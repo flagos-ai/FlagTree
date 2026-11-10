@@ -154,10 +154,12 @@ class XPUFlagCXRegistrar(FlagCXRegistrar):
         if not re.search(r"\bversion 19(?:\.|\b)", clang_version):
             raise RuntimeError(f"XPU FlagCX device IR requires XTDK LLVM 19 clang: {clang_path}")
         build_args = [f"BUILDDIR={self.src_lib_dir.parent}", f"DEVICE_HOME={sdk_path}", f"CCL_HOME={ccl_path}"]
-        device_cmd = ["make", "-C", str(device_dir), f"XPU_CLANG={clang_path}", *build_args]
+        # The device Makefile defaults OPT/LLVM_AS/LLVM_DIS to $(XTDK_HOME)/bin,
+        # so it needs XTDK_HOME just as the host command does.
+        xtdk_home = Path(clang_path).parent.parent
+        device_cmd = ["make", "-C", str(device_dir), f"XPU_CLANG={clang_path}", f"XTDK_HOME={xtdk_home}", *build_args]
         host_cmd = [
-            "make", "USE_KUNLUNXIN=1", "COMPILE_KERNEL=0", f"XTDK_HOME={Path(clang_path).parent.parent}", *build_args,
-            "-j",
+            "make", "USE_KUNLUNXIN=1", "USE_SHMEM=1", "COMPILE_KERNEL=0", f"XTDK_HOME={xtdk_home}", *build_args, "-j",
             str(os.cpu_count() or 1)
         ]
         return {self.bitcode_name: device_cmd, self.shared_lib_name: host_cmd}

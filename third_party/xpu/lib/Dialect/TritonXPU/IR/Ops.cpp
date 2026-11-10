@@ -330,6 +330,46 @@ LogicalResult DistributedBarrierOp::verify() {
   return success();
 }
 
+LogicalResult SignalOp::verify() {
+  auto kind = getSignalKindAttr().getValue();
+  if (kind != "inc" && kind != "add")
+    return emitOpError("signalKind must be inc or add");
+  if ((kind == "add") != (getAddend() != nullptr))
+    return emitOpError("add takes an addend operand and inc takes none");
+  auto teamKind = getTeamKindAttr().getInt();
+  if (teamKind < 0 || teamKind > 2)
+    return emitOpError("teamKind must be intra (0), inter (1), or world (2)");
+  auto coopKind = getCoopKindAttr().getInt();
+  if (coopKind < 0 || coopKind > 2)
+    return emitOpError("coopKind must be thread (0), warp (1), or block (2)");
+  if (getContextIdAttr().getInt() < 0)
+    return emitOpError("contextId must be non-negative");
+  auto scope = getScopeAttr().getInt();
+  if (scope < 0 || scope > 3)
+    return emitOpError("scope must be system (0), device (1), block (2), or "
+                       "thread (3)");
+  return success();
+}
+
+LogicalResult SignalWaitOp::verify() {
+  auto kind = getWaitKindAttr().getValue();
+  if (kind != "signal" && kind != "counter" && kind != "shadow")
+    return emitOpError("waitKind must be signal, counter, or shadow");
+  if ((kind == "shadow") == (getLeast() != nullptr))
+    return emitOpError("signal and counter take a least operand and shadow "
+                       "takes none");
+  auto coopKind = getCoopKindAttr().getInt();
+  if (coopKind < 0 || coopKind > 2)
+    return emitOpError("coopKind must be thread (0), warp (1), or block (2)");
+  if (getContextIdAttr().getInt() < 0)
+    return emitOpError("contextId must be non-negative");
+  auto order = getOrderAttr().getInt();
+  if (order < 0 || order > 3)
+    return emitOpError(
+        "order must be relaxed (0), acquire (1), release (2), or acq_rel (3)");
+  return success();
+}
+
 LogicalResult RemotePointerOp::verify() {
   auto ptr = cast<triton::PointerType>(getResult().getType());
   if (ptr.getAddressSpace() != 1)

@@ -1,6 +1,8 @@
 #include "triton/Conversion/TritonXPUToLLVM/FlagCxOpToLLVM/FlagCxOpToLLVM.h"
 
+#include "triton/Conversion/TritonXPUToLLVM/FlagCxOpToLLVM/DeviceInitOpToLLVM.h"
 #include "triton/Conversion/TritonXPUToLLVM/FlagCxOpToLLVM/DeviceIntraBarrierOpToLLVM.h"
+#include "triton/Conversion/TritonXPUToLLVM/FlagCxOpToLLVM/DeviceSignalOpToLLVM.h"
 #include "triton/Conversion/TritonXPUToLLVM/FlagCxOpToLLVM/GetLocalRankOpToLLVM.h"
 #include "triton/Conversion/TritonXPUToLLVM/GetDeviceIdToFlagCX.h"
 
@@ -12,7 +14,9 @@ void populateFlagCxOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
   populateGetDeviceIdOpToFlagCXPatterns(typeConverter, patterns, benefit);
   populateGetLocalRankOpToLLVMPatterns(typeConverter, patterns, benefit);
   populateGetNumPesOpToLLVMPatterns(typeConverter, patterns, benefit);
+  populateDeviceInitOpToLLVMPatterns(typeConverter, patterns, benefit);
   populateDeviceIntraBarrierOpToLLVMPatterns(typeConverter, patterns, benefit);
+  populateDeviceSignalOpToLLVMPatterns(typeConverter, patterns, benefit);
 }
 
 } // namespace mlir::triton::xpu

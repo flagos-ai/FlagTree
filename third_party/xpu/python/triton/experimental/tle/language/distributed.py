@@ -287,6 +287,117 @@ def distributed_barrier(mesh=None, device_dptr=None, *, space=None, barrier_kind
                                        barrier_index, orders[order])
 
 
+_COOP_KINDS = {"thread": 0, "warp": 1, "block": 2}
+_TEAM_KINDS = {"intra_node": 0, "inter_node": 1, "world": 2}
+_MEMORY_ORDERS = {"relaxed": 0, "acquire": 1, "release": 2, "acq_rel": 3}
+_MEMORY_SCOPES = {"system": 0, "device": 1, "block": 2, "thread": 3}
+
+
+def _signal_scalar(value, name, dtype, _semantic):
+    """Normalize one signal operand to a scalar tensor of `dtype`."""
+    value = value if isinstance(value, tl.tensor) else _semantic.to_tensor(_unwrap_if_constexpr(value))
+    if value.shape != () or not value.dtype.is_int():
+        raise TypeError(f"{name} must be a scalar integer")
+    if value.dtype != dtype:
+        value = tl.cast(value, dtype, _semantic=_semantic)
+    return value
+
+
+def _signal_context_id(context_id):
+    context_id = _unwrap_if_constexpr(context_id)
+    if not isinstance(context_id, int) or isinstance(context_id, bool):
+        raise TypeError(f"context_id must be a compile-time int, got {type(context_id).__name__}")
+    if context_id < 0 or context_id > 0x7FFFFFFF:
+        raise ValueError(f"context_id must be a non-negative int32, got {context_id}")
+    return context_id
+
+
+def _signal_coop_kind(group_kind):
+    group_kind = _unwrap_if_constexpr(group_kind)
+    if group_kind not in _COOP_KINDS:
+        raise NotImplementedError(f"XPU TLE does not support group_kind {group_kind!r}")
+    return _COOP_KINDS[group_kind]
+
+
+@builtin
+def init(device_dptr, _semantic=None, _generator=None):
+    """Bind this kernel's FlagCX device state. Required once, before the first
+    signal / signal_wait / distributed_barrier in the kernel: the device entry
+    points do not bind on their own."""
+    builder = gluon_builder(_semantic, _generator, "create_device_init")
+    builder.create_device_init(_comm_handle(device_dptr, builder))
+
+
+@builtin
+def signal(device_dptr, peer, slot_id, value=None, op="inc", space="intra_node", group_kind="block", context_id=0,
+           scope="system", _semantic=None, _generator=None):
+    """Publish an update to a slot owned by a remote FlagCX peer.
+
+    ``op="add"`` adds ``value``, ``op="inc"`` adds one. ``space`` names the team
+    ``peer`` indexes; ``context_id`` picks the arena ``slot_id`` lives in.
+    """
+    op = _unwrap_if_constexpr(op)
+    if op not in ("inc", "add"):
+        raise ValueError(f"op must be 'inc' or 'add', got {op!r}")
+    space = _unwrap_if_constexpr(space)
+    if space not in _TEAM_KINDS:
+        raise ValueError(f"space must be intra_node, inter_node, or world, got {space!r}")
+    scope = _unwrap_if_constexpr(scope)
+    if scope not in _MEMORY_SCOPES:
+        raise ValueError(f"invalid memory scope {scope!r}")
+    coop_kind = _signal_coop_kind(group_kind)
+    context_id = _signal_context_id(context_id)
+    if device_dptr is None:
+        raise ValueError("device_dptr is required for a FlagCX signal")
+
+    value = _unwrap_if_constexpr(value)
+    if op == "add" and value is None:
+        raise ValueError("op='add' requires value")
+    if op == "inc" and value is not None:
+        raise ValueError("op='inc' takes no value")
+
+    builder = gluon_builder(_semantic, _generator, "create_signal")
+    peer_tensor = _signal_scalar(peer, "peer", tl.int32, _semantic)
+    slot_tensor = _signal_scalar(slot_id, "slot_id", tl.int32, _semantic)
+    addend = None if value is None else _signal_scalar(value, "value", tl.int64, _semantic)
+    builder.create_signal(_comm_handle(device_dptr, builder), peer_tensor.handle, slot_tensor.handle,
+                          None if addend is None else addend.handle, op, _TEAM_KINDS[space], coop_kind, context_id,
+                          _MEMORY_SCOPES[scope])
+
+
+@builtin
+def signal_wait(device_dptr, slot_id, wait_kind, target=None, group_kind="block", context_id=0, order="acquire",
+                _semantic=None, _generator=None):
+    """Spin until a local FlagCX slot reaches its target.
+
+    ``"signal"`` and ``"counter"`` wait for ``target`` in their own slot
+    namespace; ``"shadow"`` reads the target from FlagCX and takes no ``target``.
+    """
+    wait_kind = _unwrap_if_constexpr(wait_kind)
+    if wait_kind not in ("signal", "counter", "shadow"):
+        raise ValueError(f"wait_kind must be signal, counter, or shadow, got {wait_kind!r}")
+    order = _unwrap_if_constexpr(order)
+    if order not in _MEMORY_ORDERS:
+        raise ValueError(f"invalid memory order {order!r}")
+    coop_kind = _signal_coop_kind(group_kind)
+    context_id = _signal_context_id(context_id)
+    if device_dptr is None:
+        raise ValueError("device_dptr is required for a FlagCX signal wait")
+
+    target = _unwrap_if_constexpr(target)
+    if wait_kind == "shadow" and target is not None:
+        raise ValueError("wait_kind='shadow' reads its target from the shadow buffer and takes no target")
+    if wait_kind != "shadow" and target is None:
+        raise ValueError(f"wait_kind={wait_kind!r} requires target")
+
+    builder = gluon_builder(_semantic, _generator, "create_signal_wait")
+    slot_tensor = _signal_scalar(slot_id, "slot_id", tl.int32, _semantic)
+    least = None if target is None else _signal_scalar(target, "target", tl.int64, _semantic)
+    builder.create_signal_wait(_comm_handle(device_dptr,
+                                            builder), slot_tensor.handle, None if least is None else least.handle,
+                               wait_kind, coop_kind, context_id, _MEMORY_ORDERS[order])
+
+
 @builtin
 def remote(tensor, shard_id=None, scope=None, space="cluster", dtype=None, offset=None, _semantic=None,
            _generator=None):

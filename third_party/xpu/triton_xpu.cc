@@ -544,6 +544,8 @@ void init_triton_xpu(py::module &&m) {
           name == "triton_xpu.get_device_id" ||
           name == "triton_xpu.get_num_pes" ||
           name == "triton_xpu.distributed_barrier" ||
+          name == "triton_xpu.signal" || name == "triton_xpu.signal_wait" ||
+          name == "triton_xpu.device_init" ||
           name == "triton_xpu.remote_pointer") {
         hasTLEOp = true;
       }

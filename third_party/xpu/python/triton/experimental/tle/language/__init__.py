@@ -7,11 +7,13 @@ from . import gpu
 from . import raw
 from .dsa.pipe import pipe
 from .distributed import (B, P, S, MeshConfig, ShardedTensor, ShardingSpec, _get_local_rank, device_mesh,
-                          distributed_barrier, make_sharded_tensor, n_pes, remote, sharding, shard_id)
+                          distributed_barrier, init, make_sharded_tensor, n_pes, remote, sharding, shard_id, signal,
+                          signal_wait)
 
 __all__ = [
     "gpu", "dsa", "pipe", "raw", "MeshConfig", "device_mesh", "B", "S", "P", "sharding", "ShardingSpec",
-    "ShardedTensor", "make_sharded_tensor", "distributed_barrier", "shard_id", "n_pes", "remote"
+    "ShardedTensor", "make_sharded_tensor", "distributed_barrier", "shard_id", "n_pes", "remote", "init", "signal",
+    "signal_wait"
 ]
 
 from triton.backends.xpu.distributed import (clear_implicit_context, flagcx_rt_conf, register_implicit_context)

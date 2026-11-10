@@ -939,6 +939,36 @@ void init_triton_ir(py::module &&m) {
                  builder.getI32IntegerAttr(barrierIndex),
                  builder.getI32IntegerAttr(order));
            })
+      .def("create_device_init",
+           [](TritonOpBuilder &self, Value comm) {
+             self.create<triton::xpu::DeviceInitOp>(comm);
+           })
+      .def("create_signal",
+           [](TritonOpBuilder &self, Value comm, Value peer, Value slot,
+              std::optional<Value> addend, const std::string &signalKind,
+              int32_t teamKind, int32_t coopKind, int32_t contextId,
+              int32_t scope) {
+             auto &builder = self.getBuilder();
+             self.create<triton::xpu::SignalOp>(
+                 comm, peer, slot, addend.value_or(Value()),
+                 builder.getStringAttr(signalKind),
+                 builder.getI32IntegerAttr(teamKind),
+                 builder.getI32IntegerAttr(coopKind),
+                 builder.getI32IntegerAttr(contextId),
+                 builder.getI32IntegerAttr(scope));
+           })
+      .def("create_signal_wait",
+           [](TritonOpBuilder &self, Value comm, Value slot,
+              std::optional<Value> least, const std::string &waitKind,
+              int32_t coopKind, int32_t contextId, int32_t order) {
+             auto &builder = self.getBuilder();
+             self.create<triton::xpu::SignalWaitOp>(
+                 comm, slot, least.value_or(Value()),
+                 builder.getStringAttr(waitKind),
+                 builder.getI32IntegerAttr(coopKind),
+                 builder.getI32IntegerAttr(contextId),
+                 builder.getI32IntegerAttr(order));
+           })
       .def("create_remote_pointers",
            [](TritonOpBuilder &self, Type resultTy, Value memory, Value peer,
               Value offset, int32_t elementBytes) -> Value {
