@@ -82,6 +82,13 @@ jobs:
           export USE_SHCA="${USE_SHCA:-1}"
           export USE_UCX=0
           if [ "$USE_SHCA" = "1" ]; then
+            # Honor explicit paths; otherwise try system and /opt installations.
+            if [ -z "${SHCA_INCLUDE:-}" ] && [ -z "${SHCA_HOME:-}" ]; then
+              SHCA_INCLUDE=/usr/include
+              if [ ! -f "$SHCA_INCLUDE/infiniband/shca_17b_types.h" ]; then
+                SHCA_INCLUDE=/opt/shca-userspace/include
+              fi
+            fi
             export SHCA_INCLUDE="${SHCA_INCLUDE:-${SHCA_HOME:-/usr}/include}"
             if [ ! -f "$SHCA_INCLUDE/infiniband/shca_17b_types.h" ]; then
               echo "USE_SHCA=1 requires $SHCA_INCLUDE/infiniband/shca_17b_types.h; check this runner's SHCA development package and ~/env.sh"
