@@ -2,6 +2,7 @@
 
 #include "IR/Dialect.h"
 #include "mlir/IR/DialectImplementation.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -15,6 +16,18 @@
 using namespace mlir;
 
 namespace mlir::triton::iluvatar_tle {
+
+namespace {
+struct IluvatarTleInlinerInterface final : public DialectInlinerInterface {
+  using DialectInlinerInterface::DialectInlinerInterface;
+
+  bool isLegalToInline(Operation *op, Region *, bool, IRMapping &) const final {
+    // Allow ordinary Triton helpers containing set_layout to be inlined before
+    // layout propagation, without changing the semantics of other TLE ops.
+    return isa<SetLayoutOp>(op);
+  }
+};
+} // namespace
 
 void IluvatarTleDialect::initialize() {
   addAttributes<
@@ -32,6 +45,7 @@ void IluvatarTleDialect::initialize() {
 #include "IR/FlagCxOps.cpp.inc"
       >();
 #endif
+  addInterfaces<IluvatarTleInlinerInterface>();
 }
 
 std::optional<MemoryOrder> parseMemoryOrder(llvm::StringRef str) {

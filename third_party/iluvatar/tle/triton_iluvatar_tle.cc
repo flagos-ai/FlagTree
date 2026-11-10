@@ -79,6 +79,87 @@ void init_triton_iluvatar_tle_ir(py::module m) {
 
   auto &builderCls = *builderClsPtr;
   builderCls
+      .def("get_blocked_encoding",
+           [](TritonOpBuilder &self, std::vector<unsigned> &sizePerThread,
+              std::vector<unsigned> &threadsPerWarp,
+              std::vector<unsigned> &warpsPerCta, std::vector<unsigned> &order,
+              std::vector<std::vector<int32_t>> &cgaBases) -> mlir::Attribute {
+             auto *ctx = self.getContext();
+             if (!cgaBases.empty())
+               throw py::value_error(
+                   "Iluvatar set_layout requires num_ctas = 1 "
+                   "and an empty cga_layout");
+             auto ctaLayout =
+                 ttg::CTAEncodingAttr::getDefault(ctx, order.size());
+             auto encoding = ttg::BlockedEncodingAttr::getChecked(
+                 [&]() { return mlir::emitError(self.getLastLoc()); }, ctx,
+                 llvm::ArrayRef<unsigned>(sizePerThread),
+                 llvm::ArrayRef<unsigned>(threadsPerWarp),
+                 llvm::ArrayRef<unsigned>(warpsPerCta),
+                 llvm::ArrayRef<unsigned>(order), ctaLayout, false, false,
+                 llvm::ArrayRef<unsigned>{});
+             if (!encoding)
+               throw py::value_error("invalid Iluvatar BlockEncoding");
+             return encoding;
+           })
+      .def("get_sliced_encoding",
+           [](TritonOpBuilder &self, unsigned dim,
+              mlir::Attribute parent) -> mlir::Attribute {
+             auto distributed =
+                 llvm::dyn_cast<ttg::DistributedEncodingTrait>(parent);
+             if (!distributed)
+               throw py::value_error(
+                   "SlicedEncoding requires a distributed parent");
+             auto encoding = ttg::SliceEncodingAttr::getChecked(
+                 [&]() { return mlir::emitError(self.getLastLoc()); },
+                 self.getContext(), dim, distributed);
+             if (!encoding)
+               throw py::value_error("invalid Iluvatar SlicedEncoding");
+             return encoding;
+           })
+      .def("get_mma_layout",
+           [](TritonOpBuilder &, std::vector<unsigned>, std::vector<unsigned>,
+              std::vector<std::vector<int32_t>>,
+              std::vector<unsigned>) -> mlir::Attribute {
+             throw py::value_error(
+                 "Iluvatar gpu.set_layout only supports "
+                 "BlockEncoding and SlicedEncoding of BlockEncoding");
+           })
+      .def("get_dot_operand_layout",
+           [](TritonOpBuilder &, unsigned, mlir::Attribute,
+              unsigned) -> mlir::Attribute {
+             throw py::value_error(
+                 "Iluvatar gpu.set_layout only supports "
+                 "BlockEncoding and SlicedEncoding of BlockEncoding");
+           })
+      .def("ensure_ttg_layout_attrs",
+           [](TritonOpBuilder &self, int numWarps, int threadsPerWarp,
+              int numCtas) {
+             auto *block = self.getBuilder().getInsertionBlock();
+             if (!block)
+               throw py::value_error("cannot set ttg layout attributes without "
+                                     "an insertion block");
+             auto *op = block->getParentOp();
+             while (op && !llvm::isa<mlir::ModuleOp>(op))
+               op = op->getParentOp();
+             auto module = llvm::dyn_cast_or_null<mlir::ModuleOp>(op);
+             if (!module)
+               throw py::value_error(
+                   "cannot find parent module for ttg layout attributes");
+             auto &builder = self.getBuilder();
+             module->setAttr("ttg.num-warps",
+                             builder.getI32IntegerAttr(numWarps));
+             module->setAttr("ttg.threads-per-warp",
+                             builder.getI32IntegerAttr(threadsPerWarp));
+             module->setAttr("ttg.num-ctas",
+                             builder.getI32IntegerAttr(numCtas));
+           })
+      .def("create_tle_gpu_set_layout",
+           [](TritonOpBuilder &self, mlir::Value value,
+              mlir::Attribute targetEncoding) -> mlir::Value {
+             return self.create<iluvatar_tle::SetLayoutOp>(
+                 value.getType(), value, targetEncoding);
+           })
       .def(
           "make_swizzled_shared_encoding_attr",
           [](TritonOpBuilder &self, unsigned vectorSize, unsigned perPhase,

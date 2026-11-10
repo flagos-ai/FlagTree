@@ -153,6 +153,9 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
 #ifdef __ILUVATAR_TLE__
   addDynamicallyLegalDialect<triton::iluvatar_tle::IluvatarTleDialect>(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
+  // Even when propagation has encoded the operands and result, set_layout
+  // must become an explicit conversion boundary before TTGIR optimization.
+  addIllegalOp<triton::iluvatar_tle::SetLayoutOp>();
 #endif
 
   // We have requirements for the data layouts

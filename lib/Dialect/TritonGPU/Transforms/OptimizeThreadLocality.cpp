@@ -35,6 +35,9 @@
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#if defined(__TLE__) || defined(__ILUVATAR_TLE__)
+#include "triton/Dialect/TritonGPU/IR/ExplicitLayout.h"
+#endif
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
@@ -56,6 +59,10 @@ struct OptimizeReshapeLayoutPattern : public OpRewritePattern<ReshapeOp> {
 
   LogicalResult matchAndRewrite(ReshapeOp viewOp,
                                 PatternRewriter &rewriter) const override {
+#if defined(__TLE__) || defined(__ILUVATAR_TLE__)
+    if (hasTleExplicitEncoding(viewOp))
+      return failure();
+#endif
     if (!viewOp.getAllowReorder())
       return failure();
     std::optional<int> reductionAxis;
@@ -253,6 +260,10 @@ struct OptimizeGatherLayoutPattern : public mlir::OpRewritePattern<GatherOp> {
 
   LogicalResult matchAndRewrite(GatherOp op,
                                 PatternRewriter &rewriter) const override {
+#if defined(__TLE__) || defined(__ILUVATAR_TLE__)
+    if (hasTleExplicitEncoding(op))
+      return failure();
+#endif
     if (op.getEfficientLayout())
       return failure();
     return setOptimizedGatherLayout(op, rewriter);
@@ -306,6 +317,10 @@ class TritonGPUOptimizeThreadLocalityPass
       if (!reduce->hasOneUse())
         return;
       Operation *user = *(reduce->getUsers().begin());
+#if defined(__TLE__) || defined(__ILUVATAR_TLE__)
+      if (hasTleExplicitEncoding(reduce) || hasTleExplicitEncoding(user))
+        return;
+#endif
       if (!user->hasOneUse())
         return;
       OpOperand &yieldOpOperand = *(user->getUses().begin());
