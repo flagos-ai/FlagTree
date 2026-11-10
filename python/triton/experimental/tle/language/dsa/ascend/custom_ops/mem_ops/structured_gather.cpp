@@ -255,6 +255,41 @@ REGISTER_SHORT_ROW_STORE(float, float)
 REGISTER_SHORT_ROW_STORE(int16, int16_t)
 REGISTER_SHORT_ROW_STORE(int32, int32_t)
 
+// Fixpipe's NZ2ND ABI cannot represent a non-unit GM column stride. Store
+// each column as a short row using the existing byte-counted DMA primitive.
+// The two workspaces are shared by all columns and fully drained per call;
+// their capacity is independent of the GM pitch and matrix dimensions.
+template <typename T>
+__aiv__ __attribute__((always_inline)) void
+strided_matrix_store(memref_t<__ubuf__ T, 2> *src, memref_t<__gm__ T, 2> *dst,
+                     memref_t<__ubuf__ int32_t, 1> *addresses,
+                     memref_t<__ubuf__ int32_t, 1> *scratch) {
+  if (src->sizes[0] == 0 || src->sizes[1] == 0)
+    return;
+  auto columnSrc = *src;
+  auto columnDst = *dst;
+  columnSrc.sizes[1] = columnDst.sizes[1] = 1;
+  columnSrc.strides[1] = columnDst.strides[1] = 1;
+  for (int64_t col = 0; col < src->sizes[1]; ++col) {
+    columnSrc.offset = src->offset + col * src->strides[1];
+    columnDst.offset = dst->offset + col * dst->strides[1];
+    short_row_store(&columnSrc, &columnDst, addresses, scratch);
+  }
+}
+
+#define REGISTER_STRIDED_STORE(SUFFIX, TYPE)                                   \
+  extern "C" __aiv__ __attribute__((always_inline)) void                       \
+      _mlir_ciface_custom_flagtree_strided_store_##SUFFIX(                     \
+          memref_t<__ubuf__ TYPE, 2> *src, memref_t<__gm__ TYPE, 2> *dst,      \
+          memref_t<__ubuf__ int32_t, 1> *addresses,                            \
+          memref_t<__ubuf__ int32_t, 1> *scratch) {                            \
+    strided_matrix_store(src, dst, addresses, scratch);                        \
+  }
+
+REGISTER_STRIDED_STORE(half, half)
+REGISTER_STRIDED_STORE(bf16, bfloat16_t)
+REGISTER_STRIDED_STORE(float, float)
+
 // The symmetric load preserves DMA even when the consumer needs packed rows.
 // Its single, preplanned workspace is at most 4 KiB; no scalar GM access is
 // introduced by CANN's choice of the output buffer's physical row stride.

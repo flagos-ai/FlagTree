@@ -157,7 +157,7 @@ def lower_private_ops(text):
             raise ValueError('Expected a result-free, bufferized private custom operation')
         indent, operands, attrs, types = match.groups()
         symbol = re.search(
-            r'\bsymbol = "(custom_flagtree_(?:(?:stride_gather|split|short_row_store|short_row_load)_'
+            r'\bsymbol = "(custom_flagtree_(?:(?:stride_gather|split|short_row_store|short_row_load|strided_store)_'
             r'(?:half|bf16|float|int16|int32)|byte_to_word|word_to_byte))"', attrs)
         if not symbol:
             raise ValueError('Unknown FlagTree structured permutation ABI')
@@ -169,7 +169,7 @@ def lower_private_ops(text):
         if len(operands) != arity or len(types) != arity or any(not re.fullmatch(r'%[\w.$-]+(?:#\d+)?', v)
                                                                 for v in operands):
             raise ValueError('Invalid structured permutation operands')
-        store = 'short_row_store_' in name
+        store = 'short_row_store_' in name or 'strided_store_' in name
         if store or load:
             canonical = [
                 _canonical_memref(types[0], 2, 'gm' if load else 'ub'),
