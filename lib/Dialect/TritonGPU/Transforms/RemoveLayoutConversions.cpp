@@ -58,6 +58,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include <deque>
+
 #ifdef __FLAGTREE_RLC_ENHANCE__
 #include "llvm/ADT/EquivalenceClasses.h"
 #include <optional>
@@ -5238,7 +5239,7 @@ public:
       // slices may additionally duplicate small access-preserving vector
       // loads (a per-row vector consumed in two layouts).
       changed = backwardRematerialization(m, storeLayoutRemat);
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
       // producer operation to avoid having to convert.
       changed = backwardRematerialization(m);
 #endif // __FLAGTREE_RLC_ENHANCE__

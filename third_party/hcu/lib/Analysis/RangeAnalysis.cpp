@@ -92,7 +92,7 @@ tt::FuncOp getEnclosingFunction(Value v) {
       funcOp = definingOp->getParentOfType<tt::FuncOp>();
   }
 
-  assert(funcOp && "No enclosing tt::FuncOp");
+  // assert(funcOp && "No enclosing tt::FuncOp");
   return funcOp;
 }
 
@@ -388,7 +388,13 @@ void TritonIntegerRangeAnalysis::setToEntryState(
       !llvm::isa<IntegerType>(getElementTypeOrSelf(anchor)))
     return;
 
-  Block *entryBlock = getFuncEntryBlock(getEnclosingFunction(anchor));
+  tt::FuncOp funcOp = getEnclosingFunction(anchor);
+  if (!funcOp) {
+    propagateIfChanged(lattice,
+                       lattice->join(IntegerValueRange::getMaxRange(anchor)));
+    return;
+  }
+  Block *entryBlock = getFuncEntryBlock(funcOp);
   IntegerValueRange range = IntegerValueRange::getMaxRange(anchor);
   if (auto maybeRange = maybeGetAssumedRange(anchor, entryBlock))
     range = *maybeRange;

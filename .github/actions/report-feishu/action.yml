@@ -114,10 +114,32 @@ runs:
           fail_or_skip "report-feishu: one of 'record' or 'jsonl' is required"
         fi
 
-        # Absent credentials are a normal state: this action can be wired into
-        # a workflow before the secrets are configured.
+        # There is a record to report but no credentials to report it with.
+        # Warn rather than skip quietly: reporting that is wired up and then
+        # silently does nothing is exactly the failure this message exists to
+        # make visible. Still exit 0 -- a lost dashboard row must not fail a
+        # PR.
         if [[ -z "${FEISHU_APP_ID}" || -z "${FEISHU_APP_SECRET}" ]]; then
-          echo "Feishu credentials not configured, skipping report."
+          set_count=0
+          for v in "${FEISHU_APP_ID}" "${FEISHU_APP_SECRET}" "${FEISHU_BITABLE_APP_TOKEN}"; do
+            [[ -n "${v}" ]] && set_count=$(( set_count + 1 ))
+          done
+
+          if (( set_count > 0 )); then
+            # Some arrived and some did not, so the wiring is right and the
+            # secrets themselves are wrong. Worth a sharper message: this is
+            # what a renamed or deleted secret looks like.
+            echo "::warning::report-feishu: only ${set_count} of 3 credentials" \
+                 "arrived. Check that FLAGTREE_FEISHU_APP_ID, _APP_SECRET and" \
+                 "_BITABLE_APP_TOKEN all exist as repository secrets."
+          else
+            echo "::warning::report-feishu: no credentials available, nothing" \
+                 "was reported. If this workflow is meant to report, check that" \
+                 "the caller forwards FLAGTREE_FEISHU_APP_ID, _APP_SECRET and" \
+                 "_BITABLE_APP_TOKEN, and that they exist as repository" \
+                 "secrets (an organization secret of the same name is passed" \
+                 "by \`secrets: inherit\` and can be used by mistake)."
+          fi
           exit 0
         fi
 
