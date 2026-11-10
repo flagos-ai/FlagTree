@@ -778,9 +778,10 @@ class HIPBackend(BaseBackend):
         # amdgcn = llvm.translate_to_asm(src, hcu.TARGET_TRIPLE, options.arch, features, flags, options.enable_fp_fusion,
         #                                False)
         kernel_ir = str(src)
-        dcc = os.environ.get("TRITON_HIP_DCC_PATH", "/opt/dtk/dcc/bin/dcc")
         # Prefer dcc for tle.raw when IR has no buffer.rsrc (dcc rejects that intrinsic).
-        use_dcc = (bool(metadata.get("hcu_tle_raw")) and os.path.isfile(dcc)
+        # Path follows FlagTree/DTK layout: {ROCM_PATH|/opt/dtk}/dcc/bin/dcc
+        dcc = Path(HIPBackend.path_to_rocm()) / "dcc" / "bin" / "dcc"
+        use_dcc = (bool(metadata.get("hcu_tle_raw")) and dcc.is_file()
                    and "llvm.amdgcn.make.buffer.rsrc" not in kernel_ir)
         metadata["hcu_raw_dcc"] = use_dcc
         try:
@@ -789,9 +790,10 @@ class HIPBackend(BaseBackend):
                 f.write(kernel_ir)
 
             asm_file = tempfile.mktemp(suffix=".amdgcn")
-            clang_path = dcc if use_dcc else HIPBackend.path_to_rocm_clang()
-            clang_args = (["-target", hcu.TARGET_TRIPLE, f"-mcpu={options.arch}", "-O3"] if use_dcc else
-                          HIPBackend._get_clang_args(metadata, options) + flags)
+            # dcc or aillvm clang: both drive llir -> .s
+            asm_compiler = str(dcc) if use_dcc else HIPBackend.path_to_rocm_clang()
+            asm_args = (["-target", hcu.TARGET_TRIPLE, f"-mcpu={options.arch}", "-O3"] if use_dcc else
+                        HIPBackend._get_clang_args(metadata, options) + flags)
 
             # Fixme: link it before run llvm.optimize_module()
             if metadata['use_dushmem']:
@@ -810,7 +812,7 @@ class HIPBackend(BaseBackend):
                 llir_file = linked_file
 
             # Compile to ASM; if dcc fails, retry with aillvm.
-            asm_command = [clang_path] + clang_args + [llir_file, "-S", "-o", asm_file]
+            asm_command = [asm_compiler] + asm_args + [llir_file, "-S", "-o", asm_file]
             result = subprocess.run(asm_command, capture_output=True, text=True)
             if result.returncode != 0 and use_dcc:
                 print(f"[hcu_raw_dcc] dcc failed; falling back to aillvm\n{result.stderr}", flush=True)
