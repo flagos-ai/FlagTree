@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 
 _DEFAULT_MUSA_PREFIX = "/usr/local/musa"
-_RLC_POLICY_CACHE_VERSION = "fixed-cost-v1-late-proof-v2"
+_RLC_POLICY_CACHE_VERSION = "fixed-cost-v1-late-proof-v3"
 
 # FlagGems uses this feature level to distinguish a backend that turns known
 # MTGPU register-allocation failures into recoverable autotuning failures from

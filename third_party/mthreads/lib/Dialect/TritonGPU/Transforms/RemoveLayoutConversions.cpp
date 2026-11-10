@@ -51,6 +51,7 @@
 #include <cstdlib>
 #include <deque>
 #include "llvm/ADT/EquivalenceClasses.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include <optional>
 
 namespace mlir::triton::gpu {
@@ -5166,10 +5167,9 @@ void hoistConvert(ModuleOp module) {
   });
 }
 
-// A closed two-output reduction can keep its conversion-free writeback while
-// grouping the rows owned by each warp consecutively. This exchanges a row
-// register bit with a row warp bit; the column distribution and load width stay
-// unchanged. Do not generalize this to mixed layouts or explicit TLE layouts.
+// Retag a closed two-output reduction and its writeback together to group rows
+// per thread. Keep the column layout and warp decomposition unchanged; reject
+// mixed or explicit TLE layouts.
 static bool packReductionWritebackRows(FuncOp funcOp) {
   auto module = funcOp->getParentOfType<ModuleOp>();
   auto target = module->getAttrOfType<StringAttr>("ttg.target");
@@ -5239,11 +5239,8 @@ static bool packReductionWritebackRows(FuncOp funcOp) {
               parent.getSizePerThread() == ArrayRef<unsigned>({1, 8}) &&
               parent.getThreadsPerWarp() == ArrayRef<unsigned>({2, 16}) &&
               parent.getWarpsPerCTA() == ArrayRef<unsigned>({8, 1});
-  // Experimental extension: when the reduced dimension spans multiple
-  // warps but row-warps are at least as numerous, try keeping the no-convert
-  // reduction and group four adjacent rows per thread for value/index stores.
-  // The closed-use, mask and alignment checks below still apply.  This is a
-  // candidate for measurement, not a claim that every matching shape wins.
+  // For a reduction spanning multiple warps, require complete groups of row
+  // owners. The closed-use, mask and alignment checks below also apply.
   auto tile = loadType.getShape();
   auto perThread = parent.getSizePerThread();
   auto lanes = parent.getThreadsPerWarp();
@@ -5254,14 +5251,12 @@ static bool packReductionWritebackRows(FuncOp funcOp) {
       perThread[0] == 1 && lanes[0] == 1 && lanes[1] == 32 &&
       warps[1] > 1 && warps[0] >= warps[1] &&
       // Require an integral number of complete packed row ownership groups.
-      // This conservative bound narrows the experiment; it is not a general
-      // occupancy or memory-transaction cost model.
+      // This bound is not an occupancy or memory-transaction cost model.
       tile[0] >= 4 * int64_t(warps[0]) * warps[1] &&
       tile[0] % (4 * int64_t(warps[0]) * warps[1]) == 0 &&
       tile[1] >= int64_t(lanes[1]) * warps[1] * perThread[1];
-  // Experimental narrow-input case: keep each row inside one warp while
-  // grouping two rows per warp owner. Require complete groups and the same
-  // closed-use and exact widening/truncation chain below; measure before use.
+  // For narrow inputs, retain the warp decomposition while grouping rows.
+  // Require complete groups and the widening/truncation chain checked below.
   bool fp16CrossWarp =
       elementType.isF16() && tile.size() == 2 &&
       perThread.size() == 2 && lanes.size() == 2 && warps.size() == 2 &&
@@ -5318,10 +5313,9 @@ static bool packReductionWritebackRows(FuncOp funcOp) {
   if (!hasValue || !hasIndex)
     return false;
   ModuleAxisInfoAnalysis axisInfo(module);
-  // Experiment: allow eight logical rows with four-element-aligned stores.
-  // MUSA StoreOp lowering caps FP32 vectors at 128 bits and also bounds them
-  // by pointer contiguity and mask alignment.  Keep original warp grouping;
-  // this still needs boundary/NaN correctness and device validation.
+  // Allow eight logical rows with four-element-aligned stores. MUSA StoreOp
+  // lowering caps FP32 vectors at 128 bits and also considers contiguity and
+  // mask alignment.
   bool packEightRows = fp32CrossWarp &&
                        tile[0] >= 8 * int64_t(warps[0]) &&
                        tile[0] % (8 * int64_t(warps[0])) == 0;
@@ -5337,14 +5331,10 @@ static bool packReductionWritebackRows(FuncOp funcOp) {
           ? 4
           : 2;
   const unsigned columnsPerThread = parent.getSizePerThread()[1];
-  // Keep the original warp grouping; only the per-thread row grouping may
-  // change.  This still requires device semantic and performance validation.
+  // Keep the original warp decomposition; only the per-thread row grouping
+  // may change. Reduction combiners can be sensitive to ordering and NaNs.
   SmallVector<unsigned> packedWarps(parent.getWarpsPerCTA().begin(),
                                     parent.getWarpsPerCTA().end());
-  // Preserve warp decomposition for both narrow and FP32 reductions.  The
-  // combine region can be non-associative for NaNs; changing the tree can
-  // change both the selected value and index.  Packing rows alone still needs
-  // device-side equivalence and performance validation.
   auto packed = BlockedEncodingAttr::get(
       funcOp.getContext(), {rowsPerThread, columnsPerThread},
       parent.getThreadsPerWarp(), packedWarps, parent.getOrder(),
@@ -5401,6 +5391,43 @@ static bool packReductionWritebackRows(FuncOp funcOp) {
                    reduce);
   return true;
 }
+
+// The matched coordinates must both participate in each store's address or
+// mask through a bounded, side-effect-free slice in the same block. Unknown
+// data flow leaves the existing writeback unchanged.
+static bool coordinatesReachDualWriteback(Value row, Value column,
+                                          ArrayRef<StoreOp> stores,
+                                          Block *block) {
+  constexpr unsigned maxSliceOperations = 256;
+  for (StoreOp store : stores) {
+    SmallVector<Value> pending{store.getPtr(), store.getMask()};
+    llvm::SmallPtrSet<Operation *, 32> visited;
+    bool foundRow = false, foundColumn = false;
+    while (!pending.empty() && (!foundRow || !foundColumn)) {
+      Value value = pending.pop_back_val();
+      if (value == row) {
+        foundRow = true;
+        continue;
+      }
+      if (value == column) {
+        foundColumn = true;
+        continue;
+      }
+      Operation *def = value.getDefiningOp();
+      if (!def || def->getBlock() != block || def->getNumRegions() != 0 ||
+          !isMemoryEffectFree(def) || !visited.insert(def).second)
+        continue;
+      if (visited.size() > maxSliceOperations)
+        return false;
+      for (Value operand : def->getOperands())
+        pending.push_back(operand);
+    }
+    if (!foundRow || !foundColumn)
+      return false;
+  }
+  return true;
+}
+
 // Retarget only a matched dual writeback with a launch-time bounded-width
 // proof. Unproved shapes retain the existing layout and writeback path.
 static void specializeBoundedDualWriteback(FuncOp funcOp) {
@@ -5496,16 +5523,17 @@ static void specializeBoundedDualWriteback(FuncOp funcOp) {
   }
   if (!div || !rem || !blocks || !numerator || !width)
     return;
-  // The fast coordinate branch is inserted before numerator. Its program
-  // coordinate must already dominate that point, including for other kernels
-  // which happen to match the same arithmetic pattern.
+  if (!coordinatesReachDualWriteback(div.getResult(), rem.getResult(), stores,
+                                     &block))
+    return;
+  // The replacement coordinate must dominate the insertion point.
   if (Operation *coordDef = div.getLhs().getDefiningOp())
     if (coordDef->getBlock() != &block ||
         !coordDef->isBeforeInBlock(numerator.getOperation()))
       return;
   auto widthArg = cast<BlockArgument>(width);
   // This attribute is a launch-time proof, carried in the specialization key.
-  // Without a matching exact tile and even divisibility, use the generic guard.
+  // Without a matching exact tile and even divisibility, keep the original path.
   auto proofBound = funcOp.getArgAttrOfType<IntegerAttr>(
       widthArg.getArgNumber(), "musa.rlc_positive_even_block_upper_bound");
   auto proofDivisor = funcOp.getArgAttrOfType<IntegerAttr>(
