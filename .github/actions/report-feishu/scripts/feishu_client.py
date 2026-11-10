@@ -257,6 +257,26 @@ def search_records(token: str, app_token: str, table_id: str, field: str, value:
     return [item.get("fields") or {} for item in (data.get("items") or [])]
 
 
+def all_records(token: str, app_token: str, table_id: str) -> List[Dict]:
+    """Every row of a table, as field dicts.
+
+    For lookups keyed on something other than a single value -- a standing
+    list of people, say -- where searching by field would need one call per
+    candidate.
+    """
+    items: List[Dict] = []
+    page_token = None
+    while True:
+        url = f"{_records_url(app_token, table_id)}/search?page_size=100"
+        if page_token:
+            url += f"&page_token={page_token}"
+        data = _request("POST", url, token, payload={}).get("data", {})
+        items.extend(item.get("fields") or {} for item in (data.get("items") or []))
+        if not data.get("has_more"):
+            return items
+        page_token = data.get("page_token")
+
+
 def cell_text(value) -> str:
     """Flatten a Bitable cell to plain text.
 
