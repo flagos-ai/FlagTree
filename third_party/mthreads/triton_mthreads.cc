@@ -15,6 +15,8 @@
 #include "passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/IR/CallingConv.h"
+#include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
@@ -36,6 +38,45 @@ void register_triton_musa_tle_dialects(mlir::DialectRegistry &registry);
 #endif
 
 namespace {
+
+// A dead result of an empty tied-register identity has no observable write.
+// Retain the volatile input dependency, but do not ask the target allocator to
+// model a register producer that emits no instruction. Used results, nonempty
+// instructions, other constraints and return attributes are left untouched.
+unsigned lowerDeadTiedRegisterFences(llvm::Module &module) {
+  llvm::SmallVector<llvm::CallInst *> candidates;
+  for (auto &fn : module)
+    for (auto &bb : fn)
+      for (auto &inst : bb) {
+        auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+        auto *assembly = call ? llvm::dyn_cast<llvm::InlineAsm>(call->getCalledOperand()) : nullptr;
+        if (!assembly || !call->use_empty() || call->isTailCall() ||
+            call->hasOperandBundles() ||
+            call->arg_size() != 1 || !call->getType()->isFloatTy() ||
+            call->getArgOperand(0)->getType() != call->getType() ||
+            !assembly->hasSideEffects() || !assembly->getAsmString().empty() ||
+            assembly->getConstraintString() != "=R,0" ||
+            call->getAttributes().getRetAttrs().hasAttributes())
+          continue;
+        candidates.push_back(call);
+      }
+  for (auto *call : candidates) {
+    auto *old = llvm::cast<llvm::InlineAsm>(call->getCalledOperand());
+    auto *type = llvm::FunctionType::get(llvm::Type::getVoidTy(module.getContext()),
+                                        {call->getArgOperand(0)->getType()}, false);
+    auto *assembly = llvm::InlineAsm::get(type, "", "R", true,
+                                         old->isAlignStack(), old->getDialect(),
+                                         old->canThrow());
+    llvm::IRBuilder<> builder(call);
+    auto *replacement = builder.CreateCall(assembly, {call->getArgOperand(0)});
+    replacement->setCallingConv(call->getCallingConv());
+    replacement->setAttributes(call->getAttributes());
+    replacement->copyMetadata(*call);
+    replacement->setDebugLoc(call->getDebugLoc());
+    call->eraseFromParent();
+  }
+  return candidates.size();
+}
 
 llvm::Function *findPrimaryKernel(llvm::Module &module,
                                   llvm::StringRef kernelNameHint) {
@@ -275,6 +316,7 @@ void init_triton_musa_passes_ttgpuir(py::module m) {
 }
 
 void init_triton_mthreads(py::module &&m) {
+  m.def("lower_dead_tied_register_fences", &lowerDeadTiedRegisterFences);
 #ifdef __TLE__
   init_triton_musa_tle_ir(m.def_submodule("ir"));
 #endif // __TLE__

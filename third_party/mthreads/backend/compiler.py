@@ -779,6 +779,8 @@ def _llc_opt_level(options: "MUSAOptions") -> str:
 
 @dataclass(frozen=True)
 class MUSAOptions:
+    # Retain side effects and input dependencies of unused empty register identities.
+    lower_dead_tied_register_fences: bool = False
     num_warps: int = 4
     num_ctas: int = 1
     num_stages: int = 1
@@ -975,6 +977,8 @@ class MUSABackend(BaseBackend):
         arch = knobs.runtime.override_arch or opts.get("arch", None) or self.target.arch
         args = {"arch": _normalize_arch(arch)}
         capability = _capability_from_arch(args["arch"])
+        if type(opts.get("lower_dead_tied_register_fences", False)) is not bool:
+            raise ValueError("lower_dead_tied_register_fences must be a bool")
         # The bundled MTGPU llc currently only provides processors through
         # mp_32. Reject future numeric capabilities here rather than letting
         # instruction selection terminate the compiler process.
@@ -1245,6 +1249,9 @@ class MUSABackend(BaseBackend):
                 llvm.link_extern_libs(llvm_mod, printf_paths, force_inline=False)
 
         MUSABackend._optimize_llir_module(llvm_mod, metadata, capability)
+        metadata["readonly_register_fence_count"] = (
+            mthreads.lower_dead_tied_register_fences(llvm_mod)
+            if options.lower_dead_tied_register_fences else 0)
         maxntidx = max(1, int(launch_num_warps) * int(options.warp_size))
         kernel_name_hint = src.get_entry_func_name() if hasattr(src, "get_entry_func_name") else ""
         mthreads.decorate_kernel_abi(llvm_mod, kernel_name_hint, maxntidx)
