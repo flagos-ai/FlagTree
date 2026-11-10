@@ -234,7 +234,11 @@ def get_hook_instance(hook_name):
 
 
 def enable_flagtree_third_party(name):
-    return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
+    # FlagCX's HCU device-bitcode build needs a consistent DTK LLVM
+    # opt/llvm-as/llvm-dis suite >= hipcc's version, which many HCU
+    # environments lack; require an explicit opt-in there.
+    default = 'OFF' if name == "flagcx" and (flagtree_backend or "nvidia") == "hcu" else 'ON'
+    return os.environ.get(f"USE_{name.upper()}", default) == 'ON'
 
 
 def download_flagtree_third_party(name, condition, required=False, hook=None):
