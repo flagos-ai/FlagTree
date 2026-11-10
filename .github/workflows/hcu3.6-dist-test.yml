@@ -79,6 +79,7 @@ jobs:
           export FLAGCX_RECOMPILE=ON
           export COMPILE_KERNEL=1
           # Enable SHCA by default; allow runner overrides in ~/env.sh.
+          # Runners without the SHCA devel package build without SHCA (warning).
           export USE_SHCA="${USE_SHCA:-1}"
           export USE_UCX=0
           if [ "$USE_SHCA" = "1" ]; then
@@ -91,8 +92,9 @@ jobs:
             fi
             export SHCA_INCLUDE="${SHCA_INCLUDE:-${SHCA_HOME:-/usr}/include}"
             if [ ! -f "$SHCA_INCLUDE/infiniband/shca_17b_types.h" ]; then
-              echo "USE_SHCA=1 requires $SHCA_INCLUDE/infiniband/shca_17b_types.h; check this runner's SHCA development package and ~/env.sh"
-              exit 1
+              echo "::warning::SHCA headers not found under $SHCA_INCLUDE; building without SHCA. Install the SHCA devel package or set USE_SHCA=0 in ~/env.sh."
+              export USE_SHCA=0
+              unset SHCA_INCLUDE
             fi
           fi
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
