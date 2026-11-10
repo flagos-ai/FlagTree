@@ -69,6 +69,7 @@ struct SqmmaDescriptorIntrinsicSpec {
   Value leadingStrideBytes;
   Value swizzleGranularity;
   Value swizzleStride;
+  int32_t nativeBits = -1;
 };
 
 struct SqmmaMatrixView {
@@ -207,6 +208,44 @@ buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
 #endif // __TLE__
 
   auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto module = rewriter.getInsertionBlock()->getParentOp()->getParentOfType<ModuleOp>();
+  int32_t nativeBits = -1;
+  if (module) {
+    auto native = module->getAttrOfType<IntegerAttr>("musa.sqmma_native_sg16");
+    auto shared = module->getAttrOfType<IntegerAttr>("musa.sqmma_native_shared");
+    if (shared && shared.getInt()) {
+      // MP31 SDK mute/arch/mma_mp31_desc.hpp defines address[0:18],
+      // leading-stride-code[18:21], and swizzle-granularity[21:23].
+      // Keep this explicit opt-in limited to byte matrices and the canonical
+      // 256B SQMMA swizzle line/stride. No descriptor bits describe other
+      // swizzle lines, so accepting them would silently misaddress memory.
+      int granularity = static_cast<int32_t>(swizzle->swizzleGranularity);
+      if (!loadType.isInteger(8) || granularity < 1 || granularity > 3 ||
+          static_cast<int32_t>(swizzle->swizzleStride) != 3 ||
+          triton::musa::getSwizzleLineBytes(swizzle->swizzleLine) != 256 ||
+          (groupedLeadingWidthBytes != 128 && groupedLeadingWidthBytes != 256)) {
+        emitError(loc, "native MP31 shared descriptors require byte elements, "
+                       "SG16/32/64, 256-byte swizzle line/stride and "
+                       "128/256-byte leading stride");
+        return failure();
+      }
+      int leadingCode = groupedLeadingWidthBytes == 128 ? 5 : 6;
+      nativeBits = (leadingCode << 18) | (granularity << 21);
+    } else if (native && native.getInt()) {
+      if (!loadType.isInteger(8) ||
+          static_cast<int32_t>(swizzle->swizzleGranularity) != 1 ||
+          static_cast<int32_t>(swizzle->swizzleStride) != 3 ||
+          (groupedLeadingWidthBytes != 128 && groupedLeadingWidthBytes != 256)) {
+        emitError(loc, "native MP31 descriptor lowering requires byte elements, "
+                       "SG16, stride-3 swizzle and 128/256-byte leading stride");
+        return failure();
+      }
+      // These descriptor forms are independently exercised by the frozen
+      // MP31 INT8/FP8 kernels. Do not generalize unvalidated bit fields to
+      // other element widths, swizzles or architectures.
+      nativeBits = (groupedLeadingWidthBytes == 128 ? 0x340000 : 0x380000);
+    }
+  }
   return SqmmaDescriptorIntrinsicSpec{
       intrinsicName,
       loadType,
@@ -215,6 +254,7 @@ buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
       b.i32_val(static_cast<int32_t>(groupedLeadingWidthBytes)),
       b.i32_val(static_cast<int32_t>(swizzle->swizzleGranularity)),
       b.i32_val(static_cast<int32_t>(swizzle->swizzleStride)),
+      nativeBits,
   };
 }
 
@@ -266,6 +306,8 @@ public:
     if (descriptorSpec.scalarInputType)
       descriptorInput = LLVM::LoadOp::create(
           rewriter, loc, descriptorSpec.scalarInputType, elemPtr);
+    if (descriptorSpec.nativeBits >= 0)
+      return b.or_(b.ptrtoint(i32_ty, elemPtr), b.i32_val(descriptorSpec.nativeBits));
     auto desc = LLVM::createLLVMIntrinsicCallOp(
         rewriter, loc, descriptorSpec.intrinsicName, TypeRange{i32_ty},
         ValueRange{descriptorInput, descriptorSpec.leadingStrideBytes,
