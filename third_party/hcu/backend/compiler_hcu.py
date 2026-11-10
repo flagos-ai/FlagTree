@@ -792,8 +792,8 @@ class HIPBackend(BaseBackend):
             asm_file = tempfile.mktemp(suffix=".amdgcn")
             # dcc or aillvm clang: both drive llir -> .s
             asm_compiler = str(dcc) if use_dcc else HIPBackend.path_to_rocm_clang()
-            asm_args = (["-target", hcu.TARGET_TRIPLE, f"-mcpu={options.arch}", "-O3"] if use_dcc else
-                        HIPBackend._get_clang_args(metadata, options) + flags)
+            asm_args = (["-target", hcu.TARGET_TRIPLE, f"-mcpu={options.arch}", "-O3"]
+                        if use_dcc else HIPBackend._get_clang_args(metadata, options) + flags)
 
             # Fixme: link it before run llvm.optimize_module()
             if metadata['use_dushmem']:
@@ -817,13 +817,11 @@ class HIPBackend(BaseBackend):
             if result.returncode != 0 and use_dcc:
                 print(f"[hcu_raw_dcc] dcc failed; falling back to aillvm\n{result.stderr}", flush=True)
                 metadata["hcu_raw_dcc"] = False
-                asm_command = ([HIPBackend.path_to_rocm_clang()] +
-                               HIPBackend._get_clang_args(metadata, options) + flags +
-                               [llir_file, "-S", "-o", asm_file])
+                asm_command = ([HIPBackend.path_to_rocm_clang()] + HIPBackend._get_clang_args(metadata, options) +
+                               flags + [llir_file, "-S", "-o", asm_file])
                 result = subprocess.run(asm_command, check=True, capture_output=True, text=True)
             elif result.returncode != 0:
-                raise subprocess.CalledProcessError(result.returncode, asm_command, result.stdout,
-                                                    result.stderr)
+                raise subprocess.CalledProcessError(result.returncode, asm_command, result.stdout, result.stderr)
             if options.wdra_enabled:
                 print(result.stdout + result.stderr, flush=True)
 
