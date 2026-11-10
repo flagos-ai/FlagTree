@@ -48,9 +48,78 @@ struct MusaTleEncodingInfo {
   explicit operator bool() const { return bool(encoding); }
 };
 
+// Split is register-local only when its final binary dimension is held in
+// a register basis. A lane/warp-owned bit needs a real layout conversion.
+static bool musaTleSplitCanInfer(RankedTensorType type, Attribute encoding) {
+  auto ll = toLinearLayout(type.getShape(), encoding);
+  auto reg = StringAttr::get(type.getContext(), "register");
+  for (const auto &dim : ll.getBases()) {
+    if (dim.first != reg)
+      continue;
+    for (const auto &basis : dim.second) {
+      if (basis.back() != 1)
+        continue;
+      bool unit = true;
+      for (unsigned i = 0; i + 1 < basis.size(); ++i)
+        unit &= basis[i] == 0;
+      if (unit)
+        return true;
+    }
+  }
+  return false;
+}
+
+// Legalize only the bit consumed by split. Preserve all other lane/warp
+// bases instead of falling back to a default blocked tensor transpose.
+static Attribute musaTleLocalSplitSourceEncoding(RankedTensorType type,
+                                                 Attribute encoding) {
+  if (musaTleSplitCanInfer(type, encoding))
+    return encoding;
+  auto *ctx = type.getContext();
+  auto ll = toLinearLayout(type.getShape(), encoding);
+  auto bases = ll.getBases();
+  auto kReg = StringAttr::get(ctx, "register");
+  auto &regs = bases[kReg];
+  for (StringRef name : {StringRef("lane"), StringRef("warp")}) {
+    auto found = bases.find(StringAttr::get(ctx, name));
+    if (found == bases.end())
+      continue;
+    auto &distributed = found->second;
+    for (auto &bit : distributed) {
+      if (bit.back() != 1)
+        continue;
+      bool unit = true;
+      for (unsigned i = 0; i + 1 < bit.size(); ++i)
+        unit &= bit[i] == 0;
+      if (!unit)
+        continue;
+      // Prefer a key register bit, preserving query ownership as well.
+      int chosen = -1;
+      for (unsigned i = 0; i < regs.size(); ++i) {
+        if (llvm::all_of(regs[i], [](int32_t v) { return v == 0; }))
+          continue;
+        if (chosen < 0 || regs[i].front() == 0)
+          chosen = i;
+        if (regs[i].front() == 0)
+          break;
+      }
+      if (chosen >= 0) {
+        std::swap(regs[chosen], bit);
+      } else {
+        regs.push_back(bit);
+        bit.assign(bit.size(), 0);
+      }
+      return LinearEncodingAttr::get(
+          ctx, LinearLayout(std::move(bases), ll.getOutDims(), /*isSurjective=*/true));
+    }
+  }
+  return {};
+}
+
 static bool musaTleEncodingsMayVary(Operation *op) {
   return isa<triton::JoinOp, triton::SplitOp, triton::ReshapeOp, triton::CatOp,
-             triton::TransOp>(op);
+             triton::TransOp, triton::ExpandDimsOp, triton::BroadcastOp,
+             triton::GatherOp>(op);
 }
 
 static LogicalResult mergeMusaTleEncodingInfo(MusaTleEncodingInfo oldInfo,
@@ -179,7 +248,17 @@ static LogicalResult updateMusaTleEncoding(ArrayRef<Value> values,
     if (!isa<RankedTensorType>(value.getType()))
       continue;
 
-    auto [it, inserted] = valueToEncoding.insert({value, info});
+    MusaTleEncodingInfo incoming = info;
+    // Leaf index/uniform producers can be shared by CSE across independent
+    // layout domains. Their physical encoding is a preference, not a contract
+    // that may flow through a shared pointer splat and override another hard
+    // set_layout result. Consumers retain their explicit layouts and convert
+    // or rematerialize the leaf as needed. Do not weaken computed values,
+    // block arguments, memory results, or the set_layout results themselves.
+    if (auto *producer = value.getDefiningOp())
+      if (isa<arith::ConstantOp, triton::MakeRangeOp, triton::SplatOp>(producer))
+        incoming.mayVary = true;
+    auto [it, inserted] = valueToEncoding.insert({value, incoming});
     if (!inserted) {
       Operation *diagOp = value.getDefiningOp();
       if (!diagOp)
@@ -188,7 +267,7 @@ static LogicalResult updateMusaTleEncoding(ArrayRef<Value> values,
       if (!diagOp)
         diagOp = func.getOperation();
       MusaTleEncodingInfo merged;
-      if (failed(mergeMusaTleEncodingInfo(it->second, info, diagOp, merged)))
+      if (failed(mergeMusaTleEncodingInfo(it->second, incoming, diagOp, merged)))
         return failure();
       if (merged.encoding == it->second.encoding &&
           merged.mayVary == it->second.mayVary)
@@ -307,11 +386,28 @@ static LogicalResult propagateMusaTleEncodingHints(
         continue;
       }
 
-      Attribute dstEncoding = inferDstEncoding(op, info.encoding);
+      // A memory operation is a layout boundary: a shared index producer may
+      // address independent loads whose consumers have different hard layouts.
+      // Keep address/result hints as preferences here; the memory walk below
+      // inserts an explicit conversion to the chosen load/store encoding.
+      // Gather's transfer function relates indices to results only. Its
+      // source is independently distributed and is read by logical index.
+      if (auto gather = dyn_cast<triton::GatherOp>(op))
+        if (use.getOperandNumber() != 1)
+          continue;
+      Attribute forwardEncoding = info.encoding;
+      if (auto split = dyn_cast<triton::SplitOp>(op)) {
+        auto type = cast<RankedTensorType>(split.getSrc().getType());
+        forwardEncoding = musaTleLocalSplitSourceEncoding(type, info.encoding);
+        if (!forwardEncoding)
+          continue;
+      }
+      Attribute dstEncoding = inferDstEncoding(op, forwardEncoding);
       if (!dstEncoding)
         continue;
       MusaTleEncodingInfo dstInfo{dstEncoding,
-                                  info.mayVary || musaTleEncodingsMayVary(op)};
+                                  info.mayVary || musaTleEncodingsMayVary(op) ||
+                                      bool(getMemAccessPtr(op))};
       if (failed(
               updateMusaTleEncoding(llvm::to_vector_of<Value>(op->getResults()),
                                     dstInfo, func, valueToEncoding, worklist)))
@@ -353,11 +449,16 @@ static LogicalResult propagateMusaTleEncodingHints(
         Attribute srcEncoding = inferSrcEncoding(definingOp, info.encoding);
         if (srcEncoding) {
           MusaTleEncodingInfo srcInfo{
-              srcEncoding, info.mayVary || musaTleEncodingsMayVary(definingOp)};
+              srcEncoding, info.mayVary || musaTleEncodingsMayVary(definingOp) ||
+                  bool(getMemAccessPtr(definingOp))};
           SmallVector<Value> tensorOperands;
-          for (Value operand : definingOp->getOperands())
-            if (isa<RankedTensorType>(operand.getType()))
-              tensorOperands.push_back(operand);
+          if (auto gather = dyn_cast<triton::GatherOp>(definingOp)) {
+            tensorOperands.push_back(gather.getIndices());
+          } else {
+            for (Value operand : definingOp->getOperands())
+              if (isa<RankedTensorType>(operand.getType()))
+                tensorOperands.push_back(operand);
+          }
           if (failed(updateMusaTleEncoding(tensorOperands, srcInfo, func,
                                            valueToEncoding, worklist)))
             return failure();
@@ -398,6 +499,191 @@ static LogicalResult propagateMusaTleEncodingHints(
   }
 
   mergeMusaTleLayoutProducerDomains(producerFamilies);
+
+  // Preserve independent index producers while satisfying gather's required
+  // index/result representation equality at each consumer.
+  func.walk([&](triton::GatherOp gather) {
+    auto srcTy = dyn_cast<RankedTensorType>(gather.getIndices().getType());
+    auto dstTy = dyn_cast<RankedTensorType>(gather.getType());
+    if (!srcTy || !dstTy || !srcTy.getEncoding() || !dstTy.getEncoding() ||
+        srcTy.getEncoding() == dstTy.getEncoding())
+      return;
+    OpBuilder builder(gather);
+    auto converted = triton::gpu::ConvertLayoutOp::create(
+        builder, gather.getLoc(),
+        srcTy.cloneWithEncoding(dstTy.getEncoding()), gather.getIndices());
+    setTleExplicitResultEncoding(converted.getOperation(), 0,
+                                 dstTy.getEncoding());
+    gather->setOperand(1, converted.getResult());
+    changed = true;
+  });
+
+  // Both outputs of tt.split share the encoding inferred from its actual
+  // source. Independent downstream layout hints must not mutate the two
+  // result types differently; bridge each consumer domain explicitly.
+  func.walk([&](triton::SplitOp split) {
+    auto srcTy = dyn_cast<RankedTensorType>(split.getSrc().getType());
+    if (!srcTy || !srcTy.getEncoding())
+      return;
+    if (!musaTleSplitCanInfer(srcTy, srcTy.getEncoding())) {
+      auto resultTy = cast<RankedTensorType>(split.getResult(0).getType());
+      if (!resultTy.getEncoding())
+        return;
+      Attribute legalEncoding = musaTleLocalSplitSourceEncoding(
+          srcTy, srcTy.getEncoding());
+      if (!legalEncoding)
+        return;
+      OpBuilder before(split);
+      auto converted = triton::gpu::ConvertLayoutOp::create(
+          before, split.getLoc(), srcTy.cloneWithEncoding(legalEncoding),
+          split.getSrc());
+      setTleExplicitResultEncoding(converted.getOperation(), 0, legalEncoding);
+      split->setOperand(0, converted.getResult());
+      srcTy = cast<RankedTensorType>(converted.getType());
+      changed = true;
+    }
+    Attribute resultEncoding = inferDstEncoding(split.getOperation(),
+                                                srcTy.getEncoding());
+    if (!resultEncoding)
+      return;
+    OpBuilder builder(split);
+    builder.setInsertionPointAfter(split);
+    for (OpResult result : split.getResults()) {
+      auto dstTy = dyn_cast<RankedTensorType>(result.getType());
+      if (!dstTy || !dstTy.getEncoding() ||
+          dstTy.getEncoding() == resultEncoding)
+        continue;
+      result.setType(dstTy.cloneWithEncoding(resultEncoding));
+      setTleExplicitResultEncoding(result, resultEncoding);
+      auto converted = triton::gpu::ConvertLayoutOp::create(
+          builder, split.getLoc(), dstTy, result);
+      setTleExplicitResultEncoding(converted.getOperation(), 0,
+                                   dstTy.getEncoding());
+      result.replaceAllUsesExcept(converted.getResult(),
+                                  converted.getOperation());
+      changed = true;
+    }
+  });
+
+  // A reduction's result encoding is a slice of its actual operand encoding.
+  // Explicit layout propagation can independently constrain its consumers to
+  // another layout (including an MMA layout after a rank-changing view).
+  // Keep the reduction well typed and materialize that boundary explicitly.
+  func.walk([&](triton::ReduceOp reduce) {
+    auto srcTy = dyn_cast<RankedTensorType>(reduce.getOperand(0).getType());
+    if (!srcTy || !srcTy.getEncoding())
+      return;
+    auto resultEncoding = triton::gpu::SliceEncodingAttr::get(
+        reduce.getContext(), reduce.getAxis(),
+        cast<triton::gpu::DistributedEncodingTrait>(srcTy.getEncoding()));
+    OpBuilder builder(reduce);
+    builder.setInsertionPointAfter(reduce);
+    for (OpResult result : reduce.getResults()) {
+      auto dstTy = dyn_cast<RankedTensorType>(result.getType());
+      if (!dstTy || !dstTy.getEncoding() ||
+          dstTy.getEncoding() == resultEncoding)
+        continue;
+      result.setType(dstTy.cloneWithEncoding(resultEncoding));
+      setTleExplicitResultEncoding(result, resultEncoding);
+      auto converted = triton::gpu::ConvertLayoutOp::create(
+          builder, reduce.getLoc(), dstTy, result);
+      setTleExplicitResultEncoding(converted.getOperation(), 0,
+                                   dstTy.getEncoding());
+      result.replaceAllUsesExcept(converted.getResult(),
+                                  converted.getOperation());
+      changed = true;
+    }
+  });
+
+  // A loop-carried producer can serve multiple explicit layout domains.
+  // Shape ops have varying hints, so independently chosen operand/result
+  // hints need not form a valid view. Bridge the source at that boundary;
+  // do not reinterpret the result or mutate the shared producer's contract.
+  func.walk([&](Operation *op) {
+    if (!isa<triton::TransOp, triton::ReshapeOp, triton::ExpandDimsOp,
+             triton::BroadcastOp>(op))
+      return;
+    auto srcTy = dyn_cast<RankedTensorType>(op->getOperand(0).getType());
+    auto dstTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!srcTy || !dstTy || !srcTy.getEncoding() || !dstTy.getEncoding())
+      return;
+    Attribute requiredSrc = inferSrcEncoding(op, dstTy.getEncoding());
+    if (!requiredSrc || requiredSrc == srcTy.getEncoding())
+      return;
+    OpBuilder builder(op);
+    auto converted = triton::gpu::ConvertLayoutOp::create(
+        builder, op->getLoc(), srcTy.cloneWithEncoding(requiredSrc),
+        op->getOperand(0));
+    setTleExplicitResultEncoding(converted.getOperation(), 0, requiredSrc);
+    op->setOperand(0, converted.getResult());
+  });
+
+  // Elementwise consumers can join independent explicit layout domains,
+  // especially after successive rank-changing reductions. Keep each producer
+  // in its chosen layout and bridge only mismatching operands at the consumer.
+  func.walk([&](Operation *op) {
+    if (!op->hasTrait<OpTrait::Elementwise>() || op->getNumResults() != 1)
+      return;
+    auto dstTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!dstTy || !dstTy.getEncoding())
+      return;
+    OpBuilder builder(op);
+    for (OpOperand &use : op->getOpOperands()) {
+      auto srcTy = dyn_cast<RankedTensorType>(use.get().getType());
+      if (!srcTy || !srcTy.getEncoding() ||
+          srcTy.getShape() != dstTy.getShape() ||
+          srcTy.getEncoding() == dstTy.getEncoding())
+        continue;
+      auto converted = triton::gpu::ConvertLayoutOp::create(
+          builder, op->getLoc(), srcTy.cloneWithEncoding(dstTy.getEncoding()),
+          use.get());
+      setTleExplicitResultEncoding(converted.getOperation(), 0,
+                                   dstTy.getEncoding());
+      use.set(converted.getResult());
+      changed = true;
+    }
+  });
+
+  // Loop-carried values have one structural type at init, region argument,
+  // yield, and result. Independent layout hints can select equivalent but
+  // structurally different slice encodings. Preserve the result contract and
+  // materialize explicit bridges at the three remaining boundaries.
+  func.walk([&](scf::ForOp loop) {
+    auto yield = cast<scf::YieldOp>(loop.getBody()->getTerminator());
+    for (unsigned i = 0; i < loop.getNumResults(); ++i) {
+      auto target = dyn_cast<RankedTensorType>(loop.getResult(i).getType());
+      if (!target || !target.getEncoding())
+        continue;
+      OpBuilder builder(loop);
+      auto bridge = [&](Value value, Operation *before) -> Value {
+        auto type = dyn_cast<RankedTensorType>(value.getType());
+        if (!type || !type.getEncoding() || type == target)
+          return value;
+        builder.setInsertionPoint(before);
+        auto converted = triton::gpu::ConvertLayoutOp::create(
+            builder, before->getLoc(), target, value);
+        setTleExplicitResultEncoding(converted.getOperation(), 0,
+                                     target.getEncoding());
+        changed = true;
+        return converted.getResult();
+      };
+      loop->setOperand(3 + i, bridge(loop.getInitArgs()[i], loop));
+      BlockArgument argument = loop.getRegionIterArgs()[i];
+      auto oldType = dyn_cast<RankedTensorType>(argument.getType());
+      if (oldType && oldType.getEncoding() && oldType != target) {
+        argument.setType(target);
+        builder.setInsertionPointToStart(loop.getBody());
+        auto converted = triton::gpu::ConvertLayoutOp::create(
+            builder, loop.getLoc(), oldType, argument);
+        setTleExplicitResultEncoding(converted.getOperation(), 0,
+                                     oldType.getEncoding());
+        argument.replaceAllUsesExcept(converted.getResult(),
+                                       converted.getOperation());
+        changed = true;
+      }
+      yield->setOperand(i, bridge(yield.getOperand(i), yield));
+    }
+  });
 
   WalkResult memoryWalk = func.walk([&](Operation *op) {
     Value pointer = getMemAccessPtr(op);
@@ -733,6 +1019,14 @@ template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
 #endif
 #ifdef __TLE__
     SmallVector<Value> operands(adaptor.getOperands());
+    if (isa<triton::GatherOp>(op.getOperation()) && retTypes.size() == 1) {
+      auto dstTy = cast<RankedTensorType>(retTypes.front());
+      auto idxTy = cast<RankedTensorType>(operands[1].getType());
+      if (idxTy.getEncoding() != dstTy.getEncoding())
+        operands[1] = triton::gpu::ConvertLayoutOp::create(
+            rewriter, op.getLoc(), idxTy.cloneWithEncoding(dstTy.getEncoding()),
+            operands[1]);
+    }
     if (Attribute encoding = getTleExplicitMemoryEncoding(op)) {
       // A store has no result through which layout propagation can align its
       // pointer and mask with an explicitly laid-out value. Materialize these
@@ -742,6 +1036,19 @@ template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
         if (type && type.getEncoding() != encoding)
           operand = triton::gpu::ConvertLayoutOp::create(
               rewriter, op.getLoc(), type.cloneWithEncoding(encoding), operand);
+      }
+    }
+    if (op->template hasTrait<OpTrait::Elementwise>() && retTypes.size() == 1) {
+      auto dstTy = dyn_cast<RankedTensorType>(retTypes.front());
+      if (dstTy && dstTy.getEncoding()) {
+        for (Value &operand : operands) {
+          auto srcTy = dyn_cast<RankedTensorType>(operand.getType());
+          if (srcTy && srcTy.getShape() == dstTy.getShape() &&
+              srcTy.getEncoding() != dstTy.getEncoding())
+            operand = triton::gpu::ConvertLayoutOp::create(
+                rewriter, op.getLoc(),
+                srcTy.cloneWithEncoding(dstTy.getEncoding()), operand);
+        }
       }
     }
     rewriter.replaceOpWithNewOp<Op>(op, retTypes, operands, op->getAttrs());
@@ -1140,8 +1447,16 @@ struct TritonSplitOpPattern : public OpConversionPattern<triton::SplitOp> {
     auto src = adaptor.getSrc();
     auto srcTy = cast<RankedTensorType>(src.getType());
     auto srcEnc = dyn_cast<BlockedEncodingAttr>(srcTy.getEncoding());
-    int rank = srcEnc.getOrder().size();
+    int rank = srcTy.getRank();
     auto typeConverter = getTypeConverter<TritonGPUTypeConverter>();
+#ifdef __TLE__
+    if (isa<LinearEncodingAttr>(srcTy.getEncoding()) &&
+        musaTleSplitCanInfer(srcTy, srcTy.getEncoding())) {
+      addNamedAttrs(rewriter.replaceOpWithNewOp<triton::SplitOp>(op, src),
+                    adaptor.getAttributes());
+      return success();
+    }
+#endif
 
     // The operand to split must have:
     //  - a blocked layout, with
@@ -1244,6 +1559,17 @@ struct TritonReducePattern : public OpConversionPattern<triton::ReduceOp> {
     auto &newCombineOp = newReduce.getCombineOp();
     rewriter.cloneRegionBefore(op.getCombineOp(), newCombineOp,
                                newCombineOp.end());
+#ifdef __TLE__
+    // The reduction's own result must keep its inferred slice encoding.
+    // A different encoded helper ABI is materialized by the type converter;
+    // retaining its old hint on the reduction would contradict that type.
+    for (auto [index, result] : llvm::enumerate(newReduce->getResults())) {
+      auto type = dyn_cast<RankedTensorType>(result.getType());
+      auto requested = getTleExplicitResultEncoding(newReduce, index);
+      if (type && requested && requested != type.getEncoding())
+        newReduce->removeAttr(getTleExplicitEncodingAttrName(index));
+    }
+#endif
     rewriter.replaceOp(op, newReduce.getResult());
     return success();
   }

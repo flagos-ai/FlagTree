@@ -629,6 +629,14 @@ Operation *LayoutPropagation::cloneElementwise(OpBuilder &rewriter,
       continue;
     auto newType = origType.cloneWithEncoding(encoding);
     newOp->getResult(i).setType(newType);
+#ifdef __TLE__
+    // Layout propagation may clone a soft producer in another representation.
+    // Do not retain the old result's layout marker on this clone. Explicit
+    // convert_layout anchors keep their hard encoding in resolveConflicts.
+    if (Attribute requested = getTleExplicitResultEncoding(newOp, i))
+      if (requested != newType.getEncoding())
+        newOp->removeAttr(getTleExplicitEncodingAttrName(i));
+#endif
   }
   return newOp;
 }
@@ -648,6 +656,18 @@ Operation *LayoutPropagation::rewriteForOp(scf::ForOp forOp) {
       scf::ForOp::create(rewriter, forOp.getLoc(), forOp.getLowerBound(),
                          forOp.getUpperBound(), forOp.getStep(), operands);
   newForOp->setAttrs(forOp->getAttrs());
+#ifdef __TLE__
+  // The rebuilt loop signature comes from the converted init operands.
+  // Result markers copied from the old signature are soft propagation data,
+  // not an instruction to reinterpret the new loop-carried representation.
+  for (auto result : newForOp->getResults()) {
+    auto type = dyn_cast<RankedTensorType>(result.getType());
+    unsigned i = result.getResultNumber();
+    if (Attribute requested = getTleExplicitResultEncoding(newForOp, i))
+      if (type && requested != type.getEncoding())
+        newForOp->removeAttr(getTleExplicitEncodingAttrName(i));
+  }
+#endif
   newForOp.getBody()->getOperations().splice(
       newForOp.getBody()->getOperations().begin(),
       forOp.getBody()->getOperations());

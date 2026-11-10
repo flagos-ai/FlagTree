@@ -15,6 +15,7 @@
 #endif
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 using namespace mlir;
@@ -117,6 +118,35 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
           .getResult(0);
     });
   }
+
+#ifdef __TLE__
+  // An outlined TLE helper may preserve an explicitly encoded function ABI
+  // while reduction inference produces a different (slice) representation.
+  // Both are already GPU tensors: materialize the representation conversion,
+  // without enabling general rematerialization of unencoded source values.
+  addSourceMaterialization([](OpBuilder &builder, RankedTensorType desired,
+                              ValueRange inputs, Location loc) -> Value {
+    if (inputs.size() != 1)
+      return {};
+    auto actual = dyn_cast<RankedTensorType>(inputs[0].getType());
+    if (!actual || actual.getShape() != desired.getShape() ||
+        actual.getElementType() != desired.getElementType() ||
+        !isa_and_nonnull<DistributedEncodingTrait>(actual.getEncoding()) ||
+        !isa_and_nonnull<DistributedEncodingTrait>(desired.getEncoding()))
+      return {};
+    auto src = toLinearLayout(actual), dst = toLinearLayout(desired);
+    for (StringRef dim : {"lane", "warp", "block"}) {
+      auto name = StringAttr::get(builder.getContext(), dim);
+      if (src.getInDimSize(name) != dst.getInDimSize(name))
+        return {}; // Never silently cross a partition's execution geometry.
+    }
+    auto cast = triton::gpu::ConvertLayoutOp::create(
+        builder, loc, desired, inputs[0]);
+    cast->setAttr(triton::musa_tle::kMUSATLEPartitionMaterializationAttr,
+                  builder.getUnitAttr());
+    return cast.getResult();
+  });
+#endif
 
   // This will be called when (desiredType != newOperandType)
   // where, desiredType = typeConverter->convertType(origType)
