@@ -695,10 +695,10 @@ struct AsyncTMECopyGlobalToLocalOpConversion
 
 #ifdef __TLE__
     if (!op->hasAttr(triton::musa::kTMEExplicitCompletionAttr))
-      LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.barrier0",
+      LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.syncthreads.lm",
                                       TypeRange{}, {});
 #else
-    LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.barrier0",
+    LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.syncthreads.lm",
                                     TypeRange{}, {});
 #endif // __TLE__
 

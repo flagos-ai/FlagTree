@@ -92,7 +92,8 @@ struct DotOpMFMAConversionHelper {
                      mmacLayout == MmacLayout::INTERLEAVE_TRANSPOSE;
     Value ltsFlag = isMmacLTS ? b.true_val() : b.false_val();
     Value litFlag = isMmacLIT ? b.true_val() : b.false_val();
-    if (intrinsicName.compare("rocdl.mmac.16x16x4.f32") == 0) {
+    if (intrinsicName.compare("rocdl.mmac.16x16x4.f32") == 0 ||
+        intrinsicName.compare("rocdl.mmac.16x16x4.f64") == 0) {
       loweredOp.addOperands({valA, valB, valC, i32Flag, ltsFlag});
     } else if (intrinsicName.compare("rocdl.mmac.16x16x8.f32") == 0 ||
                intrinsicName.compare("rocdl.mmac.f32.16x16x16.f16") == 0 ||
@@ -513,7 +514,7 @@ struct DotOpMFMAConversionHelper {
                 tb.extract_element(type, rawElems, tb.i32_val(0));
 #endif
             /* HCU support: add mmac_f32_m16n16k8_f32 support */
-            if (kWidth == 1) {
+            if (kBase == 1) {
               dotOpVals[{b, nonK, kBaseVec}] =
                   tb.extract_element(type, rawElems, tb.i32_val(0));
             } else {
