@@ -16,6 +16,15 @@ if(NOT FLAGTREE_BACKEND)
   )
 endif()
 
+# The pass definition is only emitted by tablegen when
+# __FLAGTREE_PIPELINE_ENHANCE__ is defined (see cmake/FlagTreeOptions.cmake).
+set(TritonGPUTransformsPipelineEnhanceSources)
+if(NOT FLAGTREE_BACKEND)
+  list(APPEND TritonGPUTransformsPipelineEnhanceSources
+    Pipeliner/MergeDuplicateLoads.cpp
+  )
+endif()
+
 set(TritonGPUTransformsSharedMemoryHintSources ProcessSharedMemoryHint.cpp)
 set(TritonGPUTransformsWarpSpecializationSources
   WarpSpecialization/AutomaticWarpSpecialization.cpp
@@ -50,6 +59,7 @@ add_triton_library(TritonGPUTransforms
   Pipeliner/MMAv5PipelineUtility.cpp
   Pipeliner/ScheduleLoops.cpp
   ${TritonGPUTransformsTleSources}
+  ${TritonGPUTransformsPipelineEnhanceSources}
   Pipeliner/WGMMAPipeline.cpp
   Pipeliner/PipelineExpander.cpp
   Pipeliner/TestPipelineLowerLoop.cpp
