@@ -165,10 +165,11 @@ bool relaxTceWaitGroups(llvm::Module &module) {
           continue;
         }
         if (name == kWait) {
-          auto *pendings = llvm::cast<llvm::ConstantInt>(call->getArgOperand(0));
-          unsigned groups = pendings->getZExtValue();
-          if (outstanding > groups) {
-            outstanding = groups;
+          // A group count llc cannot read is treated like one it rejects.
+          auto *pendings =
+              llvm::dyn_cast<llvm::ConstantInt>(call->getArgOperand(0));
+          if (pendings && outstanding > pendings->getZExtValue()) {
+            outstanding = pendings->getZExtValue();
             continue;
           }
           if (!sqmmaWaitFn) {
