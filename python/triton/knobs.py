@@ -674,18 +674,8 @@ class musa_knobs(base_knobs):
     replace_llir: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_LLIR")
     replace_mubin: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_MUBIN")
     libdevice_path: env_opt_str = env_opt_str("TRITON_MUSA_LIBDEVICE_PATH")
-    # Enhanced phases remain opt-in until qualified on MUSA.
+    # Enable the complete MThreads RLC enhancement pipeline.
     rlc_enhance: env_bool = env_bool("FLAGTREE_MUSA_RLC_ENHANCE", False)
-    rlc_phase_mask: env_int = env_int("FLAGTREE_MUSA_RLC_PHASE_MASK", 0xF)
-    # MUSA scalarizes atomic tensor elements in one thread. Keep Phase 2 from
-    # increasing that per-thread atomic count; the RLC master switch remains
-    # default-off, and Phase 3 MMA atomic rematerialization is unaffected.
-    rlc_atomic_writeback_max_elements_per_thread_ratio: env_int = env_int(
-        "FLAGTREE_MUSA_RLC_ATOMIC_WRITEBACK_MAX_ELEMS_PER_THREAD_RATIO", 1)
-    # MUSA scalar and vector int-to-fp paths are not bit-identical at every
-    # rounding boundary. Phase 2 must not change that per-thread vector width.
-    rlc_preserve_int_to_fp_contiguity: env_bool = env_bool(
-        "FLAGTREE_MUSA_RLC_PRESERVE_INT_TO_FP_CONTIGUITY", True)
     libprintf_path: env_opt_str = env_opt_str("TRITON_MUSA_LIBPRINTF_PATH")
 
 

@@ -116,40 +116,6 @@ static bool isExplicitLayoutConversion(Operation *op) {
 #endif
 }
 
-// Backend controls for atomic writeback parallelism and integer-to-float
-// lowering. Cost estimates retain the shared RLC constants.
-struct RlcBackendPolicy {
-  // Zero disables the limit; a positive ratio bounds per-thread atomic growth.
-  int64_t atomicWritebackMaxElementsPerThreadRatio = 0;
-  // Preserve the conversion width when scalar/vector lowering can round
-  // differently and change deterministic RNG bits.
-  bool preserveIntToFpContiguity = false;
-  // Bit `1 << width` advertises an explicitly implemented backend lowering for
-  // that integer-to-float vector width. Zero is fail-closed.
-  int64_t intToFpVectorWidthMask = 0;
-
-  static RlcBackendPolicy fromOperation(Operation *op) {
-    RlcBackendPolicy policy;
-    ModuleOp module = op ? op->getParentOfType<ModuleOp>() : ModuleOp();
-    if (!module)
-      return policy;
-
-    auto overridePositive = [&](StringRef name, int64_t &value) {
-      if (auto attr = module->getAttrOfType<IntegerAttr>(name))
-        if (attr.getInt() > 0)
-          value = attr.getInt();
-    };
-    overridePositive("ttg.rlc-atomic-writeback-max-elements-per-thread-ratio",
-                     policy.atomicWritebackMaxElementsPerThreadRatio);
-    if (auto attr = module->getAttrOfType<IntegerAttr>(
-            "ttg.rlc-preserve-int-to-fp-contiguity"))
-      policy.preserveIntToFpContiguity = attr.getInt() > 0;
-    overridePositive("ttg.rlc-int-to-fp-vector-width-mask",
-                     policy.intToFpVectorWidthMask);
-    return policy;
-  }
-};
-
 static Attribute getTensorEncoding(Value value) {
   auto tensorType = dyn_cast<RankedTensorType>(value.getType());
   return tensorType ? tensorType.getEncoding() : Attribute();
@@ -230,28 +196,27 @@ static bool isEquivalentEncoding(Value value, Attribute a, Attribute b) {
 //    correct order. For each op, rewrite it using the layout decided by the
 //    analysis phase.
 //
-// On top of this baseline we add four optional phases, each guarded by a pass
-// option that only takes effect under the master option enable-rlc-enhance;
-// with enable-rlc-enhance off the pass is identical to the original.
+// The enable-rlc-enhance option enables all four enhancement phases together;
+// with it off the pass retains the original pipeline.
 //
-//   Phase 1a (enable-cost-based-resolution): resolve conflicts by estimated
+//   Phase 1a: resolve conflicts by estimated
 //     convert cost instead of the fixed "blocked for load/store, mma
 //     otherwise" heuristic, and move whole components of tied blocked values
 //     (e.g. a loop accumulator) onto a shared encoding when that removes
 //     loop-resident converts (see resolveConflictsByComponent).
 //
-//   Phase 1b (enable-backward-propagation): push an encoding preference
+//   Phase 1b: push an encoding preference
 //     backward from single-use writeback converts into their producer chains.
 //
-//   Phase 2 (enable-small-component-solving): retag a small closed component to
+//   Phase 2: retag a small closed component to
 //     one encoding when a loop-depth-weighted cost model shows it removes a
 //     convert without degrading memory access.
 //
-//   Phase 3 (enable-store-layout-rematerialization): drop a writeback convert
+//   Phase 3: drop a writeback convert
 //     from an MMA value by rematerializing its address/mask chains in the
 //     value's layout (see LayoutRematerialization).
 //
-// Phase 1b and Phase 2 require Phase 1a.
+// Phase 1b and Phase 2 use the cost-based resolution from Phase 1a.
 class LayoutPropagation {
 public:
   // Structure to keep track of the layout associated to a value.
@@ -272,13 +237,9 @@ public:
     // parent; only the cost-based resolution may pick them.
     llvm::SmallSetVector<Attribute, 2> derivedEncodings;
   };
-  LayoutPropagation(FuncOp F, bool costBased = true, bool backwardProp = true,
-                    bool smallComponentSolving = true,
+  LayoutPropagation(FuncOp F, bool enhance,
                     ModuleAxisInfoAnalysis *axisInfo = nullptr)
-      : funcOp(F), enableCostBasedResolution(costBased),
-        enableBackwardPropagation(backwardProp),
-        enableSmallComponentSolving(smallComponentSolving),
-        axisInfoAnalysis(axisInfo) {}
+      : funcOp(F), enableEnhance(enhance), axisInfoAnalysis(axisInfo) {}
   // Find the anchor ops and set their layout in the data structure.
   void initAnchorLayout();
   // Recursively Propagate the layout to all the users of the anchor ops until
@@ -324,7 +285,6 @@ public:
   void dump();
 
 private:
-  bool hasLayoutPropagationExtensions() const;
   bool conflictsWithHardEncoding(Value value, Attribute encoding) const;
   LayoutInfo *getOrCreateBackwardLayout(Value value);
   bool addBackwardEncoding(Value target, Attribute encoding);
@@ -362,9 +322,7 @@ private:
   DenseMap<std::pair<Value, Attribute>, Value> rewriteMapping;
   SetVector<Operation *> opToDelete;
   FuncOp funcOp;
-  bool enableCostBasedResolution;
-  bool enableBackwardPropagation;
-  bool enableSmallComponentSolving;
+  bool enableEnhance;
   // Address-pattern analysis for the phase extensions (null when disabled).
   ModuleAxisInfoAnalysis *axisInfoAnalysis;
   // Values first tracked by backward propagation.
@@ -505,11 +463,6 @@ bool isLayoutAnchor(Operation *op) {
   return false;
 }
 
-bool LayoutPropagation::hasLayoutPropagationExtensions() const {
-  return enableCostBasedResolution || enableBackwardPropagation ||
-         enableSmallComponentSolving;
-}
-
 // True if `value` carries an explicit (tle.gpu.set_layout) encoding other than
 // `encoding`; resolveConflicts always keeps the explicit one.
 bool LayoutPropagation::conflictsWithHardEncoding(Value value,
@@ -587,7 +540,7 @@ void LayoutPropagation::initAnchorLayout() {
                        bool hard = false) {
     if (auto tensorType = dyn_cast<RankedTensorType>(v.getType())) {
       Attribute anchorEncoding = encoding ? encoding : tensorType.getEncoding();
-      if (hasLayoutPropagationExtensions() && !anchorEncoding)
+      if (enableEnhance && !anchorEncoding)
         return;
       auto &info = layouts[v];
       info.add(anchorEncoding, hard);
@@ -602,7 +555,7 @@ void LayoutPropagation::initAnchorLayout() {
   }
 
   funcOp.walk([&](Operation *op) {
-    if (enableCostBasedResolution)
+    if (enableEnhance)
       if (auto ext = dyn_cast<arith::ExtFOp>(op))
         if (Attribute encoding = getWidenedLoopComputeLayout(ext))
           addAnchor(ext.getResult(), encoding, /*hard=*/true);
@@ -642,7 +595,7 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
         // inside a loop body, where the convert this avoids would run every
         // iteration, synthesize the parent the source is a slice of.
         if (auto expandOp = dyn_cast<ExpandDimsOp>(op);
-            expandOp && !dstEncoding && enableCostBasedResolution &&
+            expandOp && !dstEncoding && enableEnhance &&
             isa<scf::ForOp, scf::WhileOp>(op->getParentOp())) {
           dstEncoding = getExpandDimsParentEncoding(expandOp, encoding);
           derived = true;
@@ -937,9 +890,7 @@ bool LayoutPropagation::collectProducerClosure(Proposal &proposal, Value target,
   // Integer domains that fit exactly in the destination significand (for
   // example i1 -> f32) are layout-independent and need neither path.
   Operation *targetDefOp = target.getDefiningOp();
-  if (targetDefOp &&
-      RlcBackendPolicy::fromOperation(targetDefOp).preserveIntToFpContiguity &&
-      requiresIntToFpContiguityBoundary(target, encoding)) {
+  if (targetDefOp && requiresIntToFpContiguityBoundary(target, encoding)) {
     if (getPreservedIntToFpVectorWidth(target, encoding) != 0) {
       traceRlcDecision("2", "preserve", "int-to-fp-vector-width", targetDefOp);
     } else {
@@ -1707,8 +1658,7 @@ bool LayoutPropagation::commitProposal(const Proposal &proposal) {
   for (auto &it : proposal) {
     changed |= addSmallComponentEncoding(it.first, it.second);
     Operation *defOp = it.first.getDefiningOp();
-    if (!defOp ||
-        !RlcBackendPolicy::fromOperation(defOp).preserveIntToFpContiguity)
+    if (!defOp)
       continue;
     unsigned width = getPreservedIntToFpVectorWidth(it.first, it.second);
     if (width != 0)
@@ -2008,7 +1958,7 @@ SmallVector<Value> LayoutPropagation::propagateToOperands(Value value,
 }
 
 bool LayoutPropagation::propagateLayoutBackward() {
-  if (!enableBackwardPropagation)
+  if (!enableEnhance)
     return false;
 
   SmallVector<Value> queue;
@@ -2166,9 +2116,7 @@ static unsigned getPreservedIntToFpVectorWidth(Value value,
   unsigned newElems = getTotalElemsPerThread(candidateType);
   if (oldElems != newElems || (oldElems != 2 && oldElems != 4))
     return 0;
-  RlcBackendPolicy policy = RlcBackendPolicy::fromOperation(defOp);
-  if ((policy.intToFpVectorWidthMask & (int64_t{1} << oldElems)) == 0)
-    return 0;
+  // MUSA lowering explicitly preserves i32-to-f32 widths 2 and 4.
   return oldElems;
 }
 
@@ -2332,7 +2280,7 @@ static bool isOrderIndifferentAccess(ModuleAxisInfoAnalysis *axisInfo,
 }
 
 bool LayoutPropagation::solveSmallComponents() {
-  if (!enableSmallComponentSolving)
+  if (!enableEnhance)
     return false;
 
   constexpr int kMaxStoreTailDepth = 8;
@@ -2342,8 +2290,6 @@ bool LayoutPropagation::solveSmallComponents() {
   // by its global accesses, so keeping a bridging convert is cheaper than
   // amplifying a scatter store (see the Load/Store passthrough guard below).
   const bool memoryMovementOnly = !functionHasComputeAnchors(funcOp);
-  const RlcBackendPolicy backendPolicy =
-      RlcBackendPolicy::fromOperation(funcOp);
 
   bool changed = false;
   // A proposal value adjacent to a tt.join/tt.split radix step (a radix
@@ -2396,8 +2342,7 @@ bool LayoutPropagation::solveSmallComponents() {
                                 bool restrictWeakStoreProposals = false) {
     if (proposal.empty())
       return false;
-    if (backendPolicy.preserveIntToFpContiguity &&
-        proposalChangesUnsupportedIntToFpContiguity(proposal))
+    if (proposalChangesUnsupportedIntToFpContiguity(proposal))
       return false;
     int removedConverts = countConvertsRemovedByProposal(proposal);
     if (removedConverts == 0)
@@ -2516,17 +2461,15 @@ bool LayoutPropagation::solveSmallComponents() {
     auto valType = dyn_cast<RankedTensorType>(atomicOp.getVal().getType());
     if (!ptrType || !valType)
       return false;
-    RlcBackendPolicy policy = RlcBackendPolicy::fromOperation(atomicOp);
-    if (policy.atomicWritebackMaxElementsPerThreadRatio > 0) {
-      int64_t currentElements = getTotalElemsPerThread(valType);
-      int64_t candidateElements =
-          getTotalElemsPerThread(valType.cloneWithEncoding(encoding));
-      if (candidateElements >
-          currentElements * policy.atomicWritebackMaxElementsPerThreadRatio) {
-        traceRlcDecision("2", "reject", "atomic-elements-per-thread-expansion",
-                         atomicOp);
-        return false;
-      }
+    // MUSA scalarizes atomics per thread. Removing a conversion must not
+    // increase that serial work or reduce the number of active atomic lanes.
+    int64_t currentElements = getTotalElemsPerThread(valType);
+    int64_t candidateElements =
+        getTotalElemsPerThread(valType.cloneWithEncoding(encoding));
+    if (candidateElements > currentElements) {
+      traceRlcDecision("2", "reject", "atomic-elements-per-thread-expansion",
+                       atomicOp);
+      return false;
     }
     if (!preservesWritebackMemoryAccess(
             ptrType, valType, encoding,
@@ -3277,7 +3220,7 @@ void LayoutPropagation::resolveConflicts() {
   // Candidate sets for component-level resolution, captured before the
   // per-value rules below collapse them.
   llvm::MapVector<Value, SmallVector<Attribute>> componentCandidates;
-  if (enableCostBasedResolution) {
+  if (enableEnhance) {
     for (auto &it : layouts) {
       const LayoutInfo &info = it.second;
       if (!info.hardEncodings.empty() || info.encodings.size() <= 1 ||
@@ -3313,7 +3256,7 @@ void LayoutPropagation::resolveConflicts() {
         continue;
       }
     }
-    if (!enableCostBasedResolution || !isExtensionTouchedValue(value) ||
+    if (!enableEnhance || !isExtensionTouchedValue(value) ||
         !shouldUseCostBasedResolution(info)) {
       // Derived (synthesized-parent) encodings are left to the cost-based
       // component resolution below.
@@ -3453,7 +3396,7 @@ void LayoutPropagation::rewriteRegion(Region &region) {
         // when every tensor operand already resolves to it; otherwise keep the
         // baseline per-operand remap (which converts the value back).
         Attribute storeEncoding;
-        if (enableSmallComponentSolving) {
+        if (enableEnhance) {
           if (auto storeOp = dyn_cast<StoreOp>(&op)) {
             if (smallComponentPreferredEncoding.contains(storeOp.getValue())) {
               if (auto it = layouts.find(storeOp.getValue());
@@ -3496,7 +3439,7 @@ void LayoutPropagation::rewriteRegion(Region &region) {
   // has a live use; skip erasing those. With all extensions off the queue only
   // holds fully-replaced ops, so this matches the original unconditional erase.
   for (Operation *op : llvm::reverse(opToDelete)) {
-    if (hasLayoutPropagationExtensions() && !allResultsHaveNoUses(op))
+    if (enableEnhance && !allResultsHaveNoUses(op))
       continue;
     op->erase();
   }
@@ -3551,7 +3494,7 @@ Operation *LayoutPropagation::cloneElementwise(OpBuilder &rewriter,
     // they have no transfer function for inferSrcEncoding to consult. Only the
     // phase extensions retag such ops, so the check is gated to keep the
     // all-disabled path byte-identical to the original pass.
-    if (hasLayoutPropagationExtensions() && isEncodingUniformPureOp(op))
+    if (enableEnhance && isEncodingUniformPureOp(op))
       operandEnc = encoding;
     for (auto operand : op->getOperands()) {
       if (operandEnc)
@@ -3782,7 +3725,7 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
     return rewriteIfOp(ifOp);
   OpBuilder rewriter(op);
   Attribute encoding = [&]() {
-    if (!hasLayoutPropagationExtensions())
+    if (!enableEnhance)
       return *layouts[op->getResult(0)].encodings.begin();
 
     // Pick the resolved encoding from the first tracked result: result 0 may
@@ -3830,7 +3773,7 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
   // load. Rewrite it in place by retagging its tensor operands; the elementwise
   // path below has no transfer function for a load and would hit the fatal
   // error.
-  if (enableCostBasedResolution) {
+  if (enableEnhance) {
     if (auto loadOp = dyn_cast<LoadOp>(op)) {
       Operation *newOp = rewriter.clone(*op);
       for (OpOperand &operand : op->getOpOperands()) {
@@ -3851,7 +3794,7 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
       isPassthroughWaitLike(op) ||
       isa<ReduceOp, ExpandDimsOp, ReshapeOp, TransOp, JoinOp, SplitOp, GatherOp,
           ConvertLayoutOp>(op) ||
-      (hasLayoutPropagationExtensions() && isEncodingUniformPureOp(op))) {
+      (enableEnhance && isEncodingUniformPureOp(op))) {
     Operation *newOp = cloneElementwise(rewriter, op, encoding);
     for (auto [oldResult, newResult] :
          llvm::zip(op->getResults(), newOp->getResults())) {
@@ -5597,35 +5540,19 @@ public:
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
 
-    // Per-phase options are AND-ed with the master option. Backward-propagation
-    // and small-component solving depend on cost-based resolution (disabling it
-    // forces both off); store-layout remat is independent.
-    bool costBased =
-        enableRlcEnhance && enableCostBasedResolution && (rlcPhaseMask & 1u);
-    bool backwardProp =
-        enableRlcEnhance && enableBackwardPropagation && (rlcPhaseMask & 2u);
-    bool smallComponentSolving =
-        enableRlcEnhance && enableSmallComponentSolving && (rlcPhaseMask & 4u);
-    bool storeLayoutRemat =
-        enableRlcEnhance && enableStoreLayoutRematerialization && (rlcPhaseMask & 8u);
-
-    if (!costBased) {
-      backwardProp = false;
-      smallComponentSolving = false;
-    }
+    // One production switch controls the complete enhancement pipeline.
+    const bool enhance = enableRlcEnhance;
     // The phase extensions consult the real address pattern of loads (see
     // isOrderIndifferentAccess); the analysis is only built when they
     // are enabled so the all-disabled path stays identical to the original
     // pass.
     std::optional<ModuleAxisInfoAnalysis> axisInfoAnalysis;
-    if (smallComponentSolving)
+    if (enhance)
       axisInfoAnalysis.emplace(m);
     ModuleAxisInfoAnalysis *axisInfo =
         axisInfoAnalysis ? &*axisInfoAnalysis : nullptr;
-    m.walk([costBased, backwardProp, smallComponentSolving,
-            axisInfo](FuncOp funcOp) {
-      LayoutPropagation layoutPropagation(funcOp, costBased, backwardProp,
-                                          smallComponentSolving, axisInfo);
+    m.walk([enhance, axisInfo](FuncOp funcOp) {
+      LayoutPropagation layoutPropagation(funcOp, enhance, axisInfo);
       layoutPropagation.initAnchorLayout();
       layoutPropagation.propagateLayout();
       if (layoutPropagation.propagateLayoutBackward())
@@ -5650,7 +5577,7 @@ public:
       // producer operation to avoid having to convert. Under Phase 3 the
       // slices may additionally duplicate small access-preserving vector
       // loads (a per-row vector consumed in two layouts).
-      changed = backwardRematerialization(m, storeLayoutRemat);
+      changed = backwardRematerialization(m, enhance);
       LLVM_DEBUG({
         DBGS() << "Module after backward remat:\n";
         m.dump();
@@ -5662,7 +5589,7 @@ public:
       // address/mask chains in the stored value's layout (e.g. MMA matmul
       // writeback). Run inside the fixed-point loop so the new layouts feed
       // back into backward remat / cleanup.
-      if (storeLayoutRemat) {
+      if (enhance) {
         bool storeChanged = rematerializeStoreLayout(m);
         if (storeChanged) {
           changed = true;
@@ -5698,7 +5625,7 @@ public:
     if (applyPatternsGreedily(m, std::move(cleanUpPatterns2)).failed()) {
       signalPassFailure();
     }
-    if (smallComponentSolving)
+    if (enhance)
       m.walk([](FuncOp funcOp) {
         packReductionWritebackRows(funcOp);
         specializeBoundedDualWriteback(funcOp);
@@ -5709,13 +5636,5 @@ public:
     });
   }
 };
-
-std::unique_ptr<Pass>
-createTritonGPURemoveLayoutConversionsEnhanced(bool enhance, unsigned phaseMask) {
-  TritonGPURemoveLayoutConversionsOptions options;
-  options.enableRlcEnhance = enhance;
-  options.rlcPhaseMask = phaseMask;
-  return createTritonGPURemoveLayoutConversions(options);
-}
 
 } // namespace mlir::triton::gpu

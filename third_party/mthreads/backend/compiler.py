@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 
 _DEFAULT_MUSA_PREFIX = "/usr/local/musa"
-_RLC_POLICY_CACHE_VERSION = "fixed-cost-v1-late-proof-v3"
+_RLC_POLICY_CACHE_VERSION = "musa-rlc-v4"
 
 # FlagGems uses this feature level to distinguish a backend that turns known
 # MTGPU register-allocation failures into recoverable autotuning failures from
@@ -271,55 +271,8 @@ def _max_static_shared_memory_from_arch(arch: object) -> Optional[int]:
     return None
 
 
-def _rlc_phase2_enabled() -> bool:
-    """Phase 2 (0x4) also requires cost-based resolution (0x1)."""
-    musa = knobs.musa
-    return bool(musa.rlc_enhance) and (int(musa.rlc_phase_mask) & 0b0101) == 0b0101
-
-
-def _effective_atomic_writeback_ratio() -> int:
-    """Return the atomic policy only when its owning RLC phase can run."""
-    if not _rlc_phase2_enabled():
-        return 0
-    return int(getattr(knobs.musa, "rlc_atomic_writeback_max_elements_per_thread_ratio", 0) or 0)
-
-
-def _effective_preserve_int_to_fp_contiguity() -> bool:
-    """Return the Phase 2 int-to-fp guard only while its owner can run."""
-    if not _rlc_phase2_enabled():
-        return False
-    return bool(getattr(knobs.musa, "rlc_preserve_int_to_fp_contiguity", True))
-
-
-def _apply_musa_rlc_policy(mod) -> None:
-    """Apply atomic writeback and integer-to-float layout controls."""
-    if not knobs.musa.rlc_enhance:
-        return
-    builder = ir.builder(mod.context)
-    atomic_ratio = _effective_atomic_writeback_ratio()
-    if atomic_ratio > 0:
-        mod.set_attr("ttg.rlc-atomic-writeback-max-elements-per-thread-ratio",
-                     builder.get_int32_attr(atomic_ratio))
-    if _effective_preserve_int_to_fp_contiguity():
-        mod.set_attr("ttg.rlc-preserve-int-to-fp-contiguity",
-                     builder.get_int32_attr(1))
-        # The MUSA LLVM lowering explicitly preserves these pair/quad widths
-        # when RLC retags an inexact i32 -> f32 chain. Common RLC treats every
-        # unadvertised width as a hard boundary.
-        mod.set_attr("ttg.rlc-int-to-fp-vector-width-mask",
-                     builder.get_int32_attr((1 << 2) | (1 << 4)))
-
-
 def _rlc_policy_signature() -> str:
-    """Read live controls and keep fixed-cost compiles apart from old policies."""
-    musa = knobs.musa
-    return "-".join([
-        _RLC_POLICY_CACHE_VERSION,
-        str(int(bool(musa.rlc_enhance))),
-        str(int(musa.rlc_phase_mask)),
-        str(_effective_atomic_writeback_ratio()),
-        str(int(_effective_preserve_int_to_fp_contiguity())),
-    ])
+    return f"{_RLC_POLICY_CACHE_VERSION}-{int(bool(knobs.musa.rlc_enhance))}"
 
 
 def _check_static_shared_memory(metadata: Dict[str, Any], arch: object) -> None:
@@ -1106,7 +1059,7 @@ class MUSABackend(BaseBackend):
                     refine_ints=refine_ints,
                 ),
             )
-        if _rlc_phase2_enabled():
+        if knobs.musa.rlc_enhance:
             try:
                 is_target = _capability_from_arch(self.target.arch) == 31
             except (ValueError, TypeError):
@@ -1256,7 +1209,6 @@ class MUSABackend(BaseBackend):
     def make_ttgir(mod, metadata, opt, arch, capability):
         if opt.maxnreg is not None:
             mod.set_attr("ttg.maxnreg", ir.builder(mod.context).get_int32_attr(opt.maxnreg))
-        _apply_musa_rlc_policy(mod)
         if opt.disable_sqmma_m_split_preference:
             mod.set_attr(
                 "musa_tle.disable_sqmma_m_split_preference",
@@ -1270,8 +1222,7 @@ class MUSABackend(BaseBackend):
         passes.ttir.add_convert_to_ttgpuir(pm, f"musa:{arch}", opt.num_warps, opt.warp_size, opt.num_ctas)
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_f32_dot_tc(pm, emu_tf32)
-        passes.ttgpuir.add_remove_layout_conversions(
-            pm, knobs.musa.rlc_enhance, knobs.musa.rlc_phase_mask)
+        passes.ttgpuir.add_remove_layout_conversions(pm, knobs.musa.rlc_enhance)
         passes.ttgpuir.add_optimize_thread_locality(pm)
 
         if hasattr(mthreads.passes.ttgpuir, "add_tle_optimize_local_pointer_async_stores"):
@@ -1293,8 +1244,7 @@ class MUSABackend(BaseBackend):
         if hasattr(mthreads.passes.ttgpuir, "add_tle_lower_pipe"):
             mthreads.passes.ttgpuir.add_tle_lower_pipe(pm)
         mthreads.passes.ttgpuir.add_accelerate_matmul(pm)
-        passes.ttgpuir.add_remove_layout_conversions(
-            pm, knobs.musa.rlc_enhance, knobs.musa.rlc_phase_mask)
+        passes.ttgpuir.add_remove_layout_conversions(pm, knobs.musa.rlc_enhance)
         mthreads.passes.ttgpuir.add_optimize_dot_operands(pm)
         mthreads.passes.ttgpuir.add_optimize_descriptor_encoding(pm)
         passes.ttir.add_loop_aware_cse(pm)
@@ -1323,8 +1273,7 @@ class MUSABackend(BaseBackend):
         passes.ttgpuir.add_coalesce_async_copy(pm)
         mthreads.passes.ttgpuir.add_tme_lowering(pm)
         mthreads.passes.ttgpuir.add_canonicalize_sqmma_result_conversions(pm)
-        passes.ttgpuir.add_remove_layout_conversions(
-            pm, knobs.musa.rlc_enhance, knobs.musa.rlc_phase_mask)
+        passes.ttgpuir.add_remove_layout_conversions(pm, knobs.musa.rlc_enhance)
         mthreads.passes.ttgpuir.add_issue_barrier_insertion(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
         passes.ttgpuir.add_reorder_instructions(pm)
