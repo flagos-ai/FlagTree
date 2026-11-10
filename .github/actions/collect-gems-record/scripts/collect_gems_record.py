@@ -9,6 +9,7 @@ that only exists in the environment (backend, runner, commit, PR number), and
 writes:
 
     <out-dir>/record.json          one flat object, ready to push to a table
+    <out-dir>/table_name           the month's table to report into
     <ledger>                       the same object appended as JSONL
     <op-ledger>/<record_id>.jsonl  one line per operator (optional)
     <out-dir>/notification.json    only when the run is worth a chat message
@@ -32,13 +33,18 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
 # Context is taken from CTX_* environment variables rather than flags, so that
 # secrets and multi-line CI values never land in a process listing.
 CTX_PREFIX = "CTX_"
+
+# Everything this writes is stamped in Beijing time, and the month in the
+# table name is derived the same way, so a record's own timestamp and the
+# table it lands in can never disagree about which month it was.
+TZ = timezone(timedelta(hours=8))
 
 # Operator-level status values that mean "this operator produced no result".
 _NO_RESULT_STATUSES = {"NotFound", "Not Found", "NOT_FOUND"}
@@ -220,6 +226,19 @@ def write_json(path: Path, payload: Dict) -> bool:
         return False
 
 
+def write_text(path: Path, text: str) -> bool:
+    """Write a one-line text file atomically. Never raises."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(text + "\n", encoding="utf-8")
+        tmp.replace(path)
+        return True
+    except Exception as e:
+        print(f"[WARN] Failed to write {path}: {e}")
+        return False
+
+
 # ============================================================================
 # Record building
 # ============================================================================
@@ -282,6 +301,22 @@ def job_status(compare: Optional[Dict]) -> str:
     return "success"
 
 
+def month_table(base: str) -> str:
+    """Table name for the current month, e.g. flaggems_runs_202612.
+
+    A Bitable table has a row limit, and this one gains a few hundred rows a
+    day, so a single table would eventually start rejecting writes -- quietly,
+    since reporting is not allowed to fail a PR. Partitioning by month keeps
+    every table far below the limit without ever deleting anything: the ledger
+    on the runner stays the single continuous history, and a table can be
+    re-filled from it if a cross-month view is needed.
+
+    Beijing time, matching collected_at, so the month a record says it belongs
+    to is the month whose table it is in.
+    """
+    return f"{base}_{datetime.now(TZ):%Y%m}"
+
+
 def build_record(summary: Dict, compare: Optional[Dict], baseline_ref: str = "") -> Dict:
     """Flatten summary + compare report + CI context into one row."""
     totals = summary.get("totals", {}) or {}
@@ -301,6 +336,10 @@ def build_record(summary: Dict, compare: Optional[Dict], baseline_ref: str = "")
         # part of record_id, so those results do not overwrite each other.
         "variant": ctx("VARIANT"),
         "runner": ctx("RUNNER"),
+        # The host, as opposed to the label above. Several runners can
+        # share a label, so a result can only be traced to a machine
+        # through this.
+        "runner_name": ctx("RUNNER_NAME"),
         "flaggems_tag": ctx("FLAGGEMS_TAG"),
         "flagtree_sha": ctx("FLAGTREE_SHA"),
         "flagtree_branch": ctx("FLAGTREE_BRANCH"),
@@ -313,7 +352,7 @@ def build_record(summary: Dict, compare: Optional[Dict], baseline_ref: str = "")
         "job_status": job_status(compare),
         # Baseline runs only: whether this run became the new best baseline
         "best_updated": ctx_bool("BEST_UPDATED"),
-        "collected_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "collected_at": datetime.now(TZ).isoformat(timespec="seconds"),
         # --- this run, absolute ---
         "tested_at": summary.get("timestamp", ""),
         "duration_s": round(summary.get("duration_seconds", 0) or 0, 2),
@@ -426,6 +465,7 @@ def build_operator_rows(record: Dict, summary: Dict, compare: Optional[Dict]) ->
             "backend": record["backend"],
             "variant": record["variant"],
             "runner": record["runner"],
+            "runner_name": record["runner_name"],
             "kind": record["kind"],
             "flagtree_sha": record["flagtree_sha"],
             "flaggems_tag": record["flaggems_tag"],
@@ -492,7 +532,11 @@ def build_notification(record: Dict) -> Optional[Dict]:
     if record.get("variant"):
         where = f"{where} ({record['variant']})"
 
-    lines: List[List[str]] = [["Backend", where], ["Runner", record.get("runner") or "?"]]
+    # The host rather than the label: the label is usually implied by the
+    # backend, while which machine ran this is what a reader cannot infer.
+    # Falls back to the label for records written before runner_name existed.
+    runner = record.get("runner_name") or record.get("runner") or "?"
+    lines: List[List[str]] = [["Backend", where], ["Runner", runner]]
     if record.get("pr_number"):
         lines.append(["PR", f"#{record['pr_number']}"])
     else:
@@ -607,7 +651,8 @@ Context is read from CTX_* environment variables, all optional:
   CTX_VARIANT         configuration label, for a backend that tests
                       several at once; part of record_id so they do
                       not overwrite each other
-  CTX_RUNNER          amd3.6, ...
+  CTX_RUNNER          runner label, e.g. amd3.6
+  CTX_RUNNER_NAME     the host behind that label, set by GitHub in the job
   CTX_FLAGGEMS_TAG    v5.3.5
   CTX_FLAGTREE_SHA    commit under test
   CTX_FLAGTREE_BRANCH main
@@ -690,6 +735,14 @@ Examples:
               "the notify step stays quiet."),
     )
     parser.add_argument(
+        "--table-base",
+        default="",
+        help=("Base name of the reporting table. Set it to also write a "
+              "`table_name` file next to record.json holding the name of this "
+              "month's table, so the reporting step writes where this record "
+              "says it belongs."),
+    )
+    parser.add_argument(
         "--print",
         dest="do_print",
         action="store_true",
@@ -719,6 +772,12 @@ def main() -> int:
     if not args.no_record_file:
         out_dir = args.out_dir or args.summary.parent
         write_json(out_dir / "record.json", record)
+
+    if args.table_base:
+        out_dir = args.out_dir or args.summary.parent
+        table_name = month_table(args.table_base)
+        write_text(out_dir / "table_name", table_name)
+        print(f"[INFO] Reporting table: {table_name}")
 
     if args.notify_out:
         notification = build_notification(record)

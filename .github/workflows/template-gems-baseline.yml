@@ -247,6 +247,10 @@ jobs:
           test-outcome: ${{ steps.run-flaggems-test.outcome }}
           best-updated: ${{ steps.update-best.outcome == 'success' }}
           notify: 'true'
+          # Reporting goes to one table per month: a Bitable table has a
+          # row limit, and a fixed table would eventually stop accepting
+          # rows without failing anything.
+          table-base: flaggems_runs
 
       - name: Report Record to Feishu
         if: ${{ always() && steps.collect.outputs.record-file != '' }}
@@ -254,7 +258,7 @@ jobs:
         uses: flagos-ai/FlagTree/.github/actions/report-feishu@main
         with:
           record: ${{ steps.collect.outputs.record-file }}
-          table-name: flaggems_runs
+          table-name: ${{ steps.collect.outputs.table-name }}
           schema: ${{ steps.collect.outputs.schema-file }}
           dedup-field: record_id
           app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
