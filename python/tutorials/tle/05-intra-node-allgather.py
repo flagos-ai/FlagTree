@@ -38,13 +38,10 @@ import triton.experimental.tle.language as tle
 
 from flagtree.tune import autotune, to_hashable
 
-
-CONFIG_SPACE = [
-    {"block": block, "num_warps": num_warps, "ctas_per_peer": ctas_per_peer}
-    for block in (1024, 4096, 16384)
-    for num_warps in (4, 8)
-    for ctas_per_peer in (4, 16, 64)
-]
+CONFIG_SPACE = [{"block": block, "num_warps": num_warps, "ctas_per_peer": ctas_per_peer}
+                for block in (1024, 4096, 16384)
+                for num_warps in (4, 8)
+                for ctas_per_peer in (4, 16, 64)]
 
 
 @triton.jit
@@ -213,8 +210,9 @@ def main():
         if iteration == 1 and ctx.calls - previous_calls != 1:
             raise AssertionError("The second call should reuse the tuned configuration")
         if rank == 0:
-            print(f"Pass {iteration + 1}: exact match; selected={ctx.last_config}; "
-                  f"operator invocations={ctx.calls - previous_calls}; shape={tuple(output.shape)}", flush=True)
+            print(
+                f"Pass {iteration + 1}: exact match; selected={ctx.last_config}; "
+                f"operator invocations={ctx.calls - previous_calls}; shape={tuple(output.shape)}", flush=True)
 
     # Exercise the winner without the tuner's host-side collectives between
     # launches. Queue consumers on the same stream; the next entry barrier
