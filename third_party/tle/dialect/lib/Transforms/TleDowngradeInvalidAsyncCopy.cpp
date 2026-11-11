@@ -333,7 +333,9 @@ static LogicalResult collectTokenUsers(
 // Drops each token from the commit or wait that keeps running without it.
 static void dropTokens(IRRewriter &rewriter,
                        ArrayRef<std::pair<Operation *, Value>> tokenRemovals) {
-  for (auto [op, token] : tokenRemovals)
+  for (auto &removal : tokenRemovals) {
+    Operation *op = removal.first;
+    Value token = removal.second;
     rewriter.modifyOpInPlace(op, [&] {
       for (unsigned i = 0, e = op->getNumOperands(); i < e; ++i)
         if (op->getOperand(i) == token) {
@@ -341,6 +343,7 @@ static void dropTokens(IRRewriter &rewriter,
           break;
         }
     });
+  }
 }
 
 static void recreateLocalLoadWithoutToken(IRRewriter &rewriter,
