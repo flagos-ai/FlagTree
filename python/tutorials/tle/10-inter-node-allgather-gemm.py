@@ -103,9 +103,11 @@ class TleAllGatherGemmContext:
     world_mesh: tle.device_mesh = dataclasses.field(init=False)
 
     def __post_init__(self):
-        self.world_mesh = tle.device_mesh(tle.MeshConfig(
-            node=self.world_size // self.local_world_size, device=self.local_world_size,
-        ))
+        self.world_mesh = tle.device_mesh(
+            tle.MeshConfig(
+                node=self.world_size // self.local_world_size,
+                device=self.local_world_size,
+            ))
 
     def finalize(self):
         """Collectively release the tutorial communicator and process group."""
@@ -116,9 +118,8 @@ class TleAllGatherGemmContext:
             _active_context = None
 
 
-def create_ag_gemm_context(max_M: int, N: int, K: int, dtype: torch.dtype, rank: int,
-                           world_size: int, local_world_size: int,
-                           config: Optional[TleAllGatherGemmConfig] = None,
+def create_ag_gemm_context(max_M: int, N: int, K: int, dtype: torch.dtype, rank: int, world_size: int,
+                           local_world_size: int, config: Optional[TleAllGatherGemmConfig] = None,
                            num_gemm_sms: Optional[int] = None) -> TleAllGatherGemmContext:
     """Collectively allocate one reusable, symmetric input workspace."""
     global _active_context
@@ -154,8 +155,19 @@ def create_ag_gemm_context(max_M: int, N: int, K: int, dtype: torch.dtype, rank:
     dist_ctx.register_buffer(workspace)
     triton.set_allocator(lambda size, alignment, stream: torch.empty(size, device=workspace.device, dtype=torch.int8))
     ctx = TleAllGatherGemmContext(
-        max_M, N, K, dtype, rank, world_size, local_world_size, workspace, dist_ctx,
-        torch.cuda.Stream(priority=-1), torch.cuda.current_stream(), num_gemm_sms, config,
+        max_M,
+        N,
+        K,
+        dtype,
+        rank,
+        world_size,
+        local_world_size,
+        workspace,
+        dist_ctx,
+        torch.cuda.Stream(priority=-1),
+        torch.cuda.current_stream(),
+        num_gemm_sms,
+        config,
     )
     _active_context = ctx
     return ctx
@@ -166,20 +178,37 @@ def _prepare_all_gather_kernel(dist_ctx: tl.constexpr, mesh: tl.constexpr):
     # The previous call joined AG and GEMM on the compute stream. This barrier
     # prevents a fast rank from overwriting A while a slow rank still uses it.
     tle.distributed_barrier(
-        mesh=mesh, device_dptr=dist_ctx, space="world", group_kind="block",
-        barrier_kind="sync", order="acqrel", index=0, context_id=0,
+        mesh=mesh,
+        device_dptr=dist_ctx,
+        space="world",
+        group_kind="block",
+        barrier_kind="sync",
+        order="acqrel",
+        index=0,
+        context_id=0,
     )
 
 
 @triton.jit(do_not_specialize=["epoch"])
 def kernel_ag_gemm_consumer_persistent(
-    a_ptr, b_ptr, c_ptr, M, N, K, epoch,
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    M,
+    N,
+    K,
+    epoch,
     dist_ctx: tl.constexpr,
-    RANK: tl.constexpr, WORLD_SIZE: tl.constexpr,
-    B_STRIDE_K: tl.constexpr, B_STRIDE_N: tl.constexpr,
+    RANK: tl.constexpr,
+    WORLD_SIZE: tl.constexpr,
+    B_STRIDE_K: tl.constexpr,
+    B_STRIDE_N: tl.constexpr,
     TRANS_B: tl.constexpr,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
-    GROUP_M: tl.constexpr, NUM_SMS: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    GROUP_M: tl.constexpr,
+    NUM_SMS: tl.constexpr,
 ):
     """Consume one ready source-rank segment at a time, starting locally."""
     num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -206,14 +235,23 @@ def kernel_ag_gemm_consumer_persistent(
         source_rank = pid_m // tiles_m_per_rank
         if source_rank != RANK:
             tle.signal_wait(
-                dist_ctx, slot_id=source_rank, wait_kind="signal", target=epoch,
-                group_kind="block", context_id=0, order="acquire",
+                dist_ctx,
+                slot_id=source_rank,
+                wait_kind="signal",
+                target=epoch,
+                group_kind="block",
+                context_id=0,
+                order="acquire",
             )
         # The producer writes through the generic/network path, whereas TMA
         # reads through the async proxy. Order that proxy after the acquire.
         tl.inline_asm_elementwise(
-            "fence.proxy.async.global; mov.u32 $0, 0;", constraints="=r",
-            args=[], dtype=tl.int32, is_pure=False, pack=1,
+            "fence.proxy.async.global; mov.u32 $0, 0;",
+            constraints="=r",
+            args=[],
+            dtype=tl.int32,
+            is_pure=False,
+            pack=1,
         )
         offs_m = pid_m * BLOCK_M
         offs_n = pid_n * BLOCK_N
@@ -229,8 +267,7 @@ def kernel_ag_gemm_consumer_persistent(
         c_desc.store([offs_m, offs_n], accumulator.to(c_ptr.dtype.element_ty))
 
 
-def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext,
-            *, overlap: bool = True) -> torch.Tensor:
+def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, overlap: bool = True) -> torch.Tensor:
     """Collective AllGather(A) @ B; return on the context's compute stream.
 
     overlap=False waits for AG before launching GEMM as a serial TLE baseline.
@@ -274,28 +311,48 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext,
         ctx.ag_stream.wait_stream(current_stream)
         with torch.cuda.stream(ctx.ag_stream):
             _ag.push_2d_all_gather_kernel[(ctx.world_size, )](
-                ctx.workspace, ctx.dist_ctx, ctx.rank % ctx.local_world_size,
-                ctx.rank // ctx.local_world_size, ctx.epoch,
-                LOCAL_WORLD_SIZE=ctx.local_world_size, WORLD_SIZE=ctx.world_size,
+                ctx.workspace,
+                ctx.dist_ctx,
+                ctx.rank % ctx.local_world_size,
+                ctx.rank // ctx.local_world_size,
+                ctx.epoch,
+                LOCAL_WORLD_SIZE=ctx.local_world_size,
+                WORLD_SIZE=ctx.world_size,
                 ELEM_PER_RANK=A.numel(),
                 NUM_NODE_CHUNKS=num_node_chunks,
                 NUM_LOCAL_CHUNKS=triton.cdiv(A.numel(), cfg.ag_block),
-                NODE_BLOCK=node_block, BLOCK=cfg.ag_block,
+                NODE_BLOCK=node_block,
+                BLOCK=cfg.ag_block,
                 # The consumer supplies completion in the overlapped path.
                 # The serial baseline needs AG's result-ready completion CTA.
-                WAIT_FOR_ALL=not overlap, num_warps=cfg.ag_num_warps,
+                WAIT_FOR_ALL=not overlap,
+                num_warps=cfg.ag_num_warps,
             )
         if not overlap:
             current_stream.wait_stream(ctx.ag_stream)
 
     num_tiles = triton.cdiv(M, cfg.block_m) * triton.cdiv(C.shape[1], cfg.block_n)
     kernel_ag_gemm_consumer_persistent[(min(ctx.num_gemm_sms, num_tiles), )](
-        ctx.workspace, B, C, M, C.shape[1], ctx.K, ctx.epoch, ctx.dist_ctx,
-        RANK=ctx.rank, WORLD_SIZE=ctx.world_size,
-        B_STRIDE_K=B.stride(0), B_STRIDE_N=B.stride(1), TRANS_B=trans_b,
-        BLOCK_M=cfg.block_m, BLOCK_N=cfg.block_n, BLOCK_K=cfg.block_k,
-        GROUP_M=cfg.group_m, NUM_SMS=ctx.num_gemm_sms,
-        num_warps=cfg.num_warps, num_stages=cfg.num_stages,
+        ctx.workspace,
+        B,
+        C,
+        M,
+        C.shape[1],
+        ctx.K,
+        ctx.epoch,
+        ctx.dist_ctx,
+        RANK=ctx.rank,
+        WORLD_SIZE=ctx.world_size,
+        B_STRIDE_K=B.stride(0),
+        B_STRIDE_N=B.stride(1),
+        TRANS_B=trans_b,
+        BLOCK_M=cfg.block_m,
+        BLOCK_N=cfg.block_n,
+        BLOCK_K=cfg.block_k,
+        GROUP_M=cfg.group_m,
+        NUM_SMS=ctx.num_gemm_sms,
+        num_warps=cfg.num_warps,
+        num_stages=cfg.num_stages,
     )
     if ctx.world_size > 1:
         current_stream.wait_stream(ctx.ag_stream)
@@ -354,15 +411,16 @@ def main():
         tle.get_mem_pool()
         rank, world_size = dist.get_rank(), dist.get_world_size()
         local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", world_size))
-        config = TleAllGatherGemmConfig(**{field.name: getattr(args, field.name)
-                                         for field in dataclasses.fields(TleAllGatherGemmConfig)})
+        config = TleAllGatherGemmConfig(
+            **{field.name: getattr(args, field.name)
+               for field in dataclasses.fields(TleAllGatherGemmConfig)})
         dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[args.dtype]
-        ctx = create_ag_gemm_context(args.M, args.N, args.K, dtype, rank, world_size,
-                                     local_world_size, config, args.gemm_sms)
+        ctx = create_ag_gemm_context(args.M, args.N, args.K, dtype, rank, world_size, local_world_size, config,
+                                     args.gemm_sms)
         torch.manual_seed(1234 + rank)
         A = torch.empty((args.M // world_size, args.K), dtype=dtype, device="cuda")
-        B_storage = torch.empty((args.N // world_size, args.K) if args.trans_b
-                                else (args.K, args.N // world_size), dtype=dtype, device="cuda")
+        B_storage = torch.empty((args.N // world_size, args.K) if args.trans_b else (args.K, args.N // world_size),
+                                dtype=dtype, device="cuda")
         B = B_storage.T if args.trans_b else B_storage
         for iteration in range(args.check_iters):
             # Rank-specific, changing values detect stale signals and buffer reuse.
@@ -372,15 +430,18 @@ def main():
             for overlap in (True, False):
                 output = ag_gemm(A, B, ctx, overlap=overlap)
                 _rs._assert_close_on_all_ranks(
-                    output, reference, shape=(args.M, args.N, args.K),
+                    output,
+                    reference,
+                    shape=(args.M, args.N, args.K),
                     stage=f"AG GEMM overlap={overlap} iteration={iteration}",
                     atol=2e-2 if dtype == torch.bfloat16 else 2e-3,
                     rtol=2e-2 if dtype == torch.bfloat16 else 2e-3,
                 )
         if rank == 0:
-            print(f"PASS: {args.check_iters} changing-input checks, both overlapped and serial TLE; "
-                  f"world={world_size}, local_world={local_world_size}, "
-                  f"gemm_ctas={ctx.num_gemm_sms}, config={dataclasses.asdict(config)}", flush=True)
+            print(
+                f"PASS: {args.check_iters} changing-input checks, both overlapped and serial TLE; "
+                f"world={world_size}, local_world={local_world_size}, "
+                f"gemm_ctas={ctx.num_gemm_sms}, config={dataclasses.asdict(config)}", flush=True)
         if args.iters:
             timings = {}
             for name, fn in (
