@@ -1,4 +1,4 @@
-"""Two-node TLE all-gather tutorial using a push-2d topology.
+"""TLE all-gather tutorial using a push-2d topology.
 
 The topology is fixed to two nodes with four GPUs per node.  Every rank owns
 16 MiB of float32 input.  One WORLD_SIZE-CTA kernel overlaps three roles:
@@ -9,6 +9,12 @@ The topology is fixed to two nodes with four GPUs per node.  Every rank owns
 
 The tutorial runs both torch.distributed and TLE once, then compares their
 complete all-gather outputs element by element.
+
+The producer kernel also accepts FP16/BF16 storage. Tutorial 10 reuses it
+with WAIT_FOR_ALL=False: GEMM consumes the per-source signals directly.
+The default WAIT_FOR_ALL=True preserves this tutorial's result-ready behavior.
+Each source segment uses one inter-node PUT when it fits within 2**25
+elements. Larger segments use that maximum per PUT and a masked final chunk.
 """
 
 import os
@@ -21,8 +27,20 @@ import triton.experimental.tle.language as tle
 
 ELEMENTS_PER_RANK = 4 * 1024 * 1024  # 16 MiB of float32 per rank.
 BLOCK = 4096
-NODE_BLOCK = 1 * 1024 * 1024  # 4 MiB of float32 per node PUT.
+MAX_NODE_TRANSFER_ELEMENTS = 1 << 25  # Node-copy construction limit, in elements.
 NUM_WARPS = 32
+
+
+def get_node_transfer_config(elements_per_rank: int) -> tuple[int, int]:
+    """Return (arange extent, PUT count), minimizing inter-node transfers.
+
+    arange needs a power-of-two extent. The shared prefix mask restricts the
+    actual transfer to valid elements, including non-power-of-two segments.
+    """
+    if elements_per_rank <= 0:
+        raise ValueError("elements_per_rank must be positive")
+    node_block = min(triton.next_power_of_2(elements_per_rank), MAX_NODE_TRANSFER_ELEMENTS)
+    return node_block, triton.cdiv(elements_per_rank, node_block)
 
 
 @triton.jit(do_not_specialize=["local_rank", "node_rank", "epoch"])
@@ -39,8 +57,9 @@ def push_2d_all_gather_kernel(
     NUM_LOCAL_CHUNKS: tl.constexpr,
     NODE_BLOCK: tl.constexpr,
     BLOCK: tl.constexpr,
+    WAIT_FOR_ALL: tl.constexpr = True,
 ):
-    """Push one complete all-gather segment per producer CTA."""
+    """Push complete source segments and optionally wait for the full result."""
     peer_rank = tl.program_id(0)
     global_rank = node_rank * LOCAL_WORLD_SIZE + local_rank
     peer_node = peer_rank // LOCAL_WORLD_SIZE
@@ -50,17 +69,17 @@ def push_2d_all_gather_kernel(
         if peer_rank != global_rank:
             # Inter-node producer.  The local segment already lives in its
             # final all-gather position inside the registered output buffer.
-            segment_offset = global_rank * ELEM_PER_RANK
+            segment_offset = global_rank.to(tl.int64) * ELEM_PER_RANK
             node_offsets = tl.arange(0, NODE_BLOCK)
             for chunk_id in tl.range(0, NUM_NODE_CHUNKS):
-                block_offset = chunk_id * NODE_BLOCK
+                block_offset = chunk_id.to(tl.int64) * NODE_BLOCK
                 valid_n = tl.minimum(ELEM_PER_RANK - block_offset, NODE_BLOCK)
                 mask = node_offsets < valid_n
                 remote_dst = tle.remote(
                     device_dptr,
                     shard_id=peer_rank,
                     space="node",
-                    dtype=tl.float32,
+                    dtype=registered_output.dtype.element_ty,
                     context_id=0,
                     coopkind="block",
                 )
@@ -87,21 +106,22 @@ def push_2d_all_gather_kernel(
         else:
             # The self CTA is the completion CTA.  The local segment requires
             # no signal because it was staged before this kernel was launched.
-            for source_rank in tl.static_range(0, WORLD_SIZE):
-                if source_rank != global_rank:
-                    tle.signal_wait(
-                        device_dptr,
-                        slot_id=source_rank,
-                        wait_kind="signal",
-                        target=epoch,
-                        group_kind="block",
-                        context_id=0,
-                    )
+            if WAIT_FOR_ALL:
+                for source_rank in tl.static_range(0, WORLD_SIZE):
+                    if source_rank != global_rank:
+                        tle.signal_wait(
+                            device_dptr,
+                            slot_id=source_rank,
+                            wait_kind="signal",
+                            target=epoch,
+                            group_kind="block",
+                            context_id=0,
+                        )
     else:
         # Relay the source with this CTA's peer_node and the current local
         # rank to the local destination selected by peer_local_rank.
         source_rank = peer_node * LOCAL_WORLD_SIZE + local_rank
-        segment_offset = source_rank * ELEM_PER_RANK
+        segment_offset = source_rank.to(tl.int64) * ELEM_PER_RANK
 
         if peer_node != node_rank:
             tle.signal_wait(
@@ -119,12 +139,12 @@ def push_2d_all_gather_kernel(
             device_dptr,
             shard_id=peer_local_rank,
             space="device",
-            dtype=tl.float32,
+            dtype=registered_output.dtype.element_ty,
             offset=segment_offset,
         )
         local_offsets = tl.arange(0, BLOCK)
         for chunk_id in tl.range(0, NUM_LOCAL_CHUNKS):
-            block_offset = chunk_id * BLOCK
+            block_offset = chunk_id.to(tl.int64) * BLOCK
             mask = block_offset + local_offsets < ELEM_PER_RANK
             values = tl.load(
                 registered_output + segment_offset + block_offset + local_offsets,
@@ -156,6 +176,7 @@ def push_2d_all_gather(
     """Stage one local input and launch one result-ready all-gather kernel."""
     segment_begin = rank * ELEMENTS_PER_RANK
     registered_output[segment_begin:segment_begin + ELEMENTS_PER_RANK].copy_(local_input)
+    node_block, num_node_chunks = get_node_transfer_config(ELEMENTS_PER_RANK)
 
     push_2d_all_gather_kernel[(world_size, )](
         registered_output,
@@ -166,9 +187,9 @@ def push_2d_all_gather(
         LOCAL_WORLD_SIZE=local_world_size,
         WORLD_SIZE=world_size,
         ELEM_PER_RANK=ELEMENTS_PER_RANK,
-        NUM_NODE_CHUNKS=triton.cdiv(ELEMENTS_PER_RANK, NODE_BLOCK),
+        NUM_NODE_CHUNKS=num_node_chunks,
         NUM_LOCAL_CHUNKS=triton.cdiv(ELEMENTS_PER_RANK, BLOCK),
-        NODE_BLOCK=NODE_BLOCK,
+        NODE_BLOCK=node_block,
         BLOCK=BLOCK,
         num_warps=NUM_WARPS,
     )
