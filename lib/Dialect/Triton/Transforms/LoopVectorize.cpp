@@ -12,6 +12,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <memory>
 
@@ -97,13 +98,8 @@ public:
   LogicalResult run() {
     auto plan = buildPlan();
     if (failed(plan)) {
-      if (!failureReason.empty()) {
-        auto diagnostic = loop.emitWarning("loop vectorization with factor ");
-        diagnostic << vectorFactor << " was not applied: " << failureReason;
-        if (failureOp)
-          diagnostic << " (operation '" << failureOp->getName() << "')";
-        diagnostic << "; keeping the original loop";
-      }
+      if (!failureReason.empty())
+        logFallback(failureReason, failureOp);
       return failure();
     }
 
@@ -117,9 +113,7 @@ public:
         plan->singleGroup ? emitSingleGroup(*plan) : emitStripMinedLoop(*plan);
     if (failed(result)) {
       eraseGeneratedOperations(previous);
-      loop.emitWarning() << "loop vectorization with factor " << vectorFactor
-                         << " was not applied: plan execution failed; keeping "
-                            "the original loop";
+      logFallback("plan execution failed");
       return failure();
     }
 
@@ -135,6 +129,15 @@ public:
   }
 
 private:
+  void logFallback(StringRef reason, Operation *op = nullptr) {
+    auto &os = llvm::errs();
+    os << loop.getLoc() << ": loop vectorization with factor " << vectorFactor
+       << " was not applied: " << reason;
+    if (op)
+      os << " (operation '" << op->getName() << "')";
+    os << "; keeping the original loop\n";
+  }
+
   LogicalResult reject(StringRef reason, Operation *op = nullptr) {
     failureReason = reason;
     failureOp = op;
@@ -447,12 +450,12 @@ private:
   }
 
   FailureOr<LoopVectorizationPlan> buildPlan() {
-    if (vectorFactor <= 1) {
+    if (vectorFactor == 1) {
       LDBG("Loop vectorization is disabled at " << loop.getLoc());
       return failure();
     }
-    if (!llvm::isPowerOf2_64(vectorFactor))
-      return reject("factor must be a power of two");
+    if (vectorFactor <= 0 || !llvm::isPowerOf2_64(vectorFactor))
+      return reject("factor must be a positive power of two");
     LoopVectorizationPlan plan;
     if (auto tripCount = loop.getStaticTripCount()) {
       if (tripCount->isZero()) {
@@ -831,7 +834,6 @@ private:
     auto vectorLoop = scf::ForOp::create(builder, loc, loop.getLowerBound(),
                                          vectorEnd, vectorStep, initializers);
     vectorLoop->setAttrs(loop->getAttrs());
-    vectorLoop->removeAttr(kVectorFactorAttr);
     if (!vectorLoop.getBody()->empty())
       vectorLoop.getBody()->getTerminator()->erase();
     builder.setInsertionPointToStart(vectorLoop.getBody());
@@ -860,7 +862,6 @@ private:
         scf::ForOp::create(builder, loc, vectorEnd, loop.getUpperBound(),
                            loop.getStep(), epilogueInitializers);
     epilogueLoop->setAttrs(loop->getAttrs());
-    epilogueLoop->removeAttr(kVectorFactorAttr);
     epilogueLoop->setAttr("tt.num_stages", builder.getI32IntegerAttr(1));
     if (!epilogueLoop.getBody()->empty())
       epilogueLoop.getBody()->getTerminator()->erase();
@@ -887,6 +888,7 @@ public:
 
     for (auto loop : loops) {
       if (auto factor = loop->getAttrOfType<IntegerAttr>(kVectorFactorAttr)) {
+        loop->removeAttr(kVectorFactorAttr);
         if (failed(LoopVectorizer(loop, factor.getInt()).run()))
           continue;
       }
