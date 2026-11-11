@@ -266,7 +266,7 @@ private:
 
   LogicalResult planOperands(OperationVectorizationPlan &plan,
                              const DenseMap<Value, Type> &plannedTypes) {
-    for (Value operand : plan.op->getOperands()) {
+    for (auto [index, operand] : llvm::enumerate(plan.op->getOperands())) {
       Type sourceType = plannedTypes.lookup(operand);
       if (!sourceType) {
         if (loop.getRegion().isAncestor(operand.getParentRegion()))
@@ -284,6 +284,21 @@ private:
                         plan.op);
         plan.operands.push_back({operand, target, true});
         continue;
+      }
+
+      if (auto select = dyn_cast<arith::SelectOp>(plan.op)) {
+        if (index == 0 && select.getCondition().getType().isInteger(1)) {
+          // Broadcast each iteration's scalar predicate over its value shape.
+          auto target = prependIterationDim(select.getType(), vectorFactor)
+                            .clone(builder.getI1Type());
+          Type iterType = prependIterationDim(operand.getType(), vectorFactor);
+          if (sourceType != operand.getType() && sourceType != iterType)
+            return reject(
+                "select condition cannot broadcast to the planned shape",
+                plan.op);
+          plan.operands.push_back({operand, target, true});
+          continue;
+        }
       }
 
       RankedTensorType target =
@@ -554,6 +569,10 @@ private:
         trans.setOrder(plan.order);
       else if (auto gather = dyn_cast<GatherOp>(copy))
         gather.setAxis(plan.axis);
+      else if (auto reshape = dyn_cast<ReshapeOp>(copy)) {
+        // Reordering the lifted tensor could mix independent iterations.
+        reshape.setAllowReorder(false);
+      }
       llvm::append_range(results, copy->getResults());
     }
     if (results.size() != plan.resultTypes.size())
