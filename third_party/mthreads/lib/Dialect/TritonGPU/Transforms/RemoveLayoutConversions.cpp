@@ -50,6 +50,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include <cstdlib>
 #include <deque>
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include <optional>
@@ -5110,6 +5111,76 @@ void hoistConvert(ModuleOp module) {
   });
 }
 
+// Row packing may move row bits between register slots, but must not change
+// the ordered column bits or the lane/warp ownership of reduction columns.
+// Check the actual shape-dependent maps, including broadcasts and replication.
+static bool preservesReductionColumnMapping(RankedTensorType type,
+                                            Attribute replacement) {
+  if (type.getRank() != 2)
+    return false;
+  auto before = toLinearLayout(type);
+  auto after = toLinearLayout(type.cloneWithEncoding(replacement));
+  if (!before.isSurjective() || !after.isSurjective() ||
+      before.getOutDims() != after.getOutDims())
+    return false;
+  for (auto [dim, bases] : before.getBases()) {
+    auto it = after.getBases().find(dim);
+    if (it == after.getBases().end())
+      return false;
+    bool registerDim = dim.getValue() == "register";
+    auto columns = [&](const auto &vectors,
+                       SmallVectorImpl<int32_t> &result) {
+      for (const auto &v : vectors) {
+        if (v.size() != 2 || (v[0] && v[1]))
+          return false;
+        // Only row-only register bits may move. Keep zero lane/warp slots:
+        // dropping them would hide a change in the reduction participants.
+        if (!registerDim || v[1])
+          result.push_back(v[1]);
+      }
+      return true;
+    };
+    SmallVector<int32_t> oldColumns, newColumns;
+    if (!columns(bases, oldColumns) || !columns(it->second, newColumns) ||
+        oldColumns != newColumns)
+      return false;
+  }
+  return before.getBases().size() == after.getBases().size();
+}
+
+// Follow only pointer-preserving operations. Unknown provenance must not be
+// mistaken for a new allocation; different arguments are still allowed to alias.
+static Value getWritebackPointerRoot(Value ptr) {
+  for (unsigned depth = 0; depth < 64; ++depth) {
+    if (isa<BlockArgument>(ptr))
+      return ptr;
+    Operation *op = ptr.getDefiningOp();
+    if (!op || !isa<AddPtrOp, SplatOp, BroadcastOp, ExpandDimsOp, BitcastOp>(op))
+      return {};
+    ptr = op->getOperand(0);
+  }
+  return {};
+}
+
+// Reject statically shared pointer roots before changing thread ownership.
+// This is a conservative structural guard, not a runtime no-alias proof for
+// distinct function arguments. No disjointness attribute is inferred from it.
+static bool hasDistinctWritebackRoots(ArrayRef<LoadOp> loads,
+                                      ArrayRef<StoreOp> stores) {
+  llvm::SmallDenseSet<Value, 4> outputs;
+  for (StoreOp store : stores) {
+    Value root = getWritebackPointerRoot(store.getPtr());
+    if (!root || !outputs.insert(root).second)
+      return false;
+  }
+  for (LoadOp load : loads) {
+    Value root = getWritebackPointerRoot(load.getPtr());
+    if (!root || outputs.contains(root))
+      return false;
+  }
+  return true;
+}
+
 // Retag a closed two-output reduction and its writeback together to group rows
 // per thread. Keep the column layout and warp decomposition unchanged; reject
 // mixed or explicit TLE layouts.
@@ -5255,18 +5326,16 @@ static bool packReductionWritebackRows(FuncOp funcOp) {
   }
   if (!hasValue || !hasIndex)
     return false;
+  if (!hasDistinctWritebackRoots(loads, stores))
+    return false;
   ModuleAxisInfoAnalysis axisInfo(module);
   // Allow eight logical rows with four-element-aligned stores. MUSA StoreOp
   // lowering caps FP32 vectors at 128 bits and also considers contiguity and
   // mask alignment.
-  bool packEightRows = fp32CrossWarp &&
-                       tile[0] >= 8 * int64_t(warps[0]) &&
-                       tile[0] % (8 * int64_t(warps[0])) == 0;
-  if (packEightRows)
-    for (StoreOp store : stores)
-      if (axisInfo.getAlignment(store.getPtr()) < 4 ||
-          (store.getMask() && axisInfo.getMaskAlignment(store.getMask()) < 4))
-        packEightRows = false;
+  // Cross-warp row groups contain a multiple of 8 * warps[0] rows:
+  // warps[1] is a power of two greater than one. The common store guard
+  // below rejects unaligned pack8 candidates without changing their layout.
+  bool packEightRows = fp32CrossWarp;
   const unsigned rowsPerThread =
       packEightRows ? 8 : fp16CrossWarp ? 2 :
       (fp32CrossWarp || fp16 ||
@@ -5282,6 +5351,8 @@ static bool packReductionWritebackRows(FuncOp funcOp) {
       funcOp.getContext(), {rowsPerThread, columnsPerThread},
       parent.getThreadsPerWarp(), packedWarps, parent.getOrder(),
       parent.getCGALayout());
+  if (!preservesReductionColumnMapping(loadType, packed))
+    return false;
   auto newType = [&](RankedTensorType type) -> RankedTensorType {
     Attribute encoding = type.getEncoding();
     if (encoding == parent)
@@ -5346,8 +5417,10 @@ static bool coordinatesReachDualWriteback(Value row, Value column,
     SmallVector<Value> pending{store.getPtr(), store.getMask()};
     llvm::SmallPtrSet<Operation *, 32> visited;
     bool foundRow = false, foundColumn = false;
-    while (!pending.empty() && (!foundRow || !foundColumn)) {
+    while (!pending.empty()) {
       Value value = pending.pop_back_val();
+      if (!value)
+        continue;
       if (value == row) {
         foundRow = true;
         continue;
@@ -5356,9 +5429,16 @@ static bool coordinatesReachDualWriteback(Value row, Value column,
         foundColumn = true;
         continue;
       }
+      if (auto arg = dyn_cast<BlockArgument>(value)) {
+        if (arg.getOwner() != block)
+          return false;
+        continue;
+      }
       Operation *def = value.getDefiningOp();
       if (!def || def->getBlock() != block || def->getNumRegions() != 0 ||
-          !isMemoryEffectFree(def) || !visited.insert(def).second)
+          !isMemoryEffectFree(def))
+        return false;
+      if (!visited.insert(def).second)
         continue;
       if (visited.size() > maxSliceOperations)
         return false;
@@ -5422,12 +5502,37 @@ static void specializeBoundedDualWriteback(FuncOp funcOp) {
     return attr.getInt();
   };
 
+  // Only a pair with a matching launch proof can participate in ambiguity.
+  // Other div/rem pairs must remain intact without hiding a proven pair.
+  auto provedDivisor = [&](BlockArgument widthArg,
+                           int64_t tile) -> std::optional<int64_t> {
+    auto proofBound = funcOp.getArgAttrOfType<IntegerAttr>(
+        widthArg.getArgNumber(), "musa.rlc_positive_even_block_upper_bound");
+    auto proofDivisor = funcOp.getArgAttrOfType<IntegerAttr>(
+        widthArg.getArgNumber(), "musa.rlc_positive_even_divisor");
+    if (!proofBound || proofBound.getInt() != tile || !proofDivisor)
+      return std::nullopt;
+    int64_t divisor = proofDivisor.getInt();
+    if (divisor != 2 && divisor != 4 && divisor != 8 && divisor != 16)
+      return std::nullopt;
+    auto existingDivisor = funcOp.getArgAttrOfType<IntegerAttr>(
+        widthArg.getArgNumber(), "tt.divisibility");
+    if (existingDivisor) {
+      int64_t prior = existingDivisor.getInt();
+      if (prior <= 0 || (prior % divisor != 0 && divisor % prior != 0))
+        return std::nullopt;
+      if (prior > divisor)
+        divisor = prior;
+    }
+    return divisor;
+  };
+
   arith::DivSIOp div;
   arith::RemSIOp rem;
   arith::DivSIOp blocks;
   arith::AddIOp numerator;
   Value width;
-  int64_t tile = 0;
+  int64_t divisor = 0;
   // Match div/rem of the same program coordinate by ceildiv(width, tile).
   // The guarded one-block simplification is valid for any positive tile.
   for (Operation &op : block) {
@@ -5449,20 +5554,35 @@ static void specializeBoundedDualWriteback(FuncOp funcOp) {
     if (!possibleWidth || !isa<BlockArgument>(possibleWidth) ||
         !possibleWidth.getType().isInteger(32))
       continue;
-    auto next = dyn_cast_or_null<arith::RemSIOp>(candidate->getNextNode());
-    if (!next || next.getLhs() != candidate.getLhs() ||
-        next.getRhs() != candidate.getRhs() ||
-        !add.getResult().hasOneUse() ||
+    auto candidateDivisor = provedDivisor(cast<BlockArgument>(possibleWidth),
+                                         *size);
+    if (!candidateDivisor)
+      continue;
+    if (!add.getResult().hasOneUse() ||
         !llvm::hasNItems(inner.getResult().getUses(), 2))
+      continue;
+    // Match by SSA use, not instruction adjacency: independent operations may
+    // be scheduled between the quotient and remainder without changing either.
+    arith::RemSIOp matchedRem;
+    for (OpOperand &use : inner.getResult().getUses()) {
+      auto candidateRem = dyn_cast<arith::RemSIOp>(use.getOwner());
+      if (candidateRem && candidateRem->getBlock() == &block &&
+          candidateRem.getLhs() == candidate.getLhs() &&
+          candidateRem.getRhs() == inner.getResult()) {
+        matchedRem = candidateRem;
+        break;
+      }
+    }
+    if (!matchedRem)
       continue;
     if (div)
       return; // Ambiguous candidate; keep the original code.
     div = candidate;
-    rem = next;
+    rem = matchedRem;
     blocks = inner;
     numerator = add;
     width = possibleWidth;
-    tile = *size;
+    divisor = *candidateDivisor;
   }
   if (!div || !rem || !blocks || !numerator || !width)
     return;
@@ -5475,41 +5595,18 @@ static void specializeBoundedDualWriteback(FuncOp funcOp) {
         !coordDef->isBeforeInBlock(numerator.getOperation()))
       return;
   auto widthArg = cast<BlockArgument>(width);
-  // This attribute is a launch-time proof, carried in the specialization key.
-  // Without a matching exact tile and even divisibility, keep the original path.
-  auto proofBound = funcOp.getArgAttrOfType<IntegerAttr>(
-      widthArg.getArgNumber(), "musa.rlc_positive_even_block_upper_bound");
-  auto proofDivisor = funcOp.getArgAttrOfType<IntegerAttr>(
-      widthArg.getArgNumber(), "musa.rlc_positive_even_divisor");
-  auto existingDivisor = funcOp.getArgAttrOfType<IntegerAttr>(
-      widthArg.getArgNumber(), "tt.divisibility");
-  if (proofBound && proofBound.getInt() == tile && proofDivisor &&
-      (proofDivisor.getInt() == 2 || proofDivisor.getInt() == 4 ||
-       proofDivisor.getInt() == 8 || proofDivisor.getInt() == 16)) {
-    int64_t divisor = proofDivisor.getInt();
-    if (existingDivisor) {
-      int64_t prior = existingDivisor.getInt();
-      if (prior <= 0 || (prior % divisor != 0 && divisor % prior != 0))
-        return; // Preserve unusual existing proofs unchanged.
-      if (prior > divisor)
-        divisor = prior;
-    }
-    OpBuilder b(numerator);
-    // Only the matched enhanced pass exposes divisibility to later lowering.
-    funcOp.setArgAttr(widthArg.getArgNumber(), "tt.divisibility",
-                      b.getI32IntegerAttr(divisor));
-    Value zero = arith::ConstantIntOp::create(b, numerator.getLoc(), 0, 32);
-    div.getResult().replaceAllUsesWith(div.getLhs());
-    rem.getResult().replaceAllUsesWith(zero);
-    rem.erase();
-    div.erase();
-    blocks.erase();
-    numerator.erase();
-    traceRlcDecision("2", "accept", "single-block-cache-class", funcOp);
-    return;
-  }
-  // No matching launch proof: keep the existing writeback path.
-  return;
+  // The matching launch proof is carried in the specialization key.
+  OpBuilder b(numerator);
+  funcOp.setArgAttr(widthArg.getArgNumber(), "tt.divisibility",
+                    b.getI32IntegerAttr(divisor));
+  Value zero = arith::ConstantIntOp::create(b, numerator.getLoc(), 0, 32);
+  div.getResult().replaceAllUsesWith(div.getLhs());
+  rem.getResult().replaceAllUsesWith(zero);
+  rem.erase();
+  div.erase();
+  blocks.erase();
+  numerator.erase();
+  traceRlcDecision("2", "accept", "single-block-cache-class", funcOp);
 }
 } // namespace
 
