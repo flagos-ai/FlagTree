@@ -245,6 +245,22 @@ endif()
 # MLIR
 find_package(MLIR REQUIRED CONFIG PATHS ${MLIR_DIR})
 
+# Match the assertion mode of the linked LLVM/MLIR libraries. This is an ABI
+# requirement: llvm::Statistic (and hence mlir::Pass::Statistic) changes size
+# with NDEBUG unless LLVM_FORCE_ENABLE_STATS is enabled. A Release consumer of
+# an assertions-enabled MLIR otherwise allocates a one-byte Statistic whose
+# out-of-line constructor writes a TrackingStatistic into adjacent memory.
+# Keep this a compile option so it follows the build type's -DNDEBUG (/DNDEBUG).
+if(LLVM_ENABLE_ASSERTIONS)
+  if(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/UNDEBUG>)
+  else()
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-UNDEBUG>)
+  endif()
+else()
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-DNDEBUG>)
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 

@@ -3,6 +3,9 @@
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/ArrayRef.h"
 #include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 #ifdef __TLE__
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -15,7 +18,9 @@ void setAsyncTaskIds(mlir::Operation *op,
 // A custom op builder that keeps track of the last location
 class TritonOpBuilder {
 public:
-  TritonOpBuilder(mlir::MLIRContext *context) {
+  TritonOpBuilder(mlir::MLIRContext *context,
+                  const std::string &compile_mode = "simd")
+      : compile_mode(compile_mode) {
     builder = std::make_unique<mlir::OpBuilder>(context);
     lastLoc = std::make_unique<mlir::Location>(builder->getUnknownLoc());
   }
@@ -24,6 +29,8 @@ public:
   mlir::MLIRContext *getContext() { return builder->getContext(); }
 
   bool isLineInfoEnabled() { return lineInfoEnabled; }
+
+  bool isSimtMode() const { return compile_mode == "simt"; }
 
   void setLastLoc(mlir::Location loc) {
     if (lineInfoEnabled)
@@ -106,6 +113,7 @@ private:
   std::optional<std::vector<int>> asyncTaskIds;
   bool lineInfoEnabled =
       !mlir::triton::tools::getBoolEnv("TRITON_DISABLE_LINE_INFO");
+  std::string compile_mode;
 };
 #ifdef __TLE__
 namespace ir {
