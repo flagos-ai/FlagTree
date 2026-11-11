@@ -122,8 +122,15 @@ static bool isBackedByLocalAlloc(Value value, llvm::DenseSet<Value> &active);
 // (max phase 1) and no views. A non-trivial swizzle (max phase > 1) was chosen
 // by the kernel for its stores or async copies and is kept. A view, a captured
 // or loop-carried value, or an allocation with views is kept too: retagging
-// would leave the other users on the old encoding for the same bytes.
+// would leave the other users on the old encoding for the same bytes. A PPU
+// build still compiles kernels for other targets, so the answer is keyed on
+// the module's target, not on the build.
 static bool keepsStoredSwizzledLayout(Value memDesc) {
+  auto module = memDesc.getParentRegion()->getParentOfType<ModuleOp>();
+  auto target =
+      module ? module->getAttrOfType<StringAttr>(AttrTargetName) : nullptr;
+  if (!target || !target.strref().starts_with("ppu:"))
+    return false;
   auto alloc = memDesc.getDefiningOp<LocalAllocOp>();
   if (!alloc)
     return true;
