@@ -38,7 +38,6 @@ def tle_load_add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr, 
 @pytest.mark.parametrize("is_async", [False, True])
 @pytest.mark.parametrize("n_elements", [128, 256, 1000])
 def test_tle_load_add(n_elements, is_async):
-    torch.manual_seed(0)
     BLOCK = 128
     x = torch.randn(n_elements, device=DEVICE, dtype=torch.float32)
     y = torch.randn(n_elements, device=DEVICE, dtype=torch.float32)
@@ -63,7 +62,6 @@ def tle_load_2d_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, IS_ASYN
 @pytest.mark.parametrize("is_async", [False, True])
 @pytest.mark.parametrize("M,N", [(32, 64), (64, 64)])
 def test_tle_load_2d(M, N, is_async):
-    torch.manual_seed(1)
     x = torch.randn(M, N, device=DEVICE, dtype=torch.float32)
     out = torch.empty_like(x)
 
