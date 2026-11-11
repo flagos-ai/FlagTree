@@ -112,8 +112,15 @@ DEVICE void Swap(float *x, int64_t nx, float *y, int64_t ny) {
 
 DEVICE void Stamp(int32_t *x, int64_t n) {
   for (int64_t i = 0; i < n; ++i)
-    x[i] += static_cast<int32_t>(threadIdx.x) * 10000 +
+    x[i] += static_cast<int32_t>(threadIdx.x) * 1000 +
             static_cast<int32_t>(i) * 1000000;
+}
+
+DEVICE void Stamp2(int32_t *x, int64_t nx, int32_t *y, int64_t ny) {
+  Stamp(x, nx);
+  for (int64_t i = 0; i < ny; ++i)
+    y[i] += static_cast<int32_t>(threadIdx.x) * 1000 +
+            static_cast<int32_t>(i) * 1000000 + 1;
 }
 
 DEVICE void InspectFragment(const int32_t *x, int64_t n,

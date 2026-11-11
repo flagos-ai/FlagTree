@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+import warnings
 
 import triton.language as tl
 from triton.language.core import builtin, base_type, base_value, constexpr as tl_constexpr, tensor
@@ -63,28 +64,30 @@ def _tle_raw_call_eager_mode(func, args, output_indices, hint, smem, _semantic, 
     return tl.tuple(tensors)
 
 
-def _normalize_hint(hint):
-    while isinstance(hint, tl_constexpr):
-        hint = hint.value
-    return str(hint) if hint else ""
-
-
 def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic: TLESemantic | None, _generator):
     func = tl.core._unwrap_if_constexpr(func)
+    output_indices = tl.core._unwrap_if_constexpr(output_indices)
+    hint = tl.core._unwrap_if_constexpr(hint)
+    hint = str(hint) if hint else ""
+
     mark_kernel_init_hook = getattr(func, "mark_kernel_init_hook", None)
     if mark_kernel_init_hook is not None:
         mark_kernel_init_hook(_semantic, _generator)
-    hint = _normalize_hint(hint)
     if output_indices is not None and any(idx < 0 or idx >= len(args) for idx in output_indices):
         raise RuntimeError("Using invalid output_indices in tle_raw.call")
     unwrapped_args = [tl.core._unwrap_if_constexpr(arg) for arg in args]
     has_fragment_args = any(isinstance(arg, tensor_fragment) for arg in unwrapped_args)
-    deferred = getattr(func, "deferred", None)
+    deferred = getattr(func, "deferred", False)
 
-    if not has_fragment_args and not deferred:
-        return _tle_raw_call_eager_mode(func, args, output_indices, hint, smem, _semantic, _generator)
-    elif deferred is not None and not deferred:
-        raise RuntimeError("Tensor fragment args are not compatible with eager mode in tle_raw.call")
+    if not deferred:
+        if not has_fragment_args:
+            return _tle_raw_call_eager_mode(func, args, output_indices, hint, smem, _semantic, _generator)
+        warnings.warn(
+            "Tensor fragment arguments require deferred compilation in tle_raw.call; "
+            "continuing in deferred mode. Set deferred=True in @dialect to avoid this warning.",
+            UserWarning,
+            stacklevel=2,
+        )
     if output_indices is None:
         raise RuntimeError("Deferred tle_raw.call requires explicit output_indices=")
 
@@ -104,8 +107,7 @@ def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic: TLESeman
             raise TypeError(f"Argument {i} cannot be designated as an output."
                             "Only block tensors, tensor fragments, and buffered tensors are allowed.")
         else:
-            arg_info = "value"
-        arg_info += "_inout" if ioflag else "_input"
+            arg_info = "scalar"
         arg_info_list.append(arg_info)
         handles.append((_semantic.to_tensor(arg) if isinstance(arg, tl_constexpr) else arg).handle)
 

@@ -18,6 +18,7 @@
 #include "passes.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/Support/SHA256.h"
@@ -202,13 +203,17 @@ void init_nvidia_tle_raw_passes(py::module &&m) {
       if (!source || !infos || op.getRegionDialect() != "cuda")
         return;
 
+      py::list outputMarks;
+      for (unsigned i = 0; i < op.getNumOperands(); ++i)
+        outputMarks.append(llvm::is_contained(op.getOutputOperandIndices(), i));
+
       py::list arguments;
       for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
         py::dict argument;
         StringRef kind = cast<StringAttr>(infos[i]).getValue();
         argument["kind"] = kind.str();
 
-        if (kind.starts_with("tensor_fragment_")) {
+        if (kind == "tensor_fragment") {
           auto type = dyn_cast<RankedTensorType>(operand.getType());
           if (!type || !type.getEncoding())
             throw std::runtime_error(
@@ -242,9 +247,9 @@ void init_nvidia_tle_raw_passes(py::module &&m) {
         arguments.append(argument);
       }
 
-      auto dumpedArguments =
-          dumps(arguments, py::arg("sort_keys") = true,
-                py::arg("separators") = py::make_tuple(",", ":"));
+      auto dumpedArguments = dumps(
+          py::make_tuple(arguments, outputMarks), py::arg("sort_keys") = true,
+          py::arg("separators") = py::make_tuple(",", ":"));
       std::string serializedArguments = dumpedArguments.cast<std::string>();
       llvm::SHA256 hasher;
       hasher.update(serializedArguments);
@@ -258,6 +263,7 @@ void init_nvidia_tle_raw_passes(py::module &&m) {
         wrapper["source_id"] = source.getValue().str();
         wrapper["symbol"] = symbol;
         wrapper["arguments"] = arguments;
+        wrapper["output_marks"] = outputMarks;
         wrappers.append(wrapper);
       }
       op->setAttr("tle_raw.wrapper_symbol",

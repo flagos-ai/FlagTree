@@ -13,6 +13,7 @@ from triton.experimental.tle.raw import dialect
     name="cuda",
     file=Path(__file__).with_suffix(".cu"),
     extern_func_name="SoftmaxFragment",
+    deferred=True,
 )
 def cuda_softmax(*args, **kwargs):
     ...

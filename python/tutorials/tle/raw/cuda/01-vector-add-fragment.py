@@ -9,7 +9,12 @@ import triton.experimental.tle.language.gpu as tle_gpu
 import triton.experimental.tle.language.raw as tle_raw
 
 
-@dialect(name="cuda", file=Path(__file__).parent / "01-vector-add-fragment.cu", extern_func_name='add_fragment')
+@dialect(
+    name="cuda",
+    file=Path(__file__).parent / "01-vector-add-fragment.cu",
+    extern_func_name="add_fragment",
+    deferred=True,
+)
 def cuda_add(*args, **kwargs):
     ...
 

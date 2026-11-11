@@ -86,8 +86,7 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
                                   PatternRewriter &rewriter) const {
   auto infos = op->getAttrOfType<ArrayAttr>("tle_raw.arg_info_list");
   auto isFragment = [&](unsigned i) {
-    return infos && cast<StringAttr>(infos[i]).getValue().starts_with(
-                        "tensor_fragment_");
+    return infos && cast<StringAttr>(infos[i]).getValue() == "tensor_fragment";
   };
   SmallVector<Value> newOperands;
   IRMapping mapper;

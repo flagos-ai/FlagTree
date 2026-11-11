@@ -36,6 +36,7 @@ def generate_raw_wrappers(function_name, wrappers):
 
     for wrapper in wrappers:
         symbol = wrapper["symbol"]
+        output_marks = wrapper["output_marks"]
         namespace = f"{symbol}_types"
         # Derive non-fragment parameter types from the user's function, including pointer address spaces.
         declarations = [
@@ -56,7 +57,7 @@ def generate_raw_wrappers(function_name, wrappers):
         native_index = 0
         for i, argument in enumerate(wrapper["arguments"]):
             kind = argument["kind"]
-            if kind.startswith("tensor_fragment_"):
+            if kind == "tensor_fragment":
                 count = argument["count"]
                 if count <= 0:
                     raise ValueError("fragment must contain at least one element per thread")
@@ -69,6 +70,7 @@ def generate_raw_wrappers(function_name, wrappers):
                     declarations.append(
                         f'static_assert(std::is_same<element_{i}, bool>::value, "raw wrapper i1 requires bool");')
                 parameter_type = wire_type or native_type
+
                 for j in range(count):
                     parameters.append(f"{parameter_type} a{i}_{j}")
                 values = []
@@ -79,7 +81,8 @@ def generate_raw_wrappers(function_name, wrappers):
                     values.append(value)
                 setup.append(f"  {native_type} fragment_{i}[{count}] = {{{', '.join(values)}}};")
                 call_args.extend((f"fragment_{i}", str(count)))
-                if kind.endswith("_inout"):
+
+                if output_marks[i]:
                     for j in range(count):
                         fields.append(f"  {parameter_type} a{i}_{j};")
                         value = f"fragment_{i}[{j}]"
@@ -87,24 +90,32 @@ def generate_raw_wrappers(function_name, wrappers):
                             value = f"{namespace}::bit_cast<{wire_type}>({value})"
                         returned.append(value)
                 native_index += 2
-            else:
-                width = 3 + 2 * argument["rank"] if "rank" in argument else 1
-                # Only scalar values use value_type. A floating-point pointee or
-                # memdesc element does not change the pointer/descriptor ABI.
-                conversion, wire_type = _abi_(argument.get("value_type"))
-                for j in range(width):
+
+            elif "rank" in argument:
+                # Forward allocated/aligned pointers, offset, sizes and strides
+                # with the native signature types, including address spaces.
+                for j in range(3 + 2 * argument["rank"]):
                     name = f"a{i}_{j}"
                     native_type = f"{namespace}::arg<{native_index}>"
-                    parameters.append(f"{wire_type or native_type} {name}")
-                    if conversion:
-                        call_args.append(f"{namespace}::bit_cast<{native_type}>({name})")
-                        if conversion == "bool":
-                            declarations.append(
-                                f'static_assert(std::is_same<typename std::remove_cv<arg<{native_index}>>::type, bool>::value, '
-                                '"raw wrapper i1 requires bool");')
-                    else:
-                        call_args.append(name)
+                    parameters.append(f"{native_type} {name}")
+                    call_args.append(name)
                     native_index += 1
+            else:
+                # Scalar floating-point/bool values use wire types; pointers
+                # retain their native types regardless of the pointee type.
+                conversion, wire_type = _abi_(argument.get("value_type"))
+                name = f"a{i}_0"
+                native_type = f"{namespace}::arg<{native_index}>"
+                parameters.append(f"{wire_type or native_type} {name}")
+                if conversion:
+                    call_args.append(f"{namespace}::bit_cast<{native_type}>({name})")
+                    if conversion == "bool":
+                        declarations.append(
+                            f'static_assert(std::is_same<typename std::remove_cv<arg<{native_index}>>::type, bool>::value, '
+                            '"raw wrapper i1 requires bool");')
+                else:
+                    call_args.append(name)
+                native_index += 1
         declarations.append("}\n")
 
         parts.extend(declarations)

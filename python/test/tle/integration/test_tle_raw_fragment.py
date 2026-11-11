@@ -29,9 +29,9 @@ def fragment_environment():
 SOURCE = Path(__file__).parent / "inputs" / "raw_fragment.cu"
 
 
-def bind(symbol, **kwargs):
+def bind(symbol, *, deferred=True, **kwargs):
 
-    @dialect(name="cuda", file=SOURCE, extern_func_name=symbol, **kwargs)
+    @dialect(name="cuda", file=SOURCE, extern_func_name=symbol, deferred=deferred, **kwargs)
     def function(*args, **kw):
         ...
 
@@ -49,6 +49,7 @@ masked_modify = bind("MaskedModify")
 mixed_returns = bind("MixedReturns")
 swap = bind("Swap")
 stamp = bind("Stamp")
+stamp_two = bind("Stamp2")
 inspect_fragment = bind("InspectFragment")
 store_only = bind("StoreOnly")
 mixed_memory = bind("MixedMemory")
@@ -215,34 +216,52 @@ def float_matmul_kernel(
 
 
 def test_wrapper_specializations_do_not_cross_contaminate():
-    # One launch contains five raw calls, with 1, 4, 2, 4, 1 elements/thread.
     lengths = (128, 512, 256, 512, 128)
-    host = torch.arange(1, 5 * 512 + 1, dtype=torch.int32).reshape(5, 512)
-    x = host.cuda()
-    y = torch.full_like(x, -1)
+    outidxs = ((), (0, ), (1, ), (0, 1), (1, 0), (0, 1, 0), (1, 0, 1))
+    width = max(lengths)
+    sstep = width * max(map(len, outidxs))
+    calls = len(lengths) * len(outidxs)
+    host = torch.arange(1, calls * width + 1, dtype=torch.int32).reshape(calls, width)
+    x, y = host.cuda().clone(), host.cuda().clone()
+    s = torch.full((calls, sstep // width, width), -1, dtype=torch.int32, device="cuda")
     layout = gpu.BlockEncoding([1], [32], [4], [0])
 
-    wrapper_specializations_kernel[(1, )](x, y, layout, num_warps=4)
+    wrapper_specializations_kernel[(1, )](x, y, s, layout, lengths, outidxs, width, sstep, num_warps=4)
 
-    # Each call has separate input/output storage; unused output stays guarded.
-    expected = torch.full_like(host, -1)
-    for call, n in enumerate(lengths):
-        columns = torch.arange(n, dtype=torch.int32)
-        expected[call, :n] = host[call, :n] + (columns % 128) * 10000 + (columns // 128) * 1000000
-    torch.testing.assert_close(y.cpu(), expected, rtol=0, atol=0)
+    # Each call owns one input row and several output slots. Empty outputs,
+    # unused slots and the tail beyond each fragment length stay untouched.
+    expected = torch.full(s.shape, -1, dtype=torch.int32)
+    for length_index, length in enumerate(lengths):
+        columns = torch.arange(length, dtype=torch.int32)
+        stamp_value = (columns % 128) * 1000 + (columns // 128) * 1000000
+        for i, output_indices in enumerate(outidxs):
+            call = length_index * len(outidxs) + i
+            for slot, index in enumerate(output_indices):
+                expected[call, slot, :length] = host[call, :length] + stamp_value + index
     torch.testing.assert_close(x.cpu(), host, rtol=0, atol=0)
+    torch.testing.assert_close(y.cpu(), host, rtol=0, atol=0)
+    torch.testing.assert_close(s.cpu(), expected, rtol=0, atol=0)
 
 
 @triton.jit
-def wrapper_specializations_kernel(X, Y, LAYOUT: tl.constexpr):
-    lengths: tl.constexpr = (128, 512, 256, 512, 128)
-    # Static unrolling creates five call sites in the same compiled kernel.
-    for call in tl.static_range(5):
-        columns = tl.arange(0, lengths[call])
-        offsets = call * 512 + columns
-        x = gpu.set_layout(tl.load(X + offsets), LAYOUT)
-        result = raw.call(stamp, (raw.fragment(x), ), output_indices=[0])
-        tl.store(Y + offsets, result)
+def wrapper_specializations_kernel(X, Y, S, LAYOUT: tl.constexpr, LENGTHS: tl.constexpr, OUTIDXS: tl.constexpr,
+                                   WIDTH: tl.constexpr, SSTEP: tl.constexpr):
+    fn: tl.constexpr = stamp_two
+    hint: tl.constexpr = ""
+    for length_index in tl.static_range(len(LENGTHS)):
+        columns = tl.arange(0, LENGTHS[length_index])
+        for i in tl.static_range(len(OUTIDXS)):
+            x = gpu.set_layout(tl.load(X + columns), LAYOUT)
+            y = gpu.set_layout(tl.load(Y + columns), LAYOUT)
+            s = raw.call(fn, [raw.fragment(x), raw.fragment(y)], output_indices=tl.constexpr(OUTIDXS[i]), hint=hint)
+            if len(OUTIDXS[i]) > 1:
+                for n in tl.static_range(len(OUTIDXS[i])):
+                    tl.store(S + n * WIDTH + columns, s[n])
+            elif len(OUTIDXS[i]) == 1:
+                tl.store(S + columns, s)
+            S += SSTEP
+            X += WIDTH
+            Y += WIDTH
 
 
 @pytest.mark.parametrize("warps", [1, 2, 4, 8])
@@ -259,7 +278,7 @@ def test_1d_element_ownership(warps, spt):
     for thread in range(threads):
         for item in range(2 * spt):
             col = (item // spt) * threads * spt + thread * spt + item % spt
-            expected[col] = col + thread * 10000 + item * 1000000
+            expected[col] = col + thread * 1000 + item * 1000000
     torch.testing.assert_close(y.cpu(), expected, rtol=0, atol=0)
 
 
@@ -292,7 +311,7 @@ def test_2d_element_ownership(order, distribution):
                 lane //= tpw[dim]
                 warp //= wpc[dim]
             row, col = coords
-            expected[row, col] = row * n + col + thread * 10000 + item * 1000000
+            expected[row, col] = row * n + col + thread * 1000 + item * 1000000
     torch.testing.assert_close(y.cpu().reshape(m, n), expected, rtol=0, atol=0)
     assert "#ttg.blocked" in compiled.asm["ttgir"]
 

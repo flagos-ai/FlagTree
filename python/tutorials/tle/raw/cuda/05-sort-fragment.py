@@ -59,12 +59,12 @@ def _configure_tle_raw_cccl_include():
 _configure_tle_raw_cccl_include()
 
 
-@dialect(name="cuda", file=_TLE_RAW_SOURCE, extern_func_name="RadixHistogramDigits8x2048")
+@dialect(name="cuda", file=_TLE_RAW_SOURCE, extern_func_name="RadixHistogramDigits8x2048", deferred=True)
 def _radix_histogram_digits_8x2048_raw(*args, **kwargs):
     ...
 
 
-@dialect(name="cuda", file=_TLE_RAW_SOURCE, extern_func_name="RadixRank8x2048Precomputed")
+@dialect(name="cuda", file=_TLE_RAW_SOURCE, extern_func_name="RadixRank8x2048Precomputed", deferred=True)
 def _radix_rank_8x2048_precomputed_raw(*args, **kwargs):
     ...
 

@@ -31,6 +31,7 @@
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/LogicalResult.h"
 
 namespace {
@@ -124,8 +125,8 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
       SymbolTable::lookupNearestSymbolFrom<LLVM::LLVMFuncOp>(op, symbol);
   if (!callee)
     return op.emitOpError("cannot find LLVM raw wrapper ") << symbol;
-  if (!op.getBody().empty() || op.getRegionDialect() != "cuda")
-    return op.emitOpError("raw wrapper requires an empty CUDA region");
+  if (!op.getBody().empty())
+    return op.emitOpError("raw wrapper requires an empty region");
   auto infos = op->getAttrOfType<ArrayAttr>("tle_raw.arg_info_list");
   if (!infos || infos.size() != op.getNumOperands())
     return op.emitOpError("raw wrapper argument metadata must match operands");
@@ -138,6 +139,7 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
   SmallVector<Type> inputTypes, returnTypes;
   SmallVector<unsigned> counts(op.getNumOperands(), 0);
   SmallVector<StringRef> kinds;
+  auto outputIndices = op.getOutputOperandIndices();
   auto *converter = getTypeConverter();
   for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
     auto info = dyn_cast<StringAttr>(infos[i]);
@@ -146,7 +148,7 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
              << i;
     StringRef kind = info.getValue();
     kinds.push_back(kind);
-    if (kind.starts_with("tensor_fragment_")) {
+    if (kind == "tensor_fragment") {
       auto tensor = dyn_cast<RankedTensorType>(operand.getType());
       if (!tensor || !tensor.getEncoding())
         return op.emitOpError(
@@ -159,7 +161,7 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
                << i;
       counts[i] = triton::gpu::getTotalElemsPerThread(tensor);
       inputTypes.append(counts[i], wire);
-      if (kind == "tensor_fragment_inout")
+      if (llvm::is_contained(outputIndices, i))
         returnTypes.append(counts[i], wire);
     } else if (auto memdesc =
                    dyn_cast<triton::gpu::MemDescType>(operand.getType())) {
@@ -213,7 +215,7 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
   SmallVector<Value> arguments;
   for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
     Value converted = adaptor.getOperands()[i];
-    if (kinds[i].starts_with("tensor_fragment_")) {
+    if (kinds[i] == "tensor_fragment") {
       auto elements = unpackLLElements(loc, converted, rewriter);
       if (elements.size() != counts[i])
         return op.emitOpError(
@@ -253,7 +255,7 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
   SmallVector<Value> updated(adaptor.getOperands());
   unsigned field = 0;
   for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
-    if (kinds[i] != "tensor_fragment_inout")
+    if (kinds[i] != "tensor_fragment" || !llvm::is_contained(outputIndices, i))
       continue;
     auto tensor = cast<RankedTensorType>(operand.getType());
     Type elementType = converter->convertType(tensor.getElementType());
