@@ -61,7 +61,7 @@ def test_singleton_dot_coefficients(bind, mutate):
                 torch.npu.synchronize()
             got = out.cpu().reshape_as(expected).double()
             error = torch.linalg.vector_norm(got - expected) / torch.linalg.vector_norm(expected)
-            assert error < 5e-7, float(error)
+            assert error < 5e-7, (scale, replay, float(error))
             assert torch.isfinite(got).all()
             assert (result_guard[:guard].cpu() == 12345.).all()
             assert (result_guard[-guard:].cpu() == 12345.).all()
