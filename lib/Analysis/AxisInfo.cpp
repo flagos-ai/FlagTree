@@ -1461,6 +1461,17 @@ void ModuleAxisInfoAnalysis::update(CallOpInterface callOp,
     auto index = entry.index();
     auto value = entry.value();
     auto setAttrFn = [&](StringRef attrName, int64_t prevValue) {
+#ifdef __TLE__
+      // Explicit callee promises are not weakened by caller inference. Their
+      // provenance distinguishes them from facts merged across call sites.
+      if (auto promises = callee.getArgAttrOfType<DictionaryAttr>(
+              index, "tle.argument_hints")) {
+        if (Attribute promise = promises.get(attrName)) {
+          callee.setArgAttr(index, attrName, promise);
+          return;
+        }
+      }
+#endif
       auto curValue = kMaxDivisor;
       if (callee.getArgAttrOfType<IntegerAttr>(index, attrName)) {
         curValue =
