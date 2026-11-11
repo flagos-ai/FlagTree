@@ -44,28 +44,59 @@ def test_pointer_token_chain(cuda_torch):
 
 
 @triton.jit
-def _atomic_token_chain(X, Y):
+def _atomic_token_chain(X, Y, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
+    if BLOCK == 1:
+        offsets = pid
+    else:
+        offsets = pid * BLOCK + tl.arange(0, BLOCK)
     token = tle.create_mem_token()
-    first, token = tle.atomic_cas_tko(X + pid, 0, 1, memToken=token, semantics="acquire", has_result_token=True)
-    second, token = tle.atomic_cas_tko(X + pid, 0, 2, memToken=token, has_result_token=True)
-    old, token = tle.atomic_xchg_tko(X + pid, 3, memToken=token, semantics="release", has_result_token=True)
-    final = tle.load_tko(X + pid, memToken=token)
-    tl.store(Y + pid * 4, first)
-    tl.store(Y + pid * 4 + 1, second)
-    tl.store(Y + pid * 4 + 2, old)
-    tl.store(Y + pid * 4 + 3, final)
+    first, token = tle.atomic_cas_tko(X + offsets, 0, 1, memToken=token, semantics="acquire", has_result_token=True)
+    second, token = tle.atomic_cas_tko(X + offsets, 0, 2, memToken=token, has_result_token=True)
+    old, token = tle.atomic_xchg_tko(X + offsets, 3, memToken=token, semantics="release", has_result_token=True)
+    final = tle.load_tko(X + offsets, memToken=token)
+    tl.static_assert(first.dtype == X.dtype.element_ty)
+    tl.static_assert(second.dtype == X.dtype.element_ty)
+    tl.static_assert(old.dtype == X.dtype.element_ty)
+    tl.store(Y + offsets * 4, first)
+    tl.store(Y + offsets * 4 + 1, second)
+    tl.store(Y + offsets * 4 + 2, old)
+    tl.store(Y + offsets * 4 + 3, final)
 
 
-def test_atomic_token_chain(cuda_torch):
+@pytest.mark.parametrize("dtype", ["int32", "int64"])
+@pytest.mark.parametrize("block", [1, 128])
+def test_atomic_token_chain(cuda_torch, dtype, block):
     torch = cuda_torch
-    x = torch.zeros(8, device="cuda", dtype=torch.int32)
-    y = torch.full((8, 4), -1, device="cuda", dtype=torch.int32)
-    kernel = _atomic_token_chain[(8, )](x, y)
-    expected = torch.tensor([0, 1, 1, 3], device="cuda", dtype=torch.int32).expand_as(y)
+    x = torch.zeros(8 * block, device="cuda", dtype=getattr(torch, dtype))
+    y = torch.full((8 * block, 4), -1, device="cuda", dtype=x.dtype)
+    kernel = _atomic_token_chain[(8, )](x, y, block)
+    expected = torch.tensor([0, 1, 1, 3], device="cuda", dtype=x.dtype).expand_as(y)
     torch.testing.assert_close(y, expected, atol=0, rtol=0)
     assert torch.all(x == 3)
     assert kernel.metadata.target.backend == "tileir"
+
+
+@triton.jit
+def _atomic_const_pointer(X: tl.const, BLOCK: tl.constexpr, CAS: tl.constexpr):
+    ptr = X
+    if BLOCK != 1:
+        ptr = X + tl.arange(0, BLOCK)
+    token = tle.create_mem_token()
+    if CAS:
+        tle.atomic_cas_tko(ptr, 0, 1, memToken=token)
+    else:
+        tle.atomic_xchg_tko(ptr, 1, memToken=token)
+
+
+@pytest.mark.parametrize("cas", [True, False], ids=["cas", "xchg"])
+@pytest.mark.parametrize("block", [1, 128])
+def test_atomic_const_pointer(cuda_torch, cas, block):
+    x = cuda_torch.zeros(block, device="cuda", dtype=cuda_torch.int32)
+    with pytest.raises(triton.CompilationError) as exc_info:
+        _atomic_const_pointer.warmup(x, block, cas, grid=(1, ))
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "Cannot store to a constant pointer" in str(exc_info.value.__cause__)
 
 
 @triton.jit

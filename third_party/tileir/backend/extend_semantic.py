@@ -226,10 +226,21 @@ class CudaTileSemantic(TritonSemantic):
                                               cost, _tileir_capability(self))
         return tl.tensor(token, token_ty if has_result_token else tl.void)
 
+    def atomic_typechecking_impl(self, ptr, value):
+        if not ptr.type.scalar.is_ptr() or ptr.type.scalar.element_ty.is_block():
+            raise ValueError("TKO atomics require a scalar pointer or tensor of pointers, not a block pointer")
+        if ptr.type.is_const() or ptr.type.scalar.is_const():
+            raise ValueError("Cannot store to a constant pointer")
+        value = self.to_tensor(value)
+        if ptr.type.is_block():
+            value = self.broadcast_impl_shape(value, ptr.type.get_block_shapes())
+        elif value.type.is_block():
+            raise ValueError("Value argument cannot be block type if pointer argument is not a block")
+        return self.cast(value, ptr.type.scalar.element_ty)
+
     def atomic_cas_tko(self, ptr, cmp, val, mem_token, semantics, scope, token_ty, has_result_token):
-        cmp = self.to_tensor(cmp)
-        val = self.to_tensor(val)
-        cmp, val = self.binary_op_type_checking_impl(cmp, val, False, False, False, True)
+        cmp = self.atomic_typechecking_impl(ptr, cmp)
+        val = self.atomic_typechecking_impl(ptr, val)
         semantics = _str_to_tileir_semantic(semantics)
         scope = _str_to_tileir_scope(scope)
         _check_memory_ordering(semantics, scope)
@@ -247,7 +258,7 @@ class CudaTileSemantic(TritonSemantic):
         return result
 
     def atomic_xchg_tko(self, ptr, val, mem_token, semantics, scope, token_ty, has_result_token):
-        val = self.to_tensor(val)
+        val = self.atomic_typechecking_impl(ptr, val)
         semantics = _str_to_tileir_semantic(semantics)
         scope = _str_to_tileir_scope(scope)
         _check_memory_ordering(semantics, scope)
