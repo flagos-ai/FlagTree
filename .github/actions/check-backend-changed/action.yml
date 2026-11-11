@@ -46,9 +46,25 @@ runs:
 
         # Check if the workflow is triggered by a Pull Request event
         if [ "${{ github.event_name }}" == "pull_request" ]; then
-          # Use three-dot syntax to compare the merge base (common ancestor) with the HEAD commit
-          # This ensures we only detect files changed in this PR, excluding changes already merged to base branch
-          FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.sha }})
+          # Diff the PR head against the merge base it shares with the *current*
+          # base branch, so only files this PR actually touches are reported.
+          #
+          # Two traps this avoids:
+          #   - github.sha is a synthetic merge commit of the PR into the base
+          #     branch as it looks right now, while base.sha is frozen at the
+          #     time the PR was opened. Diffing between them attributes every
+          #     commit landed on the base branch since then to this PR, so a PR
+          #     that sat for a few days triggers all backends on its next push.
+          #   - base.sha stops being the merge base once the author merges the
+          #     base branch into their own branch, which brings those same
+          #     unrelated commits back into the diff.
+          PR_HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          PR_BASE_REF="origin/${{ github.event.pull_request.base.ref }}"
+          # Fall back to base.sha if the base branch ref is unavailable locally.
+          MERGE_BASE=$(git merge-base "$PR_BASE_REF" "$PR_HEAD_SHA" 2>/dev/null \
+            || git merge-base "${{ github.event.pull_request.base.sha }}" "$PR_HEAD_SHA")
+          echo "PR diff range: $MERGE_BASE...$PR_HEAD_SHA"
+          FILES=$(git diff --name-only "$MERGE_BASE...$PR_HEAD_SHA")
         else
           # Handle 'push' events (or other events where 'base_ref' isn't applicable)
           # Check if the 'before' SHA is all zeros, which indicates a newly created/pushed branch
