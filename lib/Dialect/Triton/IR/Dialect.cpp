@@ -83,6 +83,24 @@ void TritonInlinerInterface::handleTerminator(Operation *op,
     valuesToRepl[it.index()].replaceAllUsesWith(it.value());
 }
 
+#ifdef __TLE__
+Value TritonInlinerInterface::handleArgument(
+    OpBuilder &builder, Operation *call, Operation *callable, Value argument,
+    DictionaryAttr argumentAttrs) const {
+  SmallVector<NamedAttribute> hints;
+  for (StringRef name : {"tt.divisibility", "tt.contiguity", "tt.constancy"})
+    if (Attribute hint = argumentAttrs.get(name))
+      hints.emplace_back(builder.getStringAttr(name), hint);
+  if (hints.empty())
+    return argument;
+  // Promises apply to this call's value, not every use of the caller operand.
+  auto hinted = triton::BitcastOp::create(builder, call->getLoc(),
+                                          argument.getType(), argument);
+  for (NamedAttribute hint : hints)
+    hinted->setAttr(hint.getName(), hint.getValue());
+  return hinted;
+}
+#endif
 void TritonDialect::initialize() {
   registerTypes();
 
