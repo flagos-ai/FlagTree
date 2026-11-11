@@ -130,6 +130,7 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             auto_blockify_size = 1
         builder = ir.builder(mod.context)
         mod.set_attr("flagtree.auto_blockify", builder.get_bool_attr(metadata["enable_auto_blockify"]))
+        mod.set_attr("flagtree.multibuffer", builder.get_bool_attr(get_auto_multi_buffer_option(metadata)))
         mod.set_attr("flagtree.structured_join_lowering", builder.get_string_attr(opt.structured_join_lowering))
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
@@ -504,6 +505,11 @@ def _parse_ttir_metadata(ttir: str, metadata: dict):
     return metadata
 
 
+def get_auto_multi_buffer_option(metadata):
+    multibuffer = metadata.get("multibuffer")
+    return not ((multibuffer is not None and not multibuffer) or metadata.get("num_stages") == 1)
+
+
 def get_common_bishengir_compile_options(metadata):
     bishengir_target = metadata['target'].arch
     bishengir_target_opt = f"--target={bishengir_target}"
@@ -556,11 +562,7 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
         num_stages = metadata.get("num_stages")
 
         if multibuffer is not None or num_stages is not None:
-            multi_buffer_value = True
-            if multibuffer is not None and not multibuffer:
-                multi_buffer_value = False
-            elif num_stages is not None and num_stages == 1:
-                multi_buffer_value = False
+            multi_buffer_value = get_auto_multi_buffer_option(metadata)
             _compile_option_list += [
                 f"--enable-auto-multi-buffer={multi_buffer_value}",
             ]
@@ -819,11 +821,7 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
         num_stages = metadata.get("num_stages")
 
         if multibuffer is not None or num_stages is not None:
-            multi_buffer_value = True
-            if multibuffer is not None and not multibuffer:
-                multi_buffer_value = False
-            elif num_stages is not None and num_stages == 1:
-                multi_buffer_value = False
+            multi_buffer_value = get_auto_multi_buffer_option(metadata)
             _compile_option_list.append(f"--enable-auto-multi-buffer={multi_buffer_value}")
 
         enable_ubuf_saving = metadata["enable_ubuf_saving"]
