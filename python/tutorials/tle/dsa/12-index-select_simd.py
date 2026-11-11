@@ -19,8 +19,8 @@ NUM_VEC_CORES = 48
 
 @triton.jit
 def index_select_simd_kernel(in_ptr, indices_ptr, out_ptr, dim: tl.constexpr, other_numel: tl.constexpr,
-                            g_stride: tl.constexpr, indice_length: tl.constexpr, g_block: tl.constexpr,
-                            g_block_sub: tl.constexpr, other_block: tl.constexpr):
+                             g_stride: tl.constexpr, indice_length: tl.constexpr, g_block: tl.constexpr,
+                             g_block_sub: tl.constexpr, other_block: tl.constexpr):
     """tle.dsa.ascend.index_select_simd: GM -> UB SIMD gather."""
     g_begin = tl.program_id(0) * g_block
     for goffs in range(0, g_block, g_block_sub):
@@ -63,10 +63,9 @@ def index_select_simd(x0, dim, indices):
         other_block = (ub_size - indices.element_size()) // x0.element_size()
         g_block_sub = 1
 
-    index_select_simd_kernel[NUM_VEC_CORES, 1,
-                            1](x0, indices, out, dim, other_numel=x0.shape[0], g_stride=g_stride,
-                               indice_length=indice_length, g_block=g_block, g_block_sub=g_block_sub,
-                               other_block=other_block)
+    index_select_simd_kernel[NUM_VEC_CORES, 1, 1](x0, indices, out, dim, other_numel=x0.shape[0], g_stride=g_stride,
+                                                  indice_length=indice_length, g_block=g_block, g_block_sub=g_block_sub,
+                                                  other_block=other_block)
     return out
 
 
