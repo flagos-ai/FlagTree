@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 import unittest
 from unittest.mock import patch
 
@@ -62,11 +62,10 @@ class LocalAutotuneTest(unittest.TestCase):
         self.addCleanup(identity.stop)
 
     def use_benchmarker(self, benchmark):
-        driver_module = ModuleType("triton.runtime.driver")
-        driver_module.driver = SimpleNamespace(active=SimpleNamespace(get_benchmarker=lambda: benchmark))
-        backend = patch.dict(sys.modules, {"triton.runtime.driver": driver_module})
-        backend.start()
-        self.addCleanup(backend.stop)
+        # Stub this isolated tuner without replacing the real driver or rolling back module imports.
+        benchmark_patch = patch.object(self.tune.AutoTuner, "do_bench", property(lambda _: benchmark))
+        benchmark_patch.start()
+        self.addCleanup(benchmark_patch.stop)
 
     def test_prune_select_cache_and_argument_forwarding(self):
         calls, benchmarks, keys, pruned = [], [], [], []
