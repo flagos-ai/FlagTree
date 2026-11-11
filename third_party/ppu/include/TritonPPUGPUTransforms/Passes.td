@@ -61,8 +61,8 @@ def TlePromoteAsyncLoadToAIUPass : Pass<"tle-promote-async-load-to-aiu", "mlir::
     promoted. The AIU descriptor has no row stride: with a constant row stride
     and a constant row length, a layout it cannot express is not promoted and
     stays a plain load; when either is a run-time value, the layout is checked
-    on the device where the copy is issued. Must run before
-    rewrite_tensor_pointer.
+    on the device where the copy is issued, and the threads copy a tile the
+    descriptor cannot. Must run before rewrite_tensor_pointer.
   }];
 
   let dependentDialects = ["mlir::triton::TritonDialect"];

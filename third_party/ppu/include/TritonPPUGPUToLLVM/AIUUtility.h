@@ -57,6 +57,13 @@ DenseMap<unsigned, Value> getAIUSwizzledSharedPtrs(
     SharedMemoryObject smemObj, RewriterBase &rewriter,
     SmallVectorImpl<Value> &offsetVals);
 
+// The address in a PPU0010 AIU buffer of the element at `idxCol` of the
+// contiguous dimension and `idxRow` of the other one, which are i32 values.
+Value getAIUSwizzledSharedPtr(Location loc, triton::gpu::MemDescType memTy,
+                              Type resElemTy, SharedMemoryObject smemObj,
+                              RewriterBase &rewriter, Value idxCol,
+                              Value idxRow);
+
 inline llvm::SmallVector<unsigned>
 AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
                 unsigned elemBytes, unsigned version = 1) {
@@ -145,7 +152,8 @@ AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
 // fill out of bounds. Rows that are S elements apart are copied as the 2d
 // tensor [rows, S] when nothing past the row length V has to be zero filled,
 // and as the 3d tensor [rows, S / V, V] at x = 0 otherwise, which needs S to
-// be a multiple of V.
+// be a multiple of V. A layout with neither form stays a plain load when S and
+// V are constants, and is copied by the threads when it is found at run time.
 //
 // The widths of the size fields are not documented. On a PPU-ZW810E, a 2d row
 // length (Z) of 40000, a 3d row count (Y) of 32768 (40000 rows, clamped by the

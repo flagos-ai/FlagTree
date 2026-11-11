@@ -75,7 +75,7 @@ static triton::MakeTensorPtrOp findMakeTensorPtrOp(Value ptr) {
 // constant row length, a layout the descriptor cannot express (see
 // isAIUStrideExpressible in AIUUtility.h) is not promoted and stays a plain
 // load; when either is a run-time value, the layout is checked on the device
-// where the copy is issued, and a tile the descriptor cannot copy traps.
+// where the copy is issued, and the threads copy a tile the descriptor cannot.
 static bool isAIULoadLayout(triton::LoadOp loadOp) {
   if (cast<RankedTensorType>(loadOp.getType()).getRank() != 2 ||
       loadOp.getPadding() == triton::PaddingOption::PAD_NAN)
