@@ -571,6 +571,8 @@ class HIPBackend(BaseBackend):
         hcu.passes.ttgpuir.add_allocate_shared_memory(pm)
         from .deferred_raw import (deferred_raw_materialize, finish_deferred_raw_materialize)
         deferred_raw_materialize(mod, pm)
+        # Before inline: remember tle.raw so make_amdgcn can opt into dcc.
+        metadata["hcu_tle_raw"] = "tle.dsl_region" in str(mod)
         tle.raw_passes.add_tle_dsl_region_inline(pm)
         kernel_name = mod.get_entry_func_name()
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
@@ -775,15 +777,23 @@ class HIPBackend(BaseBackend):
         # features = '-real-true16' if 'gfx11' in options.arch else ''
         # amdgcn = llvm.translate_to_asm(src, hcu.TARGET_TRIPLE, options.arch, features, flags, options.enable_fp_fusion,
         #                                False)
+        kernel_ir = str(src)
+        # Prefer dcc for tle.raw when IR has no buffer.rsrc (dcc rejects that intrinsic).
+        # Path follows FlagTree/DTK layout: {ROCM_PATH|/opt/dtk}/dcc/bin/dcc
+        dcc = Path(HIPBackend.path_to_rocm()) / "dcc" / "bin" / "dcc"
+        use_dcc = (bool(metadata.get("hcu_tle_raw")) and dcc.is_file()
+                   and "llvm.amdgcn.make.buffer.rsrc" not in kernel_ir)
+        metadata["hcu_raw_dcc"] = use_dcc
         try:
             with tempfile.NamedTemporaryFile(mode='w', suffix=".ll", delete=False) as f:
                 llir_file = f.name
-                f.write(str(src))
+                f.write(kernel_ir)
 
             asm_file = tempfile.mktemp(suffix=".amdgcn")
-
-            clang_path = HIPBackend.path_to_rocm_clang()
-            clang_args = HIPBackend._get_clang_args(metadata, options) + flags
+            # dcc or aillvm clang: both drive llir -> .s
+            asm_compiler = str(dcc) if use_dcc else HIPBackend.path_to_rocm_clang()
+            asm_args = (["-target", hcu.TARGET_TRIPLE, f"-mcpu={options.arch}", "-O3"]
+                        if use_dcc else HIPBackend._get_clang_args(metadata, options) + flags)
 
             # Fixme: link it before run llvm.optimize_module()
             if metadata['use_dushmem']:
@@ -801,12 +811,19 @@ class HIPBackend(BaseBackend):
                 subprocess.run(link_command, check=True, capture_output=True, text=True)
                 llir_file = linked_file
 
-            # Compile to ASM
-            asm_command = [clang_path] + clang_args + [llir_file, "-S", "-o", asm_file]
-            result = subprocess.run(asm_command, check=True, capture_output=True, text=True)
+            # Compile to ASM; if dcc fails, retry with aillvm.
+            asm_command = [asm_compiler] + asm_args + [llir_file, "-S", "-o", asm_file]
+            result = subprocess.run(asm_command, capture_output=True, text=True)
+            if result.returncode != 0 and use_dcc:
+                print(f"[hcu_raw_dcc] dcc failed; falling back to aillvm\n{result.stderr}", flush=True)
+                metadata["hcu_raw_dcc"] = False
+                asm_command = ([HIPBackend.path_to_rocm_clang()] + HIPBackend._get_clang_args(metadata, options) +
+                               flags + [llir_file, "-S", "-o", asm_file])
+                result = subprocess.run(asm_command, check=True, capture_output=True, text=True)
+            elif result.returncode != 0:
+                raise subprocess.CalledProcessError(result.returncode, asm_command, result.stdout, result.stderr)
             if options.wdra_enabled:
-                log = result.stdout + result.stderr
-                print(log, flush=True)
+                print(result.stdout + result.stderr, flush=True)
 
             with open(asm_file, "r") as fd_out:
                 amdgcn = fd_out.read()
