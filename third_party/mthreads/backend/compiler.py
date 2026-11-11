@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 
 _DEFAULT_MUSA_PREFIX = "/usr/local/musa"
-_RLC_POLICY_CACHE_VERSION = "musa-rlc-v4"
+_RLC_POLICY_CACHE_VERSION = "musa-rlc-v6"
 
 # FlagGems uses this feature level to distinguish a backend that turns known
 # MTGPU register-allocation failures into recoverable autotuning failures from
@@ -862,12 +862,16 @@ class MUSABackend(BaseBackend):
     @staticmethod
     def parse_attr(desc):
         assert isinstance(desc, str)
-        proof = re.fullmatch(r"RLC2B([0-9]+)D(2|4|8|16)", desc)
+        proof = re.fullmatch(r"(?:(D|D2|D4|D8):)?RLC2B([0-9]+)D(2|4|8|16)", desc)
         if proof:
-            tile, divisor = map(int, proof.groups())
+            base, tile, divisor = proof.groups()
+            tile, divisor = int(tile), int(divisor)
             if 2 <= tile <= 1024:
-                return [["musa.rlc_positive_even_divisor", divisor],
-                        ["musa.rlc_positive_even_block_upper_bound", tile]]
+                # Keep native facts visible before RLC validates the extra proof.
+                return MUSABackend.parse_attr(base or "") + [
+                    ["musa.rlc_positive_even_divisor", divisor],
+                    ["musa.rlc_positive_even_block_upper_bound", tile],
+                ]
             return []
         if desc == "D":
             return [["tt.divisibility", 16]]
@@ -1007,15 +1011,17 @@ class MUSABackend(BaseBackend):
             return specialization
         width, tile_name, i = selected
         value, tile = bound_args[width], bound_args[tile_name]
-        ty, _ = specialization[i]
+        ty, key = specialization[i]
         if type(value) is not int or type(tile) is not int or ty != "i32":
+            return specialization
+        if key not in {None, "", "D", "D2", "D4", "D8"}:
             return specialization
         if not 2 <= tile <= 1024 or not 0 < value <= tile or value % 2:
             return specialization
         # Same 2/4/8/16 alignment classes as get_int_specialization().
         divisor = min(value & -value, 16)
         result = list(specialization)
-        result[i] = (ty, f"RLC2B{tile}D{divisor}")
+        result[i] = (ty, f"{key + ':' if key else ''}RLC2B{tile}D{divisor}")
         return result
 
     @staticmethod
