@@ -1,7 +1,4 @@
 """Function autotuning unit tests and an opt-in single-device smoke test.
-
-Run with ``python -m unittest discover -s python/test/unit -p test_function_autotune.py``.
-By default, device interfaces are mocked; no PyTorch or Triton build is required.
 Set ``_FLAGTREE_TEST_DEVICE_AUTOTUNE=1`` to also run the real-device test, which
 requires installed FlagTree/PyTorch and a working accelerator benchmark backend.
 """
