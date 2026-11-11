@@ -183,8 +183,9 @@ class LocalAutotuneTest(unittest.TestCase):
         self.assertEqual(operation(), 5)
 
 
-@unittest.skipUnless(os.environ.get("_FLAGTREE_TEST_DEVICE_AUTOTUNE") == "1",
-                     "set _FLAGTREE_TEST_DEVICE_AUTOTUNE=1 to run the real-device smoke test")
+@unittest.skipUnless(
+    os.environ.get("_FLAGTREE_TEST_DEVICE_AUTOTUNE") == "1",
+    "set _FLAGTREE_TEST_DEVICE_AUTOTUNE=1 to run the real-device smoke test")
 class LocalDeviceAutotuneTest(unittest.TestCase):
 
     def test_host_function_tunes_and_reuses_config(self):
@@ -219,7 +220,7 @@ class LocalDeviceAutotuneTest(unittest.TestCase):
         self.assertIs(result, output)
         torch.testing.assert_close(result.cpu(), x_cpu + y_cpu, rtol=0, atol=0)
         self.assertEqual(set(calls), {1, 2})
-        self.assertGreater(len(calls), 2)    # warmup + tuning calls > 2
+        self.assertGreater(len(calls), 2)  # warmup + tuning calls > 2
         self.assertEqual(set(vector_add.best_configs), {x.numel()})
         winner = vector_add.best_configs[x.numel()]
         self.assertIn(winner, configs)
