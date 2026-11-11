@@ -1,4 +1,4 @@
-name: Sunrise cache metadata diagnostic
+name: Sunrise cache source diagnostic
 on:
   workflow_dispatch:
 permissions:
@@ -8,7 +8,7 @@ jobs:
     runs-on: sunrise3.6
     timeout-minutes: 3
     steps:
-      - name: Read LLVM compiler version metadata
+      - name: Read LLVM and STVM source metadata
         shell: bash
         run: |
           python3 - <<'SDK_METADATA'
@@ -30,5 +30,17 @@ jobs:
                       for line in header.read_text().splitlines():
                           if any(key in line for key in ('LLVM_VERSION', 'LLVM_REVISION', 'LLVM_REPOSITORY')):
                               print('SOURCE_VERSION_METADATA', line)
-          print('No shared-library, device-binary, core-dump, or model payload read or copied.')
+                  import hashlib
+                  include = package / 'include'
+                  candidates = [path for path in include.rglob('*') if path.is_file() and 'STVM' in str(path).upper() and path.suffix in ('.h', '.inc')]
+                  for header in sorted(candidates):
+                      source = header.read_text()
+                      if 'ShflOp' not in source:
+                          continue
+                      print('STVM_SOURCE_HEADER', str(header.relative_to(package)), hashlib.sha256(source.encode()).hexdigest())
+                      lines = source.splitlines()
+                      selected = [i for i, line in enumerate(lines) if 'ShflOp::create' in line or 'ShflOp::build' in line or 'class ShflOp :' in line]
+                      for i in selected[:10]:
+                          print('STVM_SOURCE_API', '\n'.join(lines[i:i+3]))
+          print('Only source headers and normal compiler metadata inspected.')
           SDK_METADATA
