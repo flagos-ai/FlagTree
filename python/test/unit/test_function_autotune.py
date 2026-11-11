@@ -1,7 +1,9 @@
-"""Function autotuning tests without GPU or real communication backends.
+"""Function autotuning unit tests and an opt-in single-device smoke test.
 
 Run with ``python -m unittest discover -s python/test/unit -p test_function_autotune.py``.
-Device and communication interfaces are mocked; no PyTorch or Triton build is required.
+By default, device interfaces are mocked; no PyTorch or Triton build is required.
+Set ``_FLAGTREE_TEST_DEVICE_AUTOTUNE=1`` to also run the real-device test, which
+requires installed FlagTree/PyTorch and a working accelerator benchmark backend.
 """
 
 import importlib.util
@@ -179,6 +181,60 @@ class LocalAutotuneTest(unittest.TestCase):
             return block
 
         self.assertEqual(operation(), 5)
+
+
+@unittest.skipUnless(os.environ.get("_FLAGTREE_TEST_DEVICE_AUTOTUNE") == "1",
+                     "set _FLAGTREE_TEST_DEVICE_AUTOTUNE=1 to run the real-device smoke test")
+class LocalDeviceAutotuneTest(unittest.TestCase):
+
+    def test_host_function_tunes_and_reuses_config(self):
+        import torch
+        from flagtree.tune import autotune
+        from triton.runtime.driver import driver
+
+        active = driver.active
+        device = torch.device(active.get_active_torch_device())
+        self.assertNotEqual(device.type, "cpu", "This smoke test requires an accelerator device")
+        device_interface = active.get_device_interface()
+
+        x_cpu = torch.arange(65536, dtype=torch.float32)
+        y_cpu = torch.full_like(x_cpu, 3)
+        x, y = x_cpu.to(device), y_cpu.to(device)
+        output = torch.empty_like(x)
+        configs = [{"chunks": 1}, {"chunks": 2}]
+        calls = []
+
+        # Use the real driver benchmark; disable disk caching so the first call must tune.
+        @autotune(configs, key_fn=lambda x, y, out: x.numel(), cache_dir=False)
+        def vector_add(x, y, out, *, chunks):
+            calls.append(chunks)
+            chunk_size = (x.numel() + chunks - 1) // chunks
+            for start in range(0, x.numel(), chunk_size):
+                end = start + chunk_size
+                torch.add(x[start:end], y[start:end], out=out[start:end])
+            return out
+
+        result = vector_add(x, y, output)
+        device_interface.synchronize()
+        self.assertIs(result, output)
+        torch.testing.assert_close(result.cpu(), x_cpu + y_cpu, rtol=0, atol=0)
+        self.assertEqual(set(calls), {1, 2})
+        self.assertGreater(len(calls), 2)    # warmup + tuning calls > 2
+        self.assertEqual(set(vector_add.best_configs), {x.numel()})
+        winner = vector_add.best_configs[x.numel()]
+        self.assertIn(winner, configs)
+
+        # Same workload key, changed values: reuse the winner but still execute the function.
+        x_cpu.add_(7)
+        x.copy_(x_cpu)
+        output.fill_(float("nan"))
+        calls.clear()
+        result = vector_add(x, y, output)
+        device_interface.synchronize()
+        self.assertIs(result, output)
+        torch.testing.assert_close(result.cpu(), x_cpu + y_cpu, rtol=0, atol=0)
+        self.assertEqual(calls, [winner["chunks"]])
+        self.assertIs(vector_add.best_configs[x.numel()], winner)
 
 
 if __name__ == "__main__":
