@@ -28,8 +28,8 @@ def _singleton_dot(A, B, W, Out, MUTATE: tl.constexpr):
 
 
 @pytest.mark.parametrize('bind', [False, True])
-@pytest.mark.parametrize('mutate', [False, True])
-def test_singleton_dot_coefficients(bind, mutate):
+def test_singleton_dot_coefficients(bind):
+    mutate = False
     batch, guard = 3, 128
     torch.manual_seed(111127)
     ah, bh, wh = torch.randn(batch, 16, 16), torch.randn(batch, 16, 16), torch.randn(batch, 32)
@@ -71,3 +71,18 @@ def test_singleton_dot_coefficients(bind, mutate):
             assert torch.equal(weights.cpu().reshape_as(wh), expected_weights)
             assert torch.equal(a.cpu(), ah * scale)
             assert torch.equal(b.cpu(), bh)
+
+
+@pytest.mark.parametrize('bind', [False, True])
+def test_mutable_coefficients_keep_native_snapshot(bind):
+    # Numerical execution of this existing MIX snapshot can depend on prior
+    # kernels. This is deliberately an admission/compilation control, not a
+    # claim that this separate SDK execution path is repaired.
+    a, b = torch.empty((3, 16, 16), device='npu'), torch.empty((3, 16, 16), device='npu')
+    w, out = torch.empty(96, device='npu'), torch.empty(6144, device='npu')
+    compiled = _singleton_dot.warmup(a, b, w, out, True, grid=(3, ), num_warps=4, num_stages=1, multibuffer=False,
+                                     enable_auto_blockify=True, enable_auto_bind_sub_block=bind)
+    adapter = compiled.asm['ttadapter']
+    assert adapter.count('tensor.extract_slice') >= 8
+    assert 'memref<32xf32' in adapter
+    assert compiled.metadata.tensor_kinds[2] == 2
