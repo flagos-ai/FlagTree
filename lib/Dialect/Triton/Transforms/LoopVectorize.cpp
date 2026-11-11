@@ -7,6 +7,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
@@ -204,6 +205,75 @@ private:
     return success();
   }
 
+  // Temporarily reject loop vectorization when a reduction operates on a
+  // dimension changed by reshape.
+  bool hasReshapedReductionAxis(
+      Value value, unsigned axis,
+      const llvm::SetVector<Operation *> &conditionDependencies,
+      llvm::DenseSet<std::pair<Value, unsigned>> &visited) {
+    auto type = dyn_cast<RankedTensorType>(value.getType());
+    if (!type || type.getDimSize(axis) == 1 ||
+        !visited.insert({value, axis}).second)
+      return false;
+    Operation *op = value.getDefiningOp();
+    if (!op || !loop.getRegion().isAncestor(op->getParentRegion()) ||
+        conditionDependencies.contains(op))
+      return false;
+
+    auto trace = [&](Value source, unsigned sourceAxis) {
+      return hasReshapedReductionAxis(source, sourceAxis, conditionDependencies,
+                                      visited);
+    };
+    if (auto reshape = dyn_cast<ReshapeOp>(op)) {
+      auto sourceType = cast<RankedTensorType>(reshape.getSrc().getType());
+      int64_t inner = 1;
+      for (unsigned i = axis + 1; i < type.getRank(); ++i)
+        inner *= type.getDimSize(i);
+      int64_t sourceInner = 1;
+      for (int i = sourceType.getRank() - 1; i >= 0; --i) {
+        if (sourceInner == inner &&
+            sourceType.getDimSize(i) == type.getDimSize(axis))
+          return trace(reshape.getSrc(), i);
+        sourceInner *= sourceType.getDimSize(i);
+      }
+      return true;
+    }
+    if (auto trans = dyn_cast<TransOp>(op))
+      return trace(trans.getSrc(), trans.getOrder()[axis]);
+    if (auto expand = dyn_cast<ExpandDimsOp>(op))
+      return axis != expand.getAxis() &&
+             trace(expand.getSrc(), axis - (axis > expand.getAxis()));
+    if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+      unsigned result = cast<OpResult>(value).getResultNumber();
+      auto thenYield = cast<scf::YieldOp>(ifOp.thenBlock()->getTerminator());
+      auto elseYield = cast<scf::YieldOp>(ifOp.elseBlock()->getTerminator());
+      return trace(thenYield.getOperand(result), axis) ||
+             trace(elseYield.getOperand(result), axis);
+    }
+    if (auto reduce = dyn_cast<ReduceOp>(op)) {
+      unsigned result = cast<OpResult>(value).getResultNumber();
+      return trace(reduce.getOperand(result),
+                   axis + (axis >= reduce.getAxis()));
+    }
+    if (isa<JoinOp>(op)) {
+      if (axis == type.getRank() - 1)
+        return false;
+      return trace(op->getOperand(0), axis) || trace(op->getOperand(1), axis);
+    }
+    if (isa<SplitOp>(op))
+      return trace(op->getOperand(0), axis);
+    if (op->hasTrait<OpTrait::Elementwise>() ||
+        isa<BroadcastOp, ScanOp, GatherOp>(op)) {
+      for (Value operand : op->getOperands()) {
+        auto operandType = dyn_cast<RankedTensorType>(operand.getType());
+        if (operandType && operandType.getRank() == type.getRank() &&
+            trace(operand, axis))
+          return true;
+      }
+    }
+    return false;
+  }
+
   LogicalResult validateOperation(Operation *op) {
     if (!llvm::all_of(op->getOperandTypes(), isLiftableType) ||
         !llvm::all_of(op->getResultTypes(), isLiftableType))
@@ -288,7 +358,6 @@ private:
 
       if (auto select = dyn_cast<arith::SelectOp>(plan.op)) {
         if (index == 0 && select.getCondition().getType().isInteger(1)) {
-          // Broadcast each iteration's scalar predicate over its value shape.
           auto target = prependIterationDim(select.getType(), vectorFactor)
                             .clone(builder.getI1Type());
           Type iterType = prependIterationDim(operand.getType(), vectorFactor);
@@ -324,6 +393,13 @@ private:
       }
       if (failed(validateOperation(&op)))
         return failure();
+      if (auto reduce = dyn_cast<ReduceOp>(op)) {
+        llvm::DenseSet<std::pair<Value, unsigned>> visited;
+        for (Value input : reduce.getOperands())
+          if (hasReshapedReductionAxis(input, reduce.getAxis(),
+                                       conditionDependencies, visited))
+            return reject("reshape changes the reduction dimension", &op);
+      }
       OperationVectorizationPlan operation;
       operation.op = &op;
       for (Type type : op.getResultTypes())
