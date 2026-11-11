@@ -85,7 +85,7 @@ jobs:
         run: |
           set -x
           # Run from the checkout without host pytest; the remote target only receives the wheel.
-          python3 -m unittest discover -s python/test/unit -p test_function_autotune.py -v
+          _FLAGTREE_TEST_DEVICE_AUTOTUNE=0 python3 -m unittest discover -s python/test/unit -p test_function_autotune.py -v
           ssh -p 1024 root@localhost 'bash -s' <<'REMOTE'
           set -e
           export PYTHONUNBUFFERED=1

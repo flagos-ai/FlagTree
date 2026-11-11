@@ -90,7 +90,7 @@ jobs:
         run: |
           set -x
           export LD_LIBRARY_PATH=/usr/local/tangrt/lib/linux-x86_64/stub:${LD_LIBRARY_PATH}
-          python3 -m pytest -s python/test/unit/test_function_autotune.py
+          _FLAGTREE_TEST_DEVICE_AUTOTUNE=1 python3 -m pytest -s python/test/unit/test_function_autotune.py
           python3 -m pytest third_party/sunrise/python/test/01-vector-add.py
           python3 -m pytest third_party/sunrise/python/test/02-tle-local_ptr.py
           python3 -m pytest third_party/sunrise/python/test/03-tle-extract_insert_tile.py

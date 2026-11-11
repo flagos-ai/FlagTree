@@ -165,7 +165,8 @@ jobs:
                 */launch_kernel_runner) sudo -n kill -9 "$pid" 2>/dev/null || true ;;
               esac
             done
-            python3 -m pytest -s python/test/unit/test_function_autotune.py
+            # RPU benchmarking is unsupported; run only the device-independent tests.
+            _FLAGTREE_TEST_DEVICE_AUTOTUNE=0 python3 -m pytest -s python/test/unit/test_function_autotune.py
             pytest -q third_party/rpu/python/test/unit
             python3 third_party/rpu/python/test/board/lk_board_smoke.py --require-board -v' || rc=$?
             if [ "$rc" -ne 255 ]; then exit "$rc"; fi
