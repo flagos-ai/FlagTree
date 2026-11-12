@@ -103,3 +103,10 @@ jobs:
                   test_cache_builtin_as_global or \
                   test_no_cache_callable or \
                   test_memory_leak"
+
+          ## tle raw (FEP-0165; skip deferred-only suite)
+          cd "${GITHUB_WORKSPACE}"
+          python3 -m pytest -q \
+            third_party/xpu/test/tle_raw/test_tle_raw_cluster_ir.py
+          TRITON_XPU_ARCH=3 python3 -m pytest -q \
+            third_party/xpu/test/tle_raw/vector_add/test_tle_raw_vector_add.py

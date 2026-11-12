@@ -102,3 +102,7 @@ jobs:
           source ~/env.sh
           python3 -m pytest third_party/enflame/python/test/unit \
               --ignore=third_party/enflame/python/test/unit/language/test_core.py
+
+          ## tle raw tops (FEP-0165)
+          GCU_ARCH=gcu300 python3 -m pytest -q \
+            third_party/enflame/python/test/tle/raw/tops/test_tops_scripts.py
