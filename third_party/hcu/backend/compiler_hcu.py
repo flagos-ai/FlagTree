@@ -15,7 +15,6 @@ import warnings
 import os
 from pathlib import Path
 from .distributed import Distributed, extern_libs_hash, link_flagcx
-from ._buffer_rsrc_compat import adapt_buffer_rsrc_ir
 
 
 def get_min_dot_size(target: GPUTarget):
@@ -808,23 +807,16 @@ class HIPBackend(BaseBackend):
         use_dcc = (bool(metadata.get("hcu_tle_raw")) and dcc.is_file()
                    and "llvm.amdgcn.make.buffer.rsrc" not in kernel_ir)
         metadata["hcu_raw_dcc"] = use_dcc
-        # dcc or aillvm clang: both drive llir -> .s
-        asm_compiler = str(dcc) if use_dcc else HIPBackend.path_to_rocm_clang()
-        asm_args = (["-target", hcu.TARGET_TRIPLE, f"-mcpu={options.arch}", "-O3"]
-                    if use_dcc else HIPBackend._get_clang_args(metadata, options) + flags)
-        # Producer LLVM must see its native i64 signature during optimization.
-        # Adapt only at the handoff to the actual external DTK toolchain.
-        try:
-            if not use_dcc:
-                kernel_ir = adapt_buffer_rsrc_ir(kernel_ir, asm_compiler, asm_args)
-        except RuntimeError as e:
-            raise HSACOError(str(e)) from e
         try:
             with tempfile.NamedTemporaryFile(mode='w', suffix=".ll", delete=False) as f:
                 llir_file = f.name
                 f.write(kernel_ir)
 
             asm_file = tempfile.mktemp(suffix=".amdgcn")
+            # dcc or aillvm clang: both drive llir -> .s
+            asm_compiler = str(dcc) if use_dcc else HIPBackend.path_to_rocm_clang()
+            asm_args = (["-target", hcu.TARGET_TRIPLE, f"-mcpu={options.arch}", "-O3"]
+                        if use_dcc else HIPBackend._get_clang_args(metadata, options) + flags)
 
             # Fixme: link it before run llvm.optimize_module()
             if metadata['use_dushmem']:
