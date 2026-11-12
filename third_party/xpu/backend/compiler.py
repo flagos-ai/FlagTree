@@ -772,6 +772,51 @@ class XPUBackend(BaseBackend):
         return llvm_mod
 
     @staticmethod
+    def _diagnose_missing_llvm_link(expected_path: Optional[str] = None) -> str:
+        """Explain whether llvm-link is absent from the staged toolchain or just unresolved."""
+        import shutil
+
+        lines = [
+            "tle.raw payload kernels need the LLVM 19 `llvm-link` to merge device payloads.",
+            "Diagnosis:",
+        ]
+
+        bin_dir = None
+        try:
+            bin_dir = Path(llvm19_toolchain.get_llvm19_bin_dir("xpu"))
+        except Exception as exc:  # noqa: BLE001 - surface whatever the resolver raised
+            lines.append(f"  - llvm19 bin dir: unresolved ({type(exc).__name__}: {exc})")
+
+        if bin_dir is not None:
+            lines.append(f"  - llvm19 bin dir: {bin_dir} ({'exists' if bin_dir.is_dir() else 'MISSING'})")
+            expected = Path(expected_path) if expected_path else (bin_dir / "llvm-link")
+            lines.append(f"  - expected llvm-link: {expected} "
+                         f"({'present' if expected.is_file() else 'MISSING'})")
+            if bin_dir.is_dir():
+                staged = sorted(p.name for p in bin_dir.iterdir() if p.is_file() or p.is_symlink())
+                preview = ", ".join(staged[:20]) + ("..." if len(staged) > 20 else "")
+                lines.append(f"  - staged tools ({len(staged)}): {preview or '(empty)'}")
+                lines.append(f"  - staged has llvm-link: {'yes' if 'llvm-link' in staged else 'no'}")
+                lines.append(f"  - staged has llc: {'yes' if 'llc' in staged else 'no'}")
+            else:
+                lines.append("  - staged tools: n/a (bin dir missing)")
+
+        which = shutil.which("llvm-link")
+        lines.append(f"  - PATH llvm-link: {which or 'not found'}")
+
+        override = os.environ.get(getattr(llvm19_toolchain, "_LLVM19_BIN_DIR_ENV", "TRITON_LLVM19_BIN_DIR"), "")
+        lines.append(f"  - TRITON_LLVM19_BIN_DIR: {override or '(unset)'}")
+
+        # Public/desensitized xtdk-llvm19 staging intentionally omits llvm-link
+        # (see python/setup_tools/utils/xpu.py); llc can be present while llvm-link is not.
+        lines.append(
+            "  - note: the desensitized xtdk-llvm19 package FlagTree stages does not ship "
+            "`llvm-link`/`opt`. If llc is present but llvm-link is not, this is a missing "
+            "toolchain component (not a wrong tle.raw API call). Use an SDK build that "
+            "provides llvm-link, or place llvm-link into the llvm19 bin dir above.")
+        return "\n".join(lines)
+
+    @staticmethod
     def make_elf(mod, metadata, opt):
         # Imported lazily: importing any `tle.raw` submodule runs the package
         # `__init__`, which pulls in `triton.language` -- and the backends are
@@ -797,8 +842,12 @@ class XPUBackend(BaseBackend):
             ir_text = merge_raw_payloads(ir_text, metadata, "xpu", opt.arch)
         except RuntimeError as e:
             if "llvm-link missing" in str(e):
-                raise RuntimeError(f"{e}\n  tle.raw payload kernels need the LLVM 19 `llvm-link`, which "
-                                   f"this toolchain package does not ship.") from e
+                expected = None
+                for token in str(e).split():
+                    if token.endswith("llvm-link") or token.endswith("/llvm-link"):
+                        expected = token.rstrip(":")
+                        break
+                raise RuntimeError(f"{e}\n{XPUBackend._diagnose_missing_llvm_link(expected)}") from e
             raise
         llc_extra = llvm19_toolchain.llc_flags(_LLC_EXTRA, metadata)
         ret_asm = llvm19_toolchain.llir_to_asm(ir_text, "xpu", triple, proc, extra_args=llc_extra)
