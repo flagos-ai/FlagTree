@@ -74,11 +74,11 @@ static constexpr llvm::StringLiteral
     kTleExplicitTileStylePipelineAttr("tle.explicit_tile_style_pipeline");
 
 static bool shouldPreserveAsyncWaitNum(ttg::AsyncWaitOp waitOp) {
-#ifdef __PPU__
+#if defined(__PPU__) && defined(__TLE__)
   // The PPU pipe lowering sets the wait distance of its own copies.
   if (waitOp->hasAttr(mlir::triton::tle::kTlePipeWaitAttr))
     return true;
-#endif // __PPU__
+#endif // __PPU__ && __TLE__
   Operation *parent = waitOp->getParentOp();
   while (parent) {
     if (auto forOp = dyn_cast<scf::ForOp>(parent))
