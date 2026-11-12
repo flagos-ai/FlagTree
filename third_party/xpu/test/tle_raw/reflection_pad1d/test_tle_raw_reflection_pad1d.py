@@ -28,9 +28,7 @@ def pad_edges3(out, inp, B, W_in, W_out, pad_left, pad_right, es, pid, npid):
     ...
 
 
-@triton.jit(
-    do_not_specialize=["B", "W_in", "W_out", "pad_left", "pad_right", "es", "npid"]
-)
+@triton.jit(do_not_specialize=["B", "W_in", "W_out", "pad_left", "pad_right", "es", "npid"])
 def pad1d_raw_edges_kernel(out_i8, in_i8, B, W_in, W_out, pad_left, pad_right, es, npid):
     pid = tl.program_id(axis=0)
     tle.raw.call(
@@ -55,7 +53,7 @@ def test_raw_reflection_pad1d_matches_torch():
     out[:, PAD_L:PAD_L + W_IN].copy_(x)
 
     npid = min(32, B)
-    pad1d_raw_edges_kernel[(npid,)](
+    pad1d_raw_edges_kernel[(npid, )](
         out.view(torch.int8),
         x.view(torch.int8),
         B,
