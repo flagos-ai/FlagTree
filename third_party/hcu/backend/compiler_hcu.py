@@ -554,10 +554,10 @@ class HIPBackend(BaseBackend):
                 "-mllvm=-hcu-update-wait-by-reverse-search=true",
             ],
         }
-        clang_out = subprocess.check_output([HIPBackend.path_to_rocm_clang(), "--version"])
-        match = re.search(r"version\s*(?P<major>\d+)\.(?P<minor>\d+)([\d.]+)?", clang_out.decode())
+        match = re.search(r"version\s*(?P<major>\d+)\.\d+", _hcu_clang_version())
+        if not match:
+            raise ValueError("Could not determine the HCU clang version")
         clang_major = match.group("major")
-        clang_minor = match.group("minor")
         if clang_major in version_args:
             options_args.extend(version_args[clang_major])
 
