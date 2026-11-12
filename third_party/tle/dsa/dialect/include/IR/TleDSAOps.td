@@ -20,7 +20,20 @@ class TLE_Op<string mnemonic, list<Trait> traits = []>:
 //
 // Copy OP
 //
-def TLE_DSACopyOp : TLE_Op<"dsa_copy", [Pure, MemoryEffects<[MemWrite]>]> {
+//
+// The ops in this file used to declare `[Pure, MemoryEffects<[MemWrite]>]`,
+// added here by flagtree ([TLE] Add tle dsa extension to ascend3.5, b34efe490)
+// and therefore fixed rather than documented -- unlike the two ops in
+// third_party/ascend/.../TritonAscendOps.td, which are copied verbatim from
+// triton-ascend and are deliberately left untouched.
+// `Pure` expands to AlwaysSpeculatable + NoMemoryEffect
+// (mlir/Interfaces/SideEffectInterfaces.td:147), so the list asked for both "no
+// memory effects" and "writes memory", and promised speculatability for ops
+// that write a destination buffer. tblgen merges the effects per interface, so
+// the Write still won and CSE/DCE were already conservative; what leaked was
+// AlwaysSpeculatable, which a speculating pass (LICM in particular) may act on.
+// Dropping `Pure` changes nothing else: the effect list is unchanged.
+def TLE_DSACopyOp : TLE_Op<"dsa_copy", [MemoryEffects<[MemWrite]>]> {
   let summary = "self-defined copy operation";
   let description = [{
     'tle.dsa_copy' triton copy op is designed to copy data between memory regions.
@@ -42,7 +55,7 @@ def TLE_DSACopyOp : TLE_Op<"dsa_copy", [Pure, MemoryEffects<[MemWrite]>]> {
 //
 // Add Op
 //
-def TLE_DSAAddOp : TLE_Op<"dsa_add", [Pure, MemoryEffects<[MemWrite]>,
+def TLE_DSAAddOp : TLE_Op<"dsa_add", [MemoryEffects<[MemWrite]>,
                                       SameOperandsShape, SameOperandsElementType]> {
   let summary = "self-defined add operation";
   let description = [{
@@ -56,7 +69,7 @@ def TLE_DSAAddOp : TLE_Op<"dsa_add", [Pure, MemoryEffects<[MemWrite]>,
 //
 // Sub op
 //
-def TLE_DSASubOp : TLE_Op<"dsa_sub", [Pure, MemoryEffects<[MemWrite]>,
+def TLE_DSASubOp : TLE_Op<"dsa_sub", [MemoryEffects<[MemWrite]>,
                                       SameOperandsShape, SameOperandsElementType]> {
   let summary = "self-defined sub operation";
   let description = [{
@@ -70,7 +83,7 @@ def TLE_DSASubOp : TLE_Op<"dsa_sub", [Pure, MemoryEffects<[MemWrite]>,
 //
 // Mul op
 //
-def TLE_DSAMulOp : TLE_Op<"dsa_mul", [Pure, MemoryEffects<[MemWrite]>,
+def TLE_DSAMulOp : TLE_Op<"dsa_mul", [MemoryEffects<[MemWrite]>,
                                       SameOperandsShape, SameOperandsElementType]> {
   let summary = "self-defined mul operation";
   let description = [{
@@ -84,7 +97,7 @@ def TLE_DSAMulOp : TLE_Op<"dsa_mul", [Pure, MemoryEffects<[MemWrite]>,
 //
 // Div op
 //
-def TLE_DSADivOp : TLE_Op<"dsa_div", [Pure, MemoryEffects<[MemWrite]>,
+def TLE_DSADivOp : TLE_Op<"dsa_div", [MemoryEffects<[MemWrite]>,
                                       SameOperandsShape, SameOperandsElementType]> {
   let summary = "self-defined div operation";
   let description = [{
@@ -98,7 +111,7 @@ def TLE_DSADivOp : TLE_Op<"dsa_div", [Pure, MemoryEffects<[MemWrite]>,
 //
 // Max op
 //
-def TLE_DSAMaxOp : TLE_Op<"dsa_max", [Pure, MemoryEffects<[MemWrite]>,
+def TLE_DSAMaxOp : TLE_Op<"dsa_max", [MemoryEffects<[MemWrite]>,
                                       SameOperandsShape, SameOperandsElementType]> {
   let summary = "self-defined Max operation";
   let description = [{
@@ -112,7 +125,7 @@ def TLE_DSAMaxOp : TLE_Op<"dsa_max", [Pure, MemoryEffects<[MemWrite]>,
 //
 // Min op
 //
-def TLE_DSAMinOp : TLE_Op<"dsa_min", [Pure, MemoryEffects<[MemWrite]>,
+def TLE_DSAMinOp : TLE_Op<"dsa_min", [MemoryEffects<[MemWrite]>,
                                       SameOperandsShape, SameOperandsElementType]> {
   let summary = "self-defined Min operation";
   let description = [{

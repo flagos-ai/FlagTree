@@ -567,7 +567,17 @@ def TTG_WarpReturnOp : TTG_Op<"warp_return", [
 }
 
 // flagtree tle
-def TTG_TMACopyOp : TTG_Op<"tma_copy", [Pure, MemoryEffects<[MemWrite]>]> {
+//
+// No `Pure`, unlike the two ops in third_party/ascend/.../TritonAscendOps.td:
+// those are copied verbatim from triton-ascend and are left untouched, while
+// this op was added inside flagtree ([TLE] Add initial tle design, 70bd76c8d)
+// and is ours to fix. `Pure` expands to AlwaysSpeculatable + NoMemoryEffect
+// (SideEffectInterfaces.td:147), which both contradicts the `MemWrite` below
+// and advertises a copy that writes memory as safe to speculate. Latent today
+// only because tblgen merges effects per interface, so the Write wins, and
+// because passes.common.add_licm is commented out in
+// third_party/ascend/backend/compiler.py.
+def TTG_TMACopyOp : TTG_Op<"tma_copy", [MemoryEffects<[MemWrite]>]> {
   let summary = "self-defined tma_copy operation";
   let description = [{
     'ttg.tma_copy' triton copy op is designed to copy data between memory regions.
