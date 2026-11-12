@@ -452,10 +452,11 @@ def compile(src, target=None, options=None, _env_vars=None):
                             # The card's bare budget fits, only opt-in margin fails.
                             module = cur_module
                             break
-                        raise RuntimeError("TLE kernel stack is over the local-memory budget "
-                                           "after pressure relief and vrf_budget escalation "
-                                           f"(vrf_budget={metadata['vrf_budget']}); "
-                                           "buffer_size_limit does not apply to tle.gpu.alloc.")
+                        raise RuntimeError("TLE kernel stack is over the local-memory budget; "
+                                           "it will not launch. Reduce the tile (shrink the "
+                                           "tle.gpu.alloc shape / block). Set "
+                                           "TRITONXPU_TILE_REPORT=1 for the compiler-side "
+                                           "breakdown.")
                     if metadata["buffer_size_limit"] == 16:
                         raise RuntimeError("Failed to tune buffer size.")
                     metadata["buffer_size_limit"] = metadata["buffer_size_limit"] // 2
