@@ -2257,7 +2257,7 @@ bool LayoutPropagation::solveSmallComponents() {
                                 bool rejectReachableReductionOrScan = true,
                                 bool restrictWeakStoreProposals = false) {
     if (proposal.empty())
-      return false;
+        return false;
 #ifdef __TLE__
     // Skip any component on a TLE cluster remote-address chain; retagging it
     // corrupts the remote access (see valueOnTleRemotePointerPath). Nor retag
@@ -2270,6 +2270,54 @@ bool LayoutPropagation::solveSmallComponents() {
     int removedConverts = countConvertsRemovedByProposal(proposal);
     if (removedConverts == 0)
       return false;
+#ifdef __PPU__
+    // Reject a proposal that moves the consumers of a coalesced load away from
+    // it.
+    //
+    // The load cannot follow: isSmallComponentRetaggable() refuses to retag an
+    // expensive load/store, so it keeps its layout while everything downstream
+    // has to be bridged by a convert -- and that convert sits exactly on the
+    // edge whose removal the proposal is charging for. The saving is therefore
+    // imaginary and the convert count goes up, not down.
+    //
+    // coalesce scatter, PPU: %k_22 = tt.load ... sizePerThread=[4] feeds the
+    // whole `pos` chain; the proposal moves that chain to [1]. The dump keeps
+    // the [4]->[1] convert and adds two more (gather result, vals load): three
+    // instead of zero.
+    //
+    // A proposal value usually sits several arithmetic hops below the load, so
+    // the check walks down through converts before deciding.
+    auto producerKeepsItsLayout = [&](Value operand) {
+      constexpr unsigned kMaxConvertHops = 4;
+      for (unsigned hop = 0; hop < kMaxConvertHops; ++hop) {
+        Operation *def = operand.getDefiningOp();
+        if (!def)
+          return false;
+        if (auto cvt = dyn_cast<ConvertLayoutOp>(def)) {
+          operand = cvt.getSrc();
+          continue;
+        }
+        return isa<LoadOp, StoreOp>(def) && isExpensiveLoadOrStore(def);
+      }
+      return false;
+    };
+    for (auto &it : proposal) {
+      Operation *defOp = it.first.getDefiningOp();
+      if (!defOp)
+        continue;
+      for (Value operand : defOp->getOperands()) {
+        // Inside the proposal: rewritten together with us, already priced.
+        if (proposal.count(operand))
+          continue;
+        auto operandType = dyn_cast<RankedTensorType>(operand.getType());
+        if (!operandType || !operandType.getEncoding() ||
+            operandType.getEncoding() == it.second)
+          continue;
+        if (producerKeepsItsLayout(operand))
+          return false;
+      }
+    }
+#endif // __PPU__
     // A "weak" proposal removes a single one-shot convert outside any loop; its
     // layout ripple can cost more than it saves, so only loop-resident or
     // multi-convert components are admitted.
