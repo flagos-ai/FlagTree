@@ -451,8 +451,8 @@ struct SquadDotOpConversion
   matchAndRewrite(triton::musa::SquadDotOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    bool commit = op.getIsAsync() &&
-                  op->hasAttr(musa_tle::kMUSATLEExplicitSqmmaAttr);
+    bool commit =
+        op.getIsAsync() && op->hasAttr(musa_tle::kMUSATLEExplicitSqmmaAttr);
     Value threadId = getThreadId(rewriter, loc);
     if (failed(mlir::triton::MUSA::convertSQMMADot(
             op, adaptor, this->getTypeConverter(), rewriter, threadId)))
