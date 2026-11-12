@@ -403,7 +403,7 @@ static bool factorUniformBufferLoadMask(
   Value factor = findUniformBufferMaskFactor(maskElems.front());
   auto descriptor = resource.getDefiningOp<ROCDL::MakeBufferRsrcOp>();
   if (!factor || !descriptor || descriptor->getNumOperands() != 4 ||
-      !descriptor->getOperand(2).getType().isInteger(32))
+      !descriptor->getOperand(2).getType().isInteger(64))
     return false;
 
   // All emitted transactions must contain the exact same proved factor.
@@ -419,7 +419,7 @@ static bool factorUniformBufferLoadMask(
   }
 
   TritonLLVMOpBuilder b(loc, rewriter);
-  Value records = b.select(factor, descriptor->getOperand(2), b.i32_val(0));
+  Value records = b.select(factor, descriptor->getOperand(2), b.int_val(64, 0));
   resource = rewriter.createOrFold<ROCDL::MakeBufferRsrcOp>(
       loc, resource.getType(), descriptor->getOperand(0),
       descriptor->getOperand(1), records, descriptor->getOperand(3));

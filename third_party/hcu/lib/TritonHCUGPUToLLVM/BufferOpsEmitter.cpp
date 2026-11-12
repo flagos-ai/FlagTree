@@ -104,14 +104,16 @@ Value BufferEmitter::createResourceDescriptor(Value basePtr, Value blockStride,
   Value flagsConst = b.int_val(32, flags);
   Type rsrcType = LLVM::LLVMPointerType::get(rewriter.getContext(), 8);
 
-  // HCU : modify to compatible with HCU llvm.
-  Value numRecordsByte = b.int_val(32, std::numeric_limits<int>::max() - 1);
+  // ROCDL expects i64; the hardware descriptor and uniform rebase use u32.
+  constexpr int maxRecords = std::numeric_limits<int>::max() - 1;
+  Value numRecordsByte = b.int_val(64, maxRecords);
   if (uniformByteOffset) {
     // Structured/indexed resources have different NUM_RECORDS semantics.
     assert(!blockStride && "only raw descriptors can be rebased in bytes");
     assert(uniformByteOffset.getType().isInteger(32));
-    numRecordsByte =
-        emitUniformUnsignedSaturatingSub(numRecordsByte, uniformByteOffset);
+    Value remaining =
+        emitUniformUnsignedSaturatingSub(b.i32_val(maxRecords), uniformByteOffset);
+    numRecordsByte = b.zext(i64_ty, remaining);
     // No inbounds flag: masks can suppress accesses beyond the object.
     Value byteOffset64 = b.zext(i64_ty, uniformByteOffset);
     basePtr = b.gep(basePtr.getType(), i8_ty, basePtr, ValueRange{byteOffset64});
