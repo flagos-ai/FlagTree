@@ -45,7 +45,7 @@ jobs:
       runner: xpu3.6
       backend: xpu
       gpu-env-var: CUDA_VISIBLE_DEVICES
-      flaggems-tag: 'v5.3.5'
+      flaggems-tag: 'v5.5.0.dev1'
       flagtree-build-command: |
         set -x
         source ~/env.sh
