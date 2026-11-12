@@ -1250,6 +1250,9 @@ class HIPBackend(BaseBackend):
         use_dcc = (bool(metadata.get("hcu_tle_raw")) and dcc.is_file()
                    and "llvm.amdgcn.make.buffer.rsrc" not in kernel_ir)
         metadata["hcu_raw_dcc"] = use_dcc
+        if (not use_dcc and "llvm.amdgcn.make.buffer.rsrc." in kernel_ir
+                and re.search(r"\bversion\s+18\.", _hcu_clang_version())):
+            kernel_ir = llvm.adapt_hcu_buffer_resources_for_clang18(kernel_ir)
         llir_file = asm_file = linked_file = None
         try:
             with tempfile.NamedTemporaryFile(mode='w', suffix=".ll", delete=False) as f:

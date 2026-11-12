@@ -27,6 +27,9 @@
 #include "../../third_party/hcu/include/TritonHCUGPUToLLVM/MmaPhaseScheduling.h"
 #include "../../third_party/hcu/include/TritonHCUGPUToLLVM/PostMmaWait.h"
 #include "../../third_party/hcu/include/TritonHCUGPUToLLVM/ShiftedDisjointOr.h"
+#include "llvm/Analysis/ValueTracking.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/Support/KnownBits.h"
 #endif
 #include "mlir/IR/BuiltinOps.h" // mlir::ModuleOp
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
@@ -409,10 +412,72 @@ std::string translateLLVMIRToASM(llvm::Module &module,
   return result;
 }
 
+#ifdef __HCU__
+// LLVM 22 models NUM_RECORDS as i64. DTK clang 18 still declares the same
+// intrinsic with i32. Keep LLVM 22 IR valid through scheduling and adapt the
+// final input to clang only when the upper bits are proved zero.
+static std::string adaptHcuBufferResourcesForClang18(const std::string &source) {
+  llvm::LLVMContext context;
+  llvm::SMDiagnostic diagnostic;
+  auto module = llvm::parseIR(llvm::MemoryBufferRef(source, "hcu-native-abi"),
+                              diagnostic, context);
+  if (!module)
+    throw std::invalid_argument("Invalid LLVM IR for HCU clang 18");
+
+  llvm::SmallVector<llvm::Function *> descriptors;
+  for (auto &fn : *module)
+    if (fn.isDeclaration() &&
+        fn.getName().starts_with("llvm.amdgcn.make.buffer.rsrc.") &&
+        fn.arg_size() == 4 && fn.getArg(2)->getType()->isIntegerTy(64))
+      descriptors.push_back(&fn);
+
+  for (llvm::Function *descriptor : descriptors) {
+    llvm::SmallVector<llvm::CallBase *> calls;
+    for (llvm::User *user : descriptor->users()) {
+      auto *call = llvm::dyn_cast<llvm::CallBase>(user);
+      if (!call || call->getCalledFunction() != descriptor)
+        throw std::invalid_argument("Unexpected use of HCU buffer resource intrinsic");
+      llvm::KnownBits records = llvm::computeKnownBits(
+          call->getArgOperand(2), module->getDataLayout());
+      if (records.Zero.countLeadingOnes() < 32)
+        throw std::invalid_argument("HCU clang 18 requires a 32-bit buffer resource count");
+      calls.push_back(call);
+    }
+
+    auto *originalType = descriptor->getFunctionType();
+    llvm::SmallVector<llvm::Type *> args(originalType->params());
+    args[2] = llvm::Type::getInt32Ty(context);
+    auto *legacyType = llvm::FunctionType::get(originalType->getReturnType(),
+                                                args, false);
+    std::string name = descriptor->getName().str();
+    descriptor->setName(name + ".llvm22");
+    auto *legacy = llvm::Function::Create(legacyType, descriptor->getLinkage(),
+                                          descriptor->getAddressSpace(), name,
+                                          module.get());
+    legacy->setAttributes(descriptor->getAttributes());
+    legacy->setCallingConv(descriptor->getCallingConv());
+    for (llvm::CallBase *call : calls) {
+      llvm::IRBuilder<> builder(call);
+      call->setArgOperand(2, builder.CreateTrunc(call->getArgOperand(2), args[2]));
+      call->setCalledFunction(legacy);
+    }
+    descriptor->eraseFromParent();
+  }
+  if (descriptors.empty())
+    return source;
+  std::string result;
+  llvm::raw_string_ostream stream(result);
+  module->print(stream, nullptr);
+  return result;
+}
+#endif
+
 using ret = py::return_value_policy;
 
 void init_triton_llvm(py::module &&m) {
 #ifdef __HCU__
+  m.def("adapt_hcu_buffer_resources_for_clang18",
+        &adaptHcuBufferResourcesForClang18);
   m.def("combine_hcu_shifted_disjoint_or",
         [](const std::string &source, const std::string &arch) -> py::tuple {
           llvm::LLVMContext context;
