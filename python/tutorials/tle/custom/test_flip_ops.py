@@ -1,8 +1,6 @@
 # Copyright 2026 FlagOS Contributors
 # Copyright 2026- XCoreSigma Technology Co., Ltd
-
 """Correctness and benchmark tests for the vectorized flip custom op."""
-import numpy as np
 import torch
 import torch_npu  # noqa: F401
 import triton
@@ -24,8 +22,8 @@ _TL_DTYPE = {
 
 
 @triton.jit
-def flip_kernel(X, Y, M: tl.constexpr, N: tl.constexpr, BLOCK_M: tl.constexpr,
-                DTYPE: tl.constexpr, TMP_N: tl.constexpr):
+def flip_kernel(X, Y, M: tl.constexpr, N: tl.constexpr, BLOCK_M: tl.constexpr, DTYPE: tl.constexpr,
+                TMP_N: tl.constexpr):
     pid = tl.program_id(0)
     rows = pid * BLOCK_M + tl.arange(0, BLOCK_M)
     cols = tl.arange(0, N)
@@ -45,8 +43,7 @@ def flip_custom(x0):
     ub_size = 125 * 1024 // 2
     BLOCK_M = max(1, min(M, ub_size // (2 * x0.element_size() * BLOCK_N)))
     grid = ((M - 1) // BLOCK_M + 1, )
-    flip_kernel[grid](x0, out, M, BLOCK_N, BLOCK_M, _TL_DTYPE[x0.dtype],
-                      max(256, 512 // x0.element_size()))
+    flip_kernel[grid](x0, out, M, BLOCK_N, BLOCK_M, _TL_DTYPE[x0.dtype], max(256, 512 // x0.element_size()))
     return out
 
 
