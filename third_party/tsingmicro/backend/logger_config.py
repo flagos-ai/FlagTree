@@ -105,7 +105,7 @@ def setup_logger(name='tsingmicro'):
     """
     Set up and return a unified logger instance.
     Log level is controlled by the LOG_LEVEL environment variable (default: INFO).
-    Logs are output to both console and file.
+    Logs are output to the console and, when writable, a file.
     """
     log_file = f"{name}.log"
     logger = logging.getLogger(name)
@@ -119,17 +119,21 @@ def setup_logger(name='tsingmicro'):
         formatter = logging.Formatter(fmt='[%(asctime)s.%(msecs)03d][%(levelname)s]%(name)s:%(message)s',
                                       datefmt='%Y%m%d %H:%M:%S')
 
-        # File handler
-        file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_handler.setLevel(log_level)
-        file_handler.setFormatter(formatter)
-
         # Console handler
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(log_level)
         console_handler.setFormatter(formatter)
 
-        logger.addHandler(file_handler)
         logger.addHandler(console_handler)
+
+        # Logging must not prevent backend import from a read-only directory.
+        try:
+            file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        except OSError as error:
+            logger.warning("Cannot open log file %s; continuing with console logging: %s", log_file, error)
+        else:
+            file_handler.setLevel(log_level)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
 
     return logger
