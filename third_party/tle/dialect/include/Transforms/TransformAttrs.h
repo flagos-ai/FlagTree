@@ -51,11 +51,20 @@ inline constexpr llvm::StringLiteral
 inline constexpr llvm::StringLiteral kTleEnableEncodingRematerializationAttr(
     "tle.enable_encoding_rematerialization");
 
-// Marks scf.for loops (produced from tle.range(..., reorder=True)) whose loads
-// should be clustered ahead of other ops after the LoopUnroll pass unrolls the
-// body. Consumed by the TLE reorder-loop-loads hook in the upstream LoopUnroll
-// pass. The name matches the frontend attribute set in code_generator.py.
+// Marks scf.for loops (produced from tle.range(..., reorder=...)) whose loads
+// should be issued ahead of other ops after the LoopUnroll pass unrolls the
+// body. A BoolAttr `true` (reorder=True) clusters the loads of every unrolled
+// iteration; an IntegerAttr k >= 1 (reorder=k) keeps the loads at most k
+// iterations ahead of the compute that consumes them. Consumed by the TLE
+// reorder-loop-loads hook in the upstream LoopUnroll pass. The name matches the
+// frontend attribute set in code_generator.py.
 inline constexpr llvm::StringLiteral kTleReorderLoopLoadsAttr("tt.reorder");
+
+// Transient tag the reorder-loop-loads hook puts on every top-level op that
+// loopUnrollByFactor clones, holding the unrolled iteration it belongs to. It
+// is removed before the LoopUnroll pass moves on to the next loop.
+inline constexpr llvm::StringLiteral
+    kTleReorderIterationAttr("tle.reorder_iteration");
 
 } // namespace mlir::triton::tle
 

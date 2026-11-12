@@ -45,6 +45,21 @@ from .hint_manager import hint_trigger
 from .errors import (CompilationError, CompileTimeAssertionFailure, UnsupportedLanguageConstruct)
 
 
+def _reorder_loop_loads_supported() -> bool:
+    """Whether this build compiles the LoopUnroll step that consumes tt.reorder.
+
+    The step sits behind __FLAGTREE_REORDER_LOOP_LOADS__, which only the default
+    build defines. The flag is asked for as a capability (third_party/tle/triton_tle.cc,
+    the same way as is_common_ir_enabled) so that a build without the step does not
+    carry the hint down to TTGIR. A vendor build may omit the TLE plugin or the
+    query; both read as off.
+    """
+    from .._C import libtriton  # noqa: PLC0415
+
+    query = getattr(getattr(libtriton, "tle", None), "is_reorder_loop_loads_enabled", None)
+    return query is not None and query()
+
+
 def check_identifier_legality(name, type):
     pattern = r'^[a-zA-Z_][a-zA-Z0-9_]*$'
     if not re.match(pattern, name):
@@ -1307,7 +1322,7 @@ class CodeGenerator(ast.NodeVisitor):
             flatten = iterator.flatten
             warp_specialize = iterator.warp_specialize
             disable_licm = iterator.disable_licm
-            reorder = getattr(iterator, 'reorder', False)  # flagtree reorder-loop-loads
+            reorder = _unwrap_if_constexpr(getattr(iterator, 'reorder', False))  # flagtree reorder-loop-loads
         elif IteratorClass is range:
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1372,9 +1387,15 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
             if disable_licm:
                 for_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
-            # flagtree reorder-loop-loads
+            # flagtree reorder-loop-loads: True clusters every unrolled iteration's loads, an int k >= 1
+            # keeps them at most k iterations ahead. The hint is only emitted when this build contains
+            # the step that consumes it (see third_party/tle/triton_tle.cc); a build without it would
+            # carry the attribute down to TTGIR and ignore it.
             if reorder and knobs.language.reorder_loop_loads and _unwrap_if_constexpr(loop_unroll_factor) is not None:
-                for_op.set_attr("tt.reorder", self.builder.get_bool_attr(True))
+                if _reorder_loop_loads_supported():
+                    reorder_attr = (self.builder.get_bool_attr(True)
+                                    if reorder is True else self.builder.get_int32_attr(int(reorder)))
+                    for_op.set_attr("tt.reorder", reorder_attr)
 
             self.scf_stack.append(node)
             for_op_body = for_op.get_body(0)
