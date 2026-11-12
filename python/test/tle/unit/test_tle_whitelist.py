@@ -16,6 +16,7 @@ from triton.language import load as tl_load
         ("tle.cumsum", "cumsum"),
         ("language.gpu.core.alloc", "gpu.alloc"),
         ("triton.experimental.tle.language.raw.core.call", "raw.call"),
+        ("tle.pipe.writer.acquire", "pipe.writer.acquire"),
         (tle.language.cumsum, "cumsum"),
         (tle.language.gpu.alloc, "gpu.alloc"),
         (tle.language.gpu.buffered_tensor.load, "gpu.buffered_tensor.load"),
@@ -27,6 +28,15 @@ from triton.language import load as tl_load
 )
 def test_primitive_name(primitive, expected):
     assert tle.primitive_name(primitive) == expected
+
+
+# A whitelist name is already the public name, so normalizing it has to be a
+# no-op. An alias that rewrote one would make every check skip that primitive:
+# the checks drop names TLE_PRIMITIVES does not hold, so a rewritten name is
+# never looked up in a backend's list.
+def test_whitelist_names_normalize_to_themselves():
+    for name in tle.TLE_PRIMITIVES:
+        assert tle.primitive_name(name) == name
 
 
 def test_non_tle_callable_is_rejected():
