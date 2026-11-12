@@ -610,3 +610,4 @@ def get_max_simd_tflops(dtype, clock_rate, device=None):
 # flagtree backend function specialization
 nvsmi = spec_func("nvsmi") or nvsmi
 get_max_tensorcore_tflops = spec_func("get_max_tensorcore_tflops") or get_max_tensorcore_tflops
+do_bench = spec_func("do_bench") or do_bench
