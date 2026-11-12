@@ -1,6 +1,5 @@
 add_triton_library(NvidiaTLERawTransforms
   MaterializeDeferredRaw.cpp
-  DeferredRawSourceRegistry.cpp
 
   DEPENDS
   NvidiaTLERawTransformsIncGen

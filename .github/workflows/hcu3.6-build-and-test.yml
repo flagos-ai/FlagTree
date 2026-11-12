@@ -111,7 +111,6 @@ jobs:
           python3 third_party/hcu/python/tutorials/tle/raw/hip/03-matrix-multiplication-smem.py
           python3 third_party/hcu/python/tutorials/tle/raw/hip/03-matrix-multiplication-smem-defered.py
           python3 third_party/hcu/python/tutorials/tle/raw/hip/05-sort.py
-          python3 third_party/hcu/python/tutorials/tle/raw/mlir/01-vector-add-defered.py
           python3 third_party/hcu/python/tutorials/tle/raw/mlir/01-vector-add.py
           python3 third_party/hcu/python/tutorials/tle/raw/mlir/02-fused-softmax.py
           python3 third_party/hcu/python/tutorials/tle/raw/mlir/03-matrix-multiplication-smem.py

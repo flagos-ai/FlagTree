@@ -2,7 +2,7 @@
 #include "triton/Tools/LLVMWarningFilter.h"
 #ifdef __ILUVATAR_TLE__
 #include "Dialect.h"
-#include "iluvatar/tle_raw/include/DeferredRawSourceRegistry.h"
+#include "iluvatar/tle_raw/include/CompiledRaw.h"
 #include "iluvatar/tle_raw/include/Passes.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #endif
@@ -342,34 +342,31 @@ void init_triton_iluvatar_passes_ttgpuir(py::module &&m) {
 }
 
 #ifdef __ILUVATAR_TLE__
-static void setDeferredRawPendingSources(py::dict sources) {
-  mlir::triton::iluvatar::tle_raw::clearDeferredRawSourceRegistry();
+static llvm::StringMap<mlir::triton::iluvatar::tle_raw::CompiledRaw>
+convertCompiledRawSources(py::dict sources) {
+
+  llvm::StringMap<mlir::triton::iluvatar::tle_raw::CompiledRaw> compiled;
   for (auto item : sources) {
     std::string key = py::cast<std::string>(item.first);
     py::dict entry = py::cast<py::dict>(item.second);
-
-    mlir::triton::iluvatar::tle_raw::DeferredRawSourceEntry rawEntry;
-    rawEntry.sourceId = key;
-    rawEntry.regionDialect = entry["region_dialect"].cast<std::string>();
+    mlir::triton::iluvatar::tle_raw::CompiledRaw source;
+    source.regionDialect = entry["region_dialect"].cast<std::string>();
     if (entry.contains("extern_func_name") &&
         !entry["extern_func_name"].is_none()) {
-      rawEntry.externFuncName = entry["extern_func_name"].cast<std::string>();
+      source.externFuncName = entry["extern_func_name"].cast<std::string>();
     }
-    rawEntry.source = entry["source"].cast<std::string>();
     if (entry.contains("llvm_ir"))
-      rawEntry.llvmIr = entry["llvm_ir"].cast<std::string>();
-    if (entry.contains("hint"))
-      rawEntry.hint = entry["hint"].cast<std::string>();
-    mlir::triton::iluvatar::tle_raw::getDeferredRawSourceRegistry()[key] =
-        std::move(rawEntry);
+      source.llvmIr = entry["llvm_ir"].cast<std::string>();
+    compiled[key] = std::move(source);
   }
+  return compiled;
 }
 
 void init_iluvatar_tle_raw_passes(py::module &&m) {
   m.def("deferred_raw_materialize",
         [](py::dict sources, mlir::PassManager &pm) {
-          setDeferredRawPendingSources(sources);
-          pm.addPass(mlir::createIluvatarMaterializeDeferredRaw());
+          pm.addPass(mlir::createIluvatarMaterializeDeferredRaw(
+              convertCompiledRawSources(sources)));
         });
 }
 #endif

@@ -62,6 +62,7 @@ static void addNamedAttrs(Operation *op, DictionaryAttr dictAttrs) {
 }
 
 #ifdef __TLE__
+
 struct TleEncodingInfo {
   Attribute encoding;
   bool mayVary = false;
@@ -190,6 +191,17 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
 
     for (OpOperand &use : value.getUses()) {
       Operation *op = use.getOwner();
+      if (auto raw = dyn_cast<tle::DSLRegionOp>(op)) {
+        if (raw.getBody().empty()) {
+          for (auto [i, idx] : llvm::enumerate(raw.getOutputOperandIndices())) {
+            if (idx == use.getOperandNumber() &&
+                failed(updateTleEncoding({raw.getResult(i)}, info, func,
+                                         valueToEncoding, worklist)))
+              return failure();
+          }
+        }
+        continue;
+      }
       // A memory access owns its data layout. Shared addresses and masks are
       // converted at that boundary instead of joining independent accesses.
       if (isa<triton::LoadOp, triton::StoreOp>(op))
@@ -246,7 +258,15 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
 
     if (auto opResult = dyn_cast<OpResult>(value)) {
       Operation *definingOp = opResult.getOwner();
-      if (isa<scf::ForOp, scf::WhileOp, scf::IfOp>(definingOp)) {
+      if (auto raw = dyn_cast<tle::DSLRegionOp>(definingOp)) {
+        if (raw.getBody().empty()) {
+          unsigned idx =
+              raw.getOutputOperandIndices()[opResult.getResultNumber()];
+          if (failed(updateTleEncoding({raw.getOperand(idx)}, info, func,
+                                       valueToEncoding, worklist)))
+            return failure();
+        }
+      } else if (isa<scf::ForOp, scf::WhileOp, scf::IfOp>(definingOp)) {
         auto tiedArgs = getTiedArgs(definingOp, opResult.getResultNumber());
         if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
                                      worklist)))
@@ -357,6 +377,7 @@ static LogicalResult applyTleEncodingHints(ModuleOp mod) {
       return failure();
   return success();
 }
+
 #endif
 
 template <class Op> struct GenericOpPattern : public OpConversionPattern<Op> {
@@ -1240,6 +1261,7 @@ void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
 }
 
 #ifdef __TLE__
+
 class TleDSLRegionOpPattern : public OpConversionPattern<tle::DSLRegionOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
@@ -1248,21 +1270,22 @@ public:
   matchAndRewrite(tle::DSLRegionOp op, tle::DSLRegionOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto newOp = rewriter.cloneWithoutRegions<tle::DSLRegionOp>(op);
-    Region &body = op.getBody(), &newBody = newOp.getBody();
-    rewriter.inlineRegionBefore(body, newBody, newBody.end());
+    if (op.getBody().empty()) {
+      newOp->setOperands(adaptor.getOperands());
+      for (auto [i, idx] : llvm::enumerate(op.getOutputOperandIndices()))
+        newOp.getResult(i).setType(adaptor.getOperands()[idx].getType());
+    } else {
+      Region &body = op.getBody(), &newBody = newOp.getBody();
+      rewriter.inlineRegionBefore(body, newBody, newBody.end());
 
-    if (failed(rewriter.convertRegionTypes(&newBody, *getTypeConverter()))) {
-      return rewriter.notifyMatchFailure(op, "could not convert body types");
+      if (failed(rewriter.convertRegionTypes(&newBody, *getTypeConverter()))) {
+        return rewriter.notifyMatchFailure(op, "could not convert body types");
+      }
+      newOp->setOperands(adaptor.getOperands());
+      for (OpResult result : newOp->getResults()) {
+        result.setType(getTypeConverter()->convertType(result));
+      }
     }
-    newOp->setOperands(adaptor.getOperands());
-    for (OpResult result : newOp->getResults()) {
-#ifdef __TLE__
-      result.setType(getTypeConverter()->convertType(result));
-#else
-      result.setType(getTypeConverter()->convertType(result.getType()));
-#endif
-    }
-
     rewriter.replaceOp(op, newOp->getResults());
     return success();
   }
@@ -1339,7 +1362,6 @@ public:
   }
 };
 
-#ifdef __TLE__
 class TleSetLayoutOpPattern : public OpConversionPattern<tle::SetLayoutOp> {
 public:
   using OpConversionPattern::OpConversionPattern;
@@ -1367,18 +1389,13 @@ public:
   }
 };
 
-#endif
-
 // flagtree tle raw
 void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
                             RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
   patterns.add<
       TleDSLRegionOpPattern, TleExtractTileOpPattern, TleInsertTileOpPattern,
-#ifdef __TLE__
-      TleSetLayoutOpPattern,
-#endif
-      GenericOpPattern<tle::LocalPointersOp>,
+      TleSetLayoutOpPattern, GenericOpPattern<tle::LocalPointersOp>,
       GenericOpPattern<tle::RemotePointersOp>,
       GenericOpPattern<tle::ExclusiveCumsumOp>, GenericOpPattern<tle::WGMMAOp>,
       GenericOpPattern<tle::WGMMAWaitOp>,
@@ -1392,6 +1409,7 @@ void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
       GenericOpPattern<tle::ExtractPtrOp>, GenericOpPattern<tle::PackOp>>(
       typeConverter, context);
 }
+
 #endif
 
 class ConvertTritonToTritonGPU

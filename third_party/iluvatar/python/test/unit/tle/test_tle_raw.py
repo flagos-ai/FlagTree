@@ -325,7 +325,7 @@ class TestCorexNative:
 
 class TestUnsupported:
 
-    # register_pending_source has no way to find the device symbol in the .cu
+    # Deferred creation has no way to find the device symbol in the .cu
     # once tracing no longer compiles it, so the name has to be declared.
     def test_deferred_without_extern_func_name_is_rejected(self):
 
@@ -334,7 +334,7 @@ class TestUnsupported:
             ...
 
         with pytest.raises(RuntimeError, match="extern_func_name"):
-            deferred_edsl.register_pending_source()
+            deferred_edsl.create_region_deferred(None, [], [])
 
     def test_library_is_rejected(self):
         with pytest.raises(RuntimeError, match="library"):

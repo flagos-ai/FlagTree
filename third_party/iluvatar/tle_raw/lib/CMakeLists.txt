@@ -1,6 +1,5 @@
 add_triton_library(IluvatarTLERawTransforms
   MaterializeDeferredRaw.cpp
-  DeferredRawSourceRegistry.cpp
 
   DEPENDS
   IluvatarTLERawTransformsIncGen

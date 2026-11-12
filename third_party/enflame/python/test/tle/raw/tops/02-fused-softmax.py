@@ -71,7 +71,7 @@ def softmax_kernel(output_ptr, input_ptr, n_rows, n_cols, input_row_stride, outp
     # Load the row into SRAM, using a mask since BLOCK_SIZE may be > than n_cols
     mask = col_offsets < n_cols
     row = tl.load(input_ptrs, mask=mask, other=-float('inf'))
-    tle_raw.call(edsl, [output_ptr, row, n_rows, n_cols, input_row_stride, output_row_stride], output_indices=[0])
+    tle_raw.call(edsl, [output_ptr, row, n_rows, n_cols, input_row_stride, output_row_stride], output_indices=[])
 
 
 def softmax(x):
