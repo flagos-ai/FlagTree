@@ -984,6 +984,23 @@ bool LayoutPropagation::collectProducerClosure(Proposal &proposal, Value target,
       auto resultType = dyn_cast<RankedTensorType>(loadOp.getType());
       bool inLoop = defOp->getParentOfType<scf::ForOp>() != nullptr ||
                     defOp->getParentOfType<scf::WhileOp>() != nullptr;
+#ifdef __PPU__
+      if (inLoop && resultType) {
+        auto mod = defOp->getParentOfType<ModuleOp>();
+        int64_t numThreads =
+            lookupNumWarps(defOp) * TritonGPUDialect::getThreadsPerWarp(mod);
+        int64_t basePerThread = getTotalElemsPerThread(resultType);
+        auto targetType = resultType.cloneWithEncoding(encoding);
+        int64_t newPerThread = getTotalElemsPerThread(targetType);
+        int64_t idealPerThread =
+            std::max<int64_t>(1, llvm::divideCeil(resultType.getNumElements(),
+                                                 numThreads));
+
+        if (newPerThread > basePerThread && newPerThread > idealPerThread * 2) {
+          return false;
+        }
+      }
+#endif // __PPU__
       if (!preservesWritebackMemoryAccess(ptrType, resultType, encoding,
                                           /*allowNarrowerContiguity=*/false) &&
           (inLoop ||
@@ -1281,6 +1298,22 @@ int LayoutPropagation::countConvertsRemovedByProposal(
       srcEncoding = originalSrcEncoding;
     if (!resultEncoding)
       resultEncoding = originalResultEncoding;
+#ifdef __PPU__
+    // A convert is only "removed" when the side that has to move can actually
+    // move. A coalesced (expensive) load is never retagged -- see
+    // isSmallComponentRetaggable -- so a proposal that claims src will take
+    // `srcEncoding` while src is such a load cannot deliver that saving: the
+    // rewritten IR keeps this convert and pays new ones downstream.
+    //
+    // coalesce scatter, PPU: the keyin load stays on sizePerThread=[4] while its
+    // whole `pos` chain is claimed to move to [1]. Counting this convert as a
+    // saving is what let the proposal clear the removedConverts gate; the dump
+    // then shows the convert still present plus two more (gather result, vals
+    // load) instead of the zero it promised.
+    if (srcEncoding != originalSrcEncoding &&
+        !isSmallComponentRetaggable(cvtOp.getSrc()))
+      continue;
+#endif // __PPU__
     if (srcEncoding == resultEncoding &&
         originalSrcEncoding != originalResultEncoding)
       ++removed;
@@ -1873,6 +1906,14 @@ static bool isBackwardPropagationSeedCandidate(ConvertLayoutOp cvtOp) {
     return false;
   if (isSliceEncoding(srcEncoding) || isSliceEncoding(dstEncoding))
     return false;
+#ifdef __PPU__
+  // Do not seed a conversion that hands an elementwise producer a layout with a
+  // narrower per-thread contiguity.
+  auto srcType = cast<RankedTensorType>(cvtOp.getSrc().getType());
+  auto dstType = cast<RankedTensorType>(cvtOp.getResult().getType());
+  if (getContigAlongMemoryOrder(dstType) < getContigAlongMemoryOrder(srcType))
+    return false;
+#endif // __PPU__
 
   Value src = cvtOp.getSrc();
   if (isFrozenLayoutValue(src))
@@ -2228,7 +2269,7 @@ bool LayoutPropagation::solveSmallComponents() {
     return false;
   };
 
-  auto commitIfProfitable = [&](Proposal &proposal, bool requireBenefit,
+  auto tryCommitProposal = [&](Proposal &proposal, bool requireBenefit,
                                 bool rejectReachableReductionOrScan = true,
                                 bool restrictWeakStoreProposals = false) {
     if (proposal.empty())
@@ -2286,6 +2327,38 @@ bool LayoutPropagation::solveSmallComponents() {
       return false;
     return commitProposal(proposal);
   };
+
+#ifdef __PPU__
+  // A proposal is not self-contained, so rejecting it has to undo more than its
+  // own decision: collecting it already wrote the chosen encodings into
+  // smallComponentPreferredEncoding (see addSmallComponentEncoding), and
+  // getProposalEncoding() / resolveConflicts() read that map back. A rejected
+  // proposal therefore keeps steering the final layout selection -- every gate
+  // in tryCommitProposal() above becomes a no-op for its side effects.
+  //
+  // coalesce scatter, PPU: every proposal the kernel offers reads
+  // sizePerThread [1] -> [4] (wider, never narrower), yet the final IR had the
+  // coalesced load's consumers moved to [1] with three converts. That move came
+  // from the preferred encodings of proposals this function had already
+  // rejected, not from any accepted one. Snapshotting and restoring the map on
+  // rejection is what makes the gates bite: with it, the only surviving change
+  // is the one a proposal was actually allowed to make.
+  auto commitIfProfitable = [&](Proposal &proposal, bool requireBenefit,
+                                bool rejectReachableReductionOrScan = true,
+                                bool restrictWeakStoreProposals = false) {
+    auto savedPreferred = smallComponentPreferredEncoding;
+    bool committed = tryCommitProposal(proposal, requireBenefit,
+                                       rejectReachableReductionOrScan,
+                                       restrictWeakStoreProposals);
+    if (!committed)
+      smallComponentPreferredEncoding = std::move(savedPreferred);
+    return committed;
+  };
+#else  // __PPU__
+  // Other backends keep the previous behaviour: a rejected proposal leaves its
+  // preferred encodings in the map.
+  auto &commitIfProfitable = tryCommitProposal;
+#endif // __PPU__
 
   auto collectRetaggableStoreValue = [&](Proposal &proposal, Value value,
                                          Attribute encoding) {
@@ -3817,10 +3890,31 @@ static bool isDuplicableLoadInEncoding(Operation *op, Attribute encoding,
                 op->getParentOfType<scf::WhileOp>() != nullptr;
   if (inLoop) {
     auto targetType = resultType.cloneWithEncoding(encoding);
+#ifdef __PPU__
+    int64_t basePerThread = getTotalElemsPerThread(resultType);
+    int64_t newPerThread = getTotalElemsPerThread(targetType);
+    int64_t idealPerThread =
+        std::max<int64_t>(1, llvm::divideCeil(resultType.getNumElements(),
+                                             numThreads));
+
+    // Same guard as the strict collectProducerClosure check:
+    // reject newly increased footprint above the ideal distribution.
+    if (newPerThread > basePerThread && newPerThread > idealPerThread * 2) {
+      LDBG("[rlc-remat-load] reject: increased footprint above ideal * 2");
+      return false;
+    }
+
+    // Keep the existing absolute limit.
+    if (newPerThread * elementType.getIntOrFloatBitWidth() > 256) {
+      LDBG("[rlc-remat-load] reject: footprint exceeds 256 bits");
+      return false;
+    }
+#else  // __PPU__
     if (int64_t(getTotalElemsPerThread(targetType)) *
             elementType.getIntOrFloatBitWidth() >
         256)
       return false;
+#endif // __PPU__
   }
 
   if (preservesWritebackMemoryAccess(ptrType, resultType, encoding,

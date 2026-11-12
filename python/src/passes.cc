@@ -158,17 +158,25 @@ void init_triton_passes_ttgpuir(py::module &&m) {
                             createTritonGPUOptimizeDotOperands, bool);
   m.def(
       "add_remove_layout_conversions",
-      [](mlir::PassManager &pm, bool enhance) {
+      [](mlir::PassManager &pm, bool enhance, bool enableCostBasedResolution, bool enableBackwardPropagation, bool enableSmallComponentSolving, bool enableStoreLayoutRematerialization) {
 #ifdef __FLAGTREE_RLC_ENHANCE__
         TritonGPURemoveLayoutConversionsOptions options;
         options.enableRlcEnhance = enhance;
+        options.enableCostBasedResolution = enableCostBasedResolution;
+        options.enableBackwardPropagation = enableBackwardPropagation;
+        options.enableSmallComponentSolving = enableSmallComponentSolving;
+        options.enableStoreLayoutRematerialization = enableStoreLayoutRematerialization;
         pm.addPass(createTritonGPURemoveLayoutConversions(options));
 #else  // __FLAGTREE_RLC_ENHANCE__
         (void)enhance;
+        (void)enableCostBasedResolution;
+        (void)enableBackwardPropagation;
+        (void)enableSmallComponentSolving;
+        (void)enableStoreLayoutRematerialization;
         pm.addPass(createTritonGPURemoveLayoutConversions());
 #endif // __FLAGTREE_RLC_ENHANCE__
       },
-      py::arg("pm"), py::arg("enable_rlc_enhance") = false);
+      py::arg("pm"), py::arg("enable_rlc_enhance") = false, py::arg("enable_rlc_enhance_cost_based") = true, py::arg("enable_rlc_enhance_backward_propagation") = true, py::arg("enable_rlc_enhance_small_component_solving") = true, py::arg("enable_rlc_enhance_store_layout_remat") = true);
   ADD_PASS_WRAPPER_0("add_reduce_data_duplication",
                      createTritonGPUReduceDataDuplication);
   ADD_PASS_WRAPPER_0("add_allocate_warp_groups",
