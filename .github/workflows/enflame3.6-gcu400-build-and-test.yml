@@ -111,6 +111,10 @@ jobs:
               --ignore=python/test/tle/unit/test_tle_d2d_barrier.py \
               --ignore=python/test/tle/unit/test_tle_get_node_rank.py
 
+          ## tle raw tops
+          GCU_ARCH=gcu400 python3 -m pytest -q \
+            third_party/enflame/python/test/tle/raw/tops/test_tops_scripts.py
+
           ## tle raw test
           # python3 -m pytest third_party/enflame/python/test/tle/raw \
           #     --ignore=third_party/enflame/python/test/tle/raw/mlir/02-fused-softmax.py
