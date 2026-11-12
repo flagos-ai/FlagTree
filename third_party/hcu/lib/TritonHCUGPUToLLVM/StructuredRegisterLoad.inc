@@ -136,8 +136,6 @@ static LogicalResult verifyStructuredRegisterLoads(ModuleOp mod,StringRef arch) 
     op->removeAttr(StructuredRegisterWidth);
     op->removeAttr(StructuredRegisterOrder);
   });
-  if(auto a=mod->getAttr("ttg.hcu.structured_register_flat_addressing");a&&!isa<BoolAttr>(a))
-    return mod.emitError("structured-register: flat-addressing option must be BoolAttr");
   if(auto a=mod->getAttr("ttg.hcu.structured_register_prepack_address");a&&!isa<BoolAttr>(a))
     return mod.emitError("structured-register: prepack-address option must be BoolAttr");
   if(auto a=mod->getAttr("ttg.hcu.structured_register_unclamped_column");a&&!isa<BoolAttr>(a))
@@ -235,37 +233,17 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
     Value base=b.gep(ptr_ty(ctx,1),elem,a.getBase(),baseOffset);
     auto resourceFn=getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rw,
         "llvm.amdgcn.make.buffer.rsrc.p8.p1",ptr_ty(ctx,8),{ptr_ty(ctx,1),i16_ty,i32_ty,i32_ty});
-    // Flat byte addressing is legal from a per-tile bound, independently of
-    // the total tensor size. rowBase is a 64-bit pointer displacement. Every
-    // enabled local row index is at most tileRows-1; invalid rows use an OOB
-    // sentinel. Keep the existing sixteen-byte descriptor/address bias.
-    auto flatAttr=op->getParentOfType<ModuleOp>()->getAttrOfType<BoolAttr>(
-        "ttg.hcu.structured_register_flat_addressing");
-    uint64_t tileRows=op.getType().getShape()[0],tileCols=op.getType().getShape()[1];
-    bool flat=flatAttr&&flatAttr.getValue()&&tileCols<(0x7fffffffULL-16)/2&&
-      tileRows<=(0x7fffffffULL-16-2*tileCols)/(2*uint64_t(K));
     auto prepackAttr=op->getParentOfType<ModuleOp>()->getAttrOfType<BoolAttr>(
         "ttg.hcu.structured_register_prepack_address");
-    bool prepack=!flat&&prepackAttr&&prepackAttr.getValue();
-    Value resource;
-    if(flat) {
-      // The row mask already maps every inaccessible row to a byte offset
-      // above INTMAX, and invalid columns/disabled calls have NR=0. The
-      // strict local bound therefore permits an invariant descriptor span:
-      // all complete enabled vectors end below localSpan-2*K. This avoids
-      // recomputing/saturating the remaining tensor extent on every prefetch.
-      uint64_t localSpan=2*tileRows*uint64_t(K)+2*tileCols+16;
-      Value byteRecords=b.select(enabled,b.i32_val(int32_t(localSpan)),b.i32_val(0));
-      resource=LLVM::createLLVMCallOp(rw,loc,resourceFn,{base,b.int_val(16,0),byteRecords,b.i32_val(131072)}).getResult();
-    } else {
-      resource=LLVM::createLLVMCallOp(rw,loc,resourceFn,{base,b.int_val(16,2*K|0x4000),records,b.i32_val(131072)}).getResult();
-    }
+    bool prepack = prepackAttr && prepackAttr.getValue();
+    Value resource = LLVM::createLLVMCallOp(
+        rw, loc, resourceFn,
+        {base, b.int_val(16, 2 * K | 0x4000), records, b.i32_val(131072)})
+                         .getResult();
     Type payload;
     if(width==1)payload=i16_ty;else if(width==2)payload=i32_ty;else payload=vec_ty(i32_ty,width/2);
     std::string suffix=width==1?"i16":width==2?"i32":width==4?"v2i32":"v4i32";
-    auto loadFn=flat?getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rw,
-        "llvm.amdgcn.raw.ptr.buffer.load."+suffix,payload,{ptr_ty(ctx,8),i32_ty,i32_ty,i32_ty}):
-        getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rw,
+    auto loadFn = getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rw,
         "llvm.amdgcn.struct.ptr.buffer.load."+suffix,payload,{ptr_ty(ctx,8),i32_ty,i32_ty,i32_ty,i32_ty});
     auto reg=StringAttr::get(ctx,"register"),lane=StringAttr::get(ctx,"lane"),warp=StringAttr::get(ctx,"warp");
     auto ll=triton::gpu::toLinearLayout(op.getType());ll=ll.sublayout({reg,lane,warp},llvm::to_vector(ll.getOutDimNames()));
@@ -281,33 +259,25 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
       // All meaningful sums fit signed32; disabled records never dereference.
       Value index=b.add(xy[0].second,b.sub(R,rowBase));
       Value offset=b.add(b.shl(xy[1].second,b.i32_val(1)),b.i32_val(16));
-      Value loaded;
-      if(flat) {
-        // Deliberately no nowrap assumptions on disabled/negative indices.
-        // This vector mask depends on R/M/local coordinates, not on loop C.
-        Value inRow=b.icmp_ult(index,remaining);
-        Value flatOffset=b.add(b.mul(index,b.i32_val(2*K)),offset);
-        flatOffset=b.select(inRow,flatOffset,b.i32_val(int32_t(0x80000000u)));
-        loaded=LLVM::createLLVMCallOp(rw,loc,loadFn,{resource,flatOffset,b.i32_val(0),b.i32_val(0)}).getResult();
-      } else {
-        if(prepack) {
-          // Bind the two halves as one live VReg64 address value before the
-          // structured intrinsic extracts them again. This is a pure exact
-          // register identity, with no memory clobber or synchronization.
-          // Loop-invariant pairs may then be materialized before the loop.
-          Type pairType=vec_ty(i32_ty,2);
-          Value pair=LLVM::PoisonOp::create(rw,loc,pairType);
-          pair=b.insert_element(pairType,pair,index,b.i32_val(0));
-          pair=b.insert_element(pairType,pair,offset,b.i32_val(1));
-          pair=LLVM::InlineAsmOp::create(rw,loc,pairType,ValueRange{pair},
-              "","=v,0",false,false,LLVM::TailCallKind::None,
-              LLVM::AsmDialectAttr::get(ctx,LLVM::AsmDialect::AD_ATT),
-              ArrayAttr::get(ctx,{})).getRes();
-          index=b.extract_element(i32_ty,pair,b.i32_val(0));
-          offset=b.extract_element(i32_ty,pair,b.i32_val(1));
-        }
-        loaded=LLVM::createLLVMCallOp(rw,loc,loadFn,{resource,index,offset,b.i32_val(0),b.i32_val(0)}).getResult();
+      if(prepack) {
+        // Bind the two halves as one live VReg64 address value before the
+        // structured intrinsic extracts them again. This is a pure exact
+        // register identity, with no memory clobber or synchronization.
+        // Loop-invariant pairs may then be materialized before the loop.
+        Type pairType=vec_ty(i32_ty,2);
+        Value pair=LLVM::PoisonOp::create(rw,loc,pairType);
+        pair=b.insert_element(pairType,pair,index,b.i32_val(0));
+        pair=b.insert_element(pairType,pair,offset,b.i32_val(1));
+        pair=LLVM::InlineAsmOp::create(rw,loc,pairType,ValueRange{pair},
+            "","=v,0",false,false,LLVM::TailCallKind::None,
+            LLVM::AsmDialectAttr::get(ctx,LLVM::AsmDialect::AD_ATT),
+            ArrayAttr::get(ctx,{})).getRes();
+        index=b.extract_element(i32_ty,pair,b.i32_val(0));
+        offset=b.extract_element(i32_ty,pair,b.i32_val(1));
       }
+      Value loaded = LLVM::createLLVMCallOp(
+          rw, loc, loadFn, {resource, index, offset, b.i32_val(0), b.i32_val(0)})
+                         .getResult();
       if(width==1)values[original(i)]=b.bitcast(loaded,elem);
       else {
         Value casted=b.bitcast(loaded,vec_ty(elem,width));

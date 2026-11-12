@@ -1178,8 +1178,7 @@ struct MlsPipelinePass
 
     auto prefetch =
         moduleOp->getAttrOfType<IntegerAttr>("ttg.hcu.local_prefetch");
-    // Mode 1 is the existing one-iteration local-read policy. Modes 6/7
-    // describe a different stream-pipeline experiment, not stage distances.
+    // Mode 1 requests one iteration of local-read prefetch.
     bool prefetchOrdinaryReads = prefetch && prefetch.getInt() == 1;
     constexpr bool useAsyncCopy = true;
 

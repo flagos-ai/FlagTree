@@ -704,7 +704,6 @@ void remapClusters(tt::CoarseSchedule &schedule, ClusterMap clusterMap,
 LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
                            int &numBuffers, bool useAsyncCopy, bool waitAtTail,
                            int globalPrefetch, int localPrefetch,
-                           bool readFirst,
                            Clusters &clusters, tt::CoarseSchedule &schedule) {
   LDBG("Init SingleDotSchedule");
   int lastStage = numStages - 1;
@@ -791,15 +790,6 @@ LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
     localLoadCluster = 2;
     globalLoadCluster = 3;
     computeCluster = 4;
-  }
-
-  // Private both-async diagnostic. Keep the stage distances and LDS
-  // buffers, but issue both prefetched LDS reads before future G2L copies.
-  if (readFirst) {
-    localLoadCluster = 1;
-    globalLoadCluster = 2;
-    computeCluster = 3;
-    localStoreCluster = 4; // Both loads were proved async; no local store.
   }
 
   // Create a hash map to associate cluster hash in old schedule with its
@@ -904,7 +894,6 @@ void updateSchedule(scf::ForOp &forOp, const LoadToInfoMap &loadToInfo,
   bool loopUsesAsyncCopy = hasAsyncLoad(loadToInfo, useAsyncCopy);
   int globalPrefetch = 0;
   int localPrefetch = 0;
-  bool readFirst = false;
   auto module = forOp->getParentOfType<ModuleOp>();
   auto prefetchAttr =
       module->getAttrOfType<IntegerAttr>("ttg.hcu.local_prefetch");
@@ -955,10 +944,7 @@ void updateSchedule(scf::ForOp &forOp, const LoadToInfoMap &loadToInfo,
   // complete generic RAW/WAR barrier analysis unchanged.
   auto ctas = module->getAttrOfType<IntegerAttr>("ttg.num-ctas");
   auto lanes = module->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
-  if (prefetchAttr &&
-      ((prefetchAttr.getInt() == 5 && numStages == 3) ||
-       ((prefetchAttr.getInt() == 6 || prefetchAttr.getInt() == 7) &&
-        numStages >= 3 && numStages <= 5)) &&
+  if (prefetchAttr && prefetchAttr.getInt() == 5 && numStages == 3 &&
       ctas && ctas.getInt() == 1 && lanes && lanes.getInt() == 64 &&
       !waitAtTail && arch && *arch == "gfx936" && loopUsesAsyncCopy && maxDist == 0 &&
       loadToInfo.size() == 2) {
@@ -993,21 +979,7 @@ void updateSchedule(scf::ForOp &forOp, const LoadToInfoMap &loadToInfo,
                    entry.second.sharedEncoding &&
                    entry.second.use == dot.getOperation();
           })) {
-        // A requested async policy is not proof that conversion succeeds.
-        // Match createStreamOps using the final selected layouts and masks.
-        bool bothAsync = prefetchAttr.getInt() != 5 &&
-            llvm::all_of(loadToInfo, [&](const auto &entry) {
-              auto load = cast<tt::LoadOp>(entry.first);
-              triton::HCU::TargetInfo targetInfo(arch->str());
-              return shouldUseAsyncCopy(load, useAsyncCopy) &&
-                     canBeConvertedToAsyncLoad(
-                         numStages - 1, load, entry.second.sharedEncoding,
-                         axisInfoAnalysis, targetInfo);
-            });
-        if (prefetchAttr.getInt() == 5 || bothAsync) {
-          localPrefetch = 1;
-          readFirst = prefetchAttr.getInt() != 5;
-        }
+        localPrefetch = 1;
       }
     }
   }
@@ -1016,7 +988,6 @@ void updateSchedule(scf::ForOp &forOp, const LoadToInfoMap &loadToInfo,
   if (failed(initSchedule(maxDist, stages, numStages, numBuffers,
                           loopUsesAsyncCopy, waitAtTail,
                           globalPrefetch, localPrefetch,
-                          readFirst,
                           clusters, schedule)))
     return;
 
@@ -1040,9 +1011,6 @@ void updateSchedule(scf::ForOp &forOp, const LoadToInfoMap &loadToInfo,
                                          useAsyncCopy, axisInfoAnalysis);
 
   scheduleStreamOps(loadToStreamOps, schedule, stages, clusters);
-  if (readFirst && prefetchAttr.getInt() == 7)
-    forOp->setAttr("hcu.read_first_sched_fence",
-                   UnitAttr::get(forOp.getContext()));
   dumpSchedule(schedule, "Coarse schedule stream ops:");
 
   scheduleDependencies(forOp, schedule);

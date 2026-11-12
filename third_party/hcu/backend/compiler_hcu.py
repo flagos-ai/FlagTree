@@ -74,15 +74,11 @@ class HIPOptions:
     enable_fp_fusion: bool = True
     # Suppress automatic LLVM unrolling; explicit LLVM unroll hints prevail.
     disable_llvm_loop_unroll: bool = False
-    # Experimental late resource-driven dot-K partitioning; opt in only.
-    fragment_dot_k: bool = False
     # Keep wave-private synchronous staging in the operator tuning space.
     wave_private_sync: bool = False
     # Coalesce proved terminal read-only LDS publication; diagnostic opt-in.
     terminal_readonly_publication: bool = False
     combine_shifted_disjoint_or: bool = False
-    # Proved loop-carried readonly global refill after its matching LDS store.
-    loop_carried_store_refill: bool = False
     # Experimental wave-group MMA motion; native completion check is required.
     mma_phase_schedule: bool = False
     coalesce_lgkm_waits: bool = False
@@ -105,8 +101,6 @@ class HIPOptions:
     interleave_global_lds_reads_fences: bool = False
     # Keep register-preserving fences in four-float tuples for MMAC allocation.
     tupled_register_fences: bool = False
-    # Explicit local-span byte addressing for proved structured register loads.
-    structured_register_flat_addressing: bool = False
     structured_register_prepack_address: bool = False
     structured_register_unclamped_column: bool = False
     priority_after_first_mmac: bool = False
@@ -136,10 +130,7 @@ class HIPOptions:
 
     # None preserves the existing environment/architecture policy.
     use_block_pingpong: Optional[bool] = None
-    # Private experiment: select the existing guarded LowerLoops prefetch path.
-    async_local_prefetch: bool = False
     prefer_wide_async_copy: bool = False
-    prefetch_read_first_fence: bool = False
 
     # The following option provides hints to the HCUGPU backend regarding instruction scheduling
     # for all `tt.dot` operations in a kernel. The "none" variant preserves the default
@@ -175,7 +166,6 @@ class HIPOptions:
 
     # Consume standard loop-unroll hints at the selected stage.
     loop_unroll_stage: str = "ttir"
-    peel_unroll_remainder: bool = False
 
     # Extend options for HCU(legacy), used for old arch like gfx928, gfx936
     # 1. set scheduling latency for mmac and ds:
@@ -208,17 +198,7 @@ class HIPOptions:
             raise ValueError("prefer_wide_async_copy must be boolean")
         if self.use_block_pingpong is not None and type(self.use_block_pingpong) is not bool:
             raise ValueError("use_block_pingpong must be bool or None")
-        if type(self.async_local_prefetch) is not bool or type(self.prefetch_read_first_fence) is not bool:
-            raise ValueError("async prefetch policies must be boolean")
-        if self.prefetch_read_first_fence and not self.async_local_prefetch:
-            raise ValueError("prefetch_read_first_fence requires async_local_prefetch")
-        if self.async_local_prefetch and (self.arch != "gfx936" or self.num_stages not in (3, 4, 5)):
-            raise ValueError("async_local_prefetch experiment requires gfx936 and 3 to 5 stages")
         MemorySchedulePolicy.from_options(self)
-        if type(self.structured_register_flat_addressing) is not bool:
-            raise ValueError("structured_register_flat_addressing must be boolean")
-        if self.structured_register_flat_addressing and self.arch != "gfx936":
-            raise ValueError("structured_register_flat_addressing requires gfx936")
         if type(self.structured_register_prepack_address) is not bool:
             raise ValueError("structured_register_prepack_address must be boolean")
         if self.structured_register_prepack_address and self.arch != "gfx936":
@@ -231,10 +211,6 @@ class HIPOptions:
             raise ValueError("priority_after_first_mmac must be boolean")
         if self.priority_after_first_mmac and self.arch != "gfx936":
             raise ValueError("priority_after_first_mmac requires gfx936")
-        if type(self.loop_carried_store_refill) is not bool:
-            raise ValueError("loop_carried_store_refill must be boolean")
-        if self.loop_carried_store_refill and self.arch != "gfx936":
-            raise ValueError("loop_carried_store_refill requires gfx936")
         if type(self.combine_shifted_disjoint_or) is not bool:
             raise ValueError("combine_shifted_disjoint_or must be boolean")
         if self.combine_shifted_disjoint_or and self.arch != "gfx936":
@@ -283,16 +259,10 @@ class HIPOptions:
             raise ValueError("lds_dma_alias_workaround must be a bool")
         if self.lds_dma_alias_workaround and self.arch != "gfx936":
             raise ValueError("lds_dma_alias_workaround requires gfx936")
-        if type(self.fragment_dot_k) is not bool:
-            raise ValueError("fragment_dot_k must be boolean")
         if self.loop_unroll_stage not in ("ttir", "post-pipeline"):
             raise ValueError("loop_unroll_stage must be ttir or post-pipeline")
         if self.loop_unroll_stage == "post-pipeline" and self.arch != "gfx936":
             raise ValueError("post-pipeline loop unrolling requires gfx936")
-        if type(self.peel_unroll_remainder) is not bool:
-            raise ValueError("peel_unroll_remainder must be boolean")
-        if self.peel_unroll_remainder and (self.arch != "gfx936" or self.loop_unroll_stage != "post-pipeline"):
-            raise ValueError("peel_unroll_remainder requires gfx936 post-pipeline unrolling")
         gfx_major = int(self.arch[3:-2])  # Drop "gfx" prefix and minor/patch number
         warp_size = 32 if gfx_major >= 10 else 64
         object.__setattr__(self, 'warp_size', warp_size)
@@ -660,10 +630,6 @@ class HIPBackend(BaseBackend):
             mod.set_attr("ttg.hcu.wave_private_sync", ir.builder(mod.context).get_int32_attr(1))
         if options.arch == "gfx936" and "local-prefetch" in _schedule_hints(options.schedule_hint):
             mod.set_attr("ttg.hcu.local_prefetch", ir.builder(mod.context).get_int32_attr(1))
-        if options.async_local_prefetch:
-            # Existing path rechecks the actual two-load single-dot async loop.
-            mode = 7 if options.prefetch_read_first_fence else 6
-            mod.set_attr("ttg.hcu.local_prefetch", ir.builder(mod.context).get_int32_attr(mode))
         if options.sync_lds_buffers == 2:
             mod.set_attr("ttg.hcu.sync_lds_buffers", ir.builder(mod.context).get_int32_attr(2))
         if options.mmac_transposed:
@@ -872,9 +838,6 @@ class HIPBackend(BaseBackend):
                      (hcu.has_warp_specialize(mod) or hcu.has_cta_barrier(mod)))
         explicit_ws = manual_ws
         base_warps = mod.get_int_attr("ttg.num-warps") if explicit_ws else 0
-        if options.structured_register_flat_addressing:
-            mod.set_attr("ttg.hcu.structured_register_flat_addressing",
-                         ir.builder(mod.context).get_bool_attr(True))
         if options.structured_register_prepack_address:
             mod.set_attr("ttg.hcu.structured_register_prepack_address",
                          ir.builder(mod.context).get_bool_attr(True))
@@ -896,18 +859,6 @@ class HIPBackend(BaseBackend):
         if options.buffer_store_preserve_masked_base:
             mod.set_attr("ttg.hcu.buffer_store_preserve_masked_base",
                          ir.builder(mod.context).get_bool_attr(True))
-        if options.fragment_dot_k:
-            # Independent late invocation through the existing binding. The TU
-            # consumes this private marker before any other optimization.
-            mod.set_attr("ttg.hcu.internal_fragment_dot_k",
-                         ir.builder(mod.context).get_int32_attr(256))
-            fragment_pm = ir.pass_manager(mod.context)
-            fragment_pm.enable_debug()
-            hcu.passes.ttgpuir.add_optimize_dot_operands(fragment_pm, options.arch)
-            fragment_pm.run(mod, "fragment_dot_k_late")
-        if options.peel_unroll_remainder:
-            builder = ir.builder(mod.context)
-            mod.set_attr("ttg.hcu.peel_unroll_remainder", builder.get_int32_attr(1))
         if options.loop_unroll_stage == "post-pipeline":
             late_pm = ir.pass_manager(mod.context)
             late_pm.enable_debug()
@@ -1164,13 +1115,7 @@ class HIPBackend(BaseBackend):
             fences = hcu.tuple_register_fences(llvm_mod, options.arch)
             for key, value in fences.items():
                 metadata["hcu_tupled_register_fences_" + key] = int(value)
-        result = str(llvm_mod)
-        if options.loop_carried_store_refill:
-            result, pairs, report = llvm.interleave_hcu_loop_carried_store_refill(
-                result, options.arch)
-            metadata["hcu_loop_carried_store_refill"] = report
-            metadata["hcu_loop_carried_store_refill_pairs"] = pairs
-        return result
+        return str(llvm_mod)
 
     ## TODO: [HCU] integrate with rocshmem
     @staticmethod

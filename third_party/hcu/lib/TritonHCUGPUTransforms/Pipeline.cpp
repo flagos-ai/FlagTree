@@ -1,6 +1,5 @@
 #include "TritonHCUGPUTransforms/Passes.h"
 #include "hcu/lib/TritonHCUGPUTransforms/PipelineUtility.h"
-#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 
 #define DEBUG_TYPE "tritonhcugpu-pipeline-expand-loops"
@@ -98,60 +97,15 @@ void expandLoops(ModuleOp moduleOp) {
   tt::resolveMaskOp(moduleOp);
 }
 
-// This is a machine-scheduling boundary, not a GPU memory barrier or wait.
-// Only loops certified by LowerLoops may request it. Recheck the actual
-// post-expansion operations because short loops and predication can change
-// the kernel body. An unmatched loop receives no fence.
-void insertReadFirstSchedFences(ModuleOp moduleOp) {
-  auto mode = moduleOp->getAttrOfType<IntegerAttr>("ttg.hcu.local_prefetch");
-  moduleOp.walk([&](scf::ForOp loop) {
-    if (!loop->removeAttr("hcu.read_first_sched_fence") || !mode ||
-        mode.getInt() != 7)
-      return;
-    if (llvm::any_of(loop.getBody()->without_terminator(), [](Operation &op) {
-          return op.getNumRegions() != 0;
-        }))
-      return;
-    auto reads = llvm::to_vector(loop.getBody()->getOps<ttg::LocalLoadOp>());
-    auto copies = llvm::to_vector(
-        loop.getBody()->getOps<ttg::AsyncCopyGlobalToLocalOp>());
-    if (reads.size() != 2 || copies.size() != 2 ||
-        !loop.getBody()->getOps<ttg::LocalStoreOp>().empty())
-      return;
-    Operation *firstCopy = copies.front().getOperation();
-    if (!llvm::all_of(reads, [&](ttg::LocalLoadOp read) {
-          return read->isBeforeInBlock(firstCopy);
-        }))
-      return;
-    // Each read must still depend on its preceding publication wait. Keep
-    // partial waits for multi-buffer pipelines and all membar analysis.
-    if (!llvm::all_of(reads, [&](ttg::LocalLoadOp read) {
-          Value token = read.getToken();
-          auto wait = token ? token.getDefiningOp<ttg::AsyncWaitOp>()
-                            : ttg::AsyncWaitOp{};
-          return wait && wait->getBlock() == loop.getBody() &&
-                 wait->isBeforeInBlock(read.getOperation());
-        }))
-      return;
-    OpBuilder builder(firstCopy);
-    ROCDL::SchedBarrier::create(builder, firstCopy->getLoc(), 0);
-  });
-}
 } // namespace
 
 struct PipelinePass : impl::TritonHCUGPUPipelineBase<PipelinePass> {
   using Base::Base;
 
-  void getDependentDialects(DialectRegistry &registry) const override {
-    Base::getDependentDialects(registry);
-    registry.insert<ROCDL::ROCDLDialect>();
-  }
-
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
     lowerLoops(moduleOp, useAsyncCopy, usePingpong);
     expandLoops(moduleOp);
-    insertReadFirstSchedFences(moduleOp);
 
     // Explicit per-op async loads can introduce waits with the global knob off.
     llvm::SmallSetVector<ttg::AsyncWaitOp, 8> waitOps;

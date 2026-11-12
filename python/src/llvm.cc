@@ -27,7 +27,6 @@
 #include "../../third_party/hcu/include/TritonHCUGPUToLLVM/MmaPhaseScheduling.h"
 #include "../../third_party/hcu/include/TritonHCUGPUToLLVM/PostMmaWait.h"
 #include "../../third_party/hcu/include/TritonHCUGPUToLLVM/ShiftedDisjointOr.h"
-#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/LoopCarriedStoreRefill.h"
 #endif
 #include "mlir/IR/BuiltinOps.h" // mlir::ModuleOp
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
@@ -414,44 +413,6 @@ using ret = py::return_value_policy;
 
 void init_triton_llvm(py::module &&m) {
 #ifdef __HCU__
-  m.def("interleave_hcu_loop_carried_store_refill",
-        [](const std::string &source, const std::string &arch) -> py::tuple {
-          llvm::LLVMContext context;
-          llvm::SMDiagnostic diagnostic;
-          auto module = llvm::parseIR(
-              llvm::MemoryBufferRef(source, "hcu_loop_carried_store_refill"),
-              diagnostic, context);
-          if (!module)
-            throw std::invalid_argument("Invalid LLVM IR for loop-carried refill");
-          std::string errors;
-          llvm::raw_string_ostream errorStream(errors);
-          if (llvm::verifyModule(*module, &errorStream))
-            throw std::invalid_argument("Input LLVM verification failed: " + errors);
-          auto stats = flagtree::hcu::interleaveLoopCarriedStoreRefill(*module, arch);
-          errors.clear();
-          if (llvm::verifyModule(*module, &errorStream))
-            throw std::runtime_error("Loop-carried refill verification failed: " + errors);
-          py::dict report;
-          report["reason"] = stats.reason;
-          report["loops"] = stats.loops;
-          report["pairs"] = stats.pairs;
-          report["functions_visited"] = stats.functionsVisited;
-          report["functions_changed"] = stats.functionsChanged;
-          report["moved_loads"] = stats.movedLoads;
-          report["moved_pure_dependencies"] = stats.movedPureDependencies;
-          report["scheduler_barriers"] = stats.schedulerBarriers;
-          report["rejected_functions"] = stats.rejectedFunctions;
-          report["invalid_functions"] = stats.invalidFunctions;
-          report["LLVM_parse_verify_performed"] = true;
-          report["production_compiler_feature"] = true;
-          report["private_stage_hook"] = false;
-          if (!stats.functionsChanged)
-            return py::make_tuple(source, 0u, report);
-          std::string result;
-          llvm::raw_string_ostream stream(result);
-          module->print(stream, nullptr);
-          return py::make_tuple(result, stats.pairs, report);
-        });
   m.def("combine_hcu_shifted_disjoint_or",
         [](const std::string &source, const std::string &arch) -> py::tuple {
           llvm::LLVMContext context;
