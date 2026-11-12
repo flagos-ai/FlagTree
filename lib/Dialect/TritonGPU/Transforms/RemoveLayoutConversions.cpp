@@ -1297,6 +1297,22 @@ int LayoutPropagation::countConvertsRemovedByProposal(
       srcEncoding = originalSrcEncoding;
     if (!resultEncoding)
       resultEncoding = originalResultEncoding;
+#ifdef __PPU__
+    // A convert is only "removed" when the side that has to move can actually
+    // move. A coalesced (expensive) load is never retagged -- see
+    // isSmallComponentRetaggable -- so a proposal that claims src will take
+    // `srcEncoding` while src is such a load cannot deliver that saving: the
+    // rewritten IR keeps this convert and pays new ones downstream.
+    //
+    // coalesce scatter, PPU: the keyin load stays on sizePerThread=[4] while its
+    // whole `pos` chain is claimed to move to [1]. Counting this convert as a
+    // saving is what let the proposal clear the removedConverts gate; the dump
+    // then shows the convert still present plus two more (gather result, vals
+    // load) instead of the zero it promised.
+    if (srcEncoding != originalSrcEncoding &&
+        !isSmallComponentRetaggable(cvtOp.getSrc()))
+      continue;
+#endif // __PPU__
     if (srcEncoding == resultEncoding &&
         originalSrcEncoding != originalResultEncoding)
       ++removed;
