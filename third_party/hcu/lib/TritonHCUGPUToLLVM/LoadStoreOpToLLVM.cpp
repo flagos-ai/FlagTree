@@ -9,6 +9,8 @@
 #include "WarpSpecializeUtils.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -525,6 +527,7 @@ static std::optional<uint64_t> getNonNegativeOffsetMax(Value value,
 }
 
 #include "BufferStoreScalarOffset.inc"
+#include "BufferStorePairing.inc"
 
 std::optional<const char *> getHCUGPUMemScopeStr(MemSyncScope scope) {
   switch (scope) {
@@ -2569,9 +2572,47 @@ struct BufferStoreOpConversion
       // the exact nonnegative core+constant identity before any IR is emitted.
       useScalarOffset = true;
     }
+    // Existing vector stores keep their original lowering. For scalar
+    // halfword stores, search register pairs within the current lane and
+    // check the actual lowered offsets and predicates, including edge lanes.
+    SmallVector<int> pairedWith;
+    llvm::SmallBitVector pairedHigh;
+    auto *axisInfo = axisAnalysisPass.getAxisInfo(ptr);
+    auto warps = moduleOp->getAttrOfType<IntegerAttr>("ttg.total-num-warps");
+    int64_t numWarps = warps ? warps.getInt() : triton::gpu::lookupNumWarps(moduleOp);
+    if (targetInfo.getArch() == "gfx936" && vec == 1 && !llStride &&
+        !storeUniformByteOffset && valueElemTy.getIntOrFloatBitWidth() == 16 &&
+        axisInfo && axisInfo->getDivisibility(0) % 4 == 0 &&
+        numWarps > 0 && numWarps <= 16 &&
+        TritonGPUDialect::getThreadsPerWarp(moduleOp) == 64 &&
+        cast<RankedTensorType>(offset.getType()).getElementType().isInteger(32)) {
+      BufferStorePairing pairing(numWarps * 64);
+      for (auto [lo, hi] : pairing.plan(offsetElems, maskElems, regMask)) {
+        if (pairedWith.empty()) {
+          pairedWith.resize(numElems, -1);
+          pairedHigh.resize(numElems);
+        }
+        pairedWith[lo] = hi;
+        pairedHigh.set(hi);
+      }
+    }
     BufferStoreScalarOffset scalarOffsets;
     unsigned scalarOffsetSites = 0;
     for (size_t vecStart = 0; vecStart < numElems; vecStart += vec) {
+      if (!pairedWith.empty()) {
+        if (pairedHigh.test(vecStart))
+          continue;
+        int hi = pairedWith[vecStart];
+        if (hi >= 0) {
+          Value pred = llMask ? b.and_(threadPred, maskElems[vecStart]) : threadPred;
+          auto type = cast<VectorType>(LLVM::getVectorType(valueElemTy, 2));
+          SmallVector<Value, 2> values{valueElems[vecStart], valueElems[hi]};
+          Value payload =
+              packElementRangeIntoVector(rewriter, getTypeConverter(), loc, type, values, 0);
+          bufferEmitter.emitStore(rsrcDesc, offsetElems[vecStart], payload, pred, cacheMod);
+          continue;
+        }
+      }
       if (!isCanonicalIndex(vecStart, regMask)) {
         // Don't emit store ops for redundant elements within a thread
         continue;
