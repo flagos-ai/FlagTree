@@ -57,6 +57,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
 #include <deque>
 #ifdef __FLAGTREE_RLC_ENHANCE__
 #include "llvm/ADT/EquivalenceClasses.h"
@@ -5188,6 +5189,19 @@ void hoistConvert(ModuleOp module) {
     layoutRemat.cleanup();
   });
 }
+
+#ifdef __FLAGTREE_RLC_ENHANCE__
+// Environment override for one per-phase switch of the enhanced pipeline. A
+// variable holding a boolean value ("1"/"on"/"true" or "0"/"off"/"false") wins
+// over the corresponding pass option, so a phase can be turned on or off
+// without rebuilding the pipeline; an unset or unrecognized value keeps
+// whatever the option carries.
+static bool envOverride(const char *envVar, bool optionValue) {
+  std::optional<bool> envValue =
+      tools::isEnvValueBool(tools::getStrEnv(envVar));
+  return envValue.value_or(optionValue);
+}
+#endif // __FLAGTREE_RLC_ENHANCE__
 } // namespace
 
 class TritonGPURemoveLayoutConversionsPass
@@ -5222,13 +5236,23 @@ public:
 #ifdef __FLAGTREE_RLC_ENHANCE__
     // Per-phase options are AND-ed with the master option. Backward-propagation
     // and small-component solving depend on cost-based resolution (disabling it
-    // forces both off); store-layout remat is independent.
-    bool costBased = enableRlcEnhance && enableCostBasedResolution;
-    bool backwardProp = enableRlcEnhance && enableBackwardPropagation;
+    // forces both off); store-layout remat is independent. Every switch may
+    // additionally be overridden from the environment (see envOverride), which
+    // is what the FLAGTREE_RLC_ENHANCE_* variables below are for.
+    bool costBased =
+        enableRlcEnhance && envOverride("FLAGTREE_RLC_ENHANCE_COST_BASED",
+                                        enableCostBasedResolution);
+    bool backwardProp = enableRlcEnhance &&
+                        envOverride("FLAGTREE_RLC_ENHANCE_BACKWARD_PROPAGATION",
+                                    enableBackwardPropagation);
     bool smallComponentSolving =
-        enableRlcEnhance && enableSmallComponentSolving;
+        enableRlcEnhance &&
+        envOverride("FLAGTREE_RLC_ENHANCE_SMALL_COMPONENT_SOLVING",
+                    enableSmallComponentSolving);
     bool storeLayoutRemat =
-        enableRlcEnhance && enableStoreLayoutRematerialization;
+        enableRlcEnhance &&
+        envOverride("FLAGTREE_RLC_ENHANCE_STORE_LAYOUT_REMAT",
+                    enableStoreLayoutRematerialization);
 
     if (!costBased) {
       backwardProp = false;
