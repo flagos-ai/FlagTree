@@ -160,7 +160,7 @@ jobs:
       - name: Run FlagGems Test
         id: run-flaggems-test
         if: ${{ success() && steps.check_backend.outputs.should_skip != 'true' }}
-        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        uses: ./.github/actions/run-flaggems-test
         with:
           flaggems-path: '${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}/FlagGems'
           gpus: '${{ steps.setup.outputs.gpus }}'

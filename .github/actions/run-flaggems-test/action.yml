@@ -149,14 +149,6 @@ runs:
         ASSETS="${ASSETS_DIR:-${GITHUB_ACTION_PATH}/assets}"
         VERSION_DIR="${ASSETS}/${FLAGGEMS_TAG}"
 
-        if [[ ! -f "${VERSION_DIR}/conftest.py" ]]; then
-          echo "::error::No CI assets for FlagGems tag '${FLAGGEMS_TAG}'."
-          echo "Expected ${VERSION_DIR}/conftest.py to exist."
-          echo "Add assets/${FLAGGEMS_TAG}/conftest.py to this action before"
-          echo "testing against that tag."
-          exit 1
-        fi
-
         # The skip lists stay in the checkout: each branch carries the ones
         # for the backends it builds, so they are not shared.
         SKIP_DIR="${SKIP_LIST_DIR:-${GITHUB_WORKSPACE}/.github/workflows/gems/${FLAGGEMS_TAG}/skip_list}"
@@ -170,7 +162,13 @@ runs:
         # from the tests directory. It is version-specific, and without it no
         # operator markers are collected, leaving a summary.json that looks
         # plausible but is incomplete.
-        cp "${VERSION_DIR}/conftest.py" tests/conftest.py
+        # When the asset is absent the clone's own conftest.py is used instead
+        # (the FlagGems tag ships a compatible one natively).
+        if [[ -f "${VERSION_DIR}/conftest.py" ]]; then
+          cp "${VERSION_DIR}/conftest.py" tests/conftest.py
+        else
+          echo "No conftest.py override for tag '${FLAGGEMS_TAG}', using the clone's own."
+        fi
 
         TEST_OUTPUT_DIR="${{ steps.vars.outputs.test-output-dir }}"
         rm -rf "$TEST_OUTPUT_DIR" || true

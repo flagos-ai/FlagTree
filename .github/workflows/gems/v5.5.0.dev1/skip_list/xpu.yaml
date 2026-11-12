@@ -1,0 +1,35 @@
+# Skip operators that cause GPU state corruption
+skip_operators:
+  #- atan2
+  - alias_copy
+  - alias_copy_out
+  - min
+  - min_dim
+  - nll_loss2d_backward
+  - nll_loss2d_forward
+  - nll_loss_backward
+  - nll_loss_forward
+  - nll_loss_nd_backward
+  - nll_loss_nd_forward
+  - softmax
+  - softmax_backward
+  - softmax_backward_out
+  - softmax_out
+  - index_put
+  - index_put_
+  - randn
+  - randn_like
+
+# Skip specific test functions
+skip_test_patterns:
+  #- test_scaled_dot_product_attention_legacy_backward
+  #- test_scaled_dot_product_attention_square_qk_even_mn
+  #- test_scaled_dot_product_attention_nonsquare_qk
+  #- test_scaled_dot_product_attention_legacy
+  #- test_scaled_dot_product_flash_attention
+  #- test_scaled_softmax_forward
+  #- test_scaled_softmax_backward
+
+# Skip entire test files
+skip_test_files:
+  #- test_scaled_dot_product_attention.py
