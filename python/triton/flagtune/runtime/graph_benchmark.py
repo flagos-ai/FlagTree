@@ -104,6 +104,19 @@ def do_bench_musa_graph(
 
 
 
+_HCU_MAX_GRAPH_CALLS = 32768
+_HCU_FALLBACK_GRAPH_CALLS = 1000
+
+
+def _hcu_graph_calls(rep, duration, count=1):
+    if not math.isfinite(duration) or duration <= 0:
+        return _HCU_FALLBACK_GRAPH_CALLS
+    per_call = duration / count
+    if per_call <= rep / _HCU_MAX_GRAPH_CALLS:
+        return _HCU_MAX_GRAPH_CALLS
+    return max(1, int(rep / per_call))
+
+
 def _capture_hcu_graph_duration(fn, count, api):
     """Return the graph and its median device replay duration in milliseconds."""
     graph = api.CUDAGraph()
@@ -149,9 +162,7 @@ def do_bench_hcu_graph(
         import torch
         device_interface = torch.cuda
     api = device_interface
-    caller = api.current_stream()
-    stream = caller
-    with api.stream(stream):
+    with api.stream(api.current_stream()):
         fn()
         _timed_warmup(fn, warmup_ms, api)
         start = api.Event(enable_timing=True)
@@ -162,17 +173,15 @@ def do_bench_hcu_graph(
         end.record()
         api.synchronize()
         ordinary_ms = start.elapsed_time(end) / 5
-        count = max(1, int(rep / ordinary_ms)) if math.isfinite(ordinary_ms) and ordinary_ms > 0 else 1000
+        count = _hcu_graph_calls(rep, ordinary_ms)
         # Short pilots include a fixed graph-launch/event cost. Recalibrate the
         # longer graph rather than extrapolating that cost per kernel forever.
-        for attempt in range(3):
+        for _ in range(3):
             graph, duration_ms = _capture_hcu_graph_duration(fn, count, api)
-            if not math.isfinite(duration_ms) or duration_ms <= 0:
-                next_count = 1000
-            else:
-                next_count = max(1, int(rep * count / duration_ms))
+            next_count = _hcu_graph_calls(rep, duration_ms, count)
             if duration_ms >= 0.8 * rep or next_count == count:
                 break
+            del graph
             count = next_count
         else:
             # Bound the calibration passes, then use the last extrapolation.

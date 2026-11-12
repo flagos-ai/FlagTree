@@ -118,7 +118,7 @@ _REPLAY_IMPLEMENTATIONS = {
     # Caller-stream replay has different selection/timing semantics from v2,
     # which allocated a new side stream for every helper call. Namespace both
     # persistent best-config and per-config benchmark caches through this key.
-    "triton.backends.hcu.driver": "triton_hcu_graph_calibrated_currentstream_adaptivewarmup_v4",
+    "triton.backends.hcu.driver": "triton_hcu_graph_calibrated_currentstream_adaptivewarmup_v5",
 }
 _OFFICIAL_TRITON_REPLAY_COUNT = 10
 

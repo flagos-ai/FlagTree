@@ -225,7 +225,7 @@ def test_musa_graph_helper_uses_bounded_repeat_for_invalid_calibration():
         (
             "triton.backends.hcu.driver",
             "hip",
-            "triton_hcu_graph_calibrated_currentstream_adaptivewarmup_v4",
+            "triton_hcu_graph_calibrated_currentstream_adaptivewarmup_v5",
         ),
     ],
 )
@@ -492,6 +492,24 @@ def test_hcu_graph_ranking_survives_tenfold_difference_in_host_overhead():
     assert measured[0] < measured[1]
 
 
+def test_hcu_graph_calibration_bounds_finite_near_zero_timings(monkeypatch):
+    api = _HcuTimingModel(0.006, 0.3)
+    monkeypatch.setattr(graph_benchmark_module, "_HCU_MAX_GRAPH_CALLS", 64)
+    original = graph_benchmark_module._capture_hcu_graph_duration
+
+    def near_zero_pilot(fn, count, interface):
+        assert 0 < count <= 64
+        graph, _ = original(fn, count, interface)
+        return graph, 1e-300
+
+    monkeypatch.setattr(graph_benchmark_module, "_capture_hcu_graph_duration", near_zero_pilot)
+    result = graph_benchmark_module.do_bench_hcu_graph(
+        api.fn, rep=1., n_retries=2, device_interface=api,
+    )
+    assert result > 0
+    assert api.lengths[-1] == 64
+
+
 @pytest.mark.parametrize("use_default_stream", [False, True])
 def test_hcu_graph_preserves_incoming_work_on_current_caller(use_default_stream):
     api = _HcuTimingModel(0.006, 0.03, use_default_stream=use_default_stream)
@@ -548,7 +566,7 @@ def test_hcu_currentstream_protocol_isolates_legacy_selection_and_timing_cache(m
     protocol = resolved.protocol
     current = protocol.cache_key()
     legacy = replace(protocol, implementation="triton_hcu_graph_calibrated_v2").cache_key()
-    assert current == ("triton_hcu_graph_calibrated_currentstream_adaptivewarmup_v4", 5, measurement_ms, 10,
+    assert current == ("triton_hcu_graph_calibrated_currentstream_adaptivewarmup_v5", 5, measurement_ms, 10,
                        measurement_ms / 10.0)
     assert current[1:] == legacy[1:]
 
