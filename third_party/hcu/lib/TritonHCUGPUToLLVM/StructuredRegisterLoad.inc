@@ -231,15 +231,12 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
     Value records=b.select(enabled,remaining,b.i32_val(0));
     Value baseOffset=b.sub(b.add(b.mul(b.zext(i64_ty,rowBase),b.i64_val(K)),b.zext(i64_ty,colBase)),b.i64_val(8));
     Value base=b.gep(ptr_ty(ctx,1),elem,a.getBase(),baseOffset);
-    auto resourceFn=getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rw,
-        "llvm.amdgcn.make.buffer.rsrc.p8.p1",ptr_ty(ctx,8),{ptr_ty(ctx,1),i16_ty,i32_ty,i32_ty});
     auto prepackAttr=op->getParentOfType<ModuleOp>()->getAttrOfType<BoolAttr>(
         "ttg.hcu.structured_register_prepack_address");
     bool prepack = prepackAttr && prepackAttr.getValue();
-    Value resource = LLVM::createLLVMCallOp(
-        rw, loc, resourceFn,
-        {base, b.int_val(16, 2 * K | 0x4000), records, b.i32_val(131072)})
-                         .getResult();
+    Value resource = rw.createOrFold<ROCDL::MakeBufferRsrcOp>(
+        loc, ptr_ty(ctx, 8), base, b.int_val(16, 2 * K | 0x4000),
+        b.zext(i64_ty, records), b.i32_val(131072));
     Type payload;
     if(width==1)payload=i16_ty;else if(width==2)payload=i32_ty;else payload=vec_ty(i32_ty,width/2);
     std::string suffix=width==1?"i16":width==2?"i32":width==4?"v2i32":"v4i32";

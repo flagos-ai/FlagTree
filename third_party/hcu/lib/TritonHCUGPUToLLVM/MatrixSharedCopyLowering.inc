@@ -95,7 +95,7 @@ static LogicalResult lowerMatrixSharedCopy(
       // RAW keeps IDXEN disabled and byte bounds; the nonzero pitch supplies
       // cache distribution only. Never set the address-swizzle bit (bit15).
       b.int_val(16,p.cacheSwizzle?(uint64_t(p.pitch*2)|0x4000):0),
-      records,b.i32_val(0x20000));
+      b.zext(i64_ty, records), b.i32_val(0x20000));
   auto fn=getOrInsertHCUIntrinsic(op->getParentOfType<ModuleOp>(),loc,rw,
       p.structured?"llvm.amdgcn.struct.ptr.buffer.load.lds":"llvm.amdgcn.raw.ptr.buffer.load.lds",
       LLVM::LLVMVoidType::get(ctx),p.structured?
