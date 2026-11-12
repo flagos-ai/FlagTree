@@ -202,9 +202,9 @@ def _tle_sqmma_kernel(out):
 
 
 @triton.jit
-def _tle_sqmma_dead_result_wait_kernel(out):
-    a = tle.gpu.alloc((128, 64), dtype=tl.float16, layout=None)
-    b = tle.gpu.alloc((64, 128), dtype=tl.float16, layout=None)
+def _tle_sqmma_dead_result_wait_kernel(out, block_k: tl.constexpr):
+    a = tle.gpu.alloc((128, block_k), dtype=tl.float16, layout=None)
+    b = tle.gpu.alloc((block_k, 128), dtype=tl.float16, layout=None)
     acc = tl.zeros((128, 128), dtype=tl.float32)
     acc = tle.gpu.wgmma(a, b, acc)
     completed = tle.gpu.wgmma_wait(0, acc)
@@ -978,10 +978,17 @@ def test_mthreads_tle_sqmma_merges_adjacent_equal_pending_waits():
     assert _tce_calls(llir) == ["commit.group()", "commit.group()", "wait.group(i32 0)"], llir
 
 
-def test_mthreads_tle_sqmma_keeps_dead_result_completion_wait():
-    compiled = compile_musa(_tle_sqmma_dead_result_wait_kernel, {"out": "*fp32"})
+@pytest.mark.parametrize("block_k", [64, 128])
+def test_mthreads_tle_sqmma_keeps_dead_result_completion_wait(block_k):
+    """A dead issue leaves no commit behind, whether it is one mma or a chain."""
+    compiled = compile_musa(
+        _tle_sqmma_dead_result_wait_kernel,
+        {"out": "*fp32", "block_k": "constexpr"},
+        {"block_k": block_k},
+    )
     assert "ttmg.squad_dot_wait" in compiled.asm["ttgir"], compiled.asm["ttgir"]
     assert "call void @llvm.musa.sqmma.wait()" in compiled.asm["llir"], compiled.asm["llir"]
+    assert _tce_calls(compiled.asm["llir"]) == [], compiled.asm["llir"]
 
 
 def test_mthreads_tle_sqmma_lowers_direct_loop_yield():
@@ -1513,6 +1520,33 @@ def test_mthreads_tle_sqmma_falls_back_after_a_full_drain():
     # Two issues, wait(0), one more issue, then wait(1) with one group left.
     assert _tce_calls(llir) == ["commit.group()", "commit.group()", "wait.group(i32 0)", "commit.group()"], llir
     assert llir.count("call void @llvm.musa.sqmma.wait()") == 1, llir
+
+
+@triton.jit
+def _tle_sqmma_copy_between_issues_kernel(a_desc, b_desc, out):
+    a = tle.gpu.alloc((2, 128, 64), dtype=tl.float16, layout=None, nv_mma_shared_layout=True)
+    b = tle.gpu.alloc((2, 64, 128), dtype=tl.float16, layout=None, nv_mma_shared_layout=True)
+    zero = tl.zeros((128, 128), dtype=tl.float32)
+    first = tle.gpu.wgmma(a.slot(0), b.slot(0), zero)
+    # A TME copy lowers to a branch, which ends the block the first commit
+    # lives in, so the waits below cannot count it.
+    tle.gpu.copy(a_desc, a.slot(1), (128, 64), (0, 64))
+    tle.gpu.copy(b_desc, b.slot(1), (64, 128), (64, 0))
+    second = tle.gpu.wgmma(a.slot(1), b.slot(1), zero)
+    acc = tle.gpu.wgmma_wait(1, first)
+    acc = acc + tle.gpu.wgmma_wait(0, second)
+    offsets = tl.arange(0, 128)[:, None] * 128 + tl.arange(0, 128)[None, :]
+    tl.store(out + offsets, acc)
+
+
+def test_mthreads_tle_sqmma_falls_back_across_a_copy_between_issues():
+    """A copy between two issues splits the block, so neither wait can count both."""
+    llir = compile_musa(
+        _tle_sqmma_copy_between_issues_kernel,
+        {"a_desc": "tensordesc<fp16[128, 64]>", "b_desc": "tensordesc<fp16[64, 128]>", "out": "*fp32"},
+    ).asm["llir"]
+    assert _tce_calls(llir) == ["commit.group()", "commit.group()"], llir
+    assert llir.count("call void @llvm.musa.sqmma.wait()") == 2, llir
 
 
 def test_mthreads_tle_sqmma_pending_groups_runtime_precision():

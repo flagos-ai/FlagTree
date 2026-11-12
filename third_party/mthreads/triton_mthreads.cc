@@ -120,9 +120,10 @@ bool moduleUsesMulhiHelper(const llvm::Module &module) {
 // block boundary resets the count.  wgmma_wait(N) promises less than that - it
 // returns once at most N groups are in flight, however many were issued - so
 // the shapes llc rejects fall back to the parameterless sqmma.wait, which
-// drains everything and is accepted anywhere.  An issue whose result nothing
-// reads is dropped by llc, which would leave its commit with nothing to
-// commit, so such an issue and its commit are removed here instead.
+// drains everything and is accepted anywhere.  Matrix instructions nothing
+// outside their own issue reads are dropped by llc, which would leave the
+// commit closing them with nothing to commit, so such an issue and its commit
+// are removed here instead.
 bool relaxTceWaitGroups(llvm::Module &module) {
   constexpr llvm::StringLiteral kCommit = "llvm.musa.tce.commit.group";
   constexpr llvm::StringLiteral kWait = "llvm.musa.tce.wait.group";
@@ -151,13 +152,18 @@ bool relaxTceWaitGroups(llvm::Module &module) {
           continue;
         llvm::StringRef name = callee->getName();
         if (name == kCommit) {
-          bool dead = !issue.empty() &&
-                      llvm::all_of(issue, [](llvm::CallBase *mma) {
-                        return mma->use_empty();
-                      });
+          // A wide K issue is a chain of matrix instructions, so a link read
+          // only by the next link does not keep the issue alive: the chain is
+          // dead unless something outside it reads one of its results.
+          bool dead = !issue.empty() && llvm::all_of(issue, [&](auto *mma) {
+            return llvm::all_of(mma->users(), [&](auto *user) {
+              return llvm::is_contained(issue, user);
+            });
+          });
           if (dead) {
             erase.push_back(call);
-            erase.append(issue.begin(), issue.end());
+            // Users come before their operands, so the chain unlinks itself.
+            erase.append(issue.rbegin(), issue.rend());
           } else {
             ++outstanding;
           }
