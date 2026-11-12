@@ -8,6 +8,7 @@ import pytest
 import triton.testing as triton_testing
 
 from triton.flagtune.runtime import benchmark_protocol as benchmark_module
+from triton.flagtune.runtime import graph_benchmark as graph_benchmark_module
 from triton.testing import do_bench_cudagraph
 
 
