@@ -4,6 +4,7 @@
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "PatternTritonGPUOpToLLVM.h"
 #include "TritonHCUGPUToLLVM/TargetUtils.h"
+#include "WarpSpecializeUtils.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
@@ -65,7 +66,27 @@ public:
 };
 
 static bool hasAlignedMatrixReadAllocation(
-    Value source, const LLVMTypeConverter &converter);
+    Value source, const LLVMTypeConverter &converter,
+    ArrayRef<int64_t> offsetAlignment = {});
+
+static uint32_t matrixReadAddressBits(const LinearLayout &layout,
+                                     StringAttr dim, unsigned inputMask) {
+  uint32_t bits = 0;
+  for (unsigned i = 0; i < layout.getInDimSizeLog2(dim); ++i)
+    if (inputMask & (1u << i))
+      bits |= uint32_t(layout.getBasis(dim, i)[0]);
+  return bits;
+}
+
+// The chart combines coordinates with XOR. Bits in the constant row that
+// cannot occur in the variable address can instead be added by the instruction.
+static uint32_t matrixReadImmediate(uint32_t row, uint32_t variableBits,
+                                    unsigned elemBytes) {
+  uint64_t offset = uint64_t(row & ~variableBits) * elemBytes;
+  if (row > INT32_MAX || offset > UINT16_MAX || offset % 16)
+    return 0;
+  return offset;
+}
 
 // The legacy gfx936 matrix read gathers eight 16-bit values per lane. Within
 // each 16-lane group, output registers select producer addresses in the order
@@ -201,12 +222,9 @@ public:
     // Keep those reads unchanged until their actual offset bits are known.
     if (SharedMemoryObject::isAffineSharedMemoryAccess(srcTy))
       dynamicBits = ~uint64_t(0);
-    for (unsigned bit = 0; bit < 3; ++bit) {
-      dynamicBits |= uint32_t(cvt.getBasis(reg, bit)[0]);
-      dynamicBits |= uint32_t(cvt.getBasis(lane, bit + 3)[0]);
-    }
-    for (unsigned bit = 0; bit < cvt.getInDimSizeLog2(warp); ++bit)
-      dynamicBits |= uint32_t(cvt.getBasis(warp, bit)[0]);
+    dynamicBits |= matrixReadAddressBits(cvt, reg, 7) |
+                   matrixReadAddressBits(cvt, lane, 0x38) |
+                   matrixReadAddressBits(cvt, warp, ~0u);
     unsigned elemBytes = dstTy.getElementTypeBitWidth() / 8;
     llvm::DenseMap<uint64_t, Value> rowPointers;
     Value zeroRowAddress;
@@ -214,15 +232,10 @@ public:
     for (unsigned i = 0; i < count; i += 8) {
       uint64_t row = uint32_t(cvt.apply(
           {{reg, int32_t(i)}, {lane, 0}, {warp, 0}})[0].second);
-      uint64_t additive = row & ~dynamicBits;
-      uint64_t byteOffset = additive * elemBytes;
-      // Matrix reads require a 16-byte row. Unsupported immediate ranges
-      // keep the exact old pointer expression and counter-visible intrinsic.
-      if (row > INT32_MAX || byteOffset > UINT16_MAX || byteOffset % 16)
-        byteOffset = 0;
+      uint32_t byteOffset = matrixReadImmediate(row, dynamicBits, elemBytes);
       Value ptr;
       if (byteOffset) {
-        uint64_t baseRow = row ^ additive;
+        uint64_t baseRow = row ^ (byteOffset / elemBytes);
         auto &cached = rowPointers[baseRow];
         if (!cached) {
           Value addr = b.xor_(zeroRowAddress, b.i32_val(baseRow));
@@ -262,8 +275,11 @@ private:
 // Follow the same forwarded-successor operand interface used by upstream's
 // TensorMemoryAllocation::getAlloc. Check every incoming edge, including both
 // edges of a conditional branch to the same block, and reject unknown roots.
-static bool hasAlignedMatrixReadAllocation(Value source,
-                                    const LLVMTypeConverter &converter) {
+// When offsetAlignment is present, also prove the accumulated logical offsets
+// are aligned to each dimension of the result tile.
+static bool hasAlignedMatrixReadAllocation(
+    Value source, const LLVMTypeConverter &converter,
+    ArrayRef<int64_t> offsetAlignment) {
   llvm::DenseSet<Value> seen;
   llvm::DenseMap<Value, SmallVector<Value>> dependents;
   SmallVector<Value> worklist{source}, anchors;
@@ -301,6 +317,16 @@ static bool hasAlignedMatrixReadAllocation(Value source,
           srcTy.getAllocShape() != dstTy.getAllocShape() ||
           srcTy.getMemorySpace() != dstTy.getMemorySpace())
         return false;
+      if (!offsetAlignment.empty()) {
+        ArrayRef<int32_t> offsets = slice.getOffsets();
+        if (offsets.size() < offsetAlignment.size())
+          return false;
+        for (auto [offset, alignment] :
+             llvm::zip(offsets.take_back(offsetAlignment.size()),
+                       offsetAlignment))
+          if (offset < 0 || offset % alignment)
+            return false;
+      }
       follow(slice.getSrc());
     } else if (auto view =
                    value.getDefiningOp<triton::gpu::MemDescReinterpretOp>()) {
@@ -310,7 +336,8 @@ static bool hasAlignedMatrixReadAllocation(Value source,
       // either view's rank or logical tensor shape.
       auto from = view.getSrc().getType();
       auto to = view.getType();
-      if (from.getElementType() != to.getElementType() ||
+      if (!offsetAlignment.empty() ||
+          from.getElementType() != to.getElementType() ||
           from.getMemorySpace() != to.getMemorySpace() ||
           from.getElementTypeBitWidth() != 16 ||
           (SharedMemoryObject::getMaskSpanOffsets(from) & 7))
@@ -339,6 +366,11 @@ static bool hasAlignedMatrixReadAllocation(Value source,
       follow(input);
     } else if (auto arg = dyn_cast<BlockArgument>(value)) {
       Block *block = arg.getOwner();
+      Value capture = HCU::resolveWarpSpecializeCapture(arg);
+      if (capture != value) {
+        follow(capture);
+        continue;
+      }
       if (block->isEntryBlock())
         return false;
       bool hasIncoming = false;
@@ -638,17 +670,46 @@ public:
     }
     SmallVector<Value> values(count);
     unsigned selectedMask = 3u | (1u << chosen);
+    // An affine subview may occupy only its allocation-span bits if every
+    // reaching subslice is aligned to the final tile. Check the offsets,
+    // including identity subslices, instead of assuming this from the type.
+    uint32_t dynamicBits = SharedMemoryObject::getMaskSpanOffsets(srcTy);
+    bool foldImmediate = natural &&
+        (!dynamicBits || hasAlignedMatrixReadAllocation(
+                            op.getSrc(), *getTypeConverter(), srcTy.getShape()));
+    // producerReg uses bits 0–1 and producerLane uses bits 2–5.
+    if (foldImmediate)
+      dynamicBits |= matrixReadAddressBits(cvt, reg, 3) |
+                     matrixReadAddressBits(cvt, lane, 0x3c) |
+                     matrixReadAddressBits(cvt, warp, ~0u);
+    unsigned elemBytes = dstTy.getElementTypeBitWidth() / 8;
+    Value zeroRowAddress;
+    if (foldImmediate) {
+      auto addr = applyLinearLayout(loc, rewriter, cvt,
+                                    {{reg, producerReg}, {lane, producerLane},
+                                     {warp, warpId}})[0].second;
+      zeroRowAddress = b.xor_(addr, affine);
+    }
     for (unsigned base = 0; base < count; ++base) {
       if (base & selectedMask)
         continue;
-      auto regId = b.or_(producerReg, b.i32_val(base));
-      auto addr = applyLinearLayout(loc, rewriter, cvt,
-                                    {{reg, regId}, {lane, producerLane},
-                                     {warp, warpId}})[0].second;
-      addr = b.xor_(addr, affine);
+      uint32_t byteOffset = 0;
+      Value addr;
+      if (foldImmediate) {
+        uint32_t row = cvt.apply(
+            {{reg, int32_t(base)}, {lane, 0}, {warp, 0}})[0].second;
+        byteOffset = matrixReadImmediate(row, dynamicBits, elemBytes);
+        addr = b.xor_(zeroRowAddress, b.i32_val(row ^ (byteOffset / elemBytes)));
+      } else {
+        auto regId = b.or_(producerReg, b.i32_val(base));
+        addr = applyLinearLayout(loc, rewriter, cvt,
+                                 {{reg, regId}, {lane, producerLane},
+                                  {warp, warpId}})[0].second;
+        addr = b.xor_(addr, affine);
+      }
       auto ptr = b.gep(ptr_ty(ctx, 3), elemTy, smem.getBase(), addr);
       auto read = LLVM::createLLVMCallOp(rewriter, loc, readFunc,
-                                        {ptr, b.i32_val(0)});
+                                        {ptr, b.i32_val(byteOffset)});
       HCU::addLocalLoadNoAliasScope(
           op, cast<LLVM::AliasAnalysisOpInterface>(read.getOperation()));
       auto packed = b.bitcast(read.getResult(), vec_ty(elemTy, 8));

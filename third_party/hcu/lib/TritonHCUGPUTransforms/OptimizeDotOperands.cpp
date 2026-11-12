@@ -198,11 +198,10 @@ public:
 };
 
 
-// Descriptor loads have scalar address operands, so ordinary tensor-pointer
-// rematerialization cannot retarget them. Infer a closed pure-view tree from
-// all dot consumers, then change only SSA encodings at the original read.
-// Conflicting fanout or any non-view use retains the existing path.
-class RegisterDescriptorViews : public OpRewritePattern<ttg::ConvertLayoutOp> {
+// Infer a closed pure-view tree from the consumers, then change only the SSA
+// encodings at the original read. Conflicting fanout or non-view use retains
+// the existing path.
+class RegisterLoadViews : public OpRewritePattern<ttg::ConvertLayoutOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
 
@@ -218,11 +217,24 @@ public:
         return failure();
       root = root.getDefiningOp()->getOperand(0);
     }
-    auto load = root.getDefiningOp<tt::MatrixLoadOp>();
-    if (!load || root == convert.getSrc() || load.getIsVolatile() ||
-        !isa<ttg::DistributedEncodingTrait>(load.getType().getEncoding()) ||
-        !load->hasAttr("hcu.structured_register"))
+    Operation *read = root.getDefiningOp();
+    auto type = dyn_cast<RankedTensorType>(root.getType());
+    if (!read || !type || root == convert.getSrc() ||
+        !isa<ttg::DistributedEncodingTrait>(type.getEncoding()))
       return failure();
+    if (auto load = dyn_cast<tt::MatrixLoadOp>(read)) {
+      if (load.getIsVolatile() || !load->hasAttr("hcu.structured_register"))
+        return failure();
+    } else if (auto load = dyn_cast<ttg::LocalLoadOp>(read)) {
+      auto shared = dyn_cast<ttg::SwizzledSharedEncodingAttr>(
+          load.getSrc().getType().getEncoding());
+      if (!read->getParentOfType<ttg::WarpSpecializeOp>() || !shared ||
+          shared.getOrder() != ArrayRef<unsigned>({1, 0}) || load.getToken() ||
+          !(type.getElementType().isF16() || type.getElementType().isBF16()))
+        return failure();
+    } else {
+      return failure();
+    }
     SetVector<Operation *> views;
     SetVector<ttg::ConvertLayoutOp> leaves;
     DenseSet<Value> visited;
@@ -269,7 +281,7 @@ public:
       }
     }
     Attribute encoding = ownership.lookup(root);
-    if (!encoding || encoding == load.getType().getEncoding())
+    if (!encoding || encoding == type.getEncoding())
       return failure();
     SmallVector<Operation *> ordered(views.begin(), views.end());
     auto depth = [&](Operation *op) {
@@ -298,9 +310,8 @@ public:
         forward[result] = output;
       }
     }
-    rewriter.modifyOpInPlace(load, [&] {
-      root.setType(load.getType().cloneWithEncoding(encoding));
-    });
+    rewriter.modifyOpInPlace(read,
+                             [&] { root.setType(type.cloneWithEncoding(encoding)); });
     for (Operation *view : ordered)
       rewriter.modifyOpInPlace(view, [&] {
         for (Value result : view->getResults())
@@ -611,7 +622,7 @@ public:
     });
     patterns.add<RetargetAccumulatorFence>(context);
     if (archGenerationName.getValue() == "gfx936")
-      patterns.add<LoadDotOperandRegisters, RegisterDescriptorViews,
+      patterns.add<LoadDotOperandRegisters, RegisterLoadViews,
                    RetargetLoopCarriedDotOperand>(context);
     auto isaFamily = triton::HCU::deduceISAFamily(archGenerationName);
     patterns
