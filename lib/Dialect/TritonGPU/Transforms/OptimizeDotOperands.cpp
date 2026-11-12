@@ -126,7 +126,8 @@ static bool isBackedByLocalAlloc(Value value, llvm::DenseSet<Value> &active);
 // build still compiles kernels for other targets, so the answer is keyed on
 // the module's target, not on the build.
 static bool keepsStoredSwizzledLayout(Value memDesc) {
-  auto module = memDesc.getParentRegion()->getParentOfType<ModuleOp>();
+  auto *region = memDesc.getParentRegion();
+  auto module = region ? region->getParentOfType<ModuleOp>() : nullptr;
   auto target =
       module ? module->getAttrOfType<StringAttr>(AttrTargetName) : nullptr;
   if (!target || !target.strref().starts_with("ppu:"))
@@ -144,7 +145,9 @@ static bool keepsStoredSwizzledLayout(Value memDesc) {
   return swizzled && swizzled.getMaxPhase() > 1;
 }
 #elif defined(__TLE__)
-// Builds without the PPU backend always retag the buffer.
+// A build without the PPU backend never generates code for a PPU target, so
+// the buffer is always retagged. The PPU answer is covered by the lit suite of
+// the PPU backend, which is the build that has this function.
 static bool keepsStoredSwizzledLayout(Value) { return false; }
 #endif
 

@@ -157,8 +157,11 @@ AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
 //
 // The widths of the size fields are not documented. On a PPU-ZW810E, a 2d row
 // length (Z) of 40000, a 3d row count (Y) of 32768 (40000 rows, clamped by the
-// lowering) and a 3d stride factor (X) of 32768 copy correctly; the compiler
-// takes kAIUMaxDim, inclusive, as the limit of each of these fields.
+// lowering) and a 3d stride factor (X) of 32768 copy correctly. kAIUMaxDim,
+// inclusive, is the limit the compiler applies to the fields a form is chosen
+// from: the row stride a strided 2d copy holds in its row-length field, and
+// both factors of a 3d copy. The row count of a 2d copy is passed through, the
+// measurement above having found that field wider than the limit.
 constexpr int64_t kAIUMaxDim = 1 << 15;
 
 // Looks through the extensions that widen block-pointer shapes and strides to

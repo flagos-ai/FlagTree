@@ -704,6 +704,12 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     index[innerDim] = b.urem(elem, innerLen);
     index[outerDim] = b.udiv(elem, innerLen);
     Value offset = b.i64_val(0);
+    // Only the dimensions boundary_check names are predicated, as a plain load
+    // of the same block pointer is: leaving one out is the caller's promise
+    // that the tile is inside the tensor there. The AIU path zero fills every
+    // out-of-tensor row because the descriptor carries the extents; that is a
+    // property of the engine, not a bound this copy owes the caller, so the
+    // two paths agree on the checked bounds rather than byte for byte.
     Value inBounds;
     for (unsigned dim = 0; dim < 2; ++dim) {
       Value pos = b.add(b.sext(i64_ty, adaptor.getCoord()[dim]),
@@ -1061,7 +1067,12 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
       coordC = op.getCoord()[0];
       rowDim = 1;
     }
-    // The PPU0015 descriptor takes the row stride directly.
+    // The PPU0015 descriptor takes the row stride directly, so neither the
+    // 2d/3d choice the PPU0010 lowering makes nor the thread copy that covers
+    // what those forms cannot express applies here. The compile-time gate still
+    // demotes a constant stride those forms reject, so only a run-time stride
+    // reaches this path; the layouts PPU0010 calls inexpressible (overlapping
+    // rows, a stride past the field limit) have not been run on PPU0015.
     Value rowStride = dimC;
     if (LLVM::PPU::getAIURowLayout(op.getStrides(), op.getShape(), rowDim) !=
         LLVM::PPU::AIURowLayout::Dense)
