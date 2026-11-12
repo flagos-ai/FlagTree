@@ -150,10 +150,9 @@ class partition_view_type(tl.dtype):
 
 
 def _require_tileir_builder(_semantic, op_name):
-    semantic_op_name = "create_mem_token" if op_name == "mem_token" else op_name
-    if _semantic is None or not hasattr(_semantic, semantic_op_name):
+    if _semantic is None or not hasattr(_semantic, op_name):
         raise NotImplementedError(f"tl.ext.{op_name} is only supported by FlagTree's TileIR path; "
-                                  "set FLAGTREE_USE_TILEIR=1 for kernels that only use TileIR TKO view ops")
+                                  "set FLAGTREE_USE_TILEIR=1 for kernels that only use supported TileIR TKO ops")
 
 
 def _unwrap_list(values):
@@ -193,14 +192,6 @@ def cat(input, other, can_reorder=False, dim=-1, _semantic=None):
     if dim not in (-1, len(input.shape)):
         raise NotImplementedError("tl.ext.cat currently only supports appending a last dimension")
     return tl.join(input, other, _semantic=_semantic)
-
-
-def _unsupported(name):
-
-    def fn(*args, **kwargs):
-        raise NotImplementedError(f"tl.ext.{name} is not supported by FlagTree's TileIR frontend yet")
-
-    return fn
 
 
 @tl.builtin
@@ -304,6 +295,48 @@ def store_view_tko(
 
 
 @tl.builtin
+def load_tko(ptr, mask=None, other=None, memToken=None, semantics="weak", scope="", has_result_token=False, cost=-1,
+             _semantic=None):
+    """Load a scalar or tensor of pointers with an optional memory-token dependency.
+
+    Masked-out elements use ``other`` (undefined if omitted). With
+    ``has_result_token=True``, return ``(value, token)`` instead of value.
+    Block pointers are not supported. Ordering and scope match ``load_view_tko``.
+    """
+    _require_tileir_builder(_semantic, "load_tko")
+    ptr = _semantic.to_tensor(ptr)
+    mask = tl._unwrap_if_constexpr(mask)
+    other = tl._unwrap_if_constexpr(other)
+    if mask is not None:
+        mask = _semantic.to_tensor(mask)
+    if other is not None:
+        other = _semantic.to_tensor(other)
+    memToken = tl._unwrap_if_constexpr(memToken)
+    return _semantic.load_tko(ptr, mask, other, memToken, semantics, scope, mem_token_type(),
+                              bool(tl._unwrap_if_constexpr(has_result_token)), int(tl._unwrap_if_constexpr(cost)))
+
+
+@tl.builtin
+def store_tko(ptr, value, mask=None, memToken=None, semantics="weak", scope="", has_result_token=False, cost=-1,
+              _semantic=None):
+    """Store through a scalar or tensor of pointers with an optional token dependency.
+
+    Return a token when ``has_result_token=True``. Masked-out elements are not
+    written. Block pointers are not supported. Ordering and scope match
+    ``store_view_tko``.
+    """
+    _require_tileir_builder(_semantic, "store_tko")
+    ptr = _semantic.to_tensor(ptr)
+    value = _semantic.to_tensor(value)
+    mask = tl._unwrap_if_constexpr(mask)
+    if mask is not None:
+        mask = _semantic.to_tensor(mask)
+    memToken = tl._unwrap_if_constexpr(memToken)
+    return _semantic.store_tko(ptr, value, mask, memToken, semantics, scope, mem_token_type(),
+                               bool(tl._unwrap_if_constexpr(has_result_token)), int(tl._unwrap_if_constexpr(cost)))
+
+
+@tl.builtin
 def dim(src, index, _semantic=None):
     _require_tileir_builder(_semantic, "dim")
     index = tl._unwrap_if_constexpr(index)
@@ -312,7 +345,7 @@ def dim(src, index, _semantic=None):
 
 @tl.builtin
 def create_mem_token(_semantic=None):
-    _require_tileir_builder(_semantic, "mem_token")
+    _require_tileir_builder(_semantic, "create_mem_token")
     return tl.tensor(_semantic.create_mem_token(), mem_token_type())
 
 
@@ -334,8 +367,49 @@ def join_mem_tokens(*tokens, _semantic=None):
     return result
 
 
-load = _unsupported("load")
-store = _unsupported("store")
-atomic_cas = _unsupported("atomic_cas")
-atomic_xchg = _unsupported("atomic_xchg")
-tileir_tiled_atomic_rmw = _unsupported("tileir_tiled_atomic_rmw")
+@tl.builtin
+def atomic_cas_tko(
+    ptr,
+    cmp,
+    val,
+    memToken=None,
+    semantics="relaxed",
+    scope="device",
+    has_result_token=False,
+    _semantic=None,
+):
+    _require_tileir_builder(_semantic, "atomic_cas_tko")
+    has_result_token = bool(tl._unwrap_if_constexpr(has_result_token))
+    return _semantic.atomic_cas_tko(
+        ptr,
+        cmp,
+        val,
+        memToken,
+        semantics,
+        scope,
+        mem_token_type(),
+        has_result_token,
+    )
+
+
+@tl.builtin
+def atomic_xchg_tko(
+    ptr,
+    val,
+    memToken=None,
+    semantics="relaxed",
+    scope="device",
+    has_result_token=False,
+    _semantic=None,
+):
+    _require_tileir_builder(_semantic, "atomic_xchg_tko")
+    has_result_token = bool(tl._unwrap_if_constexpr(has_result_token))
+    return _semantic.atomic_xchg_tko(
+        ptr,
+        val,
+        memToken,
+        semantics,
+        scope,
+        mem_token_type(),
+        has_result_token,
+    )

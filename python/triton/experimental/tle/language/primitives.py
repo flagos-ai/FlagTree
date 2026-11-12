@@ -48,6 +48,10 @@ TLE_PRIMITIVES = frozenset({
     "join_mem_tokens",
     "load_view_tko",
     "store_view_tko",
+    "load_tko",
+    "store_tko",
+    "atomic_cas_tko",
+    "atomic_xchg_tko",
 
     # TLE-Lite: tileir token/tko
     "dim",
