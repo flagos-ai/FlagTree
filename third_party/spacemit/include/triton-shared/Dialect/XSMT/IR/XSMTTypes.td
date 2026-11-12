@@ -10,14 +10,14 @@ class XSMT_TypeDef<string name, string _mnemonic, list<Trait> traits = []>
 def XSMT_BufferType : XSMT_TypeDef<"Buffer", "buffer", [ShapedTypeInterface]> {
   let summary = "buffer type for SMT tensors";
   let description = [{
-    A buffer type that represents multi-buffered tensors with different storage kinds.
+    A buffer type that represents multi-buffered tensors with different scope kinds.
   }];
 
   let parameters = (ins
     ArrayRefParameter<"int64_t">:$shape,
     "Type":$elementType,
     "int":$copies,
-    "StringAttr":$storageKind
+    "StringAttr":$scopeKind
   );
 
   let builders = [
@@ -25,11 +25,11 @@ def XSMT_BufferType : XSMT_TypeDef<"Buffer", "buffer", [ShapedTypeInterface]> {
       "llvm::ArrayRef<int64_t>":$shape,
       "Type":$elementType,
       "int":$copies,
-      "StringRef":$storageKind
+      "StringRef":$scopeKind
     ), [{
       auto *ctx = elementType.getContext();
       return $_get(ctx, shape, elementType, copies,
-                   StringAttr::get(ctx, storageKind));
+                   StringAttr::get(ctx, scopeKind));
     }]>
   ];
 

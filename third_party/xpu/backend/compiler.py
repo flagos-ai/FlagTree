@@ -822,6 +822,16 @@ class XPUBackend(BaseBackend):
             fn_cache_manager.put(ret_asm, f"{metadata['name']}.asm")
         ret_elf = llvm19_toolchain.llir_to_object(ir_text, "xpu", triple, proc, extra_args=llc_extra)
 
+        # `tle.raw` payloads declared with `object=` ship as device objects
+        # rather than IR, so their calls remain external symbols in `ret_elf`.
+        # Link them in with a relocatable link so the backend still receives a
+        # single object; this trades the raw call's inlining for shipping
+        # machine code instead of readable IR.
+        from triton.experimental.tle.raw.merge import TLE_RAW_EXTERN_OBJECTS_KEY
+        objects = metadata.get(TLE_RAW_EXTERN_OBJECTS_KEY) or ()
+        if objects:
+            ret_elf = llvm19_toolchain.link_objects(ret_elf, list(objects), "xpu")
+
         del mod
         return ret_elf
 

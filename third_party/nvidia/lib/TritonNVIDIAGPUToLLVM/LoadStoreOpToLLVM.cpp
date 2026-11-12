@@ -212,7 +212,7 @@ struct LoadStoreConversionBase {
     return ptrElemTy && isSharedFamilyAddressSpace(ptrElemTy.getAddressSpace());
   }
 
-  unsigned getMaxVectorSizeByAlignment(Value ptr) const {
+  unsigned getMaxVectorSizeByAxisInfo(Value ptr) const {
     auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType());
     if (!tensorTy)
       return 1;
@@ -232,7 +232,8 @@ struct LoadStoreConversionBase {
     unsigned maxMultipleBytes = axisInfo->getDivisibility(order[0]);
     unsigned maxMultiple = std::max<unsigned>(maxMultipleBytes / elemBytes, 1);
 
-    return std::min<unsigned>(128 / pointeeBitWidth, maxMultiple);
+    unsigned contiguous = axisInfo->getContiguity(order[0]);
+    return std::min({128 / pointeeBitWidth, maxMultiple, contiguous});
   }
 
   unsigned getTleSharedPointerVectorSize(Value ptr, unsigned vec) const {
@@ -240,11 +241,12 @@ struct LoadStoreConversionBase {
       return vec;
 
     // AxisInfo contiguity and TLE layout hints may both propose vectorized
-    // shared-memory accesses. They are legal only up to the width whose first
-    // element alignment is proven by AxisInfo divisibility.
+    // shared-memory accesses. Both pointer contiguity and first-element
+    // alignment must be proven; contiguous registers alone do not prove that
+    // gathered pointers address adjacent memory elements.
     unsigned hint = tte::inferTlePointerLayoutVectorHint(ptr);
-    unsigned alignmentBound = getMaxVectorSizeByAlignment(ptr);
-    return std::min(std::max(vec, hint), alignmentBound);
+    unsigned axisBound = getMaxVectorSizeByAxisInfo(ptr);
+    return std::min(std::max(vec, hint), axisBound);
   }
 #endif
 
@@ -1455,10 +1457,18 @@ struct AsyncCopyGlobalToLocalOpConversion
              << vecBytes << " bytes";
     }
     assert(vecBytes == 16 || vecBytes == 8 || vecBytes == 4);
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+    // Modifiers cp.async cannot express fall back to ca/cg in emitCpAsync.
+    // This check, the PTX gate of the L2 hint and the modifier choice below
+    // have no run-time switch, unlike the TTGIR passes behind the same macro
+    // (knobs.nvidia.pipeline_enhance): their #else branches trap in ptxas or
+    // reject the op, so there is no lowering to switch back to.
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
     if (op.getCache() != CacheModifier::NONE &&
         op.getCache() != CacheModifier::CA &&
         op.getCache() != CacheModifier::CG)
       return op.emitError("cp.async supports only ca/cg cache modifiers");
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 
     auto freeVarMasks = getFreeVariableMasks(srcTy);
     // NOTE(@peterbell10): We load redundant data on different CTAs, so the data
@@ -1468,8 +1478,19 @@ struct AsyncCopyGlobalToLocalOpConversion
     Value threadPred =
         emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
 
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+    // Adapted from https://github.com/triton-lang/triton/pull/11660 and
+    // https://github.com/triton-lang/triton/pull/11848: ptxas before CUDA 13.4
+    // (PTX 9.4) miscompiles cp.async with an L2::cache_hint into an illegal
+    // instruction, so the eviction policy is only emitted from PTX 9.4 on.
+    Value l2PolicyReg;
+    if (targetInfo.getPtxVersion() >= 94)
+      l2PolicyReg =
+          createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
     Value l2PolicyReg =
         createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 
     auto emitCpAsync =
         [&b, threadPred, ptrTy, hasMask = bool(llMask), opCache = op.getCache(),
@@ -1481,6 +1502,14 @@ struct AsyncCopyGlobalToLocalOpConversion
       auto elemTy = vecTy.getElementType();
       auto nBytes = vecTy.getNumElements() * elemTy.getIntOrFloatBitWidth() / 8;
       assert(nBytes == 16 || nBytes == 8 || nBytes == 4);
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+      // Adapted from https://github.com/triton-lang/triton/pull/11660: honor
+      // an explicit `ca`; `cg` only exists for 16-byte copies and `cv` not at
+      // all, so those take the default instead of rejecting the op.
+      CacheModifier srcCacheModifier =
+          nBytes == 16 && opCache != CacheModifier::CA ? CacheModifier::CG
+                                                       : CacheModifier::CA;
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
       // Keep Triton's historical default when the user does not specify a
       // cache modifier, but honor tl.load/ttg.async_copy cache modifiers when
       // they are present.
@@ -1488,6 +1517,7 @@ struct AsyncCopyGlobalToLocalOpConversion
           opCache == CacheModifier::NONE
               ? (nBytes == 16 ? CacheModifier::CG : CacheModifier::CA)
               : opCache;
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 
       auto structElem = vals[startIdx];
       auto srcElem = b.extract_val(ptrTy, structElem, 0);

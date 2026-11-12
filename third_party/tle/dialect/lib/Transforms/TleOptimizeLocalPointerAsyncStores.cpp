@@ -29,6 +29,7 @@
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -301,6 +302,11 @@ matchAsyncStoreCandidate(triton::StoreOp store) {
   // eligible for the existing automatic fusion.
   if (auto asyncAttr = load->getAttrOfType<BoolAttr>("tt.load.async");
       asyncAttr && !asyncAttr.getValue())
+    return std::nullopt;
+  // The current AsyncCopyGlobalToLocal lowering only implements the implicit
+  // zero fill; a non-zero `other` operand is ignored. Keep the regular
+  // load/store pair so the requested fill value is honored.
+  if (load.getOther() && !isZeroConst(load.getOther()))
     return std::nullopt;
   if (!isa<RankedTensorType>(load.getType()))
     return std::nullopt;

@@ -88,10 +88,58 @@ void init_triton_passes_ttgpuir(py::module &&m) {
                      createTritonGPUOptimizeThreadLocality);
   ADD_PASS_OPTION_WRAPPER_1("add_hoist_tmem_alloc",
                             createTritonGPUHoistTMEMAlloc, bool);
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+  m.def(
+      "add_assign_latencies",
+      [](mlir::PassManager &pm, int num_stages, bool prefetch_index_loads) {
+        TritonGPUAssignLatenciesOptions options;
+        options.numStages = num_stages;
+        options.prefetchIndexLoads = prefetch_index_loads;
+        pm.addPass(createTritonGPUAssignLatencies(options));
+      },
+      py::arg("pm"), py::arg("num_stages"),
+      py::arg("prefetch_index_loads") = true);
+  m.def(
+      "add_merge_duplicate_loads",
+      [](mlir::PassManager &pm, const std::string &mode) {
+        TritonGPUMergeDuplicateLoadsOptions options;
+        options.mode = mode;
+        pm.addPass(createTritonGPUMergeDuplicateLoads(options));
+      },
+      py::arg("pm"), py::arg("mode") = "all");
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
   ADD_PASS_OPTION_WRAPPER_1("add_assign_latencies",
                             createTritonGPUAssignLatencies, int);
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   ADD_PASS_WRAPPER_0("add_schedule_loops", createTritonGPUScheduleLoops);
-  ADD_PASS_OPTION_WRAPPER_2("add_pipeline", createTritonGPUPipeline, int, bool);
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+  m.def(
+      "add_pipeline",
+      [](mlir::PassManager &pm, int num_stages, bool dump_enabled, bool enhance,
+         bool hoist_async_copy, bool wgmma_carry) {
+        TritonGPUPipelineOptions options;
+        options.numStages = num_stages;
+        options.dumpIntermediateSteps = dump_enabled;
+        options.enablePipelineEnhance = enhance;
+        options.hoistAsyncCopy = hoist_async_copy;
+        options.wgmmaCarry = wgmma_carry;
+        pm.addPass(createTritonGPUPipeline(options));
+      },
+      py::arg("pm"), py::arg("num_stages"), py::arg("dump_enabled"),
+      py::arg("enable_pipeline_enhance") = false,
+      py::arg("hoist_async_copy") = false, py::arg("wgmma_carry") = false);
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
+  // flagtree pipeline enhance: same signature with or without the macro
+  m.def(
+      "add_pipeline",
+      [](mlir::PassManager &pm, int num_stages, bool dump_enabled,
+         bool enhance) {
+        (void)enhance;
+        pm.addPass(createTritonGPUPipeline({num_stages, dump_enabled}));
+      },
+      py::arg("pm"), py::arg("num_stages"), py::arg("dump_enabled"),
+      py::arg("enable_pipeline_enhance") = false);
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   ADD_PASS_OPTION_WRAPPER_1("add_warp_specialize",
                             createTritonGPUAutomaticWarpSpecialization, int);
   ADD_PASS_WRAPPER_0("add_prefetch", createTritonGPUPrefetch);
@@ -115,10 +163,10 @@ void init_triton_passes_ttgpuir(py::module &&m) {
         TritonGPURemoveLayoutConversionsOptions options;
         options.enableRlcEnhance = enhance;
         pm.addPass(createTritonGPURemoveLayoutConversions(options));
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
         (void)enhance;
         pm.addPass(createTritonGPURemoveLayoutConversions());
-#endif
+#endif // __FLAGTREE_RLC_ENHANCE__
       },
       py::arg("pm"), py::arg("enable_rlc_enhance") = false);
   ADD_PASS_WRAPPER_0("add_reduce_data_duplication",

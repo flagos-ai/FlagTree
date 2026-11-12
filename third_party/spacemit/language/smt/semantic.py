@@ -64,7 +64,24 @@ def view(base: tl.tensor, offsets, shape, packed_size, destination=None, _semant
 
     if is_block_ptr:
         element_ty = pointee_type.element_ty
-        handle = _semantic.builder.create_viewptr(base.handle, offsets, shape, packed_size)
+        # Dispatch to subview or subview_pack
+        if all(s == 0 for s in packed_size):
+            # packed_size=[0,0] means subview (preserve existing packing)
+            handle = _semantic.builder.create_subview(base.handle, offsets, shape)
+        else:
+            # Check if base is already packed (4D) and packed_size matches
+            base_shape = pointee_type.shape
+            if len(base_shape) == 4:
+                base_packed = [base_shape[2], base_shape[3]]
+                if list(packed_size) == base_packed:
+                    # Same packed_size → subview (preserve packing)
+                    handle = _semantic.builder.create_subview(base.handle, offsets, shape)
+                else:
+                    # Different packed_size on ptr → subview_pack
+                    handle = _semantic.builder.create_subview_pack(base.handle, offsets, shape, packed_size)
+            else:
+                # 2D base → subview_pack (apply packing)
+                handle = _semantic.builder.create_subview_pack(base.handle, offsets, shape, packed_size)
 
     else:
         element_ty = pointee_type
@@ -126,23 +143,36 @@ def view(base: tl.tensor, offsets, shape, packed_size, destination=None, _semant
     return result_tensor
 
 
-def alloc(shape, dtype, storage: str, _semantic=None):
+# Offset by 10 to avoid collision with Triton's default address_space=1.
+# PtrToMemrefConverter maps these back: 10->Global(0), 11->TCM(1), 12->L2(2), 13->Fragment(3).
+_SCOPE_ADDR_SPACE_OFFSET = 10
+_SCOPE_TO_ADDRESS_SPACE = {
+    "global": _SCOPE_ADDR_SPACE_OFFSET + 0,
+    "tcm": _SCOPE_ADDR_SPACE_OFFSET + 1,
+    "l2": _SCOPE_ADDR_SPACE_OFFSET + 2,
+    "fragment": _SCOPE_ADDR_SPACE_OFFSET + 3,
+}
+
+
+def alloc(shape, dtype, scope: str, _semantic=None):
 
     shape = [elem.value if isinstance(elem, tl.constexpr) else elem for elem in shape]
 
-    ptr_type = tl.pointer_type(tl.block_type(dtype, shape))
-    dtype_ir = ptr_type.to_ir(_semantic.builder)
-    storage = storage.value if hasattr(storage, 'value') else storage
+    scope = scope.value if hasattr(scope, 'value') else scope
+    address_space = _SCOPE_TO_ADDRESS_SPACE.get(scope, 0)
 
-    handle = _semantic.builder.create_alloc(shape, dtype_ir, storage)
+    ptr_type = tl.pointer_type(tl.block_type(dtype, shape), address_space)
+    dtype_ir = ptr_type.to_ir(_semantic.builder)
+
+    handle = _semantic.builder.create_alloc(shape, dtype_ir, scope)
 
     return tl.tensor(handle, ptr_type)
 
 
-def alloc_copies(shape, dtype, copies, storage: str, _semantic=None):
+def alloc_copies(shape, dtype, copies, scope: str, _semantic=None):
     unwrapped_shape = [tl._unwrap_if_constexpr(dim) for dim in shape]
     unwrapped_num = tl._unwrap_if_constexpr(copies)
-    storage = storage.value if hasattr(storage, 'value') else storage
+    scope = scope.value if hasattr(scope, 'value') else scope
 
     num_val = unwrapped_num.value if isinstance(unwrapped_num, tl.constexpr) else unwrapped_num
     base_shape = [d.value if isinstance(d, tl.constexpr) else d for d in unwrapped_shape]
@@ -151,8 +181,8 @@ def alloc_copies(shape, dtype, copies, storage: str, _semantic=None):
 
     element_ty_ir = dtype.to_ir(_semantic.builder)
 
-    handle = _semantic.builder.create_alloc_copies(full_shape, element_ty_ir, storage)
-    return smt.buffered_tensor(handle, dtype, full_shape, num_val, storage, _semantic)
+    handle = _semantic.builder.create_alloc_copies(full_shape, element_ty_ir, scope)
+    return smt.buffered_tensor(handle, dtype, full_shape, num_val, scope, _semantic)
 
 
 def mmt4d(a_packed: tl.tensor, b_packed: tl.tensor, out_unpacked: tl.tensor, _semantic=None):

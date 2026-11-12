@@ -15,6 +15,9 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include <string>
@@ -61,7 +64,8 @@ bool isFP8(triton::musa::SQMMAEltType type) {
 struct SqmmaDescriptorIntrinsicSpec {
   llvm::StringRef intrinsicName;
   Type loadType;
-  Type dataType;
+  Type scalarInputType;
+  int64_t elemsPerLeadingGroup;
   Value leadingStrideBytes;
   Value swizzleGranularity;
   Value swizzleStride;
@@ -143,34 +147,71 @@ buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
   if (!loadType)
     return failure();
 
-  MLIRContext *ctx = rewriter.getContext();
   llvm::StringRef intrinsicName;
-  Type dataType;
   switch (eltType) {
   case triton::musa::SQMMAEltType::f16:
   case triton::musa::SQMMAEltType::bf16:
     intrinsicName = "llvm.musa.sqmma.desc.half";
-    dataType = rewriter.getI16Type();
     break;
   case triton::musa::SQMMAEltType::tf32:
     intrinsicName = "llvm.musa.sqmma.desc.fp32";
-    dataType = rewriter.getF32Type();
     break;
   case triton::musa::SQMMAEltType::s8:
   case triton::musa::SQMMAEltType::e4m3:
   case triton::musa::SQMMAEltType::e5m2:
     intrinsicName = "llvm.musa.sqmma.desc.i8";
-    dataType = IntegerType::get(ctx, 8);
     break;
   default:
     return failure();
   }
 
+  Type scalarInputType;
+#ifdef __TLE__
+  llvm::LLVMContext llvmContext;
+  auto intrinsicId = llvm::Intrinsic::lookupIntrinsicID(intrinsicName);
+  if (!intrinsicId || llvm::Intrinsic::isOverloaded(intrinsicId)) {
+    emitError(loc) << "unsupported SQMMA descriptor intrinsic: "
+                   << intrinsicName;
+    return failure();
+  }
+  auto *signature = llvm::Intrinsic::getType(llvmContext, intrinsicId);
+  if (signature->getNumParams() != 4 ||
+      !signature->getReturnType()->isIntegerTy(32) ||
+      !signature->getParamType(1)->isIntegerTy(32) ||
+      !signature->getParamType(2)->isIntegerTy(32) ||
+      !signature->getParamType(3)->isIntegerTy(32)) {
+    emitError(loc) << "unsupported SQMMA descriptor signature: "
+                   << intrinsicName;
+    return failure();
+  }
+  auto *inputType = signature->getParamType(0);
+  if (inputType->isPointerTy()) {
+    if (inputType->getPointerAddressSpace() != 3) {
+      emitError(loc) << "SQMMA descriptor requires a shared-memory pointer: "
+                     << intrinsicName;
+      return failure();
+    }
+  } else {
+    if (inputType->isIntegerTy(elemBits))
+      scalarInputType = rewriter.getIntegerType(elemBits);
+    else if (inputType->isHalfTy() && elemBits == 16)
+      scalarInputType = rewriter.getF16Type();
+    else if (inputType->isFloatTy() && elemBits == 32)
+      scalarInputType = rewriter.getF32Type();
+    else {
+      emitError(loc) << "unsupported SQMMA descriptor scalar argument: "
+                     << intrinsicName;
+      return failure();
+    }
+  }
+#endif // __TLE__
+
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   return SqmmaDescriptorIntrinsicSpec{
       intrinsicName,
       loadType,
-      dataType,
+      scalarInputType,
+      grouping->elemsPerGroupInLeadingDim,
       b.i32_val(static_cast<int32_t>(groupedLeadingWidthBytes)),
       b.i32_val(static_cast<int32_t>(swizzle->swizzleGranularity)),
       b.i32_val(static_cast<int32_t>(swizzle->swizzleStride)),
@@ -194,9 +235,7 @@ public:
     (void)ty;
     ord.assign(matrixView.order.begin(), matrixView.order.end());
     elemBytes = ty.getElementTypeBitWidth() / 8;
-    uint32_t widthInByte = this->physicalShape[ord[0]] * elemBytes;
-    elemsPerSwizzlingRow =
-        widthInByte > 256 ? 256 / elemBytes : this->physicalShape[ord[0]];
+    elemsPerSwizzlingRow = descriptorSpec.elemsPerLeadingGroup;
     elemsPerSwizzlingRowVal =
         TritonLLVMOpBuilder(loc, rewriter).i32_val(elemsPerSwizzlingRow);
   }
@@ -223,13 +262,13 @@ public:
     auto elemPtrTy = ptr_ty(rewriter.getContext(), 3);
     Value elemBase = b.bitcast(base, elemPtrTy);
     Value elemPtr = b.gep(elemPtrTy, descriptorSpec.loadType, elemBase, offset);
-    Value data =
-        LLVM::LoadOp::create(rewriter, loc, descriptorSpec.loadType, elemPtr);
-    if (data.getType() != descriptorSpec.dataType)
-      data = b.bitcast(data, descriptorSpec.dataType);
+    Value descriptorInput = elemPtr;
+    if (descriptorSpec.scalarInputType)
+      descriptorInput = LLVM::LoadOp::create(
+          rewriter, loc, descriptorSpec.scalarInputType, elemPtr);
     auto desc = LLVM::createLLVMIntrinsicCallOp(
         rewriter, loc, descriptorSpec.intrinsicName, TypeRange{i32_ty},
-        ValueRange{data, descriptorSpec.leadingStrideBytes,
+        ValueRange{descriptorInput, descriptorSpec.leadingStrideBytes,
                    descriptorSpec.swizzleGranularity,
                    descriptorSpec.swizzleStride});
     return desc.getResult(0);
@@ -562,6 +601,17 @@ getDotAccumulationMode(triton::mtgpu::SqmmaOp op) {
       static_cast<int>(op.getAccMode()));
 }
 
+#ifdef __TLE__
+static unsigned getDotInstructionK(triton::DotOp,
+                                   MUSASqmmaEncodingAttr encoding) {
+  return encoding.getInstrShape()[2];
+}
+template <typename DotLikeOp>
+static unsigned getDotInstructionK(DotLikeOp op, MUSASqmmaEncodingAttr) {
+  return op.getK();
+}
+#endif // __TLE__
+
 template <typename DotLikeOp, typename DotLikeAdaptor>
 LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
                                   const LLVMTypeConverter *typeConverter,
@@ -594,7 +644,13 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
 
   const unsigned instM = instrShape[0];
   const unsigned instN = instrShape[1];
-  const unsigned instK = instrShape[2];
+#ifdef __TLE__
+  // A reused FP32 accumulator may retain a preceding dtype's encoding K.
+  const unsigned instructionK = getDotInstructionK(op, mmaEnc);
+#else
+  const unsigned instructionK = instrShape[2];
+#endif // __TLE__
+  unsigned instK = instructionK;
 
   Value opA = getDotOperandA(op);
   Value opB = getDotOperandB(op);
@@ -642,8 +698,16 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
   if (elemBytes == 0)
     elemBytes = 1;
 
-  if (!isSupportedSqmma(eltTypeA, eltTypeB, eltTypeC, instM, instN, instK,
-                        *sqTraits, layoutA, layoutB, elemBytes, true, true))
+  const bool splitNarrowK128 = sqTraits->arch == triton::musa::MusaArch::PH1 &&
+                               instructionK == 128 && eltTypeA == eltTypeB &&
+                               (eltTypeA == triton::musa::SQMMAEltType::f16 ||
+                                eltTypeA == triton::musa::SQMMAEltType::bf16);
+  if (splitNarrowK128)
+    instK = 64;
+
+  if (!isSupportedSqmmaWithK128Compatibility(
+          eltTypeA, eltTypeB, eltTypeC, instM, instN, instructionK, *sqTraits,
+          layoutA, layoutB, elemBytes, true, true))
     return op.emitError("MUSA SQMMA: unsupported shape or element type");
   std::string sqmmaIntrinsic =
       triton::musa::lookupSqmmaIntrinsic(eltTypeA, instM, instN, instK);

@@ -219,6 +219,16 @@ struct BinaryScalarAndTensorOpFusion
       return failure();
     }
 
+    // Max/min fusion is only valid for the NaN-masked sequence emitted by
+    // MinMaxOpRewrite. A directly written arith.maximumf/minimumf (e.g.
+    // tl.maximum(..., propagate_nan=ALL)) must keep its NaN-propagating
+    // semantics until the hardware MaxVS behavior is verified.
+    if constexpr (std::is_same_v<ArithOp, arith::MaximumFOp> ||
+                  std::is_same_v<ArithOp, arith::MinimumFOp>) {
+      if (!op->hasAttr("mk.minmax_nan_masked"))
+        return failure();
+    }
+
     assert(regionOps.size() == 1 &&
            "Expected a single operation in the linalg.generic region");
 
@@ -477,6 +487,10 @@ void mlir::triton::populateLinalgBinaryOpFusionPatterns(
   patterns.add<BinaryScalarAndTensorOpFusion<arith::SubFOp, mk::SubVS>>(
       patterns.getContext());
   patterns.add<BinaryScalarAndTensorOpFusion<arith::MulFOp, mk::MulVS>>(
+      patterns.getContext());
+  patterns.add<BinaryScalarAndTensorOpFusion<arith::MaximumFOp, mk::MaxVS>>(
+      patterns.getContext());
+  patterns.add<BinaryScalarAndTensorOpFusion<arith::MinimumFOp, mk::MinVS>>(
       patterns.getContext());
 }
 

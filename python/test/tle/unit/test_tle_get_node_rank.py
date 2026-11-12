@@ -22,7 +22,7 @@ def _tle_node_rank_kernel(out_ptr, device_dptr: tl.constexpr, mesh: tl.constexpr
     tl.store(out_ptr + pid, node_rank)
 
 
-@pytest.mark.require_tle("shard_id")
+@pytest.mark.skip_if_tle_unsupported("shard_id")
 def test_tle_get_node_rank():
     grid = 2
     with torch.cuda.use_mem_pool(tle.get_mem_pool()):

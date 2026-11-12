@@ -1,6 +1,7 @@
 #include "Dialect/MUSA/IR/Dialect.h"
 #include "TritonMUSACommon/MMAOperandUtils.h"
 #ifdef __TLE__
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSACommon/TMEUtils.h"
 #endif // __TLE__
 #include "TritonMUSAGPUTransforms/Passes.h"
@@ -55,8 +56,12 @@ static Value peelSqmmaIssueOperand(Value value) {
   return value;
 }
 
-static bool isIssueBarrier(ttg::BarrierOp barrier) {
-  return barrier && barrier.hasLocal() &&
+static bool isIssueBarrier(ttg::BarrierOp barrier, ttg::AddrSpace addrSpace) {
+  if (!barrier || !barrier.hasLocal())
+    return false;
+  // Non-local TTG barriers lower to barrier0.  SQMMA only needs the
+  // shared-memory synchronization, while TME stores retain the full barrier.
+  return addrSpace == ttg::AddrSpace::Local ||
          barrier.getAddrSpace() != ttg::AddrSpace::Local;
 }
 
@@ -64,7 +69,7 @@ static bool isIssueBarrier(ttg::BarrierOp barrier) {
 static bool isInsideStaticWarpSpecialize(Operation *op) {
   for (Operation *parent = op->getParentOp(); parent;
        parent = parent->getParentOp()) {
-    if (parent->hasAttr("musa_tle.static_warp_specialize"))
+    if (parent->hasAttr(triton::musa_tle::kMUSATLEStaticWarpSpecializeAttr))
       return true;
   }
   return false;
@@ -85,18 +90,19 @@ shouldInsertIssueBarrierBefore(triton::musa::AsyncTMECopyLocalToGlobalOp op) {
 #endif // __TLE__
   Operation *prev = op->getPrevNode();
   auto prevBarrier = dyn_cast_or_null<ttg::BarrierOp>(prev);
-  return !isIssueBarrier(prevBarrier);
+  return !isIssueBarrier(prevBarrier, ttg::AddrSpace::All);
 }
 
 static bool shouldInsertIssueBarrierBefore(triton::musa::SquadDotOp op) {
 #ifdef __TLE__
   bool partitionLocal = isInsideStaticWarpSpecialize(op);
-  if (partitionLocal && op->hasAttr("musa_tle.explicit_sqmma"))
+  if (partitionLocal &&
+      op->hasAttr(triton::musa_tle::kMUSATLEExplicitSqmmaAttr))
     return false;
 
   Operation *prev = op->getPrevNode();
   auto prevBarrier = dyn_cast_or_null<ttg::BarrierOp>(prev);
-  if (isIssueBarrier(prevBarrier) ||
+  if (isIssueBarrier(prevBarrier, ttg::AddrSpace::Local) ||
       (partitionLocal && prevBarrier && prevBarrier.hasLocal()))
     return false;
 
@@ -112,7 +118,7 @@ static bool shouldInsertIssueBarrierBefore(triton::musa::SquadDotOp op) {
 #else
   Operation *prev = op->getPrevNode();
   auto prevBarrier = dyn_cast_or_null<ttg::BarrierOp>(prev);
-  if (isIssueBarrier(prevBarrier))
+  if (isIssueBarrier(prevBarrier, ttg::AddrSpace::Local))
     return false;
 
   Value aMemDesc = peelSqmmaIssueOperand(op.getA());
@@ -127,7 +133,8 @@ static bool shouldInsertIssueBarrierBefore(triton::musa::SquadDotOp op) {
 #endif // __TLE__
 }
 
-static void insertIssueBarrierBefore(Operation *op, RewriterBase &rewriter) {
+static void insertIssueBarrierBefore(Operation *op, RewriterBase &rewriter,
+                                     ttg::AddrSpace addrSpace) {
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPoint(op);
 #ifdef __TLE__
@@ -135,12 +142,11 @@ static void insertIssueBarrierBefore(Operation *op, RewriterBase &rewriter) {
     // Publish shared operands within the issuing partition. Late static WS
     // lowering turns local barriers into partition arrival/wait pairs; a CTA
     // issue barrier here would also wait for unrelated producer/reader warps.
-    ttg::BarrierOp::create(rewriter, op->getLoc(), ttg::AddrSpace::Local);
+    ttg::BarrierOp::create(rewriter, op->getLoc(), addrSpace);
     return;
   }
 #endif // __TLE__
-  // MUSA lowers non-local TTG barriers to llvm.musa.barrier0.
-  ttg::BarrierOp::create(rewriter, op->getLoc(), ttg::AddrSpace::All);
+  ttg::BarrierOp::create(rewriter, op->getLoc(), addrSpace);
 }
 
 } // namespace
@@ -168,13 +174,13 @@ struct TritonMUSAGPUIssueBarrierInsertionPass
       if (auto store =
               dyn_cast<triton::musa::AsyncTMECopyLocalToGlobalOp>(op)) {
         if (shouldInsertIssueBarrierBefore(store))
-          insertIssueBarrierBefore(op, rewriter);
+          insertIssueBarrierBefore(op, rewriter, ttg::AddrSpace::All);
         continue;
       }
 
       if (auto sqmma = dyn_cast<triton::musa::SquadDotOp>(op)) {
         if (shouldInsertIssueBarrierBefore(sqmma))
-          insertIssueBarrierBefore(op, rewriter);
+          insertIssueBarrierBefore(op, rewriter, ttg::AddrSpace::Local);
         continue;
       }
     }

@@ -513,7 +513,12 @@ struct InitArrivalOpConversion
                           .i32_val(static_cast<int32_t>(*numWarps));
     }
 
-    Value launchPred = buildTMEIssueOnlyPredicate(loc, rewriter);
+    Value truePred = arith::ConstantIntOp::create(rewriter, loc, 1, 1);
+#ifdef __TLE__
+    Value launchPred = buildTMEIssuePredicate(truePred, loc, rewriter, op);
+#else
+    Value launchPred = buildTMEIssuePredicate(truePred, loc, rewriter);
+#endif // __TLE__
     SmallVector<Value> operands = {adaptor.getBarId(), arriveCount,
                                    adaptor.getPhaseId()};
     emitPredicatedVoidIntrinsic(rewriter, loc, launchPred,
@@ -690,10 +695,10 @@ struct AsyncTMECopyGlobalToLocalOpConversion
 
 #ifdef __TLE__
     if (!op->hasAttr(triton::musa::kTMEExplicitCompletionAttr))
-      LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.barrier0",
+      LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.syncthreads.lm",
                                       TypeRange{}, {});
 #else
-    LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.barrier0",
+    LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.syncthreads.lm",
                                     TypeRange{}, {});
 #endif // __TLE__
 

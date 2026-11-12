@@ -46,9 +46,25 @@ runs:
 
         # Check if the workflow is triggered by a Pull Request event
         if [ "${{ github.event_name }}" == "pull_request" ]; then
-          # Use three-dot syntax to compare the merge base (common ancestor) with the HEAD commit
-          # This ensures we only detect files changed in this PR, excluding changes already merged to base branch
-          FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.sha }})
+          # Diff the PR head against the merge base it shares with the *current*
+          # base branch, so only files this PR actually touches are reported.
+          #
+          # Two traps this avoids:
+          #   - github.sha is a synthetic merge commit of the PR into the base
+          #     branch as it looks right now, while base.sha is frozen at the
+          #     time the PR was opened. Diffing between them attributes every
+          #     commit landed on the base branch since then to this PR, so a PR
+          #     that sat for a few days triggers all backends on its next push.
+          #   - base.sha stops being the merge base once the author merges the
+          #     base branch into their own branch, which brings those same
+          #     unrelated commits back into the diff.
+          PR_HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          PR_BASE_REF="origin/${{ github.event.pull_request.base.ref }}"
+          # Fall back to base.sha if the base branch ref is unavailable locally.
+          MERGE_BASE=$(git merge-base "$PR_BASE_REF" "$PR_HEAD_SHA" 2>/dev/null \
+            || git merge-base "${{ github.event.pull_request.base.sha }}" "$PR_HEAD_SHA")
+          echo "PR diff range: $MERGE_BASE...$PR_HEAD_SHA"
+          FILES=$(git diff --name-only "$MERGE_BASE...$PR_HEAD_SHA")
         else
           # Handle 'push' events (or other events where 'base_ref' isn't applicable)
           # Check if the 'before' SHA is all zeros, which indicates a newly created/pushed branch
@@ -159,6 +175,24 @@ runs:
           # Files/directories in NEED_CI_TEST → run CI
           if need_ci_test "$file"; then
             echo "'$file' -> In NEED_CI_TEST list, need to run"
+            SHOULD_SKIP=false
+            break
+          fi
+
+          # FlagGems CI assets. A per-backend skip list only concerns its own
+          # backend; everything else there (shared tooling, conftest.py, the
+          # default skip list) affects every backend's results.
+          if [[ "$file" == .github/workflows/gems/* ]]; then
+            # A skip list named after another backend cannot affect this one.
+            # default.yaml is NOT such a file: it applies to every backend
+            # that has no override, so it counts as shared.
+            if [[ "$file" == */skip_list/*.yaml ]] \
+               && [[ "$file" != */skip_list/default.yaml ]] \
+               && [[ "$file" != */skip_list/${BACKEND}.yaml ]]; then
+              echo "'$file' -> Another backend's skip list, not relevant"
+              continue
+            fi
+            echo "'$file' -> FlagGems CI asset for '$BACKEND' changed, need to run"
             SHOULD_SKIP=false
             break
           fi

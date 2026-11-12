@@ -5,17 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from itertools import islice
+from pathlib import Path
 
 import pytest
 
 from triton.flagtune.contract.archive import read_platform_package
+from triton.flagtune.contract.operator_schema import _MISSING
+from triton.flagtune.runtime import model_sources
 from triton.flagtune.runtime.model_loader import FlagTuneModelManager
+from triton.flagtune.runtime.proposer import make_config_proposer
 
 RUN_REMOTE_ENV = "FLAGTUNE_RUN_REMOTE_INTEGRATION"
 MODEL_VERSION = "1.0.0"
 THEAD_MM_VERSION = "1.1.0"
 REMOTE_BASE_URL = "https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans"
-REMOTE_MANIFEST_URL = f"{REMOTE_BASE_URL}/flagtune-xgb-manifest.tar.gz"
+REMOTE_MANIFEST_URL = os.environ.get("FLAGTUNE_TEST_MANIFEST_URL", model_sources._DEFAULT_MANIFEST_URL)
 PUBLISHED_PACKAGES = (
     (
         "hygon-bw",
@@ -64,6 +69,16 @@ def _sha256(path):
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _prediction_inputs(variant):
+    """Cover dense, GEMV and split-K predicates without requiring a GPU."""
+    required = {field.name: 128 for field in variant.inputs if field.default is _MISSING}
+    for m, n, k in ((128, 128, 128), (128, 1, 128), (1, 128, 128), (16, 128, 4096), (32, 64, 4096)):
+        values = {**required, "M": m, "N": n, "K": k, "n_elements": 2048, "n_cols": 64}
+        if variant.matches(values):
+            return values
+    raise AssertionError(f"no integration input covers {variant.op_id}/{variant.name}")
 
 
 def _expected_models(platform_key, model_version):
@@ -125,10 +140,11 @@ def test_ksyun_package_download_validation_and_cache_reuse(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(cache_root))
     monkeypatch.setenv("FLAGTUNE_MANIFEST_URL", REMOTE_MANIFEST_URL)
+    staging_manifest = os.environ.get("FLAGTUNE_TEST_LOCAL_MANIFEST")
+    if staging_manifest:
+        monkeypatch.setenv("FLAGTUNE_LOCAL_MANIFEST", staging_manifest)
 
-    # Archive parsing below validates every child config without requiring the
-    # optional XGBoost runtime to be installed in the integration-test host.
-    monkeypatch.setattr(FlagTuneModelManager, "_validate_bundle_members", lambda *_args, **_kwargs: None)
+    pytest.importorskip("xgboost", reason="published model validation requires the real XGBoost runtime")
     downloaded = FlagTuneModelManager().resolve(
         "flaggems/mul",
         "broadcast_2d",
@@ -143,7 +159,7 @@ def test_ksyun_package_download_validation_and_cache_reuse(
     assert downloaded.is_file()
     assert _sha256(downloaded) == package_sha256
 
-    manifest_path = cache_root / "manifest.json"
+    manifest_path = Path(staging_manifest) if staging_manifest else cache_root / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     assert manifest["packages"][platform_key]["versions"][model_version] == {
         "url": remote_url,
@@ -169,3 +185,24 @@ def test_ksyun_package_download_validation_and_cache_reuse(
     )
     assert reused == downloaded
     assert not list(cache_root.rglob("*.tmp"))
+
+    # Loading through a new manager while offline exercises the disk cache,
+    # real Booster/config binding and feature validation for every child.
+    manager = FlagTuneModelManager()
+    for artifact in sorted(parsed.models):
+        platform, namespace, operator, variant_name, dtype_key = artifact.split("/")
+        op_id = f"{namespace}/{operator}"
+        loaded = manager.load(op_id, variant_name, platform_key=platform, dtype_key=dtype_key,
+                              model_version=model_version)
+        variant = loaded.variant
+        values = _prediction_inputs(variant)
+        candidates = list(islice(variant.iter_configs(), 128))
+        assert candidates
+        propose = make_config_proposer(op_id, variant_name, platform_key=platform, dtype_key=dtype_key,
+                                       model_version=model_version)
+        predicted = propose(None, values, candidates, {})
+        assert predicted, artifact
+        for candidate in predicted:
+            assert set(candidate) == set(variant.param_names)
+            assert variant.param_space.validate(candidate)
+            assert candidate in candidates

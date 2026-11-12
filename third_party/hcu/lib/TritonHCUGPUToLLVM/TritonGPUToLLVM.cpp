@@ -21,7 +21,9 @@
 #include "mlir/Pass/Pass.h"
 #ifdef __TLE__
 #include "tle/dialect/include/Conversion/TleToLLVM/ExclusiveCumsumOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/PackOpToLLVM.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
 #endif
@@ -269,6 +271,12 @@ struct ConvertTritonHCUGPUToLLVM
           typeConverter, targetInfo, tlePatterns,
           patternBenefitPrioritizeOverLLVMConversions);
       mlir::triton::tle::populateMemDescAliasOpToLLVMPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populateExtractOpToLLVMPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
+      mlir::triton::tle::populatePackOpToLLVMPatterns(
           typeConverter, tlePatterns,
           patternBenefitPrioritizeOverLLVMConversions);
       if (failed(

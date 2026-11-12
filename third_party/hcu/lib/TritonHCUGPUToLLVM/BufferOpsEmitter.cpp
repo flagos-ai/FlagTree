@@ -105,7 +105,6 @@ Value BufferEmitter::createResourceDescriptor(Value basePtr, Value blockStride,
   Type rsrcType = LLVM::LLVMPointerType::get(rewriter.getContext(), 8);
 
   // HCU : modify to compatible with HCU llvm.
-  // Value numRecordsByte = b.int_val(64, std::numeric_limits<int>::max() - 1);
   Value numRecordsByte = b.int_val(32, std::numeric_limits<int>::max() - 1);
   if (uniformByteOffset) {
     // Structured/indexed resources have different NUM_RECORDS semantics.
@@ -282,8 +281,10 @@ void BufferEmitter::fillCommonArgs(Type type, Value rsrcDesc,
   // Please note: the index passed is not in bytes, but in number of elements
   // In order to pass the index to the buffer operation, we need to convert in
   // bytes (i.e., we need to multiply by `elementByteWidth`)
-  Value vOffsetOutOfBunds = b.int_val(
-      32, static_cast<int>(std::numeric_limits<int>::max() + int64_t(1)));
+  // HCU : modify to compatible with HCU llvm.
+  // Value vOffsetOutOfBunds = b.int_val(
+  //     32, static_cast<int>(std::numeric_limits<int>::max() + int64_t(1)));
+  Value vOffsetOutOfBunds = b.int_val(32, -8);
   Value vOffsetBytes = b.mul(b.int_val(32, elementByteWidth), vOffsetElems);
   Value maskedOffsetBytes = b.select(pred, vOffsetBytes, vOffsetOutOfBunds);
 
@@ -314,8 +315,10 @@ void BufferEmitter::fillCommonArgsAtomics(Type type, Value rsrcDesc,
   // Please note: the index passed is not in bytes, but in number of elements
   // In order to pass the index to the buffer operation, we need to convert in
   // bytes (i.e., we need to multiply by `elementByteWidth`)
-  Value vOffsetOutOfBunds = b.int_val(
-      32, static_cast<int>(std::numeric_limits<int>::max() + int64_t(1)));
+  // HCU : modify to compatible with HCU llvm.
+  // Value vOffsetOutOfBunds = b.int_val(
+  //     32, static_cast<int>(std::numeric_limits<int>::max() + int64_t(1)));
+  Value vOffsetOutOfBunds = b.int_val(32, -8);
   Value vOffsetBytes = b.mul(b.int_val(32, elementByteWidth), vOffsetElems);
   Value maskedOffsetBytes = b.select(pred, vOffsetBytes, vOffsetOutOfBunds);
 

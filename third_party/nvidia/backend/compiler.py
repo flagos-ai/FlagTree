@@ -1,10 +1,11 @@
-from triton.backends.compiler import BaseBackend, GPUTarget, Language
+from triton.backends.compiler import BaseBackend, GPUTarget, Language, ReplaceLowering  # flagtree pipeline enhance
 from triton._C.libtriton import ir, passes, llvm, nvidia
 from triton._C.libtriton import tle
 from triton import knobs
 from triton.runtime.errors import PTXASError
 from triton.runtime._distributed import DistributedRtContext
 
+import dataclasses  # flagtree pipeline enhance
 from dataclasses import dataclass
 import functools
 from typing import Any, Dict, Tuple, Optional
@@ -134,8 +135,31 @@ class CUDAOptions:
     sanitize_overflow: bool = True
     arch: str = None
     instrumentation_mode: str = ""
+    # flagtree pipeline enhance: per-kernel switches of the pipelining fixes
+    # (all subject to FLAGTREE_PIPELINE_ENHANCE); they can be set from a
+    # triton.Config like num_stages.
+    # Issue the prefetch of the next block before the in-loop wgmma wait it
+    # does not depend on (block-scale GEMM, fp8 accumulate, ...).
+    pipeline_hoist_copy: bool = True
+    # Prefetch the index loads of indirect loads too (the upstream rule). With
+    # False the index loads (page table, token ids) stay synchronous and the
+    # data loads get the whole prefetch depth num_stages - 1.
+    pipeline_index_prefetch: bool = True
+    # Merge the loads a loop reads in several layouts: "all" merges a group
+    # only when every copy is prefetched, "any" also when some copies are
+    # synchronous, "off" disables the merge.
+    pipeline_merge_loads: str = "all"
+    # Keep the wgmma accumulator of a plain GEMM loop in flight across the
+    # iterations instead of waiting for it at the end of each iteration. The
+    # backend reverts it when ptxas spills more registers with it.
+    pipeline_wgmma_carry: bool = True
 
     def __post_init__(self):
+        # begin flagtree pipeline enhance
+        if self.pipeline_merge_loads not in ("off", "all", "any"):
+            raise ValueError(f"pipeline_merge_loads must be 'off', 'all' or 'any', "
+                             f"got {self.pipeline_merge_loads!r}")
+        # end flagtree pipeline enhance
         default_libdir = Path(__file__).parent / 'lib'
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
         if not extern_libs.get('libdevice', None):
@@ -333,7 +357,7 @@ class CUDABackend(BaseBackend):
         # encodings are chosen for one wide operand. Left as a join chain, the
         # operand is staged through shared memory instead of reaching the mma
         # in registers.
-        if hasattr(passes.ttgpuir, "add_concat_dot_operand"):
+        if knobs.nvidia.concat_dot_operand and hasattr(passes.ttgpuir, "add_concat_dot_operand"):
             passes.ttgpuir.add_concat_dot_operand(pm)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
@@ -341,6 +365,7 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
         # TODO(Qingyi): Move PlanCTAPass to the front of CoalescePass
         nvidia.passes.ttnvgpuir.add_plan_cta(pm)
+        # flagtree rlc enhance
         passes.ttgpuir.add_remove_layout_conversions(pm, knobs.nvidia.rlc_enhance)
         passes.ttgpuir.add_optimize_thread_locality(pm)
         tle.passes.add_early_assign_memory_space(pm)
@@ -356,13 +381,14 @@ class CUDABackend(BaseBackend):
         # ordered slices of one wider operand. Runs after accelerate-matmul so
         # the mma layout is known, and before remove-layout-conversions so the
         # per-extract converts it leaves behind get folded into the dots.
-        if hasattr(passes.ttgpuir, "add_merge_segmented_dot"):
+        if knobs.nvidia.concat_dot_operand and hasattr(passes.ttgpuir, "add_merge_segmented_dot"):
             passes.ttgpuir.add_merge_segmented_dot(pm)
+        # flagtree rlc enhance
         passes.ttgpuir.add_remove_layout_conversions(pm, knobs.nvidia.rlc_enhance)
         passes.ttgpuir.add_optimize_dot_operands(pm, capability >= 80)
         # flagtree pass: layout cleanup can expose a chain the first run could
         # not see, so match once more over the settled register layouts.
-        if hasattr(passes.ttgpuir, "add_merge_segmented_dot"):
+        if knobs.nvidia.concat_dot_operand and hasattr(passes.ttgpuir, "add_merge_segmented_dot"):
             passes.ttgpuir.add_merge_segmented_dot(pm)
         tle.passes.add_promote_local_store_staging(pm)
         nvidia.passes.ttnvgpuir.add_optimize_descriptor_encoding(pm)
@@ -377,11 +403,12 @@ class CUDABackend(BaseBackend):
             tle.passes.add_lower_pipe_to_nvws(pm)
             nvidia.passes.hopper.add_hopper_warpspec(pm, opt.num_stages, dump_enabled)
             tle.passes.add_downgrade_invalid_async_copy(pm)
-            passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
+            CUDABackend._add_assign_latencies(pm, opt)  # flagtree pipeline enhance
             passes.ttgpuir.add_schedule_loops(pm)
             tle.passes.add_tile_style_pipeline_schedule(pm)
             tle.passes.add_materialize_tile_style_pipeline(pm)
-            passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
+            # flagtree pipeline enhance
+            CUDABackend._add_pipeline(pm, opt, dump_enabled)
         elif capability // 10 >= 10:
             passes.ttgpuir.add_fuse_nested_loops(pm)
             passes.common.add_canonicalizer(pm)
@@ -390,10 +417,11 @@ class CUDABackend(BaseBackend):
             passes.ttgpuir.add_hoist_tmem_alloc(pm, False)
             nvidia.passes.ttnvgpuir.add_promote_lhs_to_tmem(pm)
             tle.passes.add_downgrade_invalid_async_copy(pm)
-            passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
+            CUDABackend._add_assign_latencies(pm, opt)  # flagtree pipeline enhance
             passes.ttgpuir.add_schedule_loops(pm)
             passes.ttgpuir.add_warp_specialize(pm, opt.num_stages)
-            passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
+            # flagtree pipeline enhance
+            CUDABackend._add_pipeline(pm, opt, dump_enabled)
             passes.ttgpuir.add_optimize_partition_warps(pm)
             passes.ttgpuir.add_combine_tensor_select_and_if(pm)
             # hoist again and allow hoisting out of if statements
@@ -413,6 +441,7 @@ class CUDABackend(BaseBackend):
             tle.passes.add_lower_tma_copy(pm)
             tle.passes.add_schedule_tma_store_sync(pm)
             nvidia.passes.ttnvgpuir.add_tma_lowering(pm)
+        # flagtree rlc enhance
         passes.ttgpuir.add_remove_layout_conversions(pm, knobs.nvidia.rlc_enhance)
         nvidia.passes.ttnvgpuir.add_interleave_tmem(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
@@ -432,10 +461,14 @@ class CUDABackend(BaseBackend):
         # flagtree pass: rebuild the join tree for any concat whose operand did
         # not end up with a layout the register relabel can serve. Runs after
         # everything that can still fold or retag the operand.
-        if hasattr(passes.ttgpuir, "add_expand_concat_dot_operand"):
+        if knobs.nvidia.concat_dot_operand and hasattr(passes.ttgpuir, "add_expand_concat_dot_operand"):
             passes.ttgpuir.add_expand_concat_dot_operand(pm)
 
         pm.run(mod, 'make_ttgir')
+        # flagtree pipeline enhance: whether a loop keeps its wgmma accumulator
+        # in flight across the iterations (see _make_cubin_with_carry_guard).
+        metadata["pipeline_wgmma_carry_applied"] = bool(
+            mod.get_operation().get_bool_attr("flagtree.pipeline_wgmma_carry"))
         metadata["tle_node_buffer_bindings"] = mod.get_operation().get_str_attr("tle.node_buffer_bindings") or ""
         # begin flagtree tle
         # launch_cooperative_grid may be toggled during frontend semantic lowering
@@ -446,6 +479,41 @@ class CUDABackend(BaseBackend):
         # end flagtree tle
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
         return mod
+
+    # begin flagtree pipeline enhance
+    @staticmethod
+    def _add_assign_latencies(pm, opt):
+        """assign_latencies, then the merge of the duplicate loads, with the FlagTree switches.
+
+        FLAGTREE_PIPELINE_ENHANCE=0 restores the upstream TTGIR pipelining
+        (the extra WGMMA operand slot of #1460, the index prefetch, the load
+        merge, the copy hoist and the wgmma carry); otherwise each switch
+        follows its CUDAOptions field. The knob does not reach the LLVM
+        lowering: the cp.async cache-hint and cache-modifier fixes of #1460
+        (LoadStoreOpToLLVM.cpp) are build-time only, because without them the
+        op traps in ptxas or fails to compile, so there is no lowering to fall
+        back to. A build without __FLAGTREE_PIPELINE_ENHANCE__ only has the
+        upstream passes.
+        """
+        if not hasattr(passes.ttgpuir, "add_merge_duplicate_loads"):
+            passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
+            return
+        enhance = knobs.nvidia.pipeline_enhance
+        passes.ttgpuir.add_assign_latencies(pm, opt.num_stages, (not enhance) or opt.pipeline_index_prefetch)
+        if enhance and opt.pipeline_merge_loads != "off":
+            passes.ttgpuir.add_merge_duplicate_loads(pm, opt.pipeline_merge_loads)
+
+    @staticmethod
+    def _add_pipeline(pm, opt, dump_enabled):
+        """The pipeline pass with the FlagTree switches (see _add_assign_latencies)."""
+        enhance = knobs.nvidia.pipeline_enhance
+        if not hasattr(passes.ttgpuir, "add_merge_duplicate_loads"):
+            passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled, enhance)
+            return
+        passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled, enhance, opt.pipeline_hoist_copy,
+                                    opt.pipeline_wgmma_carry)
+
+    # end flagtree pipeline enhance
 
     def gluon_to_ttgir(self, src, metadata, options, capability):
         mod = src
@@ -634,6 +702,10 @@ class CUDABackend(BaseBackend):
             ]
             try:
                 subprocess.run(ptxas_cmd, check=True, close_fds=False, stderr=flog)
+                if hasattr(tle, "passes"):
+                    from triton.experimental.tle.compiler_resources import parse_ptxas_resource_usage
+                    with open(flog.name) as resource_log:
+                        metadata.update(parse_ptxas_resource_usage(resource_log.read()))
                 if knobs.nvidia.dump_ptxas_log:
                     with open(flog.name) as log_file:
                         print(log_file.read())
@@ -676,6 +748,69 @@ please share the reproducer above with Triton project.
                 os.remove(fbin)
         return cubin
 
+    # begin flagtree pipeline enhance
+    @staticmethod
+    def _ptxas_spill_bytes(metadata):
+        """The spill traffic ptxas -v reports: store and load bytes together.
+
+        parse_ptxas_resource_usage (make_cubin) records both. A spilled value
+        is stored once and may be reloaded at several uses, so the loads are
+        the part a loop pays for on every iteration; the sum is what the wgmma
+        carry guard compares.
+        """
+        return metadata.get("ptxas_spill_store_bytes", 0) + metadata.get("ptxas_spill_load_bytes", 0)
+
+    def _make_cubin_with_carry_guard(self, src, metadata, options, capability, source_ir):
+        """Assemble, and revert the wgmma carry when it adds spills.
+
+        Keeping the accumulator in flight across the iterations can raise the
+        register pressure of large tiles; ptxas then spills and the kernel gets
+        slower. When the carry was applied and ptxas reports spills (store and
+        load bytes, _ptxas_spill_bytes), the kernel is lowered once more
+        without the carry; if that spills less, that lowering replaces this
+        one (ReplaceLowering), so the kernel is lowered twice in that case and
+        never a third time.
+        """
+        cubin = self.make_cubin(src, metadata, options, self.target.arch)
+        spills = self._ptxas_spill_bytes(metadata)
+        if not metadata.get("pipeline_wgmma_carry_applied") or spills == 0 or "ttir" not in source_ir:
+            return cubin
+        # An overridden IR does not come from the TTIR the probe would lower, and
+        # a location snapshot needs the stage outputs as modules.
+        if options.ir_override or knobs.compilation.override or knobs.compilation.use_ir_loc:
+            return cubin
+        probe_options = dataclasses.replace(options, pipeline_wgmma_carry=False)
+        probe_metadata = dict(metadata)
+        context = ir.context()
+        ir.load_dialects(context)
+        self.load_dialects(context)
+
+        def parse_module(text, suffix):
+            with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False) as f:
+                f.write(text)
+                path = f.name
+            try:
+                mod = ir.parse_mlir_module(path, context)
+                mod.context = context
+                return mod
+            finally:
+                os.remove(path)
+
+        mod = self.make_ttgir(parse_module(source_ir["ttir"], ".ttir"), probe_metadata, probe_options, capability)
+        ttgir = str(mod)
+        llir = self.make_llir(mod, probe_metadata, probe_options, capability)
+        ptx = self.make_ptx(llir, probe_metadata, probe_options, self.target.arch)
+        probe_cubin = self.make_cubin(ptx, probe_metadata, probe_options, self.target.arch)
+        probe_spills = self._ptxas_spill_bytes(probe_metadata)
+        if probe_spills < spills:
+            probe_metadata.update(probe_options.__dict__)
+            products = {"ttgir": parse_module(ttgir, ".ttgir"), "llir": llir, "ptx": ptx, "cubin": probe_cubin}
+            raise ReplaceLowering(products, probe_metadata,
+                                  f"wgmma carry spills {spills} bytes (stores and loads), {probe_spills} without it")
+        return cubin
+
+    # end flagtree pipeline enhance
+
     def add_stages(self, stages, options, language):
         capability = self._parse_arch(options.arch)
         if language == Language.TRITON:
@@ -686,6 +821,21 @@ please share the reproducer above with Triton project.
         stages["llir"] = lambda src, metadata: self.make_llir(src, metadata, options, capability)
         stages["ptx"] = lambda src, metadata: self.make_ptx(src, metadata, options, self.target.arch)
         stages["cubin"] = lambda src, metadata: self.make_cubin(src, metadata, options, self.target.arch)
+        # begin flagtree pipeline enhance: keep the TTIR text so that the wgmma
+        # carry guard can lower the kernel once more without the carry
+        source_ir = {}
+        if language == Language.TRITON:
+            make_ttgir = stages["ttgir"]
+
+            def make_ttgir_keeping_ttir(src, metadata):
+                if knobs.nvidia.pipeline_enhance and options.pipeline_wgmma_carry:
+                    source_ir["ttir"] = str(src)
+                return make_ttgir(src, metadata)
+
+            stages["ttgir"] = make_ttgir_keeping_ttir
+        stages["cubin"] = lambda src, metadata: self._make_cubin_with_carry_guard(src, metadata, options, capability,
+                                                                                  source_ir)
+        # end flagtree pipeline enhance
         if knobs.runtime.add_stages_inspection_hook is not None:
             knobs.runtime.add_stages_inspection_hook(self, stages, options, language, capability)
 

@@ -45,6 +45,7 @@
 #endif // __FLAGTREE_RLC_ENHANCE__
 #include "triton/Analysis/Utility.h"
 #ifdef __TLE__
+#include "tle/dialect/include/Analysis/CompatibleProposalMerge.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -58,6 +59,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include <deque>
+
 #ifdef __FLAGTREE_RLC_ENHANCE__
 #include "llvm/ADT/EquivalenceClasses.h"
 #include <optional>
@@ -939,7 +941,12 @@ bool LayoutPropagation::collectProducerClosure(Proposal &proposal, Value target,
   if (auto scanOp = dyn_cast<ScanOp>(defOp)) {
     if (scanOp.getSrcs().size() != 1)
       return false;
-    return collectProducerClosure(proposal, scanOp.getSrcs()[0], encoding,
+    // Scan lowering supports blocked layouts only; inferSrcEncoding rejects
+    // any other target.
+    Attribute srcEncoding = inferSrcEncoding(defOp, encoding);
+    if (!srcEncoding)
+      return false;
+    return collectProducerClosure(proposal, scanOp.getSrcs()[0], srcEncoding,
                                   depth - 1, stopAtConvertSrc, allowBlockArgs);
   }
   if (isSmallComponentForbiddenOp(defOp))
@@ -2531,6 +2538,10 @@ bool LayoutPropagation::solveSmallComponents() {
                                    bool rejectReachableReductionOrScan = true,
                                    bool restrictWeakStoreProposals = false) {
     bool localChanged = false;
+#ifdef __TLE__
+    proposals = triton::tle::mergeCompatibleProposals(
+        std::move(proposals), proposalsOverlapAndCompatible, mergeProposalInto);
+#else
     bool merged = true;
     while (merged) {
       merged = false;
@@ -2545,6 +2556,7 @@ bool LayoutPropagation::solveSmallComponents() {
         }
       }
     }
+#endif
     for (Proposal &proposal : proposals)
       localChanged |= commitIfProfitable(proposal, /*requireBenefit=*/true,
                                          rejectReachableReductionOrScan,
@@ -3744,6 +3756,9 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
 }
 
 bool canBeRemat(Operation *op) {
+  // flagtree: backport from Triton main: triton/pull/11001, triton/pull/12268
+  if (hasEffect<MemoryEffects::Write>(op))
+    return false;
   if (isa<LoadOp, StoreOp>(op))
     return !isExpensiveLoadOrStore(op);
   if (isa<AtomicRMWOp, AtomicCASOp, DotOp>(op))
@@ -3767,6 +3782,9 @@ static bool isDuplicableLoadInEncoding(Operation *op, Attribute encoding,
                                        ModuleAxisInfoAnalysis *axisInfo) {
   auto loadOp = dyn_cast<LoadOp>(op);
   if (!loadOp || !encoding)
+    return false;
+  // A volatile load must not be duplicated either (see canBeRemat).
+  if (loadOp.getIsVolatile())
     return false;
 #ifdef __TLE__
   // A load from a TLE cluster remote pointer lowers to a vectorized
@@ -5227,7 +5245,7 @@ public:
       // slices may additionally duplicate small access-preserving vector
       // loads (a per-row vector consumed in two layouts).
       changed = backwardRematerialization(m, storeLayoutRemat);
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
       // producer operation to avoid having to convert.
       changed = backwardRematerialization(m);
 #endif // __FLAGTREE_RLC_ENHANCE__

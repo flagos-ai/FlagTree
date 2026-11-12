@@ -174,6 +174,79 @@ def test_explicit_configs_preserve_linked_parameter_candidates():
     assert list(loaded.iter_configs()) == variant_config["configs"]
 
 
+def test_explicit_config_fields_are_normalized_to_parameter_order():
+    config = _config()
+    spec = config["variants"]["general"]
+    spec["configs"] = [{"num_warps": 4, "BLOCK_M": 16}]
+    variant = parse_operator_config(config).get_variant("general")
+    candidate, = variant.iter_configs()
+    assert list(candidate) == ["BLOCK_M", "num_warps"]
+    assert candidate == spec["configs"][0]
+
+
+@pytest.mark.parametrize("candidate", [
+    {"BLOCK_M": 16},
+    {"BLOCK_M": 16, "num_warps": 4, "unexpected": 1},
+    {"BLOCK_M": 17, "num_warps": 4},
+])
+def test_explicit_configs_reject_invalid_fields_or_values(candidate):
+    config = _config()
+    config["variants"]["general"]["configs"] = [candidate]
+    with pytest.raises(FlagTuneConfigError, match="fields must exactly match|outside params"):
+        parse_operator_config(config)
+
+
+def test_explicit_configs_cannot_also_declare_config_space():
+    config = _config()
+    config["variants"]["general"].update(configs=[{"BLOCK_M": 16, "num_warps": 4}], config_space={})
+    with pytest.raises(FlagTuneConfigError, match="cannot define both"):
+        parse_operator_config(config)
+
+
+def test_explicit_configs_export_the_minimum_runtime_version():
+    config = _config()
+    config["variants"]["general"]["configs"] = [{"BLOCK_M": 16, "num_warps": 4}]
+    variant = parse_operator_config(config).get_variant("general")
+    exported = variant_to_model_config(variant, _identity(), DTYPES, GPU, MODEL_VERSION)
+    assert exported["format_version"] == 5
+    assert exported["flagtune_version_min"] == "1.1.0"
+
+
+@pytest.mark.parametrize("source", ["mapping", "file", "archive_bytes"])
+def test_runtime_requirement_is_checked_before_unknown_model_fields(tmp_path, monkeypatch, source):
+    from triton.flagtune import _version
+    from triton.flagtune.contract.operator_schema import load_model_config_bytes
+
+    yaml = pytest.importorskip("yaml")
+    monkeypatch.setattr(_version, "__version__", "1.0.0")
+    config = {"flagtune_version_min": "1.1.0", "future_field": {}}
+    payload = yaml.safe_dump(config).encode()
+    path = tmp_path / "flagtune_config.yaml"
+    path.write_bytes(payload)
+    loaders = {
+        "mapping": lambda: parse_model_config(config),
+        "file": lambda: load_model_config(path),
+        "archive_bytes": lambda: load_model_config_bytes(payload),
+    }
+    with pytest.raises(FlagTuneConfigError, match="requires FlagTune >= 1.1.0"):
+        loaders[source]()
+
+
+def test_configs_require_new_runtime_even_without_declared_minimum(monkeypatch):
+    from triton.flagtune import _version
+
+    monkeypatch.setattr(_version, "__version__", "1.0.0")
+    with pytest.raises(FlagTuneConfigError, match="requires FlagTune >= 1.1.0"):
+        parse_model_config({"configs": [{"BLOCK_M": 16}]})
+
+
+def test_legacy_model_preserves_cartesian_candidates_without_configs():
+    variant = parse_operator_config(_config()).get_variant("general")
+    exported = variant_to_model_config(variant, _identity(), DTYPES, GPU, MODEL_VERSION)
+    assert "configs" not in exported
+    assert list(parse_model_config(exported).iter_configs()) == list(variant.iter_configs())
+
+
 def test_when_rejects_wrong_variant_shape():
     variant = parse_operator_config(_config()).get_variant("general")
     assert not variant.matches({"M": 32, "N": 1, "K": 64})
