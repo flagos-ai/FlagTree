@@ -27,11 +27,6 @@ import subprocess
 
 from python.setup_tools.utils.default import FlagCXRegistrar, printinfo
 
-# Pin the upstream merge of PR #667 for the DU Device API bitcode build.
-# Keep this pin specific to HCU; other backends retain their existing revisions.
-FLAGCX_HCU_URL = "https://github.com/flagos-ai/FlagCX.git"
-FLAGCX_HCU_COMMIT = "5e717e35af62677874b9e5ed4b35a2cb27c7d0c5"
-
 
 def relocate_flagcx():
     from python.setup_tools.utils import flagtree_submodules
@@ -40,8 +35,6 @@ def relocate_flagcx():
     dependency = flagtree_submodules.get("flagcx")
     if dependency is None:
         return
-    dependency.url = FLAGCX_HCU_URL
-    dependency.commit_id = FLAGCX_HCU_COMMIT
     source_dir = os.environ.get("FLAGCX_SOURCE_DIR")
     dependency.dst_path = str(Path(source_dir).expanduser().resolve()) if source_dir else str(
         Path(flagtree_configs.flagtree_submodule_dir) / "hcu/third_party/flagcx")
@@ -145,8 +138,8 @@ class HCUFlagCXRegistrar(FlagCXRegistrar):
         if os.environ.get("COMPILE_KERNEL", "1") != "1":
             raise RuntimeError("HCU FlagCX device bitcode requires COMPILE_KERNEL=1.")
         if not (source / "bindings/ir/du/Makefile").is_file():
-            raise RuntimeError(f"{source} lacks the Hygon bitcode build. Use upstream FlagCX "
-                               f"at {FLAGCX_HCU_COMMIT}, or set FLAGCX_SOURCE_DIR to a compatible checkout.")
+            raise RuntimeError(f"{source} lacks the Hygon bitcode build. Use the shared pinned FlagCX revision, "
+                               "or set FLAGCX_SOURCE_DIR to a compatible checkout.")
         sdk, llvm_bin = _toolchain()
         self.arch = _device_arch(sdk)
         json_dir = self._json_include_dir()

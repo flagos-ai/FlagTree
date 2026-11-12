@@ -62,7 +62,7 @@ submodule_registrar = SubmoduleRegistrar(submodules=(
     {"name": "FlagPrism", "url": "https://github.com/flagos-ai/FlagPrism.git"},
     {
         "name": "flagcx", "url": "https://github.com/flagos-ai/FlagCX.git", "relative_path": "tle/third_party/flagcx",
-        "commit_id": "0f2bf95f0ffdb07a6f9a378b22fc3d8300e7ead3"
+        "commit_id": "36bf2c56a1de599d4fd09ad134f0593babd0ae16"
     },
     {
         "name": "cuda-tile", "url": "https://github.com/NVIDIA/cuda-tile.git", "relative_path":
