@@ -7,6 +7,7 @@
 #include "../TritonHCUGPUToLLVM/ScalarMemoryAnalysis.h"
 #include "../TritonHCUGPUToLLVM/WarpSpecializeUtils.h"
 #include "Analysis/AxisInfoExt.h"
+#include "Analysis/MatrixCopyGeometry.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -20,6 +21,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Tools/LayoutUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -180,23 +182,15 @@ bool supportsDescriptorCopy(triton::MatrixLoadOp op) {
       result.push_back(number.getSExtValue());
     }
   }
-  unsigned column = strides[1] == 1 ? 1 : 0, row = 1 - column;
-  unsigned waves = ttg::lookupNumWarps(op);
-  uint64_t elements = type.getNumElements();
-  if (strides[column] != 1 || strides[row] < sizes[column] ||
-      strides[row] % 8 || sizes[column] % 8 || !waves || waves > 8 ||
-      !llvm::isPowerOf2_32(waves) || elements < 512 * waves ||
-      elements > (1u << 20) || elements % (512 * waves) ||
+  auto geometry = triton::HCU::getMatrixCopyGeometry(
+      sizes, strides, type.getShape(), ttg::lookupNumWarps(op));
+  if (!geometry || !triton::HCU::hasAddressableMatrixCopyTile(*geometry) ||
       !llvm::all_of(op.getIndices(), [](Value value) {
         return registerDescriptorUniform(value);
       }))
     return false;
-  if (!triton::HCU::memory_analysis::multipleOf(op.getIndices()[column], 8))
-    return false;
-  uint64_t tileSpan =
-      2 * (uint64_t(type.getShape()[row] - 1) * strides[row] +
-           type.getShape()[column]);
-  if (strides[row] >= 0x2000 && tileSpan >= (uint64_t(1) << 31))
+  if (!triton::HCU::memory_analysis::multipleOf(
+          op.getIndices()[geometry->column], 8))
     return false;
   auto arg = dyn_cast<BlockArgument>(op.getBase());
   auto fn = op->getParentOfType<tt::FuncOp>();
@@ -204,8 +198,16 @@ bool supportsDescriptorCopy(triton::MatrixLoadOp op) {
                        ? fn.getArgAttrOfType<IntegerAttr>(arg.getArgNumber(),
                                                          "tt.divisibility")
                        : IntegerAttr{};
-  return alignment && alignment.getInt() >= 16 && alignment.getInt() % 16 == 0 &&
-         triton::HCU::getMatrixDescriptorSharedLayout(op);
+  if (!alignment || alignment.getInt() < 16 || alignment.getInt() % 16)
+    return false;
+  auto shared = triton::HCU::getMatrixDescriptorSharedLayout(op);
+  if (!shared)
+    return false;
+  auto offset = StringAttr::get(op.getContext(), "offset");
+  auto dims = triton::standardOutDimNames(op.getContext(), 2);
+  auto layout = shared.getLinearLayout().sublayout({offset}, dims);
+  return triton::HCU::isMatrixCopyVectorLayout(
+      layout, offset, geometry->row, geometry->column);
 }
 
 Value expandDescriptorLoad(triton::MatrixLoadOp op, PatternRewriter &rw) {

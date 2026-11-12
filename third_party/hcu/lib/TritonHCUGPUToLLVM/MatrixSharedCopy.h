@@ -1,6 +1,7 @@
 #ifndef TRITON_HCU_MATRIX_SHARED_COPY_H
 #define TRITON_HCU_MATRIX_SHARED_COPY_H
 
+#include "Analysis/MatrixCopyGeometry.h"
 #include "PhysicalSharedRegions.h"
 #include "ScalarMemoryAnalysis.h"
 #include "llvm/ADT/DenseMap.h"
@@ -59,16 +60,26 @@ public:
         fail("requires actual aligned source argument and contiguous aligned allocation-backed destination views");
         return;
       }
-      auto s0 = memory_analysis::constant(op.getStrides()[0]);
-      auto s1 = memory_analysis::constant(op.getStrides()[1]);
-      unsigned col = s1 == 1 ? 1 : 0, row = 1 - col;
-      auto rows = memory_analysis::constant(op.getShape()[row]);
-      auto cols = memory_analysis::constant(op.getShape()[col]);
-      auto pitch = row ? s1 : s0;
-      if ((col ? s1 : s0) != 1 || !rows || !cols || !pitch ||
-          *rows <= 0 || *cols <= 0 || *pitch < *cols || *pitch > INT32_MAX ||
-          *pitch % 8 || *cols % 8 ||
-          !memory_analysis::multipleOf(op.getIndices()[col], 8) ||
+      SmallVector<int64_t, 2> sizes, strides;
+      for (auto [size, stride] : llvm::zip(op.getShape(), op.getStrides())) {
+        auto extent = memory_analysis::constant(size);
+        auto pitch = memory_analysis::constant(stride);
+        if (!extent || !pitch) {
+          fail("requires static extents and row pitch");
+          return;
+        }
+        sizes.push_back(*extent);
+        strides.push_back(*pitch);
+      }
+      unsigned waves = gpu::lookupNumWarps(op);
+      auto geometry =
+          getMatrixCopyGeometry(sizes, strides, type.getShape(), waves);
+      if (!geometry) {
+        fail("unsupported chart, row pitch or incomplete wave payload");
+        return;
+      }
+      auto [row, col, rows, cols, pitch, count, tileSpan] = *geometry;
+      if (!memory_analysis::multipleOf(op.getIndices()[col], 8) ||
           !llvm::all_of(op.getIndices(), [&](Value v) { return memory_analysis::uniform(v,op); })) {
         fail("unproven uniform origins, vector-aligned columns or representable aligned row pitch");
         return;
@@ -76,13 +87,7 @@ public:
       auto ll = shared.getLinearLayout();
       auto offset = StringAttr::get(mod.getContext(), "offset");
       auto dims = standardOutDimNames(mod.getContext(), 2);
-      unsigned waves = gpu::lookupNumWarps(op);
-      uint64_t count = uint64_t(type.getShape()[0]) * type.getShape()[1];
-      // This implementation emits complete waves only: no inactive wave may
-      // write padding beyond the destination. Other geometries use buffer copy.
-      if (!waves || waves > 8 || !llvm::isPowerOf2_32(waves) ||
-          count > (uint64_t(1) << 20) || count < 512 * waves ||
-          count % (512 * waves) || ll.getNumOutDims() != 2 ||
+      if (ll.getNumOutDims() != 2 ||
           !llvm::equal(ll.getOutDimSizes(), type.getShape()) ||
           ll.getInDimSize(StringAttr::get(mod.getContext(), "block")) != 1) {
         fail("unsupported chart or incomplete wave payload; use ordinary buffer copy");
@@ -93,6 +98,10 @@ public:
           ll.getTotalOutDimSize() != count) {
         fail("shared chart must biject the complete active tile"); return;
       }
+      if (!isMatrixCopyVectorLayout(ll, offset, row, col)) {
+        fail("physical vectors are not consecutive aligned global elements");
+        return;
+      }
       // Inspect the actual source vectors of each complete wave. With at most
       // four 16B vectors per source row, dropping IDXEN must preserve the
       // pitched cache-bank distribution; broad rows use byte-cache addressing.
@@ -101,36 +110,26 @@ public:
       // heuristic, not a claim that one policy dominates all input shapes.
       llvm::DenseMap<int32_t, unsigned> vectorsPerRow;
       bool narrowSourceRows = true;
-      // Exhaustively prove every 16B request, not only the basis points.
+      // Classify the row distribution of the already proven 16B vectors.
       for (uint64_t i = 0; i < count; i += 8) {
         auto begin = ll.apply({{offset, int32_t(i)}});
-        if (begin[col].second % 8 || begin[col].second + 8 > type.getShape()[col]) {
-          fail("physical vectors cross a logical row"); return;
-        }
         if (++vectorsPerRow[begin[row].second] > 4)
           narrowSourceRows = false;
         if ((i + 8) % 512 == 0)
           vectorsPerRow.clear();
-        for (unsigned e = 0; e < 8; ++e) {
-          auto xy = ll.apply({{offset, int32_t(i + e)}});
-          if (xy[row].second != begin[row].second || xy[col].second != begin[col].second + e) {
-            fail("physical vectors are not consecutive global elements"); return;
-          }
-        }
       }
       // Structured descriptors encode a byte pitch below bit14. Wider
       // pitches use an ordinary byte-bounded resource. The sentinel must stay
       // outside that resource, and every local relative offset must fit its
       // signed31-bit range before conversion to the hardware i32 offset.
-      uint64_t sourceBytes = 2 * (uint64_t(*rows - 1) * *pitch + *cols);
-      uint64_t tileSpan = 2 * (uint64_t(type.getShape()[row] - 1) * *pitch + type.getShape()[col]);
+      uint64_t sourceBytes = 2 * (uint64_t(rows - 1) * pitch + cols);
       auto rowRange = memory_analysis::indexBounds(op.getIndices()[row], op);
       bool fullRows = rowRange && rowRange->lo >= 0 &&
-          __int128(rowRange->hi) + type.getShape()[row] <= *rows;
+          __int128(rowRange->hi) + type.getShape()[row] <= rows;
       auto colRange = memory_analysis::indexBounds(op.getIndices()[col], op);
       bool columnInBounds = colRange && colRange->lo >= 0 &&
-          __int128(colRange->hi) + type.getShape()[col] <= *cols;
-      bool wholeColumns = *cols % type.getShape()[col] == 0 &&
+          __int128(colRange->hi) + type.getShape()[col] <= cols;
+      bool wholeColumns = cols % type.getShape()[col] == 0 &&
           memory_analysis::multipleOf(op.getIndices()[col], type.getShape()[col]);
       // A proved complete rectangle needs no descriptor row-index clamp or
       // hardware pitch. Prefer the affine byte-bounded resource when its local
@@ -138,20 +137,20 @@ public:
       // Dimension and origin alignment make every row tile either entirely
       // valid or entirely invalid. A uniform NR0 predicate preserves zero-fill
       // without a launch bound or per-vector row-index descriptor.
-      bool wholeRows = *rows % type.getShape()[row] == 0 &&
+      bool wholeRows = rows % type.getShape()[row] == 0 &&
           memory_analysis::multipleOf(op.getIndices()[row], type.getShape()[row]);
       bool completeRectangle = (fullRows || wholeRows) &&
           (wholeColumns || columnInBounds);
-      bool structured = *pitch < 0x2000 &&
+      bool structured = pitch < 0x2000 &&
           !(completeRectangle && tileSpan < (uint64_t(1) << 31));
-      if (!structured && tileSpan >= (uint64_t(1) << 31)) {
+      if (!hasAddressableMatrixCopyTile(*geometry)) {
         fail("raw local span exceeds the proven signed31-bit zero-fill domain");
         return;
       }
       MatrixSharedCopyPlan plan{row,col,waves,unsigned(count/(512*waves)),
-          *rows,*cols,*pitch,structured,wholeColumns,
+          rows,cols,pitch,structured,wholeColumns,
           fullRows,columnInBounds,wholeRows,
-          *pitch < 0x2000 && (structured || narrowSourceRows),
+          pitch < 0x2000 && (structured || narrowSourceRows),
           sourceBytes,tileSpan,{}};
       for (unsigned bit = 0; bit < ll.getInDimSizeLog2(offset); ++bit) {
         auto xy = ll.getBasis(offset,bit);

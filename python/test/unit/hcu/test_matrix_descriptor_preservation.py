@@ -166,3 +166,30 @@ def test_async_descriptor_with_unproved_column_alignment_falls_back():
     )
     assert kernel.asm["ttgir"].count("hcug.matrix_load_to_local") == 1
     assert "tt.matrix_load " not in kernel.asm["ttgir"]
+
+
+@triton.jit
+def _aligned_loop_descriptor_dot(A, B, C):
+    value = tl.full((128, 128), 0, tl.float32)
+    for k in tl.range(0, 128, 32, num_stages=3):
+        a = tl.make_block_ptr(A, (128, 128), (128, 1), (0, k), (128, 32), (1, 0))
+        b = tl.make_block_ptr(B, (128, 128), (1, 128), (k, 0), (32, 128), (0, 1))
+        av = tle.load(a, boundary_check=(0, 1), padding_option="zero", is_async=True)
+        bv = tle.load(b, boundary_check=(0, 1), padding_option="zero", is_async=True)
+        value = tl.dot(av, bv, value)
+    m = tl.arange(0, 128)
+    n = tl.arange(0, 128)
+    tl.store(C + m[:, None] * 128 + n[None, :], value)
+
+
+def test_async_descriptor_accepts_aligned_loop_induction_in_both_orders():
+    source = ASTSource(
+        _aligned_loop_descriptor_dot, {"A": "*bf16", "B": "*bf16", "C": "*bf16"},
+        attrs={(i,): [("tt.divisibility", 16), ("tt.pointer_range", 32)] for i in range(3)},
+    )
+    kernel = triton.compile(
+        source, target=GPUTarget("hip", "gfx936", 64),
+        options=dict(prefer_wide_async_copy=True, num_warps=4, num_stages=3, kpack=2,
+                     schedule_hint="local-prefetch", mmac_warps_m=2, mmac_transposed=True),
+    )
+    assert kernel.asm["ttgir"].count("hcug.matrix_load_to_local") >= 2

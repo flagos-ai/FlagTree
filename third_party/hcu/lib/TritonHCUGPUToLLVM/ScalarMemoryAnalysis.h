@@ -4,6 +4,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -78,7 +79,20 @@ static bool multipleOf(Value v,unsigned n,llvm::SmallPtrSetImpl<void *> &active)
   if(!active.insert(v.getAsOpaquePointer()).second)return true;
   bool answer=[&]() {
     if(auto arg=dyn_cast<BlockArgument>(v)) {
-      Block *dest=arg.getOwner();unsigned k=arg.getArgNumber();if(dest->hasNoPredecessors())return false;
+      Block *dest = arg.getOwner();
+      unsigned k = arg.getArgNumber();
+      if (auto loop = dyn_cast<scf::ForOp>(dest->getParentOp())) {
+        if (dest != loop.getBody())
+          return false;
+        if (k == 0)
+          return multipleOf(loop.getLowerBound(), n, active) &&
+                 multipleOf(loop.getStep(), n, active);
+        auto yield = cast<scf::YieldOp>(dest->getTerminator());
+        return multipleOf(loop.getInitArgs()[k - 1], n, active) &&
+               multipleOf(yield.getOperand(k - 1), n, active);
+      }
+      if (dest->hasNoPredecessors())
+        return false;
       for(Block *pred:dest->getPredecessors()) {
         Operation *t=pred->getTerminator();bool edge=false;
         if(auto br=dyn_cast<cf::BranchOp>(t)) {
