@@ -542,6 +542,68 @@ def _check_mask_buffer(mask, size, op_name):
 
 
 @al.register_custom_op
+class flip:
+    """Reverse a 2D UB tile along its last dimension.
+
+    Vectorized replacement for the meta-op library flip_1d scalar loop.
+    Two NCHW-convert transpose passes (scatter_vnchwconv_b16/b32) run
+    src -> tmp -> dst, each feeding src 32-byte rows in reverse order and
+    dst rows in forward order; the composition is the full reversal of
+    every 512B (2-byte dtypes) / 256B (4-byte dtypes) chunk, and repeat
+    strides walk the chunks of a row (or a contiguous multi-row tile) in
+    two instruction sequences. Shapes the transpose cannot cover
+    (2-byte dtypes below 256 elements per row, 4-byte dtypes below 64,
+    non-unit or unaligned strides, 1/8-byte dtypes) fall back to the same
+    scalar loop as the library op. The op inserts no pipeline barrier;
+    ordering is the caller's responsibility.
+
+    Inputs:
+      src: 2D UB tensor; the last dim must be fully covered by the tile.
+      tmp: 2D UB scratch tensor of the same dtype as src providing at
+        least 512 bytes (e.g. shape (1, 256) for 2-byte dtypes); used as
+        the fixed intermediate of the per-chunk transpose pair and
+        untouched by the scalar fallback.
+
+    Outputs:
+      out: required 2D UB destination tensor, same dtype and shape as src.
+    """
+
+    core = al.CORE.VECTOR
+    pipe = al.PIPE.PIPE_V
+    mode = al.MODE.SIMD
+
+    def __init__(self, src, tmp, out=None):
+        assert out is not None, "flip requires an out buffer"
+        assert _element_dtype(out) == _element_dtype(src) == _element_dtype(tmp), (
+            f"flip requires out/tmp dtype ({_element_dtype(out)}/{_element_dtype(tmp)}) "
+            f"to match src dtype ({_element_dtype(src)})")
+        assert len(src.shape) == 2, f"flip requires a 2D tile, got shape {src.shape}"
+        assert len(out.shape) == 2, f"flip requires a 2D out tile, got shape {out.shape}"
+        assert len(tmp.shape) == 2, f"flip requires a 2D tmp tile, got shape {tmp.shape}"
+        tmp_bytes = tmp.numel.value * _element_dtype(tmp).primitive_bitwidth // 8
+        assert tmp_bytes >= 512, (f"flip requires a tmp buffer of at least 512 bytes, "
+                                  f"got {tmp_bytes}")
+        dtype = _element_dtype(src)
+        suffix_by_dtype = {
+            tl.float16: "half",
+            tl.bfloat16: "bf16",
+            tl.float32: "float",
+            tl.int16: "short",
+            tl.uint16: "ushort",
+            tl.int32: "int",
+            tl.uint32: "uint",
+            tl.int8: "char",
+            tl.uint8: "uchar",
+            tl.int64: "long",
+            tl.uint64: "ulong",
+        }
+        suffix = suffix_by_dtype.get(dtype)
+        assert suffix is not None, f"flip does not support dtype {dtype}"
+        self.symbol = "custom_flip_" + suffix
+        self.bitcode = CUSTOM_OPS_BITCODE
+
+
+@al.register_custom_op
 class compare_scalar:
     """Packed scalar comparison of contiguous FP16/FP32 UB values.
 
