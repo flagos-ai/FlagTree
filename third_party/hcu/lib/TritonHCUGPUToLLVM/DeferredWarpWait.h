@@ -102,10 +102,16 @@ class WindowTrace {
       auto type = cast<gpu::MemDescType>(value.getType());
       // These shared encodings are injective over a root allocation. Other
       // encodings need their own physical-alias proof before being admitted.
-      if (!isa<gpu::SwizzledSharedEncodingAttr>(type.getEncoding()) &&
-          !(isa<gpu::SharedLinearEncodingAttr>(type.getEncoding()) &&
-            gpu::toLinearLayout(type).isInvertible()))
+      if (auto shared =
+              dyn_cast<gpu::SharedLinearEncodingAttr>(type.getEncoding())) {
+        // A multibuffer root may carry only the layout of one indexed slot.
+        // Preserve the original waits until the root's geometry is modeled.
+        if (shared.getLinearLayout().getNumOutDims() != type.getRank() ||
+            !gpu::toLinearLayout(type).isInvertible())
+          return std::nullopt;
+      } else if (!isa<gpu::SwizzledSharedEncodingAttr>(type.getEncoding())) {
         return std::nullopt;
+      }
       Window out{value, {}, {}, {}};
       for (auto [axis, extent] : llvm::enumerate(type.getShape())) {
         if (extent <= 0) return std::nullopt;
