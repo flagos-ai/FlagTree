@@ -59,6 +59,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include <deque>
+#include <cstdlib>
 #ifdef __FLAGTREE_RLC_ENHANCE__
 #include "llvm/ADT/EquivalenceClasses.h"
 #include <optional>
@@ -74,6 +75,49 @@ namespace mlir::triton::gpu {
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 namespace {
+
+// --- RLC debug logging ------------------------------------------------------
+// Plain stderr prints gated by the RLC_DEBUG environment variable:
+//   RLC_DEBUG=1  decisions   — proposal accepted/rejected and why, costs, seeding
+//   RLC_DEBUG=2  per value   — candidate sets, convert accounting, encodings
+// Deliberately NOT the trace framework: no IR attributes, no phase records, no
+// extra pass options. Just lines that can be grepped out of a build log, e.g.
+//   RLC_DEBUG=2 ... bash run_pytest.sh 2>&1 | grep '\[rlc\]'
+static int rlcDbgLevel() {
+  static const int level = [] {
+    const char *env = std::getenv("RLC_DEBUG");
+    return env ? std::atoi(env) : 0;
+  }();
+  return level;
+}
+
+// Compact encoding label: "b[spt]/t[tpw]/w[warps]/o[order]", "slice(dim,parent)".
+// Full `#ttg.blocked<{...}>` dumps make a log unreadable and are already in the
+// IR dumps; here the point is to compare two encodings at a glance.
+static std::string rlcDbgEnc(Attribute enc) {
+  auto shape = [](ArrayRef<unsigned> v) {
+    std::string s = "[";
+    for (size_t i = 0; i < v.size(); ++i) {
+      if (i)
+        s += ",";
+      s += std::to_string(v[i]);
+    }
+    return s + "]";
+  };
+  if (auto blocked = dyn_cast_or_null<BlockedEncodingAttr>(enc))
+    return "b" + shape(blocked.getSizePerThread()) + "/t" +
+           shape(blocked.getThreadsPerWarp()) + "/w" +
+           shape(blocked.getWarpsPerCTA()) + "/o" + shape(blocked.getOrder());
+  if (auto slice = dyn_cast_or_null<SliceEncodingAttr>(enc))
+    return "slice(d" + std::to_string(slice.getDim()) + "," +
+           rlcDbgEnc(slice.getParent()) + ")";
+  if (!enc)
+    return "<null>";
+  std::string s;
+  llvm::raw_string_ostream os(s);
+  enc.print(os);
+  return os.str();
+}
 
 #ifdef __TLE__
 static bool touchesTleRemotePointerPath(Value value, DenseSet<Value> &visited) {
@@ -1273,6 +1317,9 @@ bool LayoutPropagation::shouldAcceptProposal(const Proposal &proposal) const {
                                         /*useProposal=*/true);
   }
 
+  if (rlcDbgLevel() >= 1)
+    llvm::errs() << "[rlc] cost before=" << beforeCost << " after=" << afterCost
+                 << " accept=" << (afterCost < beforeCost) << "\n";
   return afterCost < beforeCost;
 }
 
@@ -1298,8 +1345,15 @@ int LayoutPropagation::countConvertsRemovedByProposal(
       srcEncoding = originalSrcEncoding;
     if (!resultEncoding)
       resultEncoding = originalResultEncoding;
-    if (srcEncoding == resultEncoding &&
-        originalSrcEncoding != originalResultEncoding)
+    bool counted = srcEncoding == resultEncoding &&
+                   originalSrcEncoding != originalResultEncoding;
+    if (rlcDbgLevel() >= 2)
+      llvm::errs() << "[rlc] cvt src=" << rlcDbgEnc(originalSrcEncoding)
+                   << " dst=" << rlcDbgEnc(originalResultEncoding)
+                   << " propSrc=" << rlcDbgEnc(srcEncoding)
+                   << " propDst=" << rlcDbgEnc(resultEncoding)
+                   << " counted=" << counted << "\n";
+    if (counted)
       ++removed;
   }
   return removed;
@@ -2258,6 +2312,13 @@ bool LayoutPropagation::solveSmallComponents() {
                                 bool restrictWeakStoreProposals = false) {
     if (proposal.empty())
         return false;
+    if (rlcDbgLevel() >= 1) {
+      llvm::errs() << "[rlc] proposal n=" << proposal.size() << "\n";
+      if (rlcDbgLevel() >= 2)
+        for (auto &it : proposal)
+          llvm::errs() << "        " << it.first << " -> "
+                       << rlcDbgEnc(it.second) << "\n";
+    }
 #ifdef __TLE__
     // Skip any component on a TLE cluster remote-address chain; retagging it
     // corrupts the remote access (see valueOnTleRemotePointerPath). Nor retag
@@ -2268,8 +2329,13 @@ bool LayoutPropagation::solveSmallComponents() {
         return false;
 #endif // __TLE__
     int removedConverts = countConvertsRemovedByProposal(proposal);
-    if (removedConverts == 0)
+    if (rlcDbgLevel() >= 1)
+      llvm::errs() << "[rlc] proposal removed=" << removedConverts << "\n";
+    if (removedConverts == 0) {
+      if (rlcDbgLevel() >= 1)
+        llvm::errs() << "[rlc] reject no-removed-convert\n";
       return false;
+    }
 #ifdef __PPU__
     // Reject a proposal that moves the consumers of a coalesced load away from
     // it.
@@ -2313,8 +2379,14 @@ bool LayoutPropagation::solveSmallComponents() {
         if (!operandType || !operandType.getEncoding() ||
             operandType.getEncoding() == it.second)
           continue;
-        if (producerKeepsItsLayout(operand))
+        if (producerKeepsItsLayout(operand)) {
+          if (rlcDbgLevel() >= 1)
+            llvm::errs() << "[rlc] reject untaggable-load-boundary: " << it.first
+                         << " <- " << operand << " with "
+                         << rlcDbgEnc(operandType.getEncoding()) << " vs "
+                         << rlcDbgEnc(it.second) << "\n";
           return false;
+        }
       }
     }
 #endif // __PPU__
@@ -2357,6 +2429,9 @@ bool LayoutPropagation::solveSmallComponents() {
       return false;
     if (requireBenefit && !shouldAcceptProposal(proposal))
       return false;
+    if (rlcDbgLevel() >= 1)
+      llvm::errs() << "[rlc] accept n=" << proposal.size()
+                   << " removed=" << removedConverts << "\n";
     return commitProposal(proposal);
   };
 
@@ -2660,6 +2735,9 @@ bool LayoutPropagation::solveSmallComponents() {
       return;
     collectResultStoreTailProposals(reduceOp, reduceTailProposals);
   });
+  if (rlcDbgLevel() >= 1)
+    llvm::errs() << "[rlc] entry=reduceTail n=" << reduceTailProposals.size()
+                 << "\n";
   changed |= commitMergedProposals(std::move(reduceTailProposals),
                                    /*rejectReachableReductionOrScan=*/true,
                                    /*restrictWeakStoreProposals=*/true);
@@ -2671,6 +2749,8 @@ bool LayoutPropagation::solveSmallComponents() {
       return;
     collectResultStoreTailProposals(forOp, loopTailProposals);
   });
+  if (rlcDbgLevel() >= 1)
+    llvm::errs() << "[rlc] entry=loopTail n=" << loopTailProposals.size() << "\n";
   changed |= commitMergedProposals(std::move(loopTailProposals),
                                    /*rejectReachableReductionOrScan=*/true,
                                    /*restrictWeakStoreProposals=*/true);
@@ -2689,6 +2769,9 @@ bool LayoutPropagation::solveSmallComponents() {
         collectConvertStoreTail(proposal, cvtOp))
       storeTailProposals.push_back(std::move(proposal));
   });
+  if (rlcDbgLevel() >= 1)
+    llvm::errs() << "[rlc] entry=storeTail n=" << storeTailProposals.size()
+                 << "\n";
   changed |= commitMergedProposals(std::move(storeTailProposals),
                                    /*rejectReachableReductionOrScan=*/true,
                                    /*restrictWeakStoreProposals=*/true);
@@ -2700,6 +2783,9 @@ bool LayoutPropagation::solveSmallComponents() {
     if (collectProducerSideConvert(proposal, cvtOp))
       producerSideProposals.push_back(std::move(proposal));
   });
+  if (rlcDbgLevel() >= 1)
+    llvm::errs() << "[rlc] entry=producerSide n=" << producerSideProposals.size()
+                 << "\n";
   changed |= commitMergedProposals(std::move(producerSideProposals),
                                    /*rejectReachableReductionOrScan=*/false);
 
@@ -3159,6 +3245,14 @@ void LayoutPropagation::resolveConflictsByComponent(
 #endif // __FLAGTREE_RLC_ENHANCE__
 
 void LayoutPropagation::resolveConflicts() {
+  if (rlcDbgLevel() >= 1) {
+    size_t multi = 0;
+    for (auto &it : layouts)
+      if (it.second.encodings.size() > 1)
+        ++multi;
+    llvm::errs() << "[rlc] rc layouts=" << layouts.size()
+                 << " multi-candidate=" << multi << "\n";
+  }
 #ifdef __FLAGTREE_RLC_ENHANCE__
   // A value reached only through synthesized parents keeps its own encoding
   // as an option, so it stays as it is unless a component finds a synthesized
@@ -3261,6 +3355,12 @@ void LayoutPropagation::resolveConflicts() {
     int64_t minCost = candidateCosts[0].second;
     for (auto &[enc, cost] : candidateCosts)
       minCost = std::min(minCost, cost);
+    if (rlcDbgLevel() >= 2) {
+      llvm::errs() << "[rlc] rc " << value << " minCost=" << minCost
+                   << " candidates=" << candidateCosts.size() << "\n";
+      for (auto &[enc, cost] : candidateCosts)
+        llvm::errs() << "        " << rlcDbgEnc(enc) << " cost=" << cost << "\n";
+    }
 
     SmallVector<Attribute> tied;
     for (auto &[enc, cost] : candidateCosts)
@@ -3287,6 +3387,15 @@ void LayoutPropagation::resolveConflicts() {
           }
         }
       }
+    }
+    if (rlcDbgLevel() >= 2) {
+      Attribute currentEnc = getTensorEncoding(value);
+      bool switched = !currentEnc || currentEnc != bestEncoding;
+      llvm::errs() << "[rlc] rc " << value
+                   << " chosen=" << rlcDbgEnc(bestEncoding)
+                   << " current=" << rlcDbgEnc(currentEnc)
+                   << " tied=" << tied.size()
+                   << (switched ? " CHANGED\n" : " same\n");
     }
     info.encodings.clear();
     info.encodings.insert(bestEncoding);
