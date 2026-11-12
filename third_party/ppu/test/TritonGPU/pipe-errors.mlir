@@ -227,9 +227,9 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.targ
 
 module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.target = "ppu:80", "ttg.threads-per-warp" = 32 : i32} {
   tt.func @endpoints_in_two_warp_specializes(%ring: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) {
-    // expected-error @below {{hands over between the partitions of two warp_specialize ops}}
+    // expected-error @below {{hands over to reader '' between warp groups that do not run at the same time}}
     tle.pipe.create %ring {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
-    // expected-note @below {{one endpoint runs here}}
+    // expected-note @below {{the writer runs here}}
     ttg.warp_specialize(%ring)
     default {
       ttg.warp_yield
@@ -241,7 +241,7 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.targ
       tle.pipe.writer_commit %writer[%stage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
       ttg.warp_return
     } : (!ttg.memdesc<2x128xf32, #shared, #smem, mutable>) -> ()
-    // expected-note @below {{reader '' here}}
+    // expected-note @below {{this reader runs here}}
     ttg.warp_specialize(%ring)
     default {
       ttg.warp_yield
@@ -272,6 +272,82 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.targ
     tle.pipe.create %ring {capacity = 4 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<4x128xf32, #shared, #smem, mutable>
     // expected-error @below {{duplicates an earlier pipe.create of the same capacity, scope, name and fields}}
     tle.pipe.create %ring {capacity = 4 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<4x128xf32, #shared, #smem, mutable>
+    tt.return
+  }
+}
+
+// -----
+
+// A cross-group pipe whose writer runs outside the warp_specialize that holds
+// its reader. The default warps block on the empty barrier before they enter
+// the op, and the arrivals that would release it sit in a partition they have
+// not started yet.
+
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.target = "ppu:80", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @writer_outside_warp_specialize(%ring: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) {
+    %stage = arith.constant 0 : i32
+    %parity = arith.constant false
+    // expected-error @below {{hands over to reader '' between warp groups that do not run at the same time}}
+    tle.pipe.create %ring {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+    // expected-note @below {{the writer runs here}}
+    tle.pipe.writer_acquire %ring[%stage, %parity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+    tle.pipe.writer_commit %ring[%stage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+    // expected-note @below {{this reader runs here}}
+    ttg.warp_specialize(%ring)
+    default {
+      ttg.warp_yield
+    }
+    partition0(%reader: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) num_warps(4) {
+      %rstage = arith.constant 0 : i32
+      %rparity = arith.constant false
+      %closed = tle.pipe.reader_wait %reader[%rstage, %rparity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      tle.pipe.reader_release %reader[%rstage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      ttg.warp_return
+    } : (!ttg.memdesc<2x128xf32, #shared, #smem, mutable>) -> ()
+    tt.return
+  }
+}
+
+// -----
+
+// A close inside a loop the pipe is created outside of. The close tags are
+// zero filled once, at the create, and nothing clears them, so the second
+// execution would start with the stage already tagged and its readers would
+// see the pipe closed before their first wait.
+
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.target = "ppu:80", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @close_inside_a_loop(%ring: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>, %n: i32) {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %parity = arith.constant false
+    // expected-note @below {{pipe created here}}
+    tle.pipe.create %ring {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+    ttg.warp_specialize(%ring, %n)
+    default {
+      scf.for %i = %c0 to %n step %c1 : i32 {
+        tle.pipe.writer_acquire %ring[%c0, %parity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+        tle.pipe.writer_commit %ring[%c0] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+        // expected-error @below {{closes the pipe inside a loop the pipe is created outside of}}
+        tle.pipe.writer_close %ring[%c1, %parity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      }
+      ttg.warp_yield
+    }
+    partition0(%reader: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>, %rn: i32) num_warps(4) {
+      %rc0 = arith.constant 0 : i32
+      %rc1 = arith.constant 1 : i32
+      %rparity = arith.constant false
+      scf.for %i = %rc0 to %rn step %rc1 : i32 {
+        %closed = tle.pipe.reader_wait %reader[%rc0, %rparity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+        tle.pipe.reader_release %reader[%rc0] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      }
+      ttg.warp_return
+    } : (!ttg.memdesc<2x128xf32, #shared, #smem, mutable>, i32) -> ()
     tt.return
   }
 }

@@ -309,6 +309,9 @@ struct Endpoint {
   bool inWriterGroup = false;
   // Index of a reader among the readers in other groups.
   int crossGroupIndex = -1;
+  // One lifecycle op of this endpoint, for the checks and diagnostics that
+  // need where it runs.
+  Operation *op = nullptr;
 };
 
 struct Pipe {
@@ -439,6 +442,7 @@ static Value loadCloseTag(OpBuilder &builder, Location loc, const Pipe &pipe,
 static LogicalResult recordEndpoint(std::optional<Endpoint> &endpoint,
                                     Operation *op, StringRef role) {
   Endpoint current{getPartition(op), getThreadCount(op)};
+  current.op = op;
   if (!endpoint) {
     endpoint = current;
     return success();
@@ -451,12 +455,15 @@ static LogicalResult recordEndpoint(std::optional<Endpoint> &endpoint,
   return success();
 }
 
-// The warp_specialize an endpoint's partition belongs to; null for the
-// default warps.
-static Operation *getWarpSpecialize(const Endpoint &endpoint) {
-  if (!endpoint.partition.region)
+// The warp_specialize an endpoint runs in, in its default region or in one of
+// its partitions; null outside any such op. Those two kinds of region are the
+// ones that run at the same time, which is what a hand-over between warp
+// groups needs; getPartition() alone cannot tell the default region of an op
+// from the code around it, since neither is a partition.
+static Operation *getEnclosingWarpSpecialize(const Endpoint &endpoint) {
+  if (!endpoint.op)
     return nullptr;
-  return endpoint.partition.region->getParentOp()->getParentOp();
+  return endpoint.op->getParentOfType<ttg::WarpSpecializeOp>();
 }
 
 // The readers of a pipe arrive once on every empty barrier before their first
@@ -467,29 +474,41 @@ static Operation *getWarpSpecialize(const Endpoint &endpoint) {
 // initial arrivals, but its counters are zero filled once all the same, and
 // nothing orders a second execution of its writer after the readers of the
 // first: it is held to the same rule.
+// The endpoints of a cross-group pipe hand over through barriers that count
+// the threads of both groups, so the groups have to run at the same time.
+static InFlightDiagnostic reportDisjointGroups(Pipe &pipe, StringRef name,
+                                               Operation *ws,
+                                               Operation *readerWs,
+                                               const Endpoint &reader) {
+  InFlightDiagnostic diag = pipe.create.emitOpError("hands over to reader '");
+  diag << name << "' between warp groups that do not run at the same time;";
+  diag << " every endpoint of such a pipe runs in the default region or in";
+  diag << " a partition of one warp_specialize";
+  diag.attachNote(ws ? ws->getLoc() : pipe.writer->op->getLoc())
+      << "the writer runs here";
+  diag.attachNote(readerWs ? readerWs->getLoc() : reader.op->getLoc())
+      << "this reader runs here";
+  return diag;
+}
+
 static LogicalResult checkRunsOnce(Pipe &pipe) {
   auto inLoop = [](Operation *op) {
     return op->getParentOfType<LoopLikeOpInterface>() != nullptr;
   };
-  // Every endpoint in a partition belongs to the same warp_specialize: the
-  // partitions of two of them never run at the same time, so a hand-over
-  // barrier between them would count threads that never arrive. The loop the
-  // rule below looks at is the one around that single op.
-  Operation *ws = getWarpSpecialize(*pipe.writer);
+  // A hand-over barrier counts the threads of both groups, so both have to be
+  // running: the default region and the partitions of one warp_specialize are.
+  // The partitions of two of them never run at the same time, and an endpoint
+  // outside the op runs before or after those regions, so in either case the
+  // barrier would wait for threads that never arrive. The loop the rule below
+  // looks at is the one around that single op.
+  Operation *ws = getEnclosingWarpSpecialize(*pipe.writer);
   for (auto &[name, reader] : pipe.readers) {
-    Operation *readerWs = getWarpSpecialize(reader);
-    if (!readerWs)
+    if (reader.inWriterGroup)
       continue;
-    if (ws && ws != readerWs) {
-      InFlightDiagnostic diag = pipe.create.emitOpError(
-          "hands over between the partitions of two warp_specialize ops, "
-          "which never run at the same time, so the hand-over barriers would "
-          "wait for threads that never arrive");
-      diag.attachNote(ws->getLoc()) << "one endpoint runs here";
-      diag.attachNote(readerWs->getLoc()) << "reader '" << name << "' here";
-      return diag;
-    }
-    ws = readerWs;
+    Operation *readerWs = getEnclosingWarpSpecialize(reader);
+    if (ws && readerWs == ws)
+      continue;
+    return reportDisjointGroups(pipe, name, ws, readerWs, reader);
   }
   if (!inLoop(pipe.create) && !(ws && inLoop(ws)))
     return success();
@@ -498,6 +517,27 @@ static LogicalResult checkRunsOnce(Pipe &pipe) {
       "and the shared-memory counters keep their state across executions, so "
       "such a pipe is created and used by a warp_specialize that runs once "
       "per kernel");
+}
+
+// The close tags are zero filled once, at the create, and nothing clears them:
+// a writer that runs its close a second time finds the stage already tagged,
+// and the readers of that execution see the pipe closed before their first
+// wait. A close inside a loop the pipe is created outside of does exactly
+// that, so it is rejected rather than lowered into a silent early exit.
+static LogicalResult checkClosesOnce(Pipe &pipe) {
+  for (Operation *op : pipe.ops) {
+    if (!isa<tle::PipeWriterCloseOp>(op))
+      continue;
+    auto loop = op->getParentOfType<LoopLikeOpInterface>();
+    if (!loop || loop.getOperation()->isAncestor(pipe.create.getOperation()))
+      continue;
+    InFlightDiagnostic diag = op->emitOpError("closes the pipe inside a loop");
+    diag << " the pipe is created outside of; the close tags are written once";
+    diag << " and never cleared, so a second execution would start closed";
+    diag.attachNote(pipe.create.getLoc()) << "pipe created here";
+    return diag;
+  }
+  return success();
 }
 
 static FailureOr<std::string> getReaderName(const Pipe &pipe, Operation *op) {
@@ -601,6 +641,8 @@ static LogicalResult analyzePipes(ModuleOp module, PipeMap &pipes) {
       pipe.emptyThreads += reader.threads;
     }
     if (pipe.crossGroupReaders && failed(checkRunsOnce(pipe)))
+      return failure();
+    if (pipe.hasClose && failed(checkClosesOnce(pipe)))
       return failure();
   }
   return success();
