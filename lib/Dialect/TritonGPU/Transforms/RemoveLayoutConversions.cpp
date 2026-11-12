@@ -2252,7 +2252,7 @@ bool LayoutPropagation::solveSmallComponents() {
     return false;
   };
 
-  auto commitIfProfitable = [&](Proposal &proposal, bool requireBenefit,
+  auto tryCommitProposal = [&](Proposal &proposal, bool requireBenefit,
                                 bool rejectReachableReductionOrScan = true,
                                 bool restrictWeakStoreProposals = false) {
     if (proposal.empty())
@@ -2310,6 +2310,38 @@ bool LayoutPropagation::solveSmallComponents() {
       return false;
     return commitProposal(proposal);
   };
+
+#ifdef __PPU__
+  // A proposal is not self-contained, so rejecting it has to undo more than its
+  // own decision: collecting it already wrote the chosen encodings into
+  // smallComponentPreferredEncoding (see addSmallComponentEncoding), and
+  // getProposalEncoding() / resolveConflicts() read that map back. A rejected
+  // proposal therefore keeps steering the final layout selection -- every gate
+  // in tryCommitProposal() above becomes a no-op for its side effects.
+  //
+  // coalesce scatter, PPU: every proposal the kernel offers reads
+  // sizePerThread [1] -> [4] (wider, never narrower), yet the final IR had the
+  // coalesced load's consumers moved to [1] with three converts. That move came
+  // from the preferred encodings of proposals this function had already
+  // rejected, not from any accepted one. Snapshotting and restoring the map on
+  // rejection is what makes the gates bite: with it, the only surviving change
+  // is the one a proposal was actually allowed to make.
+  auto commitIfProfitable = [&](Proposal &proposal, bool requireBenefit,
+                                bool rejectReachableReductionOrScan = true,
+                                bool restrictWeakStoreProposals = false) {
+    auto savedPreferred = smallComponentPreferredEncoding;
+    bool committed = tryCommitProposal(proposal, requireBenefit,
+                                       rejectReachableReductionOrScan,
+                                       restrictWeakStoreProposals);
+    if (!committed)
+      smallComponentPreferredEncoding = std::move(savedPreferred);
+    return committed;
+  };
+#else  // __PPU__
+  // Other backends keep the previous behaviour: a rejected proposal leaves its
+  // preferred encodings in the map.
+  auto &commitIfProfitable = tryCommitProposal;
+#endif // __PPU__
 
   auto collectRetaggableStoreValue = [&](Proposal &proposal, Value value,
                                          Attribute encoding) {
