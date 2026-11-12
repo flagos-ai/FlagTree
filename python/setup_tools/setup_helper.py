@@ -53,12 +53,13 @@ def get_flagtree_version(git_commit_hash_fn):
 
 def get_long_description():
     readme_path = Path(__file__).resolve().parents[2] / "README.md"
-    return readme_path.read_text(encoding="utf-8")
+    return readme_path.read_text(encoding="utf-8") if readme_path.is_file() else ""
 
 
 def init_backends(backend_installer):
     if flagtree_backend:
-        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
+        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu",
+                                "intellifusion"):
             backends = [
                 *backend_installer.copy(configs.default_backends + tuple(configs.extend_backends)),
                 *backend_installer.copy_externals(),
@@ -80,7 +81,7 @@ def init_backends(backend_installer):
 def get_backend_packages(backend):
     package_prefix = f"triton.backends.{backend.name}"
     excluded_dirs = set()
-    if backend.name == "nvidia" and flagtree_backend not in ("", "nvidia", "tileir"):
+    if backend.name == "nvidia" and flagtree_backend not in ("", "nvidia", "tileir", "intellifusion"):
         excluded_dirs = {"bin", "include", "lib.cupti"}
 
     for root, dirs, _files in os.walk(backend.backend_dir):
@@ -97,7 +98,7 @@ def get_backend_packages(backend):
 
 def get_generated_backend_packages(backend):
     """Declare data directories created after setuptools scans packages."""
-    if backend.name == "nvidia" and flagtree_backend not in ("", "nvidia", "tileir"):
+    if backend.name == "nvidia" and flagtree_backend not in ("", "nvidia", "tileir", "intellifusion"):
         return
 
     generated_package_suffixes = {
@@ -561,7 +562,7 @@ def get_excluded_package_data():
         "": cache_patterns,
         "triton": ["spec/*"],
     }
-    if flagtree_backend not in ("", "nvidia", "tileir"):
+    if flagtree_backend not in ("", "nvidia", "tileir", "intellifusion"):
         excluded_package_data["triton.backends.nvidia"] = [
             "bin/*",
             "bin/**/*",
