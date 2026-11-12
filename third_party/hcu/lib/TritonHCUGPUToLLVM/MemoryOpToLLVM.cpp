@@ -111,35 +111,35 @@ public:
     auto dot = dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstTy.getEncoding());
     auto mma = dot ? dyn_cast<triton::gpu::AMDMfmaEncodingAttr>(dot.getParent())
                    : triton::gpu::AMDMfmaEncodingAttr{};
-    bool normalDot = mma &&
-        mma.getMmacLayout() == triton::gpu::MmacLayout::LEGACY &&
-        dot.getOpIdx() == 1 && dstTy.getRank() == 2 &&
-        (dstTy.getElementType().isF16() || dstTy.getElementType().isBF16());
-    // OptimizeDotOperands may leave a distributed Linear local load followed
-    // by a transpose. Prove its physical register/lane mapping below instead
-    // of requiring a dot encoding on the load itself.
+    bool legacyDot =
+        mma && mma.getMmacLayout() == triton::gpu::MmacLayout::LEGACY;
+    if (!(legacyDot ||
+          isa<triton::gpu::LinearEncodingAttr>(dstTy.getEncoding())) ||
+        (dstTy.getRank() != 2 && dstTy.getRank() != 3) ||
+        srcTy.getRank() != dstTy.getRank() ||
+        srcTy.getShape() != dstTy.getShape() ||
+        srcTy.getElementType() != dstTy.getElementType() ||
+        !(dstTy.getElementType().isF16() || dstTy.getElementType().isBF16()) ||
+        !isa<triton::gpu::SwizzledSharedEncodingAttr,
+             triton::gpu::SharedLinearEncodingAttr>(srcTy.getEncoding()))
+      return failure();
+
+    // All encodings use the same physical gather proof below. Retain the
+    // established rank-two legacy-dot path for affine views. Other layouts
+    // need a single CTA and an independently proven asynchronous wait.
     auto module = op->getParentOfType<ModuleOp>();
     auto numCTAs = module->getAttrOfType<IntegerAttr>("ttg.num-ctas");
     auto numWarps = module->getAttrOfType<IntegerAttr>("ttg.num-warps");
     auto threads = module->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
-    bool naturalResult = isa<triton::gpu::LinearEncodingAttr>(dstTy.getEncoding()) ||
-        (mma && mma.getMmacLayout() == triton::gpu::MmacLayout::LEGACY &&
-         dot.getOpIdx() == 1 && dstTy.getRank() == 3);
-    bool natural = naturalResult &&
-        isa<triton::gpu::SwizzledSharedEncodingAttr>(srcTy.getEncoding()) &&
-        (dstTy.getRank() == 2 || dstTy.getRank() == 3) &&
-        srcTy.getRank() == dstTy.getRank() &&
-        srcTy.getShape() == dstTy.getShape() &&
-        srcTy.getElementType() == dstTy.getElementType() &&
-        (dstTy.getElementType().isF16() || dstTy.getElementType().isBF16()) &&
+    bool legacyAffineView = legacyDot && dstTy.getRank() == 2;
+    bool fullLayout =
         numCTAs && numCTAs.getInt() == 1 &&
-        numWarps && (numWarps.getInt() == 4 || numWarps.getInt() == 8) &&
+        numWarps && numWarps.getInt() > 0 && numWarps.getInt() <= 8 &&
+        llvm::isPowerOf2_64(numWarps.getInt()) &&
         threads && threads.getInt() == 64 &&
         !LLVM::SharedMemoryObject::isAffineSharedMemoryAccess(srcTy) &&
         (!op.getToken() || HCU::isSyncedViaAsyncWait(op));
-    if ((!normalDot && !natural) ||
-        !isa<triton::gpu::SwizzledSharedEncodingAttr,
-             triton::gpu::SharedLinearEncodingAttr>(srcTy.getEncoding()))
+    if (!legacyAffineView && !fullLayout)
       return failure();
     // Explicit allocation alignment overrides the encoding's default. Prove
     // the actual root, including forwarded loop views, for either encoding.
@@ -212,7 +212,7 @@ public:
     // than XORed, so it is an exact byte immediate with the same AS3 origin.
     // This proof can simplify address registers, but the SDK currently adds
     // extra VM waits for the resulting pointer aliases on some pipelines.
-    // Keep it opt-in until the complete packet lowering proves those aliases.
+    // Keep it opt-in while those pointer aliases still affect scheduling.
     auto foldAttr = module->getAttrOfType<IntegerAttr>(
         "ttg.hcu.matrix_read_immediate");
     bool foldImmediate = foldAttr && foldAttr.getInt() == 1;
