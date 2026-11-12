@@ -4,6 +4,7 @@
 #include "TritonHCUGPUTransforms/MlsGroup.h"
 #include "Utility.h"
 #include "MatrixDescriptorLayout.h"
+#include "../TritonHCUGPUToLLVM/ScalarMemoryAnalysis.h"
 #include "../TritonHCUGPUToLLVM/WarpSpecializeUtils.h"
 #include "Analysis/AxisInfoExt.h"
 #include "mlir/Analysis/SliceAnalysis.h"
@@ -157,7 +158,13 @@ static bool supportsRegisterDescriptor(tt::MatrixLoadOp op,
 // described, contiguous source. Keep ordinary loads for other legal inputs,
 // including dynamic descriptors and dots assigned to the scalar FMA path.
 bool supportsDescriptorCopy(triton::MatrixLoadOp op) {
-  if (!triton::HCU::getMatrixDescriptorSharedLayout(op) ||
+  auto mod = op->getParentOfType<ModuleOp>();
+  auto target = mod->getAttrOfType<StringAttr>("ttg.target");
+  auto type = op.getType();
+  if (!target || target.getValue() != "hip:gfx936" ||
+      ttg::TritonGPUDialect::getNumCTAs(mod) != 1 ||
+      ttg::TritonGPUDialect::getThreadsPerWarp(mod) != 64 ||
+      !(type.getElementType().isF16() || type.getElementType().isBF16()) ||
       op.getShape().size() != 2 || op.getStrides().size() != 2 ||
       op.getIndices().size() != 2 || op.getCache() != tt::CacheModifier::NONE ||
       op.getEvict() != tt::EvictionPolicy::NORMAL || op.getIsVolatile())
@@ -175,11 +182,21 @@ bool supportsDescriptorCopy(triton::MatrixLoadOp op) {
   }
   unsigned column = strides[1] == 1 ? 1 : 0, row = 1 - column;
   unsigned waves = ttg::lookupNumWarps(op);
-  uint64_t elements = op.getType().getNumElements();
+  uint64_t elements = type.getNumElements();
   if (strides[column] != 1 || strides[row] < sizes[column] ||
       strides[row] % 8 || sizes[column] % 8 || !waves || waves > 8 ||
       !llvm::isPowerOf2_32(waves) || elements < 512 * waves ||
-      elements > (1u << 20) || elements % (512 * waves))
+      elements > (1u << 20) || elements % (512 * waves) ||
+      !llvm::all_of(op.getIndices(), [](Value value) {
+        return registerDescriptorUniform(value);
+      }))
+    return false;
+  if (!triton::HCU::memory_analysis::multipleOf(op.getIndices()[column], 8))
+    return false;
+  uint64_t tileSpan =
+      2 * (uint64_t(type.getShape()[row] - 1) * strides[row] +
+           type.getShape()[column]);
+  if (strides[row] >= 0x2000 && tileSpan >= (uint64_t(1) << 31))
     return false;
   auto arg = dyn_cast<BlockArgument>(op.getBase());
   auto fn = op->getParentOfType<tt::FuncOp>();
@@ -187,7 +204,8 @@ bool supportsDescriptorCopy(triton::MatrixLoadOp op) {
                        ? fn.getArgAttrOfType<IntegerAttr>(arg.getArgNumber(),
                                                          "tt.divisibility")
                        : IntegerAttr{};
-  return alignment && alignment.getInt() >= 16 && alignment.getInt() % 16 == 0;
+  return alignment && alignment.getInt() >= 16 && alignment.getInt() % 16 == 0 &&
+         triton::HCU::getMatrixDescriptorSharedLayout(op);
 }
 
 Value expandDescriptorLoad(triton::MatrixLoadOp op, PatternRewriter &rw) {

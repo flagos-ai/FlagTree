@@ -104,9 +104,9 @@ def test_loop_descriptor_requires_exact_induction_recurrence(
 
 
 @triton.jit
-def _unpipelined_descriptor_dot(A, B, C, BK: tl.constexpr, ASYNC: tl.constexpr):
+def _unpipelined_descriptor_dot(A, B, C, BK: tl.constexpr, ASYNC: tl.constexpr, COL):
     a = tl.make_block_ptr(A, (1, BK), (BK, 1), (0, 0), (128, BK), (1, 0))
-    b = tl.make_block_ptr(B, (BK, 16), (16, 1), (0, 0), (BK, 128), (1, 0))
+    b = tl.make_block_ptr(B, (BK, 16), (16, 1), (0, COL), (BK, 128), (1, 0))
     av = tle.load(a, boundary_check=(0, 1), padding_option="zero", is_async=ASYNC)
     bv = tle.load(b, boundary_check=(0, 1), padding_option="zero", is_async=ASYNC)
     value = tl.dot(av, bv)
@@ -124,7 +124,8 @@ def test_unpipelined_descriptor_is_lowered_before_pointer_canonicalization(dtype
     source = ASTSource(
         _unpipelined_descriptor_dot,
         {"A": "*" + dtype, "B": "*" + dtype, "C": "*" + dtype,
-         "BK": "constexpr", "ASYNC": "constexpr"}, {"BK": block_k, "ASYNC": async_},
+         "BK": "constexpr", "ASYNC": "constexpr", "COL": "constexpr"},
+        {"BK": block_k, "ASYNC": async_, "COL": 0},
         attrs={(i,): [("tt.divisibility", 16), ("tt.pointer_range", 32)]
                for i in range(3)},
     )
@@ -148,3 +149,20 @@ def test_unpipelined_descriptor_is_lowered_before_pointer_canonicalization(dtype
     # ordinary dot option, while K16 still clamps the illegal packed K group.
     expected = 8 if kpack == 2 and block_k >= 32 else 4
     assert set(re.findall(r"kWidth = (\d+)", kernel.asm["ttgir"])) == {str(expected)}
+
+
+def test_async_descriptor_with_unproved_column_alignment_falls_back():
+    source = ASTSource(
+        _unpipelined_descriptor_dot,
+        {"A": "*bf16", "B": "*bf16", "C": "*bf16", "COL": "i32",
+         "BK": "constexpr", "ASYNC": "constexpr"},
+        {"BK": 32, "ASYNC": True},
+        attrs={(i,): [("tt.divisibility", 16), ("tt.pointer_range", 32)] for i in range(3)},
+    )
+    kernel = triton.compile(
+        source, target=GPUTarget("hip", "gfx936", 64),
+        options=dict(prefer_wide_async_copy=True, num_warps=4, num_stages=4, kpack=2,
+                     schedule_hint="local-prefetch", mmac_warps_m=2, mmac_transposed=True),
+    )
+    assert kernel.asm["ttgir"].count("hcug.matrix_load_to_local") == 1
+    assert "tt.matrix_load " not in kernel.asm["ttgir"]
