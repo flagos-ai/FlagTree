@@ -17,7 +17,7 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-"""Strictly detect the active device behind one FlagTune runtime.
+"""Strictly detect the Ascend NPU behind the Triton 3.5 FlagTune runtime.
 
 This module is the only FlagTune layer that interprets Triton's active target.
 Callers receive a backend-neutral :class:`DeviceDescriptor`; they must not
@@ -55,13 +55,12 @@ class DeviceDescriptor:
     """Describe one active accelerator without exposing a vendor API object.
 
     Args:
-        backend: Triton's canonical backend name, such as ``cuda``, ``hip``,
-            or ``maca``.
+        backend: Triton's Ascend backend name, ``npu``.
         vendor: Stable hardware-vendor name used in artifact identities.
         torch_device_type: Device type accepted by the installed PyTorch build.
-            ROCm intentionally uses ``cuda`` here for PyTorch compatibility.
+            Ascend uses ``npu``.
         device_name: Runtime-reported product name.
-        architecture: Backend-native target, such as ``sm90`` or ``gfx942``.
+        architecture: Backend-native target, such as ``ascend910b4-1``.
         device_index: Logical device ordinal visible to the current process.
     """
 
@@ -80,46 +79,6 @@ class _BackendDescriptor:
     normalize_architecture: Callable[[Any], str]
 
 
-def _nvidia_architecture(value: Any) -> str:
-    text = str(value).strip().lower()
-    if text.startswith("sm"):
-        suffix = text[2:].replace("_", "")
-    else:
-        suffix = text.replace(".", "").replace("_", "")
-    if not suffix.isdigit():
-        raise DeviceProbeError(f"CUDA target has invalid architecture {value!r}; expected smNN or NN")
-    return f"sm{suffix}"
-
-
-def _amd_architecture(value: Any) -> str:
-    text = str(value).strip().lower()
-    if not text.startswith("gfx") or len(text) <= 3:
-        raise DeviceProbeError(f"HIP target has invalid architecture {value!r}; expected gfxNNN")
-    return text
-
-
-def _maca_architecture(value: Any) -> str:
-    text = str(value).strip().lower()
-    if text.startswith("sm"):
-        suffix = text[2:].replace("_", "")
-    else:
-        suffix = text.replace(".", "").replace("_", "")
-    if not suffix.isdigit():
-        raise DeviceProbeError(f"MACA target has invalid architecture {value!r}; expected smNN or NN")
-    return f"sm{suffix}"
-
-
-def _musa_architecture(value: Any) -> str:
-    text = str(value).strip().lower()
-    if text.startswith("musa"):
-        suffix = text[4:]
-    else:
-        suffix = text.replace(".", "").replace("_", "")
-    if not suffix.isdigit():
-        raise DeviceProbeError(f"MUSA target has invalid architecture {value!r}; expected musaNN or NN")
-    return f"musa{suffix}"
-
-
 def _ascend_architecture(value: Any) -> str:
     text = str(value).strip().lower()
     if not re.fullmatch(r"ascend[0-9][a-z0-9_-]*", text):
@@ -133,21 +92,6 @@ def _ascend_architecture(value: Any) -> str:
 # ---------------------------------------------------------------------------
 _BACKENDS: Dict[str, _BackendDescriptor] = {
     "npu": _BackendDescriptor("huawei", "npu", _ascend_architecture),
-    "cuda": _BackendDescriptor("nvidia", "cuda", _nvidia_architecture),
-    # PyTorch ROCm deliberately exposes its runtime through torch.cuda.
-    "hip": _BackendDescriptor("amd", "cuda", _amd_architecture),
-    # MetaX MACA also exposes its runtime through torch.cuda.
-    "maca": _BackendDescriptor("metax", "cuda", _maca_architecture),
-    "musa": _BackendDescriptor("mthreads", "musa", _musa_architecture),
-}
-
-# Some vendor backends intentionally share a canonical Triton target with
-# another implementation. Resolve those drivers before the target fallback so
-# PPU and Hygon hardware retain their own stable vendor identities.
-_DRIVER_OVERRIDES: Dict[str, _BackendDescriptor] = {
-    "triton.backends.ppu.driver": _BackendDescriptor("thead", "cuda", _nvidia_architecture),
-    # Hygon HCU exposes Triton's canonical HIP target but is not an AMD device.
-    "triton.backends.hcu.driver": _BackendDescriptor("hygon", "cuda", _amd_architecture),
 }
 
 
@@ -183,8 +127,7 @@ def probe_flagtune_device(device_index: int | None = None) -> DeviceDescriptor:
         raise DeviceProbeError(f"cannot query the active Triton target: {exc}") from exc
 
     backend = str(getattr(target, "backend", "")).strip().lower()
-    driver_module = type(active).__module__
-    descriptor = _DRIVER_OVERRIDES.get(driver_module, _BACKENDS.get(backend))
+    descriptor = _BACKENDS.get(backend)
     if descriptor is None:
         supported = ", ".join(registered_device_backends())
         shown = backend or "<unknown>"

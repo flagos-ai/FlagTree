@@ -139,7 +139,7 @@ class Flagtuner(Autotuner):
         warmup: Benchmark warmup iterations.
         rep: Benchmark measurement iterations.
         benchmark_mode: Architecture-neutral ``replay`` or ``event`` timing.
-            The effective default is ``replay``.
+            The effective default is ``event`` for Ascend NPU.
         benchmark_retries: Timed replay samples sharing the total ``rep``
             measurement budget.
         use_cuda_graph: Deprecated compatibility alias for
@@ -189,7 +189,7 @@ class Flagtuner(Autotuner):
             )
             selected_mode = resolve_requested_mode("replay" if use_cuda_graph else "event")
         else:
-            selected_mode = resolve_requested_mode(benchmark_mode, default=BenchmarkMode.REPLAY)
+            selected_mode = resolve_requested_mode(benchmark_mode, default=BenchmarkMode.EVENT)
         resolved_benchmark = resolve_benchmarker(
             selected_mode,
             warmup_ms=warmup,
@@ -360,7 +360,7 @@ def flagtune(
         warmup: Benchmark warmup iterations.
         rep: Benchmark repetitions.
         benchmark_mode: Architecture-neutral ``replay`` or ``event`` timing.
-            Omission defaults to ``replay``.
+            Omission defaults to Ascend ``event`` timing.
         benchmark_retries: Timed replay samples sharing the total ``rep``
             measurement budget.
         use_cuda_graph: Deprecated compatibility alias for

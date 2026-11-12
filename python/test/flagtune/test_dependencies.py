@@ -100,6 +100,7 @@ def isolated_loader(monkeypatch, tmp_path):
     library.parent.mkdir(parents=True)
     library.touch()
     monkeypatch.setattr(_dependencies, "_XGBOOST_LIBRARY", None)
+    monkeypatch.setattr(_dependencies, "_XGBOOST_MODULE", None)
     monkeypatch.setattr(_dependencies, "_needs_xgboost_isolation", lambda: True)
     monkeypatch.delitem(_dependencies.sys.modules, "xgboost", raising=False)
     monkeypatch.setattr(_dependencies, "find_spec", lambda _name: SimpleNamespace(origin=str(package / "__init__.py")))
@@ -132,10 +133,23 @@ def test_xgboost_isolation_failure_does_not_import_unsafe_library(monkeypatch, i
     assert _dependencies._XGBOOST_LIBRARY is None
 
 
-def test_xgboost_already_imported_requires_restart(monkeypatch, isolated_loader):
-    monkeypatch.setitem(_dependencies.sys.modules, "xgboost", SimpleNamespace())
-    with pytest.raises(FlagTuneDependencyError, match="already imported.*restart"):
-        _dependencies.require_xgboost("test")
+def test_xgboost_already_imported_uses_private_runtime(monkeypatch, isolated_loader):
+    foreign = SimpleNamespace()
+    private = SimpleNamespace()
+    monkeypatch.setitem(_dependencies.sys.modules, "xgboost", foreign)
+    calls = []
+
+    def load_private(origin, feature):
+        calls.append(origin)
+        monkeypatch.setattr(_dependencies, "_XGBOOST_LIBRARY", object())
+        monkeypatch.setattr(_dependencies, "_XGBOOST_MODULE", private)
+
+    monkeypatch.setattr(_dependencies, "_load_private_xgboost", load_private)
+    monkeypatch.setattr(_dependencies, "import_module", lambda name: SimpleNamespace())
+    assert _dependencies.require_xgboost("test") is private
+    assert _dependencies.require_xgboost("test") is private
+    assert _dependencies.sys.modules["xgboost"] is foreign
+    assert len(calls) == 1
 
 
 def test_xgboost_missing_native_library_has_actionable_error(isolated_loader):
@@ -187,3 +201,18 @@ def test_xgboost_concurrent_requests_load_one_library(monkeypatch, isolated_load
     with ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(_dependencies.require_xgboost, ["test"] * 12))
     assert loads == [True]
+
+
+def test_private_xgboost_copy_failure_preserves_foreign_module(monkeypatch, isolated_loader):
+    foreign = SimpleNamespace()
+    monkeypatch.setitem(_dependencies.sys.modules, "xgboost", foreign)
+
+    def fail_copy(*args, **kwargs):
+        raise OSError("temporary storage unavailable")
+
+    monkeypatch.setattr(_dependencies.shutil, "copytree", fail_copy)
+    with pytest.raises(FlagTuneDependencyError, match="private XGBoost.*temporary storage"):
+        _dependencies.require_xgboost("test")
+    assert _dependencies.sys.modules["xgboost"] is foreign
+    assert _dependencies._XGBOOST_MODULE is None
+    assert _dependencies._XGBOOST_LIBRARY is None

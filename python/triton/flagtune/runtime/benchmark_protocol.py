@@ -17,23 +17,17 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-"""Resolve event and graph-replay benchmark protocols.
-
-Callers request an ``event`` or ``replay`` measurement and receive a callable
-plus complete protocol metadata. Replay support is selected here by Triton
-driver module name so backend driver implementations remain unchanged.
-"""
+"""Resolve Ascend NPU event timing, retaining explicit replay fallback metadata."""
 
 from __future__ import annotations
 
-import inspect
 import os
 import warnings
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Sequence
 
-from triton.flagtune._dependencies import FlagTuneDependencyError
+from triton.flagtune.runtime.device import UnsupportedFlagTuneDeviceError
 from triton.runtime.driver import driver
 
 
@@ -110,30 +104,6 @@ class ResolvedBenchmarker:
     benchmark: Callable[[Callable[..., Any], Sequence[float]], Sequence[float]]
 
 
-_REPLAY_IMPLEMENTATIONS = {
-    "triton.backends.nvidia.driver": "triton_cuda_graph_replay_v1",
-    "triton.backends.amd.driver": "triton_hip_graph_replay_v1",
-    "triton.backends.metax.driver": "triton_metax_graph_replay_v1",
-    "triton.backends.ppu.driver": "triton_ppu_graph_replay_v1",
-    "triton.backends.mthreads.driver": "triton_musa_torchada_graph_replay_v3",
-    "triton.backends.hcu.driver": "triton_hcu_graph_replay_v1",
-}
-_OFFICIAL_TRITON_REPLAY_COUNT = 10
-
-
-def _replay_implementation(active: Any) -> str | None:
-    """Return the stable replay identity for a supported Triton driver."""
-    return _REPLAY_IMPLEMENTATIONS.get(type(active).__module__)
-
-
-def _supports_configurable_retries(benchmarker: Callable[..., Any]) -> bool:
-    """Return whether a Triton graph helper accepts ``n_retries``."""
-    try:
-        return "n_retries" in inspect.signature(benchmarker).parameters
-    except (TypeError, ValueError):
-        return False
-
-
 def _validate_request(
     mode: BenchmarkMode | str,
     warmup_ms: int,
@@ -161,81 +131,14 @@ def resolve_benchmarker(
     n_retries: int = 10,
     allow_fallback: bool = True,
 ) -> ResolvedBenchmarker:
-    """Resolve one Triton benchmarker without exposing device APIs.
-
-    ``measurement_ms`` is a total timing budget.  Replay implementations
-    receive ``measurement_ms / n_retries`` as their per-graph ``rep`` value so
-    the existing graph helper can retain its internal algorithm while the
-    caller controls total timed work. All registered replay backends use
-    ``triton.testing.do_bench_cudagraph``. MUSA imports torchada on the first
-    benchmark call to alias CUDA-style PyTorch APIs; resolving the benchmarker
-    does not require torchada. Capture size and warmup follow the shared helper.
-    """
+    """Resolve NPU event timing; replay requests may fall back explicitly."""
     selected = _validate_request(mode, warmup_ms, measurement_ms, n_retries)
     active = driver.active
+    backend = active.get_current_target().backend
+    if backend != "npu":
+        raise UnsupportedFlagTuneDeviceError(
+            f"FlagTune on Triton 3.5 supports only Ascend backend 'npu', got {backend!r}")
     if selected is BenchmarkMode.REPLAY:
-        implementation = _replay_implementation(active)
-        if implementation is not None:
-            is_musa = type(active).__module__ == "triton.backends.mthreads.driver"
-            from triton.testing import do_bench_cudagraph
-
-            configurable_retries = _supports_configurable_retries(do_bench_cudagraph)
-            effective_retries = (n_retries if configurable_retries else _OFFICIAL_TRITON_REPLAY_COUNT)
-            if not configurable_retries and n_retries != effective_retries:
-                warnings.warn(
-                    "official Triton's graph benchmark uses a fixed replay "
-                    f"count of {effective_retries}; ignoring "
-                    f"n_retries={n_retries}",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-            per_replay_ms = float(measurement_ms) / effective_retries
-
-            def replay_benchmark(kernel_call, quantiles):
-                if is_musa:
-                    import triton
-
-                    device_interface = active.get_device_interface()
-                    next_power_of_2 = triton.next_power_of_2
-                    try:
-                        # Importing torchada installs the CUDA-to-MUSA API aliases.
-                        import torchada
-                    except ImportError as exc:
-                        raise FlagTuneDependencyError(
-                            "FlagTune MUSA replay requires torchada and its MUSA dependencies; "
-                            "install torchada with 'python -m pip install torchada' in the MUSA environment "
-                            "and check the chained import error") from exc
-                    finally:
-                        # TorchADA's SGLang import chain may replace this constexpr helper.
-                        triton.next_power_of_2 = next_power_of_2
-                    get_backend = getattr(torchada, "get_backend", None)
-                    if get_backend is None or get_backend() is not device_interface:
-                        raise RuntimeError(
-                            "FlagTune MUSA replay requires torchada.get_backend() to select the active torch.musa backend"
-                        )
-
-                kwargs = {
-                    "rep": per_replay_ms,
-                    "quantiles": quantiles,
-                }
-                if configurable_retries:
-                    kwargs["n_retries"] = effective_retries
-                return do_bench_cudagraph(kernel_call, **kwargs)
-
-            return ResolvedBenchmarker(
-                protocol=BenchmarkProtocol(
-                    requested_mode=selected,
-                    resolved_mode=BenchmarkMode.REPLAY,
-                    implementation=implementation,
-                    cache_policy="warm_l2",
-                    # The shared helper has no configurable timed warmup.
-                    warmup_ms=0 if is_musa else warmup_ms,
-                    measurement_ms=measurement_ms,
-                    n_retries=effective_retries,
-                    per_replay_ms=per_replay_ms,
-                ),
-                benchmark=replay_benchmark,
-            )
         reason = "active Triton backend does not provide a registered replay benchmarker"
         if not allow_fallback:
             raise RuntimeError(reason)

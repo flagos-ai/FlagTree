@@ -1,4 +1,3 @@
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +8,7 @@ from triton.flagtune.runtime import benchmark_protocol as benchmark_module
 
 class _FakeDriver:
 
-    def __init__(self, backend="cuda"):
+    def __init__(self, backend="npu"):
         self.backend = backend
         self.device_interface = object()
         self.observed = {}
@@ -41,273 +40,6 @@ def _driver_for(module_name, backend):
 
 
 @pytest.mark.parametrize(
-    ("module_name", "backend", "implementation"),
-    [
-        (
-            "triton.backends.nvidia.driver",
-            "cuda",
-            "triton_cuda_graph_replay_v1",
-        ),
-        (
-            "triton.backends.amd.driver",
-            "hip",
-            "triton_hip_graph_replay_v1",
-        ),
-        (
-            "triton.backends.metax.driver",
-            "maca",
-            "triton_metax_graph_replay_v1",
-        ),
-        (
-            "triton.backends.ppu.driver",
-            "cuda",
-            "triton_ppu_graph_replay_v1",
-        ),
-        (
-            "triton.backends.hcu.driver",
-            "hip",
-            "triton_hcu_graph_replay_v1",
-        ),
-    ],
-)
-def test_replay_splits_total_measurement_budget(monkeypatch, module_name, backend, implementation):
-    active = _driver_for(module_name, backend)
-    monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
-    monkeypatch.setattr(triton_testing, "do_bench_cudagraph", active.replay_benchmark)
-    launches = []
-
-    resolved = benchmark_module.resolve_benchmarker(
-        "replay",
-        warmup_ms=25,
-        measurement_ms=100,
-        n_retries=10,
-    )
-    result = resolved.benchmark(lambda: launches.append(True), (0.5, 0.2, 0.8))
-
-    assert result == [1.0, 0.8, 1.2]
-    assert launches == [True]
-    assert active.observed == {
-        "rep": 10.0,
-        "quantiles": (0.5, 0.2, 0.8),
-        "n_retries": 10,
-    }
-    assert resolved.protocol.as_dict() == {
-        "requested_mode": "replay",
-        "resolved_mode": "replay",
-        "implementation": implementation,
-        "cache_policy": "warm_l2",
-        "warmup_ms": 25,
-        "measurement_ms": 100,
-        "n_retries": 10,
-        "per_replay_ms": 10.0,
-        "fallback_reason": None,
-    }
-    assert resolved.protocol.cache_key() == (
-        implementation,
-        25,
-        100,
-        10,
-        10.0,
-    )
-
-
-def test_mthreads_replay_initializes_torchada_and_uses_shared_helper(monkeypatch):
-    active = _driver_for("triton.backends.mthreads.driver", "musa")
-    monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
-    initialized = []
-    interface_queries = []
-
-    def get_device_interface():
-        interface_queries.append(True)
-        return active.device_interface
-
-    monkeypatch.setattr(active, "get_device_interface", get_device_interface)
-
-    def get_backend():
-        initialized.append(True)
-        return active.device_interface
-
-    monkeypatch.setitem(sys.modules, "torchada", SimpleNamespace(get_backend=get_backend))
-
-    def shared_benchmarker(kernel_call, n_retries=10, **kwargs):
-        assert initialized == [True]
-        return active.replay_benchmark(kernel_call, n_retries=n_retries, **kwargs)
-
-    monkeypatch.setattr(triton_testing, "do_bench_cudagraph", shared_benchmarker)
-    launches = []
-
-    resolved = benchmark_module.resolve_benchmarker(
-        "replay",
-        warmup_ms=25,
-        measurement_ms=100,
-        n_retries=10,
-    )
-    assert initialized == []
-    assert interface_queries == []
-    result = resolved.benchmark(lambda: launches.append(True), (0.5, 0.2, 0.8))
-
-    assert result == [1.0, 0.8, 1.2]
-    assert launches == [True]
-    assert initialized == [True]
-    assert interface_queries == [True]
-    assert active.observed == {
-        "rep": 10.0,
-        "quantiles": (0.5, 0.2, 0.8),
-        "n_retries": 10,
-    }
-    assert resolved.protocol.as_dict() == {
-        "requested_mode": "replay",
-        "resolved_mode": "replay",
-        "implementation": "triton_musa_torchada_graph_replay_v3",
-        "cache_policy": "warm_l2",
-        "warmup_ms": 0,
-        "measurement_ms": 100,
-        "n_retries": 10,
-        "per_replay_ms": 10.0,
-        "fallback_reason": None,
-    }
-    assert resolved.protocol.cache_key() == (
-        "triton_musa_torchada_graph_replay_v3",
-        0,
-        100,
-        10,
-        10.0,
-    )
-
-
-@pytest.mark.parametrize("error_type", [None, ImportError, RuntimeError])
-def test_mthreads_replay_preserves_constexpr_helper_during_import(monkeypatch, error_type):
-    import builtins
-    import triton
-
-    active = _driver_for("triton.backends.mthreads.driver", "musa")
-    monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
-    original_helper = triton.next_power_of_2
-    original_import = builtins.__import__
-    imports = []
-
-    def patched_import(name, *args, **kwargs):
-        if name == "torchada":
-            imports.append(True)
-            monkeypatch.setattr(triton, "next_power_of_2", lambda value: value)
-            if error_type is not None:
-                raise error_type("TorchADA dependency failure")
-            return SimpleNamespace(get_backend=lambda: active.device_interface)
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", patched_import)
-
-    def shared_benchmarker(kernel_call, n_retries=10, **kwargs):
-        assert triton.next_power_of_2 is original_helper
-        return active.replay_benchmark(kernel_call, n_retries=n_retries, **kwargs)
-
-    monkeypatch.setattr(triton_testing, "do_bench_cudagraph", shared_benchmarker)
-    resolved = benchmark_module.resolve_benchmarker("replay", warmup_ms=25, measurement_ms=100)
-    assert imports == []
-    if error_type is not None:
-        expected = benchmark_module.FlagTuneDependencyError if error_type is ImportError else error_type
-        with pytest.raises(expected) as error:
-            resolved.benchmark(lambda: None, (0.5, ))
-        if error_type is ImportError:
-            assert isinstance(error.value.__cause__, ImportError)
-    else:
-        resolved.benchmark(lambda: None, (0.5, ))
-
-    assert imports == [True]
-    assert triton.next_power_of_2 is original_helper
-
-
-@pytest.mark.parametrize("mode", ["replay", "event"])
-def test_mthreads_flagtuner_constructs_without_torchada(monkeypatch, mode):
-    import builtins
-
-    from triton.flagtune.runtime.autotuner import Flagtuner
-
-    active = _driver_for("triton.backends.mthreads.driver", "musa")
-    monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
-    monkeypatch.delenv("FLAGTUNE_BENCHMARK_MODE", raising=False)
-    imports = []
-    interface_queries = []
-    original_import = builtins.__import__
-
-    def missing_torchada(name, *args, **kwargs):
-        if name == "torchada":
-            imports.append(True)
-            raise ModuleNotFoundError("No module named 'torchada'", name="torchada")
-        return original_import(name, *args, **kwargs)
-
-    def get_device_interface():
-        interface_queries.append(True)
-        return active.device_interface
-
-    monkeypatch.setattr(builtins, "__import__", missing_torchada)
-    monkeypatch.setattr(active, "get_device_interface", get_device_interface)
-    tuner = Flagtuner(
-        fn=lambda: None,
-        arg_names=[],
-        configs=[],
-        key=[],
-        reset_to_zero=None,
-        restore_value=None,
-        benchmark_mode=None if mode == "replay" else mode,
-    )
-    assert tuner.benchmark_protocol.resolved_mode.value == mode
-    assert imports == []
-    assert interface_queries == []
-    launches = []
-    if mode == "replay":
-        with pytest.raises(benchmark_module.FlagTuneDependencyError, match="requires torchada") as error:
-            tuner.do_bench(lambda: launches.append(True), (0.5, ))
-        assert isinstance(error.value.__cause__, ModuleNotFoundError)
-        assert imports == [True]
-        assert interface_queries == [True]
-        assert launches == []
-    else:
-        assert tuner.do_bench(lambda: launches.append(True), (0.5, )) == [2.0, 1.8, 2.2]
-        assert launches == [True]
-        assert imports == []
-        assert interface_queries == []
-
-
-@pytest.mark.parametrize("has_get_backend", [False, True])
-def test_mthreads_replay_checks_torchada_backend_only_when_called(monkeypatch, has_get_backend):
-    active = _driver_for("triton.backends.mthreads.driver", "musa")
-    monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
-    torchada = SimpleNamespace(get_backend=lambda: object()) if has_get_backend else SimpleNamespace()
-    monkeypatch.setitem(sys.modules, "torchada", torchada)
-    launches = []
-    resolved = benchmark_module.resolve_benchmarker("replay", warmup_ms=25, measurement_ms=100)
-
-    with pytest.raises(RuntimeError, match="active torch.musa backend"):
-        resolved.benchmark(lambda: launches.append(True), (0.5, ))
-    assert launches == []
-
-
-def test_unsupported_replay_backend_warns_and_resolves_event(monkeypatch):
-    active = _driver_for("triton.backends.example.driver", backend="example")
-    monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
-
-    with pytest.warns(RuntimeWarning, match="falling back to event"):
-        resolved = benchmark_module.resolve_benchmarker(
-            "replay",
-            warmup_ms=5,
-            measurement_ms=20,
-            n_retries=4,
-        )
-    result = resolved.benchmark(lambda: None, (0.5, 0.2, 0.8))
-
-    assert result == [2.0, 1.8, 2.2]
-    assert active.observed == {
-        "warmup": 5,
-        "rep": 20,
-        "quantiles": (0.5, 0.2, 0.8),
-    }
-    assert resolved.protocol.resolved_mode is benchmark_module.BenchmarkMode.EVENT
-    assert resolved.protocol.cache_key() == ("triton_do_bench", 5, 20)
-    assert resolved.protocol.fallback_reason
-
-
-@pytest.mark.parametrize(
     ("env_value", "explicit", "expected"),
     [
         (None, None, "event"),
@@ -330,10 +62,13 @@ def test_resolve_requested_mode_rejects_unknown_environment_value(monkeypatch):
         benchmark_module.resolve_requested_mode()
 
 
-def test_flagtuner_default_mode_preserves_replay(monkeypatch):
+def test_flagtuner_defaults_to_npu_event_timing(monkeypatch):
+    from triton.flagtune.runtime.autotuner import Flagtuner
     monkeypatch.delenv("FLAGTUNE_BENCHMARK_MODE", raising=False)
-    assert (benchmark_module.resolve_requested_mode(default=benchmark_module.BenchmarkMode.REPLAY)
-            is benchmark_module.BenchmarkMode.REPLAY)
+    monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=_FakeDriver()))
+    tuner = Flagtuner(fn=lambda: None, arg_names=[], configs=[], key=[], reset_to_zero=None, restore_value=None)
+    assert tuner.benchmark_protocol.requested_mode.value == "event"
+    assert tuner.benchmark_protocol.resolved_mode.value == "event"
 
 
 @pytest.mark.parametrize("n_retries", [0, -1, True, 1.5])
@@ -369,7 +104,7 @@ def test_ascend_uses_driver_event_benchmarker(monkeypatch, mode):
             key=[],
             reset_to_zero=None,
             restore_value=None,
-            benchmark_mode=None if mode == "replay" else mode,
+            benchmark_mode=mode,
             warmup=5,
             rep=20,
         )
@@ -392,3 +127,12 @@ def test_ascend_strict_replay_request_is_rejected(monkeypatch):
     monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
     with pytest.raises(RuntimeError, match="does not provide a registered replay"):
         benchmark_module.resolve_benchmarker("replay", warmup_ms=5, measurement_ms=20, allow_fallback=False)
+
+
+@pytest.mark.parametrize("backend", ["cuda", "hip", "maca", "musa"])
+@pytest.mark.parametrize("mode", ["event", "replay"])
+def test_non_npu_benchmarkers_are_rejected(monkeypatch, backend, mode):
+    from triton.flagtune.runtime.device import UnsupportedFlagTuneDeviceError
+    monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=_FakeDriver(backend)))
+    with pytest.raises(UnsupportedFlagTuneDeviceError, match="only Ascend"):
+        benchmark_module.resolve_benchmarker(mode, warmup_ms=5, measurement_ms=20)
