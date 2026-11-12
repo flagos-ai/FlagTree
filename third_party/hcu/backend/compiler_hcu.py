@@ -1250,7 +1250,7 @@ class HIPBackend(BaseBackend):
         use_dcc = (bool(metadata.get("hcu_tle_raw")) and dcc.is_file()
                    and "llvm.amdgcn.make.buffer.rsrc" not in kernel_ir)
         metadata["hcu_raw_dcc"] = use_dcc
-        llir_file = asm_file = None
+        llir_file = asm_file = linked_file = None
         try:
             with tempfile.NamedTemporaryFile(mode='w', suffix=".ll", delete=False) as f:
                 llir_file = f.name
@@ -1276,16 +1276,16 @@ class HIPBackend(BaseBackend):
                     linked_file,
                 ]
                 subprocess.run(link_command, check=True, capture_output=True, text=True)
-                llir_file = linked_file
 
             # Compile to ASM; if dcc fails, retry with aillvm.
-            asm_command = [asm_compiler] + asm_args + [llir_file, "-S", "-o", asm_file]
+            asm_input = linked_file or llir_file
+            asm_command = [asm_compiler] + asm_args + [asm_input, "-S", "-o", asm_file]
             result = subprocess.run(asm_command, capture_output=True, text=True)
             if result.returncode != 0 and use_dcc:
                 print(f"[hcu_raw_dcc] dcc failed; falling back to aillvm\n{result.stderr}", flush=True)
                 metadata["hcu_raw_dcc"] = False
                 asm_command = ([HIPBackend.path_to_rocm_clang()] + HIPBackend._get_clang_args(metadata, options) +
-                               flags + [llir_file, "-S", "-o", asm_file])
+                               flags + [asm_input, "-S", "-o", asm_file])
                 result = subprocess.run(asm_command, check=True, capture_output=True, text=True)
             elif result.returncode != 0:
                 raise subprocess.CalledProcessError(result.returncode, asm_command, result.stdout, result.stderr)
@@ -1307,7 +1307,7 @@ class HIPBackend(BaseBackend):
             raise HSACOError(f"File operation failed: {str(e)}") from e
         finally:
             # Clean up temporary files
-            for file in [llir_file, asm_file]:
+            for file in (llir_file, linked_file, asm_file):
                 if file is not None and os.path.exists(file):
                     os.remove(file)
         if schedule_original is not None or validate_imported_schedule:
@@ -1341,31 +1341,23 @@ class HIPBackend(BaseBackend):
         #     target_features = '+xnack'
         # hsaco = hcu.assemble_amdgcn(src, options.arch, target_features)
         try:
-            with tempfile.NamedTemporaryFile(mode='w', suffix=".s", delete=False) as f:
-                asm_file = f.name
-                f.write(str(src))
+            with tempfile.TemporaryDirectory(prefix="hcu-assemble-") as tmp:
+                asm_file = Path(tmp) / "kernel.s"
+                hsaco_file = Path(tmp) / "kernel.hsaco"
+                asm_file.write_text(str(src))
 
-            hsaco_file = tempfile.mktemp(suffix=".hsaco")
-
-            clang_path = HIPBackend.path_to_rocm_clang()
-            clang_args = HIPBackend._get_clang_args(metadata, options)
-            clang_args = _retarget_clang_args(clang_args, str(src))
-
-            # Compile to HSACO
-            hsaco_command = [clang_path] + clang_args + [asm_file, "-x", "assembler", "-o", hsaco_file]
-            subprocess.run(hsaco_command, check=True, capture_output=True, text=True)
-
-            with open(hsaco_file, "rb") as fd_out:
-                ret = fd_out.read()
-
+                clang_path = HIPBackend.path_to_rocm_clang()
+                clang_args = HIPBackend._get_clang_args(metadata, options)
+                clang_args = _retarget_clang_args(clang_args, str(src))
+                hsaco_command = [clang_path] + clang_args + [str(asm_file), "-x", "assembler", "-o", str(hsaco_file)]
+                subprocess.run(hsaco_command, check=True, capture_output=True, text=True)
+                return hsaco_file.read_bytes()
         except subprocess.CalledProcessError as e:
             print(f"Compilation failed: {e.stderr}")
             raise HSACOError(f"Compilation failed: {e.stderr}") from e
         except IOError as e:
-            print(f"File operation failed: {str(e)}")
-            raise HSACOError(f"File operation failed: {str(e)}") from e
-
-        return ret
+            print(f"File operation failed: {e.strerror}")
+            raise HSACOError(f"File operation failed: {e.strerror}") from e
 
     def add_stages(self, stages, options, language):
         if language == Language.TRITON:
