@@ -663,6 +663,10 @@ def parse_operator_config(config: Mapping[str, Any]) -> OperatorInfo:
             raise FlagTuneConfigError(f"{location} has unknown keys: {sorted(unknown)}")
 
         inputs = _parse_inputs(spec.get("inputs"), operations, f"{location}.inputs")
+        if "config_space" in spec and any(spec.get(key) is not None for key in ("config_sets", "configs")):
+            raise FlagTuneConfigError(
+                f"{location}.config_space cannot be combined with config_sets or configs"
+            )
         if "config_space" in spec:
             param_space = _parse_config_space(spec["config_space"], f"{location}.config_space")
         else:
