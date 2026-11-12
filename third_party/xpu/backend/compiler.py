@@ -809,11 +809,10 @@ class XPUBackend(BaseBackend):
 
         # Public/desensitized xtdk-llvm19 staging intentionally omits llvm-link
         # (see python/setup_tools/utils/xpu.py); llc can be present while llvm-link is not.
-        lines.append(
-            "  - note: the desensitized xtdk-llvm19 package FlagTree stages does not ship "
-            "`llvm-link`/`opt`. If llc is present but llvm-link is not, this is a missing "
-            "toolchain component (not a wrong tle.raw API call). Use an SDK build that "
-            "provides llvm-link, or place llvm-link into the llvm19 bin dir above.")
+        lines.append("  - note: the desensitized xtdk-llvm19 package FlagTree stages does not ship "
+                     "`llvm-link`/`opt`. If llc is present but llvm-link is not, this is a missing "
+                     "toolchain component (not a wrong tle.raw API call). Use an SDK build that "
+                     "provides llvm-link, or place llvm-link into the llvm19 bin dir above.")
         return "\n".join(lines)
 
     @staticmethod
