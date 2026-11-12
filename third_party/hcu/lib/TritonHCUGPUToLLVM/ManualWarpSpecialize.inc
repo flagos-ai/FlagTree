@@ -23,18 +23,12 @@ static LogicalResult early(ModuleOp mod) {
   return success();
 }
 
-static bool uniformCapture(LLVM::LLVMFuncOp fn, Value value,
-                           llvm::SmallPtrSetImpl<void *> &seen) {
-  if (!seen.insert(value.getAsOpaquePointer()).second) return true;
-  if (auto arg = dyn_cast<BlockArgument>(value))
-    return arg.getOwner() == &fn.getBody().front();
-  auto *op = value.getDefiningOp();
-  if (!op || !isPure(op)) return false;
+static bool canRematerializeCapture(Operation *op) {
   StringRef name = op->getName().getStringRef();
-  if (!(name.starts_with("llvm.") || name == "builtin.unrealized_conversion_cast") ||
-      name.contains("call") || name.contains("load") || name.contains("intrinsic"))
-    return false;
-  return llvm::all_of(op->getOperands(), [&](Value v) { return uniformCapture(fn, v, seen); });
+  return isPure(op) &&
+         (name.starts_with("llvm.") || isa<UnrealizedConversionCastOp>(op)) &&
+         !name.contains("call") && !name.contains("load") &&
+         !name.contains("intrinsic");
 }
 
 static void localCtaBarrier(triton::gpu::LocalBarrierOp op) {
@@ -68,11 +62,11 @@ static LogicalResult late(LLVM::LLVMFuncOp fn) {
   auto starts = ws.getWarpGroupStartIds();
   if (ws.getNumResults() || !starts || starts->size() != ws.getPartitionRegions().size())
     return ws.emitError("manual warp specialization: missing actual partition start IDs");
-  for (Value value : ws.getExplicitCaptures()) {
-    llvm::SmallPtrSet<void *, 32> seen;
-    if (!uniformCapture(fn, value, seen))
-      return ws.emitError("manual warp specialization: capture is not CTA-uniform and rematerializable");
-  }
+  HCU::UniformWarpCaptures captureProof(fn.getBody().front(),
+                                        canRematerializeCapture);
+  if (!llvm::all_of(ws.getExplicitCaptures(), captureProof))
+    return ws.emitError(
+        "manual warp specialization: capture is not CTA-uniform and rematerializable");
   elideTrivialCaptures(fn, ops);
   if (ws.getNumOperands())
     return ws.emitError("manual warp specialization: unresolved captures");

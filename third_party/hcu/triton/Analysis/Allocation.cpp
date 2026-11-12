@@ -200,44 +200,13 @@ private:
       allocation->addBuffer<T>(op, bytes);
   }
 
-  // Match the verified direct-CTA lowering's capture-elision contract, without
-  // changing allocation for generic WS or any other target/protocol.
-  static bool isUniformCTACapture(Value value, Operation *function) {
-    Type type = value.getType();
-    bool scalar = isa<IntegerType, IndexType, FloatType, PointerType>(type);
-    if (auto arg = dyn_cast<BlockArgument>(value))
-      return scalar && arg.getOwner() == &function->getRegion(0).front();
-    Operation *op = value.getDefiningOp();
-    if (!op) return false;
-    if (auto alloc = dyn_cast<gpu::LocalAllocOp>(op))
-      return alloc->getNumOperands() == 0;
-    bool scalarPure = scalar &&
-        (op->getName().getStringRef().starts_with("arith.") ||
-         isa<AddPtrOp>(op)) && isPure(op);
-    bool descriptorView = isa<gpu::MemDescIndexOp, gpu::MemDescSubsliceOp,
-                              gpu::MemDescReinterpretOp>(op);
-    if (!scalarPure && !descriptorView) return false;
-    return llvm::all_of(op->getOperands(), [&](Value input) {
-      return isUniformCTACapture(input, function);
-    });
-  }
-
   static bool hasNoGenericWSScratch(gpu::WarpSpecializeOp ws) {
     auto mod = ws->getParentOfType<ModuleOp>();
     auto target = mod->getAttrOfType<StringAttr>("ttg.target");
-    auto ctas = mod->getAttrOfType<IntegerAttr>("ttg.num-ctas");
-    auto wave = mod->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
-    // The explicit terminal lowering rematerializes uniform captures and
-    // branches directly to its partitions. Derive eligibility from actual IR;
-    // no RawWindow marker, version or imported witness grants scratch elision.
-    if (!target || target.getValue() != "hip:gfx936" ||
-        !ctas || ctas.getInt() != 1 || !wave || wave.getInt() != 64 ||
-        !mlir::triton::HCU::terminalWarpDomain(ws, 16))
+    if (!target || target.getValue() != "hip:gfx936")
       return false;
-    auto function = ws->getParentOfType<FunctionOpInterface>();
-    return function && llvm::all_of(ws.getExplicitCaptures(), [&](Value capture) {
-      return isUniformCTACapture(capture, function.getOperation());
-    });
+    auto domain = HCU::terminalWarpDomain(ws, 16);
+    return domain && HCU::hasUniformTritonWarpCaptures(ws, domain->function);
   }
 
   /// Initializes temporary shared memory for a given operation.
