@@ -19,6 +19,24 @@ from pathlib import Path
 _REGISTER_OWNER_DEFAULT_POLICY = "gfx936_optimize_epilogue_register_owner_shared_vector_v1"
 
 
+def _schedule_hints(value):
+    return tuple(dict.fromkeys(
+        hint for part in value.split(",")
+        if (hint := part.strip().lower()) and hint != "none"
+    ))
+
+
+@functools.lru_cache(maxsize=16)
+def _clang_version(path, file_identity):
+    return subprocess.check_output([path, "--version"], encoding="utf-8")
+
+
+def _hcu_clang_version():
+    path = HIPBackend.path_to_rocm_clang().resolve()
+    info = path.stat()
+    return _clang_version(path, (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns))
+
+
 def get_min_dot_size(target: GPUTarget):
     # We fallback to use FMA and cast arguments if certain configurations is
     # not supported natively by matrix core units.
@@ -175,6 +193,7 @@ class HIPOptions:
     wdra_num_mma_regs_tail: int = None
 
     def __post_init__(self):
+        object.__setattr__(self, "schedule_hint", ",".join(_schedule_hints(self.schedule_hint)) or "none")
         if type(self.register_batch_owner) is not bool:
             raise ValueError("register_batch_owner must be boolean")
         if self.register_batch_owner and self.arch != "gfx936":
@@ -386,7 +405,7 @@ class HIPBackend(BaseBackend):
 
         # Consume the legacy `instruction_sched_variant` option and map it to
         # `schedule_hint`. If both are present, keep the explicit schedule_hint.
-        if args.get("schedule_hint", "none") == "none" and legacy_sched_variant is not None:
+        if "schedule_hint" not in args and legacy_sched_variant is not None:
             args["schedule_hint"] = legacy_sched_variant
 
         # gfx936 has four SIMD units per CU. Split computation into two
@@ -399,7 +418,7 @@ class HIPBackend(BaseBackend):
             paired = (args["arch"] == "gfx936"
                       and type(waves) is int and waves >= 8 and waves % 8 == 0
                       and args.get("prefer_wide_async_copy", False) is True
-                      and "local-prefetch" in args.get("schedule_hint", "none").split(","))
+                      and "local-prefetch" in _schedule_hints(args.get("schedule_hint", "none")))
             args.update(post_mma_wait=paired, mma_phase_schedule=paired)
 
         if args.get("wasp_enabled"):
@@ -420,7 +439,7 @@ class HIPBackend(BaseBackend):
 
         if args.get("sync_lds_buffers", 1) not in (1, 2):
             raise ValueError("sync_lds_buffers must be 1 or 2")
-        if args.get("sync_lds_buffers", 1) == 2 and self.target.arch != "gfx936":
+        if args.get("sync_lds_buffers", 1) == 2 and args["arch"] != "gfx936":
             raise ValueError("sync_lds_buffers=2 requires gfx936")
         return HIPOptions(**args)
 
@@ -639,7 +658,7 @@ class HIPBackend(BaseBackend):
             if options.arch != "gfx936":
                 raise ValueError("wave_private_sync requires gfx936")
             mod.set_attr("ttg.hcu.wave_private_sync", ir.builder(mod.context).get_int32_attr(1))
-        if options.arch == "gfx936" and "local-prefetch" in options.schedule_hint.lower().split(","):
+        if options.arch == "gfx936" and "local-prefetch" in _schedule_hints(options.schedule_hint):
             mod.set_attr("ttg.hcu.local_prefetch", ir.builder(mod.context).get_int32_attr(1))
         if options.async_local_prefetch:
             # Existing path rechecks the actual two-load single-dot async loop.
@@ -704,7 +723,7 @@ class HIPBackend(BaseBackend):
         use_async_copy = knobs.hcu.use_async_copy
 
         # The `local-prefetch` scheduling variant requires turning on buffer ops.
-        if options.schedule_hint == "local-prefetch":
+        if "local-prefetch" in _schedule_hints(options.schedule_hint):
             global_prefetch = 1
 
         async_copy_single_buffer = options.async_copy_use_single_buffer and (options.num_stages == 2
@@ -754,9 +773,8 @@ class HIPBackend(BaseBackend):
         hcu.passes.ttgpuir.add_coalesce_async_copy(pm, options.arch)
         tle.passes.add_downgrade_invalid_async_copy(pm)
         passes.common.add_canonicalizer(pm)
-        if options.schedule_hint.lower() != "none":
-            for hint in options.schedule_hint.split(","):
-                hcu.passes.ttgpuir.insert_instruction_sched_hints(pm, hint)
+        for hint in _schedule_hints(options.schedule_hint):
+            hcu.passes.ttgpuir.insert_instruction_sched_hints(pm, hint)
         passes.ttgpuir.add_remove_layout_conversions(pm)
 
         # Descriptor-preserving MLS selection can expose the final consumer
@@ -970,7 +988,7 @@ class HIPBackend(BaseBackend):
             passes.common.add_cse(pm)
             passes.common.add_symbol_dce(pm)
 
-        if options.schedule_hint.lower() != "none":
+        if _schedule_hints(options.schedule_hint):
             hcu.passes.ttgpuir.lower_instruction_sched_hints(pm, options.arch, options.num_stages)
 
         # This can not be moved below the di_scope pass
@@ -1046,7 +1064,7 @@ class HIPBackend(BaseBackend):
         fns[0].set_calling_conv(hcu.CALLING_CONV_AMDGPU_KERNEL)
         launch_warps = total_num_warps if explicit_ws else options.num_warps
         fns[0].add_fn_attr("amdgpu-flat-work-group-size", f"1,{launch_warps*options.warp_size}")
-        if "memory-bound-attention" in options.schedule_hint.split(','):
+        if "memory-bound-attention" in _schedule_hints(options.schedule_hint):
             fns[0].add_fn_attr("amdgpu-sched-strategy", "iterative-ilp")
         fns[0].add_fn_attr("uniform-work-group-size", "true")
         # LLVM HCUGPU backend supports the attribute "hcugpu-waves-per-eu"="<min>[, <max>]".
@@ -1125,11 +1143,11 @@ class HIPBackend(BaseBackend):
         # Disable inlining of print related functions,
         # because inlining of these function could slow down compilation significantly
         hcu.disable_print_inline(llvm_mod)
-        if options.arch == "gfx936" and options.schedule_hint == "local-prefetch":
+        if options.arch == "gfx936" and "local-prefetch" in _schedule_hints(options.schedule_hint):
             hcu.prefer_ready_shared_loads(llvm_mod, options.arch)
         hcu.preserve_buffer_load_byte_offsets(llvm_mod, options.arch)
         if options.arch == "gfx936":
-            native_version = subprocess.check_output([HIPBackend.path_to_rocm_clang(), "--version"], encoding="utf-8")
+            native_version = _hcu_clang_version()
             if re.search(r"\bversion\s+18\.", native_version):
                 hcu.preserve_lds_barrier_order(llvm_mod, options.arch)
         if options.loop_unroll_stage == "post-pipeline":
@@ -1245,7 +1263,7 @@ class HIPBackend(BaseBackend):
         # into loops to avoid register spills in the MachineSinking pass, while it
         # can also lead to regression in some cases. But from current observation,
         # the regression is not significant. It would be better to have some heuristics.
-        if options.schedule_hint == 'attention':
+        if "attention" in _schedule_hints(options.schedule_hint):
             flags.append('sink-insts-to-avoid-spills')
         # features = '-real-true16' if 'gfx11' in options.arch else ''
         # amdgcn = llvm.translate_to_asm(src, hcu.TARGET_TRIPLE, options.arch, features, flags, options.enable_fp_fusion,
@@ -1356,5 +1374,5 @@ class HIPBackend(BaseBackend):
 
     @functools.lru_cache()
     def hash(self):
-        version = subprocess.check_output([HIPBackend.path_to_rocm_clang(), "--version"], encoding='utf-8')
+        version = _hcu_clang_version()
         return f'{version}-{self.target}'

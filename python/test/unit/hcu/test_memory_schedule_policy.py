@@ -144,6 +144,7 @@ def test_retired_unsafe_imported_schedule_is_rejected(monkeypatch, marker):
 
 @pytest.mark.parametrize("arch,waves,wide,hint,expected", [
     ("gfx936", 8, True, "local-prefetch", True),
+    ("gfx936", 8, True, " attention, LOCAL-PREFETCH , attention ", True),
     ("gfx936", 16, True, "local-prefetch", True),
     ("gfx936", 4, True, "local-prefetch", False),
     ("gfx936", 2, True, "local-prefetch", False),
@@ -159,6 +160,15 @@ def test_paired_default_uses_target_wave_coverage_and_intent_only(arch, waves, w
     parsed = backend.parse_options(args)
     assert parsed.post_mma_wait is expected
     assert parsed.mma_phase_schedule is expected
+
+
+def test_schedule_hint_normalization_and_explicit_none():
+    from triton.backends.compiler import GPUTarget
+    backend = compiler.HIPBackend(GPUTarget("hip", "gfx936", 64))
+    options = backend.parse_options({"schedule_hint": " attention, LOCAL-PREFETCH , attention "})
+    assert options.schedule_hint == "attention,local-prefetch"
+    disabled = backend.parse_options({"schedule_hint": "none", "instruction_sched_variant": "local-prefetch"})
+    assert disabled.schedule_hint == "none"
 
 
 @pytest.mark.parametrize("manual", [
