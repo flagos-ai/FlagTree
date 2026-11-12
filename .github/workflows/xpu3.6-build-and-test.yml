@@ -109,4 +109,4 @@ jobs:
           python3 -m pytest -q \
             third_party/xpu/test/tle_raw/test_tle_raw_cluster_ir.py
           TRITON_XPU_ARCH=3 python3 -m pytest -q \
-            third_party/xpu/test/tle_raw/vector_add/test_tle_raw_vector_add.py
+            third_party/xpu/test/tle_raw/reflection_pad1d/test_tle_raw_reflection_pad1d.py

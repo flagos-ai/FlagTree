@@ -1,5 +1,8 @@
 # Prebuilt SDNN objects and archives (installed from xpu-sdnn-objects tarball)
 *.o
+# tle.raw e2e payload checked in next to the test (FlagGems #6767 object= path)
+!/test/tle_raw/reflection_pad1d/
+!/test/tle_raw/reflection_pad1d/reflection_pad1d.o
 libTritonSharedForXPU.a
 /libTritonXPUAnalysisSDNN.a
 /lib/Analysis/SDNN/libTritonXPUAnalysisSDNN.a
