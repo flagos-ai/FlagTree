@@ -144,6 +144,8 @@ jobs:
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_async_load.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_memory_space.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_cumsum.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_set_layout.py
+          pytest third_party/iluvatar/python/test/unit/tle/test_tle_set_layout_passes.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_pipeline.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_pipeline_e2e.py
           pytest third_party/iluvatar/python/test/unit/tle/test_tle_warp_specialize.py

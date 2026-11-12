@@ -20,6 +20,20 @@ class IluvatarTle_Op<string mnemonic, list<Trait> traits = []>
 
 def IluvatarTle_SharedMemory : Resource<"::mlir::triton::gpu::SharedMemory">;
 
+def IluvatarTle_SetLayoutOp : IluvatarTle_Op<"gpu.set_layout", [
+    Pure, SameOperandsAndResultShape, SameOperandsAndResultElementType]> {
+  let summary = "Attach a requested distributed encoding to a tensor value";
+  let description = [{
+    Carries an explicit blocked or sliced-blocked layout through TTIR. The
+    Triton-to-TritonGPU conversion propagates this hard constraint and lowers
+    the boundary to a layout conversion. Only single-CTA layouts are supported.
+  }];
+  let arguments = (ins TT_Tensor:$src, AnyAttr:$target_encoding);
+  let results = (outs TT_Tensor:$result);
+  let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
+  let hasVerifier = 1;
+}
+
 def IluvatarTle_ExtractTileOp : IluvatarTle_Op<"extract_tile", [Pure]> {
   let arguments = (ins TT_Tensor:$src, TT_IntLike:$index);
   let results = (outs TT_Tensor:$result);

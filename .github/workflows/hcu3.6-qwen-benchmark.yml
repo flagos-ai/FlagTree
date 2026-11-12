@@ -37,7 +37,11 @@ concurrency:
 
 jobs:
   hcu36x-qwen:
-    runs-on: hcu3.6-qwen
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [hcu3.6-qwen, hcu3.6-bw1100-qwen]
+    runs-on: ${{ matrix.runner }}
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
     steps:
       - name: Setup environment

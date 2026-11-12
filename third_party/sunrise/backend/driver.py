@@ -569,4 +569,7 @@ class SunriseDriver(GPUDriver):
         return torch.empty(int(cache_size // 4), dtype=torch.int, device='ptpu')
 
     def clear_cache(self, cache):
-        cache.zero_()
+        # S2 writes bypass L2, so cache.zero_() leaves L2 contents intact
+        # Use a read-modify-write op instead so the cache buffer
+        # actually pollutes L2 and evicts the prior kernel's working set.
+        cache.add_(1)

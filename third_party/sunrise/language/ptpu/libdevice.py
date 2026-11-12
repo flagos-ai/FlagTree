@@ -265,3 +265,14 @@ def lgamma(arg0, _semantic=None):
         is_pure=True,
         _semantic=_semantic,
     )
+
+
+@core.extern
+def nearbyint(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "", "", [
+            arg0,
+        ], {
+            (core.dtype("fp32"), ): ("__ocml_nearbyint_f32", core.dtype("fp32")),
+            (core.dtype("fp64"), ): ("__ocml_nearbyint_f32", core.dtype("fp64")),
+        }, is_pure=True, _semantic=_semantic)

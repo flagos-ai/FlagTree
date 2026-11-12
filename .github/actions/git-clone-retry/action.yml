@@ -26,7 +26,9 @@ inputs:
     description: 'Git repository URL to clone'
     required: true
   ref:
-    description: 'Branch, tag, or commit SHA to checkout (optional, defaults to the default branch)'
+    description: >-
+      Branch or tag to clone (optional, defaults to the default branch).
+      Passed to `git clone --branch`, so a bare commit SHA is NOT accepted.
     required: false
     default: ''
   clone-dir:
@@ -57,7 +59,10 @@ inputs:
     required: false
     default: '3600'
   checkout-max-retries:
-    description: 'Maximum number of retries for the checkout step (local operation, usually 1 attempt is enough).'
+    description: >-
+      Deprecated and ignored. The ref is now selected by `git clone --branch`,
+      so there is no separate checkout step to retry. Kept so that callers
+      passing it do not break.
     required: false
     default: '3'
 
@@ -81,37 +86,6 @@ runs:
         SLOW_THRESHOLD_STEP="${{ inputs.slow-threshold-step }}"
         SLOW_THRESHOLD_INCREMENT="${{ inputs.slow-threshold-increment }}"
         MAX_TOTAL_SECONDS="${{ inputs.max-total-seconds }}"
-        CHECKOUT_MAX_RETRIES="${{ inputs.checkout-max-retries }}"
-
-        # ------------------------------------------------------------------
-        # Generic retry function (used for checkout only)
-        # ------------------------------------------------------------------
-        retry_command() {
-          local max_retries=$1
-          local delay=$2
-          local label=$3
-          shift 3
-          local attempt=1
-
-          while [ "$attempt" -le "$max_retries" ]; do
-            echo "===== [$label Attempt $attempt/$max_retries] Executing: $* ====="
-            if "$@"; then
-              echo "✅ Command succeeded on attempt $attempt."
-              return 0
-            else
-              local exit_code=$?
-              echo "❌ Command failed on attempt $attempt with exit code $exit_code."
-              attempt=$((attempt + 1))
-              if [ "$attempt" -le "$max_retries" ]; then
-                echo "⏳ Retrying in $delay seconds..."
-                sleep "$delay"
-              fi
-            fi
-          done
-
-          echo "🚨 FATAL: Command failed after $max_retries attempts."
-          return 1
-        }
 
         # ------------------------------------------------------------------
         # Helper: compute slow threshold for a given attempt number
@@ -312,8 +286,19 @@ runs:
 
           # Start git clone in background, with --progress to a log file
           # inside CLONE_DIR.
+          #
+          # When a ref is given we fetch only that ref, at depth 1. The callers
+          # always pass a release tag and nothing downstream reads git history,
+          # so pulling every branch's full history only to check out one tag was
+          # the bulk of the clone time. Without a ref we cannot narrow the
+          # clone, so fall back to the plain full clone.
           attempt_start=$(date +%s)
-          git clone --progress "$REPO_URL" 2>"$progress_log" &
+          if [ -n "$REF" ]; then
+            git clone --progress --depth 1 --single-branch --branch "$REF" \
+              "$REPO_URL" 2>"$progress_log" &
+          else
+            git clone --progress "$REPO_URL" 2>"$progress_log" &
+          fi
           clone_pid=$!
           echo "[Attempt $attempt/$MAX_ATTEMPTS] git clone started (pid=$clone_pid)"
 
@@ -424,9 +409,10 @@ runs:
         fi
 
         # ------------------------------------------------------------------
-        # Optional checkout of a specific ref
+        # Report what we ended up on. `git clone --branch` already left HEAD
+        # at the requested ref, so there is no checkout to perform here.
         # ------------------------------------------------------------------
         if [ -n "$REF" ]; then
           cd "$REPO_NAME"
-          retry_command "$CHECKOUT_MAX_RETRIES" "$RETRY_DELAY" "Checkout" git checkout "$REF"
+          echo "✅ Cloned at ref '$REF' (HEAD: $(git rev-parse --short HEAD 2>/dev/null || echo unknown))"
         fi
