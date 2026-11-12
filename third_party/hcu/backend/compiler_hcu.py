@@ -719,23 +719,20 @@ class HIPBackend(BaseBackend):
         tle.passes.add_lower_async_load(pm)
         # Form actual BUFFER copies before GLOBAL-only width contraction.
         # Failed conversions remain GLOBAL and retain their original limits.
-        early_buffer = (options.arch == "gfx936"
-                and knobs.hcu.use_buffer_ops
-                and not options.wasp_enabled and not use_block_pingpong
-                and not is_in_thread_transpose_enabled(options.arch))
+        early_buffer = (
+            options.arch == "gfx936"
+            and knobs.hcu.use_buffer_ops
+            and not options.wasp_enabled
+            and not is_in_thread_transpose_enabled(options.arch)
+        )
         # Ping-pong must still see synchronous tt.loads, including explicit
         # per-operation False overrides of the global async policy.
-        pp_async_buffer = (options.arch == "gfx936"
-                and knobs.hcu.use_buffer_ops
-                and not options.wasp_enabled and use_block_pingpong
-                and not is_in_thread_transpose_enabled(options.arch))
-        early_buffer = early_buffer or pp_async_buffer
         if early_buffer:
             hcu.passes.ttgpuir.add_canonicalize_pointers(pm)
             passes.common.add_canonicalizer(pm)
             hcu.passes.ttgpuir.add_convert_to_buffer_ops(pm, options.arch,
                 knobs.hcu.use_buffer_atomics, knobs.hcu.buffer_ops_analyze_small_tensor_range,
-                async_only=pp_async_buffer)
+                async_only=use_block_pingpong)
         hcu.passes.ttgpuir.add_coalesce_async_copy(pm, options.arch)
         tle.passes.add_downgrade_invalid_async_copy(pm)
         passes.common.add_canonicalizer(pm)
