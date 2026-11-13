@@ -278,8 +278,21 @@ struct ConvertLayoutOpConversion
     auto elemTy = getTypeConverter()->convertType(srcTy.getElementType());
     int bitwidth = getIntOrFloatOrPtrBitWidth(elemTy);
 
-    auto factors = getWarpLayoutConvertDecomposition(srcTy, dstTy, bitwidth);
+    bool unmixedBytePacking = false;
+#ifdef __TLE__
+    // PH1 byte conversion (including reshape/transpose-derived ranks):
+    // pack only register bits which do not participate
+    // in lane exchanges. This keeps mixed transpositions as whole-word
+    // selects/shuffles and avoids composing overlapping byte selectors.
+    unmixedBytePacking = bitwidth == 8 &&
+        isa<MUSASqmmaEncodingAttr, LinearEncodingAttr, BlockedEncodingAttr>(
+            srcTy.getEncoding()) &&
+        isa<LinearEncodingAttr, BlockedEncodingAttr>(dstTy.getEncoding());
+#endif
+    auto factors = getWarpLayoutConvertDecomposition(
+        srcTy, dstTy, unmixedBytePacking ? 32 : bitwidth);
     auto &[pReg, pLane, mixedTranspositions, nPack] = factors;
+    SmallVector<unsigned> unpackRegisterOrder;
     int m = mixedTranspositions.size();
     bool pLaneIsTrivial = squareSublayoutIsIdentity(pLane, kLane);
     assert((m > 0 || !pLaneIsTrivial) && "Shuffles not needed for conversion");
@@ -331,6 +344,38 @@ struct ConvertLayoutOpConversion
     for (const auto &[i, v] : llvm::enumerate(inVals))
       newInVals[pReg.apply({{kReg, i}})[0].second] = v;
     inVals = std::move(newInVals);
+
+    if (unmixedBytePacking) {
+      unsigned nBits = llvm::Log2_32(regDim);
+      SmallVector<unsigned> bitOrder;
+      auto isMixedBit = [&mixed = mixedTranspositions](unsigned bit) {
+        return llvm::any_of(mixed, [&](const auto &t) {
+          return t.transposition.first == static_cast<int>(bit);
+        });
+      };
+      for (unsigned bit = 0; bit < nBits && bitOrder.size() < 2; ++bit)
+        if (!isMixedBit(bit))
+          bitOrder.push_back(bit);
+      nPack = bitOrder.size();
+      for (unsigned bit = 0; bit < nBits; ++bit)
+        if (!llvm::is_contained(bitOrder, bit))
+          bitOrder.push_back(bit);
+      SmallVector<Value> packedOrderVals(regDim);
+      for (unsigned r = 0; r < static_cast<unsigned>(regDim); ++r) {
+        unsigned old = 0;
+        for (unsigned bit = 0; bit < nBits; ++bit)
+          if (r & (1u << bit))
+            old |= 1u << bitOrder[bit];
+        unpackRegisterOrder.push_back(old);
+        packedOrderVals[r] = inVals[old];
+      }
+      inVals = std::move(packedOrderVals);
+      for (auto &t : mixedTranspositions) {
+        auto it = llvm::find(bitOrder, t.transposition.first);
+        assert(it != bitOrder.end());
+        t.transposition.first = std::distance(bitOrder.begin(), it);
+      }
+    }
 
     // Pack registers if possible.
     int elemsPerVec = 1 << nPack;
@@ -406,6 +451,14 @@ struct ConvertLayoutOpConversion
         }
       }
       outVals = std::move(unpackedVals);
+    }
+
+    if (!unpackRegisterOrder.empty()) {
+      SmallVector<Value> originalOrder(outVals.size());
+      assert(outVals.size() == unpackRegisterOrder.size());
+      for (unsigned r = 0; r < outVals.size(); ++r)
+        originalOrder[unpackRegisterOrder[r]] = outVals[r];
+      outVals = std::move(originalOrder);
     }
 
     // If `dstLayout` has a smaller `kReg` dimension than `srcLayout` after

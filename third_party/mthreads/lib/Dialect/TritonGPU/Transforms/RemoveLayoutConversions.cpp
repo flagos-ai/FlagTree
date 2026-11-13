@@ -629,6 +629,14 @@ Operation *LayoutPropagation::cloneElementwise(OpBuilder &rewriter,
       continue;
     auto newType = origType.cloneWithEncoding(encoding);
     newOp->getResult(i).setType(newType);
+#ifdef __TLE__
+    // Layout propagation may clone a soft producer in another representation.
+    // Do not retain the old result's layout marker on this clone. Explicit
+    // convert_layout anchors keep their hard encoding in resolveConflicts.
+    if (Attribute requested = getTleExplicitResultEncoding(newOp, i))
+      if (requested != newType.getEncoding())
+        newOp->removeAttr(getTleExplicitEncodingAttrName(i));
+#endif
   }
   return newOp;
 }
@@ -648,6 +656,18 @@ Operation *LayoutPropagation::rewriteForOp(scf::ForOp forOp) {
       scf::ForOp::create(rewriter, forOp.getLoc(), forOp.getLowerBound(),
                          forOp.getUpperBound(), forOp.getStep(), operands);
   newForOp->setAttrs(forOp->getAttrs());
+#ifdef __TLE__
+  // The rebuilt loop signature comes from the converted init operands.
+  // Result markers copied from the old signature are soft propagation data,
+  // not an instruction to reinterpret the new loop-carried representation.
+  for (auto result : newForOp->getResults()) {
+    auto type = dyn_cast<RankedTensorType>(result.getType());
+    unsigned i = result.getResultNumber();
+    if (Attribute requested = getTleExplicitResultEncoding(newForOp, i))
+      if (type && requested != type.getEncoding())
+        newForOp->removeAttr(getTleExplicitEncodingAttrName(i));
+  }
+#endif
   newForOp.getBody()->getOperations().splice(
       newForOp.getBody()->getOperations().begin(),
       forOp.getBody()->getOperations());
@@ -1071,8 +1091,28 @@ void LayoutRematerialization::rewriteSlice(SetVector<Value> &slice,
       auto newType =
           cast<RankedTensorType>(old.getType()).cloneWithEncoding(it->second);
       newV.setType(newType);
+#ifdef __TLE__
+      // This is an additional materialization for a conversion's consumers.
+      // The original producer retains its explicit contract; a clone in a
+      // different layout must not inherit the original result's marker.
+      auto resultNumber = cast<OpResult>(old).getResultNumber();
+      if (Attribute explicitEncoding =
+              getTleExplicitResultEncoding(newOp, resultNumber)) {
+        if (explicitEncoding != newType.getEncoding())
+          newOp->removeAttr(getTleExplicitEncodingAttrName(resultNumber));
+      }
+#endif // __TLE__
       addRematValue(old, it->second, newV);
     }
+#ifdef __TLE__
+    if (Attribute memoryEncoding = getTleExplicitMemoryEncoding(newOp)) {
+      Value pointer = getMemAccessPtr(newOp);
+      auto pointerType =
+          pointer ? dyn_cast<RankedTensorType>(pointer.getType()) : nullptr;
+      if (pointerType && pointerType.getEncoding() != memoryEncoding)
+        newOp->removeAttr(getTleExplicitMemoryEncodingAttrName());
+    }
+#endif // __TLE__
   }
   // Check mapping and see if there are existing convertOps on the old Argument
   convertOp.replaceAllUsesWith(mapping.lookup(convertOp.getSrc()));
@@ -1758,6 +1798,8 @@ bool retargetTleSqmmaStores(ModuleOp module) {
   module.walk([&](StoreOp store) { stores.push_back(store); });
   for (StoreOp store : stores) {
     if (!store || !store->getBlock())
+      continue;
+    if (getTleExplicitMemoryEncoding(store))
       continue;
     auto valueConvert = store.getValue().getDefiningOp<ConvertLayoutOp>();
     if (!valueConvert)
