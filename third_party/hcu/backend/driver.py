@@ -237,10 +237,10 @@ FLOAT_PACK_FUNCTION = {
     "fp64": "pack_fp64",
 }
 
-_BASE_ARGS_FORMAT = "piiiKKOOOOO"
+_BASE_ARGS_FORMAT = "piiiKKOOOOOO"
 
 
-def make_launcher(constants, signature, warp_size, tensordesc_meta):
+def make_launcher(constants, signature, warp_size, tensordesc_meta, global_scratch_size=0):
 
     def _expand_signature(signature):
         output = []
@@ -421,7 +421,9 @@ static const char *hipLibSearchPaths[] = {{"{libhip_path}"}};
                   unsigned int sharedMemBytes, hipStream_t stream,            \\
                   void **kernelParams, void **extra)                          \\
   FOR_EACH_ERR_FN(hipPointerGetAttribute, true, void *data,                   \\
-                  hipPointer_attribute attribute, hipDeviceptr_t ptr)
+                  hipPointer_attribute attribute, hipDeviceptr_t ptr)         \\
+  FOR_EACH_ERR_FN(hipMemsetD8Async, false, hipDeviceptr_t dst,                \\
+                  unsigned char value, size_t count, hipStream_t stream)
 
 // The HIP symbol table for holding resolved dynamic library symbols.
 struct HIPSymbolTable {{
@@ -509,10 +511,23 @@ static inline void gpuAssert(hipError_t code, const char *file, int line)
 
 #define HIP_CHECK(ans) {{ gpuAssert((ans), __FILE__, __LINE__); }}
 
-static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int launch_cooperative_grid, int shared_memory, hipStream_t stream, hipFunction_t function, hipDeviceptr_t profile_scratch{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
+static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int launch_cooperative_grid, int shared_memory, hipStream_t stream, hipFunction_t function, hipDeviceptr_t global_scratch, hipDeviceptr_t profile_scratch{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
   if (gridX * gridY * gridZ == 0)
     return;
-  hipDeviceptr_t global_scratch = 0;
+  if (launch_cooperative_grid && global_scratch && {global_scratch_size} > 0) {{
+    if (!hipSymbolTable.hipMemsetD8Async) {{
+      PyErr_SetString(PyExc_RuntimeError, "HCU grid barrier requires hipMemsetD8Async");
+      return;
+    }}
+    // Initialize the counter on the launch stream, including custom allocators
+    // whose buffers expose only data_ptr() and contain uninitialized storage.
+    hipError_t status = hipSymbolTable.hipMemsetD8Async(
+        global_scratch, 0, (size_t)gridX * gridY * gridZ * num_ctas * {global_scratch_size}, stream);
+    if (status != hipSuccess) {{
+      HIP_CHECK(status);
+      return;
+    }}
+  }}
   void *params[] = {{ {', '.join(params)} }};
   if(num_ctas > 1) {{
     if (!hipSymbolTable.hipDrvLaunchKernelEx) {{
@@ -640,6 +655,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   uint64_t _stream;
   uint64_t _function;
   int launch_cooperative_grid;
+  PyObject *global_scratch_obj = NULL;
   PyObject *profile_scratch_obj = NULL;
   PyObject *launch_enter_hook = NULL;
   PyObject *launch_exit_hook = NULL;
@@ -647,7 +663,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   PyObject *launch_metadata = NULL;
   {' '.join([f"{_extracted_type(ty)} _arg{i}; " for i, ty in signature.items()])}
   if(!PyArg_ParseTuple(args, \"{format}\", &launch_cooperative_grid,
-                                           &gridX, &gridY, &gridZ, &_stream, &_function, &profile_scratch_obj,
+                                           &gridX, &gridY, &gridZ, &_stream, &_function, &global_scratch_obj, &profile_scratch_obj,
                                            &kernel_metadata, &launch_metadata,
                                            &launch_enter_hook, &launch_exit_hook {args_list})) {{
     return NULL;
@@ -666,6 +682,15 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
     Py_DECREF(ret);
   }}
 
+  hipDeviceptr_t global_scratch = 0;
+  if (global_scratch_obj != Py_None) {{
+    DevicePtrInfo global_scratch_info = getPointer(global_scratch_obj, -1);
+    if (!global_scratch_info.valid) {{
+      return NULL;
+    }}
+    global_scratch = global_scratch_info.dev_ptr;
+  }}
+
   hipDeviceptr_t profile_scratch = 0;
   if (profile_scratch_obj != Py_None) {{
     DevicePtrInfo profile_scratch_info = getPointer(profile_scratch_obj, -1);
@@ -679,7 +704,7 @@ static PyObject* launch(PyObject* self, PyObject* args) {{
   {newline.join(tensor_desc_decls)}
   {newline.join(ptr_decls)}
   {newline.join(float_storage_decls)}
-  _launch(gridX, gridY, gridZ, num_warps, num_ctas, launch_cooperative_grid, shared_memory, (hipStream_t)_stream, (hipFunction_t)_function, (hipDeviceptr_t)profile_scratch{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
+  _launch(gridX, gridY, gridZ, num_warps, num_ctas, launch_cooperative_grid, shared_memory, (hipStream_t)_stream, (hipFunction_t)_function, global_scratch, profile_scratch{', ' + ', '.join(internal_args_list) if len(internal_args_list) > 0 else ''});
 
   if(launch_exit_hook != Py_None){{
     PyObject* ret = PyObject_CallOneArg(launch_exit_hook, launch_metadata);
@@ -808,7 +833,7 @@ def wrap_handle_tensordesc(launcher, signature, tensordesc_metadata):
         tensordesc_idx = 0
         for i, arg in enumerate(raw_kernel_args):
             if i in tensordesc_indices:
-                tensordesc_args = make_tensordesc_arg(arg, meta_args[7],  # kernel_metadata
+                tensordesc_args = make_tensordesc_arg(arg, meta_args[8],  # kernel_metadata
                                                       tensordesc_metadata[tensordesc_idx])
                 final_args.extend(tensordesc_args)
                 tensordesc_idx += 1
@@ -827,7 +852,10 @@ class HIPLauncher(object):
         constants = {arg_idx(idx): value for idx, value in constants.items()}
         signature = {idx: value for idx, value in src.signature.items()}
         tensordesc_meta = getattr(metadata, "tensordesc_meta", None)
-        src = make_launcher(constants, signature, metadata.warp_size, tensordesc_meta)
+        self.global_scratch_size = getattr(metadata, "global_scratch_size", 0)
+        self.global_scratch_align = getattr(metadata, "global_scratch_align", 1)
+        self.num_ctas = metadata.num_ctas
+        src = make_launcher(constants, signature, metadata.warp_size, tensordesc_meta, self.global_scratch_size)
         mod = compile_module_from_src(src=src, name="__triton_launcher", include_dirs=include_dirs)
         self.launch = wrap_handle_tensordesc(mod.launch, signature, tensordesc_meta)
         self.launch_cooperative_grid = metadata.launch_cooperative_grid
@@ -839,15 +867,17 @@ class HIPLauncher(object):
         def allocate_scratch(size, align, allocator):
             if size > 0:
                 grid_size = gridX * gridY * gridZ
-                alloc_size = grid_size * size
+                alloc_size = grid_size * self.num_ctas * size
                 alloc_fn = allocator.get()
                 return alloc_fn(alloc_size, align, stream)
             return None
 
+        global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align, _allocation._allocator)
         profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
                                            _allocation._profile_allocator)
 
-        self.launch(self.launch_cooperative_grid, gridX, gridY, gridZ, stream, function, profile_scratch, *args)
+        self.launch(self.launch_cooperative_grid, gridX, gridY, gridZ, stream, function, global_scratch,
+                    profile_scratch, *args)
 
 
 class HIPDriver(GPUDriver):

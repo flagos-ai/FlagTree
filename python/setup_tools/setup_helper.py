@@ -39,7 +39,7 @@ from .utils.tools import flagtree_configs as configs
 downloader = utils.tools.DownloadManager()
 configs = configs
 flagtree_backend = configs.flagtree_backend
-FLAGCX_SUPPORT_BACKENDS = {"nvidia", "iluvatar"}
+FLAGCX_SUPPORT_BACKENDS = {"nvidia", "iluvatar", "hcu"}
 
 
 def get_console_colors() -> Tuple[str, str]:
@@ -234,7 +234,11 @@ def get_hook_instance(hook_name):
 
 
 def enable_flagtree_third_party(name):
-    return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
+    # FlagCX's HCU device-bitcode build needs a consistent DTK LLVM
+    # opt/llvm-as/llvm-dis suite >= hipcc's version, which many HCU
+    # environments lack; require an explicit opt-in there.
+    default = 'OFF' if name == "flagcx" and (flagtree_backend or "nvidia") == "hcu" else 'ON'
+    return os.environ.get(f"USE_{name.upper()}", default) == 'ON'
 
 
 def download_flagtree_third_party(name, condition, required=False, hook=None):
@@ -902,6 +906,13 @@ flagcx_wheel = PathFinder.find_spec("flagcx", sys.path)
 download_flagtree_third_party("flagcx", condition=not flagcx_wheel
                               and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS, hook="handle_flagcx",
                               required=True)
+
+if (flagcx_wheel and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS
+        and enable_flagtree_third_party("flagcx")):
+    # Preinstalled packages supply the libraries directly, but clean checkouts
+    # still need the generated Python wrappers and consumer headers installed.
+    utils.default.FlagCXRegistrar({"configs": configs, "backend": utils.flagtree_submodules["flagcx"], "cache":
+                                   cache}).run()
 
 download_flagtree_third_party("cuda-tile", condition=(flagtree_backend == "tileir"), required=True)
 

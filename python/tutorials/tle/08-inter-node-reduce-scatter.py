@@ -188,7 +188,8 @@ def _scatter_kernel(
     col_offs = tl.arange(0, BLOCK_N)
 
     source_slot_offset_elems = LOCAL_RANK * M_per_rank * N
-    for step in range(WORLD_SIZE):
+    # Resolve local/remote pointer selection at compile time for the HCU backend.
+    for step in tl.static_range(WORLD_SIZE):
         target_rank = (LOCAL_RANK + step + 1) % WORLD_SIZE
 
         # Wait for this GPU to finish the destination GEMM shard.

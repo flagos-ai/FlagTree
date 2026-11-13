@@ -65,7 +65,7 @@ from .distributed import (
     sharding,
 )
 from . import communication
-from .communication import get_mem_pool, cleanup_communicator
+from .communication import get_mem_pool, cleanup_communicator, device_type
 
 
 def create_dist_tensor(buf_tensor):
@@ -136,6 +136,7 @@ __all__ = [
     "get_mem_pool",
     "create_dist_tensor",
     "cleanup_communicator",
+    "device_type",
     "BarrierKind",
     "MemoryOrder",
     "MemoryScope",

@@ -526,6 +526,19 @@ tl.store(scatter_ptrs, values, mask=scatter_row_mask & col_mask)
 
 node 路径面向跨节点点对点传输，数据面基于 FlagCX 注册内存（对称窗口）。
 
+**HCU 后端：通信接口选择与环境连通性。** 在 HCU 后端使用 FlagCX/RDMA 通信时，应确保各 rank 所选的 SHCA 接口之间具备任务所需的网络连通性。在采用网络平面隔离的部署环境中，仅按 GPU 就近选择通信接口，可能选到无法互通的 SHCA，从而导致通信失败。
+
+例如，在本地测试环境中，由于网络隔离配置，`{shca_0, shca_3}` 与 `{shca_1, shca_2}` 分别组内互通、组间不通。该现象与具体部署环境有关，并非 HCU 后端的普遍限制；其他用户环境可能不存在此问题。下表中行表示发送端，列表示接收端（`PASS`：可通信；`FAIL`：不通）。
+
+| 发送端 / 接收端 | `shca_0` | `shca_1` | `shca_2` | `shca_3` |
+| --- | --- | --- | --- | --- |
+| `shca_0` | PASS | FAIL | FAIL | PASS |
+| `shca_1` | FAIL | PASS | PASS | FAIL |
+| `shca_2` | FAIL | PASS | PASS | FAIL |
+| `shca_3` | PASS | FAIL | FAIL | PASS |
+
+若遇到类似情况，应验证实际选用接口的连通性，并调整接口选择或检查网络配置。具体接口编号与分组应以实际环境为准。
+
 当前版本**仅支持连续数据传输**，使用前请注意：
 
 - Host 侧必须先用 `tle.create_dist_tensor(comm_buf)` 把通信 buffer 注册到 FlagCX 对称内存窗口，返回的 `DistributedRtContext` 作为 kernel 参数传入；device 间 scatter 与 node 间 P2P 可共用同一注册窗口。本地侧使用的 buffer 必须是该 context 所注册的同一个 buffer，并作为全局指针参数直接传给 kernel。
