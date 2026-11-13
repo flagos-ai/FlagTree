@@ -8,7 +8,8 @@
 #endif
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
 #ifdef __FLAGTREE_COMMON_IR__
-#include "triton/Conversion/CommonIRToTTGIR/TensorOps.h"
+#include "mlir-ext/Conversion/CommonIRToTritonGPU/Patterns.h"
+#include "triton/Conversion/CommonIRToTTGIR/CommonIRSetLayout.h"
 #endif
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -841,6 +842,33 @@ void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
   patterns.add<CFCondBranchPattern, CFBranchPattern>(typeConverter, context);
 }
 
+#ifdef __FLAGTREE_COMMON_IR__
+// Boundary conversions can consume values that have no encoding in TTIR yet.
+struct LayoutConversionPattern : OpConversionPattern<ConvertLayoutOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ConvertLayoutOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto attrs = op->getAttrs();
+    auto converted = rewriter.replaceOpWithNewOp<ConvertLayoutOp>(
+        op, getTypeConverter()->convertType(op.getType()), adaptor.getSrc());
+    converted->setAttrs(attrs);
+    return success();
+  }
+};
+
+void populateCommonIRTensorPatternsAndLegality(TypeConverter &typeConverter,
+                                               RewritePatternSet &patterns,
+                                               ConversionTarget &target) {
+  tile::populateSetLayoutToTritonGPUPatterns(typeConverter, patterns, target);
+  patterns.add<LayoutConversionPattern>(typeConverter, patterns.getContext());
+  tile::populateTensorTileTypePatterns(typeConverter, patterns, target);
+  target.addDynamicallyLegalOp<ConvertLayoutOp>(
+      [&typeConverter](Operation *op) { return typeConverter.isLegal(op); });
+}
+#endif
+
 #ifdef __MCTLE__
 namespace tle = triton::mctle;
 class TleExtractTileOpPattern : public OpConversionPattern<tle::ExtractTileOp> {
@@ -950,8 +978,7 @@ public:
     populateSCFPatterns(typeConverter, patterns);
     populateCFPatterns(typeConverter, patterns);
 #ifdef __FLAGTREE_COMMON_IR__
-    triton::metax::populateCommonIRTensorPatternsAndLegality(typeConverter,
-                                                             patterns, target);
+    populateCommonIRTensorPatternsAndLegality(typeConverter, patterns, target);
 #endif
 #ifdef __MCTLE__
     populateTileRawPatterns(typeConverter, patterns);

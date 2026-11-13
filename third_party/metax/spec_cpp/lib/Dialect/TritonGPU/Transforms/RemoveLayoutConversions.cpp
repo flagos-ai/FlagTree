@@ -1024,9 +1024,9 @@ LogicalResult LayoutRematerialization::getConvertBackwardSlice(
     return Value();
   };
 
-  if (failed(mlir::getConvertBackwardSlice(
-          root, slice, rootEncoding, layout, stopPropagation,
-          getExistingConversion)))
+  if (failed(mlir::getConvertBackwardSlice(root, slice, rootEncoding, layout,
+                                           stopPropagation,
+                                           getExistingConversion)))
     return failure();
   // Rematerialization must not recreate an explicitly constrained value in
   // another encoding. Leave a conversion at that boundary instead.

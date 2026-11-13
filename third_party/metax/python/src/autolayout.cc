@@ -2,10 +2,10 @@
 
 #include "mlir/IR/Diagnostics.h"
 #include "llvm/Support/raw_ostream.h"
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
 #include <array>
 #include <map>
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 namespace py = pybind11;
 
@@ -77,7 +77,8 @@ void init_triton_metax_autolayout(py::module &&m) {
             });
         if (mlir::failed(mlir::triton::metax::insertDotLayoutHints(
                 module, capability, numWarps, plans)))
-          throw py::value_error("failed to insert dot layout hints: " + diagnostics);
+          throw py::value_error("failed to insert dot layout hints: " +
+                                diagnostics);
       },
       py::arg("module"), py::arg("capability"), py::arg("num_warps"),
       py::arg("layouts"));

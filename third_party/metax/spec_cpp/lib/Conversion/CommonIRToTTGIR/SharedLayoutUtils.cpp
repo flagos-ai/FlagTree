@@ -1,204 +1,124 @@
 // MIT License
 // Copyright (c) 2026 The FlagOS Contributors
-#include "triton/Conversion/CommonIRToTTGIR/AsyncCopyUtils.h"
-#include "mlir-ext/Dialect/CommonIR/Analysis/AxisInfoExt.h"
-#include "triton/Analysis/AxisInfo.h"
-#include "triton/Conversion/CommonIRToTTGIR/LayoutRules.h"
 #include "triton/Conversion/CommonIRToTTGIR/SharedLayoutUtils.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 namespace mlir::triton::metax {
 namespace ttg = mlir::triton::gpu;
+
+Value getSharedViewSource(Value value) {
+  Operation *op = value.getDefiningOp();
+  if (isa_and_nonnull<ttg::MemDescIndexOp, ttg::MemDescTransOp>(op))
+    return op->getOperand(0);
+  return {};
+}
+
 namespace {
-
-// Express writer orders in allocation coordinates. Use neutral swizzle
-// parameters only to reuse the existing slot/transpose projection rules.
-llvm::DenseMap<Value, Attribute>
-collectWriterOrders(ModuleOp module,
-                    const TensorLayoutRequirements &requirements,
-                    const TTGIRBufferLayoutAdapter &buffers) {
-  llvm::DenseMap<Value, Attribute> orders;
-  auto collect = [&](OpOperand &source, Value destination) {
-    Value root = tile::getBufferLayoutRoot(destination, buffers);
-    if (!root || root.getDefiningOp()->hasAttr("tle.gpu_layout"))
-      return;
-    auto type = dyn_cast<RankedTensorType>(source.get().getType());
-    Attribute order;
-    if (type) {
-      Attribute encoding = type.getEncoding();
-      Attribute requested;
-      bool conflict = false;
-      for (const auto &requirement : requirements.uses) {
-        if (requirement.use != &source)
-          continue;
-        conflict |= requested && requested != requirement.encoding;
-        requested = requirement.encoding;
-      }
-      if (requested)
-        encoding = requested;
-      if (!conflict && isa<ttg::BlockedEncodingAttr>(encoding)) {
-        type = type.cloneWithEncoding(encoding);
-        auto contiguity = ttg::getContigPerThread(type);
-        auto blocked = cast<ttg::BlockedEncodingAttr>(encoding);
-        auto writerOrder = blocked.getOrder();
-        // A scalar or equally contiguous writer supplies no clear preference.
-        unsigned dim = writerOrder.front();
-        bool unambiguous = contiguity[dim] > 1;
-        for (unsigned other : writerOrder.drop_front())
-          unambiguous &= contiguity[dim] > contiguity[other];
-        if (unambiguous) {
-          order = ttg::SwizzledSharedEncodingAttr::get(
-              module.getContext(), 1, 1, 1, writerOrder,
-              ttg::getCTALayout(encoding));
-          for (Value view = destination; view != root && order;
-               view = buffers.getViewSource(view))
-            order = buffers.toSourceEncoding(view, order);
-        }
-      }
-    }
-    auto [it, inserted] = orders.try_emplace(root, order);
-    if (!inserted && it->second != order)
-      it->second = Attribute{};
-  };
-  module.walk([&](Operation *op) {
-    if (auto store = dyn_cast<ttg::LocalStoreOp>(op))
-      collect(store->getOpOperand(0), store.getDst());
-    else if (auto copy = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(op))
-      collect(copy->getOpOperand(0), copy.getResult());
-    else if (auto alloc = dyn_cast<ttg::LocalAllocOp>(op)) {
-      if (alloc.getSrc())
-        collect(alloc->getOpOperand(0), alloc.getResult());
-    }
-  });
-  return orders;
+Attribute projectTranspose(Attribute encoding, ArrayRef<int64_t> shape,
+                           ArrayRef<int32_t> order) {
+  Attribute result;
+  auto *interface =
+      encoding.getDialect()
+          .getRegisteredInterface<triton::DialectInferLayoutInterface>();
+  if (!interface || failed(interface->inferTransOpEncoding(
+                        encoding, shape, order, result, /*loc=*/{})))
+    return {};
+  return result;
 }
 
-FailureOr<Attribute> inferSharedEncoding(ttg::LocalLoadOp load,
-                                         Attribute operandEncoding,
-                                         Attribute writerOrder) {
-  auto dot = dyn_cast<ttg::DotOperandEncodingAttr>(operandEncoding);
-  auto mma =
-      dot ? dyn_cast<ttg::MACAMmaEncodingAttr>(dot.getParent()) : nullptr;
-  auto shared = load.getSrc().getType();
-  auto type = load.getType();
-  if (!mma || mma.getVersionMajor() != 2 || mma.getIsATrans() ||
-      mma.getIsBTrans() || load.getMmaMode() != -1 || shared.getRank() != 2 ||
-      type.getShape() != shared.getShape() ||
-      type.getElementType() != shared.getElementType() ||
-      (!type.getElementType().isF16() && !type.getElementType().isBF16()))
-    return load.emitError("automatic shared layout requires a rank-2 FP16/BF16 "
-                          "ordinary load for MACA MMA v2");
-
-  // Check microtile divisibility before constructing the shared encoding.
-  auto elems = mma.getElemsPerThreadOrTrans(dot);
-  auto atom = mma.getThreadShape(false);
-  unsigned first = dot.getOpIdx() == 0 ? atom[0] : atom[2];
-  unsigned second = dot.getOpIdx() == 0 ? atom[2] : atom[1];
-  if (type.getShape()[0] % (first * elems[0]) ||
-      type.getShape()[1] % (second * elems[1]))
-    return load.emitError("shared tile does not cover whole MMA microtiles");
-  auto order = ttg::getOrderForDotOperand(dot.getOpIdx(), 2, /*kContig=*/true);
-  if (auto preferred =
-          dyn_cast_or_null<ttg::SwizzledSharedEncodingAttr>(writerOrder))
-    order.assign(preferred.getOrder().begin(), preferred.getOrder().end());
-  return Attribute(ttg::SwizzledSharedEncodingAttr::get(
-      load.getContext(), dot, type.getShape(), order, ttg::getCTALayout(dot),
-      type.getElementType(), /*needTrans=*/false));
-}
-
-LogicalResult checkSharedCopy(
-    ttg::AsyncCopyGlobalToLocalOp copy, ttg::MemDescType destination,
-    ModuleAxisInfoAnalysis &axisInfo) {
-  auto shared =
-      dyn_cast<ttg::SwizzledSharedEncodingAttr>(destination.getEncoding());
-  auto source = copy.getSrc().getType();
-  auto info = axisInfo.getAxisInfo(copy.getSrc());
-  if (!shared || source.getRank() != 2 || !info ||
-      source.getShape() != destination.getShape())
-    return copy.emitError(
-        "automatic shared layout requires a rank-2 async copy");
-  unsigned elemBytes = destination.getElementType().getIntOrFloatBitWidth() / 8;
-  auto maxVec = getAsyncCopyMaxVectorSize(copy, destination, axisInfo);
-  if (failed(maxVec))
-    return failure();
-  // Validate the proposed shared type without prescribing a tensor layout.
-  // Keep this planner's 16/8/4-byte policy; propagation chooses the source later.
-  if (chooseAsyncCopyLayout(source, destination, info,
-                            /*minVec=*/std::max(4 / elemBytes, 1u), *maxVec))
-    return success();
-  return copy.emitError("no legal 16/8/4-byte async copy for the selected "
-                        "shared layout and proven address continuity");
+// A pipeline slot adds/drops only the leading allocation dimension.
+Attribute projectIndex(Attribute encoding, bool toRoot) {
+  auto shared = dyn_cast<ttg::SwizzledSharedEncodingAttr>(encoding);
+  if (!shared || ttg::getNumCTAs(shared) != 1)
+    return {};
+  SmallVector<unsigned> order;
+  if (toRoot) {
+    for (unsigned dim : shared.getOrder())
+      order.push_back(dim + 1);
+    order.push_back(0);
+  } else {
+    if (shared.getOrder().back() != 0)
+      return {};
+    for (unsigned dim : shared.getOrder().drop_back())
+      order.push_back(dim - 1);
+  }
+  return ttg::SwizzledSharedEncodingAttr::get(
+      encoding.getContext(), shared.getVec(), shared.getPerPhase(),
+      shared.getMaxPhase(), order,
+      ttg::CTAEncodingAttr::getDefault(encoding.getContext(), order.size()));
 }
 } // namespace
 
-FailureOr<tile::BufferLayoutPlan>
-planSharedLayouts(ModuleOp module, ArrayRef<triton::DotOp> dots,
-                  const TensorLayoutRequirements &writerPreferences) {
-  TTGIRBufferLayoutAdapter buffers;
-  TTGIRLayoutAdapter tensors;
-  auto writerOrders = collectWriterOrders(module, writerPreferences, buffers);
-  SmallVector<tile::BufferLayoutRequirement> sharedRequirements;
-  for (triton::DotOp dot : dots) {
-    for (unsigned index : {0u, 1u}) {
-      Attribute encoding =
-          cast<RankedTensorType>(dot->getOperand(index).getType()).getEncoding();
-      for (Value value :
-           collectTensorLayoutComponent(dot->getOperand(index), tensors)) {
-        auto load = value.getDefiningOp<ttg::LocalLoadOp>();
-        if (!load)
-          continue;
-        Value root = tile::getBufferLayoutRoot(load.getSrc(), buffers);
-        if (!root || root.getDefiningOp()->hasAttr("tle.gpu_layout"))
-          continue;
-        Attribute writerOrder = writerOrders.lookup(root);
-        SmallVector<Value> views;
-        for (Value view = load.getSrc(); view != root;
-             view = buffers.getViewSource(view))
-          views.push_back(view);
-        for (Value view : llvm::reverse(views)) {
-          if (!writerOrder)
-            break;
-          writerOrder = buffers.toViewEncoding(view, writerOrder);
-        }
-        auto shared = inferSharedEncoding(load, encoding, writerOrder);
-        if (failed(shared))
-          return failure();
-        sharedRequirements.push_back({load.getSrc(), *shared});
-      }
-    }
-  }
-  auto plan = tile::planBufferLayouts(sharedRequirements, buffers);
-  if (failed(plan)) {
-    module.emitError(
-        "incompatible shared layout requirements or unsupported buffer view");
-    return failure();
-  }
-  if (plan->types.empty())
-    return plan;
-  ModuleAxisInfoAnalysis axisInfo(module, tile::addCommonIRAxisInfoVisitors);
-  for (OpOperand *access : plan->accesses) {
-    Operation *op = access->getOwner();
-    auto shared = cast<ttg::MemDescType>(plan->getType(access->get()));
-    if (ttg::getNumCTAs(shared.getEncoding()) != 1) {
-      op->emitError("automatic MetaX shared layout currently requires one CTA");
-      return failure();
-    }
-    if (auto copy = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(op)) {
-      if (failed(checkSharedCopy(copy, shared, axisInfo)))
-        return failure();
-    } else if (auto load = dyn_cast<ttg::LocalLoadOp>(op)) {
-      if (load.getMmaMode() != -1 ||
-          load.getType().getElementType() != shared.getElementType()) {
-        load.emitError(
-            "automatic shared layout has an incompatible local load");
-        return failure();
-      }
-    } else if (!isa<ttg::LocalStoreOp, ttg::LocalDeallocOp>(op)) {
-      op->emitError(
-          "unsupported use of an automatically planned shared buffer");
-      return failure();
-    }
-  }
-  return plan;
+Attribute getSharedSourceEncoding(Value view, Attribute encoding) {
+  if (view.getDefiningOp<ttg::MemDescIndexOp>())
+    return projectIndex(encoding, true);
+  if (auto trans = view.getDefiningOp<ttg::MemDescTransOp>())
+    return projectTranspose(encoding, trans.getType().getShape(),
+                            triton::inversePermutation(trans.getOrder()));
+  return {};
 }
+
+Attribute getSharedViewEncoding(Value view, Attribute encoding) {
+  if (view.getDefiningOp<ttg::MemDescIndexOp>())
+    return projectIndex(encoding, false);
+  if (auto trans = view.getDefiningOp<ttg::MemDescTransOp>())
+    return projectTranspose(encoding, trans.getSrc().getType().getShape(),
+                            trans.getOrder());
+  return {};
+}
+
+Type SharedLayoutUpdates::getType(Value value) const {
+  Type type = types.lookup(value);
+  return type ? type : value.getType();
+}
+
+void SharedLayoutUpdates::apply() const {
+  for (auto [value, type] : types)
+    value.setType(type);
+}
+
+Value getSharedAllocation(Value value) {
+  while (value && !value.getDefiningOp<ttg::LocalAllocOp>())
+    value = getSharedViewSource(value);
+  return value;
+}
+
+LogicalResult collectSharedLayoutUpdates(Value allocation, Attribute encoding,
+                                         SharedLayoutUpdates &updates) {
+  if (!allocation.getDefiningOp<ttg::LocalAllocOp>())
+    return failure();
+  SmallVector<std::pair<Value, Attribute>> worklist{{allocation, encoding}};
+  for (unsigned i = 0; i < worklist.size(); ++i) {
+    auto [value, layout] = worklist[i];
+    auto type = dyn_cast<ttg::MemDescType>(value.getType());
+    if (!type || !isa<ttg::SharedEncodingTrait>(layout))
+      return failure();
+    auto replacement = ttg::MemDescType::get(
+        type.getShape(), type.getElementType(), layout, type.getMemorySpace(),
+        type.getMutableMemory(), type.getAllocShape());
+    auto [it, inserted] = updates.types.try_emplace(value, replacement);
+    if (!inserted) {
+      if (it->second != replacement)
+        return failure();
+      continue;
+    }
+    for (OpOperand &use : value.getUses()) {
+      Operation *user = use.getOwner();
+      if (user->getNumResults() == 1 &&
+          getSharedViewSource(user->getResult(0)) == value) {
+        Value view = user->getResult(0);
+        Attribute projected = getSharedViewEncoding(view, layout);
+        if (!projected)
+          return failure();
+        worklist.emplace_back(view, projected);
+      } else {
+        updates.accesses.push_back(&use);
+      }
+    }
+  }
+  return success();
+}
+
 } // namespace mlir::triton::metax

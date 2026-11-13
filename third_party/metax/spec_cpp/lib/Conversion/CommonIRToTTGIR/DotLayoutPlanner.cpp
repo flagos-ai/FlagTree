@@ -61,7 +61,8 @@ getDotLayoutConstraints(tt::DotOp dot, int computeCapability, int numWarps) {
   auto aTy = cast<RankedTensorType>(dot.getA().getType());
   auto bTy = cast<RankedTensorType>(dot.getB().getType());
   auto dTy = cast<RankedTensorType>(dot.getD().getType());
-  if (auto error = checkMacaDotPreconditions(dot, computeCapability, numWarps)) {
+  if (auto error =
+          checkMacaDotPreconditions(dot, computeCapability, numWarps)) {
     dot.emitError("cannot enumerate dot layouts: ") << *error;
     return failure();
   }
@@ -84,7 +85,8 @@ bool matchesExplicitDotHints(tt::DotOp dot, const DotLayoutPlan &plan) {
     Attribute layout = hint.getLayout();
     // A blocked producer may feed a dot through a layout conversion. Only
     // explicit MMA/dot-operand anchors constrain the candidate's dot ports.
-    return !isa<ttg::MACAMmaEncodingAttr, ttg::DotOperandEncodingAttr>(layout) ||
+    return !isa<ttg::MACAMmaEncodingAttr, ttg::DotOperandEncodingAttr>(
+               layout) ||
            layout == expected;
   };
   if (!matches(dot.getA(), plan.operandA) ||
@@ -121,13 +123,14 @@ FailureOr<SmallVector<DotLayoutDomain>> collectDots(ModuleOp module) {
 }
 
 LogicalResult validateDotLayoutCandidate(tt::DotOp dot,
-                                        const DotLayoutPlan &plan,
-                                        int computeCapability, int numWarps) {
+                                         const DotLayoutPlan &plan,
+                                         int computeCapability, int numWarps) {
   auto constraints = getDotLayoutConstraints(dot, computeCapability, numWarps);
   if (failed(constraints))
     return failure();
-  if (auto error = checkMacaDotLayout(dot, plan.mma, plan.operandA,
-                                     plan.operandB, computeCapability, numWarps))
+  if (auto error =
+          checkMacaDotLayout(dot, plan.mma, plan.operandA, plan.operandB,
+                             computeCapability, numWarps))
     return dot.emitError("MMA layout is not legal for this dot and target: ")
            << *error;
   return success();
@@ -154,7 +157,7 @@ generateDotLayoutPlans(tt::DotOp dot, int computeCapability, int numWarps) {
       return;
     DotLayoutPlan plan = makeDotLayoutPlan(dot, mma);
     if (checkMacaDotLayout(dot, plan.mma, plan.operandA, plan.operandB,
-                          computeCapability, numWarps))
+                           computeCapability, numWarps))
       return;
     if (constraints->bsmB) {
       if (auto error = checkBsmLayout(*constraints->bsmB, plan.operandB)) {
@@ -173,7 +176,8 @@ generateDotLayoutPlans(tt::DotOp dot, int computeCapability, int numWarps) {
     const unsigned replicaDim = 1 - packedDim;
     for (unsigned replicaWarps = 1; replicaWarps <= unsigned(numWarps);
          replicaWarps <<= 1) {
-      // M/N coverage may exceed the tensor shape; validate each warp grid below.
+      // M/N coverage may exceed the tensor shape; validate each warp grid
+      // below.
       if (numWarps % replicaWarps)
         continue;
       unsigned packedWarps = numWarps / replicaWarps;
@@ -253,9 +257,9 @@ enumerateDotLayoutPlans(ModuleOp module, int computeCapability, int numWarps) {
   return domains;
 }
 
-LogicalResult insertDotLayoutHints(
-    ModuleOp module, int capability, int numWarps,
-    const llvm::StringMap<DotLayoutPlan> &selection) {
+LogicalResult
+insertDotLayoutHints(ModuleOp module, int capability, int numWarps,
+                     const llvm::StringMap<DotLayoutPlan> &selection) {
   auto domains = collectDots(module);
   if (failed(domains))
     return failure();
@@ -270,8 +274,8 @@ LogicalResult insertDotLayoutHints(
       if (cast<RankedTensorType>(value.getType()).getEncoding())
         return dot.emitError(
             "layout hint injection requires unencoded TTIR tensors");
-    std::string id = domain.functionName + "/dot/" +
-                     std::to_string(domain.dotIndex);
+    std::string id =
+        domain.functionName + "/dot/" + std::to_string(domain.dotIndex);
     auto selected = selection.find(id);
     if (selected == selection.end())
       return dot.emitError("candidate is missing a plan for ") << id;
@@ -288,8 +292,8 @@ LogicalResult insertDotLayoutHints(
   // same snapshot and context, so the function-local IDs still identify them.
   for (auto [dot, plan] : choices) {
     OpBuilder builder(dot);
-    for (auto [index, encoding] :
-         llvm::enumerate(SmallVector<Attribute>{plan.operandA, plan.operandB})) {
+    for (auto [index, encoding] : llvm::enumerate(
+             SmallVector<Attribute>{plan.operandA, plan.operandB})) {
       Value source = dot->getOperand(index);
       auto existing = source.getDefiningOp<tile::SetLayoutOp>();
       if (existing && existing.getLayout() == encoding)
@@ -299,8 +303,8 @@ LogicalResult insertDotLayoutHints(
       dot->setOperand(index, hint.getResult());
     }
     builder.setInsertionPointAfter(dot);
-    auto hint = builder.create<tile::SetLayoutOp>(
-        dot.getLoc(), dot.getType(), dot.getResult(), plan.mma);
+    auto hint = builder.create<tile::SetLayoutOp>(dot.getLoc(), dot.getType(),
+                                                  dot.getResult(), plan.mma);
     dot.getResult().replaceAllUsesExcept(hint.getResult(), hint);
   }
   return success();

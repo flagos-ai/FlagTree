@@ -1,6 +1,6 @@
+#include "triton/Conversion/CommonIRToTTGIR/CommonIRSetLayout.h"
+#include "triton/Conversion/CommonIRToTTGIR/CommonIRLowerTensorTiles.h"
 #include "triton/Conversion/CommonIRToTTGIR/MmaLayout.h"
-#include "triton/Conversion/CommonIRToTTGIR/Passes.h"
-#include "triton/Conversion/CommonIRToTTGIR/TensorOps.h"
 
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "mlir-ext/Dialect/CommonIR/Transforms/LayoutHints.h"
@@ -11,8 +11,6 @@
 #include <numeric>
 
 namespace mlir::triton::metax {
-#define GEN_PASS_DEF_COMMONIRCLEARLAYOUTHINTS
-#include "triton/Conversion/CommonIRToTTGIR/Passes.h.inc"
 
 namespace ttg = mlir::triton::gpu;
 
@@ -36,8 +34,9 @@ LogicalResult validateLayoutHints(ModuleOp module, bool &hasHints) {
     auto mma = dyn_cast<ttg::MACAMmaEncodingAttr>(parent);
     auto linear = dyn_cast<ttg::LinearEncodingAttr>(parent);
     if (!blocked && !mma && !linear) {
-      op.emitOpError("MetaX supports blocked, linear or MACA MMA layouts, their dot "
-                     "operands and slices");
+      op.emitOpError(
+          "MetaX supports blocked, linear or MACA MMA layouts, their dot "
+          "operands and slices");
       return WalkResult::interrupt();
     }
     if (mma) {
@@ -51,8 +50,9 @@ LogicalResult validateLayoutHints(ModuleOp module, bool &hasHints) {
           !powersOfTwo(mma.getElementsMNK()) || mma.getColMajor() > 1 ||
           mma.getIsATrans() || mma.getIsBTrans() ||
           mma.getElementsStride() != ArrayRef<unsigned>({1, 1})) {
-        op.emitOpError("requires a rank-2 MACA MMA v2 layout with power-of-two "
-                       "warp/element counts, unit strides and no LDS transpose");
+        op.emitOpError(
+            "requires a rank-2 MACA MMA v2 layout with power-of-two "
+            "warp/element counts, unit strides and no LDS transpose");
         return WalkResult::interrupt();
       }
     }
@@ -60,16 +60,14 @@ LogicalResult validateLayoutHints(ModuleOp module, bool &hasHints) {
       op.emitOpError("layout rank must match tensor rank");
       return WalkResult::interrupt();
     }
-    auto threadsPerWarp = linear
-                              ? linear.getLinearLayout().getInDimSize(
-                                    StringAttr::get(op.getContext(), "lane"))
-                              : blocked ? product(blocked.getThreadsPerWarp())
-                                        : 64;
-    auto warpsPerCTA = linear
-                           ? linear.getLinearLayout().getInDimSize(
-                                 StringAttr::get(op.getContext(), "warp"))
-                           : product(blocked ? blocked.getWarpsPerCTA()
-                                             : mma.getWarpsPerCTA());
+    auto threadsPerWarp = linear ? linear.getLinearLayout().getInDimSize(
+                                       StringAttr::get(op.getContext(), "lane"))
+                          : blocked ? product(blocked.getThreadsPerWarp())
+                                    : 64;
+    auto warpsPerCTA = linear ? linear.getLinearLayout().getInDimSize(
+                                    StringAttr::get(op.getContext(), "warp"))
+                              : product(blocked ? blocked.getWarpsPerCTA()
+                                                : mma.getWarpsPerCTA());
     auto numCTAs = ttg::getCTALayout(parent).getLinearLayout().getInDimSize(
         StringAttr::get(op.getContext(), "block"));
     if (threadsPerWarp != ttg::TritonGPUDialect::getThreadsPerWarp(module) ||
@@ -91,12 +89,16 @@ bool isGeneralTensorLayout(Attribute encoding) {
 }
 
 bool canPropagateTo(Value value, Attribute encoding) {
+  Operation *producer = value.getDefiningOp();
+  // These lowering paths require a blocked layout. Keep other requested
+  // layouts at the set_layout boundary instead of changing the producer.
+  if (producer && isa<triton::CatOp, triton::ScanOp>(producer))
+    return isa<ttg::BlockedEncodingAttr>(encoding);
   if (isGeneralTensorLayout(encoding))
     return true;
   auto type = cast<RankedTensorType>(value.getType());
   if (isa<triton::PointerType>(type.getElementType()))
     return false;
-  Operation *producer = value.getDefiningOp();
   if (!producer)
     return true;
   // Global memory keeps its coalesced layout; local_load can produce dot A/B.
@@ -105,6 +107,39 @@ bool canPropagateTo(Value value, Attribute encoding) {
   if (isa<triton::DotOp>(producer))
     return isa<ttg::MACAMmaEncodingAttr>(encoding);
   return true;
+}
+
+Attribute getReduceScanOperandEncoding(Operation *op) {
+  if (!isa<triton::ReduceOp, triton::ScanOp>(op) || op->getNumResults() < 2)
+    return {};
+
+  // A tuple reduction/scan needs one common input layout. Prefer an inferred
+  // result requirement, then an input layout the operation supports.
+  bool hasEncoding = false;
+  for (Type type : op->getResultTypes()) {
+    auto tensor = dyn_cast<RankedTensorType>(type);
+    if (!tensor || !tensor.getEncoding())
+      continue;
+    hasEncoding = true;
+    if (Attribute encoding = inferSrcEncoding(op, tensor.getEncoding()))
+      return encoding;
+  }
+  for (Type type : op->getOperandTypes()) {
+    auto tensor = cast<RankedTensorType>(type);
+    if (!tensor.getEncoding())
+      continue;
+    hasEncoding = true;
+    if (inferDstEncoding(op, tensor.getEncoding()))
+      return tensor.getEncoding();
+  }
+  if (!hasEncoding)
+    return {};
+
+  auto type = cast<RankedTensorType>(op->getOperand(0).getType());
+  return ttg::getDefaultBlockedEncoding(
+      op->getContext(), type.getShape(), ttg::lookupNumWarps(op),
+      ttg::TritonGPUDialect::getThreadsPerWarp(op->getParentOfType<ModuleOp>()),
+      ttg::lookupNumCTAs(op));
 }
 
 void completeResultEncoding(Operation *op) {
@@ -131,8 +166,7 @@ void completeResultEncoding(Operation *op) {
 }
 
 Attribute getMemoryOperandEncoding(Operation *op) {
-  if (!isa<triton::LoadOp, triton::StoreOp,
-           ttg::AsyncCopyGlobalToLocalOp>(op))
+  if (!isa<triton::LoadOp, triton::StoreOp, ttg::AsyncCopyGlobalToLocalOp>(op))
     return {};
 
   // Tensor-of-pointer accesses share one encoding across all tensor operands.
@@ -167,6 +201,10 @@ Attribute getRequiredOperandEncoding(Operation *op, unsigned operandIndex) {
   if (auto dot = dyn_cast<triton::DotOp>(op))
     return operandIndex == 2 ? dot.getType().getEncoding() : Attribute{};
 
+  // Gather ties only its indices to its result; the source is independent.
+  if (isa<triton::GatherOp>(op) && operandIndex != 1)
+    return {};
+
   if (op->getNumResults() != 1)
     return {};
   auto resultType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
@@ -178,17 +216,36 @@ Attribute getRequiredOperandEncoding(Operation *op, unsigned operandIndex) {
 void insertRequiredLayoutConversions(ModuleOp module) {
   // Keep the producer's layout and convert at each use that needs another one.
   module.walk([&](Operation *op) {
-    completeResultEncoding(op);
-    Attribute memoryEncoding = getMemoryOperandEncoding(op);
+    Attribute commonEncoding = getReduceScanOperandEncoding(op);
+    if (commonEncoding) {
+      Attribute resultEncoding = inferDstEncoding(op, commonEncoding);
+      OpBuilder builder(op);
+      builder.setInsertionPointAfter(op);
+      for (OpResult result : op->getResults()) {
+        auto type = dyn_cast<RankedTensorType>(result.getType());
+        if (!type || type.getEncoding() == resultEncoding)
+          continue;
+        result.setType(type.cloneWithEncoding(resultEncoding));
+        // Preserve independently inferred uses and explicit output anchors.
+        if (type.getEncoding()) {
+          auto convert =
+              builder.create<ttg::ConvertLayoutOp>(op->getLoc(), type, result);
+          result.replaceAllUsesExcept(convert.getResult(), convert);
+        }
+      }
+    } else {
+      completeResultEncoding(op);
+      commonEncoding = getMemoryOperandEncoding(op);
+    }
     OpBuilder builder(op);
     for (OpOperand &operand : op->getOpOperands()) {
       auto type = dyn_cast<RankedTensorType>(operand.get().getType());
       if (!type)
         continue;
-      Attribute requiredEncoding = memoryEncoding
-                                       ? memoryEncoding
-                                       : getRequiredOperandEncoding(
-                                             op, operand.getOperandNumber());
+      Attribute requiredEncoding =
+          commonEncoding
+              ? commonEncoding
+              : getRequiredOperandEncoding(op, operand.getOperandNumber());
       if (!requiredEncoding || type.getEncoding() == requiredEncoding)
         continue;
       auto targetType = type.cloneWithEncoding(requiredEncoding);
@@ -208,8 +265,8 @@ LogicalResult validateDotLayouts(ModuleOp module) {
       auto operand = dyn_cast_or_null<ttg::DotOperandEncodingAttr>(encoding);
       return operand && isa<ttg::MACAMmaEncodingAttr>(operand.getParent());
     };
-    if (!isa_and_nonnull<ttg::MACAMmaEncodingAttr>(mma) &&
-        !isMmaOperand(a) && !isMmaOperand(b))
+    if (!isa_and_nonnull<ttg::MACAMmaEncodingAttr>(mma) && !isMmaOperand(a) &&
+        !isMmaOperand(b))
       return WalkResult::advance();
     if (!isa_and_nonnull<ttg::MACAMmaEncodingAttr>(mma)) {
       dot.emitError("MACA dot layout hints require an MMA layout for the "
@@ -229,33 +286,15 @@ LogicalResult validateDotLayouts(ModuleOp module) {
       return WalkResult::interrupt();
     }
     if (auto error = checkMacaDotLayout(dot, mma, a, b, capability,
-                                       ttg::lookupNumWarps(dot))) {
-      dot.emitError("MMA layout is not legal for this dot and target: ") << *error;
+                                        ttg::lookupNumWarps(dot))) {
+      dot.emitError("MMA layout is not legal for this dot and target: ")
+          << *error;
       return WalkResult::interrupt();
     }
     return WalkResult::advance();
   });
   return failure(result.wasInterrupted());
 }
-
-LogicalResult markExplicitMemoryLayouts(ModuleOp module) {
-  WalkResult result = module.walk([&](Operation *op) {
-    if (!getMemAccessPtr(op))
-      return WalkResult::advance();
-    Attribute encoding;
-    if (failed(tile::inferExplicitMemoryEncoding(op, encoding)))
-      return WalkResult::interrupt();
-    if (encoding)
-      tile::setExplicitMemoryEncoding(op, encoding);
-    return WalkResult::advance();
-  });
-  return failure(result.wasInterrupted());
-}
-
-struct CommonIRClearLayoutHintsPass
-    : impl::CommonIRClearLayoutHintsBase<CommonIRClearLayoutHintsPass> {
-  void runOnOperation() override { tile::clearLayoutHints(getOperation()); }
-};
 
 } // namespace
 
@@ -271,15 +310,15 @@ LogicalResult applyCommonIRLayoutHints(ModuleOp module) {
     return builder.create<ttg::ConvertLayoutOp>(loc, type, source).getResult();
   };
   const tile::LayoutHintCallbacks callbacks{
-      inferSrcEncoding, inferDstEncoding, getTiedArgs, canPropagateTo,
-      convertLayout, canLowerTensorTileInEncoding};
+      inferSrcEncoding, inferDstEncoding, getTiedArgs,
+      canPropagateTo,   convertLayout,    canLowerTensorTileInEncoding};
   if (failed(tile::propagateLayoutHints(module, callbacks)))
     return failure();
   if (failed(validateDotLayouts(module)))
     return failure();
 
   insertRequiredLayoutConversions(module);
-  return markExplicitMemoryLayouts(module);
+  return success();
 }
 
 } // namespace mlir::triton::metax

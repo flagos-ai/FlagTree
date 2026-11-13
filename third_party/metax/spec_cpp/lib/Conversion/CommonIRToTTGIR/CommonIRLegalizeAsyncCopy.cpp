@@ -11,12 +11,14 @@ namespace ttg = mlir::triton::gpu;
 namespace {
 
 class CommonIRLegalizeAsyncCopyPass
-    : public impl::CommonIRLegalizeAsyncCopyBase<CommonIRLegalizeAsyncCopyPass> {
+    : public impl::CommonIRLegalizeAsyncCopyBase<
+          CommonIRLegalizeAsyncCopyPass> {
 public:
   void runOnOperation() override {
     ModuleOp module = getOperation();
     SmallVector<ttg::AsyncCopyGlobalToLocalOp> copies;
-    module.walk([&](ttg::AsyncCopyGlobalToLocalOp copy) { copies.push_back(copy); });
+    module.walk(
+        [&](ttg::AsyncCopyGlobalToLocalOp copy) { copies.push_back(copy); });
     if (copies.empty())
       return;
 
@@ -25,7 +27,8 @@ public:
       auto srcTy = copy.getSrc().getType();
       auto dstTy = copy.getResult().getType();
       auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(srcTy.getEncoding());
-      auto shared = dyn_cast<ttg::SwizzledSharedEncodingAttr>(dstTy.getEncoding());
+      auto shared =
+          dyn_cast<ttg::SwizzledSharedEncodingAttr>(dstTy.getEncoding());
       if (!blocked || !shared) {
         copy.emitOpError(
             "requires blocked source and swizzled shared destination");

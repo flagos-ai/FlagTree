@@ -34,6 +34,7 @@ from .mthreads import warp_specialize as mthreads_warp_specialize
 from .mthreads import wgmma as mthreads_wgmma
 from .iluvatar import copy as iluvatar_copy
 from .iluvatar import layout as iluvatar_layout
+from .metax import layout as metax_layout
 from triton.compiler.code_generator import flatten_values_to_ir, unflatten_ir_values
 
 from triton.language.core import (
@@ -98,7 +99,10 @@ def set_layout(value, layout, _semantic=None):
     if not value.type.is_block():
         raise ValueError("tle.gpu.set_layout only supports block tensors")
     if not hasattr(_semantic.builder, "ensure_ttg_layout_attrs"):
-        raise RuntimeError("tle.gpu.set_layout requires explicit layout support in this backend build")
+        raise RuntimeError("tle.gpu.set_layout requires a Triton build with __TLE__ explicit "
+                           "layout support (ir.builder.ensure_ttg_layout_attrs is missing). "
+                           "This backend likely uses its own TLE variant "
+                           "(e.g. __ILUVATAR_TLE__/__MCTLE__) that does not implement this op.")
     options = _semantic.builder.options
     _semantic.builder.ensure_ttg_layout_attrs(
         int(getattr(options, "num_warps")),
@@ -344,8 +348,7 @@ def alloc(
             NVIDIA SMEM supports one non-power-of-two matrix dimension (a
             multiple of 16) through the logical-domain storage planner.
         dtype: Data type
-        layout: Optional memory layout. MetaX CommonIR autolayout selects it
-            from consumers when omitted; an explicit layout remains fixed.
+        layout: Memory layout encoding (optional)
         scope: Storage type (default to shared memory)
         init_value: Optional initial register tensor with the padded matrix shape.
             For a 3D allocation, a matrix initializes every slot with the same
@@ -430,8 +433,7 @@ def alloc(
             raise ValueError("GPU CommonIR alloc does not yet support alias buffers")
     mthreads_auto_sqmma_shared_layout = (mthreads_common.enabled() and storage == tle.smem
                                          and mthreads_wgmma.use_auto_shared_layout(layout, nv_mma_shared_layout))
-    compiler_shared_layout = (tle_semantic.COMMON_IR_ENABLED and storage == tle.smem and layout is None
-                              and hasattr(_semantic.builder, "create_metax_async_copy_global_to_local"))
+    metax_auto_shared_layout = storage == tle.smem and metax_layout.use_auto_shared_layout(layout)
 
     try:
         unwrapped_shape = [tl._unwrap_if_constexpr(dim) for dim in shape]
@@ -497,7 +499,9 @@ def alloc(
                 if iluvatar_copy.enabled():
                     layout, layout_handle = iluvatar_layout.select_default_smem_layout(
                         _semantic.builder, unwrapped_shape, dtype, nv_mma_shared_layout)
-                elif compiler_shared_layout or mthreads_auto_sqmma_shared_layout or not nv_mma_shared_layout:
+                elif metax_auto_shared_layout:
+                    layout, layout_handle = metax_layout.select_default_smem_layout(unwrapped_shape)
+                elif mthreads_auto_sqmma_shared_layout or not nv_mma_shared_layout:
                     layout = tle.swizzled_shared_layout.make_default(rank=len(unwrapped_shape))
                     layout_handle = _semantic.builder.make_swizzled_shared_encoding_attr(
                         layout.vectorSize,
@@ -540,7 +544,7 @@ def alloc(
                 dtype,
                 storage,
                 layout,
-                None if compiler_shared_layout else layout_handle,
+                layout_handle,
                 init_value,
                 _semantic,
             )

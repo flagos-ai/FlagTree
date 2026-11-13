@@ -27,24 +27,22 @@ unsigned getMmaRegisterGroupLimit(int64_t size, unsigned atomSize,
 
 // Call after checking the target and geometry preconditions.
 gpu::MACAMmaEncodingAttr buildMmaEncoding(MLIRContext *ctx,
-                                         int computeCapability,
-                                         ArrayRef<unsigned> warpsPerCTA,
-                                         ArrayRef<unsigned> elementsMNK,
-                                         unsigned colMajor);
+                                          int computeCapability,
+                                          ArrayRef<unsigned> warpsPerCTA,
+                                          ArrayRef<unsigned> elementsMNK,
+                                          unsigned colMajor);
 DotLayoutPlan makeDotLayoutPlan(triton::DotOp dot,
                                 gpu::MACAMmaEncodingAttr mma);
 
 std::optional<StringRef> checkMacaDotPreconditions(triton::DotOp dot,
-                                                 int computeCapability,
-                                                 int numWarps);
+                                                   int computeCapability,
+                                                   int numWarps);
 // Check a fixed layout without diagnostics or IR mutations.
-std::optional<StringRef> checkMacaDotLayout(triton::DotOp dot, Attribute mma,
-                                          Attribute operandA, Attribute operandB,
-                                          int computeCapability, int numWarps);
+std::optional<StringRef>
+checkMacaDotLayout(triton::DotOp dot, Attribute mma, Attribute operandA,
+                   Attribute operandB, int computeCapability, int numWarps);
 
-// Use the existing MMA layout or select a BSM-compatible default.
-FailureOr<DotLayoutPlan> inferBsmDotLayout(triton::DotOp dot,
-                                         int computeCapability, int numWarps);
+inline constexpr unsigned kBsmSlots = 32;
 
 struct BsmLayoutChain {
   gpu::LocalLoadOp load;
@@ -55,10 +53,11 @@ struct BsmLayoutChain {
 // Return an empty optional for non-BSM operands, or failure for invalid chains.
 FailureOr<std::optional<BsmLayoutChain>> getBsmLayoutChain(Value operand);
 
-// Check native split LDS / BSM mapping, optionally against planned shared storage.
+// Check native split LDS / BSM mapping, optionally against planned shared
+// storage.
 std::optional<std::string> checkBsmLayout(BsmLayoutChain chain,
-                                         Attribute encoding,
-                                         gpu::MemDescType shared = {});
+                                          Attribute encoding,
+                                          gpu::MemDescType shared = {});
 
 } // namespace mlir::triton::metax
 
