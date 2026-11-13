@@ -17,6 +17,7 @@ import functools
 from typing import Any, Dict, Tuple, Optional
 from types import ModuleType
 import hashlib
+import inspect
 import re
 import tempfile
 import signal
@@ -31,7 +32,9 @@ def min_dot_size(target: GPUTarget):
         lhs_bitwidth = lhs_type.scalar.primitive_bitwidth
         rhs_bitwidth = rhs_type.scalar.primitive_bitwidth
         assert lhs_bitwidth == rhs_bitwidth, "lhs and rhs bitwidth must be the same"
-        # For small M/N the input we can still use tensorcores with padding.
+        if lhs_type.scalar.is_fp8():
+            return (16, 16, 32)
+        # INT8 dot pads small M/N to the minimum MMA output tile.
         if lhs_bitwidth == 8:
             return (1, 1, 32)
         else:
@@ -234,6 +237,8 @@ class MACABackend(BaseBackend):
         pm.enable_debug()
         passes.common.add_inliner(pm)
         passes.ttir.add_rewrite_tensor_pointer(pm)
+        passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
+        passes.common.add_canonicalizer(pm)
         passes.ttir.add_combine(pm)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_reorder_broadcast(pm)
@@ -477,4 +482,10 @@ class MACABackend(BaseBackend):
         if mxcc_arch is None:
             raise RuntimeError('mxcc_arch is None (not specified)')
         version = subprocess.check_output([mxcc_arch, "--version"]).decode("utf-8").split('\n', 1)[0]
-        return f'{version}-{self.capability}'
+        # Hash the actual bound overlays outside the standard package scan.
+        from triton.language import core, standard
+        from triton.language.semantic import TritonSemantic
+        from triton.runtime.driver import DriverConfig
+        provider_hashes = "-".join(
+            file_hash(inspect.getfile(source)) for source in (core.dot, TritonSemantic.dot, standard, DriverConfig))
+        return f'{version}-{self.capability}-{provider_hashes}'

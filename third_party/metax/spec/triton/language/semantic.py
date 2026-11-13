@@ -817,6 +817,18 @@ class TritonSemantic(Generic[TensorTy]):
                                  "Source scalar type is " + str(src_sca_ty) + " and destination type is " +
                                  str(dst_sca_ty))
 
+        if src_sca_ty.is_int() and dst_sca_ty in (tl.float8e4nv, tl.float8e5):
+            if isinstance(input.handle, ir.value):
+                # GPU compilation only accepts a provably constant integer zero.
+                is_zero = input.handle.is_constant_zero()
+            else:
+                from triton.runtime.interpreter import TensorHandle
+                # The interpreter evaluates its reference values directly.
+                is_zero = isinstance(input.handle, TensorHandle) and not (input.handle.data != 0).any()
+            if is_zero:
+                zero = self.scalar_constant(0, dst_sca_ty)
+                return self.splat(zero, src_ty.get_block_shapes()) if src_ty.is_block() else zero
+
         if (src_sca_ty.is_fp8e4b15() or dst_sca_ty.is_fp8e4b15()):
             assert self.builder.codegen_fns.get(
                 "convert_custom_types") is not None, "target doesn't provide conversion for this type."
@@ -1092,12 +1104,16 @@ class TritonSemantic(Generic[TensorTy]):
             # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
             return self._load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile)
 
+    def _warn_descriptor_lowering(self) -> None:
+        warnings.warn("MetaX tensor descriptors use non-native synchronous pointer load/store lowering.", UserWarning)
+
     def descriptor_load(self, desc: tl.tensor_descriptor_base, offsets, cache_modifier: str,
                         eviction_policy: str) -> TensorTy:
         assert isinstance(desc, tl.tensor_descriptor_base)
         ndim = len(desc.block_shape)
         assert len(offsets) == ndim, f"expected {ndim} offsets, but got {len(offsets)}"
 
+        self._warn_descriptor_lowering()
         offsets = self._convert_to_ir_values(offsets, require_i64=False)
         x = self.builder.create_descriptor_load(desc.handle, offsets, self._str_to_load_cache_modifier(cache_modifier),
                                                 self._str_to_eviction_policy(eviction_policy))
@@ -1111,6 +1127,7 @@ class TritonSemantic(Generic[TensorTy]):
 
     def descriptor_store(self, desc: tl.tensor_descriptor_base, value: TensorTy, offsets) -> TensorTy:
         self.validate_store_like(desc, value, offsets)
+        self._warn_descriptor_lowering()
         # implicitly cast to the descriptor's type
         value = self.cast(value, desc.dtype)
         offsets = self._convert_to_ir_values(offsets, require_i64=False)
@@ -1187,6 +1204,7 @@ class TritonSemantic(Generic[TensorTy]):
             1] >= min_cols, f"descriptor gather of {dtype} must have at least {min_cols} columns, but got {desc.block_shape[1]}"
 
         type = tl.block_type(desc.dtype, [x_offsets.shape[0], desc.block_shape[1]])
+        self._warn_descriptor_lowering()
         y_offset = self._convert_to_ir_values((y_offset, ), require_i64=False)[0]
         x = self.builder.create_descriptor_gather(desc.handle, x_offsets.handle, y_offset, type.to_ir(self.builder))
         return self.tensor(x, type)
@@ -1199,7 +1217,7 @@ class TritonSemantic(Generic[TensorTy]):
         assert desc.block_shape[0] == 1, f"descriptor block must have 1 row, but got {desc.block_shape}"
 
         # Validate offsets.
-        assert len(x_offsets.shape) == 1, f"x offsets must be 1D, but got {x_offsets.shapae}"
+        assert len(x_offsets.shape) == 1, f"x offsets must be 1D, but got {x_offsets.shape}"
 
         # Validate minimum block size.
         assert x_offsets.shape[0] >= 8, f"descriptor scatter must have at least 8 rows, but got {x_offsets.shape}"
@@ -1208,6 +1226,7 @@ class TritonSemantic(Generic[TensorTy]):
         assert desc.block_shape[
             1] >= min_cols, f"descriptor scatter of {dtype} must have at least {min_cols} columns, but got {desc.block_shape[1]}"
 
+        self._warn_descriptor_lowering()
         y_offset = self._convert_to_ir_values((y_offset, ), require_i64=False)[0]
         self.builder.create_descriptor_scatter(desc.handle, value.handle, x_offsets.handle, y_offset)
         return self.tensor(None, tl.void)
@@ -1225,6 +1244,8 @@ class TritonSemantic(Generic[TensorTy]):
         assert val.type.is_block(), "Value argument must be block type or a scalar"
         assert block_shape == val.type.get_block_shapes(
         ), f"Block shape({block_shape}) and value shape({val.type.get_block_shapes()}) mismatch"
+        if val.dtype.is_int() and ptr.type.element_ty.element_ty in (tl.float8e4nv, tl.float8e5):
+            val = self.cast(val, ptr.type.element_ty.element_ty)
         assert ptr.type.element_ty.element_ty == val.type.element_ty, f"Block element type({ptr.type.element_ty.element_ty}) and value element type({val.type.element_ty}) mismatch"
 
         elt_ty = ptr.type.element_ty.element_ty
@@ -1485,6 +1506,12 @@ class TritonSemantic(Generic[TensorTy]):
             max_num_imprecise_acc: int, out_dtype: tl.dtype) -> TensorTy:
         assert lhs.type.is_block() and rhs.type.is_block()
 
+        if lhs.dtype in (tl.float8e4nv, tl.float8e5) and rhs.dtype in (tl.float8e4nv, tl.float8e5):
+            if out_dtype != tl.float32:
+                raise ValueError(f"MetaX FP8 dot requires out_dtype=float32, got {out_dtype}")
+            if acc is not None and acc.dtype != tl.float32:
+                raise ValueError(f"MetaX FP8 dot requires a float32 accumulator, got {acc.dtype}")
+
         if lhs.dtype.is_fp8() and rhs.dtype.is_fp8():
             # All combinations of supported fp8 x fp8 are permitted
             pass
@@ -1529,9 +1556,11 @@ class TritonSemantic(Generic[TensorTy]):
         assert self.builder.codegen_fns.get(
             "min_dot_size") is not None, "target doesn't provide lower shape bounds for dot."
         min_dot_size = self.builder.codegen_fns["min_dot_size"](lhs.type, rhs.type)
-        assert lhs.shape[-2].value >= min_dot_size[0] and lhs.shape[-1].value >= min_dot_size[2] \
-            and rhs.shape[-1].value >= min_dot_size[1], \
-                f"Input shapes should have M >= {min_dot_size[0]}, N >= {min_dot_size[1]} and K >= {min_dot_size[2]}"
+        if (lhs.shape[-2].value < min_dot_size[0] or lhs.shape[-1].value < min_dot_size[2]
+                or rhs.shape[-1].value < min_dot_size[1]):
+            raise ValueError(
+                f"Input shapes should have M >= {min_dot_size[0]}, N >= {min_dot_size[1]} and K >= {min_dot_size[2]}; "
+                f"got M={lhs.shape[-2].value}, N={rhs.shape[-1].value}, K={lhs.shape[-1].value}")
         if lhs.type.scalar.is_int():
             assert lhs.type.scalar == tl.int8, "only int8 supported!"
             _0 = self.builder.get_int32(0)
@@ -1559,7 +1588,10 @@ class TritonSemantic(Generic[TensorTy]):
             acc_handle = self.builder.create_splat(ret_ty.to_ir(self.builder), _0)
         else:
             acc_handle = acc.handle
-            assert acc.type.shape == ret_ty.shape and acc.type.element_ty == out_dtype
+            if acc.type.shape != ret_ty.shape:
+                raise ValueError(f"expected accumulator shape {ret_ty.shape}, got {acc.type.shape}")
+            if acc.type.element_ty != ret_scalar_ty:
+                raise ValueError(f"expected accumulator dtype {ret_scalar_ty}, got {acc.type.element_ty}")
 
         # max_num_imprecise_acc only applies to fp8 -> fp32 dot on sm_90
         if max_num_imprecise_acc is None:
@@ -1571,6 +1603,44 @@ class TritonSemantic(Generic[TensorTy]):
             if lhs.dtype.is_fp8() and rhs.dtype.is_fp8() and max_num_imprecise_acc > K:
                 raise ValueError(f"max_num_imprecise_acc ({max_num_imprecise_acc}) must be <= K ({K})")
 
+        if lhs.dtype == tl.int8 and lhs_rank == 2 and (M < 16 or N < 16):
+            # The MetaX MMA shared layout needs at least a 16x16 output tile.
+            # Interleave zero rows/columns using register views, then undo the
+            # interleaving after MMA. This never extends a global-memory load.
+            def resize(value, shape):
+                for axis, size in enumerate(shape):
+                    while value.type.shape[axis] < size:
+                        resized_shape = list(value.type.shape)
+                        resized_shape[axis] *= 2
+                        value = self.join(value, self.full(value.type.shape, 0, value.dtype))
+                        if axis == 0:
+                            value = self.permute(value, (0, 2, 1))
+                        value = self.reshape(value, resized_shape, can_reorder=False)
+                    while value.type.shape[axis] > size:
+                        resized_shape = list(value.type.shape)
+                        resized_shape[axis] //= 2
+                        resized_shape.insert(axis + 1, 2)
+                        value = self.reshape(value, resized_shape, can_reorder=False)
+                        if axis == 0:
+                            value = self.permute(value, (0, 2, 1))
+                        value, _ = self.split(value)
+                return value
+
+            padded_shape = [max(M, 16), max(N, 16)]
+            lhs = resize(lhs, [padded_shape[0], K])
+            rhs = resize(rhs, [K, padded_shape[1]])
+            padded_acc = resize(self.tensor(acc_handle, ret_ty), padded_shape)
+            result = self.tensor(
+                self.builder.create_dot(lhs.handle, rhs.handle, padded_acc.handle, input_precision,
+                                        max_num_imprecise_acc), tl.block_type(ret_scalar_ty, padded_shape))
+            return resize(result, [M, N])
+
+        if lhs.dtype in (tl.float8e4nv, tl.float8e5) and rhs.dtype in (tl.float8e4nv, tl.float8e5):
+            arch = int(self.builder.options.arch.removeprefix("sm"))
+            if not (86 <= arch < 90 and lhs.dtype == rhs.dtype):
+                warnings.warn(
+                    f"MetaX FP8 dot on target {arch} uses non-native GPU software decoding to FP16, "
+                    "followed by native FP16 MMA with FP32 accumulation.", UserWarning)
         return self.tensor(
             self.builder.create_dot(lhs.handle, rhs.handle, acc_handle, input_precision, max_num_imprecise_acc), ret_ty)
 
@@ -1629,6 +1699,16 @@ class TritonSemantic(Generic[TensorTy]):
         assert rhs_format in allowed_formats, f"NYI: rhs_format {rhs_format}"
         rhs_scale_is_none = rhs_scale is None or (isinstance(rhs_scale, tl.constexpr) and rhs_scale.value is None)
         lhs_scale_is_none = lhs_scale is None or (isinstance(lhs_scale, tl.constexpr) and lhs_scale.value is None)
+        if "e2m1" in (lhs_format, rhs_format):
+            if lhs_rank != 2:
+                raise ValueError("MetaX FP4 dot_scaled requires 2D inputs")
+            if not lhs_k_pack or not rhs_k_pack:
+                raise ValueError("MetaX FP4 dot_scaled requires packing along K (lhs_k_pack=True, rhs_k_pack=True)")
+            for name, scale, is_none in (("lhs_scale", lhs_scale, lhs_scale_is_none), ("rhs_scale", rhs_scale,
+                                                                                       rhs_scale_is_none)):
+                if not is_none and (not scale.type.is_block() or scale.dtype not in (tl.uint8, tl.int8)):
+                    raise ValueError(
+                        f"MetaX FP4 dot_scaled {name} must contain E8M0 int8/uint8 codes, got {scale.type}")
         lhs = self._bitcast_to_fp_type(lhs, lhs_format)
         rhs = self._bitcast_to_fp_type(rhs, rhs_format)
 
@@ -1650,20 +1730,72 @@ class TritonSemantic(Generic[TensorTy]):
             K = K * PACKED_A
         if not rhs_k_pack:
             N = N * PACKED_B
+        if "e2m1" in (lhs_format, rhs_format):
+            if M < 16 or N < 16 or K < 16:
+                raise ValueError(f"MetaX FP4 dot_scaled requires M >= 16, N >= 16 and K >= 16; got M={M}, N={N}, K={K}")
+            if not (lhs_scale_is_none and rhs_scale_is_none) and K % 32:
+                raise ValueError(f"MetaX FP4 dot_scaled with E8M0 scales requires K divisible by 32, got {K}")
         ret_ty = tl.block_type(out_dtype, [B, M, N] if B else [M, N])
         _0 = self.builder.get_fp32(0)
         if acc is None:
             acc_handle = self.builder.create_splat(ret_ty.to_ir(self.builder), _0)
         else:
             acc_handle = acc.handle
-            assert acc.type.shape == ret_ty.shape and acc.type.element_ty == out_dtype
+            assert acc.type.shape == ret_ty.shape, f"expected accumulator shape {ret_ty.shape}, got {acc.type.shape}"
+            assert acc.type.element_ty == out_dtype, f"expected accumulator dtype {out_dtype}, got {acc.type.element_ty}"
         rhs_scale_handle = None if rhs_scale_is_none else rhs_scale.handle
         lhs_scale_handle = None if lhs_scale_is_none else lhs_scale.handle
         self.verify_scaled_shape(M, N, K, None if lhs_scale_is_none else lhs_scale,
                                  None if rhs_scale_is_none else rhs_scale)
+        if "e2m1" in (lhs_format, rhs_format):
+            warnings.warn(
+                "MetaX FP4 dot_scaled uses non-native GPU software decoding/scaling, "
+                "followed by native BF16/FP16 MMA with FP32 accumulation.", UserWarning)
         return self.tensor(
             self.builder.create_dot_scaled(lhs.handle, lhs_scale_handle, lhs_format_enum, rhs.handle, rhs_scale_handle,
                                            rhs_format_enum, fast_math, lhs_k_pack, rhs_k_pack, acc_handle), ret_ty)
+
+    def fp_to_fp4(self, src: TensorTy, axis: int, rounding: Optional[str]) -> TensorTy:
+        if src.dtype not in (tl.float16, tl.bfloat16, tl.float32, tl.float64):
+            raise ValueError(f"fp_to_fp4 requires FP16/BF16/FP32/FP64 input, got {src.dtype}")
+        shape = src.type.get_block_shapes() if src.type.is_block() else []
+        rank = len(shape)
+        if not isinstance(axis, int) or not -rank <= axis < rank:
+            raise ValueError(f"fp_to_fp4 axis {axis} must be in [-{rank}, {rank})")
+        axis %= rank
+        if shape[axis] % 2:
+            raise ValueError(f"fp_to_fp4 packing dimension must be even, got {shape[axis]}")
+        rounding = "rtne" if rounding is None else rounding
+        if rounding not in ("rtne", "rtz"):
+            raise ValueError(f"fp_to_fp4 rounding must be rtne or rtz, got {rounding}")
+        warnings.warn("MetaX fp_to_fp4 uses non-native GPU software encoding.", UserWarning)
+
+        # Half formats widen exactly. Keep FP64 comparisons in FP64 so adjacent
+        # values around E2M1 midpoints are not rounded onto those midpoints.
+        if src.dtype in (tl.float16, tl.bfloat16):
+            src = self.cast(src, tl.float32)
+        int_ty = tl.uint64 if src.dtype == tl.float64 else tl.uint32
+        width = int_ty.primitive_bitwidth
+        bits = self.bitcast(src, int_ty)
+        sign = self.cast(self.lshr(bits, self.scalar_constant(width - 1, int_ty)), tl.uint8)
+        sign = self.shl(sign, self.scalar_constant(3, tl.uint8))
+        magnitude = self.bitcast(self.and_(bits, self.scalar_constant((1 << (width - 1)) - 1, int_ty)), src.dtype)
+        codes = self.full(shape, 0, tl.uint8)
+        thresholds = (.25, .75, 1.25, 1.75, 2.5, 3.5, 5.) if rounding == "rtne" else (.5, 1., 1.5, 2., 3., 4., 6.)
+        for code, threshold in enumerate(thresholds, 1):
+            boundary = self.scalar_constant(threshold, src.dtype)
+            above = self.greater_equal(magnitude, boundary) if rounding == "rtz" else self.greater_than(
+                magnitude, boundary)
+            if rounding == "rtne" and code % 2 == 0:
+                above = self.logical_or(above, self.equal(magnitude, boundary))
+            codes = self.where(above, self.scalar_constant(code, tl.uint8), codes)
+        codes = self.where(self.not_equal(magnitude, magnitude), self.scalar_constant(7, tl.uint8), codes)
+        codes = self.or_(codes, sign)
+        paired = self.reshape(codes, shape[:axis] + [shape[axis] // 2, 2] + shape[axis + 1:], can_reorder=False)
+        # Move the pair dimension last for the existing split operation.
+        order = [d for d in range(rank + 1) if d != axis + 1] + [axis + 1]
+        low, high = self.split(self.permute(paired, order))
+        return self.or_(low, self.shl(high, self.scalar_constant(4, tl.uint8)))
 
     def fp4_to_fp_scaled(self, src: TensorTy, scale: TensorTy, elem_type: tl.dtype, axis: int) -> TensorTy:
         assert src.type.is_block(), "src must be a tensor"
@@ -1671,7 +1803,7 @@ class TritonSemantic(Generic[TensorTy]):
         assert src.dtype.is_int8() or src.dtype.is_uint8(), f"src must have int8 or uint8 dtype, got {src.dtype}"
         assert scale.dtype.is_int8() or scale.dtype.is_uint8(
         ), f"scale must have int8 or uint8 dtype, got {scale.dtype}"
-        assert elem_type in (tl.bfloat16, ), f"elem_type must be tl.bfloat16, got {elem_type}"
+        assert elem_type in (tl.float16, tl.bfloat16), f"elem_type must be tl.float16 or tl.bfloat16, got {elem_type}"
 
         rank = len(src.type.shape)
         assert rank > 0, "src must have rank > 0"
@@ -1681,9 +1813,20 @@ class TritonSemantic(Generic[TensorTy]):
             axis += rank
 
         shape = list(src.type.shape)
+        scale_shape = scale.type.shape
         for d in range(rank):
-            assert scale.type.shape[d] == shape[d], (
-                f"scale.shape[{d}] must match src.shape[{d}] ({shape[d]}), got {scale.type.shape[d]}")
+            if d != axis:
+                assert scale_shape[d] == shape[
+                    d], f"scale.shape[{d}] must match src.shape[{d}] ({shape[d]}), got {scale_shape[d]}"
+        if scale_shape[axis] != shape[axis]:
+            assert shape[axis] % 16 == 0 and scale_shape[axis] == shape[axis] // 16, (
+                f"scale packing dimension must be {shape[axis]} or {shape[axis] // 16} for 32-value E8M0 groups, got {scale_shape[axis]}"
+            )
+            group_shape = shape[:axis] + [shape[axis] // 16, 1] + shape[axis + 1:]
+            expanded_shape = shape[:axis] + [shape[axis] // 16, 16] + shape[axis + 1:]
+            scale = self.reshape(scale, group_shape, can_reorder=False)
+            scale = self.broadcast_impl_shape(scale, expanded_shape)
+            scale = self.reshape(scale, shape, can_reorder=False)
         shape[axis] *= 2
         ret_ty = tl.block_type(elem_type, shape)
         return self.tensor(

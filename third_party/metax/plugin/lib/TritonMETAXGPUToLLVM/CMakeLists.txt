@@ -15,6 +15,7 @@ add_triton_library(TritonMETAXGPUToLLVM
     TargetInfo.cpp
     ViewOpToLLVM.cpp
     MemoryOpToLLVM.cpp
+    Fp4ToFpOpToLLVM.cpp
     Fp4ToFpScaledOpToLLVM.cpp
     BuiltinFuncToLLVMExt.cpp
 

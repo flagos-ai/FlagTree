@@ -2363,6 +2363,9 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
     For three-dimensional blocks, `tl.dot` performs the batched matrix product,
     where the first dimension of each block represents the batch dimension.
 
+    MetaX E4M3FN/E5M2 dot requires M and N >= 16 and K >= 32, with FP32
+    accumulation/output. Smaller M/N tiles are rejected before lowering.
+
     :param input: The first tensor to be multiplied.
     :type input: 2D or 3D tensor of scalar-type in {:code:`int8`, :code:`float8_e5m2`, :code:`float16`, :code:`bfloat16`, :code:`float32`}
     :param other: The second tensor to be multiplied.
@@ -2429,12 +2432,16 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
     lhs and rhs use microscaling formats described here:
     https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
 
-    Software emulation enables targeting hardware architectures without native microscaling
-    operation support. Right now for such case, microscaled lhs/rhs are upcasted to
-    :code:`bf16` element type beforehand for dot computation, with one exception:
-    for AMD CDNA3 specifically, if one of the inputs is of :code:`fp16` element type,
-    the other input is also upcasted to :code:`fp16` element type instead.
-    This behavior is experimental and may be subject to change in the future.
+    MetaX decomposes 2D operations containing E2M1 into GPU software decoding
+    and FP32 scaling, followed by BF16 MMA (FP16 MMA if either input format is
+    FP16), with FP32 accumulation/output. Inputs must be packed along K.
+    M, N and logical K must each be >= 16; K must also be divisible by 32
+    when scales are used.
+    Scales are E8M0 int8/uint8 codes, one per 32 logical K values, or None
+    for unit scaling. Code 0 is 2**-127 and code 255 is NaN. Scaled operands
+    are rounded to the MMA input type with RTNE before multiplication; this
+    can underflow or overflow. C550 BF16 MMA flushes BF16 subnormal inputs
+    to zero, as in ordinary BF16 dot. No native FP4 MMA is selected.
 
     :param lhs: The first tensor to be multiplied.
     :type lhs: 2D tensor representing fp4, fp8 or bf16 elements. Fp4 elements are packed into uint8 inputs with the first element in lower bits. Fp8 are stored as uint8 or the corresponding fp8 type.
@@ -2463,6 +2470,19 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
 
 
 @builtin
+def fp_to_fp4(src, axis=-1, fp_downcast_rounding="rtne", _semantic=None):
+    """Encode FP16/BF16/FP32/FP64 as packed E2M1 uint8 values on the GPU.
+
+    Two values along the even-sized packing axis become one byte, low nibble
+    first. RTNE (default) and RTZ are supported. Overflow, Inf and NaN saturate
+    to signed magnitude 6; signed zeros are preserved. No scale is applied.
+    MetaX uses non-native software encoding without an FP32 intermediate for
+    FP64 inputs.
+    """
+    return _semantic.fp_to_fp4(src, _unwrap_if_constexpr(axis), _unwrap_if_constexpr(fp_downcast_rounding))
+
+
+@builtin
 def fp4_to_fp_scaled(src, scale, elem_type, axis, _semantic=None):
     """
     Upcast packed fp4 (e2m1) values and multiply them by fp8 e8m0 block scales
@@ -2477,7 +2497,12 @@ def fp4_to_fp_scaled(src, scale, elem_type, axis, _semantic=None):
     :param src: int8 or uint8 tensor containing packed fp4 values.
     :param scale: int8 or uint8 tensor containing fp8 e8m0 bit patterns, one
                   scale per N packed input elements.
-    :param elem_type: output dtype, only `tl.bfloat16` supported.
+    Expanded scales with the same shape as :code:`src` are also accepted.
+    Scale code 0 represents 2**-127, and 255 produces NaN. MetaX uses a
+    non-native software path; the final FP16/BF16 conversion uses RTNE with
+    IEEE overflow and underflow behavior.
+
+    :param elem_type: output dtype, `tl.float16` or `tl.bfloat16`.
     :param axis: axis along which fp4 values are packed.
     """
     elem_type = _unwrap_if_constexpr(elem_type)
@@ -2703,6 +2728,9 @@ def make_tensor_descriptor(
 
     """
 
+    shape = _unwrap_if_constexpr(shape)
+    strides = _unwrap_if_constexpr(strides)
+    block_shape = _unwrap_if_constexpr(block_shape)
     padding_option = _unwrap_if_constexpr(padding_option)
     return _semantic.make_tensor_descriptor(base, shape, strides, block_shape, padding_option)
 

@@ -180,9 +180,17 @@ void LayoutRematerialization::cleanup() {
     op->erase();
 }
 
+bool isMacaLowPrecisionPromotion(Operation *op) {
+  return op->hasAttr("maca.keep_fp8_decode_layout") ||
+         op->hasAttr("maca.keep_fp4_decode_layout");
+}
+
 // Return true if the op is an op with a layout we don't want to change. We will
 // propagate the layout starting from anchor ops.
 bool isLayoutAnchor(Operation *op) {
+  // Preserve low-precision decoding/scaling in the coalesced input layout.
+  if (isMacaLowPrecisionPromotion(op))
+    return true;
   if (isa<DescriptorOpInterface>(op))
     return true;
   if (isa<LoadOp, StoreOp>(op))
@@ -754,6 +762,8 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
 }
 
 bool canBeRemat(Operation *op) {
+  if (isMacaLowPrecisionPromotion(op))
+    return false;
   if (isa<LoadOp, StoreOp>(op))
     return !isExpensiveLoadOrStore(op);
   if (isa<AtomicRMWOp, AtomicCASOp, DotOp>(op))
@@ -1316,6 +1326,8 @@ void LayoutRematerialization::hoistConvertDotOperand(
   // We hoist over any operation that can be done without data movement between
   // threads We do views and elementwise pure ops for now
   auto noDataMovement = [](Operation *op) {
+    if (isMacaLowPrecisionPromotion(op))
+      return false;
     return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op)) ||
            isa<BroadcastOp, Fp4ToFpOp, ConvertLayoutOp, UpcastFpOpInterface>(
                op) ||
