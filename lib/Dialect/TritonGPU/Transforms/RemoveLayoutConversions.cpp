@@ -847,6 +847,11 @@ static bool isOrderIndifferentAccess(ModuleAxisInfoAnalysis *axisInfo,
 static bool widensPastVectorAccess(ModuleAxisInfoAnalysis *axisInfo, Value ptr,
                                    Value mask, Type elementType,
                                    Attribute targetEncoding);
+#ifdef __PPU__
+static bool widensPastRealContiguity(ModuleAxisInfoAnalysis *axisInfo,
+                                     Value ptr, Type elementType,
+                                     Attribute targetEncoding);
+#endif // __PPU__
 static bool convertResultReachesAnotherConvert(ConvertLayoutOp convertOp);
 
 // Seed backward propagation onto `value`; only non-frozen local producers with
@@ -1054,6 +1059,21 @@ bool LayoutPropagation::collectProducerClosure(Proposal &proposal, Value target,
                             axisInfoAnalysis, loadOp.getPtr(), loadOp.getMask(),
                             resultType.getElementType(), encoding))
         return false;
+#ifdef __PPU__
+      // The same widening seen through the real addresses. When the fastest
+      // layout dimension is a size-1 degenerate one, the two checks above
+      // compare layout widths only and admit this retag; see
+      // widensPastRealContiguity for why that costs more than the convert.
+      if (resultType &&
+          widensPastRealContiguity(axisInfoAnalysis, loadOp.getPtr(),
+                                   resultType.getElementType(), encoding)) {
+        if (rlcDbgLevel() >= 1)
+          llvm::errs() << "[rlc] reject widen-past-real-contiguity: "
+                       << loadOp.getPtr() << " -> " << rlcDbgEnc(encoding)
+                       << "\n";
+        return false;
+      }
+#endif // __PPU__
     }
     Attribute srcEncoding = inferSrcEncoding(defOp, encoding);
     if (!srcEncoding)
@@ -2263,6 +2283,186 @@ static bool isOrderIndifferentAccess(ModuleAxisInfoAnalysis *axisInfo,
       std::min<int64_t>(info->getContiguity(dim), ptrType.getDimSize(dim));
   return contiguity <= 1;
 }
+
+#ifdef __PPU__
+// The layout states how many contiguous elements each thread should own along
+// its fastest memory dimension; the address analysis states how many the real
+// addresses support. `getOrderForMemory` falls back to the thread order when
+// the fastest layout dimension is a size-1 (degenerate) one -- the
+// `contig == 1` heuristic right above -- so `getContigAlongMemoryOrder` ends up
+// comparing layout widths only, and both `preservesWritebackMemoryAccess`'s
+// `target >= current` test and `widensPastVectorAccess`'s 128-bit floor let a
+// raise through.
+//
+// That raise is only harmless when it is really coalesced. On a transposed
+// strided access it turns each thread's single scattered element into N
+// scattered elements that the backend issues as one wider request spanning N
+// unrelated segments, while the convert it removes is an on-chip shuffle.
+// aminmax(dim=0), PPU: the transpose copy kernel goes from
+// sizePerThread=[1,1] order=[0,1] + one convert to [1,4] order=[1,0] with the
+// load reading along a dimension whose stride is the row length -- -7.3% at
+// stride 65536, -19.4% (fp32) at 1048576, while the same rewrite is +10.5% on
+// the small [4096,4096] transpose where the convert dominates instead.
+//
+// The analysis keeps one entry per value it understands, and the phase that
+// hosts this check rewrites the IR before it runs, so a freshly built address
+// chain can be missing even when its operands are not. Walk a few operands down
+// to a value that has one: an `addptr` is base + offset, so its operands carry
+// the contiguity the result would have.
+static AxisInfo *findAddressAxisInfo(ModuleAxisInfoAnalysis *axisInfo,
+                                     Value value, unsigned depth = 3) {
+  if (!axisInfo)
+    return nullptr;
+  if (AxisInfo *info = axisInfo->getAxisInfo(value))
+    return info;
+  if (depth == 0)
+    return nullptr;
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return nullptr;
+  for (Value operand : def->getOperands()) {
+    if (!isa<RankedTensorType>(operand.getType()))
+      continue;
+    if (AxisInfo *info = findAddressAxisInfo(axisInfo, operand, depth - 1))
+      return info;
+  }
+  return nullptr;
+}
+
+// Upper bound, in bytes, on how far one thread's wider run may reach
+// (sizePerThread * row pitch * element width). Below it the raise trades the
+// removed convert for a nearby wider access and still pays off; above it the
+// request spans enough pages that the amplification dominates. Calibrated on
+// PPU with aminmax(dim=0)'s transpose copy kernel: reach 32 KiB and below
+// gained (+4.9%..+10.5%), 64 KiB and above regressed (-1.2%..-19.4%).
+// Override with FLAGTREE_RLC_ENHANCE_MAX_THREAD_REACH=<bytes> (default 48 KiB).
+static int64_t rlcMaxThreadReachBytes() {
+  static const int64_t limit = [] {
+    const char *env = std::getenv("FLAGTREE_RLC_ENHANCE_MAX_THREAD_REACH");
+    int64_t raw = env ? std::strtoll(env, nullptr, 10) : 0;
+    return raw > 0 ? raw : int64_t(48) * 1024;
+  }();
+  return limit;
+}
+
+// A strided address is built as `index * pitch`, so the constant operand of
+// that multiply is the row pitch. It is the only static signal about how far a
+// wider per-thread run would reach -- the extent itself is a runtime argument.
+static std::optional<int64_t> findAddressPitch(Value value,
+                                               unsigned depth = 6) {
+  if (!value || depth == 0)
+    return std::nullopt;
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return std::nullopt;
+  if (isa<arith::MulIOp>(def)) {
+    for (Value operand : def->getOperands()) {
+      auto cst = operand.getDefiningOp<arith::ConstantOp>();
+      if (!cst)
+        continue;
+      auto dense = dyn_cast<DenseIntElementsAttr>(cst.getValue());
+      if (!dense)
+        continue;
+      for (APInt v : dense.getValues<APInt>())
+        if (!v.isZero())
+          return v.getSExtValue();
+    }
+  }
+  for (Value operand : def->getOperands()) {
+    if (!isa<RankedTensorType>(operand.getType()))
+      continue;
+    if (auto pitch = findAddressPitch(operand, depth - 1))
+      return pitch;
+  }
+  return std::nullopt;
+}
+
+// Reject the raise when the addresses cannot back the requested width.
+static bool widensPastRealContiguity(ModuleAxisInfoAnalysis *axisInfo,
+                                     Value ptr, Type elementType,
+                                     Attribute targetEncoding) {
+  // RLC_DEBUG=2 traces every early exit. The phase that hosts this check
+  // rewrites the IR before it runs, so "the value is simply absent from the
+  // analysis" is an expected failure mode and has to stay distinguishable from
+  // a genuine allow.
+  auto skip = [&](const char *why) {
+    if (rlcDbgLevel() >= 2)
+      llvm::errs() << "[rlc] real-contiguity skip(" << why << ") ptr=" << ptr
+                   << " tgt=" << rlcDbgEnc(targetEncoding) << "\n";
+    return false;
+  };
+  if (!axisInfo)
+    return skip("no-analysis");
+  if (!targetEncoding || !elementType.isIntOrFloat())
+    return skip("no-target-or-element");
+  auto ptrType = dyn_cast<RankedTensorType>(ptr.getType());
+  if (!ptrType || !ptrType.getEncoding())
+    return skip("not-tensor-ptr");
+  // Narrow to blocked layouts: what the check guards is sizePerThread, and an
+  // MMA layout derives its per-thread tile from the dot shape rather than from
+  // the address pattern, so the comparison would be meaningless there.
+  if (!isa<BlockedEncodingAttr>(targetEncoding))
+    return skip("target-not-blocked");
+  if (ptrType.getEncoding() == targetEncoding)
+    return skip("target-is-current");
+  RankedTensorType targetType = ptrType.cloneWithEncoding(targetEncoding);
+  unsigned current = getContigAlongMemoryOrder(ptrType);
+  unsigned target = getContigAlongMemoryOrder(targetType);
+  if (target <= current) {
+    if (rlcDbgLevel() >= 2)
+      llvm::errs() << "[rlc] real-contiguity skip(no-widen) ptr=" << ptr
+                   << " cur=" << current << " tgt=" << target << "\n";
+    return false; // The retag does not ask each thread for a wider run.
+  }
+  SmallVector<unsigned> targetOrder = getOrderForMemory(targetType);
+  if (targetOrder.empty())
+    return skip("no-order");
+  AxisInfo *info = findAddressAxisInfo(axisInfo, ptr);
+  if (!info) {
+    // Nothing in the address chain carries contiguity: assume the wider run is
+    // not backed. Keeping the bridging convert is the safe side of this trade
+    // -- the alternative is exactly the amplified access this check exists to
+    // stop.
+    if (rlcDbgLevel() >= 2)
+      llvm::errs() << "[rlc] real-contiguity reject(no-axisinfo) ptr=" << ptr
+                   << " tgt=" << rlcDbgEnc(targetEncoding) << "\n";
+    return true;
+  }
+  unsigned dim = targetOrder.front();
+  int64_t realContig =
+      std::min<int64_t>(info->getContiguity(dim), ptrType.getDimSize(dim));
+  if (int64_t(target) <= realContig) {
+    if (rlcDbgLevel() >= 2)
+      llvm::errs() << "[rlc] real-contiguity allow(coalesced) ptr=" << ptr
+                   << " tgt=" << target << " dim=" << dim
+                   << " real=" << realContig << "\n";
+    return false; // The addresses really are contiguous that wide.
+  }
+  // The addresses cannot back the requested width on their own, so the wider
+  // request is split. Whether that split still costs less than the convert it
+  // removes depends on how far the run reaches: a short hop stays inside the
+  // convert's budget, a long one spans the pitch's pages. Without a pitch there
+  // is nothing to price, so keep the convert.
+  std::optional<int64_t> pitch = findAddressPitch(ptr);
+  if (!pitch) {
+    if (rlcDbgLevel() >= 2)
+      llvm::errs() << "[rlc] real-contiguity reject(no-pitch) ptr=" << ptr
+                   << " tgt=" << target << " real=" << realContig << "\n";
+    return true;
+  }
+  int64_t reach =
+      int64_t(target) * *pitch * elementType.getIntOrFloatBitWidth() / 8;
+  int64_t limit = rlcMaxThreadReachBytes();
+  bool reject = reach > limit;
+  if (rlcDbgLevel() >= 2)
+    llvm::errs() << "[rlc] real-contiguity ptr=" << ptr << " cur=" << current
+                 << " tgt=" << target << " real=" << realContig
+                 << " pitch=" << *pitch << " reach=" << reach
+                 << " limit=" << limit << " -> "
+                 << (reject ? "reject" : "allow") << "\n";
+  return reject;
+}
+#endif // __PPU__
 
 bool LayoutPropagation::solveSmallComponents() {
   if (!enableSmallComponentSolving)
@@ -3973,6 +4173,10 @@ static bool isDuplicableLoadInEncoding(Operation *op, Attribute encoding,
   auto resultType = dyn_cast<RankedTensorType>(loadOp.getType());
   if (!ptrType || !resultType)
     return false;
+  if (rlcDbgLevel() >= 2)
+    llvm::errs() << "[rlc-remat-load] enter ptr=" << loadOp.getPtr()
+                 << " cur=" << rlcDbgEnc(ptrType.getEncoding())
+                 << " tgt=" << rlcDbgEnc(encoding) << "\n";
   Type elementType = resultType.getElementType();
   if (!elementType.isIntOrFloat())
     return false;
@@ -4026,6 +4230,20 @@ static bool isDuplicableLoadInEncoding(Operation *op, Attribute encoding,
 #endif // __PPU__
   }
 
+#ifdef __PPU__
+  // Reject a retag that raises the per-thread run past what the addresses
+  // support (see widensPastRealContiguity). preservesWritebackMemoryAccess
+  // cannot tell the difference while the fastest layout dimension is a size-1
+  // degenerate one: there `getOrderForMemory` falls back to the thread order
+  // and both sides of its `target >= current` test measure layout widths.
+  if (widensPastRealContiguity(axisInfo, loadOp.getPtr(), elementType,
+                               encoding)) {
+    if (rlcDbgLevel() >= 1)
+      llvm::errs() << "[rlc-remat-load] reject widen-past-real-contiguity: "
+                   << loadOp.getPtr() << " -> " << rlcDbgEnc(encoding) << "\n";
+    return false;
+  }
+#endif // __PPU__
   if (preservesWritebackMemoryAccess(ptrType, resultType, encoding,
                                      /*allowNarrowerContiguity=*/false))
     return true;
@@ -4366,7 +4584,17 @@ bool LayoutRematerialization::backwardRematerialization() {
   funcOp.walk(
       [&](ConvertLayoutOp convertOp) { convertOps.push_back(convertOp); });
   for (ConvertLayoutOp convertOp : convertOps) {
+#ifdef __PPU__
+    if (rlcDbgLevel() >= 2)
+      llvm::errs() << "[rlc] backRemat try " << convertOp << "\n";
+#endif // __PPU__
     backwardRematerialization(convertOp);
+#ifdef __PPU__
+    if (rlcDbgLevel() >= 2)
+      llvm::errs() << "[rlc] backRemat "
+                   << (opToDelete.contains(convertOp) ? "removed" : "kept")
+                   << "\n";
+#endif // __PPU__
     if (!opToDelete.contains(convertOp)) {
       // If the conversion didn't get removed, consider it for reuse in future
       // backward slices.
@@ -4698,8 +4926,14 @@ bool LayoutRematerialization::rematerializeWritebackLayout(
   // Only target tensor-core (MMA) value layouts. These are the layouts whose
   // conversion is expensive (it round-trips through shared memory) and that
   // the earlier blocked-to-blocked phases intentionally leave untouched.
-  if (!isa<MmaEncodingTrait>(targetEncoding))
+  if (!isa<MmaEncodingTrait>(targetEncoding)) {
+#ifdef __PPU__
+    if (rlcDbgLevel() >= 2)
+      llvm::errs() << "[rlc] writeback skip(non-mma) tgt="
+                   << rlcDbgEnc(targetEncoding) << "\n";
+#endif // __PPU__
     return false;
+  }
   // Trading per-thread store width for the removed convert only pays off on a
   // hot path: a writeback inside a loop (the convert serializes every
   // iteration) or an element-granular atomic. One-shot epilogues must keep the
@@ -5164,6 +5398,11 @@ bool backwardRematerialization(ModuleOp module) {
 #endif // __FLAGTREE_RLC_ENHANCE__
   bool changed = false;
 #ifdef __FLAGTREE_RLC_ENHANCE__
+#ifdef __PPU__
+  if (rlcDbgLevel() >= 2)
+    llvm::errs() << "[rlc] backRemat duplicable=" << duplicableLoadRemat
+                 << "\n";
+#endif // __PPU__
   // The duplicable-load gate consults real address contiguity. Values created
   // by earlier rewrites are simply absent from the analysis and resolve
   // conservatively.
@@ -5202,6 +5441,10 @@ bool rematerializeStoreLayout(ModuleOp module) {
     changed |= layoutRemat.rematerializeStoreLayout();
     layoutRemat.cleanup();
   });
+#ifdef __PPU__
+  if (rlcDbgLevel() >= 2)
+    llvm::errs() << "[rlc] storeLayoutRemat changed=" << changed << "\n";
+#endif // __PPU__
   return changed;
 }
 #endif // __FLAGTREE_RLC_ENHANCE__
