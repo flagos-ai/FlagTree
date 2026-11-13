@@ -545,7 +545,30 @@ struct SIToFPOpConversion
                                    Type elemTy, MultipleOperandsRange operands,
                                    Location loc) const {
     // Pre-PH1 cannot select a bare bf16 cvt; detour through f32 explicitly.
+    Type inElemTy = getElementType(op.getIn());
     Type outElemTy = getElementType(op.getOut());
+    if (auto widthAttr = op->getAttrOfType<IntegerAttr>(
+            "ttg.rlc-preserve-int-to-fp-vector-width")) {
+      int64_t width = widthAttr.getInt();
+      if ((width != 2 && width != 4) || !inElemTy.isInteger(32) ||
+          !outElemTy.isF32() || operands.size() < width)
+        return {};
+      TritonLLVMOpBuilder b(loc, rewriter);
+      Type inputVectorType =
+          vec_ty(this->getTypeConverter()->convertType(inElemTy), width);
+      Type outputVectorType = vec_ty(elemTy, width);
+      Value inputVector = b.undef(inputVectorType);
+      for (int64_t i = 0; i < width; ++i)
+        inputVector = b.insert_element(inputVectorType, inputVector,
+                                       operands[i][0], b.i32_val(i));
+      Value outputVector =
+          LLVM::SIToFPOp::create(rewriter, loc, outputVectorType, inputVector);
+      SmallVector<Value> outputs;
+      for (int64_t i = 0; i < width; ++i)
+        outputs.push_back(
+            b.extract_element(elemTy, outputVector, b.i32_val(i)));
+      return outputs;
+    }
     if (outElemTy.isBF16() && !nativeBf16Cvt) {
       Value f32Val =
           LLVM::SIToFPOp::create(rewriter, loc, f32_ty, operands[0][0]);
@@ -553,6 +576,44 @@ struct SIToFPOpConversion
           loc, rewriter, f32Val, RoundingMode::RTNE, nativeBf16Cvt)};
     }
     return {LLVM::SIToFPOp::create(rewriter, loc, elemTy, operands[0][0])};
+  }
+};
+
+struct UIToFPOpConversion
+    : ElementwiseOpConversionBase<arith::UIToFPOp, UIToFPOpConversion> {
+  using Base = ElementwiseOpConversionBase<arith::UIToFPOp, UIToFPOpConversion>;
+  using Base::Base;
+  using Adaptor = typename Base::OpAdaptor;
+
+  SmallVector<Value> createDestOps(arith::UIToFPOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    Type inElemTy = getElementType(op.getIn());
+    Type outElemTy = getElementType(op.getOut());
+    if (auto widthAttr = op->getAttrOfType<IntegerAttr>(
+            "ttg.rlc-preserve-int-to-fp-vector-width")) {
+      int64_t width = widthAttr.getInt();
+      if ((width != 2 && width != 4) || !inElemTy.isInteger(32) ||
+          !outElemTy.isF32() || operands.size() < width)
+        return {};
+      TritonLLVMOpBuilder b(loc, rewriter);
+      Type inputVectorType =
+          vec_ty(this->getTypeConverter()->convertType(inElemTy), width);
+      Type outputVectorType = vec_ty(elemTy, width);
+      Value inputVector = b.undef(inputVectorType);
+      for (int64_t i = 0; i < width; ++i)
+        inputVector = b.insert_element(inputVectorType, inputVector,
+                                       operands[i][0], b.i32_val(i));
+      Value outputVector =
+          LLVM::UIToFPOp::create(rewriter, loc, outputVectorType, inputVector);
+      SmallVector<Value> outputs;
+      for (int64_t i = 0; i < width; ++i)
+        outputs.push_back(
+            b.extract_element(elemTy, outputVector, b.i32_val(i)));
+      return outputs;
+    }
+    return {LLVM::UIToFPOp::create(rewriter, loc, elemTy, operands[0][0])};
   }
 };
 
@@ -692,6 +753,8 @@ void mlir::triton::MUSA::populateElementwiseOpToLLVMPatterns(
                                    nativeBf16Cvt);
   patterns.add<SIToFPOpConversion>(typeConverter, axisInfoAnalysis, benefit,
                                    nativeBf16Cvt);
+  patterns.add<UIToFPOpConversion>(typeConverter, axisInfoAnalysis,
+                                   priorityBenefit);
   patterns.add<FpToFpOpConversion>(typeConverter, axisInfoAnalysis,
                                    enableFp8Burst2, benefit, nativeBf16Cvt);
   patterns.add<PreciseSqrtOpConversion>(typeConverter, axisInfoAnalysis,
