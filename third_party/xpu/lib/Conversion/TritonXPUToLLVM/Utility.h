@@ -28,11 +28,11 @@ Value llGetPid(Location loc, RewriterBase &rewriter, ModuleOp moduleOp,
                int axis);
 
 Value createDeviceCall(StringRef funcName, ConversionPatternRewriter &rewriter,
-                       Operation *op, Type &elemTy, ValueRange &operands,
+                       Operation *op, Type &elemTy, ValueRange operands,
                        Location &loc);
 
 void createDeviceCall(StringRef funcName, ConversionPatternRewriter &rewriter,
-                      Operation *op, ValueRange &operands, Location &loc);
+                      Operation *op, ValueRange operands, Location &loc);
 
 // XPU-local, ceil-based offset emission. Mirrors Triton 3.0's
 // `triton::xpu::emitOffsetForClusterLayout` / `emitOffsetForSliceLayout`
