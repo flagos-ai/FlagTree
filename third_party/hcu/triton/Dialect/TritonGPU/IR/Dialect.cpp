@@ -206,6 +206,8 @@ SmallVector<unsigned> getOrder(SharedEncodingTrait layout,
   if (auto sharedLayout = dyn_cast<AMDRotatingSharedEncodingAttr>(layout)) {
     return llvm::to_vector(sharedLayout.getOrder());
   }
+  if (auto mls = dyn_cast<HCUMlsSharedEncodingAttr>(layout))
+    return llvm::to_vector(mls.getOrder());
   llvm::report_fatal_error("Unimplemented usage of getOrder for MemDescType");
   return {};
 }
@@ -814,6 +816,52 @@ std::optional<CTAEncodingAttr> parseCTAAttr(AsmParser &parser, Attribute attr,
   return CTAEncodingAttr::get(ctx, std::move(ll));
 }
 
+// Opaque packet attributes retain their ordinary typed storage. CTAEncodingAttr
+// is an internal helper without a standalone parser in this stack, so writing
+// it as an attribute parameter produced the unparseable `#ttg<>`. Use the same
+// optional CGALayout representation as the other shared/distributed encodings.
+Attribute HCUMlsSharedEncodingAttr::parse(AsmParser &parser, Type type) {
+  DictionaryAttr dict;
+  if (failed(parser.parseLess()) || failed(parser.parseAttribute(dict)) ||
+      failed(parser.parseGreater())) return {};
+  auto scalar = [&](StringRef key) -> std::optional<unsigned> {
+    auto a = dict.getAs<IntegerAttr>(key);
+    if (!a || a.getValue().isNegative() || !a.getValue().isIntN(32)) {
+      parser.emitError(parser.getNameLoc(), "missing/invalid unsigned MLS field: ") << key;
+      return std::nullopt;
+    }
+    return unsigned(a.getValue().getZExtValue());
+  };
+  auto opIdx=scalar("opIdx"),elem=scalar("elemBitWidth"),alt=scalar("alt2Kind"),version=scalar("version");
+  if (!opIdx || !elem || !alt || !version) return {};
+  SmallVector<unsigned> tile,order;
+  Attribute cta;
+  for (NamedAttribute attr : dict) {
+    StringRef key=attr.getName().strref();
+    if (key=="mlsTile") {
+      if (failed(parseIntArrayAttr(parser,attr,tile,"MLS tile"))) return {};
+    } else if (key=="order") {
+      if (failed(parseIntArrayAttr(parser,attr,order,"MLS order"))) return {};
+    } else if (key=="CGALayout") cta=attr.getValue();
+    else if (key!="opIdx" && key!="elemBitWidth" && key!="alt2Kind" && key!="version") {
+      parser.emitError(parser.getNameLoc(),"unexpected MLS encoding key: ")<<key;return {};
+    }
+  }
+  if (tile.empty() || order.size()!=tile.size()) {
+    parser.emitError(parser.getNameLoc(),"MLS tile/order rank mismatch");return {};
+  }
+  auto layout=parseCTAAttr(parser,cta,tile.size());
+  if (!layout) return {};
+  return HCUMlsSharedEncodingAttr::get(parser.getContext(),*opIdx,tile,*elem,*alt,*version,order,*layout);
+}
+void HCUMlsSharedEncodingAttr::print(AsmPrinter &printer) const {
+  printer<<"<{opIdx = "<<getOpIdx()<<", mlsTile = ["<<getMlsTile()
+         <<"], elemBitWidth = "<<getElemBitWidth()<<", alt2Kind = "<<getAlt2Kind()
+         <<", version = "<<getVersion()<<", order = ["<<getOrder()<<"]";
+  maybePrintCTALayout(getContext(),printer,getCTALayout(),getMlsTile().size());
+  printer<<"}>";
+}
+
 Attribute BlockedEncodingAttr::parse(AsmParser &parser, Type type) {
   if (parser.parseLess().failed())
     return {};
@@ -1309,7 +1357,7 @@ Attribute AMDMfmaEncodingAttr::parse(AsmParser &parser, Type type) {
     return {};
 
   if (tilesPerWarp.empty())
-    tilesPerWarp = SmallVector<unsigned>(instrShape.size(), 1);
+    tilesPerWarp = SmallVector<unsigned>(warpsPerCTA.size(), 1);
 
   return parser.getChecked<AMDMfmaEncodingAttr>(
       parser.getContext(), version, warpsPerCTA, instrShape, isTransposed,
@@ -2253,16 +2301,15 @@ SwizzledSharedEncodingAttr AMDMfmaEncodingAttr::composeSharedLayoutForOperand(
     CTAEncodingAttr ctaLayout, int operandIdx, ArrayRef<int64_t> operandShape,
     ArrayRef<unsigned> sharedOrder, unsigned vectorSize, unsigned elemBitWidth,
     bool needTrans) const {
-  int kDimIndex = operandIdx == 0 ? 1 : 0;
-
   // Disable swizzling for scales
   if (operandIdx >= 2) {
     return SwizzledSharedEncodingAttr::get(getContext(), 1, 1, 1, sharedOrder,
                                            ctaLayout);
   }
 
-  if (needTrans)
-    kDimIndex = 1 - kDimIndex;
+  // Dot operand order handles both [M,K]/[K,N] and batched operands.
+  unsigned kDimIndex = getOrderForDotOperand(
+      operandIdx, operandShape.size(), /*kContig=*/!needTrans).front();
 
   bool isKContig = sharedOrder[0] == kDimIndex;
   // GFX950 supports LDS transpose load instructions, so we need swizzling even

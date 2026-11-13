@@ -1,31 +1,34 @@
 #ifndef TRITON_THIRD_PARTY_HCU_INCLUDE_TRITONHCUGPUTOLLVM_MEMBARUTILITY_H_
 #define TRITON_THIRD_PARTY_HCU_INCLUDE_TRITONHCUGPUTOLLVM_MEMBARUTILITY_H_
 
-#include "mlir/IR/Operation.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Value.h"
+#include <optional>
+#include "llvm/ADT/SmallVector.h"
+#include <utility>
+
+namespace mlir { class ModuleAllocation; }
 
 namespace mlir::triton::HCU {
 
-// Filter function used in the HCUGPU backend to filter unnecessary barriers
-// during Membar Analysis. Filters applied by this function:
-// 1) Do not create barriers between AsyncCopyGlobalToLocal and LocalLoad if the
-// LocalLoad is synced by AsyncWait. This prevents a redundant barrier between
-// LocalLoad and prefetches because membar cannot see that subviews from the
-// same shared allocation do not alias when pipelining loads. See
-// hcugpu_membar.mlir for examples. This filter can produce wrong IR/assembly if
-// we pipeline with a single buffer in lds because it filters out a required
-// gpu.barrier between the LocalLoad and the prefetches. However the pipeliner
-// will always use at least 2 buffers so this IR cannot be produced. Example
-// membar input IR to produce incorrect results:
-//   %tile_a = ttg.memdesc_index
-//   %1 = AsyncCopyGlobalToLocal %ptr %tile_a
-//   scf.for
-//     %2 = AsyncWait %1
-//      # Membar will add a required gpu.barrier here
-//     %3 = LocalLoad %tile_a
-//      # Requires gpu.barrier but filter will prevent it
-//     %4 = AsyncCopyGlobalToLocal %ptr_2 %tile_a
-//     scf.yield
+// Ignore only async-copy RAW dependencies covered by AsyncWait; retain WAR
+// dependencies because the next copy may overwrite a tile still being read.
+// The pipeline does not provide an unconditional two-buffer guarantee.
 bool membarFilter(Operation *op1, Operation *op2);
+
+// Private gfx936 diagnostic. Prove a narrowly shaped synchronous two-slot CF
+// loop immediately before membar, synchronize its unique preheader, and return
+// only its exact LocalLoad -> LocalStore WAR pairs. No global state or IR
+// certificates survive this invocation. Unsupported CFGs return no pairs.
+llvm::SmallVector<std::pair<Operation *, Operation *>>
+prepareTwoSlotPrefetchWAR(ModuleOp mod);
+
+// Private gfx936 read-first diagnostic. Prove the final two-root async CF
+// queue's slot phases and mandatory publication barrier without mutating IR.
+// Return only exact main-body LocalLoad -> BufferLoadToLocal WAR pairs;
+// unsupported CFGs/aliases return no pairs. Call immediately before membar.
+llvm::SmallVector<std::pair<Operation *, Operation *>>
+prepareAsyncSlotPrefetchWAR(ModuleOp mod);
 } // namespace mlir::triton::HCU
 
 #endif

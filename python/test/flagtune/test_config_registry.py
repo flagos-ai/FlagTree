@@ -252,6 +252,39 @@ def test_when_rejects_wrong_variant_shape():
     assert not variant.matches({"M": 32, "N": 1, "K": 64})
 
 
+def test_config_sets_preserve_linked_candidates():
+    config = _config()
+    config["variants"]["general"]["config_sets"] = [
+        {"BLOCK_M": {"values": [16]}, "num_warps": {"values": [4]}},
+        {"BLOCK_M": {"values": [32]}, "num_warps": {"values": [8]}},
+    ]
+    variant = parse_operator_config(config).get_variant("general")
+    assert list(variant.iter_configs()) == [
+        {"BLOCK_M": 16, "num_warps": 4}, {"BLOCK_M": 32, "num_warps": 8},
+    ]
+    assert not variant.param_space.validate({"BLOCK_M": 16, "num_warps": 8})
+    exported = variant_to_model_config(variant, _identity(), DTYPES, GPU, MODEL_VERSION)
+    assert list(parse_model_config(exported).iter_configs()) == list(variant.iter_configs())
+
+
+@pytest.mark.parametrize("key,value", [
+    ("configs", [{"BLOCK_M": 16, "num_warps": 8}]),
+    ("config_sets", [{"BLOCK_M": {"values": [16, 32]}, "num_warps": {"values": [4, 8]}}]),
+])
+def test_explicit_config_space_rejects_a_second_candidate_source(key, value):
+    config = _config()
+    variant = config["variants"]["general"]
+    variant.pop("params")
+    variant["config_space"] = {
+        "kind": "explicit",
+        "fields": {"BLOCK_M": "int", "num_warps": "int"},
+        "configs": [{"BLOCK_M": 16, "num_warps": 4}, {"BLOCK_M": 32, "num_warps": 8}],
+    }
+    variant[key] = value
+    with pytest.raises(FlagTuneConfigError, match="config_space cannot be combined"):
+        parse_operator_config(config)
+
+
 @pytest.mark.parametrize(
     "disabled",
     ["*", "vendor/mm", "vendor/mm/general", f"{PLATFORM_KEY}/vendor/mm/general/{DTYPE_KEY}"],

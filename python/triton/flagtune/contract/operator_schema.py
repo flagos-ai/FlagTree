@@ -209,7 +209,15 @@ class VariantInfo:
         name: Variant name, such as ``"general_tma"``.
         inputs: Ordered input specifications.
         when: Eligibility expression evaluated from normalized inputs.
-        param_space: Cartesian tunable-parameter space for this variant.
+        param_space: Tunable-parameter domain and legality validator for this
+            variant.
+        config_spaces: Optional ordered union of Cartesian subspaces.  When
+            present, candidate enumeration is the deduplicated union rather
+            than the full Cartesian product of ``param_space``.
+        explicit_configs: Optional exact candidate list.  It takes precedence
+            over Cartesian enumeration and is useful when parameters are
+            linked (for example a kernel PIPE_STAGES value tied to Triton's
+            launch ``num_stages``).
         features: Ordered XGBoost feature specifications.
         operations: Built-in expression operation table.
     """
@@ -219,12 +227,13 @@ class VariantInfo:
     inputs: List[InputSpec]
     when: Expression
     param_space: ParameterSpace
+    config_spaces: tuple[ParameterSpace, ...]
+    explicit_configs: tuple[Dict[str, Any], ...]
     features: List[FeatureSpec]
     operations: Mapping[str, Operation]
     stage: str = "public"
     dtype_roles: Mapping[str, str] = dataclass_field(default_factory=dict)
     route_binding: Optional[str] = None
-    configs_from_params: bool = False
 
     @property
     def input_names(self) -> List[str]:
@@ -300,10 +309,27 @@ class VariantInfo:
     def iter_configs(self) -> Iterable[Dict[str, Any]]:
         """Yield every legal parameter combination in deterministic order.
 
-        The underlying space is a Cartesian product and is generated lazily.
-        Its size therefore grows multiplicatively with each parameter field.
+        A normal variant uses the Cartesian ``param_space``.  A variant with
+        ``config_sets`` uses the ordered, deduplicated union of its Cartesian
+        subspaces so expanded tuner families do not invent cross-set
+        combinations.
         """
-        return self.param_space.iter_configs()
+        if self.explicit_configs:
+            return (dict(config) for config in self.explicit_configs)
+        if not self.config_spaces:
+            return self.param_space.iter_configs()
+
+        def _iter_union() -> Iterable[Dict[str, Any]]:
+            seen = set()
+            for space in self.config_spaces:
+                for config in space.iter_configs():
+                    key = self.param_space.config_key(config)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    yield config
+
+        return _iter_union()
 
     def build_feature_rows(
         self,
@@ -462,6 +488,71 @@ def _parse_params(raw_params: Any, location: str) -> ParameterSpace:
     return ParameterSpace(fields=fields)
 
 
+def _parse_config_sets(
+    raw_config_sets: Any,
+    param_space: ParameterSpace,
+    location: str,
+) -> tuple[ParameterSpace, ...]:
+    """Compile an optional ordered union of Cartesian parameter subspaces."""
+    if raw_config_sets is None:
+        return ()
+    if not isinstance(raw_config_sets, list) or not raw_config_sets:
+        raise FlagTuneConfigError(f"{location} must be a non-empty list")
+
+    expected_names = param_space.all_field_names
+    legal_values = param_space.field_values()
+    spaces: List[ParameterSpace] = []
+    for index, raw_space in enumerate(raw_config_sets):
+        space = _parse_params(raw_space, f"{location}[{index}]")
+        if space.all_field_names != expected_names:
+            raise FlagTuneConfigError(
+                f"{location}[{index}] fields must exactly match params in declaration order"
+            )
+        for field in space.fields:
+            unexpected = [
+                value for value in field.legal_values
+                if value not in legal_values[field.name]
+            ]
+            if unexpected:
+                raise FlagTuneConfigError(
+                    f"{location}[{index}].{field.name}.values contains values "
+                    f"outside params: {unexpected!r}"
+                )
+        spaces.append(space)
+    return tuple(spaces)
+
+
+def _parse_explicit_configs(
+    raw_configs: Any,
+    param_space: ParameterSpace,
+    location: str,
+) -> tuple[Dict[str, Any], ...]:
+    """Compile an optional exact, ordered list of complete configurations."""
+    if raw_configs is None:
+        return ()
+    if not isinstance(raw_configs, list) or not raw_configs:
+        raise FlagTuneConfigError(f"{location} must be a non-empty list")
+    names = param_space.all_field_names
+    legal_values = param_space.field_values()
+    result: List[Dict[str, Any]] = []
+    seen = set()
+    for index, raw_config in enumerate(raw_configs):
+        config = dict(_require_mapping(raw_config, f"{location}[{index}]"))
+        if set(config) != set(names):
+            raise FlagTuneConfigError(f"{location}[{index}] fields must exactly match params: {names}")
+        config = {name: config[name] for name in names}
+        for name, value in config.items():
+            if value not in legal_values[name]:
+                raise FlagTuneConfigError(
+                    f"{location}[{index}].{name}={value!r} is outside params"
+                )
+        key = param_space.config_key(config)
+        if key not in seen:
+            seen.add(key)
+            result.append(config)
+    return tuple(result)
+
+
 def _parse_config_space(raw_space: Any, location: str) -> ParameterSpace:
     """Compile an explicit, non-Cartesian candidate list."""
     space = _require_mapping(raw_space, location)
@@ -494,29 +585,6 @@ def _parse_config_space(raw_space: Any, location: str) -> ParameterSpace:
         normalized.append(config)
     fields = [ParameterField(name=name, legal_values=sorted({c[name] for c in normalized}, key=repr)) for name in names]
     return ParameterSpace(fields=fields, explicit_configs=normalized)
-
-
-def _parse_configs(raw_configs: Any, param_space: ParameterSpace, location: str) -> List[Dict[str, Any]]:
-    """Validate an exact candidate list against the declared parameter domain."""
-    if not isinstance(raw_configs, list) or not raw_configs:
-        raise FlagTuneConfigError(f"{location} must be a non-empty list")
-    names = param_space.all_field_names
-    legal_values = param_space.field_values()
-    result = []
-    seen = set()
-    for index, raw_config in enumerate(raw_configs):
-        config = dict(_require_mapping(raw_config, f"{location}[{index}]"))
-        if set(config) != set(names):
-            raise FlagTuneConfigError(f"{location}[{index}] fields must exactly match params: {names}")
-        config = {name: config[name] for name in names}
-        for name, value in config.items():
-            if value not in legal_values[name]:
-                raise FlagTuneConfigError(f"{location}[{index}].{name}={value!r} is outside params")
-        key = param_space.config_key(config)
-        if key not in seen:
-            seen.add(key)
-            result.append(config)
-    return result
 
 
 def _parse_features(
@@ -589,20 +657,45 @@ def parse_operator_config(config: Mapping[str, Any]) -> OperatorInfo:
         location = f"config.variants.{variant_name}"
         spec = _require_mapping(raw_variant, location)
         unknown = set(spec) - {
-            "inputs", "when", "params", "configs", "config_space", "features", "stage", "dtype_roles", "route_binding"
+            "inputs", "when", "params", "config_sets", "configs", "config_space", "features", "stage", "dtype_roles", "route_binding"
         }
         if unknown:
             raise FlagTuneConfigError(f"{location} has unknown keys: {sorted(unknown)}")
 
         inputs = _parse_inputs(spec.get("inputs"), operations, f"{location}.inputs")
-        if "config_space" in spec and "configs" in spec:
-            raise FlagTuneConfigError(f"{location} cannot define both config_space and configs")
+        if "config_space" in spec and any(key in spec for key in ("config_sets", "configs")):
+            raise FlagTuneConfigError(
+                f"{location}.config_space cannot be combined with config_sets or configs (cannot define both)"
+            )
         if "config_space" in spec:
             param_space = _parse_config_space(spec["config_space"], f"{location}.config_space")
         else:
             param_space = _parse_params(spec.get("params"), f"{location}.params")
-            if "configs" in spec:
-                param_space.explicit_configs = _parse_configs(spec["configs"], param_space, f"{location}.configs")
+        config_spaces = _parse_config_sets(
+            spec.get("config_sets"), param_space, f"{location}.config_sets"
+        )
+        explicit_configs = _parse_explicit_configs(
+            spec.get("configs"), param_space, f"{location}.configs"
+        )
+        if config_spaces and explicit_configs:
+            raise FlagTuneConfigError(
+                f"{location} cannot define both config_sets and configs"
+            )
+        if explicit_configs:
+            legal_keys = {
+                param_space.config_key(config) for config in explicit_configs
+            }
+            param_space.constraints.append(
+                lambda config, keys=legal_keys, space=param_space: (
+                    space.config_key(config) in keys
+                )
+            )
+        elif config_spaces:
+            param_space.constraints.append(
+                lambda config, spaces=config_spaces: any(
+                    space.validate(config) for space in spaces
+                )
+            )
         variables = {field.name for field in inputs} | {"inputs"}
         when = spec.get("when", True)
         _validate_expression(when, operations, variables, f"{location}.when")
@@ -615,12 +708,13 @@ def parse_operator_config(config: Mapping[str, Any]) -> OperatorInfo:
             inputs=inputs,
             when=when,
             param_space=param_space,
+            config_spaces=config_spaces,
+            explicit_configs=explicit_configs,
             features=features,
             operations=operations,
             stage=str(spec.get("stage", "public")),
             dtype_roles=dict(spec.get("dtype_roles", {})),
             route_binding=spec.get("route_binding"),
-            configs_from_params="configs" in spec,
         )
 
     # A public route may bind to a stage model without duplicating its complete
@@ -706,6 +800,14 @@ def variant_to_model_config(
             spec["max"] = field.maximum
         inputs[field.name] = spec
     params = {field.name: {"values": list(field.legal_values)} for field in variant.param_space.fields}
+    config_sets = [
+        {
+            field.name: {"values": list(field.legal_values)}
+            for field in space.fields
+        }
+        for space in variant.config_spaces
+    ]
+    explicit_configs = [dict(config) for config in variant.explicit_configs]
     features: List[Any] = []
     for feature in variant.features:
         if feature.expression == feature.name:
@@ -754,8 +856,10 @@ def variant_to_model_config(
         "params": params,
         "features": features,
     }
-    if variant.configs_from_params:
-        result["configs"] = [dict(config) for config in variant.param_space.explicit_configs]
+    if config_sets:
+        result["config_sets"] = config_sets
+    if explicit_configs:
+        result["configs"] = explicit_configs
         result["flagtune_version_min"] = EXPLICIT_CONFIGS_VERSION
     return result
 
@@ -797,6 +901,7 @@ def parse_model_config(config: Mapping[str, Any]) -> VariantInfo:
         "inputs",
         "when",
         "params",
+        "config_sets",
         "configs",
         "features",
     }
@@ -821,7 +926,7 @@ def parse_model_config(config: Mapping[str, Any]) -> VariantInfo:
                 "inputs": root.get("inputs"),
                 "when": root.get("when", True),
                 "params": root.get("params"),
-                **({"configs": root["configs"]} if "configs" in root else {}),
+                **{key: root[key] for key in ("config_sets", "configs") if key in root},
                 "features": root.get("features"),
             }
         },

@@ -233,6 +233,16 @@ def make_config_proposer(
 
         with flagtune_error_boundary(ContractExecutionError):
             candidates = _candidate_domain(variant_info, initial_configs)
+            candidate_pruner = (
+                _meta.get("candidate_pruner")
+                if identity.platform_key.startswith("thead-") else None
+            )
+            if candidate_pruner is not None:
+                allowed_keys = {
+                    _config_key(config, fields) for config in candidate_pruner(candidates)
+                }
+                candidates = [config for config in candidates
+                              if _config_key(config, fields) in allowed_keys]
         if not candidates:
             return []
         predicted = _predict_config_dicts(variant_info, model, inputs, top_k, candidates)
@@ -262,10 +272,12 @@ def make_config_proposer(
             legal_configs=candidates,
         )
         generated = ga_searcher.generate(history) if history else []
+        legal_keys = {_config_key(config, fields) for config in candidates}
 
         for entry in generated:
             stripped = _strip_config(entry.get("config", entry), fields)
-            if len(stripped) != len(fields) or _in_history(history, stripped, fields):
+            if (len(stripped) != len(fields) or _config_key(stripped, fields) not in legal_keys
+                    or _in_history(history, stripped, fields)):
                 continue
             try:
                 latency = _benchmark_candidate(fn, stripped)

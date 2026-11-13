@@ -3,6 +3,9 @@
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "TargetInfo.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/IR/Dominance.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -49,6 +52,29 @@ bool comesFromAsyncWait(Value token) {
   }
   return true;
 }
+// A completed async copy can publish at an existing immediate common
+// continuation barrier. Follow only unconditional forward CF branches in the
+// same region: no intervening operation, conditional edge or loop backedge.
+bool isFollowedByCommonLocalBarrier(Operation *op, DominanceInfo &dominance) {
+  Operation *next = op->getNextNode();
+  llvm::SmallPtrSet<Operation *, 8> visited;
+  while (next) {
+    if (!visited.insert(next).second)
+      return false;
+    if (isa<mlir::gpu::BarrierOp, gpu::LocalBarrierOp>(next))
+      return true;
+    auto branch = dyn_cast<cf::BranchOp>(next);
+    if (!branch)
+      return false;
+    Block *source = branch->getBlock();
+    Block *dest = branch.getDest();
+    if (source->getParent() != dest->getParent() || dest->empty() ||
+        dominance.dominates(dest, source))
+      return false;
+    next = &dest->front();
+  }
+  return false;
+}
 } // namespace
 
 void addLocalBarrierAfterAmdGpuAsyncWait(ModuleOp mod) {
@@ -58,8 +84,9 @@ void addLocalBarrierAfterAmdGpuAsyncWait(ModuleOp mod) {
   mod->walk([&waits](hcugpu::AsyncWaitOp waitOp) { waits.push_back(waitOp); });
 
   IRRewriter builder(mod.getContext());
+  DominanceInfo dominance(mod);
   for (auto waitOp : waits) {
-    if (isa<mlir::gpu::BarrierOp, gpu::LocalBarrierOp>(waitOp->getNextNode()))
+    if (isFollowedByCommonLocalBarrier(waitOp, dominance))
       continue;
 
     builder.setInsertionPointAfter(waitOp);
@@ -154,8 +181,13 @@ void addLocalLoadNoAliasScope(LLVM::AliasAnalysisOpInterface llLoadOp) {
 unsigned
 fitToValidDirectToLdsVecSize(unsigned maxVecSize, unsigned elemBitwidth,
                              const triton::HCU::TargetInfo &targetInfo) {
+  return fitToValidDirectToLdsVecSize(maxVecSize, elemBitwidth, targetInfo, false);
+}
+
+unsigned fitToValidDirectToLdsVecSize(unsigned maxVecSize, unsigned elemBitwidth,
+    const triton::HCU::TargetInfo &targetInfo, bool isBuffer) {
   while (maxVecSize > 0 && !targetInfo.supportsDirectToLdsLoadBitWidth(
-                               maxVecSize * elemBitwidth)) {
+                               maxVecSize * elemBitwidth, isBuffer)) {
     maxVecSize /= 2;
   }
   return maxVecSize;

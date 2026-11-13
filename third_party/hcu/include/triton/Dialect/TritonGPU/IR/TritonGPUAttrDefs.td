@@ -574,13 +574,7 @@ def HCUMlsSharedEncodingAttr :
                         ArrayRefParameter<"unsigned">:$order,
                         "CTAEncodingAttr":$CTALayout);
 
-  let assemblyFormat = "`<` `opIdx` `=` $opIdx `,` "
-                       "`mlsTile` `=` `[` $mlsTile `]` `,` "
-                       "`elemBitWidth` `=` $elemBitWidth `,` "
-                       "`alt2Kind` `=` $alt2Kind `,` "
-                       "`version` `=` $version `,` "
-                       "`order` `=` `[` $order `]` `,` "
-                       "`CTAEncodingAttr` `=` $CTALayout `>`";
+  let hasCustomAssemblyFormat = 1;
 }
 
 //===----------------------------------------------------------------------===//

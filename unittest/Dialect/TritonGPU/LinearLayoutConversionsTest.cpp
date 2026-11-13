@@ -884,6 +884,65 @@ TEST_F(LinearLayoutConversionsTest, SliceDot) {
                 {S("dim0")}));
 }
 
+#ifdef __HCU__
+TEST_F(LinearLayoutConversionsTest, HCUMmacLegacyTranspose_1x4Warps) {
+  auto legacy = [&](bool isTransposed) {
+    return AMDMfmaEncodingAttr::get(
+        &ctx, /*version=*/3, /*warpsPerCTA=*/{1, 4},
+        /*instrShape=*/{16, 16, 16}, isTransposed,
+        CTAEncodingAttr::getDefault(&ctx, 2), /*tilesPerWarp=*/{1, 1},
+        /*elementBitWidth=*/32, MmacLayout::LEGACY);
+  };
+
+  EXPECT_EQ(toLinearLayout({16, 64}, legacy(false)),
+            LinearLayout({{S("register"), {{0, 4}, {0, 8}}},
+                          {S("lane"), {{1, 0}, {2, 0}, {4, 0}, {8, 0},
+                                       {0, 1}, {0, 2}}},
+                          {S("warp"), {{0, 16}, {0, 32}}},
+                          {S("block"), {}}},
+                         {S("dim0"), S("dim1")}));
+  // Operand swapping transposes the native 16x16 accumulator tile. The
+  // logical N warp coordinates must remain unchanged.
+  EXPECT_EQ(toLinearLayout({16, 64}, legacy(true)),
+            LinearLayout({{S("register"), {{4, 0}, {8, 0}}},
+                          {S("lane"), {{0, 1}, {0, 2}, {0, 4}, {0, 8},
+                                       {1, 0}, {2, 0}}},
+                          {S("warp"), {{0, 16}, {0, 32}}},
+                          {S("block"), {}}},
+                         {S("dim0"), S("dim1")}));
+}
+
+TEST_F(LinearLayoutConversionsTest, HCUMmacLegacyTranspose_4x2WarpsMultiTile) {
+  auto legacy = [&](bool isTransposed) {
+    return AMDMfmaEncodingAttr::get(
+        &ctx, /*version=*/3, /*warpsPerCTA=*/{4, 2},
+        /*instrShape=*/{16, 16, 16}, isTransposed,
+        CTAEncodingAttr::getDefault(&ctx, 2), /*tilesPerWarp=*/{1, 1},
+        /*elementBitWidth=*/32, MmacLayout::LEGACY);
+  };
+
+  EXPECT_EQ(toLinearLayout({128, 128}, legacy(false)),
+            LinearLayout({{S("register"), {{0, 4}, {0, 8}, {0, 32}, {0, 64},
+                                           {64, 0}}},
+                          {S("lane"), {{1, 0}, {2, 0}, {4, 0}, {8, 0},
+                                       {0, 1}, {0, 2}}},
+                          {S("warp"), {{0, 16}, {16, 0}, {32, 0}}},
+                          {S("block"), {}}},
+                         {S("dim0"), S("dim1")}));
+  // Only the first two register bases and native lane coordinates transpose.
+  // N repetitions at 32/64 still precede the outer M repetition at 64, and
+  // logical warp coordinates retain their N-first ordering.
+  EXPECT_EQ(toLinearLayout({128, 128}, legacy(true)),
+            LinearLayout({{S("register"), {{4, 0}, {8, 0}, {0, 32}, {0, 64},
+                                           {64, 0}}},
+                          {S("lane"), {{0, 1}, {0, 2}, {0, 4}, {0, 8},
+                                       {1, 0}, {2, 0}}},
+                          {S("warp"), {{0, 16}, {16, 0}, {32, 0}}},
+                          {S("block"), {}}},
+                         {S("dim0"), S("dim1")}));
+}
+#endif
+
 TEST_F(LinearLayoutConversionsTest, MFMA32_2x4Warps_tpw_2_2) {
   auto mfmaNT =
       mfma(/*version=*/3, /*warps=*/{2, 4}, /*instrShape=*/{32, 32, 8},

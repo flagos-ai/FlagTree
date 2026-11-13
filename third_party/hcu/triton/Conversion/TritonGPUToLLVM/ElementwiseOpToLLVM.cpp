@@ -331,6 +331,10 @@ struct ElementwiseInlineAsmOpConversion
   LogicalResult
   matchAndRewrite(ElementwiseInlineAsmOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // The public elementwise-asm contract requires at least one result.
+    // Diagnose imported zero-result IR before result/type indexing below.
+    if (op->getNumResults() == 0)
+      return op.emitOpError("HCU elementwise inline asm requires at least one result");
     Location loc = op->getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
 

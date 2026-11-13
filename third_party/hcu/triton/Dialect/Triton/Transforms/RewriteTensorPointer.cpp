@@ -4,6 +4,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -48,9 +49,14 @@ public:
 
   unsigned int length() const { return shape.size(); }
 
+  Value getBase() const { return base; }
+  ArrayRef<Value> getShape() const { return shape; }
+  ArrayRef<Value> getStrides() const { return strides; }
+  ArrayRef<int64_t> getTensorShape() const { return tensorShape; }
+
   Value getOffset(unsigned i) { return offsets[i]; }
 
-  SmallVector<Value> getOffsets() { return offsets; }
+  SmallVector<Value> getOffsets() const { return offsets; }
 
   void setOffset(unsigned i, Value newOffset) {
     offsets[i] = newOffset;
@@ -202,6 +208,75 @@ class RewriteTensorPointerPass
     : public impl::TritonRewriteTensorPointerBase<RewriteTensorPointerPass> {
 private:
   DenseMap<Value, RewritedInfo> rewritedInfo;
+  // Exact i32 equivalents, established from unchanged loop offsets or an
+  // induction recurrence. Never truncate an arbitrary i64 descriptor index.
+  DenseMap<Value, Value> narrowOffsets;
+
+  static bool sameInteger(Value lhs, Value rhs) {
+    if (lhs == rhs)
+      return true;
+    APInt left, right;
+    return matchPattern(lhs, m_ConstantInt(&left)) &&
+           matchPattern(rhs, m_ConstantInt(&right)) && left == right;
+  }
+
+  Value getExactI32(OpBuilder &builder, Location loc, Value value) {
+    if (value.getType().isInteger(32))
+      return value;
+    if (auto it = narrowOffsets.find(value); it != narrowOffsets.end())
+      return it->second;
+    if (auto ext = value.getDefiningOp<arith::ExtSIOp>())
+      if (ext.getIn().getType().isInteger(32))
+        return ext.getIn();
+    APInt constant;
+    if (matchPattern(value, m_ConstantInt(&constant)) &&
+        constant.isSignedIntN(32))
+      return arith::ConstantIntOp::create(builder, loc,
+                                         constant.getSExtValue(), 32);
+    return {};
+  }
+
+  bool preserveMatrixLoad(OpBuilder &builder, triton::LoadOp load,
+                          const RewritedInfo &info) {
+    auto enabled = getOperation()->getAttrOfType<IntegerAttr>(
+        "ttg.hcu.prefer_wide_async_copy");
+    auto async = load->getAttrOfType<BoolAttr>("tt.load.async");
+    auto type = cast<RankedTensorType>(load.getType());
+    if (!enabled || !enabled.getInt() ||
+        info.length() != 2 || load.getIsVolatile() ||
+        (!type.getElementType().isF16() && !type.getElementType().isBF16()) ||
+        (load.getPadding() &&
+         *load.getPadding() != triton::PaddingOption::PAD_ZERO) ||
+        !load.getFlagtreeHints().empty())
+      return false;
+
+    SmallVector<Value> shape, indices;
+    for (Value size : info.getShape()) {
+      Value narrow = getExactI32(builder, load.getLoc(), size);
+      if (!narrow)
+        return false;
+      shape.push_back(narrow);
+    }
+    for (Value offset : info.getOffsets()) {
+      Value narrow = getExactI32(builder, load.getLoc(), offset);
+      if (!narrow)
+        return false;
+      indices.push_back(narrow);
+    }
+    SmallVector<int32_t> tile;
+    for (int64_t size : info.getTensorShape()) {
+      if (size <= 0 || size > INT32_MAX)
+        return false;
+      tile.push_back(size);
+    }
+    auto matrix = triton::MatrixLoadOp::create(
+        builder, load.getLoc(), type, info.getBase(), shape, info.getStrides(),
+        tile, indices, load.getBoundaryCheck(),
+        load.getCache(), load.getEvict(), false);
+    matrix->setAttr("tt.load.async", async ? async : builder.getBoolAttr(false));
+    load.getResult().replaceAllUsesWith(matrix.getResult());
+    return true;
+  }
 
 public:
   static bool needRewrite(Operation *op) {
@@ -291,6 +366,16 @@ public:
     assert(rewritedInfo.count(ptr));
     auto info = rewritedInfo[ptr];
 
+    // Keep the scalar matrix descriptor until the target layout/copy passes.
+    // The existing pointer expansion remains the fallback for unsupported
+    // padding, volatile loads and descriptors without an exact i32 proof.
+    if (auto load = dyn_cast<triton::LoadOp>(op)) {
+      if (preserveMatrixLoad(builder, load, info)) {
+        eraser.push(op);
+        return nullptr;
+      }
+    }
+
     // Load/store with tensor pointers implicitly will check the bound while
     // accessing memory, so we should set `mask` and `other` (according to the
     // padding). Also note that load with tensor pointers do not have `mask` and
@@ -317,6 +402,8 @@ public:
           builder, loadOp.getLoc(), newPtr, newMask, newOther,
           loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(),
           loadOp.getFlagtreeHintsAttr()); // flagtree hints
+      if (auto asyncAttr = loadOp->getAttr("tt.load.async"))
+        newResult->setAttr("tt.load.async", asyncAttr);
       op->getResult(0).replaceAllUsesWith(newResult);
     } else if (auto storeOp = dyn_cast<triton::StoreOp>(op)) {
       triton::StoreOp::create(builder, storeOp.getLoc(), newPtr,
@@ -425,6 +512,7 @@ public:
     // mapping. It may refer to a value in the old loop, but we will rewrite it
     // later
     IRMapping mapping;
+    builder.setInsertionPoint(newForOp);
     for (unsigned i = 0, oldI = 0, sz = op.getInitArgs().size(); oldI < sz;
          ++i, ++oldI) {
       auto oldRegionIterArg = op.getRegionIterArg(oldI);
@@ -433,8 +521,24 @@ public:
         assert(rewritedInfo.count(oldIterOperands[oldI]));
         auto info = rewritedInfo[oldIterOperands[oldI]];
         mapping.map(oldRegionIterArg, oldRegionIterArg);
-        for (unsigned j = 0; j < info.length(); ++j)
+        auto yield = cast<scf::YieldOp>(op.getBody()->getTerminator());
+        auto advance = yield.getOperand(oldI).getDefiningOp<triton::AdvanceOp>();
+        for (unsigned j = 0; j < info.length(); ++j) {
+          Value initial = getExactI32(builder, op.getLoc(), info.getOffset(j));
+          if (advance && advance.getPtr() == oldRegionIterArg && initial) {
+            APInt delta;
+            if (matchPattern(advance.getOffsets()[j], m_ConstantInt(&delta)) &&
+                delta.isZero()) {
+              narrowOffsets[newForOp.getRegionIterArg(i + j)] = initial;
+            } else if (op.getInductionVar().getType().isInteger(32) &&
+                       sameInteger(initial, op.getLowerBound()) &&
+                       sameInteger(advance.getOffsets()[j], op.getStep())) {
+              narrowOffsets[newForOp.getRegionIterArg(i + j)] =
+                  newForOp.getInductionVar();
+            }
+          }
           info.setOffset(j, newForOp.getRegionIterArg(i + j));
+        }
         rewritedInfo[oldRegionIterArg] = info;
         i += info.length() - 1;
       } else {
@@ -556,6 +660,7 @@ public:
     // The operation could not be erased during visit, because they may have
     // later usages, so we erase after visit
     rewritedInfo.clear();
+    narrowOffsets.clear();
     while (!eraser.empty()) {
       auto op = eraser.top();
       eraser.pop();

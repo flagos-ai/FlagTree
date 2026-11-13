@@ -20,7 +20,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from ..._core import ir, builtin, _unwrap_if_constexpr
+from ..._core import ir, builtin, _unwrap_if_constexpr, async_token
 from ..._semantic import _check
 from ..._layouts import BlockedLayout, SliceLayout
 from ..cdna3 import _verify_buffer_ops
@@ -157,7 +157,7 @@ def commit_group(_semantic=None):
 
 
 @builtin
-def wait_group(num_outstanding=0, _semantic=None):
+def wait_group(num_outstanding=0, return_token=False, _semantic=None):
     """
     Wait for outstanding commit groups. It will block until the number of
     outstanding commit groups is less than or equal to `num_outstanding`. Note that uncommited
@@ -165,9 +165,19 @@ def wait_group(num_outstanding=0, _semantic=None):
 
     Args:
         num_outstanding (int): The number of outstanding commit groups to wait for. Defaults to 0.
+        return_token (bool): Return an ordinary async completion token for an
+            explicitly dependent shared load. Defaults to False.
+
+    Returns:
+        An async_token if requested; otherwise None. The caller must wait for
+        the group that produced the buffer passed to the dependent load.
     """
     num_outstanding = _unwrap_if_constexpr(num_outstanding)
-    _semantic.builder.create_async_wait_group(num_outstanding)
+    return_token = _unwrap_if_constexpr(return_token)
+    _check(isinstance(return_token, bool), lambda: "return_token must be a constexpr bool")
+    handle = _semantic.builder.create_async_wait_group(num_outstanding)
+    if return_token:
+        return async_token(handle)
 
 
 @builtin

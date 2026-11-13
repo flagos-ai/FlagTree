@@ -100,10 +100,12 @@ public:
     if (splatCond != condSelect)
       return failure();
 
-    rewriter.replaceOpWithNewOp<LoadOp>(
+    auto newLoad = rewriter.replaceOpWithNewOp<LoadOp>(
         op, loadOp.getPtr(), loadOp.getMask(), /*other=*/falseValue,
         loadOp.getBoundaryCheckAttr(), loadOp.getPaddingAttr(),
         loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile());
+    if (auto asyncAttr = loadOp->getAttr("tt.load.async"))
+      newLoad->setAttr("tt.load.async", asyncAttr);
     return success();
   }
 };

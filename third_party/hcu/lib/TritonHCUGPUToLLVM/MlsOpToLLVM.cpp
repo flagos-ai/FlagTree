@@ -1,4 +1,18 @@
 #include "BufferOpsEmitter.h"
+#include "ScalarMemoryAnalysis.h"
+#include "MatrixSharedCopy.h"
+#include "AsyncUtility.h"
+#include "MemoryLoweringUtils.h"
+#include "triton/Analysis/Allocation.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "TritonHCUGPUToLLVM/MembarUtility.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/LinearLayout.h"
+#include <optional>
+#include <functional>
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "PatternTritonGPUOpToLLVM.h"
 #include "TargetInfo.h"
@@ -8,11 +22,13 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "llvm/ADT/APFloat.h"
+#include "llvm/Support/MathExtras.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "nvidia/backend/include/cuda.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
@@ -25,8 +41,61 @@ using ::mlir::LLVM::delinearize;
 using ::mlir::LLVM::getSharedMemoryObjectFromStruct;
 using ::mlir::triton::gpu::HCUMlsSharedEncodingAttr;
 using ::mlir::triton::hcugpu::MlsEncodingAttr;
+using ::mlir::triton::HCU::memory_lowering::getOrInsertHCUIntrinsic;
+using ::mlir::triton::HCU::memory_lowering::getSignedI64Constant;
+
+
+#include "MatrixSharedCopyLowering.inc"
+#include "StructuredRegisterLoad.inc"
+
+namespace mlir::triton::HCU {
+// Verify ordinary register requests and generic partition-relative wave queries
+// before allocation/conversion. Retired custom physical versions fail clearly
+// rather than entering the vendor MLS path without its required attributes.
+LogicalResult verifyTargetMemoryOperations(ModuleOp mod, StringRef arch) {
+  bool retiredEncoding = false;
+  mod.walk([&](Operation *op) {
+    SmallVector<Type> types = llvm::to_vector(op->getResultTypes());
+    llvm::append_range(types, op->getOperandTypes());
+    for (Region &region : op->getRegions())
+      for (Block &block : region)
+        for (BlockArgument arg : block.getArguments())
+          types.push_back(arg.getType());
+    for (Type type : types)
+      if (auto mem = dyn_cast<MemDescType>(type))
+        if (auto enc = dyn_cast<HCUMlsSharedEncodingAttr>(mem.getEncoding()))
+          retiredEncoding |= enc.getVersion() == 0 || enc.getVersion() >= 256;
+  });
+  if (retiredEncoding)
+    return mod.emitError("retired custom HCU MLS physical encoding is unsupported; use an ordinary shared layout");
+  LogicalResult valid = success();
+  mod.walk([&](triton::hcugpu::WarpGroupIdOp query) {
+    int64_t size = query.getGroupSize();
+    if (size <= 0 || !llvm::isPowerOf2_64(size) ||
+        size > lookupNumWarps(query))
+      valid = query.emitError("warp group size must be a positive power of two within this partition");
+  });
+  if (failed(valid)) return failure();
+  return verifyStructuredRegisterLoads(mod, arch);
+}
+} // namespace mlir::triton::HCU
 
 namespace {
+
+// This query is an ordinary partition-relative coordinate, independent of
+// the physical shared layout or any copy/publication protocol.
+struct WarpGroupIdConversion
+    : ConvertOpToLLVMPattern<triton::hcugpu::WarpGroupIdOp> {
+  using ConvertOpToLLVMPattern<triton::hcugpu::WarpGroupIdOp>::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(triton::hcugpu::WarpGroupIdOp op, OpAdaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc(); auto b = TritonLLVMOpBuilder(loc, rewriter);
+    auto ids = getLaneAndWarpId(rewriter, loc);
+    Value wave = rewriter.create<ROCDL::ReadfirstlaneOp>(loc, i32_ty, ids.second);
+    rewriter.replaceOp(op, b.udiv(wave, b.i32_val(op.getGroupSize())));
+    return success();
+  }
+};
 
 // ===----------------------------------------------------------------------===//
 // Utility functions
@@ -73,10 +142,11 @@ struct MLSMatrixLoadToLocalOpConversion
   MLSMatrixLoadToLocalOpConversion(LLVMTypeConverter &converter,
                                    const HCU::TargetInfo &targetInfo,
                                    ModuleAxisInfoAnalysis &axisAnalysisPass,
-                                   PatternBenefit benefit)
+                                   PatternBenefit benefit,
+                                   const HCU::MatrixSharedCopies &sharedCopies)
       : ConvertOpToLLVMPattern<triton::hcugpu::MatrixLoadToLocalOp>(converter,
                                                                     benefit),
-        targetInfo(targetInfo) {}
+        targetInfo(targetInfo), sharedCopies(sharedCopies) {}
 
   LogicalResult
   matchAndRewrite(triton::hcugpu::MatrixLoadToLocalOp op, OpAdaptor adaptor,
@@ -88,6 +158,8 @@ struct MLSMatrixLoadToLocalOpConversion
 
     auto ctx = rewriter.getContext();
 
+    if (auto plan = sharedCopies.get(op))
+      return lowerMatrixSharedCopy(op, adaptor, *plan, *getTypeConverter(), rewriter);
     auto dstTy = cast<MemDescType>(op.getDest().getType());
     auto sharedLayout = dyn_cast<HCUMlsSharedEncodingAttr>(dstTy.getEncoding());
     auto blockLayout =
@@ -275,6 +347,7 @@ struct MLSMatrixLoadToLocalOpConversion
 
 private:
   const HCU::TargetInfo &targetInfo;
+  const HCU::MatrixSharedCopies &sharedCopies;
 
   /*
    * Calculate matrix load store offsets in blk: ldOffVal, stOffVal
@@ -1278,9 +1351,14 @@ void populateMLSOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                  const TargetInfo &targetInfo,
                                  RewritePatternSet &patterns,
                                  ModuleAxisInfoAnalysis &axisInfoAnalysis,
-                                 PatternBenefit benefit) {
-  patterns.add<MLSLocalAllocOpConversion, MLSMatrixLoadToLocalOpConversion,
-               MLSLocalLoadOpConversion>(typeConverter, targetInfo,
+                                 PatternBenefit benefit,
+                                 const MatrixSharedCopies &sharedCopies) {
+  patterns.add<StructuredRegisterLoadConversion>(typeConverter, targetInfo,
+      axisInfoAnalysis, benefit);
+  patterns.add<WarpGroupIdConversion>(typeConverter, benefit);
+  patterns.add<MLSMatrixLoadToLocalOpConversion>(typeConverter, targetInfo,
+      axisInfoAnalysis, benefit, sharedCopies);
+  patterns.add<MLSLocalAllocOpConversion, MLSLocalLoadOpConversion>(typeConverter, targetInfo,
                                          axisInfoAnalysis, benefit);
 }
 } // namespace mlir::triton::HCU

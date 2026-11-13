@@ -451,6 +451,9 @@ def alloc(
             raise ValueError("GPU CommonIR alloc does not yet support alias buffers")
     mthreads_auto_sqmma_shared_layout = (mthreads_common.enabled() and storage == tle.smem
                                          and mthreads_wgmma.use_auto_shared_layout(layout, nv_mma_shared_layout))
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+    hcu_auto_shared_layout = (FLAGTREE_BACKEND == "hcu" and storage == tle.smem
+                              and layout is None and nv_mma_shared_layout)
 
     try:
         unwrapped_shape = [tl._unwrap_if_constexpr(dim) for dim in shape]
@@ -521,7 +524,7 @@ def alloc(
                 if iluvatar_copy.enabled():
                     layout, layout_handle = iluvatar_layout.select_default_smem_layout(
                         _semantic.builder, unwrapped_shape, dtype, nv_mma_shared_layout)
-                elif mthreads_auto_sqmma_shared_layout or not nv_mma_shared_layout:
+                elif hcu_auto_shared_layout or mthreads_auto_sqmma_shared_layout or not nv_mma_shared_layout:
                     layout = tle.swizzled_shared_layout.make_default(rank=len(unwrapped_shape))
                     layout_handle = _semantic.builder.make_swizzled_shared_encoding_attr(
                         layout.vectorSize,
@@ -611,6 +614,10 @@ def alloc(
                                        _semantic.builder.get_int32_attr(max(alignment_bytes, layout_alignment)))
             if mthreads_auto_sqmma_shared_layout and alias is None:
                 mthreads_wgmma.mark_auto_shared_layout(_semantic.builder, tensor_handle)
+            if hcu_auto_shared_layout and alias is None:
+                # A correct generic chart until the target can see the actual
+                # global producer and matrix consumer. Explicit charts opt out.
+                tensor_handle.set_attr("hcu.auto_shared_layout", _semantic.builder.get_bool_attr(True))
             if logical_candidate:
                 _semantic.builder.mark_logical_alloc_candidate(tensor_handle, unwrapped_shape, logical_non_power_axis)
         else:

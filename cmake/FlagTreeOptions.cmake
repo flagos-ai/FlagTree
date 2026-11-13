@@ -370,8 +370,13 @@ macro(flagtree_configure_python_plugins)
   if(TRITON_BUILD_FLAGPRISM)
     # FlagPrism supplies the ProtonIR target and dialect registration.
   elseif(FLAGTREE_BACKEND STREQUAL "hcu")
-    list(APPEND TRITON_PLUGIN_DIRS
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hcu/proton")
+    # The dialect is required by core IR even without the optional profiler.
+    if(TRITON_BUILD_PROTON)
+      list(APPEND TRITON_PLUGIN_DIRS
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hcu/proton")
+    else()
+      list(APPEND TRITON_PLUGIN_NAMES "proton")
+    endif()
     include_directories(
       ${PROJECT_BINARY_DIR}/third_party/${FLAGTREE_BACKEND})
     add_subdirectory(third_party/hcu/proton/Dialect)
@@ -647,6 +652,9 @@ function(flagtree_add_tle_generated_header_dependencies)
   foreach(_flagtree_tle_header_target IN ITEMS
       TritonAnalysis
       TritonAMDAnalysis
+      TritonHCUAnalysis
+      TritonHCUGPUTransforms
+      TritonHCUGPUToLLVM
       TritonToTritonGPU
       TritonGPUTransforms
       TritonNvidiaGPUTransforms

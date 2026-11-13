@@ -34,6 +34,11 @@ __all__ = [
 ]
 
 
+def _default_mmac_layout():
+    from triton._C.libtriton import gluon_ir
+    return gluon_ir.get_amd_mfma_default_mmac_layout()
+
+
 @dataclass(frozen=True)
 class AMDMFMALayout(DistributedLayout):
     """
@@ -47,6 +52,7 @@ class AMDMFMALayout(DistributedLayout):
         element_bitwidth Optional(int): Bit width of the output element type. Supported values are 32 and 64. Defaults to 32.
         tiles_per_warp Optional(List[int]): The tile layout within a warp. Defaults to unit tile layout, i.e., single tile on all dimensions.
         cga_layout (Optional[List[List[int]]]): Bases describing CTA tiling.
+        mmac_layout (Optional[int]): HCU ownership variant. None preserves the compiled backend default (HCU LEGACY=1, otherwise AMD MFMA=0).
 
     Current supported versions:
 
@@ -62,6 +68,7 @@ class AMDMFMALayout(DistributedLayout):
     element_bitwidth: Optional[int] = None
     tiles_per_warp: Optional[List[int]] = None
     cga_layout: List[List[int]] = field(default_factory=list)
+    mmac_layout: Optional[int] = None
 
     def __post_init__(self):
         super().__setattr__("version", _unwrap_if_constexpr(self.version))
@@ -70,6 +77,9 @@ class AMDMFMALayout(DistributedLayout):
         super().__setattr__("warps_per_cta", _unwrap_if_constexpr(self.warps_per_cta))
         super().__setattr__("element_bitwidth", _unwrap_if_constexpr(self.element_bitwidth))
         super().__setattr__("tiles_per_warp", _unwrap_if_constexpr(self.tiles_per_warp))
+        super().__setattr__("mmac_layout", _unwrap_if_constexpr(self.mmac_layout))
+        if self.mmac_layout is None:
+            object.__setattr__(self, "mmac_layout", _default_mmac_layout())
 
         if self.element_bitwidth is None:
             object.__setattr__(self, "element_bitwidth", 32)
@@ -80,15 +90,12 @@ class AMDMFMALayout(DistributedLayout):
         self.verify()
 
     def _to_ir(self, builder):
-        return builder.get_amd_mfma_layout(
-            self.version,
-            self.warps_per_cta,
-            self.instr_shape,
-            self.transposed,
-            self.cga_layout,
-            self.tiles_per_warp,
-            self.element_bitwidth,
-        )
+        args = (self.version, self.warps_per_cta, self.instr_shape,
+                self.transposed, self.cga_layout, self.tiles_per_warp,
+                self.element_bitwidth)
+        if self.mmac_layout == _default_mmac_layout():
+            return builder.get_amd_mfma_layout(*args)
+        return builder.get_amd_mfma_layout(*args, self.mmac_layout)
 
     def mangle(self) -> str:
 
@@ -98,9 +105,11 @@ class AMDMFMALayout(DistributedLayout):
             return "_".join(map(str, x))
 
         cga_layout = stringify(["~".join(map(str, vec)) for vec in self.cga_layout] if self.cga_layout else None)
-        return f"MFMA_{self.version}_{stringify(self.instr_shape)}_{self.transposed}_{stringify(self.warps_per_cta)}_{self.element_bitwidth}_{stringify(self.tiles_per_warp)}_{cga_layout}_MFMA"
+        base = f"MFMA_{self.version}_{stringify(self.instr_shape)}_{self.transposed}_{stringify(self.warps_per_cta)}_{self.element_bitwidth}_{stringify(self.tiles_per_warp)}_{cga_layout}_MFMA"
+        return base if self.mmac_layout == _default_mmac_layout() else f"{base}_HCU_MMAC{self.mmac_layout}"
 
     def verify(self):
+        assert type(self.mmac_layout) is int and 0 <= self.mmac_layout <= 4, "mmac_layout must be an integer in [0, 4]"
         assert self.version >= 1 and self.version <= 4, "version must be in the [1, 4] range"
         assert len(self.instr_shape) == 3, "instr_shape must follow the (M, N, K) format"
         valid_shapes = [[32, 32], [16, 16], [64, 4], [4, 64]]
@@ -111,7 +120,7 @@ class AMDMFMALayout(DistributedLayout):
         assert all(len(vec) == rank for vec in self.cga_layout), "cga_layout basis rank mismatch"
 
     def __hash__(self):
-        return hash((
+        values = (
             self.version,
             tuple(self.instr_shape),
             self.transposed,
@@ -119,7 +128,8 @@ class AMDMFMALayout(DistributedLayout):
             self.element_bitwidth if self.element_bitwidth else None,
             tuple(self.tiles_per_warp) if self.tiles_per_warp else None,
             tuple(tuple(vec) for vec in self.cga_layout),
-        ))
+        )
+        return hash(values if self.mmac_layout == _default_mmac_layout() else values + (self.mmac_layout,))
 
     @property
     def rank(self):

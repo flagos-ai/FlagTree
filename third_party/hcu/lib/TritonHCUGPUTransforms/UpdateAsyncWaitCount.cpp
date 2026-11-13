@@ -84,6 +84,20 @@ int getOpNumberOfAsyncLoadInstructions(Operation *op,
                                        HCU::TargetInfo targetInfo,
                                        ModuleAxisInfoAnalysis &axisInfo,
                                        bool emitRemarkOnNonAsyncOp) {
+  if (auto matrixOp = dyn_cast<hcugpu::MatrixLoadToLocalOp>(op)) {
+    auto type = matrixOp.getDest().getType();
+    if (targetInfo.getArch() == "gfx936" &&
+        isa<ttg::SharedLinearEncodingAttr>(type.getEncoding()) &&
+        type.getRank() == 2 && type.getElementTypeBitWidth() == 16) {
+      unsigned waves = ttg::lookupNumWarps(matrixOp);
+      uint64_t elements = uint64_t(type.getShape()[0]) * type.getShape()[1];
+      // Lowering independently validates complete wave payloads and emits this
+      // many 16B intrinsics in every wave. Unsupported charts fail compilation.
+      if (waves && elements <= (uint64_t(1) << 20) && elements % (512 * waves) == 0)
+        return elements / (512 * waves);
+      return 0; // Never overestimate an unproven per-wave instruction count.
+    }
+  }
   if (auto copyOp = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(op)) {
     int contig = LLVM::HCU::getVectorSize(copyOp.getSrc(), axisInfo);
     return getNumberOfLoadInstructions(copyOp.getSrc().getType(),

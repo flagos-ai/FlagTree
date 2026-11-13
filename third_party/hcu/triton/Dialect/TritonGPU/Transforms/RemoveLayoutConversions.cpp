@@ -16,6 +16,7 @@
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "triton/Analysis/Utility.h"
+#include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #ifdef __TLE__
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif
@@ -302,7 +303,29 @@ void LayoutPropagation::setEncoding(ValueRange values, LayoutInfo &info,
     bool hasChanged = false;
     for (auto encoding : info.encodings) {
       Attribute dstEncoding;
-      if (isa<ConvertLayoutOp>(op)) {
+      if (auto convert = dyn_cast<ConvertLayoutOp>(op)) {
+        // Preserve an explicitly warp-synchronous reduction input rather than
+        // blindly propagating an inter-warp layout through its conversion.
+        // Forward propagation has no reduction-communication cost model; this
+        // local heuristic retains the existing legal conversion/reduce path.
+        // Other candidates/users and backwards pointer/mask rematerialization
+        // are unaffected.
+        if (convert.getResult().hasOneUse()) {
+          auto reduce =
+              dyn_cast<ReduceOp>(*convert.getResult().getUsers().begin());
+          if (reduce && reduce->getNumOperands() == 1 &&
+              reduce->getNumResults() == 1 &&
+              reduce->getOperand(0) == convert.getResult()) {
+            auto srcType =
+                cast<RankedTensorType>(reduce->getOperand(0).getType());
+            auto shape = srcType.getShape();
+            auto axis = reduce.getAxis();
+            auto currentWarps = getWarpsPerCTA(srcType.getEncoding(), shape);
+            auto candidateWarps = getWarpsPerCTA(encoding, shape);
+            if (currentWarps[axis] == 1 && candidateWarps[axis] > 1)
+              continue;
+          }
+        }
         // Try to remove the convert by making the dst encoding match the source
         // encoding.
         dstEncoding = encoding;
@@ -381,7 +404,7 @@ SmallVector<Value> LayoutPropagation::propagateToUsers(Value value,
     if (user->hasTrait<OpTrait::SameOperandsAndResultEncoding>() ||
         user->hasTrait<OpTrait::Elementwise>() ||
         isa<ReduceOp, ExpandDimsOp, ReshapeOp, TransOp, JoinOp, SplitOp,
-            ConvertLayoutOp>(user)) {
+            ConvertLayoutOp, hcugpu::AccumulatorFenceOp>(user)) {
       setEncoding(user->getResults(), info, changed, user);
       continue;
     }
@@ -822,7 +845,8 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
   if (op->hasTrait<OpTrait::SameOperandsAndResultEncoding>() ||
       op->hasTrait<OpTrait::Elementwise>() ||
       isa<ReduceOp, ExpandDimsOp, ReshapeOp, TransOp, JoinOp, SplitOp, GatherOp,
-          ConvertLayoutOp, nvidia_gpu::WarpGroupDotWaitOp>(op)) {
+          ConvertLayoutOp, nvidia_gpu::WarpGroupDotWaitOp,
+          hcugpu::AccumulatorFenceOp>(op)) {
     Operation *newOp = cloneElementwise(rewriter, op, encoding);
     for (auto [oldResult, newResult] :
          llvm::zip(op->getResults(), newOp->getResults())) {
@@ -839,6 +863,10 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
 }
 
 bool canBeRemat(Operation *op) {
+  // Re-encode a fence once at its original position; never clone it into
+  // multiple uses or move the wave-state/memory scheduling boundary.
+  if (isa<hcugpu::AccumulatorFenceOp>(op))
+    return false;
   if (isa<LoadOp, StoreOp>(op))
     return !isExpensiveLoadOrStore(op);
   if (isa<AtomicRMWOp, AtomicCASOp, DotOp>(op))
@@ -1192,10 +1220,11 @@ static int64_t getByteCount(Value result, int64_t minElementCount = 0,
 
 void LayoutRematerialization::backwardRematerialization(
     ConvertLayoutOp convertOp) {
-  // DotOperand is hoisted by hoistDotOperand
+  // Data loads into DotOperand are handled by hoistDotOperand. Pure address,
+  // predicate and fill computations can also be generated directly in that
+  // layout, without materializing pointer/predicate tensors through LDS.
   RankedTensorType targetType = convertOp.getType();
-  if (isa<DotOperandEncodingAttr>(targetType.getEncoding()))
-    return;
+  bool dotOperand = isa<DotOperandEncodingAttr>(targetType.getEncoding());
   Value oldV = convertOp.getSrc();
   LDBG("check backward remat with source " << oldV << " encoding "
                                            << targetType.getEncoding());
@@ -1230,6 +1259,11 @@ void LayoutRematerialization::backwardRematerialization(
       sliceOps.insert(op);
     }
   }
+
+  if (dotOperand && llvm::any_of(sliceOps, [](Operation *op) {
+        return !isPure(op) || op->getNumRegions();
+      }))
+    return;
 
   // Compute single-use operations
   DenseMap<Operation *, bool> isSingleUse;
@@ -1328,7 +1362,16 @@ void LayoutRematerialization::backwardRematerialization(
     DBGS() << "  rematerialisation cost: " << rematerialisationCost << "\n";
   });
 
-  if (rematerialisationCost > convertLayoutCost) {
+  auto arch = getHCUArch(funcOp->getParentOfType<ModuleOp>());
+  bool partitionLoadAddress =
+      dotOperand && arch && *arch == "gfx936" &&
+      convertOp->getParentOfType<WarpSpecializeOp>() &&
+      llvm::all_of(convertOp.getResult().getUsers(),
+                   [](Operation *op) { return isa<LoadOp>(op); });
+  // A multi-wave gfx936 partition cannot implement the alternative LDS
+  // rendezvous. This is an address computation for the existing load, not a
+  // duplicated memory operation or a speculative motion across a fence.
+  if (rematerialisationCost > convertLayoutCost && !partitionLoadAddress) {
     LDBG("  skipped rematerialization due to higher cost");
     return;
   }

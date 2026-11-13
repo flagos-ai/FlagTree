@@ -1,7 +1,6 @@
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#include "mlir/IR/Matchers.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
@@ -48,6 +47,16 @@ public:
       auto unrollFactor = getUnrollFactorOrDefault(loop);
       loop->removeAttr(loopUnrollFactorAttrName);
       LDBG("Unrolling loop by " << unrollFactor << " times\n" << loop);
+      // The unroll utility computes ceilDivPositive(upper - lower, step).
+      // Pipelining can produce an empty loop with upper < lower. Preserve its
+      // zero iterations before the utility builds the remainder loop.
+      OpBuilder builder(loop);
+      Value upper = loop.getUnsignedCmp()
+                        ? builder.createOrFold<arith::MaxUIOp>(
+                              loop.getLoc(), loop.getUpperBound(), loop.getLowerBound())
+                        : builder.createOrFold<arith::MaxSIOp>(
+                              loop.getLoc(), loop.getUpperBound(), loop.getLowerBound());
+      loop.getUpperBoundMutable().assign(upper);
       auto resultLoops = loopUnrollByFactor(loop, unrollFactor);
       // Do not pipeline the epilog loop.
       if (succeeded(resultLoops) && resultLoops->epilogueLoopOp) {

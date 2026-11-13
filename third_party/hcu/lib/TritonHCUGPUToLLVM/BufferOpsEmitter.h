@@ -66,6 +66,12 @@ struct BufferEmitter {
   // load from
   Value createResourceDescriptor(Value basePtr, Value inferredStride = nullptr);
 
+  // Raw (zero-stride) resource only. The caller proves a wave-uniform,
+  // nonnegative byte offset and no wrap in the remaining lane offsets.
+  // Preserve the existing descriptor extent, subtracting the rebased prefix.
+  Value createResourceDescriptor(Value basePtr, Value inferredStride,
+                                 Value uniformByteOffset);
+
   // Emit a predicated rocdl.raw.ptr.buffer.load
   Value emitLoad(Type type, Value rsrcDesc, Value offset, Value pred,
                  Value falseVal, CacheModifier cm);
@@ -89,6 +95,9 @@ struct BufferEmitter {
                  CacheModifier cm);
 
 private:
+  // Both operands must be wave-uniform i32. This remains exact for lhs < rhs.
+  Value emitUniformUnsignedSaturatingSub(Value lhs, Value rhs);
+
   // Fill common buffer operation arguments.
   void fillCommonArgs(Type type, Value rsrcDesc, Value vOffsetElems, Value pred,
                       CacheModifier cm, bool isBufferLoad,

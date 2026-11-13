@@ -6,17 +6,32 @@
 #include "TDMUtility.h"
 #include "TargetInfo.h"
 #include "Utility.h"
+#include "WarpSpecializeUtils.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/IR/Dominance.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Types.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
+
+#include <algorithm>
+#include <functional>
+#include <memory>
 
 using namespace mlir;
 using namespace mlir::triton::gpu;
@@ -29,6 +44,490 @@ using ::mlir::triton::gpu::getTotalElemsPerThread;
 using ::mlir::triton::HCU::ISAFamily;
 
 namespace {
+
+// A masked raw buffer load already returns all-zero bits for the OOB
+// sentinel. Recognize the original constant before unpack/insert-element
+// construction hides it from BufferEmitter's LLVM constant matcher. Only an
+// explicit all-bit-zero constant qualifies: -0, NaNs, mixed values and unknown
+// SSA values keep their original fallback selects. No mask fact is inferred.
+static bool isAllZeroBitsConstant(Value value) {
+  Attribute attr;
+  if (!value || !matchPattern(value, m_Constant(&attr)))
+    return false;
+  if (auto integer = dyn_cast<IntegerAttr>(attr))
+    return integer.getValue().isZero();
+  if (auto real = dyn_cast<FloatAttr>(attr))
+    return real.getValue().bitcastToAPInt().isZero();
+  if (auto integers = dyn_cast<DenseIntElementsAttr>(attr))
+    return integers.isSplat() && integers.getSplatValue<APInt>().isZero();
+  if (auto reals = dyn_cast<DenseFPElementsAttr>(attr))
+    return reals.isSplat() &&
+           reals.getSplatValue<APFloat>().bitcastToAPInt().isZero();
+  return false;
+}
+
+static Value peelBufferMaskAggregate(Value value);
+
+// Prove only explicit scalar integer uniformity. In particular, a scalar
+// LLVM type, a load result, and an arbitrary PHI are not uniformity proofs.
+// The CF recurrence case is the ordinary SCF-to-CF integer induction schema:
+// one dominating initial edge and one backedge with uniform arithmetic and
+// control. No warp-specialization marker or matrix configuration is used.
+static bool isRematerializationUniform(Value root,
+                                      bool loopCycleControlsOnly = false) {
+  DenseMap<Value, bool> memo;
+  llvm::SmallDenseSet<Value, 8> induction;
+  llvm::SmallDenseSet<Value, 64> active;
+  unsigned steps = 0;
+  auto arithmetic = [](Operation *op) {
+    // A defined unsigned quotient/remainder of CTA-uniform values remains
+    // uniform for every nonzero constant divisor, not just powers of two.
+    // This is a frontier proof: the existing division stays at its original
+    // position and is reused, never speculated or cloned at another lane.
+    if (isa<arith::DivUIOp, arith::RemUIOp, LLVM::UDivOp, LLVM::URemOp>(op)) {
+      APInt divisor;
+      return matchPattern(op->getOperand(1), m_ConstantInt(&divisor)) &&
+             !divisor.isZero();
+    }
+    return isa<arith::ConstantOp, arith::AddIOp, arith::SubIOp,
+               arith::MulIOp, arith::AndIOp, arith::OrIOp, arith::XOrIOp,
+               arith::ShLIOp, arith::ShRUIOp, arith::ShRSIOp,
+               arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
+               arith::CmpIOp, arith::SelectOp,
+               LLVM::ConstantOp, LLVM::AddOp, LLVM::SubOp, LLVM::MulOp,
+               LLVM::AndOp, LLVM::OrOp, LLVM::XOrOp, LLVM::ShlOp,
+               LLVM::LShrOp, LLVM::AShrOp, LLVM::SExtOp, LLVM::ZExtOp,
+               LLVM::TruncOp, LLVM::ICmpOp, LLVM::SelectOp>(op);
+  };
+  std::function<bool(Value)> prove = [&](Value value) -> bool {
+    if (loopCycleControlsOnly) {
+      value = peelBufferMaskAggregate(value);
+      if (!value)
+        return false;
+    }
+    if (!isa<IntegerType>(value.getType()) || ++steps > 512)
+      return false;
+    if (induction.contains(value))
+      return true;
+    if (auto it = memo.find(value); it != memo.end())
+      return it->second;
+    if (!active.insert(value).second)
+      return false;
+    auto finish = [&](bool result) {
+      active.erase(value);
+      memo[value] = result;
+      return result;
+    };
+    if (auto arg = dyn_cast<BlockArgument>(value)) {
+      Block *block = arg.getOwner();
+      Operation *parent = block->getParentOp();
+      if (auto func = dyn_cast<LLVM::LLVMFuncOp>(parent)) {
+        auto marker = func->getAttrOfType<IntegerAttr>("nvvm.kernel");
+        if (block == &func.getBody().front() && triton::isKernel(func) &&
+            marker && marker.getValue().isOne())
+          return finish(true);
+      }
+      // Explicit capture is an identity edge, not a new uniformity fact.
+      if (auto parts = dyn_cast<WarpSpecializePartitionsOp>(parent)) {
+        if (block == &block->getParent()->front()) {
+          auto ws = parts.getParentOp();
+          return finish(arg.getArgNumber() < ws.getExplicitCaptures().size() &&
+                        prove(ws.getExplicitCaptures()[arg.getArgNumber()]));
+        }
+        // Non-entry region arguments are ordinary CFG values, not captures.
+      }
+      if (!block->hasNoPredecessors()) {
+        SmallVector<std::pair<Block *, Value>> incoming;
+        bool valid = true;
+        for (Block *pred : block->getPredecessors()) {
+          Operation *term = pred->getTerminator();
+          if (auto branch = dyn_cast<cf::BranchOp>(term)) {
+            incoming.emplace_back(pred, branch.getDestOperands()[arg.getArgNumber()]);
+          } else if (auto branch = dyn_cast<LLVM::BrOp>(term)) {
+            incoming.emplace_back(pred, branch.getDestOperands()[arg.getArgNumber()]);
+          } else {
+            valid = false;
+          }
+        }
+        if (valid && incoming.size() == 2) {
+          DominanceInfo dominance(parent);
+          auto a = incoming[0], b = incoming[1];
+          if (dominance.dominates(block, a.first))
+            std::swap(a, b);
+          // Exactly one initial edge and one actual backedge.
+          if (!dominance.dominates(block, a.first) &&
+              dominance.dominates(block, b.first) && prove(a.second)) {
+            induction.insert(value);
+            valid = prove(b.second);
+            // A recurrence depends on control that can return to its
+            // backedge. A divergent branch after the loop cannot change the
+            // induction value. Keep existing callers' conservative scope;
+            // buffer-mask factoring opts into the natural-cycle scope.
+            llvm::SmallPtrSet<Block *, 32> cycle;
+            if (loopCycleControlsOnly) {
+              SmallVector<Block *> reverse{b.first};
+              while (valid && !reverse.empty()) {
+                Block *cursor = reverse.pop_back_val();
+                if (!cycle.insert(cursor).second)
+                  continue;
+                if (cycle.size() > 64) { valid = false; break; }
+                if (cursor == block)
+                  continue;
+                for (Block *pred : cursor->getPredecessors())
+                  if (pred->getParent() == block->getParent() &&
+                      dominance.dominates(block, pred))
+                    reverse.push_back(pred);
+              }
+              valid = valid && cycle.contains(block);
+            }
+            SmallVector<Block *> pending{block};
+            llvm::SmallPtrSet<Block *, 32> seen;
+            while (valid && !pending.empty()) {
+              Block *cursor = pending.pop_back_val();
+              if (!seen.insert(cursor).second)
+                continue;
+              if (seen.size() > 64) { valid = false; break; }
+              Operation *term = cursor->getTerminator();
+              if (auto branch = dyn_cast<cf::CondBranchOp>(term))
+                valid = prove(branch.getCondition());
+              else if (auto branch = dyn_cast<LLVM::CondBrOp>(term))
+                valid = prove(branch.getCondition());
+              else if (!isa<cf::BranchOp, LLVM::BrOp>(term))
+                valid = term->getNumSuccessors() == 0;
+              for (Block *next : cursor->getSuccessors())
+                if (next != block && next->getParent() == block->getParent() &&
+                    dominance.dominates(block, next) &&
+                    (!loopCycleControlsOnly || cycle.contains(next)))
+                  pending.push_back(next);
+            }
+            induction.erase(value);
+            return finish(valid);
+          }
+        }
+      }
+      return finish(false);
+    }
+    Operation *op = value.getDefiningOp();
+    if (!op || op->getNumRegions() || op->getNumSuccessors() ||
+        op->getNumResults() != 1)
+      return finish(false);
+    StringRef name = op->getName().getStringRef();
+    if (isa<triton::GetProgramIdOp, triton::GetNumProgramsOp>(op) ||
+        name == "rocdl.workgroup.id.x" || name == "rocdl.workgroup.id.y" ||
+        name == "rocdl.workgroup.id.z" || name == "rocdl.grid.size.x" ||
+        name == "rocdl.grid.size.y" || name == "rocdl.grid.size.z")
+      return finish(true);
+    return finish(arithmetic(op) && llvm::all_of(op->getOperands(), prove));
+  };
+  return prove(root);
+}
+
+// Factor a proved uniform Boolean conjunct out of a raw-buffer load mask.
+// NUM_RECORDS=0 suppresses the same accesses as the existing OOB offset,
+// without making the per-lane address depend on a loop-uniform condition.
+// Keep the original vector length, offsets, and nonuniform mask conjuncts.
+// This deliberately reuses the existing integer/CFG uniformity proof: a
+// scalar LLVM type, an arbitrary PHI, or a lane/load result is insufficient.
+// Prove the inputs to an integer comparison separately. If the comparison
+// is a loop exit, the induction proof may revisit it under the induction
+// hypothesis. Starting the query at the comparison itself would reject that
+// valid recursion as a value cycle.
+static bool isUniformBranchCondition(Value condition) {
+  Operation *definition = condition.getDefiningOp();
+  if (definition && isa<arith::CmpIOp, LLVM::ICmpOp>(definition))
+    return llvm::all_of(definition->getOperands(), [](Value operand) {
+      return isRematerializationUniform(operand, true);
+    });
+  return isRematerializationUniform(condition, true);
+}
+
+// A uniform mask is not an EXEC proof. A terminal gfx936 partition
+// starts on a wave boundary, and retains all its lanes when its own and
+// the enclosing kernel's control flow are uniform. Inspect the original
+// CFG before individual lowering patterns introduce masked branches.
+static bool preservesFullWaveExecution(Region &region,
+                                       Operation *specialization = nullptr) {
+  for (Block &block : region) {
+    Operation *terminator = block.getTerminator();
+    if (auto branch = dyn_cast<cf::CondBranchOp>(terminator)) {
+      if (!isUniformBranchCondition(branch.getCondition()))
+        return false;
+    } else if (auto branch = dyn_cast<LLVM::CondBrOp>(terminator)) {
+      if (!isUniformBranchCondition(branch.getCondition()))
+        return false;
+    } else if (terminator->getNumSuccessors() &&
+               !isa<cf::BranchOp, LLVM::BrOp>(terminator)) {
+      return false;
+    }
+    for (Operation &op : block.without_terminator()) {
+      if (&op == specialization)
+        continue;
+      if (op.getNumRegions() ||
+          isa<CallOpInterface, LLVM::CallIntrinsicOp, LLVM::InlineAsmOp,
+              triton::ElementwiseInlineAsmOp>(op))
+        return false;
+    }
+  }
+  return true;
+}
+
+static llvm::DenseSet<Operation *> collectFullWaveBufferCopies(ModuleOp module,
+                                                              StringRef arch) {
+  llvm::DenseSet<Operation *> copies;
+  if (arch != "gfx936" || TritonGPUDialect::getNumCTAs(module) != 1 ||
+      TritonGPUDialect::getThreadsPerWarp(module) != 64)
+    return copies;
+  auto base = module->getAttrOfType<IntegerAttr>("ttg.num-warps");
+  auto total = module->getAttrOfType<IntegerAttr>("ttg.total-num-warps");
+  if (!base || !total || base.getInt() < 1 || total.getInt() > 16)
+    return copies;
+
+  module.walk([&](WarpSpecializeOp ws) {
+    auto kernel = dyn_cast<LLVM::LLVMFuncOp>(ws->getParentOp());
+    auto starts = ws.getWarpGroupStartIds();
+    if (!kernel || !triton::isKernel(kernel) || ws.getNumResults() ||
+        !starts || starts->size() != ws.getPartitionRegions().size())
+      return;
+    // The manual specialization pass establishes these exact wave intervals.
+    int64_t next = base.getInt();
+    for (auto [start, waves] : llvm::zip(*starts, ws.getPartitionNumWarps())) {
+      if (start != next || waves < 1)
+        return;
+      next += waves;
+    }
+    if (next != total.getInt() ||
+        !preservesFullWaveExecution(kernel.getBody(), ws.getOperation()))
+      return;
+    SmallVector<Region *> regions{&ws.getDefaultRegion()};
+    llvm::append_range(regions, ws.getPartitionRegions());
+    for (Region *region : regions) {
+      if (!preservesFullWaveExecution(*region))
+        continue;
+      for (Block &block : *region)
+        for (auto copy : block.getOps<triton::hcugpu::BufferLoadToLocalOp>())
+          copies.insert(copy.getOperation());
+    }
+  });
+  return copies;
+}
+
+static Value peelBufferMaskAggregate(Value value) {
+  unsigned steps = 0;
+  while (true) {
+    // Tensor splats currently introduce same-type integer bitcasts. They
+    // are identity edges, not additional uniformity facts.
+    if (auto cast = value.getDefiningOp<LLVM::BitcastOp>()) {
+      if (cast.getArg().getType() != value.getType() ||
+          !isa<IntegerType>(value.getType()) || ++steps > 512)
+        return {};
+      value = cast.getArg();
+      continue;
+    }
+    auto extract = value.getDefiningOp<LLVM::ExtractValueOp>();
+    if (!extract)
+      return value;
+    auto position = extract.getPosition();
+    auto type =
+        dyn_cast<LLVM::LLVMStructType>(extract.getContainer().getType());
+    if (position.size() != 1 || !type || type.isOpaque() ||
+        position[0] < 0 || position[0] >= type.getBody().size() ||
+        type.getBody()[position[0]] != value.getType())
+      return {};
+    Value container = extract.getContainer();
+    while (true) {
+      if (++steps > 512)
+        return {};
+      auto insert = container.getDefiningOp<LLVM::InsertValueOp>();
+      if (!insert || insert.getPosition().size() != 1 ||
+          insert.getContainer().getType() != type || insert.getType() != type)
+        return {};
+      int64_t field = insert.getPosition()[0];
+      if (field < 0 || field >= type.getBody().size() ||
+          insert.getValue().getType() != type.getBody()[field])
+        return {};
+      if (field == position[0]) {
+        value = insert.getValue();
+        break;
+      }
+      container = insert.getContainer();
+    }
+  }
+}
+
+static Value findUniformBufferMaskFactor(Value value, unsigned depth = 0) {
+  if (!value || !value.getType().isInteger(1) || depth > 32)
+    return {};
+  value = peelBufferMaskAggregate(value);
+  if (!value)
+    return {};
+  Attribute constant;
+  if (matchPattern(value, m_Constant(&constant)))
+    return {};
+  if (isRematerializationUniform(value, /*loopCycleControlsOnly=*/true))
+    return value;
+  Operation *op = value.getDefiningOp();
+  if (!op || !isa<arith::AndIOp, LLVM::AndOp>(op))
+    return {};
+  if (Value factor = findUniformBufferMaskFactor(op->getOperand(0), depth + 1))
+    return factor;
+  return findUniformBufferMaskFactor(op->getOperand(1), depth + 1);
+}
+
+static bool collectBufferMaskResidual(Value value, Value factor,
+                                      SmallVectorImpl<Value> &residual,
+                                      bool &found, unsigned depth = 0) {
+  if (depth > 32 || !value.getType().isInteger(1))
+    return false;
+  // Unknown aggregates remain opaque residual predicates, never proof roots.
+  if (Value peeled = peelBufferMaskAggregate(value))
+    value = peeled;
+  if (value == factor) {
+    found = true;
+    return true;
+  }
+  Operation *op = value.getDefiningOp();
+  if (op && isa<arith::AndIOp, LLVM::AndOp>(op))
+    return collectBufferMaskResidual(op->getOperand(0), factor, residual,
+                                     found, depth + 1) &&
+           collectBufferMaskResidual(op->getOperand(1), factor, residual,
+                                     found, depth + 1);
+  residual.push_back(value);
+  return true;
+}
+
+static bool factorUniformBufferLoadMask(
+    ConversionPatternRewriter &rewriter, Location loc, Value &resource,
+    SmallVectorImpl<Value> &maskElems, unsigned vec) {
+  if (maskElems.empty())
+    return false;
+  Value factor = findUniformBufferMaskFactor(maskElems.front());
+  auto descriptor = resource.getDefiningOp<ROCDL::MakeBufferRsrcOp>();
+  if (!factor || !descriptor || descriptor->getNumOperands() != 4 ||
+      !descriptor->getOperand(2).getType().isInteger(64))
+    return false;
+
+  // All emitted transactions must contain the exact same proved factor.
+  // Plan first, so an unsupported predicate leaves the old lowering intact.
+  SmallVector<SmallVector<Value>> residuals;
+  for (unsigned i = 0; i < maskElems.size(); i += vec) {
+    SmallVector<Value> residual;
+    bool found = false;
+    if (!collectBufferMaskResidual(maskElems[i], factor, residual, found) ||
+        !found)
+      return false;
+    residuals.push_back(std::move(residual));
+  }
+
+  TritonLLVMOpBuilder b(loc, rewriter);
+  Value records = b.select(factor, descriptor->getOperand(2), b.int_val(64, 0));
+  resource = rewriter.createOrFold<ROCDL::MakeBufferRsrcOp>(
+      loc, resource.getType(), descriptor->getOperand(0),
+      descriptor->getOperand(1), records, descriptor->getOperand(3));
+  for (unsigned i = 0, j = 0; i < maskElems.size(); i += vec, ++j) {
+    Value pred = b.int_val(1, 1);
+    for (Value leaf : residuals[j])
+      pred = b.and_(pred, leaf);
+    maskElems[i] = pred;
+  }
+  return true;
+}
+
+
+
+// Store descriptors need the complete acyclic integer grid-index DAG.
+// Preserve the existing load/rematerialization acceptance domain. Every new
+// operation is deterministic integer arithmetic on recursively uniform inputs;
+// unknown calls, loads, thread/lane IDs and unproved CFG values remain rejected.
+static bool isBufferStoreRebaseUniform(Value root) {
+  DenseMap<Value,bool> memo;
+  llvm::SmallDenseSet<Value,64> active;
+  unsigned steps=0;
+  std::function<bool(Value)> prove=[&](Value value)->bool {
+    if (!isa<IntegerType>(value.getType()) || ++steps>512) return false;
+    if (auto it=memo.find(value);it!=memo.end()) return it->second;
+    if (isRematerializationUniform(value)) {memo[value]=true;return true;}
+    if (!active.insert(value).second) return false;
+    auto finish=[&](bool result) {active.erase(value);memo[value]=result;return result;};
+    Operation *op=value.getDefiningOp();
+    if (!op || op->getNumRegions() || op->getNumSuccessors() || op->getNumResults()!=1)
+      return finish(false);
+    StringRef name=op->getName().getStringRef();
+    bool arithmetic=isa<arith::AddIOp,arith::SubIOp,arith::MulIOp,
+      arith::AndIOp,arith::OrIOp,arith::XOrIOp,arith::ShLIOp,arith::ShRUIOp,
+      arith::ShRSIOp,arith::ExtSIOp,arith::ExtUIOp,arith::TruncIOp,
+      arith::CmpIOp,arith::SelectOp,arith::DivSIOp,arith::DivUIOp,
+      arith::RemSIOp,arith::RemUIOp,arith::MinSIOp,arith::MinUIOp,
+      arith::MaxSIOp,arith::MaxUIOp,LLVM::AddOp,LLVM::SubOp,LLVM::MulOp,
+      LLVM::AndOp,LLVM::OrOp,LLVM::XOrOp,LLVM::ShlOp,LLVM::LShrOp,
+      LLVM::AShrOp,LLVM::SExtOp,LLVM::ZExtOp,LLVM::TruncOp,LLVM::ICmpOp,
+      LLVM::SelectOp,LLVM::SDivOp,LLVM::UDivOp,LLVM::SRemOp,LLVM::URemOp>(op)
+      || name=="llvm.intr.smin" || name=="llvm.intr.smax"
+      || name=="llvm.intr.umin" || name=="llvm.intr.umax";
+    return finish(arithmetic && llvm::all_of(op->getOperands(),prove));
+  };
+  return prove(root);
+}
+
+// A deliberately small range proof for explicit offset terms. Bounds apply
+// to every tensor lane, independently of masks. Unknown arguments/loads/PHIs
+// and arithmetic that might wrap fall back to the existing offset lowering.
+static std::optional<uint64_t> getNonNegativeOffsetMax(Value value,
+                                                     unsigned depth = 0) {
+  if (depth > 16)
+    return std::nullopt;
+  auto ty = dyn_cast<IntegerType>(getElementTypeOrSelf(value.getType()));
+  if (!ty || (ty.getWidth() != 32 && ty.getWidth() != 64))
+    return std::nullopt;
+  constexpr uint64_t limit = INT32_MAX;
+  Attribute attr;
+  if (matchPattern(value, m_Constant(&attr))) {
+    if (auto integer = dyn_cast<IntegerAttr>(attr)) {
+      const APInt &v = integer.getValue();
+      if (!v.isNegative() && v.getActiveBits() <= 31)
+        return v.getZExtValue();
+    }
+    if (auto dense = dyn_cast<DenseIntElementsAttr>(attr)) {
+      if (dense.getNumElements() > 4096 && !dense.isSplat())
+        return std::nullopt;
+      uint64_t maximum = 0;
+      for (const APInt &v : dense.getValues<APInt>()) {
+        if (v.isNegative() || v.getActiveBits() > 31)
+          return std::nullopt;
+        maximum = std::max(maximum, v.getZExtValue());
+      }
+      return maximum;
+    }
+    return std::nullopt;
+  }
+  if (auto range = value.getDefiningOp<triton::MakeRangeOp>()) {
+    if (range.getStart() >= 0 && range.getEnd() > range.getStart())
+      return uint64_t(range.getEnd() - 1);
+  }
+  Operation *op = value.getDefiningOp();
+  if (!op)
+    return std::nullopt;
+  if (isa<triton::SplatOp, triton::ExpandDimsOp, triton::BroadcastOp,
+          ConvertLayoutOp, arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp>(op))
+    return getNonNegativeOffsetMax(op->getOperand(0), depth + 1);
+  if (!isa<arith::AddIOp, arith::MulIOp, arith::AndIOp>(op))
+    return std::nullopt;
+  auto a = getNonNegativeOffsetMax(op->getOperand(0), depth + 1);
+  auto b = getNonNegativeOffsetMax(op->getOperand(1), depth + 1);
+  // AND with any nonnegative bounded value clears the sign bit even when
+  // the other operand is unknown (including an arbitrary kernel argument).
+  if (isa<arith::AndIOp>(op))
+    return a && b ? std::min(*a, *b) : (a ? a : b);
+  if (!a || !b)
+    return std::nullopt;
+  if (isa<arith::AddIOp>(op) && *a <= limit - *b)
+    return *a + *b;
+  if (isa<arith::MulIOp>(op) && (!*b || *a <= limit / *b))
+    return *a * *b;
+  return std::nullopt;
+}
+
+#include "BufferStoreScalarOffset.inc"
+#include "BufferStorePairing.inc"
 
 std::optional<const char *> getHCUGPUMemScopeStr(MemSyncScope scope) {
   switch (scope) {
@@ -304,13 +803,14 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
   LogicalResult canWriteCoalesced(RewriterBase &rewriter, Operation *op,
                                   RankedTensorType srcTy, MemDescType dstTy,
                                   unsigned vectorSize,
-                                  bool requiresSrcPtrSwizzling) const {
+                                  bool requiresSrcPtrSwizzling,
+                                  bool isBuffer = false) const {
     if (targetInfo.supportsDirectToLDSScattering()) {
       return success();
     }
 
     int vecBits = vectorSize * dstTy.getElementTypeBitWidth();
-    if (!targetInfo.supportsDirectToLdsLoadBitWidth(vecBits)) {
+    if (!targetInfo.supportsDirectToLdsLoadBitWidth(vecBits, isBuffer)) {
       LDBG(*op << " results in unsupported load bitwidth: " << vecBits);
       return failure();
     }
@@ -463,19 +963,231 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
                            swizzleLaneOffset);
   }
 
+  // Replay a closed scalar-integer address DAG at the selected lane. Only
+  // gfx936 kernel-entry integer parameters use the uniform dispatch ABI;
+  // other block arguments remain unsupported. No convergent op is moved.
+  Value tryRematerializeIntegerAtLane(RewriterBase &rewriter, Location loc,
+                                    Value offset, Value selectedLane,
+                                    bool allowUniformFrontier = false) const {
+    bool isPredicate = offset.getType().isInteger(1);
+    if ((!offset.getType().isInteger(32) && !isPredicate) ||
+        lookupThreadsPerWarp(rewriter) != 64)
+      return {};
+    DenseMap<Value, Value> scalarized;
+    unsigned aggregateSteps = 0;
+    auto scalarize = [&](Value original) -> Value {
+      if (auto it = scalarized.find(original); it != scalarized.end())
+        return it->second;
+      Value value = original;
+      while (auto extract = value.getDefiningOp<LLVM::ExtractValueOp>()) {
+        auto position = extract.getPosition();
+        auto type =
+            dyn_cast<LLVM::LLVMStructType>(extract.getContainer().getType());
+        if (position.size() != 1 || !type || type.isOpaque() ||
+            position[0] < 0 || position[0] >= type.getBody().size() ||
+            type.getBody()[position[0]] != value.getType())
+          return {};
+        Value container = extract.getContainer();
+        while (true) {
+          if (++aggregateSteps > (allowUniformFrontier ? 4096u : 512u)) {
+            LDBG("selected-lane: aggregate scan budget exhausted");
+            return {};
+          }
+          auto insert = container.getDefiningOp<LLVM::InsertValueOp>();
+          if (!insert || insert.getPosition().size() != 1 ||
+              insert.getContainer().getType() != type ||
+              insert.getType() != type)
+            return {};
+          int64_t field = insert.getPosition()[0];
+          if (field < 0 || field >= type.getBody().size() ||
+              insert.getValue().getType() != type.getBody()[field])
+            return {};
+          if (field == position[0]) {
+            value = insert.getValue();
+            break;
+          }
+          container = insert.getContainer();
+        }
+      }
+      scalarized[original] = value;
+      return value;
+    };
+    auto scalarInt = [](Type type) {
+      return type.isInteger(1) || type.isInteger(32) || type.isInteger(64);
+    };
+    llvm::SmallDenseSet<Value, 64> visited;
+    SmallVector<Operation *> ordered;
+    SmallVector<Value> tids;
+    SmallVector<Value> uniformKernelArgs;
+    llvm::SmallDenseSet<Value, 64> uniformFrontier;
+    std::function<bool(Value)> visit = [&](Value original) {
+      Value value = scalarize(original);
+      if (!value || !scalarInt(value.getType())) {
+        LDBG("selected-lane: cannot scalarize " << original);
+        return false;
+      }
+      // Keep the older explicit-uniform-split path exactly as before. Reused
+      // uniform frontier values are not cloned DAG nodes; account for them
+      // separately from the unchanged 64-node cloning budget. Whole offsets
+      // can require more bounded aggregate unpacking than the older varying
+      // fragment (4096 versus 512 insert/extract visits).
+      if (allowUniformFrontier && isRematerializationUniform(value)) {
+        if (uniformFrontier.insert(value).second)
+          uniformKernelArgs.push_back(value);
+        return true;
+      }
+      if (!visited.insert(value).second)
+        return true;
+      if (visited.size() > 64) {
+        LDBG("selected-lane: value budget exhausted");
+        return false;
+      }
+      if (auto argument = dyn_cast<BlockArgument>(value)) {
+        auto function = dyn_cast<LLVM::LLVMFuncOp>(
+            argument.getOwner()->getParentOp());
+        auto kernelMarker = function
+                                ? function->getAttrOfType<IntegerAttr>("nvvm.kernel")
+                                : IntegerAttr{};
+        // FuncOpConversion sets nvvm.kernel for HCU kernel entries too.
+        // Require its marker and the entry block, not merely a scalar type
+        // or the visibility of an arbitrary LLVM function.
+        if (targetInfo.getArch() != "gfx936" || !function ||
+            !triton::isKernel(function) || !kernelMarker ||
+            !kernelMarker.getValue().isOne() ||
+            argument.getOwner() != &function.getBody().front()) {
+          LDBG("selected-lane: unproven uniform argument " << value);
+          return false;
+        }
+        uniformKernelArgs.push_back(value);
+        return true;
+      }
+      Operation *op = value.getDefiningOp();
+      if (!op || op->getNumResults() != 1 || op->getNumRegions() ||
+          op->getNumSuccessors())
+        return false;
+      bool physicalThreadX = isa<ROCDL::ThreadIdXOp>(op);
+      // getThreadId's exact pre-ROCDL spelling; replace the whole i32 leaf.
+      if (auto cast = dyn_cast<arith::IndexCastOp>(op))
+        if (cast.getIn().getType().isIndex() && value.getType().isInteger(32))
+          if (auto tid = cast.getIn().getDefiningOp<::mlir::gpu::ThreadIdOp>())
+            physicalThreadX = tid.getDimension() == ::mlir::gpu::Dimension::x;
+      if (physicalThreadX) {
+        if (!value.getType().isInteger(32))
+          return false;
+        tids.push_back(value);
+        return true;
+      }
+      bool allowed = isa<LLVM::AddOp, LLVM::SubOp, LLVM::MulOp, LLVM::AndOp,
+                         LLVM::OrOp, LLVM::XOrOp, LLVM::SExtOp, LLVM::ZExtOp,
+                         LLVM::TruncOp, LLVM::ICmpOp, LLVM::SelectOp>(op);
+      if (auto constant = dyn_cast<LLVM::ConstantOp>(op))
+        allowed = isa<IntegerAttr>(constant.getValue());
+      if (isa<LLVM::BitcastOp>(op))
+        allowed = op->getOperand(0).getType() == value.getType();
+      if (isa<LLVM::ShlOp, LLVM::LShrOp, LLVM::AShrOp, LLVM::UDivOp,
+              LLVM::URemOp>(op)) {
+        Value rhs = scalarize(op->getOperand(1));
+        APInt amount;
+        if (!rhs || !matchPattern(rhs, m_ConstantInt(&amount)))
+          return false;
+        if (isa<LLVM::UDivOp, LLVM::URemOp>(op))
+          allowed = !amount.isNegative() && amount.isPowerOf2();
+        else
+          allowed = amount.ult(cast<IntegerType>(value.getType()).getWidth());
+      }
+      // Relative thread IDs and other scalar integer address arithmetic may
+      // still be in arith during this conversion. Match the same closed
+      // semantics, only on the newly proven-frontier path. Do not lower or
+      // move an unknown op merely because its result type is scalar.
+      if (allowUniformFrontier) {
+        allowed |= isa<arith::AddIOp, arith::SubIOp, arith::MulIOp,
+                       arith::AndIOp, arith::OrIOp, arith::XOrIOp,
+                       arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
+                       arith::CmpIOp, arith::SelectOp>(op);
+        if (auto constant = dyn_cast<arith::ConstantOp>(op))
+          allowed |= isa<IntegerAttr>(constant.getValue());
+        if (isa<arith::ShLIOp, arith::ShRUIOp, arith::ShRSIOp,
+                arith::DivUIOp, arith::RemUIOp>(op)) {
+          Value rhs = scalarize(op->getOperand(1));
+          APInt amount;
+          if (!rhs || !matchPattern(rhs, m_ConstantInt(&amount)))
+            return false;
+          if (isa<arith::DivUIOp, arith::RemUIOp>(op))
+            allowed = !amount.isNegative() && amount.isPowerOf2();
+          else
+            allowed = amount.ult(cast<IntegerType>(value.getType()).getWidth());
+        }
+      }
+      if (!allowed) {
+        LDBG("selected-lane: unsupported operation " << *op);
+        return false;
+      }
+      for (Value operand : op->getOperands())
+        if (!visit(operand))
+          return false;
+      ordered.push_back(op);
+      return true;
+    };
+    if (!visit(offset) || (!isPredicate && tids.empty())) {
+      LDBG("selected-lane: fallback, frontier=" << allowUniformFrontier
+           << ", values=" << visited.size() << ", aggregates=" << aggregateSteps
+           << ", thread leaves=" << tids.size());
+      return {};
+    }
+    LDBG("selected-lane: success, frontier=" << allowUniformFrontier
+         << ", values=" << visited.size() << ", aggregates=" << aggregateSteps);
+    // Validation above emitted no IR. Preserve physical warp bits and replace
+    // all workitem-id leaves together. Reuse only ABI-proven entry parameters;
+    // no program-id, PHI, device-function parameter or memory read is guessed.
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    Value tid = ROCDL::ThreadIdXOp::create(rewriter, loc, i32_ty);
+    Value selectedTid = b.or_(b.and_(tid, b.i32_val(-64)), selectedLane);
+    IRMapping mapping;
+    for (Value argument : uniformKernelArgs)
+      mapping.map(argument, argument);
+    for (Value leaf : tids)
+      mapping.map(leaf, selectedTid);
+    for (Operation *op : ordered) {
+      for (Value operand : op->getOperands())
+        mapping.map(operand, mapping.lookup(scalarized.lookup(operand)));
+      rewriter.clone(*op, mapping);
+    }
+    return mapping.lookup(scalarized.lookup(offset));
+  }
+
   void applySwizzling(RewriterBase &rewriter, Location loc, Value &srcOrOffset,
                       Value &mask, Value laneId,
-                      Value swizzleLaneOffset) const {
+                      Value swizzleLaneOffset,
+                      bool rematerializeOffset = false,
+                      bool wholeOffset = false,
+                      bool fullWave = false) const {
     TritonLLVMOpBuilder b(loc, rewriter);
     // laneId + swizzleOffset will always stay inside the warp [0,
     // threadsPerWarp) because we only swizzle inside a warp
     Value swizzledLaneId = b.add(laneId, swizzleLaneOffset);
     // Shuffle based on swizzleLaneId to apply the swizzling
-    srcOrOffset =
-        targetInfo.shuffleIdx(rewriter, loc, srcOrOffset, swizzledLaneId);
+    Value recomputed;
+    if (rematerializeOffset) {
+      recomputed = tryRematerializeIntegerAtLane(
+          rewriter, loc, srcOrOffset, swizzledLaneId, wholeOffset);
+      // Preserve every previously successful explicit split. Only its failed
+      // closed-DAG attempt needs the additional uniform-frontier proof.
+      if (!recomputed && !wholeOffset)
+        recomputed = tryRematerializeIntegerAtLane(
+            rewriter, loc, srcOrOffset, swizzledLaneId, true);
+    }
+    srcOrOffset = recomputed ? recomputed
+                            : targetInfo.shuffleIdx(rewriter, loc, srcOrOffset,
+                                                    swizzledLaneId);
 
     if (mask) {
-      mask = shuffleMask(rewriter, b, loc, targetInfo, swizzledLaneId, mask);
+      Value remappedMask;
+      if (fullWave)
+        remappedMask = tryRematerializeIntegerAtLane(
+            rewriter, loc, mask, swizzledLaneId, /*allowUniformFrontier=*/true);
+      mask = remappedMask ? remappedMask
+                          : shuffleMask(rewriter, b, loc, targetInfo,
+                                        swizzledLaneId, mask);
     }
   }
 
@@ -538,15 +1250,13 @@ struct DirectToLdsLoadConversionBase : public LoadStoreConversionBase {
       // When this sequence occurs inside a loop, the MachineLICM pass does not
       // hoist it because `v_readfirstlane` is convergent. Since both
       // `workitem.id.x` and `wave_id` are constant at runtime, their
-      // computation can be safely hoisted to the function entry block.
+      // computation can be hoisted to the nearest isolated region entry.
+      // A warp-specialized worker cannot use an SSA value from the kernel
+      // entry, and its wave ID must remain relative to its own partition.
       auto insertPt = rewriter.saveInsertionPoint();
-      Operation *parentOp = insertPt.getBlock()->getParentOp();
-      while (!isa<LLVM::LLVMFuncOp>(parentOp)) {
-        parentOp = parentOp->getParentOp();
-      }
-
-      auto funcOp = cast<LLVM::LLVMFuncOp>(parentOp);
-      rewriter.setInsertionPointToStart(&funcOp.getBody().front());
+      Region *scope = triton::HCU::warpSpecializeScope(
+          &insertPt.getBlock()->front());
+      rewriter.setInsertionPointToStart(&scope->front());
 
       std::tie(laneId, warpId) = getLaneAndWarpId(rewriter, loc);
       auto call = LLVM::createLLVMIntrinsicCallOp(
@@ -761,7 +1471,7 @@ struct BufferLoadOpConversion
 
     // Get the `other` value (if any)
     SmallVector<Value> otherElems;
-    if (llOther)
+    if (llOther && !isAllZeroBitsConstant(other))
       otherElems = unpackLLElements(loc, llOther, rewriter);
 
     // FIXME: Explicitly disable cache swizzling(introduced by oai commit
@@ -771,6 +1481,14 @@ struct BufferLoadOpConversion
     // Create the resource descriptor and then emit the buffer_load intrinsic(s)
     // Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr, llStride);
     Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr);
+    auto module = op->getParentOfType<ModuleOp>();
+    auto target = module->getAttrOfType<StringAttr>("ttg.target");
+    // Nonzero, negative-zero, and unknown fallback values retain the entire
+    // old predicate/select path. This optimization changes regular raw loads
+    // only; direct-to-LDS transfers and their synchronization are untouched.
+    if (mask && otherElems.empty() && target &&
+        target.getValue() == "hip:gfx936")
+      factorUniformBufferLoadMask(rewriter, loc, rsrcDesc, maskElems, vec);
     SmallVector<Value> loadedVals;
     Type vecTy = LLVM::getVectorType(valueElemTy, vec);
     for (size_t vecStart = 0; vecStart < numElems; vecStart += vec) {
@@ -807,7 +1525,11 @@ struct BufferLoadToLocalOpConversion
                                 ModuleAxisInfoAnalysis &axisAnalysisPass,
                                 PatternBenefit benefit)
       : ConvertOpToLLVMPattern(converter, benefit),
-        DirectToLdsLoadConversionBase(targetInfo, axisAnalysisPass) {}
+        DirectToLdsLoadConversionBase(targetInfo, axisAnalysisPass),
+        fullWaveCopies(collectFullWaveBufferCopies(axisAnalysisPass.getModuleOp(),
+                                                    targetInfo.getArch())) {}
+
+  const llvm::DenseSet<Operation *> fullWaveCopies;
 
   LogicalResult
   matchAndRewrite(triton::hcugpu::BufferLoadToLocalOp op, OpAdaptor adaptor,
@@ -844,7 +1566,12 @@ struct BufferLoadToLocalOpConversion
 
     SmallVector<Value> offsetElems = unpackLLElements(loc, llOffset, rewriter);
     SmallVector<Value> otherElems;
-    if (llOther)
+    // gfx936 raw.ptr G2L writes zero for the emitter's OOB sentinel, even
+    // when the destination slot held nonzero data. Explicit +0 therefore
+    // needs neither conditional DMA nor a second LDS zero store. Preserve
+    // all other bit patterns (including -0), and other architectures.
+    if (llOther && !(targetInfo.getArch() == "gfx936" &&
+                     isAllZeroBitsConstant(op.getOther())))
       otherElems = unpackLLElements(loc, llOther, rewriter);
 
     auto dstTy = op.getDest().getType();
@@ -864,7 +1591,7 @@ struct BufferLoadToLocalOpConversion
         !targetInfo.supportsDirectToLDSScattering() && maybeSwizzledEnc &&
         maybeSwizzledEnc.getMaxPhase() != 1;
     if (failed(canWriteCoalesced(rewriter, op, ptrType, dstTy, vec,
-                                 requiresSrcPtrSwizzling))) {
+                                 requiresSrcPtrSwizzling, /*isBuffer=*/true))) {
       return failure();
     }
 
@@ -886,6 +1613,46 @@ struct BufferLoadToLocalOpConversion
           rewriter, op, ptrType, dstTy, flatDstTy, llDst, resElemTy, vec);
     }
 
+    // Keep an explicit uniform term outside the lane shuffle.  Splat is the
+    // same uniform/non-uniform boundary used by CanonicalizePointers; do not
+    // infer uniformity merely from a lowered scalar LLVM type.
+    Value uniformOffset, uniformSource, varyingSource;
+    if (requiresSrcPtrSwizzling &&
+        cast<RankedTensorType>(offset.getType()).getElementType().isInteger(32)) {
+      Value sum = offset;
+      if (auto trunc = sum.getDefiningOp<arith::TruncIOp>())
+        sum = trunc.getIn();
+      if (auto add = sum.getDefiningOp<arith::AddIOp>()) {
+        auto splat = add.getLhs().getDefiningOp<triton::SplatOp>();
+        Value varying = add.getRhs();
+        if (!splat) {
+          splat = add.getRhs().getDefiningOp<triton::SplatOp>();
+          varying = add.getLhs();
+        }
+        if (splat && (splat.getSrc().getType().isInteger(32) ||
+                      splat.getSrc().getType().isInteger(64))) {
+          Value llUniform = rewriter.getRemappedValue(splat.getSrc());
+          Value llVarying = rewriter.getRemappedValue(varying);
+          if (llUniform && llVarying) {
+            auto varyingElems = unpackLLElements(loc, llVarying, rewriter);
+            if (varyingElems.size() == offsetElems.size()) {
+              // Truncation distributes over addition modulo 2^32.  Keep the
+              // element-to-byte conversion and mask/OOB select in the emitter.
+              uniformSource = splat.getSrc();
+              varyingSource = varying;
+              uniformOffset = llUniform.getType().isInteger(32)
+                                  ? llUniform
+                                  : b.trunc(i32_ty, llUniform);
+              for (auto &elem : varyingElems)
+                if (!elem.getType().isInteger(32))
+                  elem = b.trunc(i32_ty, elem);
+              offsetElems = std::move(varyingElems);
+            }
+          }
+        }
+      }
+    }
+
     auto offsetTy = offsetElems[0].getType();
     bool hasOther = !otherElems.empty();
     auto otherTy = hasOther ? otherElems[0].getType() : i1_ty;
@@ -901,7 +1668,26 @@ struct BufferLoadToLocalOpConversion
     // Create the resource descriptor and then emit the buffer_loads to lds
     // based on the collected shared addresses and vector size
     // Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr, llStride);
-    Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr);
+    bool rebaseUniform = false;
+    Value uniformByteOffset;
+    if (uniformOffset && targetInfo.getArch() == "gfx936" &&
+        isRematerializationUniform(uniformOffset)) {
+      auto uMax = getNonNegativeOffsetMax(uniformSource);
+      auto vMax = getNonNegativeOffsetMax(varyingSource);
+      unsigned elemBytes = std::max(8u, resElemTy.getIntOrFloatBitWidth()) / 8;
+      uint64_t vectorBytes = uint64_t(vec) * elemBytes;
+      // This also proves the peeled i64->i32 truncation and element->byte
+      // conversion exact, and keeps every valid byte below the mask sentinel.
+      uint64_t maxElementOffset = (uint64_t(INT32_MAX) -
+                                  (vectorBytes - 1)) / elemBytes;
+      rebaseUniform = uMax && vMax && *uMax && *vMax <= maxElementOffset &&
+                      *uMax <= maxElementOffset - *vMax;
+      if (rebaseUniform)
+        uniformByteOffset = b.mul(uniformOffset, b.i32_val(elemBytes));
+    }
+    Value rsrcDesc = rebaseUniform
+        ? bufferEmitter.createResourceDescriptor(llPtr, Value{}, uniformByteOffset)
+        : bufferEmitter.createResourceDescriptor(llPtr);
 
     Value threadPred = emitRedundantThreadPredicate(
         getFreeVariableMasks(ptrType), rewriter, loc, targetInfo);
@@ -909,7 +1695,8 @@ struct BufferLoadToLocalOpConversion
     auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
     auto emitBufferLoadLds =
         [this, &op, &b, &bufferEmitter, &rsrcDesc, laneId = laneId, threadPred,
-         offsetTy, otherTy, hasOther, requiresSrcPtrSwizzling](
+         offsetTy, otherTy, hasOther, requiresSrcPtrSwizzling, uniformOffset,
+         rebaseUniform, fullWave = fullWaveCopies.contains(op.getOperation())](
             RewriterBase &rewriter, Location loc, ArrayRef<Value> loadVals,
             Value shmemAddr, int startIdx, VectorType vecTy,
             Value multicastMask) -> SmallVector<Value> {
@@ -917,13 +1704,17 @@ struct BufferLoadToLocalOpConversion
           unzipLoadValues(rewriter, loc, startIdx, loadVals, offsetTy, otherTy,
                           hasOther, vecTy.getNumElements());
       int vecBits = vecTy.getNumElements() * vecTy.getElementTypeBitWidth();
-      assert(targetInfo.supportsDirectToLdsLoadBitWidth(vecBits));
+      assert(targetInfo.supportsDirectToLdsLoadBitWidth(vecBits, /*isBuffer=*/true));
       Value vecBytesVal = b.i32_val(vecBits / 8);
 
       Value maybeSwizzledMaskElem = maskElem;
       if (requiresSrcPtrSwizzling)
         applySwizzling(rewriter, loc, offsetElem, maybeSwizzledMaskElem, laneId,
-                       swizzleLaneOffset);
+                       swizzleLaneOffset,
+                       /*rematerializeOffset=*/true,
+                       /*wholeOffset=*/!uniformOffset, fullWave);
+      if (uniformOffset && !rebaseUniform)
+        offsetElem = b.add(offsetElem, uniformOffset);
 
       // If other=0.0 we remove other in canonicalizePointers and we can use out
       // of bounds to store 0 to LDS. So if we have other values we need to
@@ -939,13 +1730,13 @@ struct BufferLoadToLocalOpConversion
       if (targetInfo.requiresAliasInfoForAsyncOps())
         HCU::addAsyncCopyAliasScope(bufferLoadToLds);
 
+      rewriter.setInsertionPointToStart(afterLoadBlock);
+
       if (hasOther) {
         emitOtherStore(rewriter, loc, this->getTypeConverter(), vecTy, maskElem,
                        otherElems, shmemAddr, laneId, requiresSrcPtrSwizzling,
                        swizzleLaneOffset);
       }
-
-      rewriter.setInsertionPointToStart(afterLoadBlock);
 
       return {};
     };
@@ -1650,14 +2441,178 @@ struct BufferStoreOpConversion
     //        buffer ops on HCUs as more hcu-specific details (stride field
     //        particularly) should be considered.
     // Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr, llStride);
-    Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr);
+    // Rebase only an explicit splatted uniform term. A runtime unsigned
+    // bound handles arbitrary origin bits; the independently proven local
+    // range guarantees exact byte arithmetic. This is a module opt-in, not
+    // an input proof. Unknown layout/arithmetic keeps the original path.
+    Value storeUniformByteOffset;
+    auto storeModule = op->getParentOfType<ModuleOp>();
+    auto rebaseAttr = storeModule->getAttrOfType<BoolAttr>(
+        "ttg.hcu.rebase_buffer_store");
+    if (rebaseAttr && rebaseAttr.getValue() &&
+        targetInfo.getArch() == "gfx936" && !llStride &&
+        cast<RankedTensorType>(offset.getType()).getElementType().isInteger(32)) {
+      Value sum = offset;
+      if (auto trunc = sum.getDefiningOp<arith::TruncIOp>()) sum = trunc.getIn();
+      if (auto add = sum.getDefiningOp<arith::AddIOp>()) {
+        for (unsigned side = 0; side != 2; ++side) {
+          Value uniformTensor = add->getOperand(side);
+          if (auto ext = uniformTensor.getDefiningOp<arith::ExtSIOp>())
+            uniformTensor = ext.getIn();
+          else if (auto ext = uniformTensor.getDefiningOp<arith::ExtUIOp>())
+            uniformTensor = ext.getIn();
+          auto splat = uniformTensor.getDefiningOp<triton::SplatOp>();
+          Value varying = add->getOperand(1-side);
+          if (!splat ||
+              (!splat.getSrc().getType().isInteger(32) &&
+               !splat.getSrc().getType().isInteger(64))) continue;
+          Value uniform = rewriter.getRemappedValue(splat.getSrc());
+          Value local = rewriter.getRemappedValue(varying);
+          if (!uniform || !local || !isBufferStoreRebaseUniform(uniform)) continue;
+          unsigned elemBytes = std::max(8u, valueElemTy.getIntOrFloatBitWidth())/8;
+          uint64_t vectorBytes = uint64_t(vec)*elemBytes;
+          if (!vectorBytes || vectorBytes > uint64_t(INT32_MAX)) continue;
+          uint64_t maxElement = (uint64_t(INT32_MAX)-(vectorBytes-1))/elemBytes;
+          // A uniform runtime interval also handles dynamic nonnegative
+          // strides. Each bound is clamped to zero on failure; arithmetic on
+          // these bounded i64 values cannot overflow. Failure only chooses
+          // the original descriptor/offset path, never an unchecked access.
+          using Bound = std::pair<Value,Value>; // nonnegative maximum, valid
+          DenseMap<Value,Bound> knownBounds;
+          unsigned boundSteps = 0;
+          std::function<std::optional<Bound>(Value,unsigned)> bound;
+          bound = [&](Value source,unsigned depth)->std::optional<Bound> {
+            if (depth>16 || ++boundSteps>512) return std::nullopt;
+            if (auto it=knownBounds.find(source);it!=knownBounds.end()) return it->second;
+            auto type=dyn_cast<IntegerType>(getElementTypeOrSelf(source.getType()));
+            if (!type || (type.getWidth()!=32 && type.getWidth()!=64)) return std::nullopt;
+            auto save=[&](Value upper,Value valid)->std::optional<Bound> {
+              Bound result{b.select(valid,upper,b.i64_val(0)),valid};
+              knownBounds[source]=result;return result;
+            };
+            if (auto maximum=getNonNegativeOffsetMax(source)) {
+              bool fits=*maximum<=maxElement;
+              return save(b.i64_val(fits?*maximum:0),b.i1_val(fits));
+            }
+            Operation *def=source.getDefiningOp();
+            if (!def) return std::nullopt;
+            if (auto splatValue=dyn_cast<triton::SplatOp>(def)) {
+              Value scalar=rewriter.getRemappedValue(splatValue.getSrc());
+              if (!scalar || !isBufferStoreRebaseUniform(scalar)) return std::nullopt;
+              if (scalar.getType().isInteger(32)) scalar=b.sext(i64_ty,scalar);
+              else if (!scalar.getType().isInteger(64)) return std::nullopt;
+              // Unsigned comparison rejects negative signed values too.
+              Value valid=b.icmp_ule(scalar,b.i64_val(maxElement));
+              return save(scalar,valid);
+            }
+            if (isa<triton::ExpandDimsOp,triton::BroadcastOp,ConvertLayoutOp,
+                    arith::ExtSIOp,arith::ExtUIOp,arith::TruncIOp>(def)) {
+              auto inner=bound(def->getOperand(0),depth+1);
+              if (inner) knownBounds[source]=*inner;
+              return inner;
+            }
+            if (!isa<arith::AddIOp,arith::MulIOp>(def)) return std::nullopt;
+            auto lhs=bound(def->getOperand(0),depth+1);
+            auto rhs=bound(def->getOperand(1),depth+1);
+            if (!lhs || !rhs) return std::nullopt;
+            Value upper;
+            if (isa<arith::AddIOp>(def)) upper=b.add(lhs->first,rhs->first);
+            else upper=b.mul(lhs->first,rhs->first);
+            Value valid=b.and_(b.and_(lhs->second,rhs->second),
+                               b.icmp_ule(upper,b.i64_val(maxElement)));
+            return save(upper,valid);
+          };
+          auto range=bound(varying,0);
+          if (!range) continue;
+          auto locals = unpackLLElements(loc, local, rewriter);
+          if (locals.size() != offsetElems.size()) continue;
+          if (!uniform.getType().isInteger(32)) uniform = b.trunc(i32_ty,uniform);
+          Value threshold=b.trunc(i32_ty,b.sub(b.i64_val(maxElement),range->first));
+          Value fits=b.and_(range->second,b.icmp_ule(uniform,threshold));
+          Value chosen = b.select(fits,uniform,b.i32_val(0));
+          Value remainder = b.sub(uniform,chosen);
+          for (Value &element : locals) {
+            if (!element.getType().isInteger(32)) element=b.trunc(i32_ty,element);
+            element=b.add(element,remainder);
+          }
+          offsetElems=std::move(locals);
+          storeUniformByteOffset=b.mul(chosen,b.i32_val(elemBytes));
+          break;
+        }
+      }
+    }
+    Value rsrcDesc = storeUniformByteOffset
+        ? bufferEmitter.createResourceDescriptor(llPtr,Value{},storeUniformByteOffset)
+        : bufferEmitter.createResourceDescriptor(llPtr);
     MLIRContext *ctx = rewriter.getContext();
     auto moduleOp = op->getParentOfType<ModuleOp>();
     auto freeVarMasks = getFreeVariableMasks(valueTy);
     Value threadPred =
         emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
     uint32_t regMask = freeVarMasks[str_attr("reg")];
+    // SOFFSET can bypass resource bounds on some buffer modes. The planner
+    // independently proves the complete original lowered scalar offset, for
+    // every possible bit pattern of its inputs (without using the predicate),
+    // covers its full i16 within the unchanged raw descriptor. A lost tensor
+    // producer during conversion cannot supply or invalidate that proof.
+    // Unknown arithmetic or rebased resources keep emitStore per element.
+    auto scalarOffsetAttr = storeModule->getAttrOfType<BoolAttr>(
+        "ttg.hcu.buffer_store_scalar_offset");
+    auto splitImmediateAttr = storeModule->getAttrOfType<BoolAttr>(
+        "ttg.hcu.buffer_store_split_immediate");
+    auto preserveMaskedBaseAttr = storeModule->getAttrOfType<BoolAttr>(
+        "ttg.hcu.buffer_store_preserve_masked_base");
+    bool useScalarOffset = false;
+    if (scalarOffsetAttr && scalarOffsetAttr.getValue() &&
+        targetInfo.getArch() == "gfx936" &&
+        (vec == 1 || vec == 2 || vec == 4 || vec == 8) && !llStride &&
+        !storeUniformByteOffset && valueElemTy.getIntOrFloatBitWidth() == 16 &&
+        cacheMod == triton::CacheModifier::NONE) {
+      // Each plan() must prove the full original offset <= MaxElement and
+      // the exact nonnegative core+constant identity before any IR is emitted.
+      useScalarOffset = true;
+    }
+    // Existing vector stores keep their original lowering. For scalar
+    // halfword stores, search register pairs within the current lane and
+    // check the actual lowered offsets and predicates, including edge lanes.
+    SmallVector<int> pairedWith;
+    llvm::SmallBitVector pairedHigh;
+    auto *axisInfo = axisAnalysisPass.getAxisInfo(ptr);
+    auto warps = moduleOp->getAttrOfType<IntegerAttr>("ttg.total-num-warps");
+    int64_t numWarps = warps ? warps.getInt() : triton::gpu::lookupNumWarps(moduleOp);
+    if (targetInfo.getArch() == "gfx936" && vec == 1 && !llStride &&
+        !storeUniformByteOffset && valueElemTy.getIntOrFloatBitWidth() == 16 &&
+        axisInfo && axisInfo->getDivisibility(0) % 4 == 0 &&
+        numWarps > 0 && numWarps <= 16 &&
+        TritonGPUDialect::getThreadsPerWarp(moduleOp) == 64 &&
+        cast<RankedTensorType>(offset.getType()).getElementType().isInteger(32)) {
+      BufferStorePairing pairing(numWarps * 64);
+      for (auto [lo, hi] : pairing.plan(offsetElems, maskElems, regMask)) {
+        if (pairedWith.empty()) {
+          pairedWith.resize(numElems, -1);
+          pairedHigh.resize(numElems);
+        }
+        pairedWith[lo] = hi;
+        pairedHigh.set(hi);
+      }
+    }
+    BufferStoreScalarOffset scalarOffsets;
+    unsigned scalarOffsetSites = 0;
     for (size_t vecStart = 0; vecStart < numElems; vecStart += vec) {
+      if (!pairedWith.empty()) {
+        if (pairedHigh.test(vecStart))
+          continue;
+        int hi = pairedWith[vecStart];
+        if (hi >= 0) {
+          Value pred = llMask ? b.and_(threadPred, maskElems[vecStart]) : threadPred;
+          auto type = cast<VectorType>(LLVM::getVectorType(valueElemTy, 2));
+          SmallVector<Value, 2> values{valueElems[vecStart], valueElems[hi]};
+          Value payload =
+              packElementRangeIntoVector(rewriter, getTypeConverter(), loc, type, values, 0);
+          bufferEmitter.emitStore(rsrcDesc, offsetElems[vecStart], payload, pred, cacheMod);
+          continue;
+        }
+      }
       if (!isCanonicalIndex(vecStart, regMask)) {
         // Don't emit store ops for redundant elements within a thread
         continue;
@@ -1671,10 +2626,58 @@ struct BufferStoreOpConversion
       Value storeVal = packElementRangeIntoVector(
           rewriter, this->getTypeConverter(), loc, cast<VectorType>(vecTy),
           valueElems, vecStart);
+      if (useScalarOffset) {
+        if (auto plan = scalarOffsets.plan(offsetElems[vecStart], vec)) {
+          Value core = scalarOffsets.emitCore(plan, rewriter, loc);
+          Value bytes = b.mul(b.i32_val(2), core);
+          Value masked = b.select(pred, bytes, b.i32_val(INT32_MIN));
+          // Preserve the original vector store's payload and predicate. Only
+          // the independently proved address decomposition changes; there is
+          // no scalarization, mask relaxation, descriptor or cache change.
+          Type payloadType = i16_ty;
+          if (vec == 2) payloadType = i32_ty;
+          else if (vec > 2) payloadType = LLVM::getVectorType(i32_ty, vec / 2);
+          Value payload = b.bitcast(storeVal, payloadType);
+          Value voffset = masked;
+          uint64_t scalarBytes = plan->constant * 2;
+          if (splitImmediateAttr && splitImmediateAttr.getValue()) {
+            // gfx936 MUBUF has a 12-bit byte immediate. Keep the original
+            // predicate/sentinel, and expose only this low displacement in
+            // VOFFSET so instruction selection may fold it into offset:imm.
+            uint64_t lowBytes = scalarBytes & 4095;
+            scalarBytes -= lowBytes;
+            // The full-domain plan gives coreBytes+allBytes <= NR-2.
+            // For a false predicate INT_MIN+lowBytes <= 0x80000fff.
+            // Both cases prove this unsigned addition cannot wrap.
+            if (lowBytes) {
+              // Exact i32 register identity. Keep the bounded masked base
+              // opaque to arithmetic reassociation across the select. This
+              // requests instruction selection; it is not a range proof.
+              // Tied allocation/CSE may still add copies or merge identities.
+              if (preserveMaskedBaseAttr && preserveMaskedBaseAttr.getValue())
+                masked = LLVM::InlineAsmOp::create(
+                    rewriter, loc, masked.getType(), ValueRange{masked},
+                    "", "=v,0", false, false, LLVM::TailCallKind::None,
+                    LLVM::AsmDialectAttr::get(ctx, LLVM::AsmDialect::AD_ATT),
+                    ArrayAttr::get(ctx, {})).getRes();
+              voffset = b.add(masked, b.i32_val(lowBytes),
+                              LLVM::IntegerOverflowFlags::nuw);
+            }
+          }
+          SmallVector<Value, 5> args{payload, rsrcDesc, voffset,
+              b.i32_val(scalarBytes), b.i32_val(0)};
+          ROCDL::RawPtrBufferStoreOp::create(rewriter, loc, TypeRange{}, args,
+                                            ArrayRef<NamedAttribute>());
+          ++scalarOffsetSites;
+          continue;
+        }
+      }
       bufferEmitter.emitStore(rsrcDesc, offsetElems[vecStart], storeVal, pred,
                               cacheMod);
     } // end vec
 
+    if (scalarOffsetSites)
+      op.emitRemark("buffer-store scalar-offset proven sites: ") << scalarOffsetSites;
     rewriter.eraseOp(op);
     return success();
   }

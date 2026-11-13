@@ -110,6 +110,12 @@ public:
           dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstType.getEncoding());
       if (!dstDotOp)
         return;
+      // This transformation stages arithmetic dot data, not the pointer or
+      // predicate expressions used by a direct register load. Such layouts
+      // are handled by pure rematerialization or the general converter.
+      auto elementType = dstType.getElementType();
+      if (!elementType.isIntOrFloat() || elementType.isInteger(1))
+        return;
 #ifdef __TLE__
       DenseSet<Value> visited;
       if (comesFromRemoteLoad(cvtOp.getSrc(), visited))

@@ -3,6 +3,11 @@
 #include "TritonHCUGPUTransforms/MfmaGroup.h"
 #include "TritonHCUGPUTransforms/MlsGroup.h"
 #include "Utility.h"
+#include "MatrixDescriptorLayout.h"
+#include "../TritonHCUGPUToLLVM/ScalarMemoryAnalysis.h"
+#include "../TritonHCUGPUToLLVM/WarpSpecializeUtils.h"
+#include "Analysis/AxisInfoExt.h"
+#include "Analysis/MatrixCopyGeometry.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -16,13 +21,243 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Tools/LayoutUtils.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace mlir;
 namespace tt = mlir::triton;
 namespace ttg = mlir::triton::gpu;
 
 namespace {
+
+// Scalar type alone is not a CTA-uniformity proof. Counted recurrences need
+// uniform entry/backedge data and control; loads and lane queries stay unknown.
+static bool registerDescriptorUniform(Value value, DenseSet<Value> &seen,
+                                      unsigned &budget) {
+  if (!budget || !value.getType().isIntOrIndex())
+    return false;
+  --budget;
+  value = triton::HCU::resolveWarpSpecializeCapture(value);
+  if (!seen.insert(value).second)
+    return true;
+  auto uniform = [&](Value v) {
+    return registerDescriptorUniform(v, seen, budget);
+  };
+  if (auto arg = dyn_cast<BlockArgument>(value)) {
+    if (auto fn = dyn_cast<tt::FuncOp>(arg.getOwner()->getParentOp()))
+      return arg.getOwner() == &fn.getBody().front();
+    if (auto loop = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp())) {
+      if (arg.getOwner() != loop.getBody() ||
+          !uniform(loop.getLowerBound()) || !uniform(loop.getUpperBound()) ||
+          !uniform(loop.getStep()))
+        return false;
+      unsigned n = arg.getArgNumber();
+      return n == 0 ||
+             (uniform(loop.getInitArgs()[n - 1]) &&
+              uniform(cast<scf::YieldOp>(loop.getBody()->getTerminator())
+                          .getOperand(n - 1)));
+    }
+    return false;
+  }
+  Operation *op = value.getDefiningOp();
+  if (!op)
+    return false;
+  if (isa<tt::GetProgramIdOp, tt::GetNumProgramsOp>(op))
+    return true;
+  if (auto branch = dyn_cast<scf::IfOp>(op)) {
+    unsigned n = cast<OpResult>(value).getResultNumber();
+    return uniform(branch.getCondition()) &&
+           uniform(branch.thenYield().getOperand(n)) &&
+           uniform(branch.elseYield().getOperand(n));
+  }
+  return op->getName().getStringRef().starts_with("arith.") &&
+         op->getNumRegions() == 0 &&
+         llvm::all_of(op->getOperands(), uniform);
+}
+
+static bool registerDescriptorUniform(Value value) {
+  DenseSet<Value> seen;
+  unsigned budget = 1024;
+  return registerDescriptorUniform(value, seen, budget);
+}
+
+static bool supportsRegisterDescriptor(tt::MatrixLoadOp op,
+                                     triton::HCU::ModuleAxisInfoAnalysis &axis) {
+  auto type = op.getType();
+  auto mod = op->getParentOfType<ModuleOp>();
+  auto target = mod->getAttrOfType<StringAttr>("ttg.target");
+  if (!target || target.getValue() != "hip:gfx936" || type.getRank() != 2 ||
+      op.getShape().size() != 2 || op.getStrides().size() != 2 ||
+      op.getIndices().size() != 2 || op.getCache() != tt::CacheModifier::NONE ||
+      op.getEvict() != tt::EvictionPolicy::NORMAL || op.getIsVolatile() ||
+      op.getBoundaryCheck().size() != 2 ||
+      !llvm::is_contained(op.getBoundaryCheck(), 0) ||
+      !llvm::is_contained(op.getBoundaryCheck(), 1) ||
+      !(type.getElementType().isF16() || type.getElementType().isBF16()) ||
+      !isa<ttg::DistributedEncodingTrait>(type.getEncoding()) ||
+      ttg::TritonGPUDialect::getNumCTAs(mod) != 1 ||
+      ttg::TritonGPUDialect::getThreadsPerWarp(mod) != 64)
+    return false;
+  APInt k, rowStride, columnStride;
+  if (!matchPattern(op.getShape()[1], m_ConstantInt(&k)) || !k.isSignedIntN(32) ||
+      k.getSExtValue() <= 0 || k.getSExtValue() >= 0x2000 ||
+      !matchPattern(op.getStrides()[0], m_ConstantInt(&rowStride)) ||
+      rowStride.getSExtValue() != k.getSExtValue() ||
+      !matchPattern(op.getStrides()[1], m_ConstantInt(&columnStride)) ||
+      !columnStride.isOne() || type.getShape()[1] > k.getSExtValue() ||
+      !llvm::isPowerOf2_64(type.getShape()[1]) ||
+      k.getSExtValue() % type.getShape()[1])
+    return false;
+  // The descriptor has a whole-window K guard. Only complete aligned windows
+  // have the same semantics as the ordinary per-element boundary masks.
+  APInt origin;
+  bool aligned = matchPattern(op.getIndices()[1], m_ConstantInt(&origin)) &&
+                 origin.getSExtValue() % type.getShape()[1] == 0;
+  if (!aligned) {
+    auto *info = axis.getAxisInfo(op.getIndices()[1]);
+    aligned = info && info->getRank() &&
+              info->getDivisibility(0) % type.getShape()[1] == 0;
+  }
+  if (!aligned)
+    return false;
+  Value base = triton::HCU::resolveWarpSpecializeCapture(op.getBase());
+  while (auto add = base.getDefiningOp<tt::AddPtrOp>()) {
+    if (!registerDescriptorUniform(add.getOffset()))
+      return false;
+    base = triton::HCU::resolveWarpSpecializeCapture(add.getPtr());
+  }
+  auto pointer = dyn_cast<tt::PointerType>(base.getType());
+  auto arg = dyn_cast<BlockArgument>(base);
+  auto fn = op->getParentOfType<tt::FuncOp>();
+  if (!pointer || pointer.getAddressSpace() != 1 || !arg || !fn ||
+      arg.getOwner() != &fn.getBody().front())
+    return false;
+  for (auto values : {op.getShape(), op.getStrides(), op.getIndices()})
+    for (Value value : values)
+      if (!registerDescriptorUniform(value))
+        return false;
+  bool control = true;
+  fn.walk([&](Operation *nested) {
+    if (auto branch = dyn_cast<scf::IfOp>(nested))
+      control &= registerDescriptorUniform(branch.getCondition());
+    else if (auto loop = dyn_cast<scf::ForOp>(nested))
+      control &= registerDescriptorUniform(loop.getLowerBound()) &&
+                 registerDescriptorUniform(loop.getUpperBound()) &&
+                 registerDescriptorUniform(loop.getStep());
+    else if (isa<scf::WhileOp, ttg::MaskOp>(nested) ||
+             nested->getNumSuccessors() > 1)
+      control = false;
+  });
+  auto ll = ttg::toLinearLayout(type);
+  auto *ctx = op.getContext();
+  return control && ll.getInDimSize(StringAttr::get(ctx, "block")) == 1 &&
+         uint64_t(ll.getInDimSize(StringAttr::get(ctx, "register"))) * 64 *
+                 ll.getInDimSize(StringAttr::get(ctx, "warp")) <= (1u << 20);
+}
+
+// The matrix-copy instruction handles complete 16B vectors of a statically
+// described, contiguous source. Keep ordinary loads for other legal inputs,
+// including dynamic descriptors and dots assigned to the scalar FMA path.
+bool supportsDescriptorCopy(triton::MatrixLoadOp op) {
+  auto mod = op->getParentOfType<ModuleOp>();
+  auto target = mod->getAttrOfType<StringAttr>("ttg.target");
+  auto type = op.getType();
+  if (!target || target.getValue() != "hip:gfx936" ||
+      ttg::TritonGPUDialect::getNumCTAs(mod) != 1 ||
+      ttg::TritonGPUDialect::getThreadsPerWarp(mod) != 64 ||
+      !(type.getElementType().isF16() || type.getElementType().isBF16()) ||
+      op.getShape().size() != 2 || op.getStrides().size() != 2 ||
+      op.getIndices().size() != 2 || op.getCache() != tt::CacheModifier::NONE ||
+      op.getEvict() != tt::EvictionPolicy::NORMAL || op.getIsVolatile())
+    return false;
+  SmallVector<int64_t> sizes, strides;
+  for (auto values : {op.getShape(), op.getStrides()}) {
+    auto &result = sizes.empty() ? sizes : strides;
+    for (Value value : values) {
+      APInt number;
+      if (!matchPattern(value, m_ConstantInt(&number)) || number.isNegative() ||
+          number.isZero() || !number.isSignedIntN(32))
+        return false;
+      result.push_back(number.getSExtValue());
+    }
+  }
+  auto geometry = triton::HCU::getMatrixCopyGeometry(
+      sizes, strides, type.getShape(), ttg::lookupNumWarps(op));
+  if (!geometry || !triton::HCU::hasAddressableMatrixCopyTile(*geometry) ||
+      !llvm::all_of(op.getIndices(), [](Value value) {
+        return registerDescriptorUniform(value);
+      }))
+    return false;
+  if (!triton::HCU::memory_analysis::multipleOf(
+          op.getIndices()[geometry->column], 8))
+    return false;
+  auto arg = dyn_cast<BlockArgument>(op.getBase());
+  auto fn = op->getParentOfType<tt::FuncOp>();
+  auto alignment = arg && fn && arg.getOwner() == &fn.getBody().front()
+                       ? fn.getArgAttrOfType<IntegerAttr>(arg.getArgNumber(),
+                                                         "tt.divisibility")
+                       : IntegerAttr{};
+  if (!alignment || alignment.getInt() < 16 || alignment.getInt() % 16)
+    return false;
+  auto shared = triton::HCU::getMatrixDescriptorSharedLayout(op);
+  if (!shared)
+    return false;
+  auto offset = StringAttr::get(op.getContext(), "offset");
+  auto dims = triton::standardOutDimNames(op.getContext(), 2);
+  auto layout = shared.getLinearLayout().sublayout({offset}, dims);
+  return triton::HCU::isMatrixCopyVectorLayout(
+      layout, offset, geometry->row, geometry->column);
+}
+
+Value expandDescriptorLoad(triton::MatrixLoadOp op, PatternRewriter &rw) {
+  auto type = op.getType();
+  auto loc = op.getLoc();
+  auto context = op.getContext();
+  auto encoding = cast<ttg::DistributedEncodingTrait>(type.getEncoding());
+  auto integer = RankedTensorType::get(type.getShape(), rw.getI64Type(), encoding);
+  auto boolean = RankedTensorType::get(type.getShape(), rw.getI1Type(), encoding);
+  Value mask, offset;
+  for (unsigned axis = 0; axis < 2; ++axis) {
+    auto slice = ttg::SliceEncodingAttr::get(context, 1 - axis, encoding);
+    auto rangeType = RankedTensorType::get({type.getShape()[axis]}, rw.getI32Type(), slice);
+    auto vectorType = rangeType.clone(rw.getI64Type());
+    Value range = rw.create<tt::MakeRangeOp>(loc, rangeType, 0, type.getShape()[axis]);
+    range = rw.create<arith::ExtSIOp>(loc, vectorType, range);
+    Value origin = rw.create<arith::ExtSIOp>(loc, rw.getI64Type(), op.getIndices()[axis]);
+    origin = rw.create<tt::SplatOp>(loc, vectorType, origin);
+    Value index = rw.create<arith::AddIOp>(loc, range, origin);
+    if (llvm::is_contained(op.getBoundaryCheck(), axis)) {
+      Value size = rw.create<arith::ExtSIOp>(loc, rw.getI64Type(), op.getShape()[axis]);
+      size = rw.create<tt::SplatOp>(loc, vectorType, size);
+      Value zero = rw.create<arith::ConstantIntOp>(loc, 0, 64);
+      zero = rw.create<tt::SplatOp>(loc, vectorType, zero);
+      Value lower = rw.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge, index, zero);
+      Value upper = rw.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, index, size);
+      Value valid = rw.create<arith::AndIOp>(loc, lower, upper);
+      valid = rw.create<tt::ExpandDimsOp>(loc, valid, 1 - axis);
+      valid = rw.create<tt::BroadcastOp>(loc, boolean, valid);
+      mask = mask ? Value(rw.create<arith::AndIOp>(loc, mask, valid)) : valid;
+    }
+    Value stride = rw.create<tt::SplatOp>(loc, vectorType, op.getStrides()[axis]);
+    Value term = rw.create<arith::MulIOp>(loc, index, stride);
+    term = rw.create<tt::ExpandDimsOp>(loc, term, 1 - axis);
+    term = rw.create<tt::BroadcastOp>(loc, integer, term);
+    offset = offset ? Value(rw.create<arith::AddIOp>(loc, offset, term)) : term;
+  }
+  auto pointers = type.clone(op.getBase().getType());
+  Value base = rw.create<tt::SplatOp>(loc, pointers, op.getBase());
+  Value ptr = rw.create<tt::AddPtrOp>(loc, pointers, base, offset);
+  Value other;
+  if (mask) {
+    Value zero = rw.create<arith::ConstantOp>(loc, rw.getZeroAttr(type.getElementType()));
+    other = rw.create<tt::SplatOp>(loc, type, zero);
+  }
+  auto load = rw.create<tt::LoadOp>(loc, ptr, mask, other, op.getCache(),
+                                  op.getEvict(), op.getIsVolatile(), StringAttr{});
+  load->setAttr("tt.load.async", op->getAttr("tt.load.async"));
+  return load.getResult();
+}
 
 //===----------------------------------------------------------------------===//
 // Utility functions
@@ -136,10 +371,37 @@ Value convertAndCastTensor(OpBuilder &builder, Value value,
 
 struct MlsEncodingInsertion : public OpRewritePattern<triton::MatrixLoadOp> {
 public:
-  MlsEncodingInsertion(MLIRContext *context) : OpRewritePattern(context, 1) {}
+  MlsEncodingInsertion(MLIRContext *context,
+                       triton::HCU::ModuleAxisInfoAnalysis &axis)
+      : OpRewritePattern(context, 1), axis(axis) {}
 
   LogicalResult matchAndRewrite(triton::MatrixLoadOp matrixOp,
                                 PatternRewriter &rewriter) const override {
+    if (matrixOp->hasAttr("hcu.structured_register"))
+      return failure();
+    if (triton::HCU::isSyncMatrixDescriptor(matrixOp)) {
+      if (!supportsRegisterDescriptor(matrixOp, axis)) {
+        rewriter.replaceOp(matrixOp, expandDescriptorLoad(matrixOp, rewriter));
+        return success();
+      }
+      Value enabled = rewriter.create<arith::ConstantIntOp>(
+          matrixOp.getLoc(), 1, 32);
+      rewriter.modifyOpInPlace(matrixOp, [&] {
+        matrixOp.getIndicesMutable().append(enabled);
+        matrixOp.setBoundaryCheckAttr(rewriter.getDenseI32ArrayAttr({}));
+        matrixOp->setAttr("hcu.structured_register", rewriter.getUnitAttr());
+      });
+      return success();
+    }
+    if (triton::HCU::isAsyncMatrixDescriptor(matrixOp)) {
+      if (matrixOp.getType().getRank() != 2 || matrixOp.getShape().size() != 2 ||
+          matrixOp.getStrides().size() != 2 || matrixOp.getIndices().size() != 2)
+        return failure();
+      if (supportsDescriptorCopy(matrixOp))
+        return failure();
+      rewriter.replaceOp(matrixOp, expandDescriptorLoad(matrixOp, rewriter));
+      return success();
+    }
     RankedTensorType oldRetType = matrixOp.getType();
     if (!oldRetType.getEncoding() ||
         !isa<ttg::BlockedEncodingAttr>(oldRetType.getEncoding()))
@@ -311,6 +573,9 @@ public:
 
     return success();
   }
+
+private:
+  triton::HCU::ModuleAxisInfoAnalysis &axis;
 };
 
 } // namespace
@@ -336,7 +601,8 @@ public:
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
     mlir::RewritePatternSet patterns(context);
-    patterns.add<MlsEncodingInsertion>(context);
+    triton::HCU::ModuleAxisInfoAnalysis axis(mod);
+    patterns.add<MlsEncodingInsertion>(context, axis);
     if (mlir::applyPatternsGreedily(mod, std::move(patterns)).failed())
       signalPassFailure();
   }

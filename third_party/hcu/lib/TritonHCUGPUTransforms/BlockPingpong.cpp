@@ -40,7 +40,7 @@ class Pingponger {
   SmallVector<tt::LoadOp> gLoadOps;
   SmallVector<ttg::LocalLoadOp> lLoadOps;
   SmallVector<ttg::LocalStoreOp> lStoreOps;
-  SmallVector<ttg::AsyncCopyGlobalToLocalOp> asyncCopyOps;
+  SmallVector<Operation *> asyncCopyOps;
   SmallVector<ttg::AsyncWaitOp> asyncWaitOps;
   SmallVector<ttg::AsyncCommitGroupOp> asyncCommitOps;
   SmallVector<tt::DotOp> dotOps;
@@ -849,7 +849,8 @@ LogicalResult Pingponger::transformChainedDotSchedule(OpBuilder &builder,
 LogicalResult
 Pingponger::transformTwoClusterWithLocalLoadAndAll(OpBuilder &builder,
                                                    Location loc) {
-  Operation *gLoadRhs = useAsyncCopy ? asyncCopyOps[1] : gLoadOps[1];
+  Operation *gLoadRhs =
+      useAsyncCopy ? asyncCopyOps[1] : gLoadOps[1].getOperation();
   builder.setInsertionPointAfter(gLoadRhs);
   updateOpInsertion(gLoadRhs);
 
@@ -897,10 +898,17 @@ Pingponger::transformTwoClusterWithLocalLoadAndAll(OpBuilder &builder,
 
   appendOp(asyncCopyOps[1]);
   appendOp(asyncCommitOps[1]);
-  appendOp(dotOps[0]);
+  moveOpAndPredecessorsUpSameBlock(dotOps[0]);
 
   appendOp(ROCDL::SchedBarrier::create(builder, loc, 0));
-  appendOp(ROCDL::SBarrierOp::create(builder, loc));
+  // This barrier protects LDS reuse. Keep its local-memory provenance so
+  // gfx936 lowering can retain unrelated global-to-LDS transfers in flight.
+  auto target = forOp->getParentOfType<ModuleOp>()->getAttrOfType<StringAttr>(
+      "ttg.target");
+  if (target && target.getValue() == "hip:gfx936")
+    appendOp(ttg::LocalBarrierOp::create(builder, loc));
+  else
+    appendOp(ROCDL::SBarrierOp::create(builder, loc));
   appendOp(ROCDL::SchedBarrier::create(builder, loc, 0));
 
   return success();
@@ -954,7 +962,9 @@ void Pingponger::getDotPingponged() {
     llvm::TypeSwitch<Operation *>(op)
         .Case<tt::LoadOp>([&](auto gLoadOp) { gLoadOps.push_back(gLoadOp); })
         .Case<ttg::AsyncCopyGlobalToLocalOp>(
-            [&](auto asyncCopyOp) { asyncCopyOps.push_back(asyncCopyOp); })
+            [&](auto asyncCopyOp) {
+              asyncCopyOps.push_back(asyncCopyOp.getOperation());
+            })
         .Case<ttg::LocalLoadOp>([&](auto lLoad) {
           // This scheduling doesn't help hiding intra-warp latency. So, we only
           // collect local_load ops that are software pipelined, which means
@@ -971,8 +981,9 @@ void Pingponger::getDotPingponged() {
             [&](auto pingpongDot) { dotOps.push_back(pingpongDot); })
         .Case<tt::DotScaledOp>(
             [&](auto pingpongDot) { scaledDotOps.push_back(pingpongDot); })
-        .Case<ttg::AsyncCopyGlobalToLocalOp>(
-            [&](auto asyncOp) { asyncCopyOps.push_back(asyncOp); })
+        .Case<tt::hcugpu::BufferLoadToLocalOp>([&](auto asyncOp) {
+          asyncCopyOps.push_back(asyncOp.getOperation());
+        })
         .Case<ttg::AsyncCommitGroupOp>([&](auto asyncCommitGroupOp) {
           asyncCommitOps.push_back(asyncCommitGroupOp);
         })
@@ -985,6 +996,44 @@ void Pingponger::getDotPingponged() {
   // software pipelining and dot rank=2. Also only accept the for-loop with
   // supported combination of operations because this transformation is very
   // tightly scheduling the latencies.
+
+  // BUFFER copies participate only in the existing single-dot async
+  // three-stage recipe. Keep chained/scaled and every old ttg path unchanged.
+  if (llvm::any_of(asyncCopyOps, [](Operation *op) {
+        return isa<tt::hcugpu::BufferLoadToLocalOp>(op);
+      })) {
+    auto target = forOp->getParentOfType<ModuleOp>()->getAttrOfType<StringAttr>(
+        "ttg.target");
+    if (!target || target.getValue() != "hip:gfx936" || numStages != 3 ||
+        numWarps != 8 || dotOps.size() != 1 || !scaledDotOps.empty() ||
+        asyncCopyOps.size() != 2 || asyncCommitOps.size() != 2 ||
+        lLoadOps.size() != 2 || asyncWaitOps.empty() || !gLoadOps.empty())
+      return;
+    auto aEncoding = dyn_cast_or_null<ttg::DotOperandEncodingAttr>(
+        dotOps[0].getA().getType().getEncoding());
+    if (!aEncoding ||
+        !dyn_cast_or_null<ttg::AMDMfmaEncodingAttr>(aEncoding.getParent()))
+      return;
+    for (unsigned i = 0; i != 2; ++i) {
+      auto *copy = asyncCopyOps[i];
+      auto commit = asyncCommitOps[i];
+      if (copy->getBlock() != forOp.getBody() ||
+          commit->getBlock() != forOp.getBody() ||
+          lLoadOps[i]->getBlock() != forOp.getBody() ||
+          copy->getNumResults() != 1 || commit.getInputTokens().size() != 1 ||
+          commit.getInputTokens().front() != copy->getResult(0))
+        return;
+    }
+    if (llvm::any_of(asyncWaitOps, [&](auto wait) {
+          return wait->getBlock() != forOp.getBody();
+        }))
+      return;
+    auto shape = dotOps[0].getType().getShape();
+    auto bits = dotOps[0].getA().getType().getElementTypeBitWidth();
+    if (shape.size() != 2 || shape[0] <= 64 || shape[1] <= 64 ||
+        (bits != 16 && bits != 8))
+      return;
+  }
 
   int64_t numOfDotLikeOps = scaledDotOps.size() + dotOps.size();
 
@@ -1075,7 +1124,11 @@ void Pingponger::getDotPingponged() {
       LDBG("Currently only support num_warp=8 for async PP");
       return;
     }
-    if (numStages > 2 && dotOps.size() == 1 && dotShape[0] > 64 &&
+    // This transform expects the previous iteration's wait at the loop tail,
+    // which LowerLoops::waitAtTail only provides for three stages. With more
+    // stages the wait is at the loop head and moving it below local_loads
+    // leaves those loads using its token before the token is defined.
+    if (numStages == 3 && dotOps.size() == 1 && dotShape[0] > 64 &&
         dotShape[1] > 64 && (elemWidth == 16 || elemWidth == 8)) {
       if (transformTwoClusterWithLocalLoadAndAll(builder, loc).failed()) {
         LDBG("Encountered failure when trying to execute the "

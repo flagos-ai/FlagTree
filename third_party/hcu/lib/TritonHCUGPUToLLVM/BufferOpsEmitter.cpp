@@ -33,8 +33,25 @@ namespace mlir::LLVM::HCU {
 BufferEmitter::BufferEmitter(RewriterBase &rw, Location loc, TargetInfo ti)
     : rewriter(rw), loc(loc), targetInfo(ti) {}
 
-Value BufferEmitter::createResourceDescriptor(Value basePtr,
-                                              Value blockStride) {
+Value BufferEmitter::emitUniformUnsignedSaturatingSub(Value lhs, Value rhs) {
+  assert(lhs.getType().isInteger(32) && rhs.getType().isInteger(32));
+  // Keep uniform descriptor arithmetic in SGPRs. Early-clobber is required:
+  // the compare still reads both inputs after the subtract writes its result.
+  return LLVM::InlineAsmOp::create(
+      rewriter, loc, lhs.getType(), ValueRange{lhs, rhs},
+      "s_sub_u32 $0, $1, $2\n\ts_cmp_ge_u32 $1, $2\n\t"
+      "s_cselect_b32 $0, $0, 0",
+      "=&s,s,s,~{scc}", false, false, LLVM::TailCallKind::None,
+      LLVM::AsmDialectAttr::get(rewriter.getContext(), LLVM::AsmDialect::AD_ATT),
+      ArrayAttr::get(rewriter.getContext(), {})).getRes();
+}
+
+Value BufferEmitter::createResourceDescriptor(Value basePtr, Value blockStride) {
+  return createResourceDescriptor(basePtr, blockStride, Value{});
+}
+
+Value BufferEmitter::createResourceDescriptor(Value basePtr, Value blockStride,
+                                              Value uniformByteOffset) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   // 1. Create the resource descriptor
   // bits 0-11: dst sel, ignored by these intrinsics
@@ -87,8 +104,20 @@ Value BufferEmitter::createResourceDescriptor(Value basePtr,
   Value flagsConst = b.int_val(32, flags);
   Type rsrcType = LLVM::LLVMPointerType::get(rewriter.getContext(), 8);
 
-  // HCU : modify to compatible with HCU llvm.
-  Value numRecordsByte = b.int_val(64, std::numeric_limits<int>::max() - 1);
+  // ROCDL expects i64; the hardware descriptor and uniform rebase use u32.
+  constexpr int maxRecords = std::numeric_limits<int>::max() - 1;
+  Value numRecordsByte = b.int_val(64, maxRecords);
+  if (uniformByteOffset) {
+    // Structured/indexed resources have different NUM_RECORDS semantics.
+    assert(!blockStride && "only raw descriptors can be rebased in bytes");
+    assert(uniformByteOffset.getType().isInteger(32));
+    Value remaining =
+        emitUniformUnsignedSaturatingSub(b.i32_val(maxRecords), uniformByteOffset);
+    numRecordsByte = b.zext(i64_ty, remaining);
+    // No inbounds flag: masks can suppress accesses beyond the object.
+    Value byteOffset64 = b.zext(i64_ty, uniformByteOffset);
+    basePtr = b.gep(basePtr.getType(), i8_ty, basePtr, ValueRange{byteOffset64});
+  }
 
   Value resource = rewriter.createOrFold<ROCDL::MakeBufferRsrcOp>(
       loc, rsrcType, basePtr, stride, numRecordsByte, flagsConst);

@@ -101,6 +101,17 @@ getIndirectLevel(triton::HCU::ModuleAxisInfoAnalysis &axisInfoAnalysis,
                                              axisInfoAnalysis, numStages,
                                              filterSmallVectors);
 
+  // Do not create or clone shared-memory streams for volatile loads. The
+  // original load stays with its consuming logical iteration; a legal drain
+  // can still execute that load once for its iteration.
+  SmallVector<Operation *> volatileLoads;
+  for (auto &[load, info] : loadOpToIndLevel)
+    if (auto loadOp = dyn_cast<tt::LoadOp>(load);
+        loadOp && loadOp.getIsVolatile())
+      volatileLoads.push_back(load);
+  for (Operation *load : volatileLoads)
+    loadOpToIndLevel.erase(load);
+
   return loadOpToIndLevel;
 }
 

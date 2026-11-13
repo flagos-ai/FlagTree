@@ -101,7 +101,10 @@ public:
   // ops. For such case we ensure syncronization between data hazards via
   // ttg.async_wait
   bool requiresAliasInfoForAsyncOps() const;
-  bool supportsDirectToLdsLoadBitWidth(int bitWidth) const;
+  // Default queries describe generic GLOBAL-to-LDS. Buffer lowering must
+  // explicitly request BUFFER-to-LDS widths.
+  bool supportsDirectToLdsLoadBitWidth(int bitWidth,
+                                     bool isBuffer = false) const;
 
   bool supportsMultiCTALaunch() const;
   bool supportsClusterLoadBitWidth(int biwWidth) const;
