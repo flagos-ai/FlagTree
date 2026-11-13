@@ -59,8 +59,10 @@ inputs:
     default: ''
   flaggems-tag:
     description: >-
-      FlagGems release under test. Selects assets/<flaggems-tag>/conftest.py
-      inside this action, and the skip list directory in the checkout.
+      Release under test (a FlagGems tag, or a FlagGems-vllm tag when
+      repo-kind is flaggems-vllm). Selects assets/gems/<tag>/conftest.py
+      (or assets/gems-vllm/<tag>/conftest.py) inside this action, and the
+      skip list directory in the checkout.
     required: true
   backend:
     description: >-
@@ -80,6 +82,13 @@ inputs:
       for the backends it builds. Absolute path.
     required: false
     default: ''
+  repo-kind:
+    description: >-
+      Operator library under test: 'flaggems' (default) or 'flaggems-vllm'.
+      Selects the asset and skip list directories (gems/ or gems-vllm/) and
+      the package ci_run_tests.py imports.
+    required: false
+    default: 'flaggems'
 
 outputs:
   test-output-dir:
@@ -130,6 +139,7 @@ runs:
         ASSETS_DIR: ${{ inputs.assets-dir }}
         SKIP_LIST_DIR: ${{ inputs.skip-list-dir }}
         RUN_SCRIPT: ${{ inputs.run-script }}
+        REPO_KIND: ${{ inputs.repo-kind }}
       run: |
         set -x
 
@@ -147,11 +157,21 @@ runs:
         # the branch under test. Absolute paths throughout, since this step's
         # working directory is the FlagGems clone.
         ASSETS="${ASSETS_DIR:-${GITHUB_ACTION_PATH}/assets}"
-        VERSION_DIR="${ASSETS}/${FLAGGEMS_TAG}"
+        # FlagGems and FlagGems-vllm keep their assets and skip lists in
+        # separate directories, so the two tag namespaces never mix.
+        case "${REPO_KIND}" in
+          flaggems)      KIND_DIR="gems" ;;
+          flaggems-vllm) KIND_DIR="gems-vllm" ;;
+          *)
+            echo "::error::Unknown repo-kind '${REPO_KIND}' (expected flaggems or flaggems-vllm)."
+            exit 1
+            ;;
+        esac
+        VERSION_DIR="${ASSETS}/${KIND_DIR}/${FLAGGEMS_TAG}"
 
         # The skip lists stay in the checkout: each branch carries the ones
         # for the backends it builds, so they are not shared.
-        SKIP_DIR="${SKIP_LIST_DIR:-${GITHUB_WORKSPACE}/.github/workflows/gems/${FLAGGEMS_TAG}/skip_list}"
+        SKIP_DIR="${SKIP_LIST_DIR:-${GITHUB_WORKSPACE}/.github/workflows/${KIND_DIR}/${FLAGGEMS_TAG}/skip_list}"
         if [[ ! -f "${SKIP_DIR}/default.yaml" ]]; then
           echo "::error::No skip lists for FlagGems tag '${FLAGGEMS_TAG}'."
           echo "Expected ${SKIP_DIR}/default.yaml to exist."
@@ -164,8 +184,14 @@ runs:
         # plausible but is incomplete.
         # When the asset is absent the clone's own conftest.py is used instead
         # (the FlagGems tag ships a compatible one natively).
+        # FlagGems-vllm has no such fallback: its own conftest.py does not
+        # implement --first-parameter-only, so a missing asset is an error.
         if [[ -f "${VERSION_DIR}/conftest.py" ]]; then
           cp "${VERSION_DIR}/conftest.py" tests/conftest.py
+        elif [[ "${REPO_KIND}" == "flaggems-vllm" ]]; then
+          echo "::error::No CI conftest.py for FlagGems-vllm tag '${FLAGGEMS_TAG}'."
+          echo "Expected ${VERSION_DIR}/conftest.py to exist."
+          exit 1
         else
           echo "No conftest.py override for tag '${FLAGGEMS_TAG}', using the clone's own."
         fi
@@ -191,7 +217,7 @@ runs:
         # checkout, so it is told where FlagGems lives.
         RUN_SCRIPT="${RUN_SCRIPT:-${ASSETS}/ci/ci_run_tests.py}"
         CMD="python ${RUN_SCRIPT} --gpus ${{ inputs.gpus }} --output-dir $TEST_OUTPUT_DIR"
-        CMD="$CMD --flaggems-path ${{ inputs.flaggems-path }}"
+        CMD="$CMD --flaggems-path ${{ inputs.flaggems-path }} --repo-kind ${REPO_KIND}"
 
         if [ "${{ inputs.first-parameter-only }}" = "true" ]; then
           CMD="$CMD --first-parameter-only"

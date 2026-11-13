@@ -7,6 +7,7 @@ ci_run_tests.py - CI Environment Batch Test Runner for FlagGems Operators
 import argparse
 import atexit
 import datetime
+import importlib
 import json
 import os
 import re
@@ -22,11 +23,13 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import yaml
 
-try:
-    import flag_gems
-except ImportError:
-    print("[ERROR] flag_gems not installed. Please run: pip install -e .")
-    sys.exit(1)
+# Operator library under test, keyed by --repo-kind. Imported in main() once
+# the argument is known, so either package may be absent from the runner.
+REPO_KIND_PACKAGES = {
+    "flaggems": "flag_gems",
+    "flaggems-vllm": "flaggems_vllm",
+}
+OPS_LIB = None
 
 # ANSI color codes
 GREEN = "\033[32m"
@@ -1110,7 +1113,7 @@ def build_gpu_env(base_env: dict, gpu_id: int) -> dict:
     """Create environment dict for a specific GPU."""
     env = base_env.copy()
     try:
-        vendor = flag_gems.vendor_name
+        vendor = OPS_LIB.vendor_name
         vendor_env_map = {
             "ascend": "ASCEND_RT_VISIBLE_DEVICES",
             "hygon": "HIP_VISIBLE_DEVICES",
@@ -1405,8 +1408,23 @@ Examples:
               "two levels above this script, i.e. the <FlagGems>/tools/ci/ "
               "layout. Pass it to run this script from outside the repository."),
     )
+    parser.add_argument(
+        "--repo-kind",
+        choices=sorted(REPO_KIND_PACKAGES),
+        default="flaggems",
+        help=("Operator library under test: flaggems (default, imports flag_gems) "
+              "or flaggems-vllm (imports flaggems_vllm). Used for vendor detection."),
+    )
 
     args = parser.parse_args()
+
+    global OPS_LIB
+    package = REPO_KIND_PACKAGES[args.repo_kind]
+    try:
+        OPS_LIB = importlib.import_module(package)
+    except ImportError:
+        print(f"[ERROR] {package} not installed. Please run: pip install -e .")
+        sys.exit(1)
 
     # Must happen before anything reads ROOT or TESTS_DIR
     if args.flaggems_path is not None:
