@@ -377,7 +377,8 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
         raise RuntimeError(f"Offline build dependency is missing from the Triton cache: {src_path}")
 
     # flagtree: check the cached binary version in ~/.triton, skip download if it matches
-    if variable not in os.environ and os.path.exists(src_path) and system == "Linux" and shutil.which(src_path) is not None:
+    if variable not in os.environ and os.path.exists(src_path) and system == "Linux" and shutil.which(
+            src_path) is not None:
         try:
             cache_version = subprocess.check_output([src_path, "--version"]).decode("utf-8").strip()
             cache_version = re.search(r"V([.|\d]+)", cache_version).group(1)
