@@ -214,15 +214,45 @@ jobs:
           # commit still belongs to the PR it came from. Squash merges also
           # record `GitHub` as the committer, so the commit itself does not say
           # who wrote the change -- the PR does.
-          # workflow_run.pull_requests[] is empty for fork PRs, hence the API
-          # call rather than trusting that field.
-          # `first` yields null rather than failing when a commit belongs to
-          # no PR, which is the normal case for a direct push.
+          #
+          # Two lookups, tried in order:
+          #
+          # 1. The commits/$SHA/pulls endpoint. One call, and it covers the
+          #    common cases: a PR from a branch in this repo, and a push after
+          #    a merge, whose PR is already closed. It only knows commits that
+          #    exist in this repo, so it finds nothing for a fork PR.
+          #    `first` yields null rather than failing when a commit belongs to
+          #    no PR, which is the normal case for a direct push.
+          #
+          # 2. The open-pulls list filtered by head SHA, for fork PRs: the PR
+          #    itself lives in this repo even though its commit does not.
+          #    Paginated, since there can be more open PRs than one page holds;
+          #    sorted by last update, so the PR that was just pushed to is
+          #    almost always on the first page, and `head -n1` stops the paging
+          #    as soon as it has a match. `gh` applies --jq to each page
+          #    separately, which is why there is no `first(...) // ""` here: a
+          #    page without a match would print an empty line ahead of the real
+          #    one.
+          #
+          # workflow_run.pull_requests[] is intentionally empty for fork PRs
+          # (GitHub security restriction), so we never rely on it.
           PR_FIELDS=$(gh api "repos/$REPO/commits/$SHA/pulls" \
             --jq 'first(.[] | "\(.user.login) \(.number) \(.html_url)") // ""' 2>/dev/null || echo "")
+          if [[ -z "$PR_FIELDS" && "$EVENT" == "pull_request" ]]; then
+            PR_FIELDS=$(gh api --paginate "repos/$REPO/pulls?state=open&sort=updated&direction=desc&per_page=100" \
+              --jq ".[] | select(.head.sha == \"$SHA\") | \"\(.user.login) \(.number) \(.html_url)\"" \
+              2>/dev/null | head -n1 || echo "")
+          fi
           read -r LOGIN PR_NUMBER PR_URL <<<"${PR_FIELDS}"
 
           [[ -n "$LOGIN" ]] && TELL="$LOGIN"
+
+          # Fork PRs: the commit lives in the fork repo, so neither API above
+          # finds the author from the commit side. Fall back to the actor, who
+          # is the person who pushed the head branch of the PR.
+          if [[ "$EVENT" == "pull_request" && -z "$LOGIN" && -n "$ACTOR" ]]; then
+            TELL="$ACTOR"
+          fi
 
           # The maintainer who merged it also wants to know, since they are the
           # one who just changed the branch. Skipped when they are the author,
