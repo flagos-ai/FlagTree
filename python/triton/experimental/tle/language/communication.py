@@ -229,7 +229,7 @@ def create_dist_tensor(buf_tensor):
     win = flagcx.flagcxCommWindowRegister(comm, buf_ptr, buf_size, flags=FLAGCX_WIN_COLL_SYMMETRIC)
     print(f"[Rank {rank}] Window registered (symmetric)")
 
-    # Create DevComm with 1 intra barrier
+    # Create device communication resources.
     reqs = flagcxDevCommRequirements()
     reqs.intraMulticast = False
     reqs.barrierCount = 8
@@ -239,7 +239,7 @@ def create_dist_tensor(buf_tensor):
     reqs.intraLLA2ASlotCount = 0
     reqs.interForceEnable = False
     reqs.interContextCount = 4
-    reqs.interSignalCount = 8
+    reqs.interSignalCount = 16  
     reqs.interCounterCount = 8
 
     dev_comm = flagcx.flagcxDevCommCreate(comm, reqs)

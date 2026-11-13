@@ -1,16 +1,43 @@
-"""Two-node TLE all-gather tutorial using a push-2d topology.
+"""Function-level autotuning for push-2d TLE all-gather on sixteen GPUs across two nodes.
 
-The topology is fixed to two nodes with four GPUs per node.  Every rank owns
-16 MiB of float32 input.  One WORLD_SIZE-CTA kernel overlaps three roles:
+Run the corresponding command on each node, using the reachable address of node 0:
 
-1. push the local segment to the same local rank on the other node;
-2. relay local and newly arrived remote segments to the other local GPUs;
-3. wait until all remote source segments are ready.
+    NODE_RANK=0 MASTER_ADDR=10.0.0.1 bash python/tutorials/tle/06-inter-node-allgather.sh
+    NODE_RANK=1 MASTER_ADDR=10.0.0.1 bash python/tutorials/tle/06-inter-node-allgather.sh
 
-The tutorial runs both torch.distributed and TLE once, then compares their
-complete all-gather outputs element by element.
+The launcher starts eight worker processes per node (sixteen in total), with
+one GPU per process.  Each node uses the first eight GPUs in its
+CUDA_VISIBLE_DEVICES list, even if more GPUs are visible.  The Python code
+requires WORLD_SIZE=16 and LOCAL_WORLD_SIZE=8 and uses a 2-by-8 device mesh.
+Signals use sixteen slots, indexed by the source's global rank.  Each
+receiver waits for one signal per epoch from every other source; its own
+input is staged locally and needs no signal.
+
+Each rank has 16 MiB of float32 input.  Four candidates combine BLOCK values
+of 2048/4096 with NODE_BLOCK values of 524288/1048576, measured in elements.
+The all-gather kernel uses NUM_WARPS=32 for every candidate.  Every rank must
+call the decorated function with autotune_pg=dist.group.WORLD, matching the
+FlagCX world communicator.
+
+Every all-gather execution, including warmup, measurement, and cached
+execution, advances its signal epoch and ends with a GPU world barrier
+before the communication buffer can be reused.  The barrier and local input
+copy are included in the measured operator latency.  One context tracks the
+epochs of one registered buffer; do not reset its epoch or invoke the
+all-gather concurrently on multiple streams using that context.
+
+The example calls the decorated function twice with different input values
+and checks exact equality with PyTorch's all-gather result after each call.
+On the first call, group rank 0 checks for a matching disk cache entry;
+all ranks tune together only on a cache miss.  The second call reuses the
+in-memory result.  Set FLAGTREE_AUTOTUNE_CACHE_DIR to choose the disk cache
+directory.  Bump cache_version below if the helper kernels or communication
+protocol change.
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass
 import os
 
 import torch
@@ -19,10 +46,15 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 
+from flagtree.tune import autotune, to_hashable
+
 ELEMENTS_PER_RANK = 4 * 1024 * 1024  # 16 MiB of float32 per rank.
-BLOCK = 4096
-NODE_BLOCK = 1 * 1024 * 1024  # 4 MiB of float32 per node PUT.
 NUM_WARPS = 32
+CONFIG_SPACE = [
+    {"block": block, "node_block": node_block}
+    for block in (2048, 4096)
+    for node_block in (512 * 1024, 1024 * 1024)
+]
 
 
 @triton.jit(do_not_specialize=["local_rank", "node_rank", "epoch"])
@@ -85,8 +117,8 @@ def push_2d_all_gather_kernel(
                 context_id=0,
             )
         else:
-            # The self CTA is the completion CTA.  The local segment requires
-            # no signal because it was staged before this kernel was launched.
+            # The self CTA waits for every other source's segment.  Its own
+            # input was staged before launch and does not produce a signal.
             for source_rank in tl.static_range(0, WORLD_SIZE):
                 if source_rank != global_rank:
                     tle.signal_wait(
@@ -143,48 +175,96 @@ def push_2d_all_gather_kernel(
         )
 
 
+@triton.jit
+def _finish_all_gather_epoch(device_dptr: tl.constexpr, mesh: tl.constexpr):
+    # A separate one-CTA kernel runs after every CTA in the all-gather kernel
+    # has completed.  All ranks must reach it before any rank reuses its buffer.
+    tle.distributed_barrier(
+        mesh=mesh,
+        device_dptr=device_dptr,
+        space="world",
+        group_kind="block",
+        barrier_kind="sync",
+        order="acqrel",
+        index=0,
+    )
+
+
+@dataclass
+class AllGatherContext:
+    registered_output: torch.Tensor
+    device_dptr: object
+    rank: int
+    local_rank: int
+    node_rank: int
+    world_size: int
+    local_world_size: int
+    world_mesh: object
+    epoch: int = 0
+    last_config: dict[str, int] | None = None
+
+
+def _all_gather_key(local_input, ctx, **kwargs):
+    # Epochs, buffer addresses, input values, and the last selected config must
+    # not produce a new workload key on every benchmark or cached invocation.
+    return (to_hashable(local_input), to_hashable(ctx.registered_output), ctx.rank,
+            ctx.world_size, ctx.local_world_size, NUM_WARPS)
+
+
+@autotune(config_space=CONFIG_SPACE, key_fn=_all_gather_key, cache_version="tle-push2d-global-slots-v1")
 def push_2d_all_gather(
     local_input: torch.Tensor,
-    registered_output: torch.Tensor,
-    device_dptr,
-    rank: int,
-    local_rank: int,
-    node_rank: int,
-    world_size: int,
-    local_world_size: int,
+    ctx: AllGatherContext,
+    *,
+    block: int,
+    node_block: int,
 ) -> torch.Tensor:
-    """Stage one local input and launch one result-ready all-gather kernel."""
-    segment_begin = rank * ELEMENTS_PER_RANK
-    registered_output[segment_begin:segment_begin + ELEMENTS_PER_RANK].copy_(local_input)
+    """Run one repeatable all-gather; all ranks must use the same candidate."""
+    ctx.epoch += 1
+    elements_per_rank = local_input.numel()
+    registered_output = ctx.registered_output
+    segment_begin = ctx.rank * elements_per_rank
+    registered_output[segment_begin:segment_begin + elements_per_rank].copy_(local_input)
 
-    push_2d_all_gather_kernel[(world_size, )](
+    push_2d_all_gather_kernel[(ctx.world_size, )](
         registered_output,
-        device_dptr,
-        local_rank,
-        node_rank,
-        1,
-        LOCAL_WORLD_SIZE=local_world_size,
-        WORLD_SIZE=world_size,
-        ELEM_PER_RANK=ELEMENTS_PER_RANK,
-        NUM_NODE_CHUNKS=triton.cdiv(ELEMENTS_PER_RANK, NODE_BLOCK),
-        NUM_LOCAL_CHUNKS=triton.cdiv(ELEMENTS_PER_RANK, BLOCK),
-        NODE_BLOCK=NODE_BLOCK,
-        BLOCK=BLOCK,
+        ctx.device_dptr,
+        ctx.local_rank,
+        ctx.node_rank,
+        ctx.epoch,
+        LOCAL_WORLD_SIZE=ctx.local_world_size,
+        WORLD_SIZE=ctx.world_size,
+        ELEM_PER_RANK=elements_per_rank,
+        NUM_NODE_CHUNKS=triton.cdiv(elements_per_rank, node_block),
+        NUM_LOCAL_CHUNKS=triton.cdiv(elements_per_rank, block),
+        NODE_BLOCK=node_block,
+        BLOCK=block,
         num_warps=NUM_WARPS,
     )
+    # The next invocation's copy is queued behind this barrier on the same
+    # stream, including during the autotuner's back-to-back warmup/repeat loops.
+    _finish_all_gather_epoch[(1, )](ctx.device_dptr, ctx.world_mesh, num_warps=4)
+    ctx.last_config = {"block": block, "node_block": node_block}
     return registered_output
 
 
 def main() -> None:
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    # TLE initializes the NCCL and FlagCX communicators here.
     mem_pool = tle.get_mem_pool()
+    if mem_pool is None:
+        raise RuntimeError("FlagCX memory pool is unavailable; check the FlagCX build and environment.")
     rank = dist.get_rank()
     world_size = dist.get_world_size()
-    local_rank = int(os.environ["LOCAL_RANK"])
     local_world_size = int(os.environ["LOCAL_WORLD_SIZE"])
+    group = dist.group.WORLD
 
-    if local_world_size <= 0 or world_size % local_world_size:
-        raise RuntimeError(f"invalid topology: world_size={world_size}, "
-                           f"local_world_size={local_world_size}")
+    # Match the launcher's two nodes with eight GPUs each.  create_dist_tensor
+    # provides sixteen user signal slots, one for each global source rank.
+    if (world_size, local_world_size) != (16, 8):
+        raise RuntimeError("This tutorial requires two nodes with eight GPUs per node; "
+                           f"got world_size={world_size}, local_world_size={local_world_size}")
     node_rank = rank // local_world_size
     expected_rank = node_rank * local_world_size + local_rank
     if rank != expected_rank:
@@ -208,31 +288,48 @@ def main() -> None:
 
     device_dptr = tle.create_dist_tensor(registered_output)
     torch_reference = torch.empty_like(registered_output)
+    ctx = AllGatherContext(
+        registered_output=registered_output,
+        device_dptr=device_dptr,
+        rank=rank,
+        local_rank=local_rank,
+        node_rank=node_rank,
+        world_size=world_size,
+        local_world_size=local_world_size,
+        world_mesh=tle.device_mesh(tle.MeshConfig(node=2, device=8)),
+    )
 
-    try:
-        dist.all_gather_into_tensor(torch_reference, local_input)
+    for iteration in range(2):
+        # Change values between the first and cached calls so stale data
+        # from an earlier epoch cannot make the correctness check pass.
+        local_input.fill_(float(rank + iteration * world_size))
+        dist.all_gather_into_tensor(torch_reference, local_input, group=group)
+        registered_output.fill_(float("nan"))
+        torch.cuda.synchronize()
+        dist.barrier(group=group)
+
+        previous_epoch = ctx.epoch
+        output = push_2d_all_gather(local_input, ctx, autotune_pg=group)
         torch.cuda.synchronize()
 
-        output = push_2d_all_gather(
-            local_input,
-            registered_output,
-            device_dptr,
-            rank,
-            local_rank,
-            node_rank,
-            world_size,
-            local_world_size,
+        # All ranks agree on validation before entering another invocation
+        # or the collective communicator cleanup.
+        valid = torch.tensor(
+            [int(torch.equal(output, torch_reference))], dtype=torch.int32, device=output.device,
         )
-        torch.cuda.synchronize()
-        torch.testing.assert_close(output, torch_reference, atol=0, rtol=0)
-
+        dist.all_reduce(valid, op=dist.ReduceOp.MIN, group=group)
+        if valid.item() != 1:
+            raise AssertionError(f"All-gather differs from torch on at least one rank, iteration={iteration}")
         if rank == 0:
             print(
-                f"TLE push-2d all-gather matches torch: output shape={tuple(output.shape)}",
+                f"Pass {iteration + 1}: TLE matches torch; selected={ctx.last_config}; "
+                f"operator invocations={ctx.epoch - previous_epoch}; output shape={tuple(output.shape)}",
                 flush=True,
             )
-    finally:
-        tle.cleanup_communicator()
+
+    # Cleanup contains a collective barrier.  A rank-local execution failure
+    # must propagate to the launcher instead of waiting for peers in a finally.
+    tle.cleanup_communicator()
 
 
 if __name__ == "__main__":
