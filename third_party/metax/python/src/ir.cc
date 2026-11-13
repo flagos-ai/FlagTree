@@ -92,12 +92,11 @@ template <typename Attr, typename... Args>
 static Attr checkedLayout(TritonOpBuilder &builder, Args &&...args) {
   std::string message;
   llvm::raw_string_ostream os(message);
-  ScopedDiagnosticHandler handler(builder.getContext(), [&](Diagnostic &diag) {
-    diag.print(os);
-  });
-  auto attr = Attr::getChecked(
-      [&] { return mlir::emitError(builder.getLastLoc()); },
-      std::forward<Args>(args)...);
+  ScopedDiagnosticHandler handler(builder.getContext(),
+                                  [&](Diagnostic &diag) { diag.print(os); });
+  auto attr =
+      Attr::getChecked([&] { return mlir::emitError(builder.getLastLoc()); },
+                       std::forward<Args>(args)...);
   if (!attr)
     throw std::invalid_argument(message);
   return attr;
@@ -742,11 +741,12 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
   py::class_<ModuleOp, OpState>(m, "module", py::module_local(),
                                 py::dynamic_attr())
       .def("dump", &ModuleOp::dump)
-      .def("clone", [](py::object self) {
-        auto result = py::cast(self.cast<ModuleOp>().clone());
-        result.attr("context") = self.attr("context");
-        return result;
-      })
+      .def("clone",
+           [](py::object self) {
+             auto result = py::cast(self.cast<ModuleOp>().clone());
+             result.attr("context") = self.attr("context");
+             return result;
+           })
       .def("str",
            [](ModuleOp &self) -> std::string {
              std::string str;
@@ -2021,7 +2021,8 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
       .def("create_tile_alloc",
            [](TritonOpBuilder &self, Type tileBufType,
               std::optional<Attribute> targetLayout) -> Value {
-             auto bufType = mlir::cast<mlir::triton::tile::BufType>(tileBufType);
+             auto bufType =
+                 mlir::cast<mlir::triton::tile::BufType>(tileBufType);
              auto op = self.create<mlir::triton::tile::AllocOp>(
                  tileBufType, bufType.getMemorySpace(),
                  /*shape=*/mlir::ArrayAttr(), /*dtype=*/mlir::TypeAttr(),
@@ -2070,32 +2071,33 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
                  tt::standardOutDimPairs(ctx, shape),
                  /*requireSurjective=*/false);
              if (!layout.isSurjective())
-               throw std::invalid_argument(
-                   "distributed linear layout must cover every element of shape");
+               throw std::invalid_argument("distributed linear layout must "
+                                           "cover every element of shape");
              return checkedLayout<ttg::LinearEncodingAttr>(self, ctx, layout);
            })
-      .def("make_shared_linear_encoding_attr",
-           [](TritonOpBuilder &self,
-              const std::vector<std::vector<int32_t>> &offsetBases,
-              const std::vector<std::vector<int32_t>> &blockBases,
-              unsigned alignment, unsigned rank) -> Attribute {
-             if (!blockBases.empty())
-               throw std::invalid_argument(
-                   "MetaX shared linear layout currently requires a single CTA");
-             auto ctx = self.getContext();
-             SmallVector<int64_t> shape(rank, 1);
-             for (const auto &basis : offsetBases)
-               for (unsigned i = 0; i < rank; ++i)
-                 shape[i] = std::max<int64_t>(
-                     shape[i], llvm::NextPowerOf2(basis[i]));
-             tt::LinearLayout layout(
-                 {{StringAttr::get(ctx, "offset"), offsetBases},
-                  {StringAttr::get(ctx, "block"), blockBases}},
-                 tt::standardOutDimPairs(ctx, shape),
-                 /*requireSurjective=*/false);
-             return checkedLayout<ttg::SharedLinearEncodingAttr>(
-                 self, ctx, layout, alignment);
-           })
+      .def(
+          "make_shared_linear_encoding_attr",
+          [](TritonOpBuilder &self,
+             const std::vector<std::vector<int32_t>> &offsetBases,
+             const std::vector<std::vector<int32_t>> &blockBases,
+             unsigned alignment, unsigned rank) -> Attribute {
+            if (!blockBases.empty())
+              throw std::invalid_argument(
+                  "MetaX shared linear layout currently requires a single CTA");
+            auto ctx = self.getContext();
+            SmallVector<int64_t> shape(rank, 1);
+            for (const auto &basis : offsetBases)
+              for (unsigned i = 0; i < rank; ++i)
+                shape[i] =
+                    std::max<int64_t>(shape[i], llvm::NextPowerOf2(basis[i]));
+            tt::LinearLayout layout(
+                {{StringAttr::get(ctx, "offset"), offsetBases},
+                 {StringAttr::get(ctx, "block"), blockBases}},
+                tt::standardOutDimPairs(ctx, shape),
+                /*requireSurjective=*/false);
+            return checkedLayout<ttg::SharedLinearEncodingAttr>(
+                self, ctx, layout, alignment);
+          })
       .def("get_metax_mma_layout",
            [](TritonOpBuilder &self, const std::vector<unsigned> &version,
               const std::vector<unsigned> &warpsPerCTA,
@@ -2108,10 +2110,10 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
                    "elements_mnk[3]");
              auto ctx = self.getContext();
              return ttg::MACAMmaEncodingAttr::get(
-                 ctx, version[0], version[1],
-                 ArrayRef<unsigned>(warpsPerCTA), ArrayRef<unsigned>(elementsMNK),
-                 unsigned(colMajor), ttg::CTAEncodingAttr::getDefault(ctx, 2),
-                 false, false, ArrayRef<unsigned>({1, 1}));
+                 ctx, version[0], version[1], ArrayRef<unsigned>(warpsPerCTA),
+                 ArrayRef<unsigned>(elementsMNK), unsigned(colMajor),
+                 ttg::CTAEncodingAttr::getDefault(ctx, 2), false, false,
+                 ArrayRef<unsigned>({1, 1}));
            })
       .def("get_dot_operand_layout",
            [](TritonOpBuilder &self, unsigned opIdx, Attribute parent,
@@ -2120,10 +2122,12 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
                  self, self.getContext(), opIdx, parent, kWidth);
            })
       .def("get_sliced_encoding",
-           [](TritonOpBuilder &self, unsigned dim, Attribute parent) -> Attribute {
+           [](TritonOpBuilder &self, unsigned dim,
+              Attribute parent) -> Attribute {
              auto distributed = dyn_cast<ttg::DistributedEncodingTrait>(parent);
              if (!distributed)
-               throw std::invalid_argument("expected a distributed parent layout");
+               throw std::invalid_argument(
+                   "expected a distributed parent layout");
              return checkedLayout<ttg::SliceEncodingAttr>(
                  self, self.getContext(), dim, distributed);
            })
@@ -2131,15 +2135,19 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, int numWarps, int threadsPerWarp,
               int numCTAs) {
              auto *block = self.getBuilder().getInsertionBlock();
-             auto module = block ? block->getParentOp()->getParentOfType<ModuleOp>()
-                                 : ModuleOp();
+             auto module =
+                 block ? block->getParentOp()->getParentOfType<ModuleOp>()
+                       : ModuleOp();
              if (!module)
-               throw std::invalid_argument("cannot find module for layout attributes");
+               throw std::invalid_argument(
+                   "cannot find module for layout attributes");
              auto &builder = self.getBuilder();
-             module->setAttr("ttg.num-warps", builder.getI32IntegerAttr(numWarps));
+             module->setAttr("ttg.num-warps",
+                             builder.getI32IntegerAttr(numWarps));
              module->setAttr("ttg.threads-per-warp",
                              builder.getI32IntegerAttr(threadsPerWarp));
-             module->setAttr("ttg.num-ctas", builder.getI32IntegerAttr(numCTAs));
+             module->setAttr("ttg.num-ctas",
+                             builder.getI32IntegerAttr(numCTAs));
            })
       .def("create_tile_set_layout",
            [](TritonOpBuilder &self, Value value, Attribute layout) -> Value {

@@ -29,9 +29,9 @@ struct DotLayoutDomain {
 };
 
 // Validate choices and insert A/B/result set_layout ops into unencoded TTIR.
-LogicalResult insertDotLayoutHints(
-    ModuleOp module, int capability, int numWarps,
-    const llvm::StringMap<DotLayoutPlan> &selection);
+LogicalResult
+insertDotLayoutHints(ModuleOp module, int capability, int numWarps,
+                     const llvm::StringMap<DotLayoutPlan> &selection);
 
 // Number dots in preorder within each function. IDs are valid only until
 // the IR structure changes.

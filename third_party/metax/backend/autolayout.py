@@ -44,8 +44,7 @@ def compose_kernel_candidates(domains):
 
 def insert_dot_layout_candidate(module, candidate, capability, num_warps):
     """Insert candidate A/B/result anchors in unencoded TTIR."""
-    layouts = {dot_id: [plan[key] for key in ("mma", "operand_a", "operand_b")]
-               for dot_id, plan in candidate.items()}
+    layouts = {dot_id: [plan[key] for key in ("mma", "operand_a", "operand_b")] for dot_id, plan in candidate.items()}
     metax.autolayout.insert_dot_layout_hints(module, capability, num_warps, layouts)
     return module
 
@@ -78,8 +77,7 @@ def prepare_layout_candidates(src, backend, options, env_vars):
             cached = json.loads(Path(manifest_path).read_text())
             if cached["version"] == 2 and cached["variants"] and all(
                 (path := cache.get_file(v["file"])) is not None
-                and hashlib.sha256(Path(path).read_bytes()).hexdigest() == v["id"] for v in cached["variants"]
-            ):
+                    and hashlib.sha256(Path(path).read_bytes()).hexdigest() == v["id"] for v in cached["variants"]):
                 manifest = cached
         except (OSError, ValueError, KeyError, TypeError):
             pass
@@ -88,8 +86,8 @@ def prepare_layout_candidates(src, backend, options, env_vars):
         ir.load_dialects(context)
         backend.load_dialects(context)
         _flagprism.load_dialects(context)
-        module = backend.make_ir(src, options, backend.get_codegen_implementation(options),
-                                 backend.get_module_map(), context)
+        module = backend.make_ir(src, options, backend.get_codegen_implementation(options), backend.get_module_map(),
+                                 context)
         metadata = {"hash": identity, "target": backend.target, **options.__dict__, **env_vars}
         stages = {}
         backend.add_stages(stages, options, src.language)
