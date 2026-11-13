@@ -1535,9 +1535,9 @@ struct LoadStoreConversionBase {
       newLoadedVals.emplace_back(vh);
     }
     if (numElems % 2 == 1) {
-      int remainedIdx = numElems - 1;
+      // The preceding BF16 loads each supplied two FP32 registers.
       Value ext = rewriter.create<LLVM::FPExtOp>(loc, resElemTy,
-                                                 loadedVals[remainedIdx]);
+                                                 loadedVals.back());
       newLoadedVals.emplace_back(ext);
     }
     loadedVals = newLoadedVals;
@@ -1554,26 +1554,40 @@ struct LoadStoreConversionBase {
   // `lmBasePtr`, register i covering elements [i*valueVecSize,
   // (i+1)*valueVecSize).
 
-  // Round an f32 register for bf16 truncation (round-to-nearest-even):
-  // x += 0x7fff + (x & 1).
-  Value roundF32ForBf16(mlir::MLIRContext *ctx, Location &loc,
-                        ConversionPatternRewriter &rewriter, Value vI32,
-                        VectorType veci32Ty) const {
-    uint32_t one = 0x0001;
-    uint32_t magic = 0x7fff;
-    SmallVector<Value, 4> andOperands({i32_val(one), vI32});
-    auto vAnd = rewriter.create<LLVM::InlineAsmOp>(
-        loc, veci32Ty, andOperands, "vand.u.mz $0{mr1}, $1, $2", "=&v,r,v",
-        /*has_side_effects=*/false,
-        /*is_align_stack=*/false, LLVM::tailcallkind::TailCallKind::None,
-        LLVM::AsmDialectAttr::get(ctx, LLVM::AsmDialect::AD_ATT), ArrayAttr());
-    SmallVector<Value, 4> addOperands({i32_val(magic), vAnd.getRes()});
-    auto vSvAdd = rewriter.create<LLVM::InlineAsmOp>(
-        loc, veci32Ty, addOperands, "vadd.u.mz $0{mr1}, $1, $2", "=&v,r,v",
-        /*has_side_effects=*/false,
-        /*is_align_stack=*/false, LLVM::tailcallkind::TailCallKind::None,
-        LLVM::AsmDialectAttr::get(ctx, LLVM::AsmDialect::AD_ATT), ArrayAttr());
-    return add(vI32, vSvAdd.getRes());
+  static Value wordConstant(Location loc, ConversionPatternRewriter &rewriter,
+                            Type type, uint32_t word) {
+    auto attr = rewriter.getI32IntegerAttr(word);
+    if (auto vt = dyn_cast<VectorType>(type))
+      return rewriter.create<LLVM::ConstantOp>(loc, vt,
+                                               DenseElementsAttr::get(vt, attr));
+    return rewriter.create<LLVM::ConstantOp>(loc, type, attr);
+  }
+
+  // The retained BF16 low bit breaks ties. Quiet NaNs before their low
+  // payload bits are discarded, including payloads that would round to Inf.
+  static Value roundF32ForBf16(Location loc, ConversionPatternRewriter &rewriter,
+                               Value bits) {
+    auto word = [&](uint32_t v) {
+      return wordConstant(loc, rewriter, bits.getType(), v);
+    };
+    Value tie = and_(lshr(bits, word(16)), word(1));
+    Value rounded = add(bits, add(word(0x7fff), tie));
+    Value isNan = icmp_ugt(and_(bits, word(0x7fffffff)), word(0x7f800000));
+    return select(isNan, or_(bits, word(0x00400000)), rounded);
+  }
+
+  // Store the high halves explicitly. Otherwise LLVM can narrow
+  // fptrunc(fadd(fpext(a), fpext(b))) to a BF16 add, which the KL3
+  // backend implements with different rounding.
+  static Value bf16Words(Location loc, ConversionPatternRewriter &rewriter,
+                         Value fp) {
+    Type i32 = rewriter.getI32Type(), i16 = rewriter.getI16Type();
+    if (auto vt = dyn_cast<VectorType>(fp.getType())) {
+      i32 = VectorType::get(vt.getShape(), i32);
+      i16 = VectorType::get(vt.getShape(), i16);
+    }
+    Value bits = roundF32ForBf16(loc, rewriter, bitcast(fp, i32));
+    return trunc(i16, lshr(bits, wordConstant(loc, rewriter, i32, 16)));
   }
 
   // Ordered f32 -> bf16 store: each source register's 16 rounded high halves
@@ -1604,12 +1618,12 @@ struct LoadStoreConversionBase {
       Value dstPtr1 =
           gep(ptr_ty(ctx, 0), halfVecBf16Ty, lmBasePtr, i16_val(2 * i));
       Value vl = bitcast(valueElems[2 * i], veci32Ty);
-      vl = roundF32ForBf16(ctx, loc, rewriter, vl, veci32Ty);
+      vl = roundF32ForBf16(loc, rewriter, vl);
       vl = bitcast(vl, vecI16Ty);
       rewriter.create<mlir::LLVM::XPU::SCATTER_MHOp>(loc, vl, maskVal, dstPtr1,
                                                      offsetVec);
       Value vh = bitcast(valueElems[2 * i + 1], veci32Ty);
-      vh = roundF32ForBf16(ctx, loc, rewriter, vh, veci32Ty);
+      vh = roundF32ForBf16(loc, rewriter, vh);
       vh = bitcast(vh, vecI16Ty);
       Value dstPtr2 =
           gep(ptr_ty(ctx, 0), halfVecBf16Ty, lmBasePtr, i16_val(2 * i + 1));
@@ -1621,8 +1635,7 @@ struct LoadStoreConversionBase {
       Value elemPtr =
           gep(ptr_ty(ctx, 0), halfVecBf16Ty, lmBasePtr, i32_val(remainedIdx));
       Value elem = valueElems[remainedIdx];
-      Value trunc = rewriter.create<LLVM::FPTruncOp>(loc, halfVecBf16Ty, elem);
-      store(trunc, elemPtr);
+      store(bf16Words(loc, rewriter, elem), elemPtr);
     }
     return;
   }
@@ -1646,13 +1659,13 @@ struct LoadStoreConversionBase {
     Value poseVal = i32_val(16);
     for (int i = 0; i < numElems / 2; ++i) {
       Value veven = bitcast(valueElems[2 * i], veci32Ty);
-      veven = roundF32ForBf16(ctx, loc, rewriter, veven, veci32Ty);
+      veven = roundF32ForBf16(loc, rewriter, veven);
       veven = bitcast(veven, veci16Ty);
       Value elemPtr = gep(ptr_ty(ctx, 0), vecBf16Ty, lmBasePtr, i32_val(i));
       rewriter.create<mlir::LLVM::XPU::VSTORE_MHOp>(loc, veven, elemPtr,
                                                     maskVal);
       Value vodd = bitcast(valueElems[2 * i + 1], veci32Ty);
-      vodd = roundF32ForBf16(ctx, loc, rewriter, vodd, veci32Ty);
+      vodd = roundF32ForBf16(loc, rewriter, vodd);
       Value voddSr = rewriter.create<mlir::LLVM::XPU::SVSRLPOp>(loc, veci32Ty,
                                                                 poseVal, vodd);
       voddSr = bitcast(voddSr, veci16Ty);
@@ -1665,15 +1678,13 @@ struct LoadStoreConversionBase {
       Value elemPtr =
           gep(ptr_ty(ctx, 0), halfVecBf16Ty, lmBasePtr, i32_val(remainedIdx));
       Value elem = valueElems[remainedIdx];
-      Value trunc = rewriter.create<LLVM::FPTruncOp>(loc, halfVecBf16Ty, elem);
-      store(trunc, elemPtr);
+      store(bf16Words(loc, rewriter, elem), elemPtr);
     }
     return;
   }
 
   // TRITONXPU_BF16_FAST: let the device library convert+store a register pair
-  // (32 bf16 = 64B) in one call. An odd trailing register falls back to fptrunc
-  // + plain store.
+  // (32 bf16 = 64B) in one call. An odd trailing register stores its rounded BF16 words directly.
   void VecFP32ToBF16(Operation *op, mlir::MLIRContext *ctx, Location &loc,
                      ConversionPatternRewriter &rewriter, int numElems,
                      int valueVecSize, int ptrDataVecSize,
@@ -1692,8 +1703,7 @@ struct LoadStoreConversionBase {
       Value elemPtr =
           gep(ptr_ty(ctx, 0), halfVecBf16Ty, lmBasePtr, i32_val(remainedIdx));
       Value elem = valueElems[remainedIdx];
-      Value trunc = rewriter.create<LLVM::FPTruncOp>(loc, halfVecBf16Ty, elem);
-      store(trunc, elemPtr);
+      store(bf16Words(loc, rewriter, elem), elemPtr);
     }
     return;
   }
@@ -1861,13 +1871,17 @@ struct XPULoadOpConversion : public ConvertOpToLLVMPattern<triton::xpu::LoadOp>,
     }
     if (index && !op.getIsDiscrete()) {
       ptrNumElems = resNumElems;
-      unsigned _stride =
-          (bf16Tofp32 && isVectorized)
-              ? std::ceil(static_cast<double>(ptrNumElems * stride) / 2)
-              : ptrNumElems * stride;
-      _stride = coreDealMultiRows ? stride : _stride;
-      Value idx = mul(llIndex, i32_val(_stride));
-      lmBasePtr = gep(ptr_ty(ctx, 0), ptrDataVecTy, lmBasePtr, idx);
+      // An indexed slice can contain an odd number of FP32 registers.
+      // Packing two registers per BF16 memory vector must not round up
+      // the distance between slices (one FP32 register is 16 BF16 words).
+      if (bf16Tofp32 && isVectorized && !coreDealMultiRows) {
+        Value idx = mul(llIndex, i32_val(resNumElems * vecSize * stride));
+        lmBasePtr = gep(ptr_ty(ctx, 0), ptrElemScalarTy, lmBasePtr, idx);
+      } else {
+        unsigned step = coreDealMultiRows ? stride : resNumElems * stride;
+        Value idx = mul(llIndex, i32_val(step));
+        lmBasePtr = gep(ptr_ty(ctx, 0), ptrDataVecTy, lmBasePtr, idx);
+      }
       stride = coreDealMultiRows
                    ? std::ceil(static_cast<double>(colSize) / vecSize)
                    : stride;
@@ -2259,11 +2273,9 @@ struct XPUStoreOpConversion
     unsigned stride = 1;
     if (index) {
       ptrNumElems = valueNumElems;
-      unsigned _stride = (fp32Tobf16 && isVectorized)
-                             ? std::ceil(static_cast<double>(ptrNumElems) / 2)
-                             : ptrNumElems;
-      _stride = coreDealMultiRows ? 1 : _stride;
-      if (valueElemScalarTy.isInteger(32) && ptrElemScalarTy.isInteger(8)) {
+      unsigned _stride = coreDealMultiRows ? 1 : valueNumElems;
+      if ((fp32Tobf16 && isVectorized && !coreDealMultiRows) ||
+          (valueElemScalarTy.isInteger(32) && ptrElemScalarTy.isInteger(8))) {
         Value idx = mul(llIndex, i32_val(valueNumElems * valueVecSize));
         lmBasePtr = gep(ptr_ty(ctx, 0), ptrElemScalarTy, lmBasePtr, idx);
       } else {
@@ -2336,7 +2348,7 @@ struct XPUStoreOpConversion
         for (size_t elemIdx = 0; elemIdx < ptrNumElems; elemIdx++) {
           Value elem = llVals[elemIdx];
           if (fp32Tobf16) {
-            elem = rewriter.create<LLVM::FPTruncOp>(loc, ptrElemScalarTy, elem);
+            elem = bf16Words(loc, rewriter, elem);
           }
           Value elemPtr = gep(ptr_ty(ctx, 0), ptrElemScalarTy, lmBasePtr,
                               i32_val(elemIdx * stride));
