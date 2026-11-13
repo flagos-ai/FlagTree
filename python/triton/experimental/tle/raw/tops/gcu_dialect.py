@@ -234,8 +234,7 @@ class GCUOps:
     def slice_deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
                             slice_shape: list[ir.Value], dst_offsets: list[ir.Value]) -> None:
         seg = [1, 1, 1, len(offsets), len(slice_shape), len(dst_offsets), 0]
-        ir.Operation.create("gcu.slice_deslice_async",
-                            operands=[dte, dst, src, *offsets, *slice_shape, *dst_offsets],
+        ir.Operation.create("gcu.slice_deslice_async", operands=[dte, dst, src, *offsets, *slice_shape, *dst_offsets],
                             attributes=_segment_sizes(seg))
 
     @staticmethod
@@ -257,8 +256,7 @@ class GCUOps:
     def slice_transpose_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
                               layout: list[ir.Value], pad_value: ir.Value) -> None:
         seg = [1, 1, 1, len(offsets), len(layout), 1, 0]
-        ir.Operation.create("gcu.slice_transpose_async",
-                            operands=[dte, dst, src, *offsets, *layout, pad_value],
+        ir.Operation.create("gcu.slice_transpose_async", operands=[dte, dst, src, *offsets, *layout, pad_value],
                             attributes=_segment_sizes(seg))
 
     @staticmethod

@@ -145,14 +145,11 @@ def _add_dte_pipeline_segment(kernel):
             values = [v.strip() for v in segs.group(1).split(',') if v.strip()]
             if len(values) >= expected:
                 continue
-            line = (line[:segs.start(1)] +
-                    ', '.join(values + ['0'] * (expected - len(values))) +
-                    line[segs.end(1):])
+            line = (line[:segs.start(1)] + ', '.join(values + ['0'] * (expected - len(values))) + line[segs.end(1):])
         elif op.group(1) == 'memset_start':
             # The old op had no AttrSizedOperandSegments, hence no property.
             n_operands = len([v for v in op.group(2).split(',') if v.strip()])
-            prop = (' <{operandSegmentSizes = array<i32: 1, 1, 1, ' +
-                    str(n_operands - 3) + ', 0>}>')
+            prop = (' <{operandSegmentSizes = array<i32: 1, 1, 1, ' + str(n_operands - 3) + ', 0>}>')
             line = line[:op.end(2) + 1] + prop + line[op.end(2) + 1:]
         else:
             continue
