@@ -329,11 +329,20 @@ struct UnaryOpConversion : public ConvertOpToLLVMPattern<SrcOp>,
 
     auto valueElems = unpackLLElements(loc, llvalue, rewriter);
 
+    auto vectorTy = cast<VectorType>(convertVectorType(resultElemTy));
     SmallVector<Value> calculatedVals;
-    for (size_t vecStart = 0; vecStart < numElems; vecStart += 1) {
-      Value vexpOp = rewriter.create<DstOp>(
-          loc, convertVectorType(resultElemTy), valueElems[vecStart]);
-      calculatedVals.push_back(vexpOp);
+    for (unsigned i = 0; i < numElems; ++i) {
+      Value input = valueElems[i];
+      if constexpr (std::is_same_v<SrcOp, triton::xpu::VExpFOp>) {
+        // Keep natural exp distinct from base-two exp in LLVM IR. The KL3
+        // LLVM pass consumes this exact packet type before code generation.
+        if (xpuArch == 3 && !vectorTy.isScalable() && vectorTy.getRank() == 1 &&
+            vectorTy.getNumElements() == 16 && vectorTy.getElementType().isF32()) {
+          calculatedVals.push_back(rewriter.create<LLVM::ExpOp>(loc, vectorTy, input));
+          continue;
+        }
+      }
+      calculatedVals.push_back(rewriter.create<DstOp>(loc, vectorTy, input));
     }
 
     Type llvmResultStructTy = getTypeConverter()->convertType(resultTy);

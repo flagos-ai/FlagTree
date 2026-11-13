@@ -18,3 +18,5 @@ add_triton_library(MLIRLLVMXPUToLLVMIRTranslation
 add_xpu_sdnn_object(MLIRLLVMXPUToLLVMIRTranslationSDNN
   ${CMAKE_CURRENT_SOURCE_DIR}/XPUToIRTranslationForSDNN.cpp.o
 )
+
+add_subdirectory(GroupedExp)
