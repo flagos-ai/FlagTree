@@ -1683,8 +1683,23 @@ struct LoadStoreConversionBase {
     return;
   }
 
-  // TRITONXPU_BF16_FAST: let the device library convert+store a register pair
-  // (32 bf16 = 64B) in one call. An odd trailing register stores its rounded BF16 words directly.
+  // The device helper rounds finite values by adding a bias to their bits.
+  // Pass it representable quiet NaNs: otherwise the bias can carry into the
+  // exponent or sign and turn a NaN into an infinity or zero.
+  static Value prepareForBf16FastStore(Location loc,
+                                       ConversionPatternRewriter &rewriter,
+                                       Value value) {
+    auto fpType = cast<VectorType>(value.getType());
+    auto wordType = VectorType::get(fpType.getShape(), rewriter.getI32Type());
+    auto word = [&](uint32_t n) { return wordConstant(loc, rewriter, wordType, n); };
+    Value bits = bitcast(value, wordType);
+    Value isNan = icmp_ugt(and_(bits, word(0x7fffffff)), word(0x7f800000));
+    Value quiet = or_(and_(bits, word(0xffff0000)), word(0x00400000));
+    return bitcast(select(isNan, quiet, bits), fpType);
+  }
+
+  // Convert and store a register pair (32 BF16 elements) in one device call.
+  // Store an odd trailing register as explicitly rounded BF16 words.
   void VecFP32ToBF16(Operation *op, mlir::MLIRContext *ctx, Location &loc,
                      ConversionPatternRewriter &rewriter, int numElems,
                      int valueVecSize, int ptrDataVecSize,
@@ -1694,7 +1709,9 @@ struct LoadStoreConversionBase {
     for (int i = 0; i < numElems / 2; ++i) {
       Value dstPtr =
           gep(ptr_ty(ctx, 0), halfVecBf16Ty, lmBasePtr, i32_val(2 * i));
-      ValueRange args({dstPtr, valueElems[2 * i], valueElems[2 * i + 1]});
+      Value lo = prepareForBf16FastStore(loc, rewriter, valueElems[2 * i]);
+      Value hi = prepareForBf16FastStore(loc, rewriter, valueElems[2 * i + 1]);
+      ValueRange args({dstPtr, lo, hi});
       LLVM::XPU::createDeviceCall("_ZN3xpu10vstore2_lmEPNS_8bfloat16EDv16_fS2_",
                                   rewriter, op, args, loc);
     }
