@@ -239,7 +239,7 @@ def create_dist_tensor(buf_tensor):
     reqs.intraLLA2ASlotCount = 0
     reqs.interForceEnable = False
     reqs.interContextCount = 4
-    reqs.interSignalCount = 16  
+    reqs.interSignalCount = 16
     reqs.interCounterCount = 8
 
     dev_comm = flagcx.flagcxDevCommCreate(comm, reqs)

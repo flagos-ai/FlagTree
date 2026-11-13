@@ -50,11 +50,9 @@ from flagtree.tune import autotune, to_hashable
 
 ELEMENTS_PER_RANK = 4 * 1024 * 1024  # 16 MiB of float32 per rank.
 NUM_WARPS = 32
-CONFIG_SPACE = [
-    {"block": block, "node_block": node_block}
-    for block in (2048, 4096)
-    for node_block in (512 * 1024, 1024 * 1024)
-]
+CONFIG_SPACE = [{"block": block, "node_block": node_block}
+                for block in (2048, 4096)
+                for node_block in (512 * 1024, 1024 * 1024)]
 
 
 @triton.jit(do_not_specialize=["local_rank", "node_rank", "epoch"])
@@ -207,8 +205,8 @@ class AllGatherContext:
 def _all_gather_key(local_input, ctx, **kwargs):
     # Epochs, buffer addresses, input values, and the last selected config must
     # not produce a new workload key on every benchmark or cached invocation.
-    return (to_hashable(local_input), to_hashable(ctx.registered_output), ctx.rank,
-            ctx.world_size, ctx.local_world_size, NUM_WARPS)
+    return (to_hashable(local_input), to_hashable(ctx.registered_output), ctx.rank, ctx.world_size,
+            ctx.local_world_size, NUM_WARPS)
 
 
 @autotune(config_space=CONFIG_SPACE, key_fn=_all_gather_key, cache_version="tle-push2d-global-slots-v1")
@@ -315,7 +313,9 @@ def main() -> None:
         # All ranks agree on validation before entering another invocation
         # or the collective communicator cleanup.
         valid = torch.tensor(
-            [int(torch.equal(output, torch_reference))], dtype=torch.int32, device=output.device,
+            [int(torch.equal(output, torch_reference))],
+            dtype=torch.int32,
+            device=output.device,
         )
         dist.all_reduce(valid, op=dist.ReduceOp.MIN, group=group)
         if valid.item() != 1:
