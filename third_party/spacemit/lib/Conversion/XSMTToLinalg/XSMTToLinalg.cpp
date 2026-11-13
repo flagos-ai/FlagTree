@@ -787,6 +787,50 @@ private:
   }
 };
 
+// xsmt.vmt4d: M=1 matvec on plain (unpacked) 2D tensors. Lower to
+// linalg.matmul so the spine-mlir midend (DirectMVPattern in PackMatmul)
+// decomposes it into the vmt4d engine path
+// (inner_bpack -> vmt4d2 -> inner_funpack -> slide-MMA).
+struct LowerXSMTVMT4D : public OpRewritePattern<xsmt::VMT4DOp> {
+  using OpRewritePattern<xsmt::VMT4DOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(xsmt::VMT4DOp op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value a = op.getA();
+    Value b = op.getB();
+    Value c = op.getC();
+
+    if (auto cast = a.getDefiningOp<tensor::CastOp>())
+      a = cast.getSource();
+    if (auto cast = b.getDefiningOp<tensor::CastOp>())
+      b = cast.getSource();
+    if (c) {
+      if (auto cast = c.getDefiningOp<tensor::CastOp>())
+        c = cast.getSource();
+    }
+
+    Value initTensor;
+    if (c) {
+      initTensor = c;
+    } else {
+      auto resultType = cast<RankedTensorType>(op.getResult().getType());
+      initTensor = tensor::EmptyOp::create(rewriter, loc, resultType.getShape(),
+                                           resultType.getElementType());
+      auto zeroAttr = FloatAttr::get(resultType.getElementType(), 0.0);
+      auto zero = arith::ConstantOp::create(rewriter, loc, zeroAttr);
+      initTensor = linalg::FillOp::create(rewriter, loc, ValueRange{zero},
+                                          ValueRange{initTensor})
+                       .getResult(0);
+    }
+
+    auto matmulOp = linalg::MatmulOp::create(rewriter, loc, ValueRange{a, b},
+                                             ValueRange{initTensor});
+    rewriter.replaceOp(op, matmulOp.getResult(0));
+    return success();
+  }
+};
+
 // ===----------------------------------------------------------------------===//
 // Phase 3: Loop parallelization and remaining cleanup
 // ===----------------------------------------------------------------------===//
@@ -1748,6 +1792,7 @@ void mlir::triton::populateXSMTConversionPatterns(RewritePatternSet &patterns) {
   patterns.add<UnpackOpPattern>(patterns.getContext());
   patterns.add<RepackOpPattern>(patterns.getContext());
   patterns.add<LowerXSMTMMT4D>(patterns.getContext());
+  patterns.add<LowerXSMTVMT4D>(patterns.getContext());
   patterns.add<GetThreadOpToLLVMCallPattern>(patterns.getContext());
   patterns.add<ForToForallPattern>(patterns.getContext());
   patterns.add<ProtonRecordOpPattern>(patterns.getContext());

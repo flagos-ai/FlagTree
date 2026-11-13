@@ -128,6 +128,20 @@ def dot(a_packed, b_packed, out_unpacked=None, _semantic=None):
 
 
 @builtin
+def vmt4d(a, b, init=None, _semantic=None):
+    """M=1 matrix-vector multiplication on plain 2D tensors.
+
+    :param a: activation row, shape [1, K] (NOT packed)
+    :param b: weight tile viewed as [K, N] (i.e. W^T for a row-major [N, K] W)
+    :param init: optional [1, N] accumulator/bias; f16 inputs without init
+                 accumulate in f32 (engine widening)
+    :return: result row, shape [1, N]
+    """
+
+    return smt_semantic.vmt4d(a, b, init, _semantic)
+
+
+@builtin
 def mbarrier(flag=tl.constexpr(0), arrive_count=tl.constexpr(0), transaction_count=tl.constexpr(0),
              expect_count=tl.constexpr(1), _semantic=None):
     """Initialize a memory barrier for thread synchronization.
