@@ -69,7 +69,8 @@ def get_long_description():
 
 def init_backends(backend_installer):
     if flagtree_backend:
-        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu", "amd"):
+        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu", "amd",
+                                "evas"):
             backends = [
                 *backend_installer.copy(configs.default_backends + tuple(configs.extend_backends)),
                 *backend_installer.copy_externals(),
