@@ -3424,6 +3424,22 @@ void LayoutPropagation::resolveConflictsByComponent(
         bool better = adjacentToMoved ? cost.total < bestCost.total
                                       : cost.inLoop < bestCost.inLoop &&
                                             cost.total <= bestCost.total;
+#ifdef __PPU__
+        // A kernel with no loop around this component has inLoop == 0 for
+        // every candidate: getScopeLoopFrequencyWeight returns 1 without an
+        // enclosing loop and charge() only accumulates inLoop for weight > 1.
+        // The rule above then never fires (0 < 0 is false), so the per-value
+        // result survives no matter how many boundary converts one shared
+        // encoding would remove. Compare totals in that case as well, keeping
+        // the comparison strict so a tie still leaves the per-value result
+        // alone. scatter_reduce_row_atomic (64x64, PPU) is the motivating
+        // case: the kernel is fully unrolled, Phase 1b hands both b[2] and
+        // b[1] to the min/max encode chain, and the unresolved tie leaves the
+        // atomic target on the default b[1] with two bridging converts.
+        if (!better && !adjacentToMoved && cost.inLoop == 0 &&
+            bestCost.inLoop == 0)
+          better = cost.total < bestCost.total;
+#endif // __PPU__
         if (better) {
           bestCost = cost;
           best = enc;
