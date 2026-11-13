@@ -903,6 +903,9 @@ setup(
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
     package_data={
+        # Standalone builds bundle the NVIDIA command-line tools downloaded by
+        # CMakeBuild so runtime compilation does not depend on a system ptxas.
+        **({"triton.backends.nvidia": ["bin/*"]} if not helper.flagtree_backend else {}),
         # Pre-built custom-op bitcode, required at runtime by
         # triton/experimental/tle/language/dsa/ascend/custom_ops/registry.py.
         # Same convention as triton/backends/*/lib/libdevice.10.bc.
