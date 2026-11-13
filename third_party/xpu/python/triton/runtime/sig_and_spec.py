@@ -6,11 +6,11 @@ import torch
 import torch
 from packaging import version
 
-# 预先检测一次PyTorch版本
+# Pre-check the PyTorch version once
 _current_version = version.parse(torch.__version__)
-_min_version = version.parse("2.5.0")  # 设置最低版本，决定是否包含 uints
+_min_version = version.parse("2.5.0")  # Minimum version: decides whether the uints are included
 
-# 构建字典
+# Build the type map dict
 type_map_dict = {
     torch.bool: "i1",
     torch.float16: "fp16",
@@ -70,7 +70,7 @@ def fast_mangle_type(arg, is_const=False):
 
 
 def fast_create_function_from_signature(sig, kparams):
-    """生成可缓存的高效参数处理函数，优化内核启动开销"""
+    """Build a cacheable, efficient parameter-handling function to reduce kernel launch overhead."""
 
     assert len(sig.parameters) == len(kparams)
 

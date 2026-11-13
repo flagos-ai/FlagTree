@@ -40,5 +40,8 @@ endif()
 
 if(BUILD_MCTLE)
   add_dependencies(TritonAnalysis McTleTableGen)
+  # FlagPrism：generate MCTLE headers before compiling MetaX TritonGPUIR sources.
+  add_dependencies(TritonGPUIR McTleTableGen)
+  # FlagPrism end
   target_link_libraries(TritonToTritonGPU PUBLIC McTleIR)
 endif()

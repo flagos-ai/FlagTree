@@ -1,0 +1,67 @@
+// Standalone equivalent (Iluvatar triton-opt): triton-opt %s -split-input-file -tritongpu-remove-layout-conversions
+
+// set_layout can lower to a marker on an existing producer without emitting
+// a convert. That producer must be an anchor, and must not be rematerialized
+// in its users' preferred layout with an obsolete explicit attribute.
+#a = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [64], warpsPerCTA = [4], order = [0]}>
+#b = #ttg.blocked<{sizePerThread = [2], threadsPerWarp = [64], warpsPerCTA = [4], order = [0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:71", "ttg.threads-per-warp" = 64 : i32} {
+  tt.func @explicit_pointwise(%x: tensor<256xf32, #a>, %y: tensor<256xf32, #a>, %ptr: tensor<256x!tt.ptr<f32>, #a>) {
+    %xb = ttg.convert_layout %x : tensor<256xf32, #a> -> tensor<256xf32, #b>
+    %yb = ttg.convert_layout %y : tensor<256xf32, #a> -> tensor<256xf32, #b>
+    %sum = arith.addf %xb, %yb {tle.explicit_encoding.0 = #b} : tensor<256xf32, #b>
+    %out = ttg.convert_layout %sum : tensor<256xf32, #b> -> tensor<256xf32, #a>
+    tt.store %ptr, %out : tensor<256x!tt.ptr<f32>, #a>
+    tt.return
+  }
+}
+
+// -----
+
+// The same rule applies to slice encodings, including when the competing
+// blocked layout has the same logical tensor shape.
+#a = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [64], warpsPerCTA = [4], order = [0]}>
+#parent = #ttg.blocked<{sizePerThread = [1, 2], threadsPerWarp = [1, 64], warpsPerCTA = [1, 4], order = [1, 0]}>
+#slice = #ttg.slice<{dim = 0, parent = #parent}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:71", "ttg.threads-per-warp" = 64 : i32} {
+  tt.func @explicit_slice(%x: tensor<256xf32, #a>, %y: tensor<256xf32, #a>, %ptr: tensor<256x!tt.ptr<f32>, #a>) {
+    %xs = ttg.convert_layout %x : tensor<256xf32, #a> -> tensor<256xf32, #slice>
+    %ys = ttg.convert_layout %y : tensor<256xf32, #a> -> tensor<256xf32, #slice>
+    %sum = arith.addf %xs, %ys {tle.explicit_encoding.0 = #slice} : tensor<256xf32, #slice>
+    %out = ttg.convert_layout %sum : tensor<256xf32, #slice> -> tensor<256xf32, #a>
+    tt.store %ptr, %out : tensor<256x!tt.ptr<f32>, #a>
+    tt.return
+  }
+}
+
+// -----
+
+// Ordinary pointwise code still has its redundant layout round trip removed.
+#a = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [64], warpsPerCTA = [4], order = [0]}>
+#b = #ttg.blocked<{sizePerThread = [2], threadsPerWarp = [64], warpsPerCTA = [4], order = [0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:71", "ttg.threads-per-warp" = 64 : i32} {
+  tt.func @ordinary_pointwise(%x: tensor<256xf32, #a>, %y: tensor<256xf32, #a>, %ptr: tensor<256x!tt.ptr<f32>, #a>) {
+    %xb = ttg.convert_layout %x : tensor<256xf32, #a> -> tensor<256xf32, #b>
+    %yb = ttg.convert_layout %y : tensor<256xf32, #a> -> tensor<256xf32, #b>
+    %sum = arith.addf %xb, %yb : tensor<256xf32, #b>
+    %out = ttg.convert_layout %sum : tensor<256xf32, #b> -> tensor<256xf32, #a>
+    tt.store %ptr, %out : tensor<256x!tt.ptr<f32>, #a>
+    tt.return
+  }
+}
+
+// -----
+
+// Different explicit layouts on successive values are legal. A hard layout
+// propagated from %sum must not override the explicit target of %out.
+#a = #ttg.blocked<{sizePerThread = [2], threadsPerWarp = [64], warpsPerCTA = [4], order = [0]}>
+#b = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [64], warpsPerCTA = [4], order = [0]}>
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:71", "ttg.threads-per-warp" = 64 : i32} {
+  tt.func @successive_explicit_layouts(%x: tensor<256xf32, #a>, %y: tensor<256xf32, #a>, %pa: tensor<256x!tt.ptr<f32>, #a>, %pb: tensor<256x!tt.ptr<f32>, #b>) {
+    %sum = arith.addf %x, %y {tle.explicit_encoding.0 = #a} : tensor<256xf32, #a>
+    %out = ttg.convert_layout %sum {tle.explicit_encoding.0 = #b} : tensor<256xf32, #a> -> tensor<256xf32, #b>
+    tt.store %pa, %sum : tensor<256x!tt.ptr<f32>, #a>
+    tt.store %pb, %out : tensor<256x!tt.ptr<f32>, #b>
+    tt.return
+  }
+}

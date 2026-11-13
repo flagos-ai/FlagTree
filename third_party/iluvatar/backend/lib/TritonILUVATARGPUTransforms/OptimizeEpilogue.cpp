@@ -171,6 +171,10 @@ public:
   matchAndRewrite(triton::StoreOp stOp,
                   mlir::PatternRewriter &rewriter) const override {
 
+    Attribute explicitEncoding;
+    if (failed(inferTleExplicitMemoryEncoding(stOp, explicitEncoding)) ||
+        explicitEncoding)
+      return failure();
     Value ptr = stOp.getPtr();
     Value val = stOp.getValue();
     Value mask = stOp.getMask();
@@ -186,6 +190,8 @@ public:
       auto chainedOp = val.getDefiningOp();
       if (!chainedOp)
         return mlir::failure();
+      if (hasTleExplicitEncoding(chainedOp))
+        return failure();
       if (llvm::isa<triton::gpu::ConvertLayoutOp>(chainedOp))
         break;
       if (!chainedOp->hasOneUse())

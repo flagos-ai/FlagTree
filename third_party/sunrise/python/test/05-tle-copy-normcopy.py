@@ -86,7 +86,6 @@ def copy_roundtrip(a, c, XBLOCK, YBLOCK):
 
 @pytest.mark.parametrize("XBLOCK,YBLOCK", [(32, 64), (64, 64), (32, 128)])
 def test_copy_roundtrip(XBLOCK, YBLOCK):
-    torch.manual_seed(0)
     xnumel, ynumel = 256, YBLOCK * 4
 
     a = torch.randn(xnumel, ynumel, device=DEVICE, dtype=torch.float32)
@@ -127,7 +126,6 @@ def copy_gm_to_local_kernel(
 
 
 def test_copy_gm_to_local_identity():
-    torch.manual_seed(1)
     XBLOCK, YBLOCK = 32, 64
     xnumel, ynumel = 256, YBLOCK * 4
 

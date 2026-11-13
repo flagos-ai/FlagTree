@@ -579,6 +579,8 @@ class nvidia_knobs(base_knobs):
     mock_ptx_version: env_opt_str = env_opt_str("TRITON_MOCK_PTX_VERSION")
     dump_ptxas_log: env_bool = env_bool("TRITON_DUMP_PTXAS_LOG")
     rlc_enhance: env_bool = env_bool("FLAGTREE_RLC_ENHANCE", True)  # flagtree rlc enhance
+    # flagtree pipeline enhance: TTGIR pipelining only (CUDABackend._add_assign_latencies);
+    # the cp.async lowering fixes behind the same macro have no run-time switch.
     pipeline_enhance: env_bool = env_bool("FLAGTREE_PIPELINE_ENHANCE", True)  # flagtree pipeline enhance
     concat_dot_operand: env_bool = env_bool("FLAGTREE_CONCAT_DOT_OPERAND", True)  # flagtree concat dot operand
 

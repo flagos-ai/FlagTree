@@ -27,6 +27,8 @@
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "triton/Tools/LayoutUtils.h"
 
 #include <cstdlib>
 #include <numeric>
@@ -55,6 +57,49 @@ int64_t saturatingMultiplyDivisor(int64_t lhs, int64_t rhs) {
   if (lhs > kMax / rhs)
     return kMax;
   return multiplyDivisor(lhs, rhs);
+}
+
+int64_t getPhysicalOffsetIdentityBound(triton::gpu::MemDescType type) {
+  // AxisInfo below linearizes logical indices in row-major order. Its proofs
+  // also describe physical addresses only within the low bits left unchanged
+  // by the shared-memory mapping used by LocalPointersOpConversion.
+  int64_t bound = highestPowOf2Divisor<int64_t>(0);
+  auto shape = type.getShape();
+  SmallVector<int64_t> logicalStrides(shape.size(), 1);
+  for (int d = static_cast<int>(shape.size()) - 2; d >= 0; --d)
+    logicalStrides[d] = logicalStrides[d + 1] * shape[d + 1];
+
+  if (auto padded =
+          dyn_cast<triton::gpu::PaddedSharedEncodingAttr>(type.getEncoding())) {
+    // Padded local-pointer lowering first linearizes in encoding order, then
+    // adds each interval's padding. Account for both reorderings and gaps.
+    auto order = triton::gpu::getOrder(padded, shape);
+    int64_t physicalStride = 1;
+    for (unsigned dim : order) {
+      bound = std::gcd(bound, highestPowOf2Divisor<int64_t>(
+                                  physicalStride ^ logicalStrides[dim]));
+      physicalStride *= shape[dim];
+    }
+    for (auto [interval, padding] :
+         llvm::zip_equal(padded.getIntervals(), padded.getPaddings()))
+      bound = gcd(bound, interval, padding);
+    return bound;
+  }
+
+  auto *ctx = type.getContext();
+  auto offset = StringAttr::get(ctx, "offset");
+  auto dims = triton::standardOutDimNames(ctx, shape.size());
+  auto physical =
+      triton::gpu::toLinearLayout(type).sublayout({offset}, dims).invert();
+  for (auto [dim, name] : llvm::enumerate(dims)) {
+    for (int bit = 0; bit < physical.getInDimSizeLog2(name); ++bit) {
+      int64_t logicalBasis = logicalStrides[dim] * (int64_t(1) << bit);
+      int64_t physicalBasis = physical.getBasis(name, bit, offset);
+      bound = std::gcd(
+          bound, highestPowOf2Divisor<int64_t>(logicalBasis ^ physicalBasis));
+    }
+  }
+  return bound;
 }
 
 class TleExtractTileOpAxisInfoVisitor final : public AxisInfoVisitor {
@@ -130,6 +175,8 @@ public:
     if (!memDescTy)
       return AxisInfo();
 
+    const int64_t physicalBound = getPhysicalOffsetIdentityBound(memDescTy);
+
     auto resultTensorTy =
         dyn_cast<RankedTensorType>(local.getResult().getType());
     auto resultPtrTy = dyn_cast<PointerType>(local.getResult().getType());
@@ -174,8 +221,10 @@ public:
       int64_t offsetDivBytes =
           saturatingMultiplyDivisor(offsetDivElems, elemBytes);
       int64_t ptrDivBytes = std::gcd(baseAlignBytes, offsetDivBytes);
+      ptrDivBytes = std::gcd(
+          ptrDivBytes, saturatingMultiplyDivisor(physicalBound, elemBytes));
       std::optional<int64_t> constantValue = std::nullopt;
-      if (hasConstOffset)
+      if (hasConstOffset && physicalBound == highestPowOf2Divisor<int64_t>(0))
         constantValue = constOffsetElems * elemBytes;
       return AxisInfo(/*contiguity=*/{1},
                       /*divisibility=*/{ptrDivBytes},
@@ -269,16 +318,23 @@ public:
     if (ptrTy)
       elemBytes = std::max<int64_t>(1, getPointeeBitWidth(ptrTy) / 8);
     AxisInfo::DimVectorT byteDivisibility = offsetInfo.getDivisibility();
-    for (int d = 0; d < rank; ++d)
+    AxisInfo::DimVectorT contiguity = offsetInfo.getContiguity();
+    for (int d = 0; d < rank; ++d) {
+      contiguity[d] = std::min(contiguity[d], physicalBound);
       byteDivisibility[d] =
           saturatingMultiplyDivisor(byteDivisibility[d], elemBytes);
+      byteDivisibility[d] =
+          std::gcd(byteDivisibility[d],
+                   saturatingMultiplyDivisor(physicalBound, elemBytes));
+    }
 
     std::optional<int64_t> constantValue = std::nullopt;
-    if (offsetInfo.getConstantValue().has_value())
+    if (offsetInfo.getConstantValue().has_value() &&
+        physicalBound == highestPowOf2Divisor<int64_t>(0))
       constantValue = offsetInfo.getConstantValue().value() * elemBytes;
 
-    return AxisInfo(offsetInfo.getContiguity(), byteDivisibility,
-                    offsetInfo.getConstancy(), constantValue);
+    return AxisInfo(contiguity, byteDivisibility, offsetInfo.getConstancy(),
+                    constantValue);
   }
 
   bool match(Operation *op) override {

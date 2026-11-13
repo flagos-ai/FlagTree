@@ -212,7 +212,7 @@ struct LoadStoreConversionBase {
     return ptrElemTy && isSharedFamilyAddressSpace(ptrElemTy.getAddressSpace());
   }
 
-  unsigned getMaxVectorSizeByAlignment(Value ptr) const {
+  unsigned getMaxVectorSizeByAxisInfo(Value ptr) const {
     auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType());
     if (!tensorTy)
       return 1;
@@ -232,7 +232,8 @@ struct LoadStoreConversionBase {
     unsigned maxMultipleBytes = axisInfo->getDivisibility(order[0]);
     unsigned maxMultiple = std::max<unsigned>(maxMultipleBytes / elemBytes, 1);
 
-    return std::min<unsigned>(128 / pointeeBitWidth, maxMultiple);
+    unsigned contiguous = axisInfo->getContiguity(order[0]);
+    return std::min({128 / pointeeBitWidth, maxMultiple, contiguous});
   }
 
   unsigned getTleSharedPointerVectorSize(Value ptr, unsigned vec) const {
@@ -240,11 +241,12 @@ struct LoadStoreConversionBase {
       return vec;
 
     // AxisInfo contiguity and TLE layout hints may both propose vectorized
-    // shared-memory accesses. They are legal only up to the width whose first
-    // element alignment is proven by AxisInfo divisibility.
+    // shared-memory accesses. Both pointer contiguity and first-element
+    // alignment must be proven; contiguous registers alone do not prove that
+    // gathered pointers address adjacent memory elements.
     unsigned hint = tte::inferTlePointerLayoutVectorHint(ptr);
-    unsigned alignmentBound = getMaxVectorSizeByAlignment(ptr);
-    return std::min(std::max(vec, hint), alignmentBound);
+    unsigned axisBound = getMaxVectorSizeByAxisInfo(ptr);
+    return std::min(std::max(vec, hint), axisBound);
   }
 #endif
 
@@ -1457,6 +1459,10 @@ struct AsyncCopyGlobalToLocalOpConversion
     assert(vecBytes == 16 || vecBytes == 8 || vecBytes == 4);
 #ifdef __FLAGTREE_PIPELINE_ENHANCE__
     // Modifiers cp.async cannot express fall back to ca/cg in emitCpAsync.
+    // This check, the PTX gate of the L2 hint and the modifier choice below
+    // have no run-time switch, unlike the TTGIR passes behind the same macro
+    // (knobs.nvidia.pipeline_enhance): their #else branches trap in ptxas or
+    // reject the op, so there is no lowering to switch back to.
 #else  // __FLAGTREE_PIPELINE_ENHANCE__
     if (op.getCache() != CacheModifier::NONE &&
         op.getCache() != CacheModifier::CA &&

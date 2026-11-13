@@ -102,9 +102,13 @@ struct XPUVectorizedOpsConversionBase {
     if (!vectorTy)
       return 1;
     auto elemTy = vectorTy.getElementType();
+    auto shape = vectorTy.getShape();
+    // i1 masks come from vectorized compares; their lane count is the mask
+    // width itself (matches the companion data vector), not 512/bitwidth.
+    if (elemTy.isInteger(1))
+      return shape[0];
     auto width = elemTy.getIntOrFloatBitWidth();
 
-    auto shape = vectorTy.getShape();
     if (shape[0] != 16) { // return vecSize = numElems for vector<numElemsxf32>
       return shape[0];
     }
@@ -120,6 +124,9 @@ struct XPUVectorizedOpsConversionBase {
       return LLVM::getVectorType(LLVM::type::f16Ty(ctx), getVectorSize(type));
     else if (elemTy.isF32())
       return LLVM::getVectorType(LLVM::type::f32Ty(ctx), getVectorSize(type));
+    else if (elemTy.isInteger(1))
+      return LLVM::getVectorType(mlir::IntegerType::get(ctx, 1),
+                                 getVectorSize(type));
     else if (elemTy.isInteger(8))
       return LLVM::getVectorType(LLVM::type::i8Ty(ctx), getVectorSize(type));
     else if (elemTy.isInteger(16))

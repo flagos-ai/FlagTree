@@ -261,7 +261,11 @@ struct TritonTransPattern : public OpConversionPattern<TransOp> {
   LogicalResult
   matchAndRewrite(TransOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm_unreachable("TODO[dyq]: Check Logic");
+    // [t2] This branch used to be stubbed with
+    // llvm_unreachable("TODO[dyq]: Check Logic"), aborting the compiler for
+    // any tt.trans that reaches this pass (e.g. linalg_lu_factor). The logic
+    // below rebuilds the trans on the already-converted operand, which the
+    // dynamically-legal check (converted types) accepts.
     Value src = adaptor.getSrc();
     auto srcTy = cast<RankedTensorType>(src.getType());
     auto srcEnc = srcTy.getEncoding();
@@ -300,14 +304,38 @@ struct TritonReducePattern : public OpConversionPattern<triton::ReduceOp> {
   LogicalResult
   matchAndRewrite(triton::ReduceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto newReduce = rewriter.create<triton::ReduceOp>(
-        op.getLoc(), adaptor.getOperands(), adaptor.getAxis());
+    // [t2] The XPU reduce lowering only supports axis 0 for 2D+ tensors
+    // after an explicit transpose (see the tritonxpu-legalize guard).
+    // Rewrite such reductions as
+    //   tt.reduce(tt.trans(%x, [1, 0, 2, ...]), axis = 1)
+    // so kernels written with generic axis-0 reductions compile instead of
+    // erroring out. The trans keeps the element order, it only relabels the
+    // dims, so the reduction result is unchanged.
+    int32_t axis = op.getAxis();
+    SmallVector<Value> srcs(adaptor.getOperands().begin(),
+                            adaptor.getOperands().end());
+    if (axis == 0) {
+      if (auto srcTy = dyn_cast<RankedTensorType>(srcs[0].getType())) {
+        if (srcTy.getRank() >= 2 && srcTy.getShape()[0] > 1) {
+          SmallVector<int32_t> order;
+          for (int32_t i = 0, e = srcTy.getRank(); i < e; ++i)
+            order.push_back(i);
+          int32_t head = order[0];
+          order[0] = order[1];
+          order[1] = head;
+          for (Value &src : srcs)
+            src = rewriter.create<triton::TransOp>(op.getLoc(), src, order);
+          axis = 1;
+        }
+      }
+    }
+    auto newReduce = rewriter.create<triton::ReduceOp>(op.getLoc(), srcs, axis);
     addNamedAttrs(newReduce, adaptor.getAttributes());
 
     auto &newCombineOp = newReduce.getCombineOp();
     rewriter.cloneRegionBefore(op.getCombineOp(), newCombineOp,
                                newCombineOp.end());
-    rewriter.replaceOp(op, newReduce.getResult());
+    rewriter.replaceOp(op, newReduce.getResults());
     return success();
   }
 };

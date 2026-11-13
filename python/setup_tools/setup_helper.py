@@ -270,7 +270,7 @@ class FlagPrismSetup:
         self.project_root = Path(project_root).resolve()
         backend = configs.flagtree_backend or ""
         # FlagPrism: register all supported integration backends together.
-        supported_backends = {"ascend", "iluvatar", "mthreads", "enflame"}
+        supported_backends = {"ascend", "iluvatar", "mthreads", "enflame", "metax"}
         default = "ON" if backend in supported_backends else "OFF"
         self.enabled = self._check_env_flag("TRITON_BUILD_FLAGPRISM", default)
         self.build_config = None
@@ -279,7 +279,7 @@ class FlagPrismSetup:
         # FlagPrism: allow the default NVIDIA build and supported named backends.
         if self.enabled and backend and backend not in supported_backends:
             raise RuntimeError("TRITON_BUILD_FLAGPRISM is only supported when "
-                               "FLAGTREE_BACKEND=ascend, iluvatar, mthreads, or enflame.")
+                               "FLAGTREE_BACKEND=ascend, iluvatar, mthreads, enflame, or metax.")
         if not self.enabled:
             return
         if self._check_env_flag("TRITON_BUILD_PROTON"):

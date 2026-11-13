@@ -124,7 +124,7 @@ def exp2(x, _semantic=None):
 @core._tensor_member_fn
 def log(x, _semantic=None):
     x = _semantic.to_tensor(x)
-    return core.tensor(_semantic.builder.create_log2(x.handle), x.type)
+    return core.tensor(_semantic.builder.create_log(x.handle), x.type)
 
 
 @core.builtin

@@ -105,8 +105,10 @@ struct CanonicalizeConvertFromReshape
   mlir::LogicalResult
   matchAndRewrite(triton::ReshapeOp op,
                   PatternRewriter &rewriter) const override {
+    if (hasTleExplicitEncoding(op))
+      return failure();
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || isTleExplicitConvertLayoutOp(convert))
       return failure();
     // If the layouts are structurally the same, the convert is trivial
     if (isConvertTrivial(convert)) {
@@ -140,6 +142,8 @@ struct CanonicalizeConvertFromTranspose
   mlir::LogicalResult
   matchAndRewrite(triton::TransOp op,
                   PatternRewriter &rewriter) const override {
+    if (hasTleExplicitEncoding(op))
+      return failure();
     // transpose(x, order=[0, 1, ...]) -> x
     // We turn it into a (trivial) convert_layout that may be folded away
     if (isIota(op.getOrder())) {
@@ -150,7 +154,8 @@ struct CanonicalizeConvertFromTranspose
 
     // If the layouts are structurally the same, the convert is trivial
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert || !isConvertTrivial(convert))
+    if (!convert || isTleExplicitConvertLayoutOp(convert) ||
+        !isConvertTrivial(convert))
       return failure();
 
     rewriter.replaceOpWithNewOp<triton::TransOp>(
@@ -167,9 +172,11 @@ struct CanonicalizeConvertFromHistogram
   mlir::LogicalResult
   matchAndRewrite(triton::HistogramOp op,
                   PatternRewriter &rewriter) const override {
+    if (hasTleExplicitEncoding(op))
+      return failure();
     auto src = op.getSrc();
     auto convert = src.getDefiningOp<ConvertLayoutOp>();
-    if (!convert) {
+    if (!convert || isTleExplicitConvertLayoutOp(convert)) {
       return failure();
     }
     src = convert.getSrc();
@@ -199,12 +206,14 @@ struct CanonicalizeConvertFromGatherSource : public OpRewritePattern<GatherOp> {
 
   mlir::LogicalResult
   matchAndRewrite(GatherOp op, PatternRewriter &rewriter) const override {
+    if (hasTleExplicitEncoding(op))
+      return failure();
     // Don't do this if the compiler picked an optimized layout.
     if (op.getEfficientLayout())
       return failure();
 
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || isTleExplicitConvertLayoutOp(convert))
       return failure();
 
     rewriter.replaceOpWithNewOp<GatherOp>(op, convert.getSrc(), op.getIndices(),
@@ -221,10 +230,12 @@ struct CanonicalizeConvertFromAlloc
   mlir::LogicalResult
   matchAndRewrite(triton::gpu::LocalAllocOp op,
                   PatternRewriter &rewriter) const override {
+    if (hasTleExplicitEncoding(op))
+      return failure();
     if (!op.getSrc())
       return failure();
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || isTleExplicitConvertLayoutOp(convert))
       return failure();
     rewriter.replaceOpWithNewOp<triton::gpu::LocalAllocOp>(
         op, op->getResult(0).getType(), convert.getSrc());
@@ -240,8 +251,10 @@ struct CanonicalizeConvertFromLocalStore
   mlir::LogicalResult
   matchAndRewrite(triton::gpu::LocalStoreOp op,
                   PatternRewriter &rewriter) const override {
+    if (hasTleExplicitEncoding(op))
+      return failure();
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || isTleExplicitConvertLayoutOp(convert))
       return failure();
     rewriter.replaceOpWithNewOp<triton::gpu::LocalStoreOp>(op, convert.getSrc(),
                                                            op.getDst());
@@ -256,8 +269,10 @@ struct CanonicalizeConvertFromSplit
   mlir::LogicalResult
   matchAndRewrite(triton::SplitOp op,
                   PatternRewriter &rewriter) const override {
+    if (hasTleExplicitEncoding(op))
+      return failure();
     auto convert = op.getSrc().getDefiningOp<ConvertLayoutOp>();
-    if (!convert)
+    if (!convert || isTleExplicitConvertLayoutOp(convert))
       return failure();
     auto srcEncoding = convert.getSrc().getType().getEncoding();
     // Multiple source layout can give the same output layout, if the source
@@ -278,6 +293,8 @@ struct CanonicalizeConvertFromConvert
   mlir::LogicalResult
   matchAndRewrite(ConvertLayoutOp op,
                   PatternRewriter &rewriter) const override {
+    if (hasTleExplicitEncoding(op))
+      return failure();
     // Convert to the same layout is redundant.
     if (op->getResultTypes() == op->getOperandTypes()) {
       rewriter.replaceOp(op, op->getOperands());
@@ -294,6 +311,10 @@ struct CanonicalizeConvertFromConvert
 
     Operation *arg = op.getSrc().getDefiningOp();
     if (!arg)
+      return failure();
+    // Folding into a producer would erase its own hard layout, even if this
+    // conversion has no explicit target of its own.
+    if (hasTleExplicitEncoding(arg))
       return failure();
 
     // cvt(reshape) -> reshape

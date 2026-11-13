@@ -46,11 +46,13 @@ on:
       - "Enflame3.6-GCU300-Gems-Baseline"
       - "Enflame3.6-GCU300-Gems-Test"
       - "Enflame3.6-GCU400-Build-And-Test"
+      - "Enflame3.6-Qwen-Benchmark"
       - "FlagCICD-NV3.6-Build-And-Test"
       - "Hcu3.6"
       - "Hcu3.6-Gems-Baseline"
       - "Hcu3.6-Gems-Test"
       - "Hcu3.6-Qwen-Benchmark"
+      - "Hcu3.6-Dist"
       - "Iluvatar3.6-Build-And-Test"
       - "Iluvatar3.6-Gems-Baseline"
       - "Iluvatar3.6-Gems-Test"
@@ -85,6 +87,7 @@ on:
       - "Xpu3.6-Build-And-Test"
       - "Xpu3.6-Gems-Baseline"
       - "Xpu3.6-Gems-Test"
+      - "Xpu3.6-Qwen-Benchmark"
 
 # Name each run after the run it is reporting on, so the Actions list shows
 # what failed rather than rows of identical titles.
@@ -92,7 +95,8 @@ run-name: >-
   Notify [${{ github.event.workflow_run.name }}]
   ${{ github.event.workflow_run.event == 'pull_request'
   && format('PR #{0}', github.event.workflow_run.pull_requests[0].number || '?')
-  || format('{0} {1}', github.event.workflow_run.event, github.event.workflow_run.head_branch) }}
+  || format('{0} {1}', github.event.workflow_run.event, github.event.workflow_run.head_branch) }}:
+  ${{ github.event.workflow_run.display_title }}
 
 permissions:
   actions: read        # read the watched run's current state
@@ -161,42 +165,105 @@ jobs:
           LOGIN=""
           PR_NUMBER=""
           PR_URL=""
+          TELL=""
 
-          # Asked for every event, not just pull_request: a merge arrives as a
+          # A scheduled run executes whatever is at the head of the branch,
+          # so the commit it lands on resolves to the last PR merged -- an
+          # author who had nothing to do with the failure, and who would keep
+          # being paged until somebody else merged something. It belongs to
+          # whoever looks after CI instead, which is a standing list rather
+          # than anything derivable from the run.
+          if [[ "$EVENT" == "schedule" ]]; then
+            echo "Scheduled run: notifying the admins rather than an author."
+            {
+              echo "logins="
+              echo "admins=true"
+              echo "pr-number="
+              echo "pr-url="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A manual run has an obvious owner: whoever started it. No standing
+          # list needed, and no reason to tell anyone else.
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            echo "Manual run started by ${ACTOR:-<unknown>}."
+            {
+              echo "logins=$ACTOR"
+              echo "admins=false"
+              echo "pr-number="
+              echo "pr-url="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Anything else without a change behind it has nobody to tell.
+          if [[ "$EVENT" != "pull_request" && "$EVENT" != "push" ]]; then
+            echo "Trigger is '$EVENT', which belongs to nobody. Not notifying."
+            {
+              echo "logins="
+              echo "admins=false"
+              echo "pr-number="
+              echo "pr-url="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Asked for a push too, not just pull_request: a merge arrives as a
           # push whose actor is the maintainer who pressed the button, and the
           # commit still belongs to the PR it came from. Squash merges also
           # record `GitHub` as the committer, so the commit itself does not say
           # who wrote the change -- the PR does.
-          # workflow_run.pull_requests[] is empty for fork PRs, hence the API
-          # call rather than trusting that field.
-          # `first` yields null rather than failing when a commit belongs to
-          # no PR, which is the normal case for a direct push.
+          #
+          # Two lookups, tried in order:
+          #
+          # 1. The commits/$SHA/pulls endpoint. One call, and it covers the
+          #    common cases: a PR from a branch in this repo, and a push after
+          #    a merge, whose PR is already closed. It only knows commits that
+          #    exist in this repo, so it finds nothing for a fork PR.
+          #    `first` yields null rather than failing when a commit belongs to
+          #    no PR, which is the normal case for a direct push.
+          #
+          # 2. The open-pulls list filtered by head SHA, for fork PRs: the PR
+          #    itself lives in this repo even though its commit does not.
+          #    Paginated, since there can be more open PRs than one page holds;
+          #    sorted by last update, so the PR that was just pushed to is
+          #    almost always on the first page, and `head -n1` stops the paging
+          #    as soon as it has a match. `gh` applies --jq to each page
+          #    separately, which is why there is no `first(...) // ""` here: a
+          #    page without a match would print an empty line ahead of the real
+          #    one.
+          #
+          # workflow_run.pull_requests[] is intentionally empty for fork PRs
+          # (GitHub security restriction), so we never rely on it.
           PR_FIELDS=$(gh api "repos/$REPO/commits/$SHA/pulls" \
             --jq 'first(.[] | "\(.user.login) \(.number) \(.html_url)") // ""' 2>/dev/null || echo "")
+          if [[ -z "$PR_FIELDS" && "$EVENT" == "pull_request" ]]; then
+            PR_FIELDS=$(gh api --paginate "repos/$REPO/pulls?state=open&sort=updated&direction=desc&per_page=100" \
+              --jq ".[] | select(.head.sha == \"$SHA\") | \"\(.user.login) \(.number) \(.html_url)\"" \
+              2>/dev/null | head -n1 || echo "")
+          fi
           read -r LOGIN PR_NUMBER PR_URL <<<"${PR_FIELDS}"
 
-          # cron and workflow_dispatch belong to nobody in particular: the
-          # actor is whoever last touched the workflow, which is not a useful
-          # person to page. Those failures are about the health of the branch,
-          # which the chat notification already covers.
-          TELL=""
-          if [[ -n "$LOGIN" ]]; then
-            TELL="$LOGIN"
+          [[ -n "$LOGIN" ]] && TELL="$LOGIN"
+
+          # Fork PRs: the commit lives in the fork repo, so neither API above
+          # finds the author from the commit side. Fall back to the actor, who
+          # is the person who pushed the head branch of the PR.
+          if [[ "$EVENT" == "pull_request" && -z "$LOGIN" && -n "$ACTOR" ]]; then
+            TELL="$ACTOR"
           fi
+
           # The maintainer who merged it also wants to know, since they are the
           # one who just changed the branch. Skipped when they are the author,
           # so self-merging does not arrive twice.
           if [[ "$EVENT" == "push" && -n "$ACTOR" && "$ACTOR" != "$LOGIN" ]]; then
             TELL="${TELL:+$TELL }$ACTOR"
           fi
-          # A push with no PR behind it (direct commit to a branch) still has
-          # exactly one person to tell.
-          if [[ -z "$TELL" && "$EVENT" == "push" && -n "$ACTOR" ]]; then
-            TELL="$ACTOR"
-          fi
 
           {
             echo "logins=$TELL"
+            echo "admins=false"
             echo "pr-number=$PR_NUMBER"
             echo "pr-url=$PR_URL"
           } >> "$GITHUB_OUTPUT"
@@ -205,11 +272,12 @@ jobs:
 
       - name: Resolve the Feishu recipient
         id: contact
-        if: ${{ steps.settled.outputs.proceed == 'true' && steps.author.outputs.logins != '' }}
+        if: ${{ steps.settled.outputs.proceed == 'true' && (steps.author.outputs.logins != '' || steps.author.outputs.admins == 'true') }}
         continue-on-error: true
         uses: flagos-ai/FlagTree/.github/actions/lookup-feishu-contact@main
         with:
           login: ${{ steps.author.outputs.logins }}
+          admins: ${{ steps.author.outputs.admins }}
           workflow: ${{ github.event.workflow_run.name }}
           app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
           app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
@@ -225,19 +293,26 @@ jobs:
           RUN_ID=${{ github.event.workflow_run.id }}
           REPO=${{ github.repository }}
 
-          # "job / step" rather than the job alone: on these workflows the job
-          # name is the backend, which the title already says, while the step
-          # is what separates a build break from a failing test. Steps the
-          # runner skipped after the failure are ignored -- only `failure`
-          # counts, not `cancelled`.
+          # "job / step @ host" rather than the job alone: the job name is the
+          # backend, which the title already says, while the step separates a
+          # build break from a failing test, and the host matters because
+          # several self-hosted runners share one label -- a failure on one
+          # machine and not its siblings points at the machine. Steps the
+          # runner skipped after the failure are ignored: only `failure`
+          # counts, not `cancelled`. runner_name is absent on a queued or
+          # cancelled job, so it is only appended when present.
           NAMES=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate --jq '
             [ .jobs[]
               | select(.conclusion == "failure")
               | . as $job
               | ( [ $job.steps[]? | select(.conclusion == "failure") | .name ] ) as $steps
-              | if ($steps | length) > 0
-                then "\($job.name) / \($steps | join(" + "))"
-                else $job.name
+              | ( if ($steps | length) > 0
+                  then "\($job.name) / \($steps | join(" + "))"
+                  else $job.name
+                  end ) as $what
+              | if ($job.runner_name // "") != ""
+                then "\($what) @ \($job.runner_name)"
+                else $what
                 end
             ] | join("; ")' 2>/dev/null || echo "")
 
@@ -266,7 +341,9 @@ jobs:
             ${{ steps.jobs.outputs.failed }}
 
             **Trigger** ${{ github.event.workflow_run.event }} on `${{ github.event.workflow_run.head_branch }}`${{ steps.author.outputs.pr-number != '' && format(' (PR #{0})', steps.author.outputs.pr-number) || '' }}
-            **Attempt** ${{ github.event.workflow_run.run_attempt }}
+            **Attempt** ${{ github.event.workflow_run.run_attempt }}${{ steps.author.outputs.admins == 'true' && '
+
+            _Sent to the CI admins: a scheduled run belongs to the branch, not to any one change._' || '' }}
           link-url: ${{ github.event.workflow_run.html_url }}
           link-text: Open run
           # Second button only when the change came from a PR. The run link
