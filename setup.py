@@ -528,7 +528,16 @@ class CMakeBuild(build_ext):
             pybind11_include_dir = os.path.join(pybind11_sys_path, "include")
         else:
             pybind11_include_dir = pybind11.get_include()
-        return [f"-Dpybind11_INCLUDE_DIR='{pybind11_include_dir}'", f"-Dpybind11_DIR='{pybind11.get_cmake_dir()}'"]
+        cmake_args = [f"-Dpybind11_INCLUDE_DIR='{pybind11_include_dir}'"]
+        try:
+            cmake_args.append(f"-Dpybind11_DIR='{pybind11.get_cmake_dir()}'")
+        except ImportError:
+            # Distro packages of pybind11 (3.x) keep the CMake files outside the python
+            # package (e.g. /usr/share/cmake/pybind11); let find_package() locate them.
+            print(
+                f'{YELLOW}pybind11 CMake dir not found in the python package, '
+                f'leaving pybind11_DIR to CMake find_package(){NC}', file=sys.stderr, flush=True)
+        return cmake_args
 
     def get_proton_cmake_args(self):
         cmake_args = get_thirdparty_packages([get_json_package_info()])
