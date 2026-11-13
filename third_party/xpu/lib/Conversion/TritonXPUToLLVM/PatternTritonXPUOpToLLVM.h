@@ -141,6 +141,10 @@ void populateRawOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                  RewritePatternSet &patterns,
                                  PatternBenefit benefit);
 
+void populateRemotePointerOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                           RewritePatternSet &patterns,
+                                           PatternBenefit benefit);
+
 } // namespace xpu
 } // namespace triton
 } // namespace mlir
