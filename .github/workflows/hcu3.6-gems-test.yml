@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [hcu3.6, hcu3.6-bw1100]
+        runner: [hcu3.6-test, hcu3.6-bw1100-test]
     if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false }}
     uses: flagos-ai/FlagTree/.github/workflows/template-gems-test.yml@main
     with:
