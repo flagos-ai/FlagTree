@@ -182,7 +182,8 @@ runs:
           # FlagGems CI assets. A per-backend skip list only concerns its own
           # backend; everything else there (shared tooling, conftest.py, the
           # default skip list) affects every backend's results.
-          if [[ "$file" == .github/workflows/gems/* ]]; then
+          if [[ "$file" == .github/workflows/gems/* ]] \
+             || [[ "$file" == .github/workflows/gems-vllm/* ]]; then
             # A skip list named after another backend cannot affect this one.
             # default.yaml is NOT such a file: it applies to every backend
             # that has no override, so it counts as shared.
