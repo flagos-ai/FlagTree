@@ -16,7 +16,8 @@ bool isAsyncCopyDestinationSupported(gpu::MemDescType destination) {
 }
 
 gpu::MemDescType getAsyncCopyLinearDestination(gpu::MemDescType destination) {
-  auto shared = cast<gpu::SwizzledSharedEncodingAttr>(destination.getEncoding());
+  auto shared =
+      cast<gpu::SwizzledSharedEncodingAttr>(destination.getEncoding());
   auto linear = gpu::SwizzledSharedEncodingAttr::get(
       destination.getContext(), shared.getVec(), 1, 1, shared.getOrder(),
       shared.getCTALayout());
@@ -27,8 +28,8 @@ gpu::MemDescType getAsyncCopyLinearDestination(gpu::MemDescType destination) {
 }
 
 unsigned getAsyncCopyVectorSize(RankedTensorType source,
-                               gpu::MemDescType destination,
-                               const AxisInfo *sourceInfo) {
+                                gpu::MemDescType destination,
+                                const AxisInfo *sourceInfo) {
   auto layout = gpu::toLinearEncoding(source);
   unsigned dim = layout.getOrder()[0];
   unsigned bits = destination.getElementTypeBitWidth();
@@ -40,15 +41,22 @@ unsigned getAsyncCopyVectorSize(RankedTensorType source,
   }
   unsigned vec =
       std::min({contiguity, layout.getContigPerThread()[dim], 128 / bits});
-  auto shared = cast<gpu::SwizzledSharedEncodingAttr>(destination.getEncoding());
+  auto shared =
+      cast<gpu::SwizzledSharedEncodingAttr>(destination.getEncoding());
   if (shared.getMaxPhase() > 1)
     vec = std::min(vec, shared.getVec());
   return vec;
 }
 
-FailureOr<unsigned> getAsyncCopyMaxVectorSize(
-    gpu::AsyncCopyGlobalToLocalOp copy, gpu::MemDescType destination,
-    ModuleAxisInfoAnalysis &axisInfo) {
+FailureOr<unsigned>
+getAsyncCopyMaxVectorSize(gpu::AsyncCopyGlobalToLocalOp copy,
+                          gpu::MemDescType destination,
+                          ModuleAxisInfoAnalysis &axisInfo, bool emitErrors) {
+  auto reject = [&](StringRef message) -> FailureOr<unsigned> {
+    if (emitErrors)
+      copy.emitOpError(message);
+    return failure();
+  };
   auto shared =
       cast<gpu::SwizzledSharedEncodingAttr>(destination.getEncoding());
   unsigned dim = shared.getOrder().front();
@@ -56,11 +64,11 @@ FailureOr<unsigned> getAsyncCopyMaxVectorSize(
   if (Value mask = copy.getMask()) {
     auto *info = axisInfo.getAxisInfo(mask);
     if (!info || info->getRank() != destination.getRank())
-      return copy.emitOpError("cannot prove async-copy mask uniformity");
+      return reject("cannot prove async-copy mask uniformity");
     // LLVM swizzles source addresses but not predicates along this axis.
     if (shared.getMaxPhase() > 1 &&
         info->getConstancy(dim) < destination.getShape()[dim])
-      return copy.emitOpError(
+      return reject(
           "swizzled shared layout requires an async-copy mask uniform along "
           "the swizzled axis");
     maxVec = std::min<int64_t>(maxVec, info->getConstancy(dim));
@@ -70,14 +78,16 @@ FailureOr<unsigned> getAsyncCopyMaxVectorSize(
       other = convert.getSrc();
     if (!matchPattern(other, m_Zero()) &&
         !matchPattern(other, m_PosZeroFloat()))
-      return copy.emitOpError("MetaX async copy requires zero fill");
+      return reject("MetaX async copy requires zero fill");
   }
   return maxVec;
 }
 
-gpu::BlockedEncodingAttr chooseAsyncCopyLayout(
-    RankedTensorType source, gpu::MemDescType destination,
-    const AxisInfo *sourceInfo, unsigned minVec, unsigned maxVec) {
+gpu::BlockedEncodingAttr chooseAsyncCopyLayout(RankedTensorType source,
+                                               gpu::MemDescType destination,
+                                               const AxisInfo *sourceInfo,
+                                               unsigned minVec,
+                                               unsigned maxVec) {
   auto blocked = dyn_cast<gpu::BlockedEncodingAttr>(source.getEncoding());
   auto shared =
       dyn_cast<gpu::SwizzledSharedEncodingAttr>(destination.getEncoding());
@@ -97,9 +107,9 @@ gpu::BlockedEncodingAttr chooseAsyncCopyLayout(
     SmallVector<unsigned> sizePerThread(source.getRank(), 1);
     sizePerThread[shared.getOrder()[0]] = width;
     auto encoding = gpu::BlockedEncodingAttr::get(
-        source.getContext(), source.getShape(), sizePerThread, shared.getOrder(),
-        product(blocked.getWarpsPerCTA()), product(blocked.getThreadsPerWarp()),
-        blocked.getCTALayout());
+        source.getContext(), source.getShape(), sizePerThread,
+        shared.getOrder(), product(blocked.getWarpsPerCTA()),
+        product(blocked.getThreadsPerWarp()), blocked.getCTALayout());
     auto candidate = source.cloneWithEncoding(encoding);
     if (compatible(candidate))
       return encoding;
@@ -108,7 +118,7 @@ gpu::BlockedEncodingAttr chooseAsyncCopyLayout(
 }
 
 bool isAsyncCopyLayoutCompatible(RankedTensorType source,
-                                gpu::MemDescType destination, unsigned vec) {
+                                 gpu::MemDescType destination, unsigned vec) {
   if (!isa<gpu::BlockedEncodingAttr>(source.getEncoding()) ||
       !isAsyncCopyDestinationSupported(destination) ||
       source.getShape() != destination.getShape() || !llvm::isPowerOf2_32(vec))
@@ -120,7 +130,8 @@ bool isAsyncCopyLayoutCompatible(RankedTensorType source,
   auto block = StringAttr::get(ctx, "block");
   auto offset = StringAttr::get(ctx, "offset");
   auto srcLayout = gpu::toLinearLayout(source);
-  auto dstLayout = gpu::toLinearLayout(getAsyncCopyLinearDestination(destination));
+  auto dstLayout =
+      gpu::toLinearLayout(getAsyncCopyLinearDestination(destination));
   auto cvt = srcLayout.invertAndCompose(dstLayout);
   if (!cvt.isTrivialOver({block}))
     return false;

@@ -1,7 +1,6 @@
+#include "triton/Conversion/CommonIRToTTGIR/CommonIRLowerTensorTiles.h"
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h"
-#include "triton/Conversion/CommonIRToTTGIR/TensorOps.h"
 
-#include "mlir-ext/Conversion/CommonIRToTritonGPU/Patterns.h"
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "mlir-ext/Dialect/CommonIR/IR/LayoutHintAttrs.h"
 #include "mlir/IR/Matchers.h"
@@ -23,20 +22,6 @@ namespace {
 
 namespace ttg = mlir::triton::gpu;
 
-// Boundary conversions can consume values that have no encoding in TTIR yet.
-struct LayoutConversionPattern : OpConversionPattern<ttg::ConvertLayoutOp> {
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(ttg::ConvertLayoutOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto attrs = op->getAttrs();
-    auto converted = rewriter.replaceOpWithNewOp<ttg::ConvertLayoutOp>(
-        op, getTypeConverter()->convertType(op.getType()), adaptor.getSrc());
-    converted->setAttrs(attrs);
-    return success();
-  }
-};
-
 struct TensorTilePlan {
   Operation *op;
   RankedTensorType fullType;
@@ -45,9 +30,8 @@ struct TensorTilePlan {
   DenseI64ArrayAttr elementIndices;
 };
 
-// The native MACA view lowering sorts the selected register slots in its MMA
-// ABI order. Check their logical coordinates too: inferred shape/cardinality
-// alone does not prove a same-lane rectangular slice, especially for colMajor.
+// Check coordinates in MACA's register order: matching shape alone cannot prove
+// a same-lane rectangular slice, especially for colMajor.
 static bool preservesMmaCoordinates(RankedTensorType fullTy,
                                     RankedTensorType tileTy,
                                     ArrayRef<int64_t> tileIndex) {
@@ -244,10 +228,9 @@ static FailureOr<TensorTilePlan> planTile(Operation *op) {
             planForEncoding(op, fullTy, tileTy, *tileIndex, candidate);
         succeeded(direct))
       return direct;
-    // Native extract inference takes its order from the register bases. When
-    // an axis has no register replicas this can differ from the blocked order,
-    // also changing lane/warp placement. Re-plan with that order explicitly;
-    // the surrounding conversions preserve the original logical tensor.
+    // Without register replicas, inferred order can change lane/warp placement.
+    // Re-plan in that order and preserve public layouts with boundary
+    // conversions.
     auto order = ttg::getOrder(fullTy.cloneWithEncoding(candidate));
     if (llvm::equal(order, candidate.getOrder()))
       return failure();
@@ -283,7 +266,7 @@ static Value convertLayout(OpBuilder &builder, Location loc, Value value,
                            RankedTensorType type) {
   if (value.getType() == type)
     return value;
-  return ttg::ConvertLayoutOp::create(builder, loc, type, value);
+  return builder.create<ttg::ConvertLayoutOp>(loc, type, value);
 }
 
 struct CommonIRLowerTensorTilesPass
@@ -324,8 +307,9 @@ struct CommonIRLowerTensorTilesPass
                         cast<RankedTensorType>(op->getResult(0).getType()));
       // Only transfer a hint that still describes the logical result type.
       if (auto encoding = tile::getExplicitResultEncoding(op, 0);
-          encoding && encoding == cast<RankedTensorType>(replacement.getType())
-                                      .getEncoding())
+          encoding &&
+          encoding ==
+              cast<RankedTensorType>(replacement.getType()).getEncoding())
         tile::setExplicitResultEncoding(cast<OpResult>(replacement), encoding);
       op->getResult(0).replaceAllUsesWith(replacement);
       op->erase();
@@ -347,16 +331,6 @@ bool canLowerTensorTileInEncoding(Operation *op, Attribute encoding) {
                                            : op->getOperand(1).getType());
   auto plan = planForEncoding(op, fullTy, tileTy, *index, encoding);
   return succeeded(plan) && plan->tileType.getEncoding() == encoding;
-}
-
-void populateCommonIRTensorPatternsAndLegality(TypeConverter &typeConverter,
-                                               RewritePatternSet &patterns,
-                                               ConversionTarget &target) {
-  tile::populateSetLayoutToTritonGPUPatterns(typeConverter, patterns, target);
-  patterns.add<LayoutConversionPattern>(typeConverter, patterns.getContext());
-  tile::populateTensorTileTypePatterns(typeConverter, patterns, target);
-  target.addDynamicallyLegalOp<ttg::ConvertLayoutOp>(
-      [&typeConverter](Operation *op) { return typeConverter.isLegal(op); });
 }
 
 } // namespace mlir::triton::metax

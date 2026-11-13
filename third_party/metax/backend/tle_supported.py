@@ -15,7 +15,6 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.metax.sched_bound",
     "gpu.metax.iglp",
     "gpu.metax.local_load",
-    "gpu.metax.bsm_perm",
     "gpu.buffered_tensor.load",
     "gpu.buffered_tensor.store",
     "gpu.buffered_tensor.slot",
@@ -25,4 +24,4 @@ TLE_SUPPORTED_PRIMITIVES = [
 ]
 
 if COMMON_IR_ENABLED:
-    TLE_SUPPORTED_PRIMITIVES.extend(["gpu.set_layout", "gpu.buffered_tensor.subslice"])
+    TLE_SUPPORTED_PRIMITIVES.extend(["gpu.set_layout", "gpu.buffered_tensor.subslice", "gpu.metax.bsm_perm"])

@@ -45,8 +45,7 @@ class MmaEncoding(distributed_encoding):
         return 2
 
     def to_ir(self, builder):
-        return builder.get_metax_mma_layout(
-            self.version, self.warps_per_cta, self.elements_mnk, self.col_major)
+        return builder.get_metax_mma_layout(self.version, self.warps_per_cta, self.elements_mnk, self.col_major)
 
     def __repr__(self):
         return (f"metax.MmaEncoding(version={self.version}, warps_per_cta={self.warps_per_cta}, "
@@ -91,8 +90,8 @@ class DotOperandEncoding(distributed_encoding):
                 f"parent={self.parent!r}, k_width={self.k_width})")
 
     def __eq__(self, other):
-        return (type(self) is type(other) and self.operand_index == other.operand_index
-                and self.parent == other.parent and self.k_width == other.k_width)
+        return (type(self) is type(other) and self.operand_index == other.operand_index and self.parent == other.parent
+                and self.k_width == other.k_width)
 
     def __hash__(self):
         return hash((self.operand_index, self.parent, self.k_width))

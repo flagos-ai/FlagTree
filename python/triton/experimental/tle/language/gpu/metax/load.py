@@ -20,6 +20,7 @@
 """MetaX shared-memory loads and register permutation."""
 
 import triton.language.core as tl
+from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 
 from .. import types as tle
 from ..semantic import get_memdesc
@@ -27,7 +28,10 @@ from ..semantic import get_memdesc
 
 @tl.builtin
 def local_load(buffer, dtype=None, intrinsic=False, is_constant_offs=False, mma_mode=-1, _semantic=None):
-    """Load shared memory into registers; mma_mode=2 returns packed int32 for bsm_perm."""
+    """Load shared memory into registers.
+
+    mma_mode=2 currently requires CommonIR and returns packed int32 for bsm_perm.
+    """
     if not isinstance(buffer, tle.buffered_tensor) or buffer.type.storage != tle.smem:
         raise ValueError("MetaX local_load requires a shared-memory buffer")
     dtype = tl._unwrap_if_constexpr(dtype)
@@ -40,11 +44,13 @@ def local_load(buffer, dtype=None, intrinsic=False, is_constant_offs=False, mma_
     if isinstance(mma_mode, bool) or not isinstance(mma_mode, int):
         raise ValueError("local_load mma_mode must be a compile-time integer")
     if mma_mode == 2:
+        if not COMMON_IR_ENABLED:
+            raise RuntimeError("MetaX local_load(mma_mode=2) requires a CommonIR-enabled build")
         if buffer.dtype not in (tl.float16, tl.bfloat16) or dtype != tl.int32 or len(buffer.shape) != 2:
             raise ValueError("local_load mma_mode=2 requires a rank-2 float16/bfloat16 buffer and dtype=tl.int32")
     elif dtype != buffer.dtype:
         raise ValueError("local_load dtype must match the buffer element type unless mma_mode=2")
-    result_type = tl.block_type(dtype, buffer.type.shape)
+    result_type = tl.block_type(dtype, list(buffer.type.shape))
     handle = _semantic.builder.create_metax_local_load(result_type.to_ir(_semantic.builder),
                                                        get_memdesc(buffer, _semantic), intrinsic, is_constant_offs,
                                                        mma_mode)
@@ -53,7 +59,7 @@ def local_load(buffer, dtype=None, intrinsic=False, is_constant_offs=False, mma_
 
 @tl.builtin
 def bsm_perm(value, dtype, _semantic=None):
-    """Reorder a packed MetaX B operand from local_load(mma_mode=2) for MMA."""
+    """Reorder a packed MetaX B operand from local_load(mma_mode=2) for MMA; currently requires CommonIR."""
     dtype = tl._unwrap_if_constexpr(dtype)
     if (not isinstance(value, tl.tensor) or not value.type.is_block() or len(value.shape) != 2
             or value.dtype != tl.int32 or dtype not in (tl.float16, tl.bfloat16)):

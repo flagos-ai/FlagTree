@@ -60,8 +60,8 @@ def _specialization_key(bundle):
     import torch
 
     device = torch.cuda.get_device_properties(torch.cuda.current_device())
-    payload = (_PROTOCOL, "jit-specialization-v1", bundle.hash, str(getattr(device, "uuid", device.name)),
-               device.name, device.multi_processor_count)
+    payload = (_PROTOCOL, "jit-specialization-v1", bundle.hash, str(getattr(device, "uuid", device.name)), device.name,
+               device.multi_processor_count)
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
@@ -172,10 +172,10 @@ class LayoutTuner(KernelInterface):
         with self._layout_lock:
             bundle = self._bundles[device].get(key)
             if bundle is None:
-                options, signature, constants, attrs = self.fn._pack_args(
-                    backend, kwargs, bound_args, specialization, raw_options)
-                if self.fn._call_hook(knobs.runtime.jit_cache_hook, key, signature, device, constants, options,
-                                      [attrs], True):
+                options, signature, constants, attrs = self.fn._pack_args(backend, kwargs, bound_args, specialization,
+                                                                          raw_options)
+                if self.fn._call_hook(knobs.runtime.jit_cache_hook, key, signature, device, constants, options, [attrs],
+                                      True):
                     return None
                 src = self.fn.ASTSource(self.fn, signature, constants, attrs)
                 bundle = prepare_layout_candidates(src, backend, options, get_cache_invalidating_env_vars())
@@ -192,13 +192,15 @@ class LayoutTuner(KernelInterface):
             if key in winners:
                 return winners[key]
             if key not in self._warmups[device]:
+
                 def finalize(kernel):
                     self._warmups[device][key] = kernel
                     self._finish_compile(kernel, bundle, backend, device, key)
 
                 mode = _async_compile.active_mode.get()
                 if mode is not None:
-                    result = mode.submit((id(self), device, bundle.hash), lambda: self._first_compiled(bundle), finalize)
+                    result = mode.submit((id(self), device, bundle.hash), lambda: self._first_compiled(bundle),
+                                         finalize)
                     self._warmups[device][key] = result
                 else:
                     finalize(self._first_compiled(bundle))
@@ -326,8 +328,9 @@ class LayoutTuner(KernelInterface):
         def refine(identities):
             for identity in identities:
                 try:
-                    samples[identity].extend(_benchmark(compiled[identity], grid, stream, args, reset, warmup=0,
-                                                       repetitions=_TOTAL_SAMPLES - _COARSE_SAMPLES))
+                    samples[identity].extend(
+                        _benchmark(compiled[identity], grid, stream, args, reset, warmup=0,
+                                   repetitions=_TOTAL_SAMPLES - _COARSE_SAMPLES))
                     measurements[identity]["status"] = "complete"
                 except Exception as error:
                     measurements[identity]["status"] = "failed"
@@ -339,8 +342,11 @@ class LayoutTuner(KernelInterface):
         # instead of failing a workload that still has executable alternatives.
         if samples and not any(item["status"] == "complete" for item in measurements.values()):
             refine(identity for identity in samples if identity in pruned)
-        timings = {identity: statistics.median(samples[identity]) for identity, item in measurements.items()
-                   if item["status"] == "complete"}
+        timings = {
+            identity: statistics.median(samples[identity])
+            for identity, item in measurements.items()
+            if item["status"] == "complete"
+        }
         report = {
             "protocol": _PROTOCOL,
             "warmup": _WARMUP,
@@ -350,8 +356,8 @@ class LayoutTuner(KernelInterface):
             "candidate_count": len(compiled),
             "candidates": measurements,
         }
-        _LOGGER.info("CommonIR autolayout benchmark: %d candidates, %d pruned, %d fully measured",
-                     len(compiled), sum(item["status"] == "pruned" for item in measurements.values()), len(timings))
+        _LOGGER.info("CommonIR autolayout benchmark: %d candidates, %d pruned, %d fully measured", len(compiled),
+                     sum(item["status"] == "pruned" for item in measurements.values()), len(timings))
         return timings, report
 
     def _remember_winner(self, kernel_cache, key, winner):
@@ -422,14 +428,19 @@ class LayoutTuner(KernelInterface):
                 timings, benchmark = self._benchmark_candidates(compiled, failures, grid, stream, replay, reset)
             if not timings:
                 self.autolayout_results[key] = {
-                    "version": 1, "selected": None, "timings_ms": {}, "failures": failures, "source": "failed",
+                    "version": 1,
+                    "selected": None,
+                    "timings_ms": {},
+                    "failures": failures,
+                    "source": "failed",
                     "benchmark": benchmark,
                 }
                 self._raise_all_failed(bundle, failures)
             # Manifest order breaks ties among the successful candidates.
             selected = min(timings, key=timings.get)
-            record = {"version": 1, "selected": selected, "timings_ms": timings, "failures": failures,
-                      "benchmark": benchmark}
+            record = {
+                "version": 1, "selected": selected, "timings_ms": timings, "failures": failures, "benchmark": benchmark
+            }
             cache.put(json.dumps(record), "commonir-autolayout.json", binary=False)
             winner = compiled[selected]
             self.autolayout_results[key] = dict(record, source="tuned")

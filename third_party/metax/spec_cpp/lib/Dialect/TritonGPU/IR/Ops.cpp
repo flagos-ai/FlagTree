@@ -292,8 +292,8 @@ struct CanonicalizeConvertFromConvert
 #ifdef __FLAGTREE_COMMON_IR__
     Attribute encoding = tile::getExplicitResultEncoding(op, 0);
 #endif
-    auto replacement = rewriter.replaceOpWithNewOp<OpTy>(
-        op, std::forward<Args>(args)...);
+    auto replacement =
+        rewriter.replaceOpWithNewOp<OpTy>(op, std::forward<Args>(args)...);
 #ifdef __FLAGTREE_COMMON_IR__
     if (encoding)
       tile::setExplicitResultEncoding(replacement, 0, encoding);
@@ -345,7 +345,8 @@ struct CanonicalizeConvertFromConvert
         return failure();
 
       replaceWithHint<ReshapeOp>(op, rewriter, op->getResult(0).getType(),
-                                reshape.getResult(), reshape.getAllowReorder());
+                                 reshape.getResult(),
+                                 reshape.getAllowReorder());
       return success();
     }
 
@@ -354,7 +355,7 @@ struct CanonicalizeConvertFromConvert
       // For histogram ops the input and output layouts are independent, so we
       // can always fold convert into the histogram op.
       replaceWithHint<HistogramOp>(op, rewriter, op->getResult(0).getType(),
-                                  histogram.getSrc(), histogram.getMask());
+                                   histogram.getSrc(), histogram.getMask());
       return success();
     }
 
@@ -366,7 +367,7 @@ struct CanonicalizeConvertFromConvert
       // memory side-effects between the LocalLoad op and the ConvertLayout op
       rewriter.setInsertionPoint(arg);
       replaceWithHint<LocalLoadOp>(op, rewriter, op->getResult(0).getType(),
-                                  sharedLoad.getSrc(), sharedLoad.getToken());
+                                   sharedLoad.getSrc(), sharedLoad.getToken());
 
       return success();
     }
@@ -377,7 +378,7 @@ struct CanonicalizeConvertFromConvert
         return failure();
 
       replaceWithHint<CatOp>(op, rewriter, op->getResult(0).getType(),
-                            cat.getOperands());
+                             cat.getOperands());
       return success();
     }
 
@@ -400,7 +401,7 @@ struct CanonicalizeConvertFromConvert
     // cvt(type1, make_range(type2, x)) -> make_range(type1, x)
     if (auto range = dyn_cast<MakeRangeOp>(arg)) {
       replaceWithHint<MakeRangeOp>(op, rewriter, op->getResultTypes(),
-                                  range.getStart(), range.getEnd());
+                                   range.getStart(), range.getEnd());
       return success();
     }
 
