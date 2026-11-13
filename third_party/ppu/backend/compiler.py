@@ -41,12 +41,7 @@ from pathlib import Path
 # TLE ops the PPU backend has no lowering for, mapped to the TLE API that emits
 # them. Checked on the frontend-emitted TTIR so the error names the API the user
 # called instead of surfacing as an opaque MLIR legalization failure much later.
-# ttg.warp_specialize and ttg.tma_copy reach TTIR only from the TLE builtins:
-# tl.range(warp_specialize=True) merely sets a loop attribute, and PPU never runs
-# the pass that would turn it into an op.
 PPU_UNSUPPORTED_TLE_OPS = {
-    "ttg.warp_specialize": "tle.warp_specialize",
-    "ttg.tma_copy": "tle.gpu.copy.tensor_descriptor",
     "tle.distributed_barrier": "tle.distributed_barrier",
     "tle.remote_pointers": "tle.remote",
 }
@@ -58,9 +53,26 @@ def reject_unsupported_tle(mod):
     # mod.walk takes a void callback and cannot be interrupted from Python, so
     # collect during the walk and report every unsupported feature at once.
     def visit(op):
-        feature = PPU_UNSUPPORTED_TLE_OPS.get(op.get_name())
+        name = op.get_name()
+        feature = PPU_UNSUPPORTED_TLE_OPS.get(name)
         if feature is not None:
             features.add(feature)
+        # PPU has hardware named barriers but no mbarrier: barrier_wait/arrive
+        # without phaseIdx are supported, the phased forms are not, nor is a
+        # descriptor copy that signals an mbarrier on completion. A barrier
+        # allocated with init=READY or expect_bytes has only mbarrier forms;
+        # the LLVM conversion rejects the ttng mbarrier ops they lower to
+        # (BarrierOpToLLVM.cpp), as it does every other mbarrier op that
+        # reaches it.
+        if name in ("tle.barrier.wait", "tle.barrier.arrive") and op.get_str_attr("backend") == "mbarrier":
+            features.add("tle.gpu.barrier_" + name.split(".")[-1] + "(phaseIdx=...)")
+        if name == "ttg.tma_copy":
+            # Operands: descriptor, buffer, coordinates and, with a completion
+            # barrier, the barrier: a second shared-memory descriptor.
+            memdescs = sum(
+                str(op.get_operand(i).get_type()).startswith("!ttg.memdesc") for i in range(op.get_num_operands()))
+            if memdescs > 1:
+                features.add("tle.gpu.copy(barrier=...)")
 
     mod.walk(visit)
     if features:
@@ -254,6 +266,28 @@ class PPUBackend(BaseBackend):
     def supports_target(target: GPUTarget):
         return target.backend == "cuda"
 
+    # A TLE descriptor copy becomes a bounds-checked pointer copy on PPU (no
+    # TMA unit). The cache key records what makes it a vectorized cp.async: a
+    # 16-byte aligned base, and the dimensions whose extent is a multiple of
+    # 16 elements, whose bounds mask is then constant over every vector. The
+    # padding is a kernel argument; a copy to shared memory traps on NaN
+    # padding (TleZeroPadDescriptorCopies), a descriptor load keeps it.
+    @staticmethod
+    def get_tensor_descriptor_specialization(arg):
+        # A fake tensor has no storage to be aligned (TensorDescriptor skips it too).
+        fake = type(arg.base).__name__ in ("FakeTensor", "FunctionalTensor")
+        bits = int(not fake and arg.base.data_ptr() % 16 == 0)
+        for dim, extent in enumerate(arg.shape):
+            if extent % 16 == 0:
+                bits |= 2 << dim
+        return f"ppuD{bits}"
+
+    @staticmethod
+    def parse_attr(desc):
+        if desc.startswith("ppuD"):
+            return [["ppu.tensordesc_divisibility", int(desc[4:])]]
+        return BaseBackend.parse_attr(desc)
+
     def _parse_arch(self, arch):
         pattern = r"^sm(\d+)$"
         match = re.fullmatch(pattern, arch)
@@ -354,10 +388,14 @@ class PPUBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
+        ppu.passes.ttppugpuir.add_tle_lower_tma_copy(pm)
         ppu.passes.ttppugpuir.add_tle_promote_async_load_to_aiu(pm)
         passes.ttir.add_rewrite_tensor_pointer(pm)
-        if capability // 10 < 9:
-            passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
+        # PPU has no TMA unit at any capability: descriptors always become
+        # pointers, and the descriptor copies lowered above become zero-padded
+        # pointer loads.
+        passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
+        ppu.passes.ttppugpuir.add_tle_zero_pad_descriptor_copies(pm)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_combine(pm)
         passes.ttir.add_reorder_broadcast(pm)
@@ -392,7 +430,8 @@ class PPUBackend(BaseBackend):
             tle.passes.add_early_assign_memory_space(pm)
             tle.passes.add_select_encodings(pm)
             tle.passes.add_insert_local_pointer_barriers(pm)
-            tle.passes.add_optimize_local_pointer_loads(pm)
+            # flagtree keep smem read order
+            tle.passes.add_optimize_local_pointer_loads(pm, knobs.compilation.keep_smem_read_order)
             tle.passes.add_optimize_local_pointer_stores(pm)
         ppu.passes.ttgpuir.add_accelerate_matmul(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
@@ -400,6 +439,11 @@ class PPUBackend(BaseBackend):
         if tle is not None:
             tle.passes.add_promote_local_store_staging(pm)
         passes.ttir.add_loop_aware_cse(pm)
+        if tle is not None:
+            # Named barriers (tle.gpu.barrier_wait/arrive without a phase) only:
+            # PPU has no mbarrier, which reject_unsupported_tle diagnoses.
+            tle.passes.add_lower_barriers(pm)
+            ppu.passes.ttppugpuir.add_tle_lower_pipe(pm)
         if capability // 10 in [8, 9]:
             passes.ttgpuir.add_fuse_nested_loops(pm)
             passes.common.add_canonicalizer(pm)
@@ -421,11 +465,16 @@ class PPUBackend(BaseBackend):
         ppu.passes.ttppugpuir.add_aiu_lowering(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
-        passes.ttgpuir.add_reorder_instructions(pm)
+        # flagtree keep smem read order
+        passes.ttgpuir.add_reorder_instructions(pm, knobs.compilation.keep_smem_read_order)
         if tle is not None:
             tle.passes.add_lower_async_load(pm)
         passes.ttir.add_loop_aware_cse(pm)
         passes.common.add_symbol_dce(pm)
+        if tle is not None:
+            # Physical named barrier ids, above the ids that warp
+            # specialization reserves.
+            tle.passes.add_allocate_named_barriers(pm)
         passes.common.add_sccp(pm)
         passes.common.add_cse(pm)
         passes.common.add_canonicalizer(pm)
@@ -479,7 +528,10 @@ class PPUBackend(BaseBackend):
         ppu.passes.ttgpuir.add_convert_libdevice_func_to_ppu(pm)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
+        # ppugpu.warp_id is relative to its warp group, which only the partition
+        # regions of ttg.warp_specialize tell: convert it before they are lowered.
         ppu.passes.ttppugpuir.add_ppugpu_to_llvm(pm)
+        ppu.passes.ttgpuir.add_warp_specialize_to_llvm(pm, capability)
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)

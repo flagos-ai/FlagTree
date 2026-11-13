@@ -1198,8 +1198,14 @@ void init_triton_tle_passes(py::module &&m) {
                      tle::createTritonTleSelectEncodings);
   ADD_PASS_WRAPPER_0("add_insert_local_pointer_barriers",
                      tle::createTritonTleInsertLocalPointerBarriers);
-  ADD_PASS_WRAPPER_0("add_optimize_local_pointer_loads",
-                     tle::createTritonTleOptimizeLocalPointerLoads);
+  m.def(
+      "add_optimize_local_pointer_loads",
+      [](mlir::PassManager &pm, bool keep_smem_read_order) {
+        tle::TritonTleOptimizeLocalPointerLoadsOptions options;
+        options.keepSmemReadOrder = keep_smem_read_order;
+        pm.addPass(tle::createTritonTleOptimizeLocalPointerLoads(options));
+      },
+      py::arg("pm"), py::arg("keep_smem_read_order") = false);
   ADD_PASS_WRAPPER_0("add_optimize_local_pointer_stores",
                      tle::createTritonTleOptimizeLocalPointerStores);
   ADD_PASS_WRAPPER_0("add_optimize_local_pointer_async_stores",

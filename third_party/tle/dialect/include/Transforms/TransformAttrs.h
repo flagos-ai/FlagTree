@@ -57,6 +57,10 @@ inline constexpr llvm::StringLiteral kTleEnableEncodingRematerializationAttr(
 // pass. The name matches the frontend attribute set in code_generator.py.
 inline constexpr llvm::StringLiteral kTleReorderLoopLoadsAttr("tt.reorder");
 
+// Marks an async_wait whose distance a pipe lowering already chose. Pipeline
+// and barrier analyses must not recompute or move it.
+inline constexpr llvm::StringLiteral kTlePipeWaitAttr("tle.pipe_wait");
+
 } // namespace mlir::triton::tle
 
 #endif // TRITON_TLE_TRANSFORM_ATTRS_H

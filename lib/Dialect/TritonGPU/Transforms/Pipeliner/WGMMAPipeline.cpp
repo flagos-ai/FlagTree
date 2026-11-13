@@ -36,6 +36,9 @@
 #endif // __FLAGTREE_PIPELINE_ENHANCE__
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
+#ifdef __PPU__
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
+#endif // __PPU__
 #endif
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
@@ -71,6 +74,11 @@ static constexpr llvm::StringLiteral
     kTleExplicitTileStylePipelineAttr("tle.explicit_tile_style_pipeline");
 
 static bool shouldPreserveAsyncWaitNum(ttg::AsyncWaitOp waitOp) {
+#if defined(__PPU__) && defined(__TLE__)
+  // The PPU pipe lowering sets the wait distance of its own copies.
+  if (waitOp->hasAttr(mlir::triton::tle::kTlePipeWaitAttr))
+    return true;
+#endif // __PPU__ && __TLE__
   Operation *parent = waitOp->getParentOp();
   while (parent) {
     if (auto forOp = dyn_cast<scf::ForOp>(parent))

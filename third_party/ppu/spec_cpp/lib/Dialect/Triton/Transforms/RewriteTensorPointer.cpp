@@ -81,6 +81,8 @@ public:
 
   SmallVector<Value> getShape() { return shape; }
 
+  SmallVector<Value> getStrides() { return strides; }
+
   void setOffset(unsigned i, Value newOffset) {
     offsets[i] = newOffset;
     cachedOffsetWithRange.clear();
@@ -387,7 +389,8 @@ public:
 
     auto newResult = triton::AIULoadOp::create(
         builder, aiuLoadOp.getLoc(), aiuLoadOp.getResult().getType(), basePtr,
-        i32Offsets, shape, order, aiuLoadOp.getCache(), aiuLoadOp.getEvict());
+        i32Offsets, shape, info.getStrides(), aiuLoadOp.getBoundaryCheck(),
+        order, aiuLoadOp.getCache(), aiuLoadOp.getEvict());
     op->getResult(0).replaceAllUsesWith(newResult);
     eraser.push(op);
     return nullptr;

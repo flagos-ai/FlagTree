@@ -1134,6 +1134,9 @@ def _tle_flashmla_prefill_consumer1(
 
         k1_l_qk_reader.release(pair)
 
+        # Read the slot again, as consumer0 does: the pipe operations in between
+        # keep the first load in registers, and a second staging buffer with it.
+        k1_r_blk = tl.load(tle.gpu.local_ptr(k1_r_slot.sK, (kv_rows, kv_cols_r)))
         acc_r = tl.dot(prob1_b, k1_r_blk, acc_r, out_dtype=tl.float32)
 
         sS1_slot = sS1_writer.acquire(pair)

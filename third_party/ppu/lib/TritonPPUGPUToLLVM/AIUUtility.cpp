@@ -177,6 +177,108 @@ Value getSliceKOffset(ConversionPatternRewriter &rewriter, Location loc,
   }
 }
 
+// The address in a PPU0010 AIU buffer of the element at `idxCol` of the
+// contiguous dimension and `idxRow` of the other one, which are i32 values.
+static Value getPPUAIUV1SwizzledSharedPtr(
+    TritonLLVMOpBuilder &b, Value dstPtrBase, Type resElemTy,
+    triton::gpu::PPUAIUSharedEncodingAttr resSharedLayout, Value idxCol,
+    Value idxRow) {
+  auto dstPtrTy = dstPtrBase.getType();
+  // swizzling params as described in TritonGPUAttrDefs.td
+  auto elemBytes = resElemTy.getIntOrFloatBitWidth() / 8;
+  // number of elements in one 32-byte channel slice
+  unsigned sliceElems = 32 / elemBytes;
+  // swizzle chunk is 16 bytes (16 elems for b8, 8 for b16, 4 for b32); the
+  // rotation below works on 16-byte chunks and is independent of elemBytes
+  unsigned outVec = sliceElems / 2;
+  auto aiuLoad = resSharedLayout.getAIUStrategy();
+  unsigned cubeC = aiuLoad[0];
+  unsigned cubeW = aiuLoad[1];
+  unsigned aiuWarpCopyC = aiuLoad[2];
+  unsigned aiuWarpCopyW = aiuLoad[3];
+  unsigned elemsPerSlice = sliceElems * cubeW;
+  unsigned elemsPerCopy = cubeC * cubeW * aiuWarpCopyC * aiuWarpCopyW;
+  unsigned elemsPerCube = cubeC * cubeW;
+
+  // element row index inside cube
+  Value idxRowInnerCube = b.urem(idxRow, b.i32_val(cubeW));
+  // cube row index inside tensor
+  Value idxRowCube = b.udiv(idxRow, b.i32_val(cubeW));
+  // element column index inside cube
+  Value idxColInnerCube = b.urem(idxCol, b.i32_val(cubeC));
+  // cube col index inside tensor
+  Value idxColCube = b.udiv(idxCol, b.i32_val(cubeC));
+  // warp channel index inside copy
+  Value warpCIdx = b.urem(idxColCube, b.i32_val(aiuWarpCopyC));
+  // warp width index insice copy
+  Value warpWIdx = b.urem(idxRowCube, b.i32_val(aiuWarpCopyW));
+  // copy index inside tensor
+  Value copyIdx = b.udiv(idxColCube, b.i32_val(aiuWarpCopyC));
+  // slice ID inside cube
+  Value sliceID = b.udiv(idxColInnerCube, b.i32_val(sliceElems));
+  // slice offset inside cube
+  Value sliceOffset = b.mul(sliceID, b.i32_val(elemsPerSlice));
+  // warp offset inside copy
+  Value warpOffset =
+      b.add(b.mul(warpWIdx, b.i32_val(elemsPerCube * aiuWarpCopyC)),
+            b.mul(warpCIdx, b.i32_val(elemsPerCube)));
+  // copy offset insice tensor
+  Value copyOffset = b.mul(copyIdx, b.i32_val(elemsPerCopy));
+
+  Value sliceStartOffset = b.add(copyOffset, b.add(warpOffset, sliceOffset));
+  Value sliceStartPtr =
+      b.gep(dstPtrTy, resElemTy, dstPtrBase, sliceStartOffset);
+
+  // column index inside slice, slice shape is (cubeW, sliceElems)
+  Value idxColInnerSlice = b.urem(idxColInnerCube, b.i32_val(sliceElems));
+  // new swizzled row index inside slice, swizzled slice shape is
+  // (cubeW/4, 4*sliceElems)
+  Value rowSwizzleID = b.udiv(idxRowInnerCube, b.i32_val(4));
+  // new linear slice index inside slice, slice shape is (cubeW/4,
+  // 4*sliceElems)
+  Value idxColSlicelinear = b.urem(
+      b.add(b.mul(idxRowInnerCube, b.i32_val(sliceElems)), idxColInnerSlice),
+      b.i32_val(4 * sliceElems));
+  // new column slice ID, vec=outVec
+  // Value colSliceID = lshr(idxColSlicelinear, i32_val(3));
+  Value colSliceID = b.udiv(idxColSlicelinear, b.i32_val(outVec));
+
+  // rotated length: (((sliceID>1)|(sliceID<1))&0x3) << 1
+  // sliceID 0, 1, 2, 3 ---> rotated length: 0, 4, 2, 6
+  Value rotateLen =
+      b.and_(b.or_(b.lshr(sliceID, b.i32_val(1)), b.shl(sliceID, b.i32_val(1))),
+             b.i32_val(3));
+  rotateLen = b.shl(rotateLen, b.i32_val(1));
+  // rotate position bit
+  Value colBitPos = b.sub(b.i32_val(7), colSliceID);
+  Value ROrL = b.icmp_uge(colBitPos, rotateLen);
+  Value rotR = b.sub(colBitPos, rotateLen);
+  Value rotL = b.add(colBitPos, b.sub(b.i32_val(8), rotateLen));
+  Value colRotBitPos = b.select(ROrL, rotR, rotL);
+  Value colRotID = b.sub(b.i32_val(7), colRotBitPos);
+  Value colSwizzleID = b.xor_(colRotID, b.urem(rowSwizzleID, b.i32_val(2)));
+
+  Value swizzleOffset = b.add(b.mul(rowSwizzleID, b.i32_val(4 * sliceElems)),
+                              b.mul(colSwizzleID, b.i32_val(outVec)));
+
+  // for minVec is not equal to outVec
+  swizzleOffset = b.or_(swizzleOffset, b.urem(idxCol, b.i32_val(outVec)));
+  return b.gep(dstPtrTy, resElemTy, sliceStartPtr, swizzleOffset);
+}
+
+Value getAIUSwizzledSharedPtr(Location loc, triton::gpu::MemDescType memTy,
+                              Type resElemTy, SharedMemoryObject smemObj,
+                              RewriterBase &rewriter, Value idxCol,
+                              Value idxRow) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto resSharedLayout =
+      cast<triton::gpu::PPUAIUSharedEncodingAttr>(memTy.getEncoding());
+  assert(resSharedLayout.isPPU0010() &&
+         "only the PPU0010 buffer is addressed by element");
+  return getPPUAIUV1SwizzledSharedPtr(b, smemObj.getBase(), resElemTy,
+                                      resSharedLayout, idxCol, idxRow);
+}
+
 DenseMap<unsigned, Value> getPPUAIUV1SwizzledSharedPtrs(
     Location loc, const TargetInfoBase &target, unsigned inVec,
     RankedTensorType srcTy, triton::gpu::MemDescType memTy,
@@ -190,16 +292,10 @@ DenseMap<unsigned, Value> getPPUAIUV1SwizzledSharedPtrs(
   Value dstPtrBase = b.gep(dstPtrTy, resElemTy, smemObj.getBase(), dstOffset);
 
   auto srcEncoding = srcTy.getEncoding();
-  auto srcShape = srcTy.getShape();
-  auto srcShapePerCTA = triton::gpu::getShapePerCTA(srcTy);
   unsigned numElems = triton::gpu::getTotalElemsPerThread(srcTy);
-  // swizzling params as described in TritonGPUAttrDefs.td
   auto elemBytes = resElemTy.getIntOrFloatBitWidth() / 8;
-  // number of elements in one 32-byte channel slice
-  unsigned sliceElems = 32 / elemBytes;
-  // swizzle chunk is 16 bytes (16 elems for b8, 8 for b16, 4 for b32); the
-  // rotation below works on 16-byte chunks and is independent of elemBytes
-  unsigned outVec = sliceElems / 2;
+  // The swizzle chunk, see getPPUAIUV1SwizzledSharedPtr.
+  unsigned outVec = 32 / elemBytes / 2;
   auto outOrder = resSharedLayout.getOrder();
 
   // Return values
@@ -207,16 +303,7 @@ DenseMap<unsigned, Value> getPPUAIUV1SwizzledSharedPtrs(
   // Tensor indices held by the current thread, as LLVM values
   auto srcIndices = emitIndices(loc, rewriter, target, srcEncoding, srcTy,
                                 /*withCTAOffset=*/false);
-
-  auto aiuLoad = resSharedLayout.getAIUStrategy();
-  unsigned cubeC = aiuLoad[0];
-  unsigned cubeW = aiuLoad[1];
-  unsigned aiuWarpCopyC = aiuLoad[2];
-  unsigned aiuWarpCopyW = aiuLoad[3];
   unsigned minVec = std::min(outVec, inVec);
-  unsigned elemsPerSlice = sliceElems * cubeW;
-  unsigned elemsPerCopy = cubeC * cubeW * aiuWarpCopyC * aiuWarpCopyW;
-  unsigned elemsPerCube = cubeC * cubeW;
 
   for (unsigned elemIdx = 0; elemIdx < numElems; elemIdx += minVec) {
     auto idx = srcIndices[elemIdx];
@@ -227,71 +314,8 @@ DenseMap<unsigned, Value> getPPUAIUV1SwizzledSharedPtrs(
     } else {
       idxRow = b.i32_val(0);
     }
-
-    // element row index inside cube
-    Value idxRowInnerCube = b.urem(idxRow, b.i32_val(cubeW));
-    // cube row index inside tensor
-    Value idxRowCube = b.udiv(idxRow, b.i32_val(cubeW));
-    // element column index inside cube
-    Value idxColInnerCube = b.urem(idxCol, b.i32_val(cubeC));
-    // cube col index inside tensor
-    Value idxColCube = b.udiv(idxCol, b.i32_val(cubeC));
-    // warp channel index inside copy
-    Value warpCIdx = b.urem(idxColCube, b.i32_val(aiuWarpCopyC));
-    // warp width index insice copy
-    Value warpWIdx = b.urem(idxRowCube, b.i32_val(aiuWarpCopyW));
-    // copy index inside tensor
-    Value copyIdx = b.udiv(idxColCube, b.i32_val(aiuWarpCopyC));
-    // slice ID inside cube
-    Value sliceID = b.udiv(idxColInnerCube, b.i32_val(sliceElems));
-    // slice offset inside cube
-    Value sliceOffset = b.mul(sliceID, b.i32_val(elemsPerSlice));
-    // warp offset inside copy
-    Value warpOffset =
-        b.add(b.mul(warpWIdx, b.i32_val(elemsPerCube * aiuWarpCopyC)),
-              b.mul(warpCIdx, b.i32_val(elemsPerCube)));
-    // copy offset insice tensor
-    Value copyOffset = b.mul(copyIdx, b.i32_val(elemsPerCopy));
-
-    Value sliceStartOffset = b.add(copyOffset, b.add(warpOffset, sliceOffset));
-    Value sliceStartPtr =
-        b.gep(dstPtrTy, resElemTy, dstPtrBase, sliceStartOffset);
-
-    // column index inside slice, slice shape is (cubeW, sliceElems)
-    Value idxColInnerSlice = b.urem(idxColInnerCube, b.i32_val(sliceElems));
-    // new swizzled row index inside slice, swizzled slice shape is
-    // (cubeW/4, 4*sliceElems)
-    Value rowSwizzleID = b.udiv(idxRowInnerCube, b.i32_val(4));
-    // new linear slice index inside slice, slice shape is (cubeW/4,
-    // 4*sliceElems)
-    Value idxColSlicelinear = b.urem(
-        b.add(b.mul(idxRowInnerCube, b.i32_val(sliceElems)), idxColInnerSlice),
-        b.i32_val(4 * sliceElems));
-    // new column slice ID, vec=outVec
-    // Value colSliceID = lshr(idxColSlicelinear, i32_val(3));
-    Value colSliceID = b.udiv(idxColSlicelinear, b.i32_val(outVec));
-
-    // rotated length: (((sliceID>1)|(sliceID<1))&0x3) << 1
-    // sliceID 0, 1, 2, 3 ---> rotated length: 0, 4, 2, 6
-    Value rotateLen = b.and_(
-        b.or_(b.lshr(sliceID, b.i32_val(1)), b.shl(sliceID, b.i32_val(1))),
-        b.i32_val(3));
-    rotateLen = b.shl(rotateLen, b.i32_val(1));
-    // rotate position bit
-    Value colBitPos = b.sub(b.i32_val(7), colSliceID);
-    Value ROrL = b.icmp_uge(colBitPos, rotateLen);
-    Value rotR = b.sub(colBitPos, rotateLen);
-    Value rotL = b.add(colBitPos, b.sub(b.i32_val(8), rotateLen));
-    Value colRotBitPos = b.select(ROrL, rotR, rotL);
-    Value colRotID = b.sub(b.i32_val(7), colRotBitPos);
-    Value colSwizzleID = b.xor_(colRotID, b.urem(rowSwizzleID, b.i32_val(2)));
-
-    Value swizzleOffset = b.add(b.mul(rowSwizzleID, b.i32_val(4 * sliceElems)),
-                                b.mul(colSwizzleID, b.i32_val(outVec)));
-
-    // for minVec is not equal to outVec
-    swizzleOffset = b.or_(swizzleOffset, b.urem(idxCol, b.i32_val(outVec)));
-    ret[elemIdx] = b.gep(dstPtrTy, resElemTy, sliceStartPtr, swizzleOffset);
+    ret[elemIdx] = getPPUAIUV1SwizzledSharedPtr(
+        b, dstPtrBase, resElemTy, resSharedLayout, idxCol, idxRow);
   }
 
   return ret;

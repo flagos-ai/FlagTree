@@ -174,6 +174,13 @@ def _kernel_distributed_barrier():
 
 
 @triton.jit
+def _kernel_mbarrier_phase():
+    bar = tle.alloc_barrier()
+    tle.barrier_arrive(bar, phaseIdx=0)
+    tle.barrier_wait(bar, phaseIdx=0)
+
+
+@triton.jit
 def _ws_default_partition():
     pass
 
@@ -185,8 +192,8 @@ def _ws_worker_partition():
 
 @triton.jit
 def _kernel_warp_specialize():
-    # Well-formed NV-style warp_specialize so the op is actually emitted; PPU
-    # then rejects it when the backend checks the TTIR.
+    # Well-formed warp_specialize: lowered to PPU warp groups with hardware named
+    # barriers.
     _tle_lang.gpu.warp_specialize([(_ws_default_partition, ()), (_ws_worker_partition, ())], [4], [168])
 
 
@@ -223,15 +230,26 @@ def test_ppu_rejects_distributed_barrier_with_clear_error():
     assert "ppu" in full.lower()
 
 
-def test_ppu_rejects_warp_specialize_with_clear_error():
-    with pytest.raises(Exception) as excinfo:
+def test_ppu_compiles_warp_specialize():
+    # The runtime behavior is covered by test_tle_warp_specialize.py.
+    triton.compile(
+        triton.compiler.ASTSource(fn=_kernel_warp_specialize, signature={}, constexprs={}),
+        target=_GPU_TARGET,
+    )
+
+
+def test_ppu_rejects_phased_barrier_with_clear_error():
+    """PPU has named barriers but no mbarrier: the phased wait/arrive is
+    rejected on the frontend IR, naming the API. The ttng mbarrier ops that any
+    other mbarrier form lowers to are illegal in the LLVM conversion
+    (third_party/ppu/test/TritonGPU/barrier-errors.mlir)."""
+    with pytest.raises(NotImplementedError) as excinfo:
         triton.compile(
-            triton.compiler.ASTSource(fn=_kernel_warp_specialize, signature={}, constexprs={}),
+            triton.compiler.ASTSource(fn=_kernel_mbarrier_phase, signature={}, constexprs={}),
             target=_GPU_TARGET,
         )
-    chain = _exception_chain(excinfo.value)
-    full = str(excinfo.value) + "".join(str(c) for c in chain)
-    assert "tle.warp_specialize" in full
+    full = str(excinfo.value) + "".join(str(c) for c in _exception_chain(excinfo.value))
+    assert "tle.gpu.barrier_wait(phaseIdx=...)" in full
     assert "ppu" in full.lower()
 
 

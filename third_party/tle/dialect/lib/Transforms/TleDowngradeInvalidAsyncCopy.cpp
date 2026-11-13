@@ -307,42 +307,43 @@ static bool rematerializeLogicalAsyncCopy(
   return true;
 }
 
-static LogicalResult
-collectErasableTokenUsers(Value token,
-                          SmallPtrSetImpl<Operation *> &visitedTokenOps,
-                          SmallPtrSetImpl<Operation *> &localLoadSet,
-                          SmallVectorImpl<ttg::LocalLoadOp> &localLoads,
-                          SmallVectorImpl<Operation *> &eraseOps) {
-  SmallVector<OpOperand *> uses;
-  for (OpOperand &use : token.getUses())
-    uses.push_back(&use);
-
-  for (OpOperand *use : uses) {
-    Operation *user = use->getOwner();
+// The users of a downgraded copy's token. A commit or wait keeps running:
+// its other copies still need it, a wait covers every group up to its
+// distance and not only the copies it names, and dropping either would
+// renumber the groups that the wait distances count. The token is taken out
+// of the op, which stays in place with its result token valid (a commit group
+// without tokens is legal). A local_load that names the copy's token is
+// recreated without it.
+static LogicalResult collectTokenUsers(
+    Value token, SmallVectorImpl<ttg::LocalLoadOp> &localLoads,
+    SmallVectorImpl<std::pair<Operation *, Value>> &tokenRemovals) {
+  for (OpOperand &use : token.getUses()) {
+    Operation *user = use.getOwner();
     if (auto localLoad = dyn_cast<ttg::LocalLoadOp>(user)) {
-      if (localLoadSet.insert(user).second)
-        localLoads.push_back(localLoad);
+      localLoads.push_back(localLoad);
       continue;
     }
-
     if (!isa<ttg::AsyncCommitGroupOp, ttg::AsyncWaitOp>(user))
       return failure();
-
-    // Rewriting a token out of a multi-token commit/wait would require
-    // rebuilding the remaining async dependency chain. Keep this pass
-    // conservative and only erase self-contained single-token chains.
-    if (user->getNumOperands() != 1)
-      return failure();
-
-    if (visitedTokenOps.insert(user).second) {
-      if (failed(collectErasableTokenUsers(user->getResult(0), visitedTokenOps,
-                                           localLoadSet, localLoads, eraseOps)))
-        return failure();
-      eraseOps.push_back(user);
-    }
+    tokenRemovals.push_back({user, token});
   }
-
   return success();
+}
+
+// Drops each token from the commit or wait that keeps running without it.
+static void dropTokens(IRRewriter &rewriter,
+                       ArrayRef<std::pair<Operation *, Value>> tokenRemovals) {
+  for (auto &removal : tokenRemovals) {
+    Operation *op = removal.first;
+    Value token = removal.second;
+    rewriter.modifyOpInPlace(op, [&] {
+      for (unsigned i = 0, e = op->getNumOperands(); i < e; ++i)
+        if (op->getOperand(i) == token) {
+          op->eraseOperand(i);
+          break;
+        }
+    });
+  }
 }
 
 static void recreateLocalLoadWithoutToken(IRRewriter &rewriter,
@@ -359,12 +360,9 @@ static void recreateLocalLoadWithoutToken(IRRewriter &rewriter,
 static LogicalResult downgradeAsyncCopy(IRRewriter &rewriter,
                                         ttg::AsyncCopyGlobalToLocalOp copyOp,
                                         tt::ModuleAxisInfoAnalysis &axisInfo) {
-  SmallPtrSet<Operation *, 8> visitedTokenOps;
-  SmallPtrSet<Operation *, 8> localLoadSet;
   SmallVector<ttg::LocalLoadOp> localLoads;
-  SmallVector<Operation *> eraseOps;
-  if (failed(collectErasableTokenUsers(copyOp.getToken(), visitedTokenOps,
-                                       localLoadSet, localLoads, eraseOps)))
+  SmallVector<std::pair<Operation *, Value>> tokenRemovals;
+  if (failed(collectTokenUsers(copyOp.getToken(), localLoads, tokenRemovals)))
     return failure();
 
   OpBuilder::InsertionGuard guard(rewriter);
@@ -395,8 +393,7 @@ static LogicalResult downgradeAsyncCopy(IRRewriter &rewriter,
 
   for (ttg::LocalLoadOp localLoad : localLoads)
     recreateLocalLoadWithoutToken(rewriter, localLoad);
-  for (Operation *op : eraseOps)
-    rewriter.eraseOp(op);
+  dropTokens(rewriter, tokenRemovals);
   rewriter.eraseOp(copyOp);
 
   return success();
