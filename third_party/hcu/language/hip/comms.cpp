@@ -57,7 +57,7 @@ load_acquire_workgroup(int [[clang::opencl_global]] * input) {
 // =============================================================================
 // ========================================   #2 ===============================
 // =============================================================================
-
+test
 __attribute__((used, device)) int
 load_relaxed_workgroup(int [[clang::opencl_global]] * input) {
   return __hip_atomic_load(input, __ATOMIC_RELAXED,
