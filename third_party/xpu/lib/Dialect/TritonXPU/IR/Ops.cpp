@@ -316,6 +316,9 @@ OpFoldResult BroadcastOp::fold(FoldAdaptor adaptor) {
 
   if (auto denseElemsAttr = dyn_cast<SplatElementsAttr>(value)) {
     auto shapedType = cast<ShapedType>(getType());
+    // A broadcast from f32 to vector<16xf32> cannot resize a scalar splat.
+    if (denseElemsAttr.getElementType() != shapedType.getElementType())
+      return {};
     return denseElemsAttr.resizeSplat(shapedType);
   }
   return {};
