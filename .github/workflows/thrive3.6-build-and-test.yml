@@ -65,10 +65,10 @@ jobs:
           set -x
           export FLAGTREE_BACKEND=thrive
           export LLVM_SYSPATH=/work/llvm-f6ded0be-ubuntu-x64
-          MAX_JOBS=32 python3 setup.py bdist_wheel
+          MAX_JOBS=32 python3.11 setup.py bdist_wheel
           ssh -p 1024 root@localhost "rm -f /work/flagtree-*.whl"
           scp -P 1024 dist/flagtree-*.whl root@localhost:/work
-          ssh -p 1024 root@localhost "pip3 install /work/flagtree-*.whl --force-reinstall"
+          ssh -p 1024 root@localhost "python3.11 -m pip install /work/flagtree-*.whl --force-reinstall"
 
       - name: Clear cache if ClearCache label present
         if: steps.check_backend.outputs.should_skip != 'true'
@@ -87,6 +87,6 @@ jobs:
           ssh -p 1024 root@localhost 'bash -s' <<'REMOTE'
           set -e
           export PYTHONUNBUFFERED=1
-          cd /usr/local/lib/python3.10/dist-packages/triton/backends/thrive/test
-          python3 -m pytest unit/language/test_standard.py chiplet/ --device thrive -v -s < /dev/null
+          cd /usr/local/lib/python3.11/dist-packages/triton/backends/thrive/test
+          python3.11 -m pytest unit/language/test_standard.py unit/language/test_cumsum_tle.py unit/language/test_tile_ops_tle.py chiplet/ --device thrive -v -s < /dev/null
           REMOTE
