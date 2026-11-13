@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
+#include "Conversion/TleToThvTile/Passes.h"
 #include "Dialect/ThvTile/IR/Dialect.h"
 #include "mlir/Dialect/Func/Extensions/InlinerExtension.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -16,6 +17,8 @@ std::unique_ptr<Pass> createChipletToThvTilePass();
 void init_thrive_passes(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_chiplet_to_thvtile",
                      mlir::thrive::createChipletToThvTilePass);
+  ADD_PASS_WRAPPER_0("add_convert_tle_to_thvtile",
+                     mlir::thvtile::createConvertTleToThvTilePass);
 }
 
 void init_triton_thrive(py::module &&m) {

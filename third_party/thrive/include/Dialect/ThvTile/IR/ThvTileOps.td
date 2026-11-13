@@ -33,6 +33,12 @@ def ThvTile_MakeTensorStructureOp : ThvTile_Op<"make_tensor_structure", [Pure, A
     - `offsets`: starting offsets from base pointer for this tile (in elements)
     - `strides`: element strides for each dimension (number of elements between
       adjacent indices along that dimension)
+    - `dst_offsets`: optional destination write positions for boundary masks.
+      When non-empty, specifies where valid data should be written in the
+      destination tensor (per dimension). Empty for `none` and `strided`.
+      This separates source-side read offsets (`offsets`) from
+      destination-side write positions (`dst_offsets`), which differ when
+      a gather pattern is optimized via the masked-contiguous path.
     - `valid_seg_sizes`: optional effective segment sizes derived from mask
       analysis. For `boundary`, it is the dense valid region size per rank;
       for `strided`, it is the contiguous size of each valid segment.
@@ -52,22 +58,22 @@ def ThvTile_MakeTensorStructureOp : ThvTile_Op<"make_tensor_structure", [Pure, A
       // (1) 2D row-major contiguous tile: 32x64 tile at offset [0, 64],
       //     inner stride == 1 (contiguous)
       %s0 = thvtile.make_tensor_structure %base, [%c32, %c64], [%src_m, %src_n],
-              [%o0, %o1], [%c128, %c1], [], [], [] {order = array<i32: 1, 0>}
+              [%o0, %o1], [%c128, %c1], [], [], [], [] {order = array<i32: 1, 0>}
               : !thvtile.ptr<f16> -> !thvtile.tensor_structure<tensor<32x64xf16>>
 
       // (2) 2D sampled/strided tile: inner stride == 2 (every 2nd column)
       %s1 = thvtile.make_tensor_structure %base, [%c32, %c32], [], [%o0, %o1],
-              [%c128, %c2], [], [], [] {order = array<i32: 1, 0>}
+              [%c128, %c2], [], [], [], [] {order = array<i32: 1, 0>}
               : !thvtile.ptr<f16> -> !thvtile.tensor_structure<tensor<32x32xf16>>
 
       // (3) 1D contiguous tile
-      %s2 = thvtile.make_tensor_structure %base, [%c256], [], [%o0], [%c1], [], [], []
+      %s2 = thvtile.make_tensor_structure %base, [%c256], [], [%o0], [%c1], [], [], [], []
               {order = array<i32: 0>}
               : !thvtile.ptr<f32> -> !thvtile.tensor_structure<tensor<256xf32>>
 
       // (4) 1D boundary mask: logical tile has 256 elements, only first
       //     %valid_n elements are valid; masked tail is cropped by metadata.
-      %s3 = thvtile.make_tensor_structure %base, [%c256], [], [%o0], [%c1], [%valid_n], [], []
+      %s3 = thvtile.make_tensor_structure %base, [%c256], [], [%o0], [%c1], [], [%valid_n], [], []
               {order = array<i32: 0>, mask_kind = #thvtile.mask_kind<boundary>}
               : !thvtile.ptr<f32> -> !thvtile.tensor_structure<tensor<256xf32>>
   }];
@@ -78,6 +84,7 @@ def ThvTile_MakeTensorStructureOp : ThvTile_Op<"make_tensor_structure", [Pure, A
     Variadic<I64>:$source_shape,
     Variadic<I64>:$offsets,
     Variadic<I64>:$strides,
+    Variadic<I64>:$dst_offsets,
     Variadic<I64>:$valid_seg_sizes,
     Variadic<I64>:$valid_num_segs,
     Variadic<I64>:$valid_seg_strides,
@@ -90,7 +97,7 @@ def ThvTile_MakeTensorStructureOp : ThvTile_Op<"make_tensor_structure", [Pure, A
 
   let assemblyFormat = [{
     $base `,` `[` $shape `]` `,` `[` $source_shape `]` `,`
-    `[` $offsets `]` `,` `[` $strides `]` `,`
+    `[` $offsets `]` `,` `[` $strides `]` `,` `[` $dst_offsets `]` `,`
     `[` $valid_seg_sizes `]` `,` `[` $valid_num_segs `]` `,`
     `[` $valid_seg_strides `]` attr-dict `:` type($base) `->` type($result)
   }];
@@ -169,6 +176,107 @@ def ThvTile_StoreOp : ThvTile_Op<"store", [
 
   let assemblyFormat = [{
     $value `,` $structure attr-dict `:` type($value) `,` type($structure)
+  }];
+
+  let hasVerifier = 1;
+}
+
+def ThvTile_GatherLoadOp : ThvTile_Op<"gather_load", [
+  AttrSizedOperandSegments,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Gather load from memory using index tensor";
+  let description = [{
+    Loads data from memory using a 1D index tensor that specifies the offset
+    (in elements) for each loaded element relative to the base pointer.
+
+    This op represents gather access patterns where each element's address is
+    computed as: `base + indices[i] * element_size`. The indices tensor provides
+    the element-wise offsets from the base pointer.
+
+    The optional `mask` controls which elements are actually loaded; masked-off
+    positions are filled with `other` if provided, otherwise undefined.
+
+    The lowering will analyze the index pattern and choose the optimal strategy:
+    - If indices have a unique stride (e.g., [0, 2, 4, 6] with stride=2),
+      generate `thvpe.dmu_dma` with appropriate pack parameters.
+    - If indices have a strided pattern with gaps (e.g., [0, 1, 4, 5] representing
+      [T, T, F, F, T, T, F, F] mask), generate DMA with strided mask metadata.
+    - Otherwise, fall back to `thvtile.iterative_load`.
+
+    Example:
+      // (1) Gather load with stride-2 pattern
+      %indices = arith.constant dense<[0, 2, 4, 6]> : tensor<4xi64>
+      %t0 = thvtile.gather_load %base, %indices
+              : !thvtile.ptr<f32>, tensor<4xi64> -> tensor<4xf32>
+
+      // (2) Gather load with mask
+      %t1 = thvtile.gather_load %base, %indices, %mask, %other
+              : !thvtile.ptr<f32>, tensor<4xi64>, tensor<4xi1>, f32
+              -> tensor<4xf32>
+  }];
+
+  let arguments = (ins
+    AnyType:$base,
+    ThvTile_I64Tensor:$indices,
+    Optional<ThvTile_BoolTensor>:$mask,
+    Optional<ThvTile_Scalar>:$other
+  );
+
+  let results = (outs ThvTile_FpIntTensor:$result);
+
+  let assemblyFormat = [{
+    $base `,` $indices (`,` $mask^)? (`,` $other^)? attr-dict `:`
+    type($base) `,` type($indices) (`,` type($mask)^)? (`,` type($other)^)?
+    `->` type($result)
+  }];
+
+  let hasVerifier = 1;
+}
+
+def ThvTile_ScatterStoreOp : ThvTile_Op<"scatter_store", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Scatter store to memory using index tensor";
+  let description = [{
+    Stores data to memory using a 1D index tensor that specifies the offset
+    (in elements) for each stored element relative to the base pointer.
+
+    This op represents scatter access patterns where each element's address is
+    computed as: `base + indices[i] * element_size`. The indices tensor provides
+    the element-wise offsets from the base pointer.
+
+    The optional `mask` controls which elements are actually stored; masked-off
+    positions are skipped.
+
+    The lowering will analyze the index pattern and choose the optimal strategy:
+    - If indices have a unique stride, generate `thvpe.dmu_dma` with appropriate
+      pack parameters.
+    - If indices have a strided pattern with gaps, generate DMA with strided mask
+      metadata.
+    - Otherwise, fall back to `thvtile.iterative_store`.
+
+    Example:
+      // (1) Scatter store with stride-2 pattern
+      %indices = arith.constant dense<[0, 2, 4, 6]> : tensor<4xi64>
+      thvtile.scatter_store %value, %base, %indices
+          : tensor<4xf32>, !thvtile.ptr<f32>, tensor<4xi64>
+
+      // (2) Scatter store with mask
+      thvtile.scatter_store %value, %base, %indices, %mask
+          : tensor<4xf32>, !thvtile.ptr<f32>, tensor<4xi64>, tensor<4xi1>
+  }];
+
+  let arguments = (ins
+    ThvTile_ScalarOrTensor:$value,
+    AnyType:$base,
+    ThvTile_I64Tensor:$indices,
+    Optional<ThvTile_BoolTensor>:$mask
+  );
+
+  let assemblyFormat = [{
+    $value `,` $base `,` $indices (`,` $mask^)? attr-dict `:`
+    type($value) `,` type($base) `,` type($indices) (`,` type($mask)^)?
   }];
 
   let hasVerifier = 1;
@@ -394,6 +502,48 @@ def ThvTile_FlipOp : ThvTile_Op<"flip", [Pure,
   let hasVerifier = 1;
 }
 
+def ThvTile_SortOp : ThvTile_Op<"sort", [Pure]> {
+  let summary = "VPU-accelerated radix-8 sort";
+  let description = [{
+    Sorts each row of `src` independently using a VPU radix-8 kernel.
+
+    Example:
+      %s = thvtile.sort %src {descending = false}
+           : tensor<4x128xf32> -> tensor<4x128xf32>
+  }];
+
+  let arguments = (ins
+    ThvTile_FpIntTensor:$src,
+    DefaultValuedAttr<BoolAttr, "false">:$descending
+  );
+  let results = (outs ThvTile_FpIntTensor:$result);
+
+  let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+def ThvTile_TopkOp : ThvTile_Op<"topk", [Pure]> {
+  let summary = "VPU-accelerated MSD radix select top-k";
+  let description = [{
+    Selects the top-k elements from each row of `src` using a VPU MSD radix select
+    kernel.
+
+    Example:
+      %t = thvtile.topk %src {k = 8, descending = true}
+           : tensor<4x128xf32> -> tensor<4x8xf32>
+  }];
+
+  let arguments = (ins
+    ThvTile_FpIntTensor:$src,
+    I64Attr:$k,
+    DefaultValuedAttr<BoolAttr, "false">:$descending
+  );
+  let results = (outs ThvTile_FpIntTensor:$result);
+
+  let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
+  let hasVerifier = 1;
+}
+
 def ThvTile_CastOp : ThvTile_Op<"cast", [Pure,
     SameOperandsAndResultShape]> {
   let summary = "Type conversion between floating-point and integer types";
@@ -457,15 +607,10 @@ def ThvTile_BitcastOp : ThvTile_Op<"bitcast", [Pure,
   let hasVerifier = 1;
 }
 
-def ThvTile_ExtractSliceOp : ThvTile_Op<"extract_slice", [
-  DestinationStyleOpInterface,
-  Pure,
-  TypesMatchWith<"expected result type to match dest type",
-                 "dest", "result", "$_self">
-]> {
+def ThvTile_ExtractSliceOp : ThvTile_Op<"extract_slice", [Pure]> {
   let summary = "Extract a tile or gather-like sub-tensor";
   let description = [{
-    Extracts tile/data from source tensor into an explicit destination tensor.
+    Extracts tile/data from source tensor.
 
     This op models two access patterns:
     - Full-tile access: `static_sizes` covers the whole source tile and all
@@ -478,12 +623,11 @@ def ThvTile_ExtractSliceOp : ThvTile_Op<"extract_slice", [
       the block-count dimension and another as the contiguous block dimension.
 
     When all static sizes are 1, a scalar-like extraction can be represented with
-    a rank-0 tensor destination/result. During lowering, compatible cases may be
-    optimized into a subview-like representation instead of materializing a data
-    copy, depending on aliasing and target support.
+    a rank-0 tensor result. During lowering, compatible cases may be optimized
+    into a subview-like representation instead of materializing a data copy,
+    depending on aliasing and target support.
 
     - `source`: tensor to read from
-    - `dest`: destination tensor whose type matches the result type
     - `offsets`: starting position for each source dimension
     - `sizes`: number of elements to extract per source dimension; it must either
       cover the full source tile for full-tile access or describe the selected
@@ -494,21 +638,20 @@ def ThvTile_ExtractSliceOp : ThvTile_Op<"extract_slice", [
 
     Example:
       // (1) full 2D tile, unit stride
-      %s0 = thvtile.extract_slice %src into %dst [%c0, %c0] [64, 64] [1, 1]
-             : tensor<64x64xf16> into tensor<64x64xf16>
+      %s0 = thvtile.extract_slice %src [%c0, %c0] [64, 64] [1, 1]
+             : tensor<64x64xf16> -> tensor<64x64xf16>
 
       // (2) gather-like 2D tile: sizes [32, 32], uniform non-unit period 2
-      %s1 = thvtile.extract_slice %src into %dst [%c0, %c0] [32, 32] [2, 1]
-             : tensor<64x64xf16> into tensor<32x32xf16>
+      %s1 = thvtile.extract_slice %src [%c0, %c0] [32, 32] [2, 1]
+             : tensor<64x64xf16> -> tensor<32x32xf16>
 
       // (3) scalar-like extract at dynamic-loop-lowered position i
-      %v0 = thvtile.extract_slice %vec into %dst0 [%i] [1] [1]
-             : tensor<8xf32> into tensor<f32>
+      %v0 = thvtile.extract_slice %vec [%i] [1] [1]
+             : tensor<8xf32> -> tensor<f32>
   }];
 
   let arguments = (ins
     ThvTile_FpIntTensor:$source,
-    ThvTile_FpIntTensor:$dest,
     Variadic<Index>:$offsets,
     DenseI64ArrayAttr:$static_sizes,
     DenseI64ArrayAttr:$static_strides
@@ -516,19 +659,14 @@ def ThvTile_ExtractSliceOp : ThvTile_Op<"extract_slice", [
   let results = (outs ThvTile_FpIntTensor:$result);
 
   let assemblyFormat = [{
-    $source `into` $dest `[` $offsets `]` $static_sizes $static_strides
-    attr-dict `:` type($source) `into` type($dest)
-  }];
-
-  let extraClassDeclaration = [{
-    MutableOperandRange getDpsInitsMutable() { return getDestMutable(); }
+    $source `[` $offsets `]` $static_sizes $static_strides
+    attr-dict `:` type($source) `->` type($result)
   }];
 
   let hasVerifier = 1;
 }
 
 def ThvTile_InsertSliceOp : ThvTile_Op<"insert_slice", [
-  DestinationStyleOpInterface,
   Pure,
   TypesMatchWith<"expected result type to match dest type",
                  "dest", "result", "$_self">
@@ -586,12 +724,9 @@ def ThvTile_InsertSliceOp : ThvTile_Op<"insert_slice", [
 
   let assemblyFormat = [{
     $source `into` $dest `[` $offsets `]` $static_sizes $static_strides
-    attr-dict `:` type($source) `into` type($dest)
+    attr-dict `:` type($source) `into` type($dest) `->` type($result)
   }];
 
-  let extraClassDeclaration = [{
-    MutableOperandRange getDpsInitsMutable() { return getDestMutable(); }
-  }];
 
   let hasVerifier = 1;
 }
@@ -622,10 +757,10 @@ def ThvTile_ExpandShapeOp : ThvTile_Op<"expand_shape", [Pure,
   }];
 
   let arguments = (ins
-    ThvTile_FpIntTensor:$src,
+    ThvTile_AnyTensor:$src,
     IndexListArrayAttr:$reassociation
   );
-  let results = (outs ThvTile_FpIntTensor:$result);
+  let results = (outs ThvTile_AnyTensor:$result);
 
   let assemblyFormat = [{
     $src $reassociation attr-dict `:` type($src) `->` type($result)
@@ -656,16 +791,54 @@ def ThvTile_CollapseShapeOp : ThvTile_Op<"collapse_shape", [Pure,
   }];
 
   let arguments = (ins
-    ThvTile_FpIntTensor:$src,
+    ThvTile_AnyTensor:$src,
     IndexListArrayAttr:$reassociation
   );
-  let results = (outs ThvTile_FpIntTensor:$result);
+  let results = (outs ThvTile_AnyTensor:$result);
 
   let assemblyFormat = [{
     $src $reassociation attr-dict `:` type($src) `->` type($result)
   }];
 
   let hasVerifier = 1;
+}
+
+def ThvTile_BroadcastOp : ThvTile_Op<"broadcast", [Pure,
+    SameOperandsAndResultElementType]> {
+  let summary = "Broadcast a tensor along singleton dimensions";
+  let description = [{
+    Broadcasts the source tensor to the result shape. Each source dimension
+    must be 1 or equal to the corresponding result dimension.
+
+    Example:
+      // (1) broadcast a column vector to a matrix
+      %b = thvtile.broadcast %x : tensor<32x1xf16> -> tensor<32x64xf16>
+
+      // (2) broadcast a row vector to a matrix
+      %c = thvtile.broadcast %y : tensor<1x64xf32> -> tensor<32x64xf32>
+  }];
+
+  let arguments = (ins ThvTile_AnyTensor:$src);
+  let results = (outs ThvTile_AnyTensor:$result);
+
+  let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
+}
+
+def ThvTile_IotaOp : ThvTile_Op<"iota", [Pure]> {
+  let summary = "Generate a 1-D integer index sequence from start to end";
+  let description = [{
+    Creates a 1-D integer tensor whose values span [start, end) with step 1.
+    The result length is end - start.
+
+    Example:
+      // generate indices 0..127
+      %idx = thvtile.iota {start = 0 : i32, end = 128 : i32} : tensor<128xi32>
+  }];
+
+  let arguments = (ins I32Attr:$start, I32Attr:$end);
+  let results = (outs ThvTile_IntTensor:$result);
+
+  let assemblyFormat = "attr-dict `:` type($result)";
 }
 
 def ThvTile_MatmulOp : ThvTile_Op<"matmul", [Pure, AttrSizedOperandSegments]> {
@@ -1000,6 +1173,57 @@ def ThvTile_PtrToIntOp : ThvTile_Op<"ptr_to_int", [
   let results = (outs ThvTile_I64Like:$result);
 
   let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
+}
+
+def ThvTile_ScanOp : ThvTile_Op<"scan", [SingleBlock, AttrSizedResultSegments]> {
+  let summary = "Associative scan over a tensor along a given axis";
+  let description = [{
+    Performs an associative scan (prefix sum) over the input tensor along the
+    specified axis. The `combineOp` region defines the binary associative
+    operation applied to pairs of elements.
+
+    Example:
+      // scan along axis 1 (rows)
+      %result, %total = thvtile.scan(%input) {axis = 1 : i32, reverse = false} {
+      ^bb0(%lhs: f32, %rhs: f32):
+        %sum = arith.addf %lhs, %rhs : f32
+        thvtile.scan.return %sum : f32
+      } : tensor<4x8xf32> -> (tensor<4x8xf32>, tensor<4xf32>)
+
+      // scan with scalar total:
+      %result, %total = thvtile.scan(%input) {axis = 0 : i32, reverse = false,
+          return_total = true} {
+      ^bb0(%lhs: f32, %rhs: f32):
+        %sum = arith.addf %lhs, %rhs : f32
+        thvtile.scan.return %sum : f32
+      } : tensor<4x8xf32> -> (tensor<4x8xf32>, f32)
+  }];
+
+  let arguments = (ins
+    Variadic<ThvTile_FpIntTensor>:$inputs,
+    I32Attr:$axis,
+    BoolAttr:$reverse,
+    DefaultValuedAttr<BoolAttr, "false">:$exclusive,
+    DefaultValuedAttr<BoolAttr, "false">:$return_total
+  );
+
+  let results = (outs
+    Variadic<ThvTile_FpIntTensor>:$result,
+    Variadic<ThvTile_ScalarOrTensor>:$total
+  );
+
+  let regions = (region SizedRegion<1>:$combineOp);
+
+  let assemblyFormat = [{
+    `(` $inputs `)` attr-dict `:` functional-type($inputs, $result) (`->` type($total)^)? $combineOp
+  }];
+}
+
+def ThvTile_ScanReturnOp : ThvTile_Op<"scan.return",
+    [HasParent<"ScanOp">, Pure, Terminator, ReturnLike]> {
+  let summary = "terminator for scan operator";
+  let arguments = (ins Variadic<AnyType>:$result);
+  let assemblyFormat = "$result attr-dict `:` type($result)";
 }
 
 #endif

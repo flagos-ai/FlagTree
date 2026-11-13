@@ -189,6 +189,7 @@ class ThriveBackend(BaseBackend):
         from triton._C.libtriton import thrive
         pm = ir.pass_manager(mod.context)
         thrive.passes.add_chiplet_to_thvtile(pm)
+        thrive.passes.add_convert_tle_to_thvtile(pm)
         pm.run(mod, 'tle_to_thvtile')
 
         mod_text = str(mod)
@@ -252,6 +253,19 @@ class ThriveBackend(BaseBackend):
             return result
 
     @staticmethod
+    def _attach_kernel_vpu_cc(mod_text):
+        # Attach dfca_kernel_vpu_cc on the function with "run-on-vpu" attr
+        vpu_defined = {
+            m.group(1)
+            for line in mod_text.splitlines()
+            if (m := re.search(r"llvm\.func @([\w$.]+)\b", line)) and '"run-on-vpu"' in line
+        }
+        for name in sorted(vpu_defined):
+            mod_text = re.sub(rf"llvm\.(func|call) (@{re.escape(name)})(?![\w$.])", r"llvm.\1 dfca_kernel_vpu_cc \2",
+                              mod_text)
+        return mod_text
+
+    @staticmethod
     def make_llir(mod, metadata, options):
         mod_text = str(mod)
         metadata["fw_preempt"] = 0
@@ -285,7 +299,8 @@ class ThriveBackend(BaseBackend):
                 llvmir_path
             ])
             llvm_mod_text = Path(llvmir_path).read_text()
-            _save_content_to_tmp(tmp_llvm_mod_text, metadata["name"], "output_llvm.mlir")
+            llvm_mod_text = ThriveBackend._attach_kernel_vpu_cc(llvm_mod_text)
+            _save_content_to_tmp(llvm_mod_text, metadata["name"], "output_llvm.mlir")
             return llvm_mod_text
 
     @staticmethod

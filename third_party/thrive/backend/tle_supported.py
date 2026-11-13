@@ -1,9 +1,12 @@
 TLE_SUPPORTED_PRIMITIVES = [
+    "extract_tile",
+    "insert_tile",
     "device_mesh",
     "sharding",
     "shard_id",
     "distributed_barrier",
     "remote",
+    "cumsum",
     "dsa.thrive.putmem",
     "dsa.thrive.getmem",
     "dsa.thrive.wait",
