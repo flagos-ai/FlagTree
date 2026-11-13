@@ -11,6 +11,7 @@ try:
 except ImportError:
     enable_mctle = False
 from triton import knobs
+from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 
 from dataclasses import dataclass, field
 import functools
@@ -144,6 +145,12 @@ class MACAOptions:
     inner_stages: Tuple[int, int] = field(default_factory=lambda: (0, 0))
 
     def __post_init__(self):
+        scenarios = set(parse_option(self.scenario))
+        if "commonir-fa-fwd" in scenarios:
+            if self.pipeline != "basic" or self.num_stages != 2:
+                raise ValueError("commonir-fa-fwd requires pipeline='basic' and num_stages=2")
+            if scenarios & {"mla", "flashattn-fwd", "flashattn-bwd"}:
+                raise ValueError("commonir-fa-fwd cannot be combined with another attention scenario")
         default_libdir = os.getenv("MACA_PATH") + '/lib'
         ext_default_libdir = Path(__file__).parent / 'lib'
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
@@ -233,6 +240,8 @@ class MACABackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
+        if COMMON_IR_ENABLED:
+            passes.commonir.add_to_ttgir(pm)
         passes.ttir.add_rewrite_tensor_pointer(pm)
         passes.ttir.add_combine(pm)
         passes.common.add_canonicalizer(pm)
@@ -246,6 +255,8 @@ class MACABackend(BaseBackend):
 
     @staticmethod
     def make_ttgir(mod, metadata, opt, capability):
+        explicit_layouts = COMMON_IR_ENABLED and passes.commonir.has_layout_hints(mod)
+
         assert opt.pipeline_load_num >= -1, "invalid pipeline_load_num value!"
         scenarios = parse_option(opt.scenario)
         disable_prefetch = "unprefetch" in scenarios
@@ -268,13 +279,20 @@ class MACABackend(BaseBackend):
         passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, 64, opt.num_ctas)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
+        if COMMON_IR_ENABLED:
+            passes.commonir.add_resolve_bsm_layouts(pm, capability, opt.num_warps)
+            passes.commonir.add_optimize_shared_layouts(pm)
+            passes.commonir.add_optimize_tensor_tile_layouts(pm)
+            passes.commonir.add_lower_tensor_tiles(pm)
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
         if enable_mctle:
             mctle.passes.add_reject_dot_op(pm)
             mctle.passes.add_early_assign_memory_space(pm)
-            mctle.passes.add_select_encodings(pm)
+            # The prebuilt MCTLE selector does not preserve explicit layouts.
+            if not explicit_layouts:
+                mctle.passes.add_select_encodings(pm)
             mctle.passes.add_insert_local_pointer_barriers(pm)
             mctle.passes.add_optimize_local_pointer_loads(pm)
             mctle.passes.add_optimize_local_pointer_stores(pm)
@@ -319,6 +337,8 @@ class MACABackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_canonicalizer(pm)
+        if COMMON_IR_ENABLED:
+            passes.commonir.add_legalize_async_copy(pm)
         pm.run(mod, 'make_ttgir')
         return mod
 
@@ -402,7 +422,13 @@ class MACABackend(BaseBackend):
         if mxcc_arch is None:
             raise RuntimeError('mxcc_arch is None (not specified)')
         compile_options = ""
-        if (opt.pipeline == "basic" or opt.pipeline == "basic-prefetch") and "mla" not in scenarios:
+        if "commonir-fa-fwd" in scenarios:
+            # Match Gluon's gluon-flashattn-fwd preset. Keep K16 shared-read
+            # base + constant offsets intact across LICM and register allocation.
+            compile_options = (" -mllvm -metaxgpu-mma-sched=true -mllvm -map-use-pk-fma=1"
+                               " -mllvm -metaxgpu-split-regalloc=true -mllvm -metaxgpu-aggressive-fold=true"
+                               " -mllvm -metaxgpu-disable-licm=true ")
+        elif (opt.pipeline == "basic" or opt.pipeline == "basic-prefetch") and "mla" not in scenarios:
             compile_options = " -mllvm -metaxgpu-sched-regpressure=false "
             if "fullstage" in scenarios:
                 compile_options += " -mllvm -metaxgpu-vectorize-slp=true -mllvm -metaxgpu-igroup "

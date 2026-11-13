@@ -7,6 +7,10 @@
 #include "mctle/dialect/include/IR/Dialect.h"
 #endif
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
+#ifdef __FLAGTREE_COMMON_IR__
+#include "mlir-ext/Conversion/CommonIRToTritonGPU/Patterns.h"
+#include "triton/Conversion/CommonIRToTTGIR/CommonIRSetLayout.h"
+#endif
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -642,6 +646,14 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
       TritonFuncOpPattern
       // clang-format on
       >(typeConverter, context);
+#ifdef __FLAGTREE_COMMON_IR__
+  patterns.add<GenericOpPattern<LocalAllocOp>, GenericOpPattern<LocalStoreOp>>(
+      typeConverter, context);
+#endif
+  patterns.add<GenericOpPattern<LocalLoadOp>, GenericOpPattern<BsmPermOp>>(
+      typeConverter, context);
+  patterns.add<GenericOpPattern<AsyncCopyGlobalToLocalOp>>(typeConverter,
+                                                           context);
 }
 //
 // SCF patterns
@@ -830,6 +842,33 @@ void populateCFPatterns(TritonGPUTypeConverter &typeConverter,
   patterns.add<CFCondBranchPattern, CFBranchPattern>(typeConverter, context);
 }
 
+#ifdef __FLAGTREE_COMMON_IR__
+// Boundary conversions can consume values that have no encoding in TTIR yet.
+struct LayoutConversionPattern : OpConversionPattern<ConvertLayoutOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ConvertLayoutOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto attrs = op->getAttrs();
+    auto converted = rewriter.replaceOpWithNewOp<ConvertLayoutOp>(
+        op, getTypeConverter()->convertType(op.getType()), adaptor.getSrc());
+    converted->setAttrs(attrs);
+    return success();
+  }
+};
+
+void populateCommonIRTensorPatternsAndLegality(TypeConverter &typeConverter,
+                                               RewritePatternSet &patterns,
+                                               ConversionTarget &target) {
+  tile::populateSetLayoutToTritonGPUPatterns(typeConverter, patterns, target);
+  patterns.add<LayoutConversionPattern>(typeConverter, patterns.getContext());
+  tile::populateTensorTileTypePatterns(typeConverter, patterns, target);
+  target.addDynamicallyLegalOp<ConvertLayoutOp>(
+      [&typeConverter](Operation *op) { return typeConverter.isLegal(op); });
+}
+#endif
+
 #ifdef __MCTLE__
 namespace tle = triton::mctle;
 class TleExtractTileOpPattern : public OpConversionPattern<tle::ExtractTileOp> {
@@ -938,6 +977,9 @@ public:
     //    mlir::scf::populateSCFStructurealTypeConversionsAndLegality(...) here?
     populateSCFPatterns(typeConverter, patterns);
     populateCFPatterns(typeConverter, patterns);
+#ifdef __FLAGTREE_COMMON_IR__
+    populateCommonIRTensorPatternsAndLegality(typeConverter, patterns, target);
+#endif
 #ifdef __MCTLE__
     populateTileRawPatterns(typeConverter, patterns);
 #endif
@@ -948,6 +990,11 @@ public:
     mod->setAttr(AttrNumThreadsPerWarp, b.getI32IntegerAttr(threadsPerWarp));
     mod->setAttr(AttrNumCTAsName, b.getI32IntegerAttr(numCTAs));
     mod->setAttr(AttrTargetName, b.getStringAttr(this->target.getValue()));
+
+#ifdef __FLAGTREE_COMMON_IR__
+    if (failed(triton::metax::applyCommonIRLayoutHints(mod)))
+      return signalPassFailure();
+#endif
 
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();
