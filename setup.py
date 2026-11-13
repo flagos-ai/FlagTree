@@ -357,7 +357,11 @@ FLAGPRISM_SETUP = helper.FlagPrismSetup(get_base_dir(), get_flagprism_dependency
 
 
 def download_and_copy(name, src_func, dst_path, variable, version, url_func):
+    if is_offline_build():
+        return
     triton_cache_path = get_triton_cache_path()
+    if variable in os.environ:
+        return
     base_dir = os.path.dirname(__file__)
     system = platform.system()
     arch = platform.machine()
