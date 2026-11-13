@@ -105,6 +105,62 @@ def _pack_i1_dense_hex(kernel):
     return pattern.sub(pack, kernel)
 
 
+# The 1.0.20261110 backend sync added an optional trailing `pipeline` operand
+# to the DTE ops in MemrefExtOps.td. Those ops use AttrSizedOperandSegments, so
+# the extra operand also adds one entry to their `operandSegmentSizes` property
+# (and gives `memref_ext.memset_start` such a property for the first time).
+# GCUIR is printed by the in-process backend shared library and parsed by the
+# separate gcu-compiler-opt binary. When those two come from different builds,
+# a perfectly valid kernel is rejected with e.g.
+#   size mismatch in attribute conversion: 7 vs 8
+# Normalize the short (pre-`pipeline`) form when that parse failure happens;
+# setups whose backend and toolkit agree never take this path.
+_MEMREF_EXT_DTE_SEGMENTS = {
+    "memset_start": 5,
+    "slice_start": 7,
+    "slice_pad_start": 8,
+    "slice_deslice_start": 8,
+    "slice_broadcast_start": 7,
+    "slice_transpose_start": 8,
+}
+
+_DTE_OP_LINE = re.compile(r'"memref_ext\.(\w+)"\(([^)]*)\)(\s*<\{[^}]*\}>)?\s*:')
+
+
+def _add_dte_pipeline_segment(kernel):
+    """Bring memref_ext DTE ops to the current (with-`pipeline`) operand layout.
+
+    Returns (kernel, changed). IR already emitted by a current backend is left
+    untouched.
+    """
+    lines = kernel.splitlines(keepends=True)
+    changed = False
+    for i, line in enumerate(lines):
+        op = _DTE_OP_LINE.search(line)
+        if not op or op.group(1) not in _MEMREF_EXT_DTE_SEGMENTS:
+            continue
+        expected = _MEMREF_EXT_DTE_SEGMENTS[op.group(1)]
+        segs = re.search(r'operandSegmentSizes\s*=\s*array<i32:\s*([^>]*)>', line)
+        if segs:
+            values = [v.strip() for v in segs.group(1).split(',') if v.strip()]
+            if len(values) >= expected:
+                continue
+            line = (line[:segs.start(1)] +
+                    ', '.join(values + ['0'] * (expected - len(values))) +
+                    line[segs.end(1):])
+        elif op.group(1) == 'memset_start':
+            # The old op had no AttrSizedOperandSegments, hence no property.
+            n_operands = len([v for v in op.group(2).split(',') if v.strip()])
+            prop = (' <{operandSegmentSizes = array<i32: 1, 1, 1, ' +
+                    str(n_operands - 3) + ', 0>}>')
+            line = line[:op.end(2) + 1] + prop + line[op.end(2) + 1:]
+        else:
+            continue
+        lines[i] = line
+        changed = True
+    return ''.join(lines), changed
+
+
 def _patch_kernel_for_llir(kernel, arch):
     # GCU passes may materialize the newer default barrier scope after the
     # initial TTGIR compatibility patch. Strip it again before LLVM 21 parses
@@ -363,7 +419,16 @@ def make_llir(mod, metadata, options):
     #    paths = [path for (name, path) in options.extern_libs]
     #    llvm.link_extern_libs(llvm_mod, paths)
 
-    return toolkit.gcu_compiler_opt(mod, *passes)
+    try:
+        return toolkit.gcu_compiler_opt(mod, *passes)
+    except Exception as err:
+        message = str(err)
+        if "memref_ext." not in message or "operandSegmentSizes" not in message:
+            raise
+        patched, changed = _add_dte_pipeline_segment(mod)
+        if not changed:
+            raise
+        return toolkit.gcu_compiler_opt(patched, *passes)
 
 
 def make_fatbin(mod, metadata, options):
