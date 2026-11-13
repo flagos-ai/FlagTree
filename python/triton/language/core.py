@@ -2084,7 +2084,7 @@ def dot(input, other, acc=None, input_precision=None, allow_tf32=None, max_num_i
 
 @builtin
 def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None, fast_math=False, lhs_k_pack=True,
-               rhs_k_pack=True, out_dtype=float32, _semantic=None):
+               rhs_k_pack=True, out_dtype=float32, _semantic=None, _generator=None):
     """
     Returns the matrix product of two blocks in microscaling format.
 
@@ -2097,6 +2097,18 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
     for AMD CDNA3 specifically, if one of the inputs is of :code:`fp16` element type,
     the other input is also upcasted to :code:`fp16` element type instead.
     This behavior is experimental and may be subject to change in the future.
+
+    HCU also accepts :code:`int4` and :code:`int8` formats. Scaled integer dot
+    uses FP32 scales of shapes :code:`[M,K/32]` and :code:`[N,K/32]`. INT4
+    stores two values per uint8, low nibble first, packed along K. With both
+    scales set to None, :code:`out_dtype=int32` selects an unscaled integer dot
+    with INT32 accumulation and output and permits INT4 packing along M or N.
+
+    .. code-block:: python
+
+       scaled = tl.dot_scaled(a4, sa, "int4", b8, sb, "int8")
+       integer = tl.dot_scaled(a4, None, "int4", b4, None, "int4",
+                               acc=acc_i32, out_dtype=tl.int32)
 
     :param lhs: The first tensor to be multiplied.
     :type lhs: 2D tensor representing fp4, fp8 or bf16 elements. Fp4 elements are packed into uint8 inputs with the first element in lower bits. Fp8 are stored as uint8 or the corresponding fp8 type.
@@ -2119,6 +2131,15 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
     """
     out_dtype = _unwrap_if_constexpr(out_dtype)
     acc = _unwrap_if_constexpr(acc)
+    if _generator is not None:
+        get_lowering = _semantic.builder.codegen_fns.get("get_dot_scaled_lowering")
+        if get_lowering is not None:
+            lowering = get_lowering(_unwrap_if_constexpr(lhs_format), _unwrap_if_constexpr(rhs_format))
+            if lowering is not None:
+                return _generator.call_JitFunction(
+                    lowering,
+                    (lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc, lhs_k_pack, rhs_k_pack, out_dtype),
+                    kwargs={})
     assert out_dtype == float32, "Only float32 is supported for out_dtype at the moment"
     return _semantic.dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc, fast_math, lhs_k_pack,
                                 rhs_k_pack, out_dtype)

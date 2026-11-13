@@ -6,6 +6,7 @@
 #include "third_party/hcu/include/Analysis/AxisInfoExt.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Tools/LayoutUtils.h"
 
 #undef DEBUG_TYPE
@@ -242,14 +243,51 @@ public:
 
     mlir::RewritePatternSet patterns(context);
 
-    if (!llvm::is_contained({HCU::ISAFamily::CDNA3, HCU::ISAFamily::CDNA4},
-                            targetInfo.getISAFamily()))
-      return; // This pass is CDNA3 and CDNA4 specific.
+    bool supportsDirectToLds =
+        llvm::is_contained({HCU::ISAFamily::CDNA3, HCU::ISAFamily::CDNA4},
+                           targetInfo.getISAFamily());
+
+    HCU::ModuleAxisInfoAnalysis axisAnalysis(m);
+    // Validate explicit TLE requests before the common async-load pass creates
+    // copies. Byte/halfword copies require provable vector and mask alignment;
+    // otherwise native dword loads would overwrite adjacent LDS elements.
+    m.walk([&](triton::LoadOp load) {
+      auto request = load->getAttrOfType<BoolAttr>("tt.load.async");
+      if (!request || !request.getValue())
+        return;
+      auto type = dyn_cast<RankedTensorType>(load.getType());
+      auto ptrType = dyn_cast<RankedTensorType>(load.getPtr().getType());
+      bool eligible = supportsDirectToLds && type && !load.getIsVolatile() &&
+                      ptrType &&
+                      cast<triton::PointerType>(ptrType.getElementType())
+                              .getAddressSpace() == 1;
+      if (eligible) {
+        unsigned contiguity =
+            mlir::LLVM::HCU::getContiguity(load.getPtr(), axisAnalysis);
+        if (auto mask = load.getMask())
+          contiguity = std::min<unsigned>(contiguity,
+                                          axisAnalysis.getMaskAlignment(mask));
+        eligible = contiguity * type.getElementTypeBitWidth() >= 32 &&
+                   triton::canBeAsyncLoad(load);
+      }
+      if (!eligible) {
+        load->removeAttr("tt.load.async");
+        m->setAttr(
+            "hcug.async_load_diagnostics",
+            StringAttr::get(
+                context,
+                "HCU tle.load(is_async=True) uses a synchronous load: "
+                "direct-to-LDS requires a non-volatile global tensor load with "
+                "at least four coalesced bytes and compatible pointer, "
+                "mask and shared layout alignment (native=false)"));
+      }
+    });
+    if (!supportsDirectToLds)
+      return;
 
     // Precompute the contiguity of all AsyncCopy ops based on the src and
     // mask contiguity/alignment to avoid rebuilding ModuleAxisInfoAnalysis
     // after every IR change.
-    HCU::ModuleAxisInfoAnalysis axisAnalysis(m);
     DenseMap<ttg::AsyncCopyGlobalToLocalOp, unsigned> asyncCopyContiguity;
     m->walk([&](ttg::AsyncCopyGlobalToLocalOp copyOp) {
       unsigned contiguity =

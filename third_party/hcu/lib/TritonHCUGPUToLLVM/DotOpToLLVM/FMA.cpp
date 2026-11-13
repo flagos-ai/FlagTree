@@ -14,6 +14,10 @@ struct DotIntrinsic {
   Type outElemTy;
   StringRef intrinsicName;
   SmallVector<Value> additionalArgs;
+  // Software integer multiply-add (no intrinsic): lowered as mul+add with
+  // 32-bit wrapping semantics. Used for signed I8 dots with I32
+  // accumulation.
+  bool useMulAdd = false;
 };
 
 class HCUFMAVectorMultiplier : public FMAVectorMultiplier {
@@ -45,13 +49,25 @@ class HCUFMAVectorMultiplier : public FMAVectorMultiplier {
         chosenOp.additionalArgs = {b.false_val()};
         return chosenOp;
       }
-      if (aElemTy.isInteger(8) && dElemTy.isInteger(32)) {
+      if (aElemTy.isInteger(8) && dElemTy.isInteger(32) &&
+          aOpTy.getShape().back() % 4 == 0) {
         chosenOp.vectorSize = 4;
         chosenOp.outElemTy = i32_ty;
         chosenOp.intrinsicName = "llvm.amdgcn.sdot4";
         chosenOp.additionalArgs = {b.false_val()};
         return chosenOp;
       }
+    }
+    // Signed integer scalar path: no suitable matrix/vector instruction.
+    // Software multiply-add keeps exact integer semantics
+    // (32-bit wrapping); never route through an fp32 intermediate, which
+    // would lose precision beyond 2^24.
+    if (aElemTy.isInteger(8) && dElemTy.isInteger(32)) {
+      chosenOp.vectorSize = 1;
+      chosenOp.outElemTy = i32_ty;
+      chosenOp.useMulAdd = true;
+      chosenOp.additionalArgs = {};
+      return chosenOp;
     }
     // choose one of FMA intrinsics
     assert(aElemTy.isIntOrFloat() && !aElemTy.isIntOrIndex());
@@ -115,7 +131,15 @@ public:
     for (int k = 0; k < kSize; k += intrinsic.vectorSize) {
       auto aOp = packOperand(a, k, intrinsic.vectorSize);
       auto bOp = packOperand(b, k, intrinsic.vectorSize);
-      accum = generateDotInstr(aOp, bOp, accum);
+      if (intrinsic.useMulAdd) {
+        aOp = LLVM::SExtOp::create(rewriter, loc, i32_ty, aOp);
+        bOp = LLVM::SExtOp::create(rewriter, loc, i32_ty, bOp);
+        // software integer multiply-add, 32-bit wrapping
+        auto prod = rewriter.create<LLVM::MulOp>(loc, aOp, bOp);
+        accum = rewriter.create<LLVM::AddOp>(loc, prod, accum);
+      } else {
+        accum = generateDotInstr(aOp, bOp, accum);
+      }
     }
     return accum;
   }

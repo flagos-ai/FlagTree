@@ -1,11 +1,12 @@
-from triton.backends.compiler import BaseBackend, GPUTarget, Language
+from triton.backends.compiler import BaseBackend, DotCap, DotSupport, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, hcu, distributed, tle
 from triton import knobs
 from triton.runtime.errors import HSACOError
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 from types import ModuleType
 import hashlib
+import inspect
 import tempfile
 import re
 import subprocess
@@ -19,6 +20,35 @@ def get_min_dot_size(target: GPUTarget):
     # We fallback to use FMA and cast arguments if certain configurations is
     # not supported natively by matrix core units.
     return lambda lhs_type, rhs_type: (1, 1, 1)
+
+
+# Native-path classification is deferred to the HCU lowering, where the
+# selected matrix/vector/scalar path and operand layout are known.
+def _make_resolve_dot(arch: str):
+
+    def resolve_dot(a_dtype: str, b_dtype: str, acc_dtype: str, M: int, N: int, K: int) -> Optional[DotCap]:
+        ordinary = ("int8", "fp16", "bf16", "fp32", "fp64")
+        fp8 = ("fp8e4nv", "fp8e5")
+        if (a_dtype == b_dtype and a_dtype in ordinary) or (a_dtype in fp8 and b_dtype in fp8):
+            return None
+        return DotCap(
+            DotSupport.UNSUPPORTED, diag=f"tl.dot: {a_dtype} x {b_dtype} is not supported on hip/{arch}; "
+            "INT32 is reserved for integer accumulation/output; use matching int8/fp16/bf16/fp32/fp64 operands or OCP fp8 pairs"
+        )
+
+    return resolve_dot
+
+
+def _make_resolve_dot_scaled(arch: str):
+
+    def resolve_dot_scaled(lhs_format: str, rhs_format: str) -> Optional[DotCap]:
+        formats = ("e2m1", "e4m3", "e5m2", "bf16", "fp16")
+        if lhs_format in formats and rhs_format in formats:
+            return None
+        return DotCap(DotSupport.UNSUPPORTED,
+                      diag=f"tl.dot_scaled: {lhs_format} x {rhs_format} is not supported on hip/{arch}")
+
+    return resolve_dot_scaled
 
 
 def is_pingpong_schedule_enabled(arch, use_async_copy):
@@ -55,6 +85,7 @@ class HIPOptions:
     # we software emulate the support for them.
     # For leagcy HCU, enable software emulation for fp8e4nv conversions.
     supported_fp8_dtypes: Tuple[str] = ("fp8e4nv", "fp8e5")
+    custom_cast_fp8_dtypes: Tuple[str] = ("fp8e4nv", "fp8e5")
     deprecated_fp8_dot_operand_dtypes: Tuple[str] = ()
     default_dot_input_precision: str = "ieee"
     allowed_dot_input_precisions: Tuple[str] = ("ieee", )
@@ -146,6 +177,7 @@ class HIPOptions:
 
 
 class HIPBackend(BaseBackend):
+
     instrumentation = None
     supports_native_tensor_specialization = False
 
@@ -227,7 +259,15 @@ class HIPBackend(BaseBackend):
         )
 
     def get_codegen_implementation(self, options):
-        return {"min_dot_size": get_min_dot_size(self.target)}
+        from triton.language.extra.hip import utils
+
+        return {
+            "convert_custom_types": utils._convert_fp8,
+            "min_dot_size": get_min_dot_size(self.target),
+            "resolve_dot": _make_resolve_dot(options.arch),
+            "resolve_dot_scaled": _make_resolve_dot_scaled(options.arch),
+            "get_dot_scaled_lowering": utils._get_dot_scaled_lowering,
+        }
 
     def get_module_map(self) -> Dict[str, ModuleType]:
         from triton.language.extra.hip import libdevice
@@ -445,6 +485,11 @@ class HIPBackend(BaseBackend):
         tle.passes.add_insert_local_pointer_barriers(pm)
         tle.passes.add_optimize_local_pointer_loads(pm)
         tle.passes.add_optimize_local_pointer_stores(pm)
+        # Explicit TLE requests are independent of automatic loop pipelining.
+        # Validate vector/mask widths before constructing native LDS copies.
+        hcu.passes.ttgpuir.add_coalesce_async_copy(pm, options.arch)
+        tle.passes.add_lower_async_load(pm)
+        hcu.passes.ttgpuir.add_coalesce_async_copy(pm, options.arch)
         # end flagtree tle
         hcu.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack,
                                                  options.mmac_layout_force)
@@ -530,6 +575,11 @@ class HIPBackend(BaseBackend):
         if 1:  #use_async_copy:
             hcu.passes.ttgpuir.add_update_async_wait_count(pm, options.arch)
         pm.run(mod, 'make_ttgir')
+        for attribute in ("hcug.software_dot_diagnostics", "hcug.async_load_diagnostics"):
+            diagnostics = mod.get_operation().get_str_attr(attribute)
+            if diagnostics:
+                for diagnostic in diagnostics.splitlines():
+                    warnings.warn(diagnostic, UserWarning)
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
         return mod
 
@@ -892,4 +942,16 @@ class HIPBackend(BaseBackend):
     @functools.lru_cache()
     def hash(self):
         version = subprocess.check_output([HIPBackend.path_to_rocm_clang(), "--version"], encoding='utf-8')
-        return f'{version}-{self.target}'
+        from triton.experimental.tle.language import core as tle_core
+        from triton.language import core, standard
+        from triton.language.semantic import TritonSemantic
+        from triton.runtime.driver import DriverConfig
+        from triton.language.extra.hip import utils
+
+        # Include actual bound providers, including spec overlays and runtime
+        # driver sources outside the compiler/language package scan.
+        providers = (inspect.unwrap(core.dot), TritonSemantic.dot, standard, DriverConfig, utils, tle_core)
+        sources = hashlib.sha256()
+        for provider in providers:
+            sources.update(Path(inspect.getfile(provider)).read_bytes())
+        return f'{version}-{self.target}-{sources.hexdigest()}'

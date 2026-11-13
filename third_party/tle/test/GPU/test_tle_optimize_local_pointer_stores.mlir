@@ -84,3 +84,35 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @explicit_full_indices
+  // CHECK: ttg.local_store
+  // CHECK-NOT: tt.store
+  tt.func @explicit_full_indices(%value: tensor<128xi32, #blocked>) {
+    %index = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32, #blocked>
+    %smem = ttg.local_alloc : () -> !ttg.memdesc<128xi32, #shared, #smem, mutable>
+    %ptr = "tle.local_pointers"(%smem, %index) : (!ttg.memdesc<128xi32, #shared, #smem, mutable>, tensor<128xi32, #blocked>) -> tensor<128x!tt.ptr<i32, 3>, #blocked>
+    tt.store %ptr, %value : tensor<128x!tt.ptr<i32, 3>, #blocked>
+    tt.return
+  }
+  // CHECK-LABEL: tt.func @permuted_full_indices
+  // CHECK: tle.local_pointers
+  // CHECK-NOT: ttg.local_store
+  // CHECK: tt.store
+  tt.func @permuted_full_indices(%value: tensor<128xi32, #blocked>) {
+    %index = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32, #blocked>
+    %c64 = arith.constant dense<64> : tensor<128xi32, #blocked>
+    %permuted = arith.xori %index, %c64 : tensor<128xi32, #blocked>
+    %smem = ttg.local_alloc : () -> !ttg.memdesc<128xi32, #shared, #smem, mutable>
+    %ptr = "tle.local_pointers"(%smem, %permuted) : (!ttg.memdesc<128xi32, #shared, #smem, mutable>, tensor<128xi32, #blocked>) -> tensor<128x!tt.ptr<i32, 3>, #blocked>
+    tt.store %ptr, %value : tensor<128x!tt.ptr<i32, 3>, #blocked>
+    tt.return
+  }
+}

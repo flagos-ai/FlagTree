@@ -1,8 +1,10 @@
+#include "Dialect/TritonHCUGPU/Utility/CommonUtils.h"
 #include "TritonHCUGPUTransforms/Passes.h"
 #include "Utility.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/AsyncUtility.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/TargetInfo.h"
 #include "hcu/lib/TritonHCUGPUTransforms/PipelineUtility.h"
+#include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/Support/Debug.h"
@@ -304,12 +306,71 @@ bool canBeConvertedToAsyncLoad(unsigned numBuffers, tt::LoadOp loadOp,
   return triton::canBeConvertedToAsyncLoad(loadOp, axisInfoAnalysis);
 }
 
+// Stage the existing MMA layout conversion instead of adding a raw-LDS copy
+// before it. ReduceDataDuplication would otherwise materialize another shared
+// allocation for this conversion after the pipeliner. Preflight both operands
+// before mutating; uncommon/shared decode graphs keep the general path.
+static llvm::MapVector<Operation *, ttg::ConvertLayoutOp>
+getFP4OperandConversions(scf::ForOp forOp, const LoadToInfoMap &loads) {
+  llvm::MapVector<Operation *, ttg::ConvertLayoutOp> result;
+  if (!forOp->hasAttr(triton::HCU::FP4DotLoop))
+    return result;
+  auto dots = llvm::to_vector(forOp.getBody()->getOps<tt::DotOp>());
+  if (dots.size() != 1)
+    return result;
+  DenseSet<Operation *> conversions;
+  for (Value operand : {dots.front().getA(), dots.front().getB()}) {
+    auto def = operand.getDefiningOp();
+    ttg::ConvertLayoutOp cvt;
+    while (def && def->getBlock() == forOp.getBody()) {
+      auto candidate = dyn_cast<ttg::ConvertLayoutOp>(def);
+      if (candidate &&
+          isa<ttg::DotOperandEncodingAttr>(candidate.getType().getEncoding())) {
+        cvt = candidate;
+        break;
+      }
+      if (def->getNumOperands() != 1 || def->getNumResults() != 1)
+        return {};
+      def = def->getOperand(0).getDefiningOp();
+    }
+    if (!cvt || !cvt->hasOneUse() || !conversions.insert(cvt).second ||
+        !cvtNeedsSharedMemory(cvt.getSrc().getType(), cvt.getType()))
+      return {};
+    SmallVector<Value> pending{cvt.getSrc()};
+    DenseSet<Operation *> seen;
+    Operation *input = nullptr;
+    while (!pending.empty()) {
+      auto parent = pending.pop_back_val().getDefiningOp();
+      if (!parent || parent->getBlock() != forOp.getBody() ||
+          !seen.insert(parent).second)
+        continue;
+      if (isa<tt::LoadOp>(parent)) {
+        if (!loads.count(parent) ||
+            !parent->hasAttr(triton::HCU::FP4DecodeLoad) ||
+            (input && input != parent))
+          return {};
+        input = parent;
+      } else {
+        llvm::append_range(pending, parent->getOperands());
+      }
+    }
+    if (!input || result.count(input))
+      return {};
+    result[input] = cvt;
+  }
+  return result;
+}
+
 // Convert load ops into shared memory allocation loads and apply
 // multi-buffering based on the required number of buffers.
 LoadToStreamOpMap
 createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
                 const int &numBuffers, bool useAsyncCopy,
                 tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+  // Keep the native direct-to-LDS path when async copy is requested.
+  auto operandCvts = useAsyncCopy
+                         ? llvm::MapVector<Operation *, ttg::ConvertLayoutOp>{}
+                         : getFP4OperandConversions(forOp, loadToInfo);
   IRRewriter builder(forOp);
   Location loc = forOp.getLoc();
   Value minusOne = arith::ConstantIntOp::create(builder, loc, -1, 32);
@@ -338,11 +399,35 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
 
   LoadToStreamOpMap loadToStreamOp;
   for (auto &[l, info] : loadToInfo) {
-    if (!info.sharedEncoding)
-      continue;
-
     auto loadOp = dyn_cast<tt::LoadOp>(l);
     if (!loadOp)
+      continue;
+
+    if (auto cvt = operandCvts.lookup(l)) {
+      auto type = cast<RankedTensorType>(cvt.getSrc().getType());
+      auto dot = cast<ttg::DotOperandEncodingAttr>(cvt.getType().getEncoding());
+      // Match the shared layout used by ReduceDataDuplication for this exact
+      // conversion, preserving packed vs decoded representation and swizzling.
+      auto encoding = ttg::SwizzledSharedEncodingAttr::get(
+          forOp.getContext(), dot, type.getShape(),
+          ttg::getOrderForMemory(type), ttg::getCTALayout(type.getEncoding()),
+          type.getElementType());
+      Value alloc =
+          triton::createAlloc(forOp, type, cvt.getLoc(), encoding, numBuffers);
+      builder.setInsertionPoint(cvt);
+      auto view = triton::createSingleBufferView(builder, alloc, extractIdx)
+                      .getDefiningOp<ttg::MemDescIndexOp>();
+      auto store =
+          ttg::LocalStoreOp::create(builder, cvt.getLoc(), cvt.getSrc(), view);
+      auto local =
+          ttg::LocalLoadOp::create(builder, cvt.getLoc(), cvt.getType(), view);
+      cvt.replaceAllUsesWith(local.getResult());
+      cvt.erase();
+      loadToStreamOp[l] = StreamCopyChainOps{loadOp, view, store, local};
+      continue;
+    }
+
+    if (!info.sharedEncoding)
       continue;
 
     // Create an allocation that can hold distance number of loadOp shapes.
@@ -769,6 +854,14 @@ void lowerLoop(scf::ForOp forOp,
           getSharedEncIfAllUsersAreDotEnc(load, axisInfoAnalysis, targetInfo,
                                           useAsyncCopy)
               .value_or(nullptr);
+      if (!sharedEncoding && load->hasAttr(triton::HCU::FP4DecodeLoad)) {
+        // Buffer original packed data; decode after restoring its register
+        // layout in the compute stage, without widening the stage buffers.
+        auto type = cast<RankedTensorType>(load->getResult(0).getType());
+        sharedEncoding = ttg::SwizzledSharedEncodingAttr::get(
+            forOp.getContext(), 1, 1, 1, ttg::getOrderForMemory(type),
+            ttg::getCTALayout(type.getEncoding()));
+      }
       loadToInfo[load] = {sharedEncoding, distance, use};
       LDBG("Populate loadInfo with shared encoding: " << sharedEncoding);
     }

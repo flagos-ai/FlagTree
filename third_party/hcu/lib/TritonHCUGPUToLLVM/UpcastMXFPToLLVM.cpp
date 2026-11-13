@@ -27,16 +27,13 @@ namespace {
 
 SmallVector<Value> upcastMxfp4_SW(RewriterBase &rewriter,
                                   hcugpu::UpcastMXFPOp upcastOp, bool toFp16,
-                                  ArrayRef<Value> values, int idx,
-                                  HCU::ISAFamily isaFamily,
-                                  Value scale = nullptr) {
+                                  ArrayRef<Value> values, int idx) {
   Location loc = upcastOp.getLoc();
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   Value packedVec = b.undef(vec_ty(i8_ty, 4));
   for (int i : llvm::seq(4))
     packedVec = b.insert_element(packedVec, values[idx + i], b.i32_val(i));
-  return upcast8xMxfp4_SW(rewriter, upcastOp, toFp16, packedVec, isaFamily,
-                          scale);
+  return upcast8xMxfp4_SW(rewriter, upcastOp, toFp16, packedVec);
 }
 
 Value mxfpScaleFp16(RewriterBase &rewriter, Location loc, Value v, Value scale,
@@ -102,16 +99,8 @@ static void upcast8xMxfp4(RewriterBase &rewriter, Location loc,
     }
     return;
   }
-  /// fp4->bf16 for cdna3
-  if (isaFamily == HCU::ISAFamily::CDNA3 && !useFp16) {
-    SmallVector<Value> v8bf16 =
-        upcastMxfp4_SW(rewriter, op, useFp16, xVals, idx, isaFamily, scale);
-    yVals.append(v8bf16.begin(), v8bf16.end());
-    return;
-  }
   /// fp4->f16 before cdna4, fp4->bf16 before cdna3
-  SmallVector<Value> vf16 =
-      upcastMxfp4_SW(rewriter, op, useFp16, xVals, idx, isaFamily);
+  SmallVector<Value> vf16 = upcastMxfp4_SW(rewriter, op, useFp16, xVals, idx);
   for (int i = 0; i < 8; i++) {
     auto result =
         useFp16 ? mxfpScaleFp16(rewriter, loc, vf16[i], scale, op.getFastMath())
