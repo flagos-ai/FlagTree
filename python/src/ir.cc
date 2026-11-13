@@ -382,13 +382,19 @@ void init_triton_ir(py::module &&m) {
       .value("NONE", PropagateNan::NONE)
       .value("ALL", PropagateNan::ALL);
 
-  py::enum_<InputPrecision>(m, "INPUT_PRECISION", py::module_local())
+  auto inputPrecision =
+      py::enum_<InputPrecision>(m, "INPUT_PRECISION", py::module_local());
+  inputPrecision
       .value("TF32", InputPrecision::TF32)
       .value("TF32x3", InputPrecision::TF32x3)
       .value("IEEE", InputPrecision::IEEE)
       .value("BF16x3", InputPrecision::BF16x3)
-      .value("BF16x6", InputPrecision::BF16x6)
-      .export_values();
+      .value("BF16x6", InputPrecision::BF16x6);
+
+  // Backend-specialized enum definitions may additionally support HF32.
+  if (auto hf32 = symbolizeInputPrecision("hf32"))
+    inputPrecision.value("HF32", *hf32);
+  inputPrecision.export_values();
 
   py::enum_<ScaleDotElemType>(m, "ScaleDotElemTypeTY", py::module_local())
       .value("E4M3", ScaleDotElemType::E4M3)

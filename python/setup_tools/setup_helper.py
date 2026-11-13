@@ -68,7 +68,8 @@ def get_long_description():
 
 def init_backends(backend_installer):
     if flagtree_backend:
-        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu", "amd"):
+        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu", "amd",
+                                "ascend"):
             backends = [
                 *backend_installer.copy(configs.default_backends + tuple(configs.extend_backends)),
                 *backend_installer.copy_externals(),
@@ -231,6 +232,12 @@ def get_hook_instance(hook_name):
         return None
     hook_instance = getattr(configs.activated_module, hook_name, None)
     return hook_instance if callable(hook_instance) else None
+
+
+def finalize_backend_build_tree(build_lib):
+    hook = get_hook_instance("finalize_build_tree")
+    if hook:
+        hook(build_lib)
 
 
 def enable_flagtree_third_party(name):
@@ -888,7 +895,14 @@ else:
 
 cache = FlagTreeCache()
 
-download_flagtree_third_party("flir", condition=(flagtree_backend == "tsingmicro"), required=True)
+# FLIR supplies the CommonIR dialect, which the ascend backend requires for its
+# CommonIRToHIVM lowering and FLIR's triton-lane-vectorize pass.
+download_flagtree_third_party("flir", condition=(flagtree_backend in ("tsingmicro", "ascend")), required=True)
+
+# The ascend backend links the BiShengIR dialects built from AscendNPU-IR.
+if flagtree_backend == "ascend":
+    configs.activated_module.warn_stale_ascend_npu_ir_checkout(utils.flagtree_submodules["AscendNPU-IR"])
+    download_flagtree_third_party("AscendNPU-IR", condition=True, required=True)
 '''
    FlagCX is a third-party library adopted by the tle distributed system,
    refer to https://github.com/flagos-ai/FlagCX

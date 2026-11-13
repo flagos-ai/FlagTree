@@ -1,0 +1,662 @@
+diff --git a/mlir/include/mlir/Dialect/Arith/IR/ArithOps.td b/mlir/include/mlir/Dialect/Arith/IR/ArithOps.td
+index ef9ccb7e8794..83d85f173802 100644
+--- a/mlir/include/mlir/Dialect/Arith/IR/ArithOps.td
++++ b/mlir/include/mlir/Dialect/Arith/IR/ArithOps.td
+@@ -1317,6 +1317,7 @@ def Arith_TruncIOp : Arith_Op<"trunci",
+   let hasFolder = 1;
+   let hasCanonicalizer = 1;
+   let hasVerifier = 1;
++  let useCustomPropertiesEncoding = 1;
+ }
+ 
+ //===----------------------------------------------------------------------===//
+diff --git a/mlir/include/mlir/Dialect/ControlFlow/IR/ControlFlowOps.td b/mlir/include/mlir/Dialect/ControlFlow/IR/ControlFlowOps.td
+index a441fd82546e..b7569ef0fbc7 100644
+--- a/mlir/include/mlir/Dialect/ControlFlow/IR/ControlFlowOps.td
++++ b/mlir/include/mlir/Dialect/ControlFlow/IR/ControlFlowOps.td
+@@ -233,6 +233,7 @@ def CondBranchOp
+     $falseDest (`(` $falseDestOperands^ `:` type($falseDestOperands) `)`)?
+     attr-dict
+   }];
++  let useCustomPropertiesEncoding = 1;
+ }
+ 
+ //===----------------------------------------------------------------------===//
+diff --git a/mlir/include/mlir/Dialect/Func/IR/FuncOps.td b/mlir/include/mlir/Dialect/Func/IR/FuncOps.td
+index 06ce4f16c867..905efc7e4d30 100644
+--- a/mlir/include/mlir/Dialect/Func/IR/FuncOps.td
++++ b/mlir/include/mlir/Dialect/Func/IR/FuncOps.td
+@@ -122,6 +122,8 @@ def CallOp : Func_Op<"call",
+   let assemblyFormat = [{
+     $callee `(` $operands `)` attr-dict `:` functional-type($operands, results)
+   }];
++
++  let useCustomPropertiesEncoding = 1;
+ }
+ 
+ //===----------------------------------------------------------------------===//
+@@ -357,6 +359,7 @@ def FuncOp : Func_Op<"func", [
+     bool isDeclaration() { return isExternal(); }
+   }];
+   let hasCustomAssemblyFormat = 1;
++  let useCustomPropertiesEncoding = 1;
+ }
+ 
+ //===----------------------------------------------------------------------===//
+diff --git a/mlir/include/mlir/Dialect/LLVMIR/LLVMIntrinsicOps.td b/mlir/include/mlir/Dialect/LLVMIR/LLVMIntrinsicOps.td
+index 5e2461b4508e..d3c398ab12c9 100644
+--- a/mlir/include/mlir/Dialect/LLVMIR/LLVMIntrinsicOps.td
++++ b/mlir/include/mlir/Dialect/LLVMIR/LLVMIntrinsicOps.td
+@@ -554,7 +554,7 @@ def LLVM_AssumeOp
+                         $op_bundle_tags)^ )?
+     `:` type($cond) attr-dict
+   }];
+-
++  let useCustomPropertiesEncoding = 1;
+   let builders = [
+     OpBuilder<(ins "Value":$cond)>,
+     OpBuilder<(ins "Value":$cond, "llvm::StringRef":$tag, "ValueRange":$args)>,
+diff --git a/mlir/include/mlir/Dialect/Linalg/IR/LinalgStructuredOps.td b/mlir/include/mlir/Dialect/Linalg/IR/LinalgStructuredOps.td
+index f3674c3eecfe..312ef5d211af 100644
+--- a/mlir/include/mlir/Dialect/Linalg/IR/LinalgStructuredOps.td
++++ b/mlir/include/mlir/Dialect/Linalg/IR/LinalgStructuredOps.td
+@@ -775,6 +775,7 @@ def MatmulOp : LinalgStructuredBase_Op<"matmul", [
+ 
+     ];
+     let hasCustomAssemblyFormat = 1;
++    let useCustomPropertiesEncoding = 1;
+     let hasFolder = 1;
+     let hasVerifier = 1;
+ 
+@@ -1045,6 +1046,7 @@ def BatchMatmulOp : LinalgStructuredBase_Op<"batch_matmul", !listconcat([AttrSiz
+       
+     ];
+     let hasCustomAssemblyFormat = 1;
++    let useCustomPropertiesEncoding = 1;
+     let hasFolder = 1;
+     let hasVerifier = 1;
+ 
+diff --git a/mlir/include/mlir/Dialect/SCF/IR/SCFOps.td b/mlir/include/mlir/Dialect/SCF/IR/SCFOps.td
+index 88df54174da2..01c8ea9b61c0 100644
+--- a/mlir/include/mlir/Dialect/SCF/IR/SCFOps.td
++++ b/mlir/include/mlir/Dialect/SCF/IR/SCFOps.td
+@@ -309,6 +309,7 @@ def ForOp : SCF_Op<"for",
+ 
+   let hasCanonicalizer = 1;
+   let hasCustomAssemblyFormat = 1;
++  let useCustomPropertiesEncoding = 1;
+   let hasVerifier = 1;
+   let hasRegionVerifier = 1;
+ }
+diff --git a/mlir/lib/Dialect/Arith/IR/ArithOps.cpp b/mlir/lib/Dialect/Arith/IR/ArithOps.cpp
+index 7d4d818ee448..3fdc036abf14 100644
+--- a/mlir/lib/Dialect/Arith/IR/ArithOps.cpp
++++ b/mlir/lib/Dialect/Arith/IR/ArithOps.cpp
+@@ -1560,6 +1560,13 @@ LogicalResult arith::ScalingExtFOp::verify() {
+ //===----------------------------------------------------------------------===//
+ // TruncIOp
+ //===----------------------------------------------------------------------===//
++::llvm::LogicalResult TruncIOp::readProperties(::mlir::DialectBytecodeReader &reader, ::mlir::OperationState &state) {
++  return ::mlir::success();
++}
++
++void TruncIOp::writeProperties(::mlir::DialectBytecodeWriter &writer) {
++  return;
++}
+ 
+ OpFoldResult arith::TruncIOp::fold(FoldAdaptor adaptor) {
+   if (matchPattern(getOperand(), m_Op<arith::ExtUIOp>()) ||
+diff --git a/mlir/lib/Dialect/Bufferization/IR/BufferizationDialect.cpp b/mlir/lib/Dialect/Bufferization/IR/BufferizationDialect.cpp
+index 6c08cdfb669f..f4442c9d0cd6 100644
+--- a/mlir/lib/Dialect/Bufferization/IR/BufferizationDialect.cpp
++++ b/mlir/lib/Dialect/Bufferization/IR/BufferizationDialect.cpp
+@@ -98,6 +98,25 @@ struct BuiltinMemRefExternalModel
+ //===----------------------------------------------------------------------===//
+ // Bufferization Dialect
+ //===----------------------------------------------------------------------===//
++struct BufferizationDialectVersion : public DialectVersion {
++  BufferizationDialectVersion(uint64_t version) : version(version) {}
++  uint64_t version;
++};
++
++struct BufferizationBytecodeInterface : public BytecodeDialectInterface {
++  BufferizationBytecodeInterface(Dialect *dialect) : BytecodeDialectInterface(dialect) {}
++
++  void writeVersion(DialectBytecodeWriter &writer) const override {
++    writer.writeVarInt(351); 
++    return;
++  }
++
++  std::unique_ptr<DialectVersion> readVersion(DialectBytecodeReader &reader) const override {
++    uint64_t version;
++    if (failed(reader.readVarInt(version))) return nullptr;
++    return std::make_unique<BufferizationDialectVersion>(version);
++  }
++};
+ 
+ void mlir::bufferization::BufferizationDialect::initialize() {
+   addOperations<
+@@ -119,6 +138,7 @@ void mlir::bufferization::BufferizationDialect::initialize() {
+       *getContext());
+   UnrankedMemRefType::attachInterface<
+       BuiltinMemRefExternalModel<UnrankedMemRefType>>(*getContext());
++   addInterfaces<BufferizationBytecodeInterface>();
+ }
+ 
+ LogicalResult BufferizationDialect::verifyRegionArgAttribute(
+diff --git a/mlir/lib/Dialect/ControlFlow/IR/ControlFlowOps.cpp b/mlir/lib/Dialect/ControlFlow/IR/ControlFlowOps.cpp
+index 582593adfa5c..48e0cf29bc60 100644
+--- a/mlir/lib/Dialect/ControlFlow/IR/ControlFlowOps.cpp
++++ b/mlir/lib/Dialect/ControlFlow/IR/ControlFlowOps.cpp
+@@ -458,6 +458,57 @@ Block *CondBranchOp::getSuccessorForOperands(ArrayRef<Attribute> operands) {
+   return nullptr;
+ }
+ 
++::llvm::LogicalResult CondBranchOp::readProperties(::mlir::DialectBytecodeReader &reader, ::mlir::OperationState &state) {
++  auto &prop = state.getOrAddProperties<Properties>(); (void)prop;
++  if (::mlir::failed(reader.readOptionalAttribute(prop.branch_weights)))
++    return ::mlir::failure();
++
++  if (reader.getBytecodeVersion() < /*kNativePropertiesODSSegmentSize=*/6) {
++    auto &propStorage = prop.operandSegmentSizes;
++    ::mlir::DenseI32ArrayAttr attr;
++    if (::mlir::failed(reader.readAttribute(attr))) return ::mlir::failure();
++    if (attr.size() > static_cast<int64_t>(sizeof(propStorage) / sizeof(int32_t))) {
++      reader.emitError("size mismatch for operand/result_segment_size");
++      return ::mlir::failure();
++    }
++    ::llvm::copy(::llvm::ArrayRef<int32_t>(attr), propStorage.begin());
++  }
++
++  {
++    auto &propStorage = prop.operandSegmentSizes;
++    auto readProp = [&]() {
++
++  if (reader.getBytecodeVersion() >= /*kNativePropertiesODSSegmentSize=*/6)
++    return reader.readSparseArray(::llvm::MutableArrayRef(propStorage));
++;
++      return ::mlir::success();
++    };
++    if (::mlir::failed(readProp()))
++      return ::mlir::failure();
++  }
++  return ::mlir::success();
++}
++
++void CondBranchOp::writeProperties(::mlir::DialectBytecodeWriter &writer) {
++  auto &prop = getProperties(); (void)prop;
++
++  // writer.writeOptionalAttribute(prop.branch_weights);
++
++if (writer.getBytecodeVersion() < /*kNativePropertiesODSSegmentSize=*/6) {
++  auto &propStorage = prop.operandSegmentSizes;
++  writer.writeAttribute(::mlir::DenseI32ArrayAttr::get(this->getContext(), propStorage));
++}
++
++  {
++    auto &propStorage = prop.operandSegmentSizes;
++
++  if (writer.getBytecodeVersion() >= /*kNativePropertiesODSSegmentSize=*/6)
++    writer.writeSparseArray(::llvm::ArrayRef(propStorage));
++;
++  }
++}
++
++
+ //===----------------------------------------------------------------------===//
+ // SwitchOp
+ //===----------------------------------------------------------------------===//
+diff --git a/mlir/lib/Dialect/Func/IR/FuncOps.cpp b/mlir/lib/Dialect/Func/IR/FuncOps.cpp
+index 3c09a2124bd7..3b41d9a18efb 100644
+--- a/mlir/lib/Dialect/Func/IR/FuncOps.cpp
++++ b/mlir/lib/Dialect/Func/IR/FuncOps.cpp
+@@ -33,6 +33,26 @@ using namespace mlir::func;
+ // FuncDialect
+ //===----------------------------------------------------------------------===//
+ 
++struct FuncDialectVersion : public DialectVersion {
++  FuncDialectVersion(uint64_t version) : version(version) {}
++  uint64_t version;
++};
++
++struct FuncBytecodeInterface : public BytecodeDialectInterface {
++  FuncBytecodeInterface(Dialect *dialect) : BytecodeDialectInterface(dialect) {}
++
++  void writeVersion(DialectBytecodeWriter &writer) const override {
++    writer.writeVarInt(351); 
++    return;
++  }
++
++  std::unique_ptr<DialectVersion> readVersion(DialectBytecodeReader &reader) const override {
++    uint64_t version;
++    if (failed(reader.readVarInt(version))) return nullptr;
++    return std::make_unique<FuncDialectVersion>(version);
++  }
++};
++
+ void FuncDialect::initialize() {
+   addOperations<
+ #define GET_OP_LIST
+@@ -43,6 +63,7 @@ void FuncDialect::initialize() {
+   declarePromisedInterface<ConvertToLLVMPatternInterface, FuncDialect>();
+   declarePromisedInterfaces<bufferization::BufferizableOpInterface, CallOp,
+                             FuncOp, ReturnOp>();
++  addInterfaces<FuncBytecodeInterface>();
+ }
+ 
+ /// Materialize a single constant operation from a given attribute value with
+@@ -279,6 +300,89 @@ FuncOp FuncOp::clone() {
+   return clone(mapper);
+ }
+ 
++::llvm::LogicalResult FuncOp::readProperties(DialectBytecodeReader &reader, 
++                                                        OperationState &state) {
++  auto &prop = state.getOrAddProperties<Properties>(); (void)prop;
++
++  // 1. arg_attrs
++  if (failed(reader.readOptionalAttribute(prop.arg_attrs)))
++    return failure();
++
++  // 2. function_type
++  if (failed(reader.readAttribute(prop.function_type)))
++    return failure();
++
++  // --- 关键修改：版本感知的 no_inline 读取 ---
++  // 1. 移除 auto 后面的星号，因为返回的是 FailureOr 包装类
++  auto versionOr = reader.getDialectVersion<FuncDialect>();
++  
++  uint64_t version = 0;
++  // 2. 检查是否读取成功，并且返回的指针不为空
++  if (succeeded(versionOr) && *versionOr) {
++    // 3. 使用 *versionOr 获取内部的 const DialectVersion*，再进行类型转换
++    version = static_cast<const FuncDialectVersion *>(*versionOr)->version;
++  }
++
++  if (version >= 1) {
++    // 只有新版文件才读取这 1 字节
++    if (failed(reader.readOptionalAttribute(prop.no_inline)))
++      return failure();
++  } else {
++    // 旧版文件没有这个属性，设为默认值（false），不移动指针
++    prop.no_inline = nullptr; 
++  }
++
++  // 3. res_attrs (字母 r)
++  if (failed(reader.readOptionalAttribute(prop.res_attrs)))
++    return failure();
++
++  // 4. sym_name (字母 s)
++  if (failed(reader.readAttribute(prop.sym_name)))
++    return failure();
++
++  // 5. sym_visibility
++  if (failed(reader.readOptionalAttribute(prop.sym_visibility)))
++    return failure();
++
++  return success();
++}
++
++
++void FuncOp::writeProperties(DialectBytecodeWriter &writer) {
++  auto &prop = getProperties(); (void)prop;
++
++  writer.writeOptionalAttribute(prop.arg_attrs);
++  writer.writeAttribute(prop.function_type);
++
++  writer.writeOptionalAttribute(prop.res_attrs);
++  writer.writeAttribute(prop.sym_name);
++  writer.writeOptionalAttribute(prop.sym_visibility);
++}
++
++::llvm::LogicalResult CallOp::readProperties(DialectBytecodeReader &reader, OperationState &state) {
++  auto &prop = state.getOrAddProperties<Properties>(); (void)prop;
++
++  // 读取必需的 "callee" 属性
++  if (failed(reader.readAttribute(prop.callee)))
++    return failure();
++
++  if (failed(reader.readOptionalAttribute(prop.arg_attrs)))
++    return failure();
++
++  if (failed(reader.readOptionalAttribute(prop.res_attrs)))
++    return failure();
++  
++  return success();
++}
++
++void CallOp::writeProperties(DialectBytecodeWriter &writer) {
++  auto &prop = getProperties(); (void)prop;
++
++  writer.writeAttribute(prop.callee);
++
++  // writer.writeOptionalAttribute(prop.arg_attrs);
++  // writer.writeOptionalAttribute(prop.res_attrs);
++}
+ //===----------------------------------------------------------------------===//
+ // ReturnOp
+ //===----------------------------------------------------------------------===//
+diff --git a/mlir/lib/Dialect/LLVMIR/IR/LLVMDialect.cpp b/mlir/lib/Dialect/LLVMIR/IR/LLVMDialect.cpp
+index a6e89f63c822..21e863025215 100644
+--- a/mlir/lib/Dialect/LLVMIR/IR/LLVMDialect.cpp
++++ b/mlir/lib/Dialect/LLVMIR/IR/LLVMDialect.cpp
+@@ -4114,6 +4114,14 @@ void LLVM::AssumeOp::build(OpBuilder &builder, OperationState &state,
+ 
+ LogicalResult LLVM::AssumeOp::verify() { return verifyOperandBundles(*this); }
+ 
++::llvm::LogicalResult AssumeOp::readProperties(::mlir::DialectBytecodeReader &reader, ::mlir::OperationState &state) {
++  return ::mlir::success();
++}
++
++void AssumeOp::writeProperties(::mlir::DialectBytecodeWriter &writer) {
++  return;
++}
++
+ //===----------------------------------------------------------------------===//
+ // masked_gather (intrinsic)
+ //===----------------------------------------------------------------------===//
+diff --git a/mlir/lib/Dialect/Linalg/IR/LinalgOps.cpp b/mlir/lib/Dialect/Linalg/IR/LinalgOps.cpp
+index e0e371617729..da3ab7590e54 100644
+--- a/mlir/lib/Dialect/Linalg/IR/LinalgOps.cpp
++++ b/mlir/lib/Dialect/Linalg/IR/LinalgOps.cpp
+@@ -203,6 +203,110 @@ static void buildMatmulOp(OpBuilder &b, OperationState &state,
+                            attributes, regionBuilder);
+ }
+ 
++::llvm::LogicalResult MatmulOp::readProperties(::mlir::DialectBytecodeReader &reader, ::mlir::OperationState &state) {
++  auto &prop = state.getOrAddProperties<Properties>(); (void)prop;
++  if (::mlir::failed(reader.readOptionalAttribute(prop.cast)))
++    return ::mlir::failure();
++
++  if (::mlir::failed(reader.readOptionalAttribute(prop.indexing_maps)))
++    return ::mlir::failure();
++
++  if (reader.getBytecodeVersion() < /*kNativePropertiesODSSegmentSize=*/6) {
++    auto &propStorage = prop.operandSegmentSizes;
++    ::mlir::DenseI32ArrayAttr attr;
++    if (::mlir::failed(reader.readAttribute(attr))) return ::mlir::failure();
++    if (attr.size() > static_cast<int64_t>(sizeof(propStorage) / sizeof(int32_t))) {
++      reader.emitError("size mismatch for operand/result_segment_size");
++      return ::mlir::failure();
++    }
++    ::llvm::copy(::llvm::ArrayRef<int32_t>(attr), propStorage.begin());
++  }
++
++  {
++    auto &propStorage = prop.operandSegmentSizes;
++    auto readProp = [&]() {
++
++  if (reader.getBytecodeVersion() >= /*kNativePropertiesODSSegmentSize=*/6)
++    return reader.readSparseArray(::llvm::MutableArrayRef(propStorage));
++;
++      return ::mlir::success();
++    };
++    if (::mlir::failed(readProp())) 
++      return ::mlir::failure();
++  }
++  return ::mlir::success();
++}
++
++void MatmulOp::writeProperties(::mlir::DialectBytecodeWriter &writer) {
++  auto &prop = getProperties(); (void)prop;
++
++  writer.writeOptionalAttribute(prop.cast);
++
++if (writer.getBytecodeVersion() < /*kNativePropertiesODSSegmentSize=*/6) {
++  auto &propStorage = prop.operandSegmentSizes;
++  writer.writeAttribute(::mlir::DenseI32ArrayAttr::get(this->getContext(), propStorage));
++}
++
++  {
++    auto &propStorage = prop.operandSegmentSizes;
++
++  if (writer.getBytecodeVersion() >= /*kNativePropertiesODSSegmentSize=*/6)
++    writer.writeSparseArray(::llvm::ArrayRef(propStorage));
++;
++  }
++}
++
++::llvm::LogicalResult BatchMatmulOp::readProperties(::mlir::DialectBytecodeReader &reader, ::mlir::OperationState &state) {
++  auto &prop = state.getOrAddProperties<Properties>(); (void)prop;
++  if (::mlir::failed(reader.readOptionalAttribute(prop.cast)))
++    return ::mlir::failure();
++
++  if (::mlir::failed(reader.readOptionalAttribute(prop.indexing_maps)))
++    return ::mlir::failure();
++
++  if (reader.getBytecodeVersion() < /*kNativePropertiesODSSegmentSize=*/6) {
++    auto &propStorage = prop.operandSegmentSizes;
++    ::mlir::DenseI32ArrayAttr attr;
++    if (::mlir::failed(reader.readAttribute(attr))) return ::mlir::failure();
++    if (attr.size() > static_cast<int64_t>(sizeof(propStorage) / sizeof(int32_t))) {
++      reader.emitError("size mismatch for operand/result_segment_size");
++      return ::mlir::failure();
++    }
++    ::llvm::copy(::llvm::ArrayRef<int32_t>(attr), propStorage.begin());
++  }
++
++  {
++    auto &propStorage = prop.operandSegmentSizes;
++    auto readProp = [&]() {
++
++  if (reader.getBytecodeVersion() >= /*kNativePropertiesODSSegmentSize=*/6)
++    return reader.readSparseArray(::llvm::MutableArrayRef(propStorage));
++;
++      return ::mlir::success();
++    };
++    if (::mlir::failed(readProp()))
++      return ::mlir::failure();
++  }
++  return ::mlir::success();
++}
++
++void BatchMatmulOp::writeProperties(::mlir::DialectBytecodeWriter &writer) {
++  auto &prop = getProperties(); (void)prop;
++
++if (writer.getBytecodeVersion() < /*kNativePropertiesODSSegmentSize=*/6) {
++  auto &propStorage = prop.operandSegmentSizes;
++  writer.writeAttribute(::mlir::DenseI32ArrayAttr::get(this->getContext(), propStorage));
++}
++
++  {
++    auto &propStorage = prop.operandSegmentSizes;
++
++  if (writer.getBytecodeVersion() >= /*kNativePropertiesODSSegmentSize=*/6)
++    writer.writeSparseArray(::llvm::ArrayRef(propStorage));
++;
++  }
++}
++
+ static void buildBatchMatmulOp(OpBuilder &b, OperationState &state,
+                                std::optional<TypeRange> resultTensorTypes,
+                                ValueRange inputs, ValueRange outputs,
+diff --git a/mlir/lib/Dialect/SCF/IR/SCF.cpp b/mlir/lib/Dialect/SCF/IR/SCF.cpp
+index 0dbc041d231a..9d1960a65a74 100644
+--- a/mlir/lib/Dialect/SCF/IR/SCF.cpp
++++ b/mlir/lib/Dialect/SCF/IR/SCF.cpp
+@@ -315,6 +315,18 @@ void ConditionOp::getSuccessorRegions(
+ //===----------------------------------------------------------------------===//
+ // ForOp
+ //===----------------------------------------------------------------------===//
++::llvm::LogicalResult ForOp::readProperties(::mlir::DialectBytecodeReader &reader, ::mlir::OperationState &state) {
++  // auto &prop = state.getOrAddProperties<Properties>(); (void)prop;
++  // if (::mlir::failed(reader.readOptionalAttribute(prop.unsignedCmp)))
++    // return ::mlir::failure();
++  return ::mlir::success();
++}
++
++void ForOp::writeProperties(::mlir::DialectBytecodeWriter &writer) {
++  // auto &prop = getProperties(); (void)prop;
++
++  // writer.writeOptionalAttribute(prop.unsignedCmp);
++}
+ 
+ void ForOp::build(OpBuilder &builder, OperationState &result, Value lb,
+                   Value ub, Value step, ValueRange initArgs,
+diff --git a/mlir/lib/Bytecode/Writer/BytecodeWriter.cpp b/mlir/lib/Bytecode/Writer/BytecodeWriter.cpp
+--- a/mlir/lib/Bytecode/Writer/BytecodeWriter.cpp
++++ b/mlir/lib/Bytecode/Writer/BytecodeWriter.cpp
+@@ -1025,11 +1025,21 @@ LogicalResult BytecodeWriter::writeOp(EncodingEmitter &emitter, Operation *op) {
+   }
+ 
+   // Emit the operands of the operation.
+-  if (unsigned numOperands = op->getNumOperands()) {
++  unsigned numOperands = op->getNumOperands();
++  bool dropAssumeOperandBundles =
++      op->getName().getStringRef() == "llvm.intr.assume" && numOperands > 1;
++  if (dropAssumeOperandBundles)
++    numOperands = 1;
++  if (numOperands) {
+     opEncodingMask |= bytecode::OpEncodingMask::kHasOperands;
+     emitter.emitVarInt(numOperands, "op operands count");
+-    for (Value operand : op->getOperands())
+-      emitter.emitVarInt(numberingState.getNumber(operand), "op operand types");
++    if (dropAssumeOperandBundles) {
++      emitter.emitVarInt(numberingState.getNumber(op->getOperand(0)),
++                         "op operand types");
++    } else {
++      for (Value operand : op->getOperands())
++        emitter.emitVarInt(numberingState.getNumber(operand), "op operand types");
++    }
+   }
+ 
+   // Emit the successors of the operation.
+diff --git a/mlir/include/mlir/Dialect/LLVMIR/LLVMOps.td b/mlir/include/mlir/Dialect/LLVMIR/LLVMOps.td
+--- a/mlir/include/mlir/Dialect/LLVMIR/LLVMOps.td
++++ b/mlir/include/mlir/Dialect/LLVMIR/LLVMOps.td
+@@ -456,6 +456,7 @@ def LLVM_LoadOp : LLVM_MemAccessOpBase<"load",
+       CArg<"StringRef", "StringRef()">:$syncscope)>
+   ];
+   let hasVerifier = 1;
++  let useCustomPropertiesEncoding = 1;
+ }
+ 
+ def LLVM_StoreOp : LLVM_MemAccessOpBase<"store",
+@@ -621,8 +621,10 @@
+   let hasFolder = 1;
+ }
+ def LLVM_IntToPtrOp : LLVM_DereferenceableCastOp<"inttoptr", "IntToPtr",
+-                                  LLVM_ScalarOrVectorOf<AnySignlessInteger>,
+-                                  LLVM_ScalarOrVectorOf<LLVM_AnyPointer>>;
++                                  LLVM_ScalarOrVectorOf<AnySignlessInteger>,
++                                  LLVM_ScalarOrVectorOf<LLVM_AnyPointer>> {
++  let useCustomPropertiesEncoding = 1;
++}
+ def LLVM_PtrToIntOp : LLVM_CastOp<"ptrtoint", "PtrToInt",
+                                   LLVM_ScalarOrVectorOf<LLVM_AnyPointer>,
+                                   LLVM_ScalarOrVectorOf<AnySignlessInteger>>;
+@@ -2409,7 +2411,8 @@ def LLVM_InlineAsmOp : LLVM_Op<"inline_asm", [DeclareOpInterfaceMethods<MemoryEf
+     static StringRef getElementTypeAttrName() {
+       return "elementtype";
+     }
+   }];
+ 
+   let hasVerifier = 1;
++  let useCustomPropertiesEncoding = 1;
+ }
+diff --git a/mlir/lib/Dialect/LLVMIR/IR/LLVMDialect.cpp b/mlir/lib/Dialect/LLVMIR/IR/LLVMDialect.cpp
+index 5d08cccb4faa..000000000000 100644
+--- a/mlir/lib/Dialect/LLVMIR/IR/LLVMDialect.cpp
++++ b/mlir/lib/Dialect/LLVMIR/IR/LLVMDialect.cpp
+@@ -950,3 +950,63 @@ void StoreOp::build(OpBuilder &builder, OperationState &state, Value value,
++::llvm::LogicalResult LoadOp::readProperties(
++    ::mlir::DialectBytecodeReader &reader, ::mlir::OperationState &state) {
++  auto &prop = state.getOrAddProperties<Properties>(); (void)prop;
++  if (::mlir::failed(reader.readOptionalAttribute(prop.access_groups)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readOptionalAttribute(prop.alias_scopes)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readOptionalAttribute(prop.alignment)))
++    return ::mlir::failure();
++  ::mlir::Attribute dereferenceable;
++  if (::mlir::failed(reader.readOptionalAttribute(dereferenceable)))
++    return ::mlir::failure();
++  prop.dereferenceable = nullptr;
++  if (::mlir::failed(reader.readOptionalAttribute(prop.invariant)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readOptionalAttribute(prop.invariantGroup)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readOptionalAttribute(prop.noalias_scopes)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readOptionalAttribute(prop.nontemporal)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readOptionalAttribute(prop.ordering)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readOptionalAttribute(prop.syncscope)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readOptionalAttribute(prop.tbaa)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readOptionalAttribute(prop.volatile_)))
++    return ::mlir::failure();
++  return ::mlir::success();
++}
++
++void LoadOp::writeProperties(::mlir::DialectBytecodeWriter &writer) {
++  auto &prop = getProperties(); (void)prop;
++  writer.writeOptionalAttribute(prop.access_groups);
++  writer.writeOptionalAttribute(prop.alias_scopes);
++  writer.writeOptionalAttribute(prop.alignment);
++  // LLVM 19/20 does not know the dereferenceable load property.
++  writer.writeOptionalAttribute(::mlir::Attribute());
++  writer.writeOptionalAttribute(prop.invariant);
++  writer.writeOptionalAttribute(prop.invariantGroup);
++  writer.writeOptionalAttribute(prop.noalias_scopes);
++  writer.writeOptionalAttribute(prop.nontemporal);
++  writer.writeOptionalAttribute(prop.ordering);
++  writer.writeOptionalAttribute(prop.syncscope);
++  writer.writeOptionalAttribute(prop.tbaa);
++  writer.writeOptionalAttribute(prop.volatile_);
++}
++
++::llvm::LogicalResult IntToPtrOp::readProperties(
++    ::mlir::DialectBytecodeReader &reader, ::mlir::OperationState &state) {
++  auto &prop = state.getOrAddProperties<Properties>(); (void)prop;
++  prop.dereferenceable = nullptr;
++  return ::mlir::success();
++}
++
++void IntToPtrOp::writeProperties(::mlir::DialectBytecodeWriter &writer) {
++  return;
++}
++
+ //===----------------------------------------------------------------------===//
+ // CallOp
+ //===----------------------------------------------------------------------===//
+@@ -4197,6 +4208,37 @@ void LLVM::masked_compressstore::build(OpBuilder &builder,
+ // InlineAsmOp
+ //===----------------------------------------------------------------------===//
+-
++::llvm::LogicalResult InlineAsmOp::readProperties(
++    ::mlir::DialectBytecodeReader &reader, ::mlir::OperationState &state) {
++  auto &prop = state.getOrAddProperties<Properties>(); (void)prop;
++  if (::mlir::failed(reader.readOptionalAttribute(prop.asm_dialect)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readAttribute(prop.asm_string)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readAttribute(prop.constraints)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readOptionalAttribute(prop.has_side_effects)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readOptionalAttribute(prop.is_align_stack)))
++    return ::mlir::failure();
++  if (::mlir::failed(reader.readOptionalAttribute(prop.operand_attrs)))
++    return ::mlir::failure();
++  // LLVM 20 does not know the tail_call_kind inline asm property.
++  prop.tail_call_kind =
++      TailCallKindAttr::get(state.getContext(), TailCallKind::None);
++  return ::mlir::success();
++}
++
++void InlineAsmOp::writeProperties(::mlir::DialectBytecodeWriter &writer) {
++  auto &prop = getProperties(); (void)prop;
++  writer.writeOptionalAttribute(prop.asm_dialect);
++  writer.writeAttribute(prop.asm_string);
++  writer.writeAttribute(prop.constraints);
++  writer.writeOptionalAttribute(prop.has_side_effects);
++  writer.writeOptionalAttribute(prop.is_align_stack);
++  writer.writeOptionalAttribute(prop.operand_attrs);
++  // LLVM 20 does not know the tail_call_kind inline asm property.
++}
++
+ LogicalResult InlineAsmOp::verify() {
+   if (!getTailCallKindAttr())
+     return success();

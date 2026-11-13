@@ -215,3 +215,24 @@ __all__ = [
 
 if raw is not None:
     __all__.append("raw")
+
+
+def __getattr__(name):
+    # 3.5 compatibility: ``with tle.scope(core_mode="cube"|"vector")`` is the
+    # Ascend core-mode scope. The backend registers this exact class as a
+    # ``with_handlers`` entry, so re-exporting it is enough.
+    if name == "scope":
+        try:
+            from triton.language.extra.cann.extension.scope import scope
+        except ImportError as exc:
+            raise AttributeError(f"module {__name__!r} has no attribute 'scope'") from exc
+        return scope
+    # Keep the historical ``tle.<op>`` surface used by FlagTree kernels. The
+    # canonical definitions live under ``tle.language``; backend-provided
+    # extension APIs are resolved by ``tle.language.__getattr__``.
+    from . import language
+
+    try:
+        return getattr(language, name)
+    except AttributeError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None

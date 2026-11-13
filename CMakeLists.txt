@@ -172,6 +172,12 @@ if(FLAGTREE_BACKEND AND EXISTS ${BACKEND_INCLUDE_DIR})
   # flagtree: include directories
   include_directories(${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND}/include)
   include_directories(${PROJECT_BINARY_DIR}/third_party/${FLAGTREE_BACKEND}/include) # Tablegen'd files
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    # The ascend backend builds the core include/lib from its own CMakeLists, so
+    # only the search paths are needed here.
+    include_directories(${PROJECT_SOURCE_DIR}/include)
+    include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
+  endif()
 else()
   include_directories(${PROJECT_SOURCE_DIR}/include)
   include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
@@ -212,6 +218,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
   # FlagPrism: register component targets before backend codegen captures TRITON_LIBS.
   flagtree_add_flagprism_components()
   flagtree_configure_flir_dependency()
+  # Provide the BiShengIR targets before the backend subdirectory links them.
+  flagtree_configure_ascend_npu_ir_dependency()
 
   foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
     add_subdirectory(third_party/${CODEGEN_BACKEND})
@@ -257,6 +265,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
     ${triton_plugins}
 
     # mlir
+    MLIRFuncInlinerExtension
     MLIRAMDGPUDialect
     MLIRNVVMDialect
     MLIRNVVMToLLVMIRTranslation

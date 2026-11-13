@@ -71,3 +71,28 @@ class CompileTimeAssertionFailure(CompilationError):
 
 class UnsupportedLanguageConstruct(CompilationError):
     pass
+
+
+class MLIRCompilationError(TritonError):
+    """Failure in an Ascend IR or binary compilation stage."""
+
+    def __init__(self, stage_name: Optional[str], message: Optional[str] = None):
+        self.stage_name = stage_name
+        self.error_message = "" if message is None else message
+        # Preserve the complete diagnostic, but omit the unsymbolized stack
+        # dump from the displayed message.
+        detail = self.error_message.split("Stack dump without symbol names", 1)[0]
+        if detail and not detail.endswith("\n"):
+            detail += "\n"
+        self.message = (
+            "\n"
+            "///------------------[ERROR][Triton][BEG]------------------\n"
+            f"[{self.stage_name}] encounters error:\n"
+            f"{detail}"
+            "///------------------[ERROR][Triton][END]------------------\n"
+        )
+        super().__init__(self.message)
+
+    def __reduce__(self):
+        # Reconstruct from the original diagnostic, not the formatted message.
+        return type(self), (self.stage_name, self.error_message)

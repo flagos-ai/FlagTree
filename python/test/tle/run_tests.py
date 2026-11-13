@@ -49,22 +49,37 @@ def main():
     success = run_command("python -m pytest unit/test_tle.py  -v --tb=short", "TLE Basic Unit Tests", env)
     all_passed = all_passed and success
 
-    # 2. Run end-to-end tests (if GPU available)
+    # 2. Run end-to-end tests (if a supported accelerator is available)
     try:
         import torch
-        if torch.cuda.is_available():
+
+        def has_accelerator():
+            if torch.cuda.is_available():
+                return True
+            try:
+                import torch_npu  # noqa: F401
+                return torch.npu.is_available()
+            except Exception:
+                return False
+
+        if has_accelerator():
             integration_tests = [
                 ("integration/test_tle_pipeline_e2e.py", "TLE Pipeline End-to-End Tests"),
                 ("integration/test_tle_local_store.py", "TLE Local Pointer Integration Tests"),
                 ("integration/test_tle_tma_copy.py", "TLE TMA Copy Integration Tests"),
                 ("integration/test_tle_gemm.py", "TLE TMA gemm Integration Tests"),
+                ("integration/test_tle_dsa_arith.py", "TLE DSA Buffer Arithmetic Tests"),
+                ("integration/test_tle_dsa_bridge.py", "TLE DSA Buffer/Tensor Bridge Tests"),
+                ("integration/test_tle_dsa_slice.py", "TLE DSA Slice/Tile Tests"),
+                ("integration/test_tle_dsa_pipeline_e2e.py", "TLE DSA Pipeline End-to-End Tests"),
+                ("integration/test_tle_dsa_rand.py", "TLE DSA Vendor Random Tests"),
             ]
 
             for test_file, description in integration_tests:
                 success = run_command(f"python -m pytest {test_file} -v --tb=short", description, env)
                 all_passed = all_passed and success
         else:
-            print("\n⚠️  Skipping end-to-end tests: CUDA GPU not detected")
+            print("\n⚠️  Skipping end-to-end tests: no CUDA or Ascend NPU detected")
     except ImportError:
         print("\n⚠️  Skipping end-to-end tests: PyTorch not installed")
 

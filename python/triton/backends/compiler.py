@@ -114,6 +114,17 @@ class BaseBackend(metaclass=ABCMeta):
         return None
 
     @staticmethod
+    def use_alignment_specialization(options: dict) -> bool:
+        """Whether divisibility-by-16 specialization applies for these options.
+
+        Receives raw launch keyword options before parse_options, once per
+        binder call when alignment specialization can apply. The default
+        preserves existing cache keys. Overrides must agree with the options
+        used for compilation; parameter-level opt-outs still take precedence.
+        """
+        return True
+
+    @staticmethod
     @abstractmethod
     def supports_target(target: GPUTarget):
         raise NotImplementedError

@@ -37,6 +37,11 @@ macro(flagtree_configure_options)
     add_compile_definitions(__FLAGTREE_COMMON_IR__)
   endif()
 
+  # Ascend always requires CommonIR, without a C/C++ feature gate.
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    set(FLAGTREE_COMMON_IR_ENABLED ON)
+  endif()
+
   set(FLAGCX_ENABLED OFF)
   set(FLAGCX_SUPPORT_BACKENDS nvidia iluvatar)
   if(NOT FLAGTREE_BACKEND OR
@@ -84,6 +89,29 @@ macro(flagtree_configure_options)
     set(CMAKE_CXX_COMPILER clang++-16)
     add_definitions(-D__NVIDIA__)
     add_definitions(-D__AMD__)
+  elseif(FLAGTREE_BACKEND STREQUAL "ascend")
+    set(CMAKE_C_COMPILER clang)
+    set(CMAKE_CXX_COMPILER clang++)
+    # AscendNPU-IR gates its sources on the LLVM major version. cmake/llvm-hash.txt
+    # pins LLVM 22 here.
+    #
+    # Deliberately leave LLVM_MAJOR_VERSION_21_COMPATIBLE unset: LLVM 22 renamed
+    # the Mesh dialect to Shard (only libMLIRShardDialect.a ships in the pinned
+    # package), so turning it on would reference a missing target.
+    set(LLVM_MAJOR_VERSION_22_OR_HIGHER ON)
+    set(LLVM_MAJOR_VERSION_22_COMPATIBLE ON CACHE BOOL
+        "AscendNPU-IR build with llvm major version 22 or later" FORCE)
+    add_definitions(-D__LLVM_MAJOR_VERSION_22_COMPATIBLE__)
+    add_compile_options("-Wno-deprecated-declarations")
+    add_compile_options("-Wno-error=deprecated-declarations")
+    # AscendNPU-IR: build only the standalone IR, and keep it out of the
+    # backend's own CMakeLists so the subdirectory is added exactly once.
+    set(BISHENGIR_ENABLE_A5_UNPUBLISHED_FEATURES ON)
+    set(BISHENGIR_BUILD_STANDALONE_IR_ONLY ON)
+    set(ASCENDNPU_IR_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ascend/AscendNPU-IR)
+    set(ASCENDNPU_IR_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/third_party/ascend/AscendNPU-IR)
+    include_directories(${ASCENDNPU_IR_SRC_DIR}/bishengir/include)
+    include_directories(${ASCENDNPU_IR_BINARY_DIR}/bishengir/include)
   elseif(FLAGTREE_BACKEND STREQUAL "tsingmicro")
     set(CMAKE_C_COMPILER clang)
     set(CMAKE_CXX_COMPILER clang++)
@@ -232,7 +260,7 @@ macro(flagtree_configure_core_source)
   endif()
 
   if(FLAGTREE_BACKEND MATCHES
-     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|metax|tileir|ppu|spacemit|sunrise)$")
+     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|metax|tileir|ppu|spacemit|sunrise|ascend)$")
     include_directories(${PROJECT_SOURCE_DIR}/include)
     include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
     if(FLAGTREE_BACKEND STREQUAL "xpu")
@@ -322,7 +350,7 @@ endmacro()
 macro(flagtree_configure_flir_dependency)
   if(FLAGTREE_COMMON_IR_ENABLED)
     if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third_party/flir/CMakeLists.txt")
-      message(FATAL_ERROR "FLAGTREE_COMMON_IR requires third_party/flir")
+      message(FATAL_ERROR "CommonIR support requires third_party/flir")
     endif()
     include_directories(${PROJECT_SOURCE_DIR}/third_party/flir/include)
     include_directories(${PROJECT_BINARY_DIR}/third_party/flir/include)
@@ -344,6 +372,21 @@ macro(flagtree_configure_flir_dependency)
         "${PROJECT_BINARY_DIR}/third_party/flir"
       )
     endif()
+  endif()
+endmacro()
+
+
+# AscendNPU-IR provides the BiShengIR dialects the ascend backend links against.
+# Added from the top level (not from the backend's own CMakeLists) so the source
+# directory is only ever associated with one binary directory.
+macro(flagtree_configure_ascend_npu_ir_dependency)
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    if(NOT EXISTS "${ASCENDNPU_IR_SRC_DIR}/CMakeLists.txt")
+      message(FATAL_ERROR
+        "The ascend backend requires AscendNPU-IR at ${ASCENDNPU_IR_SRC_DIR}. "
+        "Run the Python package build to download third-party dependencies.")
+    endif()
+    add_subdirectory(${ASCENDNPU_IR_SRC_DIR} ${ASCENDNPU_IR_BINARY_DIR})
   endif()
 endmacro()
 
@@ -577,6 +620,10 @@ macro(flagtree_configure_tools_and_tests)
       flagtree_add_tle_generated_header_dependencies()
     endif()
     add_subdirectory(test)
+  elseif(FLAGTREE_BACKEND STREQUAL "ascend")
+    if(FLAGTREE_TLE)
+      flagtree_add_tle_generated_header_dependencies()
+    endif()
   elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
     option(FLAGTREE_ILUVATAR_BUILD_BIN
       "Build third_party/iluvatar/bin tools and lit tests" OFF)
@@ -684,6 +731,13 @@ macro(flagtree_added_python_src)
     endif()
   endforeach()
   add_library(triton SHARED ${_flagtree_python_sources})
+
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    # third_party/ascend/triton_ascend.cc registers the buffer_ir submodule, so
+    # its implementation must be part of the triton module.
+    target_sources(triton PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ascend/python/triton/extension/buffer/src/buffer_ir.cc)
+  endif()
 
   if(FLAGTREE_BACKEND STREQUAL "xpu")
     target_sources(triton PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xpu/python/src/mlir_pass_abi_shim.cc)

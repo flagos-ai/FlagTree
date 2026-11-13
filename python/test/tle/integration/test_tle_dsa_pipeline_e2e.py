@@ -1,33 +1,23 @@
 # flagtree tle
-"""
-TLE End-to-End Integration Tests
+"""TLE DSA pipeline end-to-end integration (backend-portable: txda/npu).
 
-Tests complete workflow of TLE pipeline functionality in real GPU environment:
-- Memory allocation (tle.gpu.alloc)
-- Copying between GM and shared memory (tle.gpu.copy)
-- Shared-memory pointer materialization (tle.gpu.local_ptr + tl.load/store)
-- Pipeline iterator (tle.gpu.pipeline)
-- Integration with Triton JIT
+The pipeline uses on-chip buffers and ``tle.dsa.to_tensor`` to read them back.
+Ascend does not expose ``tle.dsa.local_ptr``, so the portable form uses the
+buffer-to-tensor view instead.
 """
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 import triton
 import triton.experimental.tle.language as tle
 import triton.language as tl
 
+from .._dsa_backend import get_dsa_backend
 
-def _is_txda():
-    try:
-        import torch_txda  # noqa: F401
-    except ImportError:
-        return False
-    target = triton.runtime.driver.active.get_current_target()
-    return getattr(target, "backend", None) == "txda"
-
-
-pytestmark = pytest.mark.skipif(not _is_txda(), reason="TLE DSA tests require TsingMicro (txda) backend")
+BACKEND, DEVICE, SPACE = get_dsa_backend()
+IS_ASCEND = BACKEND in ("npu", "ascend")
 
 
 @triton.jit
@@ -45,101 +35,77 @@ def elementwise_add_kernel(
     ystride_c,
     XBLOCK: tl.constexpr,
     YBLOCK: tl.constexpr,
+    SPACE: tl.constexpr,
+    IS_ASCEND: tl.constexpr,
 ):
     """
-    Element-wise addition kernel using TLE pipeline
+    Element-wise addition using TLE DSA buffers and a software pipeline.
 
-    This kernel demonstrates the complete TLE workflow:
-    1. Allocate shared memory buffers
-    2. Use pipeline for for-loop iteration
-    3. copy data to shared memory
-    4. Load data from shared memory for computation
-    5. Store results back to global memory
+    1. Allocate on-chip buffers.
+    2. Iterate with ``tle.dsa.pipeline``.
+    3. Copy GM -> on-chip with ``tle.dsa.copy``.
+    4. Read the buffers through ``tle.dsa.to_tensor``.
+    5. Store results back to global memory.
     """
     pid = tl.program_id(0)
 
-    # Calculate row offset for current program
     xoffs = pid * XBLOCK + tl.arange(0, XBLOCK)
 
-    # Calculate global memory pointers
     a_ptrs = a_ptr + xstride_a * xoffs[:, None]
     b_ptrs = b_ptr + xstride_b * xoffs[:, None]
     c_ptrs = c_ptr + xstride_c * xoffs[:, None]
 
-    # Allocate shared memory buffers
-    a_smem = tle.dsa.alloc([XBLOCK, YBLOCK], dtype=tl.float32)
-    b_smem = tle.dsa.alloc([XBLOCK, YBLOCK], dtype=tl.float32)
-    row_ids = tl.arange(0, XBLOCK)[:, None]
-    col_ids = tl.arange(0, YBLOCK)[None, :]
-    row_ids = tl.broadcast_to(row_ids, (XBLOCK, YBLOCK))
-    col_ids = tl.broadcast_to(col_ids, (XBLOCK, YBLOCK))
-    a_smem_ptrs = tle.dsa.local_ptr(a_smem, (row_ids, col_ids))
-    b_smem_ptrs = tle.dsa.local_ptr(b_smem, (row_ids, col_ids))
+    if IS_ASCEND:
+        a_smem = tle.dsa.alloc([XBLOCK, YBLOCK], dtype=tl.float32, mem_addr_space=SPACE)
+        b_smem = tle.dsa.alloc([XBLOCK, YBLOCK], dtype=tl.float32, mem_addr_space=SPACE)
+    else:
+        a_smem = tle.dsa.alloc([XBLOCK, YBLOCK], dtype=tl.float32)
+        b_smem = tle.dsa.alloc([XBLOCK, YBLOCK], dtype=tl.float32)
 
-    # Use TLE pipeline for block-wise processing
-    # for yoff in range(0, ynumel, YBLOCK):
     for yoff in tle.dsa.pipeline(0, ynumel, YBLOCK, num_stages=2):
-        # Calculate column offset for current block
         yoffs = tl.arange(0, YBLOCK) + yoff
         mask = (xoffs < xnumel)[:, None] & (yoffs < ynumel)[None, :]
 
-        # copy data to shared memory
         tle.dsa.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
         tle.dsa.copy(b_ptrs + ystride_b * yoffs[None, :], b_smem, [XBLOCK, YBLOCK])
 
-        # Load data from shared memory
-        aval = tl.load(a_smem_ptrs)
-        bval = tl.load(b_smem_ptrs)
-
-        # Perform computation
+        aval = tle.dsa.to_tensor(a_smem)
+        bval = tle.dsa.to_tensor(b_smem)
         c_val = aval + bval
 
-        # Store results
         tl.store(c_ptrs + ystride_c * yoffs[None, :], c_val, mask=mask)
 
 
 def elementwise_add(A, B, C, XBLOCK=32, YBLOCK=64):
-    """
-    Wrapper function to execute element-wise addition using TLE pipeline
-
-    Args:
-        A: Input tensor A (CUDA tensor)
-        B: Input tensor B (CUDA tensor)
-        C: Output tensor C (CUDA tensor)
-        XBLOCK: Block size for X dimension
-        YBLOCK: Block size for Y dimension
-    """
+    """Execute element-wise addition using the TLE pipeline."""
     assert A.shape == B.shape == C.shape, "Input and output tensor shapes must match"
     xnumel, ynumel = A.shape
     grid = (triton.cdiv(xnumel, XBLOCK), )
 
-    return elementwise_add_kernel[grid](A, B, C, xnumel, ynumel, *A.stride(), *B.stride(), *C.stride(), XBLOCK, YBLOCK)
+    return elementwise_add_kernel[grid](A, B, C, xnumel, ynumel, *A.stride(), *B.stride(), *C.stride(), XBLOCK,
+                                        YBLOCK, SPACE=SPACE, IS_ASCEND=IS_ASCEND)
 
 
 class TestTLEPipelineEndToEnd:
     """TLE Pipeline End-to-End Integration Tests"""
 
     def test_elementwise_add_basic(self):
-        """Test basic element-wise addition functionality"""
-        torch.manual_seed(42)  # Ensure reproducibility
+        """Test basic element-wise addition functionality."""
+        torch.manual_seed(42)
 
         xnumel, ynumel = 512, 512
         XBLOCK, YBLOCK = 64, 64
 
-        # Create test data
-        a = torch.randn(xnumel, ynumel, device="txda", dtype=torch.float32)
-        b = torch.randn(xnumel, ynumel, device="txda", dtype=torch.float32)
-        c = torch.empty_like(a, device="txda", dtype=torch.float32)
+        a = torch.randn(xnumel, ynumel, device=DEVICE, dtype=torch.float32)
+        b = torch.randn(xnumel, ynumel, device=DEVICE, dtype=torch.float32)
+        c = torch.empty_like(a)
 
-        # Execute TLE pipeline computation
         elementwise_add(a, b, c, XBLOCK, YBLOCK)
 
-        # Verify results
-        expected = a + b
-        torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
+        torch.testing.assert_close(c, a + b, atol=1e-5, rtol=1e-5)
 
     def test_elementwise_add_different_sizes(self):
-        """Test different tensor sizes"""
+        """Test different tensor sizes."""
         torch.manual_seed(123)
 
         test_cases = [
@@ -150,77 +116,73 @@ class TestTLEPipelineEndToEnd:
         ]
 
         for xnumel, ynumel, XBLOCK, YBLOCK in test_cases:
-            # Create test data
-            a = torch.randn(xnumel, ynumel, device="txda", dtype=torch.float32)
-            b = torch.randn(xnumel, ynumel, device="txda", dtype=torch.float32)
-            c = torch.empty_like(a, device="txda", dtype=torch.float32)
+            a = torch.randn(xnumel, ynumel, device=DEVICE, dtype=torch.float32)
+            b = torch.randn(xnumel, ynumel, device=DEVICE, dtype=torch.float32)
+            c = torch.empty_like(a)
 
-            # Execute computation
             elementwise_add(a, b, c, XBLOCK, YBLOCK)
 
-            # Verify results
             expected = a + b
             torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
             assert c.shape == expected.shape, f"Shape mismatch: {xnumel}x{ynumel}, block size: {XBLOCK}x{YBLOCK}"
 
     def test_elementwise_add_different_dtypes(self):
-        """Test different data types"""
+        """Test different data types."""
         torch.manual_seed(456)
 
-        dtypes = [torch.float32]  # Skip float16 due to type conversion issues in TLE
+        dtypes = [torch.float32]  # float16 is not used by the dsa.copy path yet
         xnumel, ynumel = 512, 512
         XBLOCK, YBLOCK = 64, 64
 
         for dtype in dtypes:
-            # Create test data
-            a = torch.randn(xnumel, ynumel, device="txda", dtype=dtype)
-            b = torch.randn(xnumel, ynumel, device="txda", dtype=dtype)
-            c = torch.empty_like(a, device="txda", dtype=dtype)
+            a = torch.randn(xnumel, ynumel, device=DEVICE, dtype=dtype)
+            b = torch.randn(xnumel, ynumel, device=DEVICE, dtype=dtype)
+            c = torch.empty_like(a)
 
-            # Execute computation
             elementwise_add(a, b, c, XBLOCK, YBLOCK)
 
-            # Verify results
             expected = a + b
             torch.testing.assert_close(c, expected, atol=1e-3, rtol=1e-3)
             assert c.shape == expected.shape, f"Shape mismatch for data type {dtype}"
 
     def test_elementwise_add_edge_cases(self):
-        """Test edge cases"""
+        """Test edge cases."""
         torch.manual_seed(789)
 
-        # Test minimum size
-        a = torch.randn(1, 1, device="txda", dtype=torch.float32)
-        b = torch.randn(1, 1, device="txda", dtype=torch.float32)
-        c = torch.empty_like(a, device="txda", dtype=torch.float32)
+        a = torch.randn(1, 1, device=DEVICE, dtype=torch.float32)
+        b = torch.randn(1, 1, device=DEVICE, dtype=torch.float32)
+        c = torch.empty_like(a)
 
         elementwise_add(a, b, c, 1, 1)
         torch.testing.assert_close(c, a + b, atol=1e-5, rtol=1e-5)
 
-        # Test non-square tensors
-        a = torch.randn(128, 1024, device="txda", dtype=torch.float32)
-        b = torch.randn(128, 1024, device="txda", dtype=torch.float32)
-        c = torch.empty_like(a, device="txda", dtype=torch.float32)
+        a = torch.randn(128, 1024, device=DEVICE, dtype=torch.float32)
+        b = torch.randn(128, 1024, device=DEVICE, dtype=torch.float32)
+        c = torch.empty_like(a)
 
         elementwise_add(a, b, c, 32, 128)
         torch.testing.assert_close(c, a + b, atol=1e-5, rtol=1e-5)
 
     def test_tle_module_import(self):
-        """Test TLE module import (no GPU required)"""
-        # Verify all necessary functions and types can be imported
+        """Test the TLE module surface for the active DSA backend."""
         assert hasattr(tle, "dsa")
-        assert hasattr(tle.dsa, "alloc")
-        assert hasattr(tle.dsa, "copy")
-        assert hasattr(tle.dsa, "local_ptr")
-        assert hasattr(tle.dsa, "pipeline")
-        assert hasattr(tle.dsa, "scope")
-        assert hasattr(tle.dsa, "buffered_tensor")
+        for name in ("alloc", "copy", "pipeline", "to_tensor", "to_buffer"):
+            assert hasattr(tle.dsa, name), f"tle.dsa.{name} is missing"
 
-        # Verify functions have docstrings
+        if IS_ASCEND:
+            assert hasattr(tle.dsa, "workspace")
+            assert hasattr(tle.dsa, "ascend")
+            assert hasattr(tle.dsa.ascend, "UB")
+        else:
+            assert hasattr(tle.dsa, "local_ptr")
+            assert hasattr(tle.dsa, "scope")
+            assert hasattr(tle.dsa, "buffered_tensor")
+
         assert tle.dsa.alloc.__doc__ is not None
         assert tle.dsa.copy.__doc__ is not None
-        assert tle.dsa.local_ptr.__doc__ is not None
         assert tle.dsa.pipeline.__doc__ is not None
+        assert tle.dsa.to_tensor.__doc__ is not None
+        assert tle.dsa.to_buffer.__doc__ is not None
 
 
 if __name__ == "__main__":
