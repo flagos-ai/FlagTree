@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.o
+*.so
+*.lock
+*.tmp
