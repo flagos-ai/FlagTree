@@ -240,6 +240,7 @@ class MACABackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_licm(pm)
         passes.common.add_symbol_dce(pm)
+        passes.ttir.add_loop_vectorize(pm)
         passes.ttir.add_loop_unroll(pm)
         pm.run(mod, 'make_ttir')
         return mod
