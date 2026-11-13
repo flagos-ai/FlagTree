@@ -87,6 +87,7 @@ jobs:
           set -x
           source ~/env.sh
           export XPU_EVENT_KL3_ENABLE=1
+          _FLAGTREE_TEST_DEVICE_AUTOTUNE=1 python3 -m pytest -s python/test/unit/test_function_autotune.py
           cd third_party/xpu/python/test/unit
           python3 -m pytest -s . \
               --ignore=language/test_compile_errors.py \

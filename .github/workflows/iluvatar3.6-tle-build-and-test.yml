@@ -102,6 +102,8 @@ jobs:
             fi
           fi
 
+          _FLAGTREE_TEST_DEVICE_AUTOTUNE=1 python3 -m pytest -s python/test/unit/test_function_autotune.py
+
           # triton language unit test
           UMD_CUDAMODULELOADING=0 pytest third_party/iluvatar/python/test/unit/language/test_core.py
           pytest third_party/iluvatar/python/test/unit/language/test_annotations.py

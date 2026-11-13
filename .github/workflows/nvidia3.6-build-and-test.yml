@@ -123,6 +123,7 @@ jobs:
           python3 -m pytest -s python/test/unit/language \
               --ignore=python/test/unit/language/test_line_info.py
           python3 -m pytest -s python/test/unit/runtime
+          _FLAGTREE_TEST_DEVICE_AUTOTUNE=1 python3 -m pytest -s python/test/unit/test_function_autotune.py
           python3 -m pytest -s python/test/mixed_precision
           if [ -d "python/test/operators" ]; then
             python3 -m pytest -s python/test/operators
