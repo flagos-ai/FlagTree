@@ -409,11 +409,17 @@ class CMakeBuildPy(build_py):
     def run(self) -> None:
         FLAGPRISM_SETUP.prepare_build_tree(self.build_lib)  # FlagPrism
         self.run_command('build_ext')
-        # build_ext downloads the NVIDIA tools. Discard a package-data list
-        # that setuptools may have computed before those files existed.
-        self.__dict__.pop("data_files", None)
         helper.write_flagtree_backend_file()
         result = super().run()
+        if not helper.flagtree_backend:
+            nvidia_bin = Path(__file__).parent / "third_party" / "nvidia" / "backend" / "bin"
+            if not nvidia_bin.is_dir():
+                raise RuntimeError(f"NVIDIA tools were not generated in {nvidia_bin}")
+            shutil.copytree(
+                nvidia_bin,
+                Path(self.build_lib) / "triton" / "backends" / "nvidia" / "bin",
+                dirs_exist_ok=True,
+            )
         FLAGPRISM_SETUP.finalize_build_tree(self.build_lib)  # FlagPrism
         return result
 
@@ -768,10 +774,6 @@ def add_links(external_only):
 class plugin_bdist_wheel(bdist_wheel):
 
     def run(self):
-        # Package data may be scanned before build_ext runs. Materialize the
-        # NVIDIA tools first so bin/* is present when the wheel file list is
-        # computed.
-        download_and_copy_dependencies()
         add_links(external_only=True)
         super().run()
         helper.post_install()
