@@ -84,6 +84,41 @@ struct FastDividefToArithDivfPattern
   }
 };
 
+// The cluster dtype legalization widens bf16 registers to f32. Preserve the
+// observable rounding of an explicit f32 -> bf16 -> f32 before that pass.
+struct PreserveBF16RoundTrip : public OpRewritePattern<arith::ExtFOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(arith::ExtFOp ext,
+                                PatternRewriter &b) const override {
+    auto trunc = ext.getIn().getDefiningOp<arith::TruncFOp>();
+    auto type = dyn_cast<RankedTensorType>(ext.getType());
+    if (!trunc || !type || !type.getElementType().isF32() ||
+        trunc.getIn().getType() != type ||
+        !cast<RankedTensorType>(trunc.getType()).getElementType().isBF16() ||
+        trunc.getRoundingmode().has_value())
+      return failure();
+    Location loc = ext.getLoc();
+    auto i32 = type.clone(b.getI32Type());
+    auto constant = [&](uint32_t value) -> Value {
+      return b.create<arith::ConstantOp>(loc, DenseElementsAttr::get(
+          i32, b.getI32IntegerAttr(value)));
+    };
+    Value bits = b.create<triton::BitcastOp>(loc, i32, trunc.getIn());
+    Value hi = b.create<arith::ShRUIOp>(loc, bits, constant(16));
+    Value tie = b.create<arith::AndIOp>(loc, hi, constant(1));
+    Value bias = b.create<arith::AddIOp>(loc, constant(0x7fff), tie);
+    Value rounded = b.create<arith::AddIOp>(loc, bits, bias);
+    Value abs = b.create<arith::AndIOp>(loc, bits, constant(0x7fffffff));
+    Value nan = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ugt, abs,
+                                       constant(0x7f800000));
+    Value quiet = b.create<arith::OrIOp>(loc, bits, constant(0x00400000));
+    Value selected = b.create<arith::SelectOp>(loc, nan, quiet, rounded);
+    Value result = b.create<arith::AndIOp>(loc, selected, constant(0xffff0000));
+    b.replaceOpWithNewOp<triton::BitcastOp>(ext, type, result);
+    return success();
+  }
+};
+
 } // namespace
 
 struct TritonXPULegalizeExternEW
@@ -97,6 +132,7 @@ struct TritonXPULegalizeExternEW
     RewritePatternSet patterns(context);
     patterns.add<FastExpfToMathExpPattern, FastDividefToArithDivfPattern>(
         context);
+    patterns.add<PreserveBF16RoundTrip>(context);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       signalPassFailure();
     }
