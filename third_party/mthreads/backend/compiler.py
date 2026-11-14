@@ -779,6 +779,8 @@ def _llc_opt_level(options: "MUSAOptions") -> str:
 
 @dataclass(frozen=True)
 class MUSAOptions:
+    # Opt-in: TME transaction issuers must supply warp-uniform inputs.
+    tme_issue_warp: bool = False
     num_warps: int = 4
     num_ctas: int = 1
     num_stages: int = 1
@@ -975,6 +977,10 @@ class MUSABackend(BaseBackend):
         arch = knobs.runtime.override_arch or opts.get("arch", None) or self.target.arch
         args = {"arch": _normalize_arch(arch)}
         capability = _capability_from_arch(args["arch"])
+        if type(opts.get("tme_issue_warp", False)) is not bool:
+            raise ValueError("tme_issue_warp must be a bool")
+        if opts.get("tme_issue_warp", False) and capability != 31:
+            raise ValueError("tme_issue_warp is currently supported only on MP31")
         # The bundled MTGPU llc currently only provides processors through
         # mp_32. Reject future numeric capabilities here rather than letting
         # instruction selection terminate the compiler process.
@@ -1192,6 +1198,7 @@ class MUSABackend(BaseBackend):
 
     @staticmethod
     def make_llir(src, metadata, options, arch):
+        src.set_attr("musa.tme_issue_warp", ir.builder(src.context).get_int32_attr(int(options.tme_issue_warp)))
         from triton._C.libtriton import llvm
 
         mod = src

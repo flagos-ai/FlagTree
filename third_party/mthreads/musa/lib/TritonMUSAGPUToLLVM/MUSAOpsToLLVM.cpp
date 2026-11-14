@@ -216,6 +216,18 @@ Value buildTMEIssuePredicate(Value userPred, Location loc,
   } else {
     threadId = getThreadId(rewriter, loc);
   }
+  // The explicit MP31 collective issue mode keeps a TME transaction's
+  // add-trans/copy/arrival region warp-uniform. Init-arrival is a separate
+  // one-thread setup operation. Unaligned explicit issuers conservatively
+  // retain their original single-thread semantics.
+  if (issueOp && !isa<triton::musa::InitArrivalOp>(issueOp) &&
+      issueThread % 32 == 0) {
+    if (auto module = issueOp->getParentOfType<ModuleOp>()) {
+      auto collective = module->getAttrOfType<IntegerAttr>("musa.tme_issue_warp");
+      if (collective && collective.getInt())
+        threadId = b.and_(threadId, b.i32_val(-32));
+    }
+  }
   Value issuerPred = b.icmp_eq(threadId, b.i32_val(issueThread));
   return b.and_(userPred, issuerPred);
 }
