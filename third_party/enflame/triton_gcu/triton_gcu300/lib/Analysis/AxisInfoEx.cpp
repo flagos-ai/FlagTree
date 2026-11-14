@@ -18,8 +18,11 @@
 #include <string>
 #include <vector>
 
-#include "mlir/Analysis/DataFlow/SparseAnalysis.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#if TRITON_VERSION >= 38
+#include "mlir/Support/TypeID.h" // MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID
+#endif
+#include "mlir/Analysis/DataFlow/SparseAnalysis.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -194,6 +197,15 @@ private:
 
 class AxisInfoExAnalysis : public dataflow::SparseForwardDataFlowAnalysis<
                                dataflow::Lattice<AxisInfoEx>> {
+public:
+#if TRITON_VERSION >= 38
+  // Triton 3.8 配套的 LLVM 23 起，匿名 namespace 内的类型不再允许隐式 TypeID：
+  // DataFlowSolver::load<T>() 内部走 TypeID::get<T>()，遇到匿名类型直接
+  // 以 "LLVM ERROR" 中止（旧版仅回退到字符串名，所以此前从未暴露）。
+  // 显式声明内部 TypeID，保证该类型即便在匿名 namespace 中也具备唯一 ID。
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(AxisInfoExAnalysis)
+#endif
+
 private:
   AxisInfoExVisitorList visitors;
 

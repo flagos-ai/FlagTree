@@ -81,6 +81,17 @@ def _parse(type_str: str) -> ir.Type:
     return ir.Type.parse(type_str)
 
 
+def _segment_sizes(sizes: list[int]) -> dict:
+    """operandSegmentSizes for a DTE op with AttrSizedOperandSegments.
+
+    The DTE ops carry an optional trailing `pipeline` operand, which must be
+    represented by a segment even when the operand itself is absent (the final
+    0 below). Omitting it makes the GCU parser reject the op with
+    "size mismatch in attribute conversion".
+    """
+    return {"operandSegmentSizes": ir.DenseI32ArrayAttr.get(sizes)}
+
+
 # ---------------------------------------------------------------------------
 # GCUOps – mirrors every op in GCUOps.td
 # ---------------------------------------------------------------------------
@@ -204,15 +215,16 @@ class GCUOps:
     @staticmethod
     def slice_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
                     default_value: ir.Value) -> None:
-        ir.Operation.create("gcu.slice_async", operands=[dte, dst, src, *offsets, default_value])
+        seg = [1, 1, 1, len(offsets), 1, 0]
+        ir.Operation.create("gcu.slice_async", operands=[dte, dst, src, *offsets, default_value],
+                            attributes=_segment_sizes(seg))
 
     @staticmethod
     def slice_pad_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
                         slice_shape: list[ir.Value], pad_value: ir.Value) -> None:
-        seg = [1, 1, 1, len(offsets), len(slice_shape), 1]
-        seg_attr = ir.DenseI32ArrayAttr.get(seg)
+        seg = [1, 1, 1, len(offsets), len(slice_shape), 1, 0]
         ir.Operation.create("gcu.slice_pad_async", operands=[dte, dst, src, *offsets, *slice_shape, pad_value],
-                            attributes={"operandSegmentSizes": seg_attr})
+                            attributes=_segment_sizes(seg))
 
     @staticmethod
     def deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value]) -> None:
@@ -221,7 +233,9 @@ class GCUOps:
     @staticmethod
     def slice_deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
                             slice_shape: list[ir.Value], dst_offsets: list[ir.Value]) -> None:
-        ir.Operation.create("gcu.slice_deslice_async", operands=[dte, dst, src, *offsets, *slice_shape, *dst_offsets])
+        seg = [1, 1, 1, len(offsets), len(slice_shape), len(dst_offsets), 0]
+        ir.Operation.create("gcu.slice_deslice_async", operands=[dte, dst, src, *offsets, *slice_shape, *dst_offsets],
+                            attributes=_segment_sizes(seg))
 
     @staticmethod
     def transpose_async(dte: ir.Value, dst: ir.Value, src: ir.Value, layout: list[ir.Value]) -> None:
@@ -234,12 +248,16 @@ class GCUOps:
     @staticmethod
     def slice_broadcast_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
                               slice_shape: list[ir.Value]) -> None:
-        ir.Operation.create("gcu.slice_broadcast_async", operands=[dte, dst, src, *offsets, *slice_shape])
+        seg = [1, 1, 1, len(offsets), len(slice_shape), 0]
+        ir.Operation.create("gcu.slice_broadcast_async", operands=[dte, dst, src, *offsets, *slice_shape],
+                            attributes=_segment_sizes(seg))
 
     @staticmethod
     def slice_transpose_async(dte: ir.Value, dst: ir.Value, src: ir.Value, offsets: list[ir.Value],
                               layout: list[ir.Value], pad_value: ir.Value) -> None:
-        ir.Operation.create("gcu.slice_transpose_async", operands=[dte, dst, src, *offsets, *layout, pad_value])
+        seg = [1, 1, 1, len(offsets), len(layout), 1, 0]
+        ir.Operation.create("gcu.slice_transpose_async", operands=[dte, dst, src, *offsets, *layout, pad_value],
+                            attributes=_segment_sizes(seg))
 
     @staticmethod
     def transpose_deslice_async(dte: ir.Value, dst: ir.Value, src: ir.Value, layout: list[ir.Value],

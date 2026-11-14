@@ -1855,7 +1855,7 @@ struct TleExclusiveCumsumLowering : SharedGenericConversionPattern {
       const TypeConverter &converter, MLIRContext *ctx,
       triton::gcu::FirstLastUserAnalysis &userAnalysis,
       std::map<Operation *, Operation *> &replaced2Origin,
-      triton::gcu::PrivateTagPool &pTagPool)
+      triton::gcu::DTETagPool &pTagPool)
       : SharedGenericConversionPattern("tle.exclusive_cumsum", converter, ctx,
                                        userAnalysis, replaced2Origin,
                                        pTagPool) {}
@@ -2434,7 +2434,7 @@ void mlir::triton::populateScanOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool) {
+    triton::gcu::DTETagPool &pTagPool) {
   patterns.add<TTScanOpLowering>(converter, patterns.getContext(), userAnalysis,
                                  replaced2Origin, pTagPool);
   patterns.add<TleExclusiveCumsumLowering>(converter, patterns.getContext(),

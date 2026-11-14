@@ -126,10 +126,12 @@ def build_gcu_ext(name, src, srcdir, extra_objects=[], extra_libraries=[]):
 
     cc_cmd = [cc, src, "-O3", "-shared", "-fPIC", "-w", "-o", so]
     cc_cmd += extra_objects
+    cc_cmd += ["-Wl,--no-as-needed"]
     cc_cmd += [f'-l{lib}' for lib in libraries]
     cc_cmd += [f"-L{dir}" for dir in library_dirs]
     cc_cmd += [f"-I{dir}" for dir in include_dirs]
-    cc_cmd += [f"-Wl,-rpath={local_lib_path}"]
+    for dir in library_dirs:
+        cc_cmd += [f"-Wl,-rpath={dir}"]
     subprocess.check_call(cc_cmd, stdout=subprocess.DEVNULL)
     return so
 
@@ -166,6 +168,7 @@ class GCUUtils(object):
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         self.load_binary = mod.load_binary
+        self.unload_module = mod.unload_module
         self.get_device_properties = mod.get_device_properties
 
 
@@ -410,9 +413,11 @@ def generate_launcher(constants, signature, arch='gcu300', no_constant_args=Fals
     # GCU 400/410: validate cluster dims at launch time.
     #   Supports 2D clusters: clusterDimX * clusterDimY <= 6, clusterDimZ == 1.
     #   cluster-internal CTA sharing (like NVIDIA DSMEM) is supported.
-    #   Cooperative grid launch (grid-level barrier) is supported via
-    #   topsLaunchAttributeCooperative on topsModuleLaunchKernelEx.
-    #   (clusterDimX, clusterDimY, clusterDimZ) maps to config.blockDim.
+
+
+#   Cooperative grid launch (grid-level barrier) is supported via
+#   topsLaunchAttributeCooperative on topsModuleLaunchKernelEx.
+#   (clusterDimX, clusterDimY, clusterDimZ) maps to config.blockDim.
     cluster_check_str = ''
     if 'gcu400' == arch or 'gcu410' == arch:
         cluster_check_str = """
@@ -436,37 +441,55 @@ def generate_launcher(constants, signature, arch='gcu300', no_constant_args=Fals
     launch_str = ''
     if 'gcu400' == arch or 'gcu410' == arch:
         if redundant_sip:
-            launch_str += f"""topsLaunchConfig_t l_config;
+            launch_str += """
+      topsLaunchConfig_t l_config;
       memset(&l_config, 0x0, sizeof(l_config));
       l_config.gridDim = dim3(gridX, gridY, gridZ);
       l_config.blockDim = dim3(1, 1, 1);
-      struct topsLaunchAttribute att[2];
+      topsLaunchAttribute att[2];
       att[0].id = topsLaunchAttributeThreadDimension;
+#if defined(TOPSRT_VERSION) && TOPSRT_VERSION >= 4010
+      att[0].val.threadDim.x = num_warps;
+      att[0].val.threadDim.y = 1;
+      att[0].val.threadDim.z = 1;
+      att[1].id = topsLaunchAttributeSchedulingPolicy;
+      att[1].val.schedulingPolicyPreference = topsSchedulingPolicyRedundant;
+#else
       att[0].val.ThreadDim.x = num_warps;
       att[0].val.ThreadDim.y = 1;
       att[0].val.ThreadDim.z = 1;
       att[1].id = topsLaunchAttributeSchedulingPolicy;
       att[1].val.SchedulingPolicyPreference = topsSchedulingPolicyRedundant;
+#endif
       l_config.attrs = att;
       l_config.numAttrs = 2;
       l_config.stream = stream;
       TOPS_CHECK(topsModuleLaunchKernelEx(&l_config, function, params, NULL));"""
         else:
-            launch_str += f"""topsLaunchAttribute attrs[2];
+            launch_str += """
+      topsLaunchAttribute attrs[2];
       int num_attrs = 0;
       attrs[num_attrs].id = topsLaunchAttributeThreadDimension;
-      attrs[num_attrs].val.ThreadDim = {{(unsigned int)num_warps, 1, 1}};
+#if defined(TOPSRT_VERSION) && TOPSRT_VERSION >= 4010
+      attrs[num_attrs].val.threadDim.x = (unsigned int)num_warps;
+      attrs[num_attrs].val.threadDim.y = 1;
+      attrs[num_attrs].val.threadDim.z = 1;
+#else
+      attrs[num_attrs].val.ThreadDim.x = (unsigned int)num_warps;
+      attrs[num_attrs].val.ThreadDim.y = 1;
+      attrs[num_attrs].val.ThreadDim.z = 1;
+#endif
       ++num_attrs;
 
-      if (launch_cooperative_grid != 0) {{
+      if (launch_cooperative_grid != 0) {
         attrs[num_attrs].id = topsLaunchAttributeCooperative;
         attrs[num_attrs].val.cooperative = 1;
         ++num_attrs;
-      }}
+      }
 
-      topsLaunchConfig_t config = {{}};
-      config.gridDim = {{(unsigned int)gridX, (unsigned int)gridY, (unsigned int)gridZ}};
-      config.blockDim = {{(unsigned int)clusterDimX, (unsigned int)clusterDimY, (unsigned int)clusterDimZ}};
+      topsLaunchConfig_t config = {};
+      config.gridDim = {(unsigned int)gridX, (unsigned int)gridY, (unsigned int)gridZ};
+      config.blockDim = {(unsigned int)clusterDimX, (unsigned int)clusterDimY, (unsigned int)clusterDimZ};
       config.dynamicSmemBytes = shared_memory;
       config.attrs = attrs;
       config.numAttrs = num_attrs;
@@ -479,12 +502,14 @@ def generate_launcher(constants, signature, arch='gcu300', no_constant_args=Fals
     src = f"""
 #include <stdbool.h>
 #include <Python.h>
-#include <dlfcn.h>
 #include <tops/tops_runtime.h>
+
+#define KURAMA_TOPS_OK topsSuccess
+#define KURAMA_TOPS_ERR_INVALID topsErrorInvalidValue
 
 static inline void gcuAssert(topsError_t code, const char *file, int line)
 {{
-   if (code != TOPS_SUCCESS)
+   if (code != KURAMA_TOPS_OK)
    {{
       const char* prefix = "Kurama Error [TOPS]: ";
       const char* str = topsGetErrorString(code);
@@ -540,7 +565,7 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
       return ptr_info;
     uint64_t dev_ptr;
     int status = topsPointerGetAttribute(&dev_ptr, TOPS_POINTER_ATTRIBUTE_DEVICE_POINTER, ptr_info.dev_ptr);
-    if (status == TOPS_ERROR_INVALID_VALUE) {{
+    if (status == KURAMA_TOPS_ERR_INVALID) {{
         PyErr_Format(PyExc_ValueError,
                      "Pointer argument (at %d) cannot be accessed from Kurama (cpu tensor?)", idx);
         ptr_info.valid = false;
@@ -560,7 +585,7 @@ static inline uint64_t translateToDevicePtr(uint64_t v) {{
   uint64_t dev_ptr = 0;
   topsError_t status = topsPointerGetAttribute(
       (void*)&dev_ptr, TOPS_POINTER_ATTRIBUTE_DEVICE_POINTER, (void*)(uintptr_t)v);
-  if (status == TOPS_SUCCESS && dev_ptr != 0) {{
+  if (status == KURAMA_TOPS_OK && dev_ptr != 0) {{
     return dev_ptr;
   }}
   return v;
@@ -704,14 +729,6 @@ class GcuLauncher(object):
         cst_key = lambda i: src.fn.arg_names.index(i) if isinstance(i, str) else i
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
-        # FlagPrism: retain launch metadata and the original user-argument count.
-        self.metadata = metadata
-        self.user_arg_count = len(signature)
-        # FlagPrism: metadata-only capture uses the gateway without extending the ABI.
-        self._debug_enabled = bool(getattr(metadata, 'debug_enabled', False))
-        # FlagPrism: append the control-buffer pointer only when instrumentation requires it.
-        if getattr(metadata, 'debug_launch_hidden_arg', False):
-            signature[len(signature)] = '*i8'
         redundant_sip = getattr(metadata, 'redundant_sip', False)
         if isinstance(metadata, dict):
             ptr_int_args = set(metadata.get('ptr_int_args', ()))
@@ -732,16 +749,7 @@ class GcuLauncher(object):
             raise OutOfResources(grid_1, 255, "grid.y")
         if grid_2 > 255:
             raise OutOfResources(grid_2, 255, "grid.z")
-        # FlagPrism: preserve the direct launch path when debugging is disabled.
-        if not self._debug_enabled:
-            return self.launch(*args, **kwargs)
-        from flagtree import _flagprism
-        # FlagPrism: exclude launcher arguments, including for zero-argument kernels.
-        user_args = args[-self.user_arg_count:] if self.user_arg_count else ()
-        # FlagPrism: prepare capture and finalize it through the launch context.
-        with _flagprism.debugger_launch_context("gcu", self.metadata, args[:3], args[3], args[6],
-                                                user_args) as hidden_args:
-            return self.launch(*args, *hidden_args, **kwargs)
+        self.launch(*args, **kwargs)
 
 
 class GCUDriver(object):
@@ -756,10 +764,17 @@ class GCUDriver(object):
             return
         else:
             self.arch = ""
-        self.utils = GCUUtils()
         import torch
         self.get_current_stream = lambda idx: torch.gcu.current_stream(idx).gcu_stream
         self.get_current_device = lambda: torch.device(f"{device_name}:{torch.gcu.current_device()}").index
+        self.utils = GCUUtils()
+        device = self.get_current_device()
+        self.device_properties = self.utils.get_device_properties(device)
+        self.arch_name = self.device_properties['arch_name']
+        self.warp_size = self.device_properties['max_threads_per_block']
+        self.device_properties["version"] = int(''.join(
+            filter(str.isdigit, self.device_properties["arch_name"].split('-')[-1])))
+        del self.device_properties["arch_name"]
         self.launcher_cls = GcuLauncher
 
     def get_device_properties(self, device):
@@ -778,10 +793,7 @@ class GCUDriver(object):
                 'max_shared_mem': 67108864, 'multiprocessor_count': 4, 'max_threads_per_block': 1024, 'sm_clock_rate':
                 1800000, 'mem_clock_rate': 9000000, 'mem_bus_width': 512, 'version': 500
             }
-        props = self.utils.get_device_properties(device)
-        props["version"] = int(props["arch_name"].split('-')[-1][3:])
-        del props["arch_name"]
-        return props
+        return self.device_properties
 
     def get_stream(self, idx=None):
         if self.arch in ("gcu300", "gcu400", "gcu500"):
@@ -801,10 +813,7 @@ class GCUDriver(object):
             return "dtu-enflame-tops--gcu400"
         elif self.arch == "gcu500":
             return "efgcu-enflame-tops--gcu500"
-        device = self.get_current_device()
-        device_properties = self.utils.get_device_properties(device)
-        arch = device_properties['arch_name']
-        return arch
+        return self.arch_name
 
     def get_warp_size(self):
         if self.arch == "gcu300":
@@ -813,10 +822,7 @@ class GCUDriver(object):
             return 8
         elif self.arch == "gcu500":
             return 128
-        device = self.get_current_device()
-        device_properties = self.utils.get_device_properties(device)
-        warp_size = device_properties['max_threads_per_block']
-        return warp_size
+        return self.warp_size
 
     def get_benchmarker(self):
         from triton.testing import do_bench

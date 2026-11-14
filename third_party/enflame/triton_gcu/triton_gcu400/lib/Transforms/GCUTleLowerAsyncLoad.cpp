@@ -16,6 +16,7 @@
 
 #include "Transforms/Passes.h"
 
+#include "Conversion/TritonToGCU/Constants.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "mlir/Pass/Pass.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -126,9 +127,10 @@ public:
     auto copyAsync = builder.create<ttgcu::CopyGlobalToLocalOp>(
         loadOp.getLoc(), loadOp.getPtr(), loadOp.getShape(),
         loadOp.getStrides(), loadOp.getOffsets(), localAllocOp,
-        loadOp.getDefaultValue(), loadOp.getOrderHint());
+        loadOp.getDefaultValue(), loadOp.getOrderHint(),
+        loadOp.getBroadcastDims(), loadOp.getOffsetsAreDst());
 
-    copyAsync->setAttr("tt.load.async", builder.getBoolAttr(true));
+    copyAsync->setAttr(kLoadAsync, builder.getBoolAttr(true));
 
     return;
   }

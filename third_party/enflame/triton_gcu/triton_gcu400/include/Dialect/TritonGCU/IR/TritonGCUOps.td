@@ -63,13 +63,22 @@ def TTGCU_LoadOp : TTGCU_Op<"load",
                               [MemoryEffects<[MemRead]>, AttrSizedOperandSegments]> {
   let summary = "Load";
   let description = [{
+    `offsets` are offsets into the *source* region. When `offsets_are_dst` is
+    set, PtrAnalysis has folded a `>=`-style mask start into `ptr` and put that
+    start into `offsets` instead, so the operand is the within-tile column at
+    which the valid block has to be written. The two meanings cannot be told
+    apart from the values alone, hence the explicit marker. It changes what the
+    very same operands compute, so it is an inherent attribute: a marked and an
+    unmarked load must not be considered equivalent.
   }];
   let arguments = (ins TTGCU_PtrType:$ptr,
                        Variadic<Index>:$shape,
                        Variadic<Index>:$strides,
                        Variadic<Index>:$offsets,
                        Optional<AnyType>:$default_value,
-                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$order_hint);
+                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$order_hint,
+                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$broadcast_dims,
+                       UnitAttr:$offsets_are_dst);
   let results = (outs AnyStaticShapeTensor:$result);
   let assemblyFormat = [{$ptr `,` `[` $shape `]` `,`
                         `[` $strides `]` `,` `[` $offsets `]`
@@ -239,6 +248,8 @@ def TritonGCU_CopyGlobalToLocalOp : TTGCU_Op<"copy_global_to_local", [MemoryEffe
 
     Unlike async_load_from_global, this op blocks until the transfer completes
     and does not return a sync token.
+
+    `offset_` and `offsets_are_dst` follow the same convention as `triton_gcu.load`.
   }];
   let arguments = (ins TTGCU_PtrType:$ptr,
                        Variadic<Index>:$shape,
@@ -246,7 +257,9 @@ def TritonGCU_CopyGlobalToLocalOp : TTGCU_Op<"copy_global_to_local", [MemoryEffe
                        Variadic<Index>:$offsets,
                        TTG_MemDescType:$dstMem,
                        Optional<AnyType>:$default_value,
-                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$order_hint);
+                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$order_hint,
+                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$broadcast_dims,
+                       UnitAttr:$offsets_are_dst);
   let results = (outs);
   let assemblyFormat = [{$ptr `,` `shape_` `[` $shape `]` `,`
                       `stride_` `[` $strides `]` `,` `offset_` `[` $offsets `]` `,`$dstMem
@@ -434,10 +447,17 @@ def TritonGCU_MaskedLoadOp : TTGCU_Op<"maskedload", [
     }];
 
     let extraClassDeclaration = [{
+      // Triton 3.8 配套的 MLIR 把 OpaqueProperties 改名为 PropertyRef（见
+      // mlir/IR/OperationSupport.h）。这里用别名隔离，保持 3.5~3.7 构建不变。
+      #if TRITON_VERSION >= 38
+      using KuramaOpaqueProperties = ::mlir::PropertyRef;
+      #else
+      using KuramaOpaqueProperties = ::mlir::OpaqueProperties;
+      #endif
       static ::llvm::LogicalResult inferReturnTypes(
           ::mlir::MLIRContext * context, ::std::optional<::mlir::Location> location,
           ::mlir::ValueRange operands, ::mlir::DictionaryAttr attributes,
-          mlir::OpaqueProperties properties, ::mlir::RegionRange regions,
+          KuramaOpaqueProperties properties, ::mlir::RegionRange regions,
           ::llvm::SmallVectorImpl<::mlir::Type> & inferredReturnTypes) {
         inferredReturnTypes.resize(1);
         auto elementTy = cast<::mlir::triton::PointerType>(operands[0].getType())

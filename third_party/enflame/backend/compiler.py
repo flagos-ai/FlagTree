@@ -13,8 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+import logging
 import re
-import json
 import os
 import subprocess
 import tempfile
@@ -23,14 +23,13 @@ from triton.backends.enflame.backend import GCUBackend, _version_key, _triton_ve
 from triton.backends.enflame import toolkit
 from triton.backends.enflame.toolkit import resolve_gcu500_tool, PY_TOOLS_PATH, get_tops_home
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import functools
 from typing import Any, Tuple
 import hashlib
 from triton.runtime.cache import get_cache_manager
 from triton._C.libtriton import ir, passes, llvm
 from triton.backends.enflame import passes as gcu_passes
-from triton.backends.enflame.gcu_intrinsics import restore_intrinsics_from_placeholders as _restore_gcu_intrinsics
 from typing import Dict
 from types import ModuleType
 from triton.runtime.errors import OutOfResources
@@ -73,6 +72,11 @@ if toolkit.get_bool_env("TRITON_GCU_COMPILE_TIME"):
 
 
 def _patch_kernel_for_gcuir(kernel):
+    # LLVM 21 models gpu.barrier as a workgroup barrier without a scope
+    # attribute. Triton 3.8 emits that default explicitly using an attribute
+    # introduced by newer MLIR, which the fixed GCU parser cannot register.
+    kernel = re.sub(r'((?:"gpu\.barrier"\(\)|gpu\.barrier))\s*<\{\s*scope\s*=\s*#gpu\.barrier_scope<workgroup>\s*\}>',
+                    r'\1', kernel)
     # add gpu module
     kernel = re.sub('module ([^\n]+)\n', 'module \\1\ngpu.module @triton {\n', kernel)
     pattern = r'#loc\d* = loc\(.*?\)\n'
@@ -83,7 +87,85 @@ def _patch_kernel_for_gcuir(kernel):
     return kernel
 
 
+def _pack_i1_dense_hex(kernel):
+    """Convert Triton 3.8's byte-per-i1 hex payloads for the fixed GCU parser."""
+    pattern = re.compile(r'dense<"0x([0-9A-Fa-f]+)">\s*:\s*vector<(\d+)xi1>')
+
+    def pack(match):
+        payload = bytes.fromhex(match.group(1))
+        element_count = int(match.group(2))
+        if len(payload) != element_count:
+            return match.group(0)
+        packed = bytearray((element_count + 7) // 8)
+        for index, value in enumerate(payload):
+            if value:
+                packed[index // 8] |= 1 << (index % 8)
+        return f'dense<"0x{packed.hex().upper()}"> : vector<{element_count}xi1>'
+
+    return pattern.sub(pack, kernel)
+
+
+# The 1.0.20261110 backend sync added an optional trailing `pipeline` operand
+# to the DTE ops in MemrefExtOps.td. Those ops use AttrSizedOperandSegments, so
+# the extra operand also adds one entry to their `operandSegmentSizes` property
+# (and gives `memref_ext.memset_start` such a property for the first time).
+# GCUIR is printed by the in-process backend shared library and parsed by the
+# separate gcu-compiler-opt binary. When those two come from different builds,
+# a perfectly valid kernel is rejected with e.g.
+#   size mismatch in attribute conversion: 7 vs 8
+# Normalize the short (pre-`pipeline`) form when that parse failure happens;
+# setups whose backend and toolkit agree never take this path.
+_MEMREF_EXT_DTE_SEGMENTS = {
+    "memset_start": 5,
+    "slice_start": 7,
+    "slice_pad_start": 8,
+    "slice_deslice_start": 8,
+    "slice_broadcast_start": 7,
+    "slice_transpose_start": 8,
+}
+
+_DTE_OP_LINE = re.compile(r'"memref_ext\.(\w+)"\(([^)]*)\)(\s*<\{[^}]*\}>)?\s*:')
+
+
+def _add_dte_pipeline_segment(kernel):
+    """Bring memref_ext DTE ops to the current (with-`pipeline`) operand layout.
+
+    Returns (kernel, changed). IR already emitted by a current backend is left
+    untouched.
+    """
+    lines = kernel.splitlines(keepends=True)
+    changed = False
+    for i, line in enumerate(lines):
+        op = _DTE_OP_LINE.search(line)
+        if not op or op.group(1) not in _MEMREF_EXT_DTE_SEGMENTS:
+            continue
+        expected = _MEMREF_EXT_DTE_SEGMENTS[op.group(1)]
+        segs = re.search(r'operandSegmentSizes\s*=\s*array<i32:\s*([^>]*)>', line)
+        if segs:
+            values = [v.strip() for v in segs.group(1).split(',') if v.strip()]
+            if len(values) >= expected:
+                continue
+            line = (line[:segs.start(1)] + ', '.join(values + ['0'] * (expected - len(values))) + line[segs.end(1):])
+        elif op.group(1) == 'memset_start':
+            # The old op had no AttrSizedOperandSegments, hence no property.
+            n_operands = len([v for v in op.group(2).split(',') if v.strip()])
+            prop = (' <{operandSegmentSizes = array<i32: 1, 1, 1, ' + str(n_operands - 3) + ', 0>}>')
+            line = line[:op.end(2) + 1] + prop + line[op.end(2) + 1:]
+        else:
+            continue
+        lines[i] = line
+        changed = True
+    return ''.join(lines), changed
+
+
 def _patch_kernel_for_llir(kernel, arch):
+    # GCU passes may materialize the newer default barrier scope after the
+    # initial TTGIR compatibility patch. Strip it again before LLVM 21 parses
+    # the GCUIR text for LLIR lowering.
+    kernel = re.sub(r'((?:"gpu\.barrier"\(\)|gpu\.barrier))\s*<\{\s*scope\s*=\s*#gpu\.barrier_scope<workgroup>\s*\}>',
+                    r'\1', kernel)
+    if _triton_version() >= (3, 8):
+        kernel = _pack_i1_dense_hex(kernel)
     # strip arith.trunci's overflowFlags attribute
     kernel = re.sub(r'((?:")?arith\.trunci(?:")?\([^)]*\))\s*<\{overflowFlags\s*=\s*#arith\.overflow<[^>]*>\}>', r'\1',
                     kernel)
@@ -126,17 +208,17 @@ def _warn_enable_i64_dropped():
 def _enable_i64_pass_option(options):
     """The trailing ' enable_i64=true' for --convert-gpu-to-gcu, when it is usable.
 
-    gcu300 is the only target whose toolkits can predate the option (tops1.9.10,
-    for one); such a toolkit rejects the whole command, so every kernel fails to
-    compile, whether or not it uses 64-bit integers. Later targets always know
-    the option, so they are not probed.
+    The option is only emitted when the toolkit's parser knows it. A toolkit that
+    does not (tops1.9.10, for one) rejects the whole command, so every kernel
+    fails to compile, whether or not it uses 64-bit integers.
     See toolkit.toolkit_supports_enable_i64.
     """
     if not options.enable_i64:
         return ''
-    if options.arch == "gcu300" and not toolkit.toolkit_supports_enable_i64():
-        _warn_enable_i64_dropped()
-        return ''
+    if options.arch == "gcu300":
+        if not toolkit.toolkit_supports_enable_i64():
+            _warn_enable_i64_dropped()
+            return ''
     return ' enable_i64=true'
 
 
@@ -153,8 +235,7 @@ def make_ttir(mod, metadata, options):
     pm.enable_debug()
 
     passes.common.add_inliner(pm)
-    # FlagPrism: debug collectors require element pointers for block-pointer kernels.
-    if options.arch == "gcu500" or options.instrumentation_mode.startswith("debugger"):
+    if options.arch == "gcu500":
         passes.ttir.add_rewrite_tensor_pointer(pm)
     passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
     passes.common.add_canonicalizer(pm)
@@ -200,19 +281,7 @@ def make_ttgir(mod, metadata, options):
     return mod
 
 
-# FlagPrism: local collect regions can request L2 under a global L1 default.
-# The payload plan after TTIR instrumentation determines the SDK's i64 requirement.
-def _debug_codegen_options(options, metadata):
-    if (options.instrumentation_mode.startswith("debugger")
-            and metadata.get("debug_full_dump_payload_bytes_per_instance", 0) > 0 and not options.enable_i64):
-        metadata["enable_i64"] = True
-        return replace(options, enable_i64=True)
-    return options
-
-
 def make_gcuir(mod, metadata, options):
-    # FlagPrism: apply local L2 payload requirements before SDK lowering.
-    options = _debug_codegen_options(options, metadata)
     patched_mod = _patch_kernel_for_gcuir(str(mod))
     metadata['name'] = re.search('tt.func public @(\\w+)\\(', patched_mod).group(1).strip()
     metadata['tle_raw'] = '"tle.dsl_region"' in patched_mod
@@ -264,7 +333,10 @@ def make_gcuir(mod, metadata, options):
             gcu_passes.gcu400.add_gcu64_type_verifier(pm)
         gcu_passes.gcu400.add_gcu_convert_triton_to_tritongpu(pm, options.num_warps, options.warp_size,
                                                               options.num_ctas, f'gcu:{options.arch}')
-        gcu_passes.gcu400.add_triton_gcu_remove_layout_conversions(pm)
+        if _triton_version() >= (3, 8):
+            gcu_passes.gcu400.add_tritongpu_remove_layout_conversions(pm)
+        else:
+            gcu_passes.gcu400.add_triton_gcu_remove_layout_conversions(pm)
         if metadata['tle_raw']:
             gcu_passes.gcu400.add_tle_remove_redundant_copy(pm)
             if not metadata['tle_raw_deferred']:
@@ -281,7 +353,10 @@ def make_gcuir(mod, metadata, options):
         gcu_passes.gcu400.add_convert_triton_load_store_to_gcu_dma(pm, options.enable_stride0, options.redundant_sip)
         gcu_passes.mlir.add_canonicalize(pm)
         gcu_passes.gcu400.add_triton_wgdot_to_gcu(pm)
-        gcu_passes.gcu400.add_triton_gcu_remove_layout_conversions(pm)
+        if _triton_version() >= (3, 8):
+            gcu_passes.gcu400.add_tritongpu_remove_layout_conversions(pm)
+        else:
+            gcu_passes.gcu400.add_triton_gcu_remove_layout_conversions(pm)
         gcu_passes.gcu400.add_triton_gcu_data_layout_optimize(pm)
         gcu_passes.mlir.add_loop_invariant_code_motion(pm)
         gcu_passes.gcu400.add_annotate_dot_acc_reuse(pm)
@@ -295,7 +370,7 @@ def make_gcuir(mod, metadata, options):
         gcu_passes.gcu400.add_triton_gcu_local_mem_optimize(pm)
         gcu_passes.gcu400.add_gcu_tle_lower_async_load(pm)
         gcu_passes.gcu400.add_triton_gcu_insert_producer_fences(pm)
-        gcu_passes.gcu400.add_convert_triton_to_gcu(pm)
+        gcu_passes.gcu400.add_convert_triton_to_gcu(pm, options.single_kernel_slot)
         gcu_passes.mlir.add_cse(pm)
         gcu_passes.mlir.add_canonicalize(pm)
         if metadata['tle_raw']:
@@ -307,8 +382,6 @@ def make_gcuir(mod, metadata, options):
 
 
 def make_llir(mod, metadata, options):
-    # FlagPrism: apply local L2 payload requirements before SDK lowering.
-    options = _debug_codegen_options(options, metadata)
     mod = _patch_kernel_for_llir(str(mod), options.arch)
     passes = []
     if toolkit.get_bool_env("MLIR_ENABLE_DUMP"):
@@ -323,7 +396,7 @@ def make_llir(mod, metadata, options):
         '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
         '-convert-private-tag-to-gcu', '-convert-memref-to-gcu', '-kernel-memory-alloc=arch=' + options.arch +
         ' num-warps=' + str(options.num_warps), '-convert-warp-specialize-to-scf', '-loop-invariant-code-motion',
-        '-convert-scf-to-cf', '-canonicalize', '-cse', '--symbol-dce', '-gcu-remove-transform-ir',
+        '-scf-loop-unroll', '-convert-scf-to-cf', '-canonicalize', '--symbol-dce', '-gcu-remove-transform-ir',
         '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
         '--expand-strided-metadata', '-lower-affine', '-canonicalize', '-cse', '--convert-gpu-to-gcu=chipset=' +
         options.arch + ' vector-bit-width=' + str(options.vector_length * 8) + _enable_i64_pass_option(options),
@@ -343,40 +416,16 @@ def make_llir(mod, metadata, options):
     #    paths = [path for (name, path) in options.extern_libs]
     #    llvm.link_extern_libs(llvm_mod, paths)
 
-    return toolkit.gcu_compiler_opt(mod, *passes)
-
-
-# FlagPrism: the GCU300 SDK may optimize scalar L2 summary sqrt(x*x)
-# into fabs(float), whose C++ device symbol is missing from its libraries.
-# Link a sign-bit implementation only after the caller recognizes that
-# specific linker failure; keep normal optimization and all collectors.
-def _compile_with_debugger_fabs(mod, options, tmpdir, compile_args):
-    compat = os.path.join(tmpdir, "debugger_fabs.ll")
-    with open(compat, "w") as output:
-        output.write('''
-define weak float @_Z4fabsf(float %x) {
-entry:
-  %slot = alloca i32, align 4, addrspace(5)
-  store volatile i32 2147483647, i32 addrspace(5)* %slot, align 4
-  %mask = load volatile i32, i32 addrspace(5)* %slot, align 4
-  %bits = bitcast float %x to i32
-  %absolute = and i32 %bits, %mask
-  %value = bitcast i32 %absolute to float
-  ret float %value
-}
-''')
-    # The volatile sign mask prevents LLVM from reconstructing
-    # the same missing libcall. AS5 is the GCU300 stack space.
-    libraries = [path for _, path in (options.extern_libs or []) if path]
-    libraries.append(compat)
-    # attach-target appends instead of replacing. Remove the old
-    # target so serialization does not first compile it unlinked.
-    unattached, replaced = re.subn(r', targets = \[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\]', '', str(mod), count=1)
-    if replaced != 1:
-        raise RuntimeError('Cannot attach GCU debugger math compatibility library')
-    linked = toolkit.gcu_compiler_opt(unattached,
-                                      '--gcu-attach-target=arch=gcu300' + ''.join(f' l={path}' for path in libraries))
-    toolkit.compile(linked, *compile_args)
+    try:
+        return toolkit.gcu_compiler_opt(mod, *passes)
+    except Exception as err:
+        message = str(err)
+        if "memref_ext." not in message or "operandSegmentSizes" not in message:
+            raise
+        patched, changed = _add_dte_pipeline_segment(mod)
+        if not changed:
+            raise
+        return toolkit.gcu_compiler_opt(patched, *passes)
 
 
 def make_fatbin(mod, metadata, options):
@@ -413,24 +462,13 @@ def make_fatbin(mod, metadata, options):
     if options.arch == "gcu500":
         return _make_fatbin_gcu500(str(mod), metadata, options)
     else:
-        if metadata['tle_raw']:
-            if not metadata['tle_raw_deferred']:
-                mod = _restore_gcu_intrinsics(str(mod))
         with tempfile.TemporaryDirectory() as tmpdir:
             bin = os.path.join(tmpdir, "kernel.fatbin")
             compile_args = [
                 "--device-only", "--is-triton-backend", f"--arch={options.arch}", f"--toolkit-path={toolkit.datadir}",
                 f"--output={bin}"
             ]
-            # FlagPrism: retry only the known GCU300 debugger SDK link failure.
-            try:
-                toolkit.compile(mod, *compile_args)
-            except Exception as error:
-                if not (options.arch == "gcu300" and options.instrumentation_mode.startswith("debugger")
-                        and "ld.lld: error: relocation" in str(error) and "fabs(float)" in str(error)):
-                    raise
-                _compile_with_debugger_fabs(mod, options, tmpdir, compile_args)
-                metadata['debug_math_compat'] = 'scalar_fabs'
+            toolkit.compile(mod, *compile_args)
             with open(bin, "rb") as f:
                 return f.read()
 
@@ -478,7 +516,14 @@ def _make_llir_gcu500(mod, metadata, options):
         metadata['name'] = m.group(1).strip()
 
     pipeline = gcu500.Pipeline()
-    pipeline.add_allocate_gcu_shared_memory()
+    # accelerate_matmul must run BEFORE allocate_shared_memory: it rewrites a
+    # single-atom tt.dot into SIMT128 fragment convert_layouts (which need shared
+    # memory) plus triton_gcu500.mma, and the allocation has to see those
+    # convert_layouts.  add_allocate_shared_memory maps to the upstream Triton
+    # AllocateSharedMemory pass (createAllocateSharedMemory); the former Enflame
+    # copy (AllocateGCUSharedMemory) was identical and is removed.
+    pipeline.add_accelerate_matmul()
+    pipeline.add_allocate_shared_memory()
     pipeline.add_convert_scf_to_cf()
     pipeline.add_convert_index_to_llvm()
     pipeline.add_convert_triton_gpu_to_efgcu()
@@ -506,31 +551,6 @@ def _make_llir_gcu500(mod, metadata, options):
 
     llir = pipeline.translate_to_llvmir(result_mlir)
 
-    opt_bin = resolve_gcu500_tool('opt')
-
-    # Run opt to simplify LLVM IR before passing to llc.
-    # Use -simplifycfg + -instcombine instead of -O3: -O3 is too aggressive
-    # and can break control flow in kernels using tl.atomic_add + conditional
-    # return patterns (e.g. test_constexpr_if_return). These two passes are
-    # sufficient to transform nested br i1 (generated by scf.if elif chains)
-    # into switch, which llc EFGCU can handle correctly (COMPILER-313).
-    with tempfile.NamedTemporaryFile(suffix='.ll', mode='w', delete=False) as f:
-        f.write(llir)
-        kernel_ll = f.name
-    try:
-        optimized_ll = kernel_ll + '.opt.ll'
-        cp = subprocess.run([
-            opt_bin, '-S', '-simplifycfg', '-instcombine', '-vectorize-slp=false', '--vectorize-loops=false', kernel_ll,
-            '-o', optimized_ll
-        ], capture_output=True, text=True, timeout=60)
-        if cp.returncode == 0 and os.path.isfile(optimized_ll):
-            with open(optimized_ll, 'r') as f:
-                llir = f.read()
-    finally:
-        for p in [kernel_ll, optimized_ll]:
-            if os.path.isfile(p):
-                os.remove(p)
-
     if options.extern_libs:
         libdevice_path = None
         for name, path in options.extern_libs:
@@ -548,30 +568,47 @@ def _make_llir_gcu500(mod, metadata, options):
                 linked_input_ll = f.name
             try:
                 linked_ll = linked_input_ll + '.linked.ll'
-                inline_optimized_ll = linked_input_ll + '.inline_opt.ll'
                 cp = subprocess.run([llvm_link, linked_input_ll] + link_inputs +
                                     ['-S', '--only-needed', '-o', linked_ll], capture_output=True, text=True,
                                     timeout=30)
                 if cp.returncode == 0 and os.path.isfile(linked_ll):
-                    kernel_name_for_opt = metadata.get("name", "")
-                    cp2 = subprocess.run([
-                        opt_bin, '-S', '-O3', '-passes=always-inline,default<O3>', '-vectorize-slp=false',
-                        '--vectorize-loops=false', '-internalize-public-api-list=' + kernel_name_for_opt, linked_ll,
-                        '-o', inline_optimized_ll
-                    ], capture_output=True, text=True, timeout=60)
-                    if cp2.returncode != 0 or not os.path.isfile(inline_optimized_ll):
-                        cp2 = subprocess.run([
-                            opt_bin, '-S', '-O3', '-vectorize-slp=false', '--vectorize-loops=false',
-                            '-internalize-public-api-list=' + kernel_name_for_opt, linked_ll, '-o', inline_optimized_ll
-                        ], capture_output=True, text=True, timeout=60)
-                    if cp2.returncode == 0 and os.path.isfile(inline_optimized_ll):
-                        with open(inline_optimized_ll, 'r') as f:
-                            llir = f.read()
-                    else:
-                        with open(linked_ll, 'r') as f:
-                            llir = f.read()
+                    with open(linked_ll, 'r') as f:
+                        llir = f.read()
+                    # Mirror the NVIDIA backend's llvm.optimize_module(mod,
+                    # OPTIMIZE_O3): internalize every function except the kernel
+                    # and run the default O3 pipeline, with IR loop/SLP
+                    # vectorization disabled as before.  llc never runs IR-level
+                    # passes for EFGCU, so this step is what folds the linked
+                    # libdevice helpers (e.g. __ef_exp2f) into the kernel before
+                    # lld resolves relocations.  Fall back to the linked
+                    # (un-optimized) IR if the in-process pass fails, matching
+                    # the former subprocess opt fallback.
+                    try:
+                        llir = gcu500.optimize_llvmir(llir, kernel_name)
+                    except Exception as e:
+                        logging.warning(
+                            "gcu500: in-process O3 optimization failed for kernel "
+                            "'%s', falling back to linked IR: %s", kernel_name, e)
+                    # llc does not run the always-inliner for EFGCU either, so
+                    # force-inline whatever the O3 pipeline deliberately kept:
+                    # mark every non-noinline definition (and its call sites)
+                    # alwaysinline, then run the AlwaysInlinerPass.  Mirrors the
+                    # NVIDIA backend's translate_to_asm() force-inline step and
+                    # the former `opt -passes=always-inline,default<O3>` run.
+                    # Both steps stay scoped to the post-link module: the linked
+                    # libdevice helpers are the only definitions that reach llc
+                    # here, and this must run before patch_llir() injects the
+                    # efgcu_kernel calling convention, which the in-process
+                    # parser does not accept.  On failure keep the O3-optimized
+                    # IR rather than failing the compile.
+                    try:
+                        llir = gcu500.inline_llvmir(llir)
+                    except Exception as e:
+                        logging.warning(
+                            "gcu500: in-process always-inline failed for kernel "
+                            "'%s', continuing with the O3-optimized IR: %s", kernel_name, e)
             finally:
-                for p in [linked_input_ll, linked_ll, inline_optimized_ll]:
+                for p in [linked_input_ll, linked_ll]:
                     if os.path.isfile(p):
                         os.remove(p)
 
@@ -608,6 +645,7 @@ class GCUOptions:
     enable_fp_fusion: bool = True
     enable_stride0: bool = False
     redundant_sip: bool = False
+    single_kernel_slot: bool = False
     enable_i64: bool = False
     launch_cooperative_grid: bool = False
     extern_libs: dict = None
@@ -654,6 +692,7 @@ class GCUOptions:
             # GCU500 (5.0): 1 warp = 128 threads (equivalent to 128 CUDA threads per warp)
             self.warp_size = 128  # SIMT warp size (5.0: 128 threads per warp)
             self.simt_lane_size = 128  # SIMT lane size (same as warp size for GCU500)
+            self.enable_i64 = True  # GCU500 SIMT ISA supports s64/u64
             # Handle exceptions for the num_warps parameter (SIMT mode supports more warps)
             if self.num_warps > 8:
                 self.num_warps = 8
@@ -725,28 +764,10 @@ class _GCUBackend(BaseBackend):
         else:
             args["enable_stride0"] = toolkit.get_bool_env("TRITON_GCU_ENABLE_STRIDE_GATHER")
 
-        # enable_i64 comes from ENABLE_I64 when the caller asks for it, and from
-        # the environment otherwise. Derive the environment default only when the
-        # key is absent, because triton parses these options twice: _pack_args
-        # parses the kernel's keyword arguments, then _do_compile hands the
-        # resolved dataclass back to compile() as a dict (options.__dict__), so
-        # the second parse always finds the key present. Re-deriving it there is
-        # what turned a resolved False into True under ENABLE_I64_CHECK=0 and made
-        # make_llir emit an option the toolkit then rejected.
-        # https://github.com/flagos-ai/FlagTree/issues/1233
         if "ENABLE_I64" in opts:
             args["enable_i64"] = opts["ENABLE_I64"]
         elif "enable_i64" not in opts:
             args["enable_i64"] = _default_enable_i64()
-
-        # FlagPrism: L2 instrumentation introduces i64 payload packing even when the
-        # original operator only uses f32/i32 (and FlagGems sets ENABLE_I64=False).
-        # The instrumentation configuration is part of the compilation cache key.
-        mode = args.get("instrumentation_mode", "")
-        if mode.startswith("debugger") and "|config=" in mode:
-            config = json.loads(mode.split("|config=", 1)[1])
-            if config.get("debug_record_level", 1) == 2:
-                args["enable_i64"] = True
 
         return GCUOptions(**args)
 
@@ -779,9 +800,7 @@ class _GCUBackend(BaseBackend):
         stages["ttir"] = lambda src, metadata: make_ttir(src, metadata, options)
         stages["ttgir"] = lambda src, metadata: make_ttgir(src, metadata, options)
         if options.arch == "gcu500":
-            # FlagPrism: apply the same L2 payload requirements to the GCU500 path.
-            stages["llir"] = lambda src, metadata: _make_llir_gcu500(src, metadata,
-                                                                     _debug_codegen_options(options, metadata))
+            stages["llir"] = lambda src, metadata: _make_llir_gcu500(src, metadata, options)
         else:
             stages["gcuir"] = lambda src, metadata: make_gcuir(src, metadata, options)
             stages["llir"] = lambda src, metadata: make_llir(src, metadata, options)

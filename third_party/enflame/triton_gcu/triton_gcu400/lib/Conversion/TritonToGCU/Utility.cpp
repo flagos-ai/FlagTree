@@ -19,6 +19,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -65,7 +66,6 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
@@ -531,8 +531,27 @@ bool isMustAliasOp(OpOperand &use) {
   Operation *op = use.getOwner();
   if (llvm::isa<triton::PtrToIntOp, triton::IntToPtrOp, triton::BitcastOp,
                 gcu::PtrToMemRefOp, gcu::MemRefToPtrOp, gcu::IntToPtrOp,
-                gcu::PtrToIntOp>(op)) {
+                gcu::PtrToIntOp, triton::gcu::MemDescToPtrOp>(op)) {
+    // memdesc_to_ptr only extracts the base address of a shared-memory
+    // memdesc, so the result still aliases the source storage.
     return true;
+  } else if (llvm::isa<triton::AddPtrOp>(op)) {
+    // tt.addptr only aliases the source buffer through its pointer operand
+    // (operand 0); the offset operand (operand 1) is consumed to compute the
+    // new address and must not be treated as aliasing.
+    return use.getOperandNumber() == 0;
+  } else if (llvm::isa<triton::gpu::MemDescTransOp,
+                       triton::gpu::MemDescSubsliceOp,
+                       triton::gpu::MemDescReshapeOp,
+                       triton::gpu::MemDescReinterpretOp,
+                       triton::gpu::MemDescIndexOp>(op)) {
+    // ttg.memdesc_* view ops only create a new descriptor over the same
+    // shared-memory buffer, so the result still aliases the source storage.
+    return true;
+  } else if (auto splatOp = dyn_cast<triton::SplatOp>(op)) {
+    // tt.splat of a pointer only replicates the base address (view), while
+    // tt.splat of a scalar broadcasts data (copy). Only the former aliases.
+    return isa<triton::PointerType>(splatOp.getSrc().getType());
   } else if (llvm::isa<triton::gpu::ConvertLayoutOp>(op)) {
     auto convertLayout = cast<triton::gpu::ConvertLayoutOp>(op);
     auto src = convertLayout.getSrc();
@@ -569,6 +588,7 @@ bool isMustAliasOp(OpOperand &use) {
         isa<triton::gpu::DotOperandEncodingAttr>(dstLayout)) {
       return true;
     }
+    // return canUseSubView(srcTy, dstTy);
     return false;
   } else if (isa<triton::ExpandDimsOp>(op)) {
     auto expandDimOp = cast<triton::ExpandDimsOp>(op);
@@ -588,6 +608,13 @@ bool isMustAliasOp(OpOperand &use) {
                                          reshapeOp.getType());
   } else if (isa<triton::BroadcastOp>(op)) {
     auto broastOp = cast<triton::BroadcastOp>(op);
+    // Broadcasting a pointer tensor only replicates addresses, so the result
+    // still aliases the source storage (view). For data tensors fall through
+    // to the layout-based check below.
+    if (auto srcTy = dyn_cast<RankedTensorType>(broastOp.getSrc().getType())) {
+      if (isa<triton::PointerType>(srcTy.getElementType()))
+        return true;
+    }
     auto srcNumElems =
         triton::gcu::getElemsPerThread(broastOp.getSrc().getType());
     auto dstNumElems = triton::gcu::getElemsPerThread(broastOp.getType());
@@ -597,19 +624,18 @@ bool isMustAliasOp(OpOperand &use) {
     return false;
   } else if (isa<triton::gpu::LocalLoadOp>(op)) {
     auto localLoadOp = cast<triton::gpu::LocalLoadOp>(op);
-    auto srcLayout =
-        cast<triton::gpu::TensorOrMemDesc>(localLoadOp.getSrc().getType())
-            .getEncoding();
-    auto dstLayout =
-        dyn_cast<RankedTensorType>(localLoadOp.getType()).getEncoding();
+    auto srcType = localLoadOp.getSrc().getType();
+    auto dstType = localLoadOp.getType();
+    auto srcLayout = cast<triton::gpu::TensorOrMemDesc>(srcType).getEncoding();
+    auto dstLayout = dyn_cast<RankedTensorType>(dstType).getEncoding();
     // share to Distributed
-    if (mlir::isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
+    if (isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
         isa<triton::gpu::BlockedEncodingAttr>(dstLayout)) {
       // copy to local
       ModuleOp builtinModule = op->getParentOfType<ModuleOp>();
       int numWarps = triton::gcu::getNumWarps(builtinModule);
       if (numWarps > 1) {
-        return false;
+        return canUseSubView(srcType, dstType);
       } else {
         return true;
       }
@@ -828,6 +854,33 @@ void leaveTritionOp(ConversionPatternRewriter &rewriter, Operation *ttParent) {
   return;
 }
 
+bool canUseSubView(Type srcType, Type dstType) {
+  int64_t srcRank = 0;
+  ArrayRef<int64_t> srcShape;
+  if (!TypeSwitch<Type, bool>(srcType)
+           .Case<MemRefType, triton::gpu::TensorOrMemDesc>([&](auto ty) {
+             srcRank = ty.getRank();
+             srcShape = ty.getShape();
+             return true;
+           })
+           .Default([](auto) { return false; }))
+    return false;
+
+  auto dstTensorType = dyn_cast<RankedTensorType>(dstType);
+  if (!dstTensorType || srcRank != dstTensorType.getRank()) {
+    return false;
+  }
+
+  auto elemsPerThread = triton::gcu::getElemsPerThread(dstType);
+  for (unsigned i = 1; i < srcRank; ++i) {
+    if (srcShape[i] != elemsPerThread[i] ||
+        dstTensorType.getShape()[i] != elemsPerThread[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 void mergeContinuousDims(OpBuilder &subBuilder, Location loc,
                          Value &sharedMemref, Value &warpMemref,
                          SmallVector<Value, 4> &offsets,
@@ -880,14 +933,123 @@ void mergeContinuousDims(OpBuilder &subBuilder, Location loc,
   return;
 }
 
+Value stripUnrealizedConversionCastOp(Value v) {
+  auto defOp = v.getDefiningOp();
+  if (auto ucc = dyn_cast_or_null<UnrealizedConversionCastOp>(defOp)) {
+    if (ucc.getNumOperands() == 1 && ucc.getNumResults() == 1)
+      return ucc.getOperand(0);
+  }
+  return v;
+}
+
+bool isContiguousRowMajor(MemRefType ty) {
+  // Only the strides matter here: the offset is always foldable into the
+  // base pointer (getMemRefBasePtr / DTE bufferPtr), so a non-zero offset
+  // does not break contiguity.
+  auto [strides, offset] = ty.getStridesAndOffset();
+  (void)offset;
+  int64_t expected = 1;
+  for (int i = static_cast<int>(ty.getRank()) - 1; i >= 0; --i) {
+    if (ShapedType::isDynamic(strides[i]) || strides[i] != expected)
+      return false;
+    expected *= ty.getShape()[i];
+  }
+  return true;
+}
+
+bool isContiguousMemDescView(Value memdesc) {
+  auto ty = dyn_cast<triton::gpu::MemDescType>(memdesc.getType());
+  if (!ty)
+    return false;
+  Operation *def = memdesc.getDefiningOp();
+  if (!def)
+    return true;
+
+  // Root allocation: a plain, contiguous SMEM buffer.
+  if (isa<triton::gpu::LocalAllocOp>(def))
+    return true;
+
+  // A transpose is never linear.
+  if (isa<triton::gpu::MemDescTransOp>(def))
+    return false;
+
+  // A reshape of a contiguous buffer only reinterprets the same linear range
+  // with row-major strides, so it stays contiguous.
+  if (auto reshape = dyn_cast<triton::gpu::MemDescReshapeOp>(def))
+    return isContiguousMemDescView(reshape.getSrc());
+
+  // Same for a pure type reinterpretation.
+  if (auto reinterpret = dyn_cast<triton::gpu::MemDescReinterpretOp>(def))
+    return isContiguousMemDescView(reinterpret.getSrc());
+
+  // Peeling dim 0 keeps the trailing dims (and their strides) intact.
+  if (auto index = dyn_cast<triton::gpu::MemDescIndexOp>(def))
+    return isContiguousMemDescView(index.getSrc());
+
+  // A remote (cluster-partner) memdesc describes the very same buffer layout in
+  // another CTA's shared memory; only the address space differs.
+  if (auto remote = dyn_cast<triton::gcu::RemoteMemDescOp>(def))
+    return isContiguousMemDescView(remote.getSrc());
+
+  if (auto sub = dyn_cast<triton::gpu::MemDescSubsliceOp>(def)) {
+    auto srcTy = dyn_cast<triton::gpu::MemDescType>(sub.getSrc().getType());
+    if (!srcTy || !isContiguousMemDescView(sub.getSrc()))
+      return false;
+    ArrayRef<int64_t> srcShape = srcTy.getShape();
+    ArrayRef<int64_t> subShape = ty.getShape();
+    if (subShape.size() != srcShape.size())
+      return false;
+    // A subslice keeps the source strides and only changes the base offset
+    // (which is foldable into the destination pointer), so contiguity is a
+    // property of the resulting SHAPE alone: with row-major source strides
+    // `st[i] = prod(srcShape[i+1:])`, the view is row-major iff
+    // `st[i] == prod(subShape[i+1:])` for every i, and since each extent only
+    // shrinks that holds exactly when no dimension after dim 0 is reduced -
+    // i.e. the slice may only peel the outermost dimension. Compare
+    // isContiguousRowMajor() above, which makes the same check on the lowered
+    // strided memref.
+    for (int64_t i = 1, e = srcShape.size(); i < e; ++i)
+      if (subShape[i] != srcShape[i])
+        return false;
+    return true;
+  }
+
+  return false;
+}
+
+Value getMemRefBasePtr(OpBuilder &rewriter, Value v) {
+  auto loc = v.getLoc();
+  auto memRefTy = cast<MemRefType>(v.getType());
+  auto elemTy = memRefTy.getElementType();
+  auto ptrTy = gcu::PtrType::get(rewriter.getContext(), elemTy);
+
+  // Identity layout: the existing memref2ptr lowering returns element 0.
+  if (memRefTy.getLayout().isIdentity())
+    return rewriter.create<gcu::MemRefToPtrOp>(loc, ptrTy, v);
+
+  Value alignedIdx = rewriter.create<memref::ExtractAlignedPointerAsIndexOp>(
+      loc, rewriter.getIndexType(), v);
+  Value elemOffset =
+      rewriter.create<gcu::GetMemRefOffsetOp>(loc, v, ValueRange{});
+  unsigned bpe = elemTy.getIntOrFloatBitWidth() / 8;
+  Value byteOffset = rewriter.create<arith::MulIOp>(
+      loc, elemOffset, rewriter.create<arith::ConstantIndexOp>(loc, bpe));
+  Value byteAddr = rewriter.create<arith::AddIOp>(loc, alignedIdx, byteOffset);
+  Value addrI64 =
+      rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), byteAddr);
+  return rewriter.create<gcu::IntToPtrOp>(loc, ptrTy, addrI64);
+}
+
 Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
                         Value buffer, bool onlyThread0,
                         std::pair<Operation *, int> lastTTUser,
                         std::pair<Operation *, int> firstTTUser,
                         triton::gcu::FirstLastUserAnalysis &userAnalysis,
-                        std::map<Operation *, Operation *> &replaced2Origin) {
+                        std::map<Operation *, Operation *> &replaced2Origin,
+                        bool useSubView) {
   auto loc = buffer.getLoc();
   auto srcType = dyn_cast<MemRefType>(buffer.getType());
+  auto elemType = srcType.getElementType();
   auto numElems = triton::gcu::getElemsPerThread(type);
   auto totalNumElems = builder.create<arith::ConstantIndexOp>(
       loc, triton::gcu::getTotalElemsPerThread(type));
@@ -896,6 +1058,60 @@ Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
                       srcType.getElementType());
 
   auto warpIds = getWarpIds(builder, loc, type);
+
+  // Load data from shared memory directly without any data transfer
+  if (useSubView && canUseSubView(srcType, type)) {
+    auto srcStrides = srcType.getStridesAndOffset().first;
+    Value offsetElems = builder.create<arith::ConstantIndexOp>(loc, 0);
+    for (unsigned i = 0; i < srcType.getRank(); ++i) {
+      Value dimOffset = builder.create<arith::MulIOp>(
+          loc,
+          builder.create<arith::MulIOp>(
+              loc, builder.create<arith::ConstantIndexOp>(loc, numElems[i]),
+              warpIds[i]),
+          builder.create<arith::ConstantIndexOp>(loc, srcStrides[i]));
+      offsetElems = builder.create<arith::AddIOp>(loc, offsetElems, dimOffset);
+    }
+
+    // Convert element offset to byte offset
+    auto bpe = triton::gcu::getBpe(elemType);
+    Value offsetBytes = builder.create<arith::MulIOp>(
+        loc, offsetElems, builder.create<arith::ConstantIndexOp>(loc, bpe));
+
+    // Get SMEM base pointer and fold the view offset into the base address.
+    // memref2ptr requires an identity layout, so a strided subview source
+    // (e.g. memdesc_subslice with a non-zero offset) must go through
+    // getMemRefBasePtr, whose strided branch folds the view offset.
+    auto ptrType = gcu::PtrType::get(buffer.getContext(), elemType);
+    Value basePtr = getMemRefBasePtr(builder, buffer);
+    Value baseAddr =
+        builder.create<gcu::PtrToIntOp>(loc, builder.getI64Type(), basePtr);
+    Value offsetBytesI64 = builder.create<arith::IndexCastOp>(
+        loc, builder.getI64Type(), offsetBytes);
+    Value adjustedAddr =
+        builder.create<arith::AddIOp>(loc, baseAddr, offsetBytesI64);
+    Value adjustedPtr =
+        builder.create<gcu::IntToPtrOp>(loc, ptrType, adjustedAddr);
+
+    // Wrap pointer into a 1D i8 memref
+    MemRefType memType1D =
+        MemRefType::get({ShapedType::kDynamic}, builder.getI8Type());
+    auto buffer1D =
+        builder.create<gcu::PtrToMemRefOp>(loc, memType1D, adjustedPtr);
+
+    // Change to the result memory space (metadata only, address preserved)
+    auto bufferWithSpace = builder.create<memref::MemorySpaceCastOp>(
+        loc,
+        MemRefType::get({ShapedType::kDynamic}, builder.getI8Type(),
+                        AffineMap{}, outputType.getMemorySpace()),
+        buffer1D);
+
+    // Final view with offset 0 (offset already folded into base address)
+    return builder.create<memref::ViewOp>(
+        loc, outputType, bufferWithSpace,
+        builder.create<arith::ConstantIndexOp>(loc, 0), ValueRange{});
+  }
+
   SmallVector<Value, 4> offsets;
   for (unsigned i = 0; i < srcType.getRank(); ++i) {
     offsets.push_back(builder.create<arith::MulIOp>(
@@ -1194,6 +1410,281 @@ Value storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
   return merged;
 }
 
+// Emit a vector load/store for a flat per-thread run (the last dim of a
+// per-thread block). The GCU400 store granularity is kOaccSizeInBytes (512B):
+// a run at least that large uses a plain vector load/store; a smaller run is
+// masked on a kOaccSizeInBytes-wide vector with a partial mask.
+static Value emitFlatVectorLoad(OpBuilder &builder, Location loc, Type elemType,
+                                Value memref, Value offset,
+                                unsigned flatElems) {
+  unsigned bpe = triton::gcu::getBpe(elemType);
+  unsigned padN = kOaccSizeInBytes / bpe;
+  if (flatElems * bpe >= kOaccSizeInBytes) {
+    auto vecTy = VectorType::get({flatElems}, elemType);
+    return builder
+        .create<vector::LoadOp>(loc, vecTy, memref, ValueRange{offset})
+        .getResult();
+  }
+  auto vecTy = VectorType::get({padN}, elemType);
+  auto mask = builder.create<vector::ConstantMaskOp>(
+      loc, VectorType::get({padN}, builder.getI1Type()),
+      DenseI64ArrayAttr::get(builder.getContext(),
+                             ArrayRef<int64_t>{flatElems}));
+  auto padding = builder.create<arith::ConstantOp>(
+      loc, DenseElementsAttr::get(vecTy, builder.getZeroAttr(elemType)));
+  return builder
+      .create<vector::MaskedLoadOp>(loc, vecTy, memref, ValueRange{offset},
+                                    mask, padding)
+      .getResult();
+}
+
+static void emitFlatVectorStore(OpBuilder &builder, Location loc, Type elemType,
+                                Value memref, Value offset, Value val,
+                                unsigned flatElems) {
+  unsigned bpe = triton::gcu::getBpe(elemType);
+  if (flatElems * bpe >= kOaccSizeInBytes) {
+    builder.create<vector::StoreOp>(loc, val, memref, ValueRange{offset});
+    return;
+  }
+  unsigned padN = kOaccSizeInBytes / bpe;
+  auto mask = builder.create<vector::ConstantMaskOp>(
+      loc, VectorType::get({padN}, builder.getI1Type()),
+      DenseI64ArrayAttr::get(builder.getContext(),
+                             ArrayRef<int64_t>{flatElems}));
+  builder.create<vector::MaskedStoreOp>(loc, memref, ValueRange{offset}, mask,
+                                        val);
+}
+
+template <typename T> T static getProduct(ArrayRef<T> ins) {
+  return std::accumulate(ins.begin(), ins.end(), T{1}, std::multiplies<T>());
+}
+
+template <typename T>
+static SmallVector<T> getStrides(ArrayRef<T> shape, T start = 1) {
+  int rank = shape.size();
+  SmallVector<T> strides(rank);
+  for (int i = rank - 1; i >= 0; --i) {
+    strides[i] = start;
+    start *= shape[i];
+  }
+  return strides;
+}
+
+template <typename T>
+static SmallVector<T> getStrides(SmallVector<T> &shape, T start = 1) {
+  return getStrides(ArrayRef<T>(shape), start);
+}
+
+// Emit one vector load/store per leading-dim grid point of the per-thread
+// block. The block is [n0..n_{N-1}]; the last dim (n_{N-1}) is the vector
+// width, the leading dims are nested loops (unrolled at build time). `privBuf`
+// is the flattened private buffer [prod(n_i)] in row-major; `sharedBuf` is the
+// flat shared tensor [prod(shape_i)]; `sharedBaseOffset` is the thread's base
+// flat offset in the shared buffer. `isLoad=false` moves privBuf -> shared
+// (store), `isLoad=true` moves shared -> privBuf.
+static void emitChunkVectorOps(OpBuilder &builder, Location loc, Type elemType,
+                               Value privBuf, Value sharedBuf,
+                               Value sharedBaseOffset,
+                               ArrayRef<unsigned> leadingElems,
+                               ArrayRef<int64_t> sharedStrides,
+                               unsigned lastWidth, bool isLoad) {
+  unsigned leadingTotal = getProduct(leadingElems);
+  SmallVector<unsigned> privStrides = getStrides(leadingElems, lastWidth);
+  for (unsigned idx = 0; idx < leadingTotal; ++idx) {
+    unsigned tmp = idx;
+    unsigned privOff = 0;
+    unsigned sharedOff = 0;
+    for (unsigned d = 0; d < leadingElems.size(); ++d) {
+      unsigned c = tmp % leadingElems[d];
+      tmp /= leadingElems[d];
+      privOff += c * privStrides[d];
+      sharedOff += c * sharedStrides[d];
+    }
+    auto sharedIndex = builder.create<arith::AddIOp>(
+        loc, sharedBaseOffset,
+        builder.create<arith::ConstantIndexOp>(loc, sharedOff));
+    auto privIndex = builder.create<arith::ConstantIndexOp>(loc, privOff);
+    if (isLoad) {
+      auto vec = emitFlatVectorLoad(builder, loc, elemType, sharedBuf,
+                                    sharedIndex, lastWidth);
+      emitFlatVectorStore(builder, loc, elemType, privBuf, privIndex, vec,
+                          lastWidth);
+    } else {
+      auto vec = emitFlatVectorLoad(builder, loc, elemType, privBuf, privIndex,
+                                    lastWidth);
+      emitFlatVectorStore(builder, loc, elemType, sharedBuf, sharedIndex, vec,
+                          lastWidth);
+    }
+  }
+}
+
+// Compute the per-thread block dims, the full tensor shape, and the
+// thread's base flat offset in the shared buffer, for any rank.
+std::tuple<Value, SmallVector<unsigned>,
+           SmallVector<int64_t>> static getChunkInfo(OpBuilder &builder,
+                                                     Location loc,
+                                                     RankedTensorType type) {
+  auto warpIds = triton::gcu::getWarpIds(builder, loc, type);
+  auto numElems = triton::gcu::getElemsPerThread(type);
+  auto shape = type.getShape();
+  unsigned rank = type.getRank();
+  SmallVector<int64_t> flatStrides = getStrides(shape);
+
+  Value base = builder.create<arith::ConstantIndexOp>(loc, 0);
+  for (unsigned i = 0; i < rank; ++i) {
+    auto term = builder.create<arith::MulIOp>(
+        loc,
+        builder.create<arith::MulIOp>(
+            loc, builder.create<arith::ConstantIndexOp>(loc, numElems[i]),
+            warpIds[i]),
+        builder.create<arith::ConstantIndexOp>(loc, flatStrides[i]));
+    base = builder.create<arith::AddIOp>(loc, base, term);
+  }
+  return {base, numElems, SmallVector<int64_t>(shape.begin(), shape.end())};
+}
+
+// Vector-store a private per-thread chunk (block dims `elemsPerThread` of the
+// full tensor `tensorShape`) into the shared staging buffer, then barrier.
+// Handles arbitrary rank: the last dim is the vector width, the leading dims
+// are moved per-point (strided when the warp split is not only on dim 0).
+void storeToSharedMemVector(OpBuilder &builder, Location loc, Value srcBuf,
+                            RankedTensorType srcType, Value sharedBuf) {
+  auto dstType = dyn_cast<MemRefType>(sharedBuf.getType());
+  if (!dstType) {
+    llvm_unreachable("dst type cannot be cast to MemRefType");
+    return;
+  }
+
+  // Source memref
+  auto [sharedBaseOffset, elemsPerThread, srcShape] =
+      getChunkInfo(builder, loc, srcType);
+  auto elemType = srcType.getElementType();
+
+  unsigned total = getProduct(ArrayRef<unsigned>(elemsPerThread));
+  auto flatSrcType = MemRefType::get({total}, elemType);
+  auto src1D = builder.create<memref::ReinterpretCastOp>(
+      loc, flatSrcType, srcBuf, /*offset=*/0, ArrayRef<int64_t>{total},
+      ArrayRef<int64_t>{1});
+
+  // Dst memref
+  Value sharedBuf1D = sharedBuf;
+  if (dstType.getRank() != 1) {
+    auto dstTotal = dstType.getNumElements();
+    auto sharedType = MemRefType::get({dstTotal}, dstType.getElementType(),
+                                      AffineMap{}, dstType.getMemorySpace());
+    sharedBuf1D = builder.create<memref::ReinterpretCastOp>(
+        loc, sharedType, sharedBuf, /*offset*/ 0, dstTotal, /*stride*/ 1);
+  }
+
+  unsigned rank = elemsPerThread.size();
+  unsigned lastWidth = elemsPerThread[rank - 1];
+  SmallVector<int64_t> flatStrides = dstType.getRank() == srcType.getRank()
+                                         ? dstType.getStridesAndOffset().first
+                                         : getStrides(srcShape);
+  emitChunkVectorOps(builder, loc, elemType, src1D, sharedBuf1D,
+                     sharedBaseOffset,
+                     ArrayRef<unsigned>(elemsPerThread).drop_back(),
+                     ArrayRef<int64_t>(flatStrides).drop_back(), lastWidth,
+                     /*isLoad=*/false);
+  builder.create<gpu::BarrierOp>(loc);
+}
+
+Value storeToSharedMemVector(
+    OpBuilder &builder, Value srcBuf, RankedTensorType srcType,
+    std::pair<Operation *, int> lastUser,
+    triton::gcu::FirstLastUserAnalysis &userAnalysis,
+    std::map<Operation *, Operation *> &replaced2Origin) {
+  // Shared staging buffer.
+  auto loc = srcBuf.getLoc();
+  auto sharedType =
+      MemRefType::get(srcType.getShape(), srcType.getElementType(), AffineMap{},
+                      builder.getI64IntegerAttr(2));
+  auto sharedBuffer = syncAllocOp(builder, loc, lastUser, userAnalysis,
+                                  replaced2Origin, sharedType);
+
+  // Each warp writes its private chunk into shared.
+  storeToSharedMemVector(builder, loc, srcBuf, srcType, sharedBuffer);
+  return sharedBuffer;
+}
+
+// Vector-load a private per-thread chunk (block dims `elemsPerThread` of the
+// full tensor `tensorShape`) from the shared staging buffer and return it as a
+// private [prod(elemsPerThread)] buffer. When `useSubView` is set and
+// the chunk is a single contiguous alias of the shared buffer (only dim 0
+// split across warps: elemsPerThread[i] == tensorShape[i] for i>=1), skip the
+// data movement and return a shared-space view with the per-thread offset
+// folded into the base address (mirrors TTLocalLoadOpLowering's
+// onlyHighestDimSplit alias path).
+Value loadFromSharedMemVector(
+    OpBuilder &builder, Value sharedBuf, RankedTensorType dstType,
+    MemRefType dstResTy, std::pair<Operation *, int> lastUser,
+    triton::gcu::FirstLastUserAnalysis &userAnalysis,
+    std::map<Operation *, Operation *> &replaced2Origin, bool useSubView) {
+  auto loc = sharedBuf.getLoc();
+  Type elemType = dstType.getElementType();
+
+  auto srcType = dyn_cast<MemRefType>(sharedBuf.getType());
+  Value sharedBuf1D = sharedBuf;
+  if (srcType && srcType.getRank() != 1) {
+    auto srcTotal = srcType.getNumElements();
+    auto sharedType = MemRefType::get({srcTotal}, srcType.getElementType(),
+                                      AffineMap{}, srcType.getMemorySpace());
+    sharedBuf1D = builder.create<memref::ReinterpretCastOp>(
+        loc, sharedType, sharedBuf, /*offset*/ 0, srcTotal, /*stride*/ 1);
+  }
+
+  auto [sharedBaseOffset, elemsPerThread, dstShape] =
+      getChunkInfo(builder, loc, dstType);
+  if (useSubView && canUseSubView(srcType, dstType)) {
+    unsigned bpe = triton::gcu::getBpe(elemType);
+    auto ptrType = gcu::PtrType::get(builder.getContext(), elemType);
+    Value basePtr =
+        builder.create<gcu::MemRefToPtrOp>(loc, ptrType, sharedBuf1D);
+    Value baseAddr =
+        builder.create<gcu::PtrToIntOp>(loc, builder.getI64Type(), basePtr);
+    Value offsetBytes = builder.create<arith::MulIOp>(
+        loc, sharedBaseOffset,
+        builder.create<arith::ConstantIndexOp>(loc, bpe));
+    Value offsetBytesI64 = builder.create<arith::IndexCastOp>(
+        loc, builder.getI64Type(), offsetBytes);
+    Value adjustedAddr =
+        builder.create<arith::AddIOp>(loc, baseAddr, offsetBytesI64);
+    Value adjustedPtr =
+        builder.create<gcu::IntToPtrOp>(loc, ptrType, adjustedAddr);
+    auto buffer1D = builder.create<gcu::PtrToMemRefOp>(
+        loc, MemRefType::get({ShapedType::kDynamic}, builder.getI8Type()),
+        adjustedPtr);
+    auto bufferWithSpace = builder.create<memref::MemorySpaceCastOp>(
+        loc,
+        MemRefType::get({ShapedType::kDynamic}, builder.getI8Type(),
+                        AffineMap{}, srcType.getMemorySpace()),
+        buffer1D);
+    return builder.create<memref::ViewOp>(
+        loc, dstResTy, bufferWithSpace,
+        builder.create<arith::ConstantIndexOp>(loc, 0), ValueRange{});
+  }
+
+  auto dstBuf = syncAllocOp(builder, loc, lastUser, userAnalysis,
+                            replaced2Origin, dstResTy);
+  auto dstBuf1D = dstBuf;
+  if (dstType.getRank() != 1) {
+    auto dstTotal = dstType.getNumElements();
+    auto flatDstType = MemRefType::get({dstTotal}, dstType.getElementType());
+    dstBuf1D = builder.create<memref::ReinterpretCastOp>(
+        loc, flatDstType, dstBuf, /*offset*/ 0, dstTotal, /*stride*/ 1);
+  }
+
+  unsigned rank = elemsPerThread.size();
+  unsigned lastWidth = elemsPerThread[rank - 1];
+  SmallVector<int64_t> flatStrides = getStrides(dstShape);
+  emitChunkVectorOps(builder, loc, elemType, dstBuf1D, sharedBuf1D,
+                     sharedBaseOffset,
+                     ArrayRef<unsigned>(elemsPerThread).drop_back(),
+                     ArrayRef<int64_t>(flatStrides).drop_back(), lastWidth,
+                     /*isLoad=*/true);
+  return dstBuf;
+}
+
 // refine yiled memref operand
 void AnalysisYieldOperendUseStage(
     Operation *module, triton::gcu::FirstLastUserAnalysis &userAnalysis,
@@ -1349,11 +1840,59 @@ void GetTransByOrder(OpBuilder &rewriter, Location loc,
   transOrder = tmpTransOrderBuffer;
 }
 
+/// True when `configOffsets` can be non-zero at runtime: either a constant
+/// non-zero entry, or an entry the analysis could not fold to a constant.
+static bool hasNonZeroOffset(mlir::ValueRange configOffsets, unsigned rank) {
+  if (configOffsets.size() != rank)
+    return false;
+  return llvm::any_of(configOffsets, [](Value offset) {
+    auto cst = getConstantIntValue(offset);
+    return !cst || *cst != 0;
+  });
+}
+
+bool hasOffsetsAreDst(Operation *op) {
+  if (auto load = dyn_cast<triton::gcu::LoadOp>(op))
+    return load.getOffsetsAreDst();
+  if (auto copy = dyn_cast<triton::gcu::CopyGlobalToLocalOp>(op))
+    return copy.getOffsetsAreDst();
+  return false;
+}
+
+/// True when the offsets of `op` are destination tile offsets: PtrAnalysis
+/// folded the mask start into the base pointer (foldMaskStartIntoBase) and
+/// exposed it through the offsets (`offsets_are_dst`), so the valid block has
+/// to be written at the matching tile columns instead of at tile offset 0.
+static bool isDstTileOffsetOp(Operation *op, mlir::ValueRange configOffsets,
+                              unsigned rank) {
+  return hasOffsetsAreDst(op) && hasNonZeroOffset(configOffsets, rank);
+}
+
+/// Destination (tile) offsets of the valid block: the load offsets are in the
+/// original (source) dims, while the destination memref is indexed in memory
+/// order, so map them through the static order permutation. Dims added by
+/// ConfigGcuLoad itself (reshape / synthetic stride dim) have no offset and
+/// stay at zero.
+static SmallVector<Value, 4> getDstTileOffsets(OpBuilder &rewriter,
+                                               Location loc,
+                                               mlir::ValueRange configOffsets,
+                                               ArrayRef<int32_t> order,
+                                               unsigned rank, Value zero) {
+  SmallVector<Value, 4> dstOffsets(rank);
+  for (unsigned i = 0; i < rank; ++i) {
+    Value offset = i < configOffsets.size() ? configOffsets[i] : zero;
+    dstOffsets[order[i]] =
+        rewriter.create<arith::IndexCastOp>(loc, rewriter.getI32Type(), offset);
+  }
+  return dstOffsets;
+}
+
 Value ConfigGcuLoad(OpBuilder &rewriter, Location loc, Value srcOut,
                     mlir::Operation *op, MemRefType resultType, Value loadPtr,
                     mlir::ValueRange configStrides,
                     mlir::ValueRange configShapes, Value defaultValue,
-                    triton::gcu::TagInfo tag, bool IsShareOutput) {
+                    triton::gcu::TagInfo tag, bool IsShareOutput,
+                    mlir::ValueRange configOffsets) {
   if ((!llvm::isa_and_nonnull<triton::gcu::LoadOp>(op)) &&
       (!llvm::isa_and_nonnull<triton::gcu::CopyGlobalToLocalOp>(op))) {
     assert(false && "please check IR ConfigGcuLoad got a bad input op");
@@ -1383,6 +1922,15 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc, Value srcOut,
     return Value();
   };
 
+  auto getBroadcastDims = [](mlir::Operation *op) -> llvm::ArrayRef<int32_t> {
+    if (auto load = llvm::dyn_cast_if_present<triton::gcu::LoadOp>(op))
+      return load.getBroadcastDims();
+    if (auto copy =
+            llvm::dyn_cast_if_present<triton::gcu::CopyGlobalToLocalOp>(op))
+      return copy.getBroadcastDims();
+    return {};
+  };
+
   auto elemType = resultType.getElementType();
   int64_t rank = resultType.getRank();
 
@@ -1408,13 +1956,9 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc, Value srcOut,
     else
       order_hint.push_back(hint[i]);
 
-  for (unsigned i = 0; i < rank; ++i) {
-    auto srcDim = getConstantIntValue(configShapes[i]);
-    if (srcDim && *srcDim == 1 && resultType.getShape()[i] != 1) {
-      bStaticBroadcast = true;
-      break;
-    }
-  }
+  auto broadcastDims = getBroadcastDims(op);
+  bStaticBroadcast =
+      llvm::any_of(broadcastDims, [](int32_t v) { return v != 0; });
 
   for (unsigned i = 0; i < rank; ++i) {
     if (order_hint[i] == Dynamic_stride_symbol) {
@@ -1512,8 +2056,25 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc, Value srcOut,
 
   SmallVector<Value, 4> vSrcOffsets;
   if (IsShareOutput) {
-    for (unsigned i = 0; i < nInitStrideDims.size(); ++i)
-      vSrcOffsets.push_back(zero);
+    if (hasOffsetsAreDst(op)) {
+      // The offsets are DESTINATION tile offsets: PtrAnalysis folded the mask
+      // start into the base (foldMaskStartIntoBase), so the valid block
+      // already starts at element 0 of the source memref. Reading them as
+      // source offsets would apply the start twice and would collapse
+      // vSlicehape to 0; the destination offsets are consumed by the
+      // isDstTileOffsetOp branch below.
+      for (unsigned i = 0; i < nInitStrideDims.size(); ++i)
+        vSrcOffsets.push_back(zero);
+    } else {
+      // Plain source offsets, e.g. the sub-region offset folded in by
+      // FuseMemDescSubsliceLoadLocalAllocPattern.
+      for (unsigned i = 0; i < nInitStrideDims.size(); ++i) {
+        if (configOffsets.empty())
+          vSrcOffsets.push_back(zero);
+        else
+          vSrcOffsets.push_back(configOffsets[nInitStrideDims[i]]);
+      }
+    }
   } else {
     auto load = llvm::cast<triton::gcu::LoadOp>(op);
     auto loadType = load.getType();
@@ -1779,6 +2340,41 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc, Value srcOut,
                 tag.getTag(), ValueRange{tag.getIdx()});
             builder.create<scf::YieldOp>(loc);
           });
+    } else if (isDstTileOffsetOp(op, configOffsets, rank)) {
+      // The valid block starts inside the tile (a `>=`-style mask): the start
+      // is folded into the source base, so slice_start / slice_pad - which can
+      // only write at tile offset 0 - would put the data in the masked-out
+      // lanes. Fill the whole tile with the default value first, then DTE the
+      // valid block into its destination columns. doMemset waits for its own
+      // DTE, so the deslice starts from a completed fill.
+      auto dstOffsets = getDstTileOffsets(rewriter, loc, configOffsets,
+                                          order_hint, rank, zero);
+      auto isNotZero = rewriter.create<arith::CmpIOp>(
+          loc, arith::CmpIPredicate::ne, totalSize, zero);
+      int64_t totalNumElems = 1;
+      for (int64_t s : resultShapes)
+        totalNumElems *= s;
+      rewriter.create<scf::IfOp>(
+          loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
+            builder.create<scf::IfOp>(
+                loc, isNotZero,
+                [&](OpBuilder &childBuilder, Location loc) {
+                  if (totalNumElems > 0)
+                    doMemset(childBuilder, tag, op, reshapeOut, defaultValue,
+                             totalNumElems);
+                  childBuilder.create<memref_ext::SliceDesliceStartOp>(
+                      loc, reshapeOut, src, vOrderOffsets, vIntSlicehape,
+                      dstOffsets, tag.getTag(), ValueRange{tag.getIdx()});
+                  childBuilder.create<scf::YieldOp>(loc);
+                },
+                [&](OpBuilder &childBuilder, Location loc) {
+                  if (getDefaultValue(op))
+                    doMemsetConfig(childBuilder, loc, reshapeOut, defaultValue,
+                                   tag);
+                  childBuilder.create<scf::YieldOp>(loc);
+                });
+            builder.create<scf::YieldOp>(loc);
+          });
     } else {
       rewriter.create<scf::IfOp>(
           loc, isPad,
@@ -1804,6 +2400,13 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc, Value srcOut,
     auto isNotZero = rewriter.create<arith::CmpIOp>(
         loc, arith::CmpIPredicate::ne, totalSize, zero);
     auto isPad = rewriter.create<arith::AndIOp>(loc, isNeedPad, isNotZero);
+    // Private (non-shared) masked loads may carry the within-tile mask start
+    // through configOffsets (see PtrAnalysis::getPtrInfo /
+    // exposeMaskStartOffset): the valid block then has to be written at tile
+    // column >= mask start, not at column 0. Detect that here so the static
+    // (non-transposed) path below emits a memset + slice_deslice with dst
+    // offsets.
+    bool bDstTileOffsetLoad = hasNonZeroOffset(configOffsets, rank);
     if (bDynamicStride) {
       auto isTrans =
           rewriter.create<arith::AndIOp>(loc, isDynamicTrans, isNotZero);
@@ -1850,6 +2453,38 @@ Value ConfigGcuLoad(OpBuilder &rewriter, Location loc, Value srcOut,
           [&](OpBuilder &builder, Location loc) {
             builder.create<memref_ext::SliceTransposeStartOp>(
                 loc, reshapeOut, src, vOrderOffsets, vTransOrder, defaultValue,
+                tag.getTag(), ValueRange{tag.getIdx()});
+            builder.create<scf::YieldOp>(loc);
+          },
+          [&](OpBuilder &builder, Location loc) {
+            if (getDefaultValue(op)) {
+              doMemsetConfig(builder, loc, reshapeOut, defaultValue, tag);
+            }
+            builder.create<scf::YieldOp>(loc);
+          });
+    } else if (bDstTileOffsetLoad) {
+      // Masked load whose valid block starts at a non-zero tile column
+      // (configOffsets carries the per-dim mask start; the base is already
+      // folded so the DTE reads the valid memory region). SlicePad/SliceStart
+      // can only place the loaded block at tile offset 0, which puts the data
+      // in the masked-out lanes. Instead, fill the whole result tile with the
+      // default value first, then DTE the valid block into its tile-column
+      // range (memset + slice_deslice with dst offsets).
+      // The dst offsets are expressed in the result-tile (memory) dims: map
+      // configOffsets (original dims) through static_order -> memory position.
+      auto dstOffsets = getDstTileOffsets(rewriter, loc, configOffsets,
+                                          order_hint, rank, zero);
+      int64_t totalNumElems = 1;
+      for (int64_t s : resultShapes)
+        totalNumElems *= s;
+      rewriter.create<scf::IfOp>(
+          loc, isNotZero,
+          [&](OpBuilder &builder, Location loc) {
+            if (totalNumElems > 0)
+              doMemset(builder, tag, op, reshapeOut, defaultValue,
+                       totalNumElems);
+            builder.create<memref_ext::SliceDesliceStartOp>(
+                loc, reshapeOut, src, vOrderOffsets, vIntSlicehape, dstOffsets,
                 tag.getTag(), ValueRange{tag.getIdx()});
             builder.create<scf::YieldOp>(loc);
           },
@@ -2256,6 +2891,52 @@ Value ConfigGcuStore(OpBuilder &rewriter, Location loc, Value storeValue,
       SmallVector<int64_t>(rank, ShapedType::kDynamic), elemType);
   auto dst = rewriter.create<memref::ReinterpretCastOp>(
       loc, resultType, buffer, zero, vOrderShapes, vOrderStrides);
+  // Shrink the contiguous src to the mask-valid counts so the DMA copy
+  // amount is exactly the valid region; scatter memory-order counts back
+  // to source order.
+  SmallVector<Value, 4> vSliceShapeSrc(rank, zero);
+  SmallVector<Value, 4> vSliceOffSrc(rank, zero);
+  if (!bDynamicStride) {
+    for (unsigned k = 0; k < rank; ++k) {
+      unsigned srcDim = memOrderToSrc[k];
+      vSliceShapeSrc[srcDim] = vSlicehape[k];
+      vSliceOffSrc[srcDim] = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getIndexType(), sliceOffsets[k]);
+    }
+  } else {
+    for (unsigned k = 0; k < rank; ++k) {
+      Value memOrder = memOrderAt(k);
+      Value srcOffIdx = rewriter.create<arith::IndexCastOp>(
+          loc, rewriter.getIndexType(), sliceOffsets[k]);
+      for (unsigned d = 0; d < rank; ++d) {
+        auto idx = rewriter.create<arith::ConstantIntOp>(loc, d, 32);
+        auto eq = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq,
+                                                 memOrder, idx);
+        vSliceShapeSrc[d] = rewriter.create<arith::SelectOp>(
+            loc, eq, vSlicehape[k], vSliceShapeSrc[d]);
+        vSliceOffSrc[d] = rewriter.create<arith::SelectOp>(loc, eq, srcOffIdx,
+                                                           vSliceOffSrc[d]);
+      }
+    }
+  }
+  // Full-tile row-major strides (buffer layout unchanged); fold the per-dim
+  // offsets into the single linear base offset.
+  auto fullType = MemRefType::get(storeShapes, elemType);
+  auto [fullStrides, fullOffset] = fullType.getStridesAndOffset();
+  (void)fullOffset;
+  Value srcBaseOff = zero;
+  SmallVector<Value, 4> fullStridesVals;
+  for (unsigned d = 0; d < rank; ++d) {
+    auto strideVal =
+        rewriter.create<arith::ConstantIndexOp>(loc, fullStrides[d]);
+    fullStridesVals.push_back(strideVal);
+    srcBaseOff = rewriter.create<arith::AddIOp>(
+        loc, srcBaseOff,
+        rewriter.create<arith::MulIOp>(loc, vSliceOffSrc[d], strideVal));
+  }
+  auto srcSliced = rewriter.create<memref::ReinterpretCastOp>(
+      loc, resultType, reshapeStoreValue, srcBaseOff, vSliceShapeSrc,
+      fullStridesVals);
 
   auto isNeedSlice = rewriter.create<arith::CmpIOp>(
       loc, arith::CmpIPredicate::sgt, diff, zero);
@@ -2282,8 +2963,8 @@ Value ConfigGcuStore(OpBuilder &rewriter, Location loc, Value storeValue,
         loc, isTrans,
         [&](OpBuilder &builder, Location loc) {
           builder.create<memref_ext::TransposeDesliceStartOp>(
-              loc, dst, reshapeStoreValue, vTransOrder, dstOffsets,
-              tag.getTag(), ValueRange{tag.getIdx()});
+              loc, dst, srcSliced, vTransOrder, dstOffsets, tag.getTag(),
+              ValueRange{tag.getIdx()});
           builder.create<scf::YieldOp>(loc);
         },
         [&](OpBuilder &builder, Location loc) {
@@ -2309,11 +2990,12 @@ Value ConfigGcuStore(OpBuilder &rewriter, Location loc, Value storeValue,
           builder.create<scf::YieldOp>(loc);
         });
   } else if (bStaticTranspose) {
+    // Single DMA: srcSliced limits the copy to the mask-valid region.
     rewriter.create<scf::IfOp>(
         loc, isNotZero, [&](OpBuilder &build, Location loc) {
           build.create<memref_ext::TransposeDesliceStartOp>(
-              loc, dst, reshapeStoreValue, vTransOrder, dstOffsets,
-              tag.getTag(), ValueRange{tag.getIdx()});
+              loc, dst, srcSliced, vTransOrder, dstOffsets, tag.getTag(),
+              ValueRange{tag.getIdx()});
           build.create<scf::YieldOp>(loc);
         });
   } else {
@@ -2453,65 +3135,64 @@ void ConfigMatrixLoad(OpBuilder &rewriter, Location loc,
   rewriter.create<gcu::MatrixLoadOp>(loc, value, srcPtr, memDims, realDims);
 }
 
-memref::AllocaOp getAllocaOp(Value val) {
-  while (auto castOp = val.getDefiningOp<memref::ReinterpretCastOp>())
-    val = castOp.getSource();
-
-  if (auto allocaOp = val.getDefiningOp<memref::AllocaOp>()) {
-    return allocaOp;
+// Walks the def-use chain of `val` and returns the `memref.alloca` it is
+// backed by, looking through reinterpret casts, loop-carried buffers and
+// in-place fusion regions. `remap` resolves values whose replacement has only
+// been registered by an in-flight dialect conversion (rollback mode).
+memref::AllocaOp getAllocaOp(Value val, triton::gcu::ValueRemapFn remap) {
+  SmallPtrSet<Value, 16> visited;
+  while (val && visited.insert(val).second) {
+    if (Value remapped = remap(val))
+      val = remapped;
+    if (auto castOp = val.getDefiningOp<memref::ReinterpretCastOp>()) {
+      val = castOp.getSource();
+      continue;
+    }
+    if (auto allocaOp = val.getDefiningOp<memref::AllocaOp>()) {
+      return allocaOp;
+    }
+    // Loop-carried buffer: trace it back to the value the loop starts from.
+    if (auto blockArg = dyn_cast<BlockArgument>(val)) {
+      auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
+      if (!forOp)
+        return nullptr;
+      val = forOp.getInitArgs()[blockArg.getArgNumber() -
+                                forOp.getNumInductionVars()];
+      continue;
+    }
+    if (auto forOp = val.getDefiningOp<scf::ForOp>()) {
+      unsigned resultIdx = cast<OpResult>(val).getResultNumber();
+      val = forOp.getRegionIterArg(resultIdx);
+      continue;
+    }
+    // In-place fusion region: the result is written to its in-place operand.
+    if (auto fusionOp =
+            val.getDefiningOp<triton::gcu::ElementwiseFusionRegionOp>()) {
+      if (auto inplaceAttr =
+              fusionOp->getAttrOfType<IntegerAttr>(kAccReuseInplaceOperand)) {
+        val = fusionOp->getOperand(inplaceAttr.getInt());
+        continue;
+      }
+      return nullptr;
+    }
+    return nullptr;
   }
   return nullptr;
 }
 
-bool useMatrixStore(triton::gcu::StoreOp storeOp, Value adaptedValue) {
+bool useMatrixStore(triton::gcu::StoreOp storeOp, Value adaptedValue,
+                    triton::gcu::ValueRemapFn remap) {
   if (storeOp.getValue().getType().getRank() != 2) {
     LLVM_DEBUG(llvm::dbgs() << "useMatrixStore: storeOp shape rank != 2\n");
     return false;
   }
   // return storeOp->hasAttr(kMaxtrixStore);
+  return getAllocaOp(adaptedValue, remap) != nullptr;
+}
 
-  auto getStoreVal = [](Value val) {
-    while (auto *defOp = val.getDefiningOp()) {
-      if (isa<arith::TruncFOp, arith::TruncIOp, arith::FPToSIOp,
-              arith::FPToUIOp, arith::SIToFPOp, arith::UIToFPOp, arith::ExtFOp,
-              arith::ExtSIOp, arith::ExtUIOp>(defOp))
-        val = defOp->getOperand(0);
-      else
-        break;
-    }
-    return val;
-  };
-
-  auto isAccStoreGlobal = [](Value val) {
-    auto defOp = val.getDefiningOp();
-    if (defOp) {
-      if (isa<triton::DotOp, triton::gcu::ElementwiseFusionRegionOp>(defOp)) {
-        if (defOp->hasAttr(kAccStore)) {
-          StringRef accStoreVal =
-              mlir::cast<StringAttr>(defOp->getAttr(kAccStore)).getValue();
-          return accStoreVal == kAccStoreGlobal ||
-                 accStoreVal == kAccStoreCvtGlobal;
-        }
-      } else if (getAllocaOp(val)) {
-        return true;
-      }
-    } else if (isa<BlockArgument>(val) && getAllocaOp(val)) {
-      return true;
-    }
-    return false;
-  };
-
-  bool useMatrixStore = false;
-  Value storeVal = getStoreVal(adaptedValue);
-  if (isAccStoreGlobal(storeVal)) {
-    useMatrixStore = true;
-  } else if (auto forOp = storeVal.getDefiningOp<scf::ForOp>()) {
-    unsigned resultIdx = cast<OpResult>(storeVal).getResultNumber();
-    auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
-    Value yieldedVal = getStoreVal(yieldOp.getOperand(resultIdx));
-    useMatrixStore = isAccStoreGlobal(yieldedVal);
-  }
-  return useMatrixStore;
+bool useMatrixStore(triton::gcu::StoreOp storeOp, Value adaptedValue) {
+  return useMatrixStore(storeOp, adaptedValue,
+                        [](Value value) { return value; });
 }
 
 void ConfigMatrixStore(OpBuilder &rewriter, Location loc,
@@ -2745,7 +3426,8 @@ void moveDeallocOp(ConversionPatternRewriter &rewriter, Value v, Operation *pos,
       break;
     }
   }
-  if (deallocOp && deallocOp->getBlock() == pos->getBlock()) {
+  if (deallocOp && deallocOp->getBlock() == pos->getBlock() &&
+      deallocOp->isBeforeInBlock(pos)) {
     deallocOp->moveAfter(pos);
   }
 }
@@ -2806,15 +3488,16 @@ Value lookupPartitionTagArg<triton::gpu::WarpSpecializeOp>(
 
 } // namespace
 
-PrivateTagPool::PrivateTagPool(mlir::Operation *entryFunc, int32_t numWarps,
-                               bool useAsyncSharedTag, bool useAllTags)
+DTETagPool::DTETagPool(mlir::Operation *entryFunc, int32_t numWarps,
+                       bool useAsyncSharedTag, bool useAllTags)
     : useAsyncSharedTag(useAsyncSharedTag) {
   OpBuilder builder(entryFunc);
   auto func = llvm::dyn_cast<FunctionOpInterface>(entryFunc);
   auto firstOp = &func.getFunctionBody().getBlocks().front().front();
-
   int32_t totalTagsSize =
-      numWarps > 4 || (useAsyncSharedTag && useAllTags) ? 11 : 11 / 2;
+      ((numWarps <= maxWarpPerSlot && useAllTags) || numWarps > maxWarpPerSlot)
+          ? dteTagSizePerSip
+          : dteTagSizePerSip / kernelSlotPerSip;
   if (this->useAsyncSharedTag) {
     pTagsSize = 1;
     sTagsSize = totalTagsSize - numWarps;
@@ -2847,7 +3530,7 @@ PrivateTagPool::PrivateTagPool(mlir::Operation *entryFunc, int32_t numWarps,
   this->usedSyncSharedTag = false;
 }
 
-TagInfo PrivateTagPool::getPrivateSyncTagInfo(mlir::Operation *op) {
+TagInfo DTETagPool::getPrivateSyncTagInfo(mlir::Operation *op) {
   auto loc = op->getLoc();
   auto builder = OpBuilder(op);
   auto tags = getPrivateTagsValue(op);
@@ -2855,7 +3538,7 @@ TagInfo PrivateTagPool::getPrivateSyncTagInfo(mlir::Operation *op) {
   return TagInfo(tags, zero, false);
 }
 
-TagInfo PrivateTagPool::tryGetPrivateAsyncTagInfo(mlir::Operation *op) {
+TagInfo DTETagPool::tryGetPrivateAsyncTagInfo(mlir::Operation *op) {
   int32_t idx = -1;
   for (int32_t i = 1; i < pTagsSize; i++) {
     if (!pTagsBitset[i]) {
@@ -2878,7 +3561,7 @@ TagInfo PrivateTagPool::tryGetPrivateAsyncTagInfo(mlir::Operation *op) {
   }
 }
 
-TagInfo PrivateTagPool::getSharedSyncTagInfo(mlir::Operation *op) {
+TagInfo DTETagPool::getSharedSyncTagInfo(mlir::Operation *op) {
   auto loc = op->getLoc();
   auto builder = OpBuilder(op);
   auto tags = getSharedTagsValue(op);
@@ -2887,7 +3570,7 @@ TagInfo PrivateTagPool::getSharedSyncTagInfo(mlir::Operation *op) {
   return TagInfo(tags, zero, true);
 }
 
-TagInfo PrivateTagPool::tryGetSharedAsyncTagInfo(mlir::Operation *op) {
+TagInfo DTETagPool::tryGetSharedAsyncTagInfo(mlir::Operation *op) {
   int32_t idx = -1;
   for (int32_t i = 1; i < sTagsSize; i++) {
     if (!sTagsBitset[i]) {
@@ -2911,15 +3594,15 @@ TagInfo PrivateTagPool::tryGetSharedAsyncTagInfo(mlir::Operation *op) {
   }
 }
 
-void PrivateTagPool::setMap(Operation *op, TagInfo tagInfo) {
+void DTETagPool::setMap(Operation *op, TagInfo tagInfo) {
   op2TagInfoMap[op].push_back(tagInfo);
 }
 
-bool PrivateTagPool::isExistInMap(Operation *op) const {
+bool DTETagPool::isExistInMap(Operation *op) const {
   return op2TagInfoMap.count(op) != 0;
 }
 
-void PrivateTagPool::releaseMap(Operation *op) {
+void DTETagPool::releaseMap(Operation *op) {
   if (op2TagInfoMap.count(op) == 0)
     return;
 
@@ -2934,15 +3617,15 @@ void PrivateTagPool::releaseMap(Operation *op) {
   op2TagInfoMap.erase(op);
 }
 
-Type PrivateTagPool::getPrivateTagsType() {
+Type DTETagPool::getPrivateTagsType() {
   return pTagsAllocOp->getResult(0).getType();
 }
 
-Type PrivateTagPool::getSharedTagsType() {
+Type DTETagPool::getSharedTagsType() {
   return sTagsAllocOp->getResult(0).getType();
 }
 
-Value PrivateTagPool::getPrivateTagsValue(Operation *op) {
+Value DTETagPool::getPrivateTagsValue(Operation *op) {
   auto func = op->getParentOfType<FunctionOpInterface>();
   assert(func && "can't find func op");
 
@@ -2963,7 +3646,7 @@ Value PrivateTagPool::getPrivateTagsValue(Operation *op) {
   return pTagsMemref;
 }
 
-Value PrivateTagPool::getSharedTagsValue(Operation *op) {
+Value DTETagPool::getSharedTagsValue(Operation *op) {
   auto func = op->getParentOfType<FunctionOpInterface>();
   assert(func && "can't find func op");
 
@@ -2985,7 +3668,7 @@ Value PrivateTagPool::getSharedTagsValue(Operation *op) {
   return sTagsMemref;
 }
 
-void PrivateTagPool::updateUsedSize() {
+void DTETagPool::updateUsedSize() {
   OpBuilder builder(pTagsAllocOp);
   auto loc = pTagsAllocOp->getLoc();
 
@@ -3020,6 +3703,22 @@ void PrivateTagPool::updateUsedSize() {
   if (!moduleOp) {
     llvm::report_fatal_error("can't find GPUModuleOp for tags");
   }
+
+  moduleOp.walk([&](mlir::gcu::WarpSpecializeOp wsOp) {
+    for (Region *region : wsOp.getPartitionRegions()) {
+      for (Block &block : *region) {
+        for (auto [idx, arg] : llvm::enumerate(block.getArguments())) {
+          if (idx >= wsOp->getNumOperands())
+            continue;
+          Type captureType = wsOp->getOperand(idx).getType();
+          if (arg.getType() == captureType)
+            continue;
+          if (isa<MemRefType>(arg.getType()) && isa<MemRefType>(captureType))
+            arg.setType(captureType);
+        }
+      }
+    }
+  });
 
   auto updateFuncType = [](func::FuncOp funcOp, int32_t argPos, Type newType) {
     if (static_cast<unsigned>(argPos) >= funcOp.getNumArguments()) {
@@ -3061,7 +3760,7 @@ void PrivateTagPool::updateUsedSize() {
   }
 }
 
-void PrivateTagPool::setPrivateFuncNameMap(Operation *op, int argNum) {
+void DTETagPool::setPrivateFuncNameMap(Operation *op, int argNum) {
   assert(llvm::isa<FunctionOpInterface>(op) && "not a triton func op");
   auto func = llvm::cast<FunctionOpInterface>(op);
   assert(argNum >= 0 && "arg number is negative");
@@ -3070,7 +3769,7 @@ void PrivateTagPool::setPrivateFuncNameMap(Operation *op, int argNum) {
   pTagsArgPosMap[func.getName()] = argNum;
 }
 
-void PrivateTagPool::setSharedFuncNameMap(Operation *op, int argNum) {
+void DTETagPool::setSharedFuncNameMap(Operation *op, int argNum) {
   assert(llvm::isa<FunctionOpInterface>(op) && "not a triton func op");
   auto func = llvm::cast<FunctionOpInterface>(op);
   assert(argNum >= 0 && "arg number is negative");
@@ -3425,6 +4124,223 @@ int getNumWarps(Operation *op) {
   return 1;
 }
 
+int64_t getOaccMaxNum(Operation *op) {
+  int numWarps = getNumWarps(op);
+  return numWarps == 1 ? OACC_MAX_NUM * 2 : OACC_MAX_NUM;
+}
+
+// Some ops keep every input live while producing their result, and the result
+// cannot share/overwrite an input register:
+//   - multi-operand extern elementwise (mac/mas/imas/wadd/add/wmul/mul)
+//   - select (condition + both arms)
+//   - conversions (the result has a different element type/width)
+static bool opCannotReuseInputRegister(Operation *o) {
+  if (auto ext = dyn_cast<triton::ExternElementwiseOp>(o)) {
+    StringRef sym = ext.getSymbol();
+    for (StringRef prefix :
+         {"__gcu_mac", "__gcu_mas", "__gcu_imas", "__gcu_wadd", "__gcu_add",
+          "__gcu_wmul", "__gcu_mul"})
+      if (sym.starts_with(prefix))
+        return true;
+    return false;
+  }
+  return isa<arith::SelectOp, arith::ExtFOp, arith::TruncFOp, arith::ExtSIOp,
+             arith::ExtUIOp, arith::TruncIOp, arith::FPToSIOp, arith::SIToFPOp,
+             arith::UIToFPOp, arith::FPToUIOp, arith::IndexCastOp, math::SqrtOp,
+             math::RsqrtOp, math::ExpOp, math::Exp2Op, math::LogOp,
+             math::Log2Op, math::SinOp, math::CosOp, math::TanOp, math::PowFOp,
+             math::FloorOp, math::CeilOp, math::RoundOp, math::RoundEvenOp>(o);
+}
+
+unsigned
+computeFusionLivePerStep(triton::gcu::ElementwiseFusionRegionOp op,
+                         const llvm::SmallPtrSetImpl<Value> &excluded) {
+  Block *body = op.getBody();
+  SmallVector<Operation *> ops;
+  for (Operation &o : body->without_terminator())
+    ops.push_back(&o);
+  unsigned numOps = ops.size();
+
+  // birth: index at which a tensor value starts occupying a register.
+  // Region arguments and values captured from above are materialized at region
+  // entry (birth 0), not at their first use: the lowering has to keep them
+  // available for the whole chain.
+  DenseMap<Value, unsigned> birth, death;
+  for (unsigned i = 0; i < numOps; ++i)
+    for (Value result : ops[i]->getResults())
+      if (isa<TensorType>(result.getType()) && !excluded.contains(result))
+        birth.try_emplace(result, i);
+
+  auto noteUses = [&](Operation *o, unsigned idx) {
+    for (Value operand : o->getOperands()) {
+      if (!isa<TensorType>(operand.getType()) || excluded.contains(operand))
+        continue;
+      if (!birth.count(operand))
+        birth[operand] = 0;
+      death[operand] = idx;
+    }
+  };
+  for (unsigned i = 0; i < numOps; ++i)
+    noteUses(ops[i], i);
+  noteUses(body->getTerminator(), numOps);
+
+  auto isLiveAt = [&](Value v, unsigned def, unsigned i) {
+    auto it = death.find(v);
+    unsigned end = it == death.end() ? numOps : it->second;
+    return def < i && end >= i;
+  };
+
+  // Values present at region entry.
+  unsigned liveMax = 0;
+  for (auto &entry : birth)
+    if (entry.second == 0)
+      ++liveMax;
+
+  for (unsigned i = 0; i < numOps; ++i) {
+    unsigned liveBefore = 0;
+    for (auto &[value, def] : birth)
+      if (isLiveAt(value, def, i))
+        ++liveBefore;
+
+    unsigned outs = 0;
+    for (Value result : ops[i]->getResults())
+      if (isa<TensorType>(result.getType()) && !excluded.contains(result))
+        ++outs;
+    if (outs == 0) {
+      liveMax = std::max(liveMax, liveBefore);
+      continue;
+    }
+
+    unsigned pressure;
+    if (ops[i]->getNumOperands() < 3 && opCannotReuseInputRegister(ops[i])) {
+      // Every input stays live while the result is written.
+      pressure = liveBefore + outs;
+    } else {
+      // Elementwise/math ops may overwrite an operand whose last use is here.
+      SmallPtrSet<Value, 4> dying;
+      for (Value operand : ops[i]->getOperands()) {
+        if (!isa<TensorType>(operand.getType()) || excluded.contains(operand))
+          continue;
+        auto it = death.find(operand);
+        if (it != death.end() && it->second == i)
+          dying.insert(operand);
+      }
+      unsigned liveAfter =
+          liveBefore - std::min(liveBefore, (unsigned)dying.size()) + outs;
+      pressure = std::max(liveBefore, liveAfter);
+    }
+    liveMax = std::max(liveMax, pressure);
+  }
+  return liveMax;
+}
+
+FusionUnrollPlan
+computeFusionUnrollPlan(triton::gcu::ElementwiseFusionRegionOp op,
+                        unsigned vectorLength, unsigned maxBpe,
+                        unsigned tripCount, Value forcedPublishedValue) {
+  FusionUnrollPlan plan;
+  plan.oaccPerValue = std::max(1u, (vectorLength * maxBpe) / kOaccSizeInBytes);
+
+  // A dot operand with acc_store=none stays in OACC until this region consumes
+  // it (a 128x128 f32 accumulator = 128 of the per-slot 192 OACC), so charge
+  // it against the budget and pick the largest power-of-two unroll whose
+  // live-per-copy set still fits.
+  unsigned reservedOacc = 0;
+  SmallPtrSet<Value, 4> countedAccs;
+  SmallPtrSet<Value, 4> publishedAccSet;
+  for (Value operand : op.getOperands()) {
+    if (!countedAccs.insert(operand).second)
+      continue;
+    // A loop-carried accumulator reaches the region as the enclosing
+    // scf.for's result (dot result -> scf.yield -> for result); resolve it
+    // back to the yielded value so the reservation sees the dot.
+    Value accValue = operand;
+    if (auto res = dyn_cast<OpResult>(operand)) {
+      if (auto forOp = dyn_cast<scf::ForOp>(res.getOwner());
+          forOp && !forOp.getRegion().empty()) {
+        // The plan also runs mid-conversion, where a loop body may not have
+        // its terminator yet -- read the block tail instead of calling
+        // getTerminator() (which asserts in that state).
+        Block &body = forOp.getRegion().front();
+        unsigned resultNo = res.getResultNumber();
+        if (!body.empty())
+          if (auto yield = dyn_cast<scf::YieldOp>(&body.back()))
+            if (resultNo < yield.getNumOperands())
+              accValue = yield.getOperand(resultNo);
+      }
+    }
+    auto dotOp = dyn_cast_or_null<triton::DotOp>(accValue.getDefiningOp());
+    if (!dotOp)
+      continue;
+    // The annotator asks about a dot it is about to publish; at that point
+    // acc_store is still `local`, so it names the value to model it as if it
+    // were already published. The lowering does not pass this: by then the
+    // dot carries acc_store=none and is counted by the check below.
+    bool forcedPublished =
+        forcedPublishedValue && operand == forcedPublishedValue;
+    auto accStore = dotOp->getAttrOfType<StringAttr>(kAccStore);
+    if (!forcedPublished && (!accStore || accStore.getValue() != kAccStoreNone))
+      continue;
+    auto accTy = dyn_cast<RankedTensorType>(dotOp.getResult().getType());
+    if (!accTy)
+      continue;
+    unsigned elems = getTotalElemsPerThread(accTy);
+    unsigned bpe = getBpe(accTy.getElementType());
+    reservedOacc +=
+        llvm::divideCeil(elems * bpe, static_cast<unsigned>(kOaccSizeInBytes));
+    ++plan.publishedAccs;
+    publishedAccSet.insert(operand);
+  }
+  plan.reservedOacc = reservedOacc;
+  plan.livePerStep = computeFusionLivePerStep(op, publishedAccSet);
+
+  // A single-warp program can address both banks (getOaccMaxNum doubles the
+  // count); two such programs then occupy the two kernel slots, so one
+  // program's share is a single bank's worth.
+  int64_t oaccMax = getOaccMaxNum(op.getOperation());
+  unsigned oaccSlots = getNumWarps(op.getOperation()) == 1 ? 2u : 1u;
+  unsigned oaccBudget = static_cast<unsigned>(oaccMax / oaccSlots);
+  plan.freeOacc = reservedOacc < oaccBudget ? oaccBudget - reservedOacc : 1u;
+
+  // A published accumulator reserves OACC in front of the unrolled live set.
+  // Fit the largest power-of-two unroll into what is left, capping the base at
+  // kLoopUnrollTimes/oaccPerValue.
+  unsigned unrollLimit = kLoopUnrollTimes;
+  if (plan.oaccPerValue > 1 && reservedOacc > 0) {
+    unsigned base = std::max(1u, kLoopUnrollTimes / plan.oaccPerValue);
+    unsigned liveCost = std::max(1u, plan.livePerStep) * plan.oaccPerValue;
+    unsigned fit = std::max(1u, plan.freeOacc / liveCost);
+    unrollLimit = std::max(std::min(base, pow2Floor(fit)),
+                           kLoopUnrollTimes / 2 / plan.oaccPerValue);
+  }
+
+  plan.loopCnt = std::min(tripCount, unrollLimit);
+
+  // Silicon sweep knob: force the per-region unroll (0/absent = keep the
+  // plan).  Used to chart loopCnt against OACC spills and wall time.
+  // if (std::getenv("TRITON_GCU_FUSION_PLAN_DEBUG"))
+  //   llvm::errs() << "[FUSION-PLAN] loopCnt=" << plan.loopCnt
+  //                << " (trip=" << tripCount << ", vl=" << vectorLength
+  //                << ", maxBpe=" << maxBpe << ", opv=" << plan.oaccPerValue
+  //                << ", live=" << plan.livePerStep
+  //                << ", pub=" << plan.publishedAccs
+  //                << ", reserved=" << plan.reservedOacc
+  //                << ", free=" << plan.freeOacc << ")\n";
+  // if (const char *forced = std::getenv("TRITON_GCU_FUSION_LOOPCNT")) {
+  //   unsigned forcedCnt = static_cast<unsigned>(std::atoi(forced));
+  //   if (forcedCnt > 0) {
+  //     plan.loopCnt = std::min(tripCount, forcedCnt);
+  //     llvm::errs() << "[FUSION-PLAN] forced loopCnt=" << plan.loopCnt
+  //                  << " (trip=" << tripCount << ", vl=" << vectorLength
+  //                  << ", maxBpe=" << maxBpe << ", opv=" << plan.oaccPerValue
+  //                  << ", live=" << plan.livePerStep
+  //                  << ", pub=" << plan.publishedAccs
+  //                  << ", reserved=" << plan.reservedOacc << ")\n";
+  //   }
+  // }
+  return plan;
+}
+
 int getTotalNumWarps(mlir::gpu::GPUModuleOp mod) {
   if (!mod->hasAttr(kTotalNumWarps))
     return triton::gpu::lookupNumWarps(mod);
@@ -3519,6 +4435,10 @@ SmallVector<bool> getFreeWarpMask(Type type) {
 }
 
 unsigned getBpe(Type type) {
+  if (llvm::isa<triton::PointerType>(type)) {
+    // use i64 for pointer type
+    return 8;
+  }
   assert(type.isIntOrFloat());
   return ((type.getIntOrFloatBitWidth() + 7) / 8);
 }
@@ -3611,179 +4531,6 @@ void TritonGCUBuilder::tarJump(Value &tarAddr, const Value &tarValue) {
   tarAddr = builder->create<arith::AddIOp>(loc, tarAddr, tarValue);
 }
 
-bool isNvLibDeviceSymbol(StringRef symbol) {
-  static const llvm::StringSet<> symbolSet = {
-      ///  unary op
-      "__nv_abs",
-      "__nv_llabs",
-      "__nv_fabsf",
-      "__nv_brev",
-      "__nv_brevll",
-      "__nv_clz",
-      "__nv_clzll",
-      "__nv_ffs",
-      "__nv_ffsll",
-      "__nv_popc",
-      "__nv_popcll",
-      "__nv_acosf",
-      "__nv_acoshf",
-      "__nv_asinf",
-      "__nv_asinhf",
-      "__nv_atanf",
-      "__nv_atanhf",
-      "__nv_cbrtf",
-      "__nv_ceilf",
-      "__nv_cosf",
-      "__nv_coshf",
-      "__nv_cospif",
-      "__nv_erfcf",
-      "__nv_erfcinvf",
-      "__nv_erfcxf",
-      "__nv_erff",
-      "__nv_erfinvf",
-      "__nv_exp10f",
-      "__nv_exp2f",
-      "__nv_expf",
-      "__nv_expm1f",
-      "__nv_floorf",
-      "__nv_frcp_rd",
-      "__nv_frcp_rn",
-      "__nv_frcp_ru",
-      "__nv_frcp_rz",
-      "__nv_frsqrt_rn",
-      "__nv_fsqrt_rd",
-      "__nv_fsqrt_rn",
-      "__nv_fsqrt_ru",
-      "__nv_fsqrt_rz",
-      "__nv_j0f",
-      "__nv_j1f",
-      "__nv_lgammaf",
-      "__nv_log10f",
-      "__nv_log1pf",
-      "__nv_log2f",
-      "__nv_logbf",
-      "__nv_logf",
-      "__nv_nearbyintf",
-      "__nv_normcdff",
-      "__nv_normcdfinvf",
-      "__nv_rcbrtf",
-      "__nv_rintf",
-      "__nv_roundf",
-      "__nv_rsqrtf",
-      "__nv_saturatef",
-      "__nv_sinf",
-      "__nv_sinhf",
-      "__nv_sinpif",
-      "__nv_sqrtf",
-      "__nv_tanf",
-      "__nv_tanhf",
-      "__nv_tgammaf",
-      "__nv_truncf",
-      "__nv_y0f",
-      "__nv_y1f",
-      ///  unary int32 float
-      "__nv_finitef",
-      "__nv_ilogbf",
-      "__nv_isinff",
-      "__nv_isnanf",
-      "__nv_signbitf",
-      ///  unary int64 float
-      "__nv_llrintf",
-      "__nv_llroundf",
-      ///  unary type convert
-      "__nv_float_as_int",
-      "__nv_int_as_float",
-      "__nv_float2int_rd",
-      "__nv_float2int_rn",
-      "__nv_float2int_ru",
-      "__nv_float2int_rz",
-      "__nv_float2uint_rd",
-      "__nv_float2uint_rn",
-      "__nv_float2uint_ru",
-      "__nv_float2uint_rz",
-      "__nv_int2float_rd",
-      "__nv_int2float_rn",
-      "__nv_int2float_ru",
-      "__nv_int2float_rz",
-      "__nv_uint2float_rd",
-      "__nv_uint2float_rn",
-      "__nv_uint2float_ru",
-      "__nv_uint2float_rz",
-      "__nv_float2ll_rd",
-      "__nv_float2ll_rn",
-      "__nv_float2ll_ru",
-      "__nv_float2ll_rz",
-      "__nv_float2ull_rd",
-      "__nv_float2ull_rn",
-      "__nv_float2ull_ru",
-      "__nv_float2ull_rz",
-      "__nv_ll2float_rd",
-      "__nv_ll2float_rn",
-      "__nv_ll2float_ru",
-      "__nv_ll2float_rz",
-      "__nv_ull2float_rd",
-      "__nv_ull2float_rn",
-      "__nv_ull2float_ru",
-      "__nv_ull2float_rz",
-      ///  binary op
-      "__nv_hadd",
-      "__nv_uhadd",
-      "__nv_llmax",
-      "__nv_ullmax",
-      "__nv_max",
-      "__nv_umax",
-      "__nv_fmaxf",
-      "__nv_llmin",
-      "__nv_ullmin",
-      "__nv_min",
-      "__nv_umin",
-      "__nv_fminf",
-      "__nv_mul24",
-      "__nv_umul24",
-      "__nv_mulhi",
-      "__nv_umulhi",
-      "__nv_mul64hi",
-      "__nv_umul64hi",
-      "__nv_rhadd",
-      "__nv_urhadd",
-      "__nv_atan2f",
-      "__nv_copysignf",
-      "__nv_fadd_rd",
-      "__nv_fadd_rn",
-      "__nv_fadd_ru",
-      "__nv_fadd_rz",
-      "__nv_fdimf",
-      "__nv_fdiv_rd",
-      "__nv_fdiv_rn",
-      "__nv_fdiv_ru",
-      "__nv_fdiv_rz",
-      "__nv_fmodf",
-      "__nv_fmul_rd",
-      "__nv_fmul_rn",
-      "__nv_fmul_ru",
-      "__nv_fmul_rz",
-      "__nv_fsub_rd",
-      "__nv_fsub_rn",
-      "__nv_fsub_ru",
-      "__nv_fsub_rz",
-      "__nv_hypotf",
-      "__nv_nextafterf",
-      "__nv_powif",
-      "__nv_powf",
-      "__nv_remainderf",
-      ///  binary float float int32
-      "__nv_ldexpf",
-      "__nv_scalbnf",
-      ///  ternary op
-      "__nv_fmaf",
-      "__nv_fmaf_rd",
-      "__nv_fmaf_rn",
-      "__nv_fmaf_ru",
-      "__nv_fmaf_rz",
-  };
-  return symbolSet.contains(symbol);
-}
-
 bool isMixedPrecisionSymbol(StringRef symbol) {
   static const std::string mixedPrecisionSymbolPrefixList[] = {
       "__gcu_wadd", "__gcu_add",  "__gcu_wmul",    "__gcu_mul",     "__gcu_mac",
@@ -3794,10 +4541,16 @@ bool isMixedPrecisionSymbol(StringRef symbol) {
                       });
 }
 
-bool isAllocaInputValue(Value v) {
+static bool isAllocaInputValueImpl(Value v, ValueRemapFn remap) {
   if (!v) {
     return false;
   }
+  // In rollback mode the conversion registers the replacement of a value before
+  // it reaches the IR (TTDotOpLowering swaps the accumulator buffer for an OACC
+  // alloca this way). Resolve it here so the query observes what the IR will
+  // hold once the conversion commits.
+  if (Value remapped = remap(v))
+    v = remapped;
   auto defOp = v.getDefiningOp();
   if (!defOp) {
     auto blockArg = dyn_cast<mlir::BlockArgument>(v);
@@ -3808,16 +4561,59 @@ bool isAllocaInputValue(Value v) {
     if (!forOp) {
       return false;
     }
-    return isAllocaInputValue(forOp.getInitArgs()[blockArg.getArgNumber() -
-                                                  forOp.getNumInductionVars()]);
+    return isAllocaInputValueImpl(
+        forOp.getInitArgs()[blockArg.getArgNumber() -
+                            forOp.getNumInductionVars()],
+        remap);
+  }
+  if (auto forOp = dyn_cast<scf::ForOp>(defOp)) {
+    unsigned resultIdx = cast<OpResult>(v).getResultNumber();
+    auto innerArg = forOp.getRegionIterArg(resultIdx);
+    if (llvm::none_of(innerArg.getUsers(), [](Operation *user) {
+          return isa<mlir::gcu::MatMulOp>(user);
+        }))
+      return false;
+    return isAllocaInputValueImpl(forOp.getInitArgs()[resultIdx], remap);
   }
   if (isa_and_nonnull<memref::AllocaOp>(defOp)) {
     return true;
   }
   if (isa_and_nonnull<memref::ReinterpretCastOp>(defOp)) {
-    return isAllocaInputValue(defOp->getOperand(0));
+    return isAllocaInputValueImpl(defOp->getOperand(0), remap);
   }
   return false;
+}
+
+bool isAllocaInputValue(Value v, ValueRemapFn remap) {
+  return isAllocaInputValueImpl(v, remap);
+}
+
+LogicalResult resolveAccumulatorOperand(Value originalValue, Value &operand,
+                                        const AccPublishContext &ctx) {
+  // A consumer may sit behind a passthrough layout conversion: an identity
+  // convert_layout lowers to a plain replacement of its source, so the
+  // published buffer must be found through it as well. This keeps the
+  // resolution in one place instead of every consumer's lowering.
+  Value key = originalValue;
+  while (auto cvt = key.getDefiningOp<triton::gpu::ConvertLayoutOp>()) {
+    auto srcTy = dyn_cast<RankedTensorType>(cvt.getSrc().getType());
+    auto dstTy = dyn_cast<RankedTensorType>(cvt.getType());
+    if (!srcTy || !dstTy || srcTy.getEncoding() != dstTy.getEncoding())
+      break;
+    key = cvt.getSrc();
+  }
+  auto it = ctx.buffers.find(key);
+  if (it != ctx.buffers.end()) {
+    operand = it->second;
+    return success();
+  }
+  if (ctx.expected.contains(key))
+    return failure();
+  return success();
+}
+
+bool isAllocaInputValue(Value v) {
+  return isAllocaInputValue(v, [](Value value) { return value; });
 }
 
 ReduceGenerator::ReduceGenerator(triton::ReduceOp op,
@@ -3936,14 +4732,11 @@ void ReduceGenerator::processPrologue(OpBuilder &builder, Location loc,
           ArrayRef<int64_t>{vectorLength},
           getElementTypeOrSelf(externElementwiseOp.getResult()));
       Value result;
-      if (isNvLibDeviceSymbol(symbol)) {
+      if (symbol.starts_with("__ef_")) {
         std::string efSymbol = "__ef_v";
-        efSymbol += symbol.drop_front(strlen("__nv_"));
+        efSymbol += symbol.drop_front(strlen("__ef_"));
         result = builder.create<mlir::gcu::ExternElementwiseOp>(
             loc, resultTy, operands, efSymbol);
-      } else if (symbol == "__nv_ffs") {
-        result = builder.create<math::CtPopOp>(loc, operands.front().getType(),
-                                               operands);
       } else if (isMixedPrecisionSymbol(symbol)) {
         result = builder.create<mlir::gcu::ExternElementwiseOp>(
             loc, resultTy, operands, symbol);

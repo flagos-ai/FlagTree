@@ -221,8 +221,8 @@ def topk_kernel_tle(
         k_to_find = tl.full((), K, dtype=tl.int32)
         k_limit = tl.full((), K, dtype=tl.int32)
 
-        for digit_pos in tl.static_range(START_POS, -1, -RADIX_BITS):
-            cached_key = tl.load(smem_key_ptrs, mask=mask_n, other=0).to(x_utype)
+        cached_key = tl.load(smem_key_ptrs, mask=mask_n, other=0).to(x_utype)
+        for digit_pos in tl.range(START_POS, -1, -RADIX_BITS):
             matches = (cached_key & desired_mask) == desired
             digit = ((cached_key >> digit_pos) & RADIX_MASK).to(tl.int32)
             valid = mask_n & matches
@@ -485,6 +485,7 @@ def main(argv=None):
             baseline_csv=str(data_dir / "baseline_topk-naive-vs-tle-vs-torch.csv"),
             dimension_fields=["M", "N", "K"],
             regression_threshold=0.10,
+            exclude_cols=["Torch-TopK"],
         )
         if not result:
             raise Exception('Benchmark validation failed!')

@@ -22,21 +22,33 @@ from typing import Any
 device_name = "gcu"
 datadir = os.getenv("TRITON_GCU_PATH") or "/opt/triton_gcu"
 
-if not os.path.exists(datadir):
-    raise Exception("Cannot find data directory in " + datadir)
-
 TOOLKIT_PATH = os.path.join(datadir, "bin")
 RUNTIME_PATH = os.path.join(datadir, "lib")
 
 PY_TOOLS_PATH = Path(__file__).parent
 
 
+# The triton-gcu deb installs its tools under $TRITON_GCU_PATH (default
+# /opt/triton_gcu).  Installing that deb is optional for the GCU500/draco
+# target, whose compiler is carried by the triton-gcu-triton37-nda wheel
+# (see resolve_gcu500_tool), so the directory may legitimately be missing.
+# Do not fail at import time -- the module is imported on every arch path --
+# and only complain when a deb-provided tool is actually going to be used.
+def _require_toolkit_tool(cmd):
+    if not os.path.isdir(datadir):
+        raise Exception("Cannot find data directory in " + datadir)
+    tool = os.path.join(TOOLKIT_PATH, cmd)
+    if not os.path.isfile(tool):
+        raise Exception("Cannot find " + tool + " in data directory " + datadir)
+    return tool
+
+
 # toolkit
 def _run_command(cmd, content, *args):
     if not isinstance(content, str):
         content = str(content)
-    result = subprocess.run([os.path.join(TOOLKIT_PATH, cmd)] + list(args), input=content, capture_output=True,
-                            text=True, encoding="utf-8")
+    result = subprocess.run([_require_toolkit_tool(cmd)] + list(args), input=content, capture_output=True, text=True,
+                            encoding="utf-8", errors='replace')
     if result.returncode != 0:
         raise Exception(result.stderr)
     # print(__file__, "run command: \n", [os.path.join(TOOLKIT_PATH, cmd)] + list(args))
@@ -49,7 +61,7 @@ def _run_command2(cmd, content, *args):
     if not isinstance(content, str):
         content = str(content)
     result = subprocess.run([PY_TOOLS_PATH / cmd] + list(args), input=content, capture_output=True, text=True,
-                            encoding="utf-8")
+                            encoding="utf-8", errors='replace')
     if result.returncode != 0:
         raise Exception(result.stderr)
     # print(__file__, "run command: \n", [os.path.join(PY_TOOLS_PATH, cmd)] + list(args))
@@ -225,8 +237,7 @@ def get_bool_env(env, defaultValue=False):
 # 64-bit integers. 'enable_i64' is newer than some toolkits still in the field:
 # the tops1.9.10 toolkit answers with the marker below, and since the error is
 # raised while the pass is being constructed it fails every kernel, not only the
-# ones that use i64. Only the gcu300 toolkits can be that old, so only a gcu300
-# kernel asks this question; the probe uses gcu300 passes for the same reason.
+# ones that use i64.
 _ENABLE_I64_PROBE_OPTIONS = "--convert-gpu-to-gcu=chipset=gcu300 vector-bit-width=4096 enable_i64=true"
 _UNKNOWN_ENABLE_I64_MARKER = "no such option enable_i64"
 
@@ -242,22 +253,22 @@ def toolkit_supports_enable_i64():
     answer. The exit status is deliberately ignored: a toolkit that knows the
     option may still object to an empty module.
 
-    Only gcu300 kernels ask, since no later target is served by a toolkit old
-    enough to predate the option.
-
     An inconclusive probe (no toolkit, timeout, crash) reports True. Dropping the
     option for a kernel that needs it would run 64-bit code through passes that
     cannot handle it, which is worse than letting the toolkit reject the command.
 
-    Set TRITON_GCU_ENABLE_I64 to 0 or 1 to skip the probe.
+    Set TRITON_GCU_ENABLE_I64 to 0 or 1 to skip the probe.  Any other value
+    falls back to True, matching the conservative default below: an unusable
+    override must not silently drop the option.
     """
     override = os.getenv("TRITON_GCU_ENABLE_I64")
     if override is not None:
-        return get_bool_env("TRITON_GCU_ENABLE_I64")
+        return get_bool_env("TRITON_GCU_ENABLE_I64", True)
 
     cmd = [os.path.join(TOOLKIT_PATH, "gcu-compiler-opt"), _ENABLE_I64_PROBE_OPTIONS]
     try:
-        result = subprocess.run(cmd, input="module {}\n", capture_output=True, text=True, encoding="utf-8", timeout=60)
+        result = subprocess.run(cmd, input="module {}\n", capture_output=True, text=True, encoding="utf-8",
+                                errors='replace', timeout=60)
     except (OSError, subprocess.SubprocessError):
         return True
     return _UNKNOWN_ENABLE_I64_MARKER not in (result.stderr or "")
@@ -311,34 +322,22 @@ def compile_llir_to_fatbin_gcu500(llir_str: str, kernel_name: str = "kernel") ->
             "-mattr=multi-addrspaces",
         ]
 
-        result = subprocess.run(
-            llc_common_flags + ["--filetype=obj", "-o", obj_path, ll_path],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
+        result = subprocess.run(llc_common_flags + ["--filetype=obj", "-o", obj_path, ll_path], capture_output=True,
+                                text=True, encoding="utf-8", errors='replace')
         if result.returncode != 0:
             raise RuntimeError(f"llc (gcu500) failed:\n{result.stderr}")
         if result.stderr:
             print(result.stderr)
 
-        result_asm = subprocess.run(
-            llc_common_flags + ["--filetype=asm", "-o", asm_path, ll_path],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
+        result_asm = subprocess.run(llc_common_flags + ["--filetype=asm", "-o", asm_path, ll_path], capture_output=True,
+                                    text=True, encoding="utf-8", errors='replace')
 
         tops_objcopy = os.path.join(get_tops_home(), "bin", "llvm-objcopy")
         objcopy = tops_objcopy if os.path.isfile(tops_objcopy) else (shutil.which("llvm-objcopy")
                                                                      or shutil.which("objcopy"))
         if objcopy:
-            subprocess.run(
-                [objcopy, "--remove-section=.eh_frame", "--remove-section=.rela.eh_frame", obj_path],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-            )
+            subprocess.run([objcopy, "--remove-section=.eh_frame", "--remove-section=.rela.eh_frame", obj_path],
+                           capture_output=True, text=True, encoding="utf-8", errors='replace')
 
         lld_args = [
             lld_bin,
@@ -354,25 +353,15 @@ def compile_llir_to_fatbin_gcu500(llir_str: str, kernel_name: str = "kernel") ->
             "--entry=0",
         ]
 
-        result = subprocess.run(
-            lld_args,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
+        result = subprocess.run(lld_args, capture_output=True, text=True, encoding="utf-8", errors='replace')
         if result.returncode != 0:
             raise RuntimeError(f"lld (gcu500 link) failed:\n{result.stderr}")
 
         target_str = "tops-dtu-enflame-tops--efgcu500"
-        result = subprocess.run(
-            [
-                bundler_bin, "-type=o", f"-output={bin_path}", f"-targets=host-x86_64-unknown-linux,{target_str}",
-                f"-input=/dev/null", f"-input={so_path}"
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
+        result = subprocess.run([
+            bundler_bin, "-type=o", f"-output={bin_path}", f"-targets=host-x86_64-unknown-linux,{target_str}",
+            f"-input=/dev/null", f"-input={so_path}"
+        ], capture_output=True, text=True, encoding="utf-8", errors='replace')
         if result.returncode != 0:
             raise RuntimeError(f"clang-offload-bundler failed:\n{result.stderr}")
 

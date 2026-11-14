@@ -243,6 +243,7 @@ bool isZeroStride(OpBuilder &builder, Location loc, const OpFoldResult ofr) {
 
 PtrInfo PtrState::getPtrInfo(OpBuilder &builder, Location loc,
                              const MaskState &mstate,
+                             bool foldMaskStartIntoBase,
                              bool exposeMaskStartOffset) {
   PtrInfo ptrInfo;
 
@@ -260,13 +261,14 @@ PtrInfo PtrState::getPtrInfo(OpBuilder &builder, Location loc,
   auto one = builder.create<arith::ConstantIndexOp>(loc, 1);
 
   // The mask's within-tile start (mstate.starts) may be non-zero for a `>=`
-  // mask (the valid region begins at starts[d] within the tile). Fold it into
-  // the base pointer for loads (starts[d] * strides[d] * bpe) so the load
-  // reads from the valid region. For stores this is skipped — the store
-  // exposes starts via the `offsets` operand (see getDimOffset) for
-  // ConfigGcuStore to convert per-warp.
+  // mask (the valid region begins at starts[d] within the tile). When
+  // foldMaskStartIntoBase is set (loads) each start is folded into the base
+  // pointer as starts[d] * strides[d] * bpe so the DMA reads the valid memory
+  // block. When exposeMaskStartOffset is set (stores, and DMA loads whose
+  // mask carries a non-zero start) the start is ALSO exposed via `offsets` so
+  // the DMA lowering can place the data at the right tile / memory position.
   auto foldMaskStartsIntoBase = [&](Value base) -> Value {
-    if (exposeMaskStartOffset || mstate.starts.empty())
+    if (!foldMaskStartIntoBase || mstate.starts.empty())
       return base;
     auto bpeVal = builder.create<arith::ConstantIntOp>(loc, bpe, /*width=*/64);
     for (int64_t d = 0; d < static_cast<int64_t>(mstate.starts.size()); ++d) {
@@ -284,10 +286,10 @@ PtrInfo PtrState::getPtrInfo(OpBuilder &builder, Location loc,
     return base;
   };
 
-  // Per-dimension within-tile mask start. For loads this is unused (the start
-  // is folded into the base, and offsets stays zero). For stores this becomes
-  // the `offsets` operand: the mask start in the tile coordinate space, which
-  // ConfigGcuStore converts to per-warp src/dst offsets.
+  // Per-dimension within-tile mask start (the tile coordinate at which the
+  // valid region begins). Only exposed when exposeMaskStartOffset is set
+  // (stores / DMA masked loads); the DMA lowering consumes it as the per-warp
+  // source slice offset (store) or the result-tile write offset (load).
   auto getMaskStart = [&](int64_t i) -> Value {
     if (exposeMaskStartOffset &&
         i < static_cast<int64_t>(mstate.starts.size())) {
@@ -300,9 +302,6 @@ PtrInfo PtrState::getPtrInfo(OpBuilder &builder, Location loc,
     return zero.getResult();
   };
 
-  // For stores, `offsets` carries the mask start (tile-internal). For loads,
-  // `offsets` is the memory offset and stays zero (the start is folded into
-  // the base above).
   auto getDimOffset = [&](int64_t i) -> Value {
     return exposeMaskStartOffset ? getMaskStart(i) : zero.getResult();
   };
@@ -1886,6 +1885,17 @@ bool isPtrCandidate(Value v, const gcu::AxisInfoEx *axisInfoEx,
     } else {
       strideHint.push_back(stride);
     }
+  }
+
+  int broadcastDimCount = 0;
+  for (int i = 0; i < rank; ++i) {
+    if (strideHint[i] == 0 && tshape[i] > 1)
+      ++broadcastDimCount;
+  }
+  if (broadcastDimCount > 1) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "bypass load/store op with more than one broadcast dim: \n");
+    return false;
   }
 
   if (std::count(strideHint.begin(), strideHint.end(), 1) > 1) {

@@ -155,3 +155,49 @@ def install_extension(*args, **kargs):
                     shutil.rmtree(mlir_dst)
                 shutil.copytree(mlir_src, mlir_dst)
                 print(f"Copied MLIR Python bindings from {mlir_src} to {mlir_dst}", file=sys.stderr)
+                _stage_multipython_mlir(mlir_dst)
+
+
+def _stage_multipython_mlir(mlir_dst):
+    """Add the MLIR extension modules built for the other python versions.
+
+    The package copied from the LLVM syspath only carries the extension modules
+    of the interpreter LLVM was built with.  build.sh's mlir_python step builds
+    the same modules once per version the wheel promises and leaves them in
+    FLAGTREE_MLIR_PY_DIR, where this copies them from; their file names carry
+    each interpreter's EXT_SUFFIX, so python loads the one built for it.
+
+    Every module the wheel ships has to exist for every version (anything else
+    breaks the py3-none-any promise), so the modules that are not in the list the
+    step wrote are removed: the two python_test modules are among them, as they
+    cannot be built outside of LLVM at all.
+    """
+    staging_dir = os.environ.get("FLAGTREE_MLIR_PY_DIR")
+    if not staging_dir:
+        return
+
+    modules_file = os.path.join(staging_dir, "modules.txt")
+    if not os.path.isfile(modules_file):
+        raise RuntimeError(f"FLAGTREE_MLIR_PY_DIR is set to {staging_dir}, but it holds no "
+                           "modules.txt: run `.pipeline/build.sh mlir_python` before building "
+                           "the wheel")
+    with open(modules_file, encoding="utf-8") as stream:
+        modules = {line.strip() for line in stream if line.strip()}
+
+    libs_dst = os.path.join(mlir_dst, "_mlir_libs")
+    copied = 0
+    for name in sorted(os.listdir(staging_dir)):
+        if name.endswith(".so"):
+            shutil.copy2(os.path.join(staging_dir, name), os.path.join(libs_dst, name))
+            copied += 1
+
+    removed = 0
+    for name in sorted(os.listdir(libs_dst)):
+        if not name.endswith(".so") or name.startswith("libMLIRPythonCAPI"):
+            continue
+        if name.split(".")[0] not in modules:
+            os.remove(os.path.join(libs_dst, name))
+            removed += 1
+
+    print(f"Staged {copied} per-version MLIR modules in {libs_dst} "
+          f"({removed} removed that no version can supply)", file=sys.stderr)

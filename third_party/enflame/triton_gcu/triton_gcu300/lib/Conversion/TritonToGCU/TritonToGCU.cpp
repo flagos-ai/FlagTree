@@ -1527,46 +1527,46 @@ struct TTExternElemwiseOpLowering
       pTagPool.releaseMap(op.getOperation());
     }
     auto name = op.getSymbol();
-    if (name == "__nv_fmaxf") {
+    if (name == "__ef_fmaxf") {
       rewriter.replaceOpWithNewOp<arith::MaximumFOp>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__nv_fminf") {
+    } else if (name == "__ef_fminf") {
       rewriter.replaceOpWithNewOp<arith::MinimumFOp>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__nv_floorf") {
+    } else if (name == "__ef_floorf") {
       rewriter.replaceOpWithNewOp<math::FloorOp>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__nv_nearbyintf") {
+    } else if (name == "__ef_nearbyintf") {
       rewriter.replaceOpWithNewOp<math::RoundEvenOp>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__nv_rintf") {
+    } else if (name == "__ef_rintf") {
       rewriter.replaceOpWithNewOp<math::RoundEvenOp>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__nv_min") {
+    } else if (name == "__ef_min") {
       rewriter.replaceOpWithNewOp<arith::MinSIOp>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__nv_max") {
+    } else if (name == "__ef_max") {
       rewriter.replaceOpWithNewOp<arith::MaxSIOp>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__nv_umin") {
+    } else if (name == "__ef_umin") {
       rewriter.replaceOpWithNewOp<arith::MinUIOp>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__nv_umax") {
+    } else if (name == "__ef_umax") {
       rewriter.replaceOpWithNewOp<arith::MaxUIOp>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__nv_powf") {
+    } else if (name == "__ef_powf") {
       rewriter.replaceOpWithNewOp<math::PowFOp>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__nv_log2f") {
+    } else if (name == "__ef_log2f") {
       rewriter.replaceOpWithNewOp<math::Log2Op>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__nv_log1pf") {
+    } else if (name == "__ef_log1pf") {
       rewriter.replaceOpWithNewOp<math::Log1pOp>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__nv_exp2f") {
+    } else if (name == "__ef_exp2f") {
       rewriter.replaceOpWithNewOp<math::Exp2Op>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__nv_rsqrtf") {
+    } else if (name == "__ef_rsqrtf") {
       rewriter.replaceOpWithNewOp<math::RsqrtOp>(op, adaptor.getOperands());
       return success();
     } else if (name == "__gcu_begin_clock") {
@@ -2858,6 +2858,25 @@ struct TTGConvertLayoutOpLowering
   }
 };
 
+#if TRITON_VERSION >= 37
+// have BarrierOp after triton 3.7
+struct TTGBarrierOpLowering
+    : public SharedConversionPattern<triton::gpu::BarrierOp> {
+  using SharedConversionPattern::SharedConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::BarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    enterTritionOp(rewriter, op.getOperation());
+    if (pTagPool.isExistInMap(op.getOperation()))
+      pTagPool.releaseMap(op.getOperation());
+    auto newOp = rewriter.create<gpu::BarrierOp>(op.getLoc());
+    rewriter.replaceOp(op, newOp);
+    return success();
+  }
+};
+#endif
+
 struct GCUMatmulLowering : SharedConversionPattern<triton::gcu::MatmulOp> {
   using SharedConversionPattern::SharedConversionPattern;
 
@@ -3116,6 +3135,11 @@ void ConvertTritonToGCUPass::runOnOperation() {
       TTGConvertLayoutOpLowering, GCULoadOpLowering, GCUStoreOpLowering,
       TTDotOpLowering, TTSplatOpLowering, TTUnsplatOpLowering>(
       converter, ctx, userAnalysis, replaced2Origin, pTagPool);
+
+#if TRITON_VERSION >= 37
+  patterns.add<TTGBarrierOpLowering>(converter, ctx, userAnalysis,
+                                     replaced2Origin, pTagPool);
+#endif
 
   patterns.add<TTMakeRangeOpLowering>(converter, ctx, userAnalysis,
                                       replaced2Origin, pTagPool, vectorLength,

@@ -14,14 +14,17 @@
  * limitations under the License.
  */
 #include <tops/tops_runtime.h>
+#if !defined(TOPSRT_VERSION) || TOPSRT_VERSION < 4010
+typedef topsDeviceProp_t topsDeviceProp;
+#endif
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
+#define KURAMA_TOPS_OK topsSuccess
 #include <stdio.h>
-#include <stdlib.h>
 
 static inline void gcuAssert(topsError_t code, const char *file, int line) {
   {
-    if (code != TOPS_SUCCESS) {
+    if (code != KURAMA_TOPS_OK) {
       {
         const char *prefix = "Kurama Error [TOPS]: ";
         const char *str = topsGetErrorString(code);
@@ -49,7 +52,7 @@ static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
   if (!PyArg_ParseTuple(args, "i", &device_id))
     return NULL;
 
-  topsDeviceProp_t props;
+  topsDeviceProp props;
   TOPS_CHECK(topsGetDeviceProperties(&props, device_id));
 
   // create a struct to hold device properties
@@ -91,9 +94,22 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
                        n_max_threads);
 }
 
+static PyObject *unloadModule(PyObject *self, PyObject *args) {
+  unsigned long long module_handle;
+  if (!PyArg_ParseTuple(args, "K", &module_handle)) {
+    return NULL;
+  }
+
+  auto module = reinterpret_cast<topsModule_t>(module_handle);
+  TOPS_CHECK(topsModuleUnload(module));
+  Py_RETURN_NONE;
+}
+
 static PyMethodDef ModuleMethods[] = {
     {"load_binary", loadBinary, METH_VARARGS,
      "Load provided kernel into TOPS driver"},
+    {"unload_module", unloadModule, METH_VARARGS,
+     "Unload provided TOPS module to free memory"},
     {"get_device_properties", getDeviceProperties, METH_VARARGS,
      "Get the properties for a given device"},
     {NULL, NULL, 0, NULL} // sentinel
