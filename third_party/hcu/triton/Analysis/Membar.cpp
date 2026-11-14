@@ -229,12 +229,13 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
   }
 
 #ifdef __TLE__
-  // Preserve the 3.5 behavior for atomic chains in TLE mode: consecutive
-  // atomics on overlapping shared intervals do not require an extra CTA
-  // barrier here.
+  // Skip atomic-pair dependencies only when neither operation uses scratch.
+  // Shared scratch broadcasts need WAR synchronization before reuse.
   auto effectiveFilter = [&](Operation *lhs, Operation *rhs) -> bool {
     if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(lhs) &&
-        isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs))
+        isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs) &&
+        allocation->getBufferId(lhs) == Allocation::InvalidBufferId &&
+        allocation->getBufferId(rhs) == Allocation::InvalidBufferId)
       return true;
     return filter ? filter(lhs, rhs) : false;
   };
