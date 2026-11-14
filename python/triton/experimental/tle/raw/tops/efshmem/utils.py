@@ -30,11 +30,12 @@ NVSHMEM one:
 
 Two things the TOPS backend needs from here:
 
-1. `enable_efshmem_device_bc()` — set by `@dialect(name="tops", library="efshmem")`.
-   `third_party/enflame/backend/compiler.py` then attaches the device bitcode to
-   the kernel's `extern_libs`, which the GCU backend forwards as
-   `--gcu-attach-target ... l=<bc>` ("extra bitcode libraries to link"). That is
-   what resolves the device-side `efshmem_*` symbols a `.tops` kernel calls.
+1. `get_efshmem_extern_libs()` — `@dialect(name="tops", library="efshmem")` stamps
+   `tle.raw.efshmem_device_bc` on the kernel's MLIR module, and
+   `third_party/enflame/backend/compiler.py` attaches the device bitcode to that
+   kernel's `extern_libs` only, forwarding it as `--gcu-attach-target ... l=<bc>`
+   ("extra bitcode libraries to link"). That is what resolves the device-side
+   `efshmem_*` symbols a `.tops` kernel calls.
 
 2. `register_efshmem_cumodule_init_hook()` — efshmem keeps per-module state that
    has to be initialised on the loaded module (`efshmemx_cumodule_init`), same as
@@ -56,26 +57,15 @@ from pathlib import Path
 from triton.experimental.tle.raw.cache_key import compute_tle_raw_host_cache_key
 from triton.runtime.cache import get_cache_manager
 
-_EFSHMEM_CUMODULE_INIT_HOOK = "efshmem_cumodule_init"
+# Name the cumodule init hook is registered under; `TOPSJITFunction.mark_kernel_init_hook`
+# stamps this same name into the kernel's module attribute, so keep one definition.
+EFSHMEM_CUMODULE_INIT_HOOK = "efshmem_cumodule_init"
 # Key the efshmem device bitcode is filed under in the kernel's `extern_libs`.
 # It is only a label for the `--gcu-attach-target ... l=<path>` list (the GCU
 # backend forwards the paths, and the only name it matches specially is
 # `libdevice`), so it is spelled after the artifact it points at:
 # libefshmem_device.bc.
 EFSHMEM_EXTERN_LIB_KEY = "libefshmem_device"
-
-# Set by @dialect(..., library="efshmem"); the GCU backend links the efshmem
-# device bitcode only when True.
-_efshmem_device_bc_enabled: bool = False
-
-
-def enable_efshmem_device_bc(enabled: bool = True) -> None:
-    global _efshmem_device_bc_enabled
-    _efshmem_device_bc_enabled = bool(enabled)
-
-
-def is_efshmem_device_bc_enabled() -> bool:
-    return _efshmem_device_bc_enabled
 
 
 def get_efshmem_home() -> Path:
@@ -119,7 +109,14 @@ def resolve_efshmem_device_library(efshmem_home: Path | None = None) -> Path | N
     Bitcode only: the value ends up in `--gcu-attach-target ... l=<path>`, which
     documents itself as "extra bitcode libraries", so a static archive of device
     objects would not be a usable substitute.
+
+    `EFSHMEM_LIBDEVICE_PATH` (legacy spelling: `NVSHMEM_LIBDEVICE_PATH`) is an
+    escape hatch for a bitcode living outside `$EFSHMEM_HOME/lib`.
     """
+    for var in ("EFSHMEM_LIBDEVICE_PATH", "NVSHMEM_LIBDEVICE_PATH"):
+        explicit = os.environ.get(var)
+        if explicit and os.path.isfile(explicit):
+            return Path(explicit)
     home = Path(efshmem_home) if efshmem_home is not None else try_get_efshmem_home()
     if home is None:
         return None
@@ -128,9 +125,7 @@ def resolve_efshmem_device_library(efshmem_home: Path | None = None) -> Path | N
 
 
 def get_efshmem_extern_libs(efshmem_home: Path | None = None) -> dict[str, str]:
-    """Return {EFSHMEM_EXTERN_LIB_KEY: path} when enabled; else {}."""
-    if not is_efshmem_device_bc_enabled():
-        return {}
+    """Return {EFSHMEM_EXTERN_LIB_KEY: path} for kernels that requested efshmem."""
     device_lib = resolve_efshmem_device_library(efshmem_home)
     return {EFSHMEM_EXTERN_LIB_KEY: str(device_lib)} if device_lib is not None else {}
 
@@ -193,7 +188,8 @@ def _get_host_compiler() -> str:
                        "set EFSHMEM_HOST_CC")
 
 
-def _build_host_command(compiler: str, source_path: Path, output_path: Path, efshmem_home: Path) -> list[str]:
+def _build_host_command(compiler: str, source_path: Path, output_path: Path,
+                        efshmem_home: Path) -> list[str]:
     lib_dir = efshmem_home / "lib"
     host_lib = resolve_efshmem_host_library(efshmem_home)
     tops_lib_dir = _tops_home() / "lib"
@@ -321,21 +317,15 @@ def _initialize_efshmem_cumodule(kernel):
 def register_efshmem_cumodule_init_hook() -> None:
     """Register the efshmem cumodule init hook, idempotently.
 
-    The hook registry lives in the TLE-Raw CUDA runtime module because that is
-    the one `triton.runtime.jit` consults after every compile, on all backends;
-    the registry itself is backend-neutral (kernel metadata drives it).
+    The registry is backend-neutral (`triton.experimental.tle.raw.kernel_hooks`),
+    so this works on stripped backends that ship without the CUDA dialect.
 
     This is invoked from `triton.experimental.tle.raw.tops.runtime` at import
     time (mirroring how `cuda.runtime` registers its own nvshmem hook), so just
     importing the TOPS dialect runtime is enough; no need to call it by hand.
     """
-    from triton.experimental.tle.raw.cuda.runtime import (
-        _KERNEL_INIT_HOOKS,
-        register_kernel_init_hook,
-    )
-    if _EFSHMEM_CUMODULE_INIT_HOOK in _KERNEL_INIT_HOOKS:
-        return
-    register_kernel_init_hook(_EFSHMEM_CUMODULE_INIT_HOOK, _initialize_efshmem_cumodule)
+    from triton.experimental.tle.raw.kernel_hooks import register_kernel_init_hook
+    register_kernel_init_hook(EFSHMEM_CUMODULE_INIT_HOOK, _initialize_efshmem_cumodule)
 
 
 # ---------------------------------------------------------------------------
