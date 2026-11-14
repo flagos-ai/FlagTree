@@ -271,8 +271,7 @@ class TOPSJITFunction(RawJITFunction):
 # lives in the efshmem utils module that owns `efshmem_module()`.
 try:
     from triton.experimental.tle.raw.tops.efshmem.utils import (
-        register_efshmem_cumodule_init_hook,
-    )
+        register_efshmem_cumodule_init_hook, )
 except ImportError:
     pass
 else:

@@ -375,9 +375,8 @@ def make_llir(mod, metadata, options):
         '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
         '--expand-strided-metadata', '-lower-affine', '-canonicalize', '-cse', '--convert-gpu-to-gcu=chipset=' +
         options.arch + ' vector-bit-width=' + str(options.vector_length * 8) + _enable_i64_pass_option(options),
-        '--gcu-attach-target=arch=' + options.arch +
-        ''.join([f' l={path}' for name, path in extern_libs if path]), '-convert-index-to-llvm',
-        '-gpu-to-llvm', '-convert-llvm-to-gcu', '-alloca-to-entry', '-canonicalize'
+        '--gcu-attach-target=arch=' + options.arch + ''.join([f' l={path}' for name, path in extern_libs if path]),
+        '-convert-index-to-llvm', '-gpu-to-llvm', '-convert-llvm-to-gcu', '-alloca-to-entry', '-canonicalize'
     ]
 
     # Get some metadata

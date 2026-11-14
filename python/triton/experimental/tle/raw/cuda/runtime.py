@@ -41,7 +41,6 @@ from triton._C.libtriton.tle.llvm import parse_llvm_ir  # pyright: ignore[report
 from triton.experimental.tle.raw.kernel_hooks import (
     KERNEL_INIT_HOOK_ATTR as _KERNEL_INIT_HOOK_ATTR,
     register_kernel_init_hook,
-    run_kernel_init_hooks,
 )
 from triton.experimental.tle.raw.runtime import RawJITFunction
 from triton.experimental.tle.raw.source_store import register_source

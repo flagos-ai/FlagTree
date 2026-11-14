@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-
 """Backend-neutral registry of post-compile kernel init hooks.
 
 A dialect that needs per-module initialisation on the *loaded* module (e.g.
