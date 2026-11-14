@@ -807,6 +807,13 @@ class MUSAOptions:
     disable_max_ilp_scheduler: bool = False
     disable_sqmma_m_split_preference: bool = False
     enable_fp8_burst2: bool = False
+    tie_signed_vector_conversions: bool = False
+    order_sqmma_overlap_adds: bool = False
+    sqmma_ordered_add_limit: int = 0
+    tie_sqmma_overlap_adds: bool = False
+    pack_sqmma_overlap_adds: bool = False
+    fuse_fp8_pack_pair_sums: bool = False
+    canonicalize_lane_shuffles: bool = False
     enable_llvm_compat: bool = True
     extern_libs: Optional[tuple] = None
     debug: bool = False
@@ -975,6 +982,30 @@ class MUSABackend(BaseBackend):
         arch = knobs.runtime.override_arch or opts.get("arch", None) or self.target.arch
         args = {"arch": _normalize_arch(arch)}
         capability = _capability_from_arch(args["arch"])
+        if type(opts.get("tie_signed_vector_conversions", False)) is not bool:
+            raise ValueError("tie_signed_vector_conversions must be a bool")
+        if type(opts.get("canonicalize_lane_shuffles", False)) is not bool:
+            raise ValueError("canonicalize_lane_shuffles must be a bool")
+        if type(opts.get("order_sqmma_overlap_adds", False)) is not bool:
+            raise ValueError("order_sqmma_overlap_adds must be a bool")
+        if (type(opts.get("sqmma_ordered_add_limit", 0)) is not int
+                or not 0 <= opts.get("sqmma_ordered_add_limit", 0) <= 1024):
+            raise ValueError("sqmma_ordered_add_limit must be an integer in 0..1024")
+        if opts.get("sqmma_ordered_add_limit", 0) and not opts.get("order_sqmma_overlap_adds", False):
+            raise ValueError("sqmma_ordered_add_limit requires order_sqmma_overlap_adds")
+        if type(opts.get("tie_sqmma_overlap_adds", False)) is not bool:
+            raise ValueError("tie_sqmma_overlap_adds must be a bool")
+        if opts.get("tie_sqmma_overlap_adds", False) and not opts.get("order_sqmma_overlap_adds", False):
+            raise ValueError("tie_sqmma_overlap_adds requires order_sqmma_overlap_adds")
+        if type(opts.get("pack_sqmma_overlap_adds", False)) is not bool:
+            raise ValueError("pack_sqmma_overlap_adds must be a bool")
+        if opts.get("pack_sqmma_overlap_adds", False) and not opts.get("order_sqmma_overlap_adds", False):
+            raise ValueError("pack_sqmma_overlap_adds requires order_sqmma_overlap_adds")
+        if type(opts.get("fuse_fp8_pack_pair_sums", False)) is not bool:
+            raise ValueError("fuse_fp8_pack_pair_sums must be a bool")
+        if opts.get("order_sqmma_overlap_adds", False) and (capability != 31
+                                                            or not hasattr(mthreads, "order_sqmma_overlap_adds")):
+            raise ValueError("order_sqmma_overlap_adds requires a TLE-enabled MP31 build")
         # The bundled MTGPU llc currently only provides processors through
         # mp_32. Reject future numeric capabilities here rather than letting
         # instruction selection terminate the compiler process.
@@ -1245,9 +1276,21 @@ class MUSABackend(BaseBackend):
                 llvm.link_extern_libs(llvm_mod, printf_paths, force_inline=False)
 
         MUSABackend._optimize_llir_module(llvm_mod, metadata, capability)
+        metadata["canonicalized_lane_shuffle_count"] = (mthreads.canonicalize_lane_shuffles(llvm_mod) if
+                                                        options.canonicalize_lane_shuffles and capability == 31 else 0)
+        metadata["tied_signed_vector_conversion_count"] = (mthreads.tie_signed_vector_conversions(llvm_mod)
+                                                           if options.tie_signed_vector_conversions and capability == 31
+                                                           else 0)
+        metadata["fused_fp8_pack_pair_sum_count"] = (mthreads.fuse_fp8_pack_pair_sums(llvm_mod)
+                                                     if options.fuse_fp8_pack_pair_sums and capability == 31 else 0)
         maxntidx = max(1, int(launch_num_warps) * int(options.warp_size))
         kernel_name_hint = src.get_entry_func_name() if hasattr(src, "get_entry_func_name") else ""
         mthreads.decorate_kernel_abi(llvm_mod, kernel_name_hint, maxntidx)
+        metadata["ordered_sqmma_overlap_add_count"] = (mthreads.order_sqmma_overlap_adds(
+            llvm_mod, options.sqmma_ordered_add_limit, options.tie_sqmma_overlap_adds)
+                                                       if options.order_sqmma_overlap_adds else 0)
+        metadata["packed_sqmma_overlap_add_count"] = (mthreads.pack_sqmma_overlap_adds(llvm_mod)
+                                                      if options.pack_sqmma_overlap_adds else 0)
         metadata["uses_mulhi_helper"] = mthreads.module_uses_mulhi_helper(llvm_mod)
 
         metadata["shared"] = src.get_int_attr("ttg.shared")
