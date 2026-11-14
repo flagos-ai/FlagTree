@@ -591,6 +591,7 @@ class XPUBackend(BaseBackend):
                 "math.exp2": np.exp2,
                 "math.log2": np.log2,
                 "tt.gelu": np_gelu,
+                "tt.silu": lambda x: x / (1.0 + np.exp(-x)),
             }[fn]
             dtype = {0: np.float32, 1: np.float16}[dtype]
             table = [0.0] * size * 2
