@@ -339,6 +339,13 @@ unsigned getVectorSize(Value ptr, Value offset,
   return std::min<unsigned>(128 / pointeeBitWidth, contiguity);
 }
 
+unsigned getLoadVectorSize(Value ptr, ModuleAxisInfoAnalysis &axisAnalysisPass,
+                           bool disableLoadVectorize) {
+  if (disableLoadVectorize)
+    return 1;
+  return getVectorSize(ptr, axisAnalysisPass);
+}
+
 Type scaleDotElemTypeToMLIRType(MLIRContext *ctx, triton::ScaleDotElemType t) {
   switch (t) {
   case triton::ScaleDotElemType::FP16:
