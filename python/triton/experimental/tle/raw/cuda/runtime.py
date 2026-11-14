@@ -29,12 +29,20 @@ import shutil
 import struct
 import subprocess
 from pathlib import Path
-from typing import Any, Final, Callable
+from typing import Any, Final
 
 import torch
 from triton import knobs
 from triton._C.libtriton import llvm  # pyright: ignore[reportMissingImports]
 from triton._C.libtriton.tle.llvm import parse_llvm_ir  # pyright: ignore[reportMissingImports]
+# Backend-neutral hook registry. The registry helpers are re-exported for
+# out-of-tree code that still imports them from here; in-tree callers import
+# `triton.experimental.tle.raw.kernel_hooks` directly.
+from triton.experimental.tle.raw.kernel_hooks import (
+    KERNEL_INIT_HOOK_ATTR as _KERNEL_INIT_HOOK_ATTR,
+    register_kernel_init_hook,
+    run_kernel_init_hooks,
+)
 from triton.experimental.tle.raw.runtime import RawJITFunction
 from triton.experimental.tle.raw.source_store import register_source
 
@@ -176,8 +184,6 @@ def _sanitize_clang_ir(ir: str) -> str:
 # ---------------------------------------------------------------------------
 
 _nvshmemx_cumodule_init = None
-_KERNEL_INIT_HOOKS: dict[str, Callable] = {}
-_KERNEL_INIT_HOOK_ATTR = "tle.raw.kernel_init_hooks"
 _NVSHMEM_CUMODULE_INIT_HOOK = "nvshmem_cumodule_init"
 
 
@@ -202,20 +208,6 @@ def _initialize_nvshmem_cumodule(kernel):
     kernel._init_handles()
     result = _get_nvshmemx_cumodule_init()(ctypes.c_void_p(kernel.module))
     assert result == 0, f"nvshmemx_cumodule_init failed: {result}"
-
-
-def register_kernel_init_hook(name: str, hook: Callable) -> None:
-    if name in _KERNEL_INIT_HOOKS:
-        raise RuntimeError(f"kernel init hook {name!r} is already registered")
-    _KERNEL_INIT_HOOKS[name] = hook
-
-
-def run_kernel_init_hooks(kernel) -> None:
-    for name in getattr(kernel.metadata, "kernel_init_hooks", ()):
-        hook = _KERNEL_INIT_HOOKS.get(name)
-        if hook is None:
-            raise RuntimeError(f"kernel init hook {name!r} is not registered")
-        hook(kernel)
 
 
 register_kernel_init_hook(_NVSHMEM_CUMODULE_INIT_HOOK, _initialize_nvshmem_cumodule)
