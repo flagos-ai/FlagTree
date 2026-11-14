@@ -19,7 +19,7 @@ endif()
 # The pass definition is only emitted by tablegen when
 # __FLAGTREE_PIPELINE_ENHANCE__ is defined (see cmake/FlagTreeOptions.cmake).
 set(TritonGPUTransformsPipelineEnhanceSources)
-if(NOT FLAGTREE_BACKEND)
+if(NOT FLAGTREE_BACKEND OR FLAGTREE_BACKEND STREQUAL "ppu")
   list(APPEND TritonGPUTransformsPipelineEnhanceSources
     Pipeliner/MergeDuplicateLoads.cpp
   )

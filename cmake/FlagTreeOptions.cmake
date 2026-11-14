@@ -107,6 +107,11 @@ macro(flagtree_configure_options)
     find_package(Python3 3.10 REQUIRED COMPONENTS Development.Module Interpreter)
   elseif(FLAGTREE_BACKEND STREQUAL "ppu")
     add_definitions(-D__PPU__)
+    # The TTGIR pipelining fixes are backend independent; PPU runs the same
+    # three-stage pipeliner. The tablegen flag is required for the pass options
+    # of Passes.td to be emitted.
+    add_definitions(-D__FLAGTREE_PIPELINE_ENHANCE__)
+    list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_PIPELINE_ENHANCE__)
   endif()
 
   set(FLAGTREE_PLUGIN "$ENV{FLAGTREE_PLUGIN}")

@@ -683,6 +683,9 @@ class musa_knobs(base_knobs):
 class ppu_knobs(base_knobs):
     disable_ppu_llc_opt: env_bool = env_bool("DISABLE_PPU_LLC_OPT")
     ppu_llc_options: env_opt_str = env_opt_str("PPU_LLC_OPTIONS")
+    # flagtree pipeline enhance: the TTGIR pipelining fixes (PPUBackend._add_assign_latencies).
+    # Setting it to 0 restores the upstream pipelining whatever a kernel passes.
+    pipeline_enhance: env_bool = env_bool("FLAGTREE_PIPELINE_ENHANCE", True)  # flagtree pipeline enhance
     dump_compile_log: env_bool = env_bool("TRITON_DUMP_COMPILE_LOG")
     libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
 
