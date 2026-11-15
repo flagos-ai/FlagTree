@@ -1,16 +1,20 @@
-"""Overlap TLE push-2d AllGather with persistent GEMM.
+"""Overlap hierarchical TLE AllGather with persistent GEMM.
 
 C_rank = cat(A_0, ..., A_(world_size-1), dim=0) @ B_rank.
 A_rank is [M/world_size, K]; B_rank is [K, N/world_size]. M and N
 are global dimensions, while K is replicated. B may be contiguous or a
 transpose of contiguous [N/world_size, K] storage.
 
-The producer is shared with tutorial 06. All communication uses TLE remote,
-signal, signal_wait, and distributed_barrier, with no raw NVSHMEM calls.
-The consumer follows Triton-distributed's allgather_gemm.py; context and
-stream organization follow tutorials 08/09. Requires NVIDIA SM90 or newer.
-Inter-node PUTs transfer a complete source segment up to 2**25 elements;
-only larger segments are split. This limit counts elements, not bytes.
+The AllGather implementation is local to this tutorial. As in Triton-distributed,
+inter-node sends and intra-node distribution run on separate streams. A single
+intra-node CTA copies to one destination at a time, first distributing local A,
+then relaying remote A. Inter-node sends use one CTA per remote node. All
+communication uses TLE remote, signal, signal_wait, and distributed_barrier;
+intra-node copies use SM load/store rather than Triton-distributed's Copy Engine.
+Context and stream organization follow tutorials 08/09. Requires SM90 or newer.
+Inter-node PUTs transfer a complete source segment up to the runtime's tensor
+construction limit (2**25 elements in this checkout); only larger segments are
+split. This limit counts elements, not bytes.
 
 Run on every node (set NODE_RANK separately):
 
@@ -40,9 +44,17 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 
-_ag = importlib.import_module("06-inter-node-allgather")
 _rs = importlib.import_module("08-inter-node-reduce-scatter")
 _active_context = None
+MAX_NODE_TRANSFER_ELEMENTS = tl.TRITON_MAX_TENSOR_NUMEL
+
+
+def get_node_transfer_config(elements_per_rank: int) -> tuple[int, int]:
+    """Use one network PUT per segment unless it exceeds the construction limit."""
+    if elements_per_rank <= 0:
+        raise ValueError("elements_per_rank must be positive")
+    node_block = min(triton.next_power_of_2(elements_per_rank), MAX_NODE_TRANSFER_ELEMENTS)
+    return node_block, triton.cdiv(elements_per_rank, node_block)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -94,20 +106,26 @@ class TleAllGatherGemmContext:
     local_world_size: int
     workspace: torch.Tensor
     dist_ctx: object
-    ag_stream: torch.cuda.Stream
+    ag_intranode_stream: torch.cuda.Stream
+    ag_internode_stream: torch.cuda.Stream
     compute_stream: torch.cuda.Stream
     num_gemm_sms: int
     config: TleAllGatherGemmConfig
     epoch: int = 0
     closed: bool = False
+    local_rank: int = dataclasses.field(init=False)
+    node_rank: int = dataclasses.field(init=False)
+    nnodes: int = dataclasses.field(init=False)
     world_mesh: tle.device_mesh = dataclasses.field(init=False)
 
     def __post_init__(self):
-        self.world_mesh = tle.device_mesh(
-            tle.MeshConfig(
-                node=self.world_size // self.local_world_size,
-                device=self.local_world_size,
-            ))
+        self.local_rank = self.rank % self.local_world_size
+        self.node_rank = self.rank // self.local_world_size
+        self.nnodes = self.world_size // self.local_world_size
+        self.world_mesh = tle.device_mesh(tle.MeshConfig(
+            node=self.nnodes,
+            device=self.local_world_size,
+        ))
 
     def finalize(self):
         """Collectively release the tutorial communicator and process group."""
@@ -138,9 +156,9 @@ def create_ag_gemm_context(max_M: int, N: int, K: int, dtype: torch.dtype, rank:
     if int(os.environ.get("LOCAL_RANK", rank % local_world_size)) != rank % local_world_size:
         raise ValueError("ranks must be contiguous within each node")
     total_sms = torch.cuda.get_device_properties("cuda").multi_processor_count
-    # Bound persistent CTA counts to leave room for every producer CTA, including
-    # relay CTAs that can wait on inter-node producers. This is not SM pinning.
-    ag_sms = world_size if world_size > 1 else 0
+    # Leave room for the inter-node send CTAs and the ordered intra-node CTA.
+    # The latter may wait for an incoming network PUT. This is not SM pinning.
+    ag_sms = world_size // local_world_size - 1 + int(local_world_size > 1)
     available = total_sms - ag_sms
     if num_gemm_sms is None:
         num_gemm_sms = available
@@ -164,6 +182,7 @@ def create_ag_gemm_context(max_M: int, N: int, K: int, dtype: torch.dtype, rank:
         local_world_size,
         workspace,
         dist_ctx,
+        torch.cuda.Stream(priority=-1),
         torch.cuda.Stream(priority=-1),
         torch.cuda.current_stream(),
         num_gemm_sms,
@@ -189,6 +208,115 @@ def _prepare_all_gather_kernel(dist_ctx: tl.constexpr, mesh: tl.constexpr):
     )
 
 
+@triton.jit
+def _all_gather_inter_node_kernel(
+    workspace,
+    dist_ctx: tl.constexpr,
+    RANK: tl.constexpr,
+    LOCAL_WORLD_SIZE: tl.constexpr,
+    WORLD_SIZE: tl.constexpr,
+    ELEM_PER_RANK: tl.constexpr,
+    NUM_NODE_CHUNKS: tl.constexpr,
+    NODE_BLOCK: tl.constexpr,
+):
+    """Push our original A segment to the same local rank on each remote node."""
+    nnodes = WORLD_SIZE // LOCAL_WORLD_SIZE
+    peer_node = (RANK // LOCAL_WORLD_SIZE + tl.program_id(0) + 1) % nnodes
+    peer_rank = peer_node * LOCAL_WORLD_SIZE + RANK % LOCAL_WORLD_SIZE
+    segment_offset: tl.constexpr = RANK * ELEM_PER_RANK
+    offsets = tl.arange(0, NODE_BLOCK)
+    for chunk_id in tl.range(NUM_NODE_CHUNKS):
+        block_offset = chunk_id.to(tl.int64) * NODE_BLOCK
+        mask = offsets < tl.minimum(ELEM_PER_RANK - block_offset, NODE_BLOCK)
+        remote_dst = tle.remote(
+            dist_ctx,
+            shard_id=peer_rank,
+            space="node",
+            dtype=workspace.dtype.element_ty,
+            coopkind="block",
+            context_id=0,
+        )
+        values = tl.load(workspace + segment_offset + block_offset + offsets, mask=mask)
+        tl.store(remote_dst + segment_offset + block_offset + offsets, values, mask=mask)
+    # The same network context orders the notification after every chunk PUT.
+    tle.signal(
+        dist_ctx,
+        peer_rank,
+        slot_id=RANK,
+        op="inc",
+        space="world",
+        group_kind="block",
+    )
+
+
+@triton.jit(do_not_specialize=["epoch"])
+def _all_gather_intra_node_kernel(
+    workspace,
+    dist_ctx: tl.constexpr,
+    epoch,
+    RANK: tl.constexpr,
+    LOCAL_WORLD_SIZE: tl.constexpr,
+    WORLD_SIZE: tl.constexpr,
+    ELEM_PER_RANK: tl.constexpr,
+    NUM_LOCAL_CHUNKS: tl.constexpr,
+    BLOCK: tl.constexpr,
+):
+    """One CTA distributes local A, then relays remote A in TD's send order."""
+    offsets = tl.arange(0, BLOCK)
+    for node_step in tl.static_range(WORLD_SIZE // LOCAL_WORLD_SIZE):
+        source_node = (RANK // LOCAL_WORLD_SIZE + WORLD_SIZE // LOCAL_WORLD_SIZE - node_step) % (WORLD_SIZE //
+                                                                                                 LOCAL_WORLD_SIZE)
+        source_rank = source_node * LOCAL_WORLD_SIZE + RANK % LOCAL_WORLD_SIZE
+        segment_offset = source_rank * ELEM_PER_RANK
+        if node_step != 0:
+            tle.signal_wait(
+                dist_ctx,
+                slot_id=source_rank,
+                wait_kind="signal",
+                target=epoch,
+                group_kind="block",
+                order="acquire",
+            )
+        # Complete one destination and publish readiness before starting another.
+        for peer_step in tl.static_range(1, LOCAL_WORLD_SIZE):
+            peer_local_rank = (RANK % LOCAL_WORLD_SIZE + LOCAL_WORLD_SIZE - peer_step) % LOCAL_WORLD_SIZE
+            remote_dst = tle.remote(
+                dist_ctx,
+                shard_id=peer_local_rank,
+                space="device",
+                dtype=workspace.dtype.element_ty,
+                offset=segment_offset,
+            )
+            for chunk_id in tl.range(NUM_LOCAL_CHUNKS):
+                block_offset = chunk_id.to(tl.int64) * BLOCK
+                mask = block_offset + offsets < ELEM_PER_RANK
+                values = tl.load(workspace + segment_offset + block_offset + offsets, mask=mask)
+                tl.store(remote_dst + block_offset + offsets, values, mask=mask)
+            tle.signal(
+                dist_ctx,
+                peer_local_rank,
+                slot_id=source_rank,
+                op="inc",
+                space="intra_node",
+                group_kind="block",
+            )
+
+
+@triton.jit(do_not_specialize=["epoch"])
+def _wait_all_gather_kernel(dist_ctx: tl.constexpr, epoch, RANK: tl.constexpr, WORLD_SIZE: tl.constexpr):
+    """The serial baseline must wait for incoming data, not just outgoing sends."""
+    for source_rank in tl.static_range(WORLD_SIZE):
+        if source_rank != RANK:
+            tle.signal_wait(
+                dist_ctx,
+                slot_id=source_rank,
+                wait_kind="signal",
+                target=epoch,
+                group_kind="block",
+                order="acquire",
+            )
+
+
 @triton.jit(do_not_specialize=["epoch"])
 def kernel_ag_gemm_consumer_persistent(
     a_ptr,
@@ -201,6 +329,7 @@ def kernel_ag_gemm_consumer_persistent(
     dist_ctx: tl.constexpr,
     RANK: tl.constexpr,
     WORLD_SIZE: tl.constexpr,
+    LOCAL_WORLD_SIZE: tl.constexpr,
     B_STRIDE_K: tl.constexpr,
     B_STRIDE_N: tl.constexpr,
     TRANS_B: tl.constexpr,
@@ -228,11 +357,16 @@ def kernel_ag_gemm_consumer_persistent(
         group_id = tile_id // tiles_per_group
         first_pid_m = group_id * GROUP_M
         group_size_m = min(num_pid_m - first_pid_m, GROUP_M)
-        pid_m = first_pid_m + tile_id % group_size_m
+        pid_m = first_pid_m + (tile_id % tiles_per_group) % group_size_m
         pid_n = (tile_id % tiles_per_group) // group_size_m
-        # A rank-aligned cyclic swizzle lets local A start computing immediately.
-        pid_m = (pid_m + RANK * tiles_m_per_rank) % num_pid_m
-        source_rank = pid_m // tiles_m_per_rank
+        # Follow TD's hierarchical swizzle: our node first, starting at our
+        # local rank within every node. Rank boundaries are BLOCK_M-aligned.
+        logical_rank = pid_m // tiles_m_per_rank
+        tile_in_rank = pid_m % tiles_m_per_rank
+        source_node = (logical_rank // LOCAL_WORLD_SIZE + RANK // LOCAL_WORLD_SIZE) % (WORLD_SIZE // LOCAL_WORLD_SIZE)
+        source_local_rank = (logical_rank % LOCAL_WORLD_SIZE + RANK % LOCAL_WORLD_SIZE) % LOCAL_WORLD_SIZE
+        source_rank = source_node * LOCAL_WORLD_SIZE + source_local_rank
+        pid_m = source_rank * tiles_m_per_rank + tile_in_rank
         if source_rank != RANK:
             tle.signal_wait(
                 dist_ctx,
@@ -240,7 +374,6 @@ def kernel_ag_gemm_consumer_persistent(
                 wait_kind="signal",
                 target=epoch,
                 group_kind="block",
-                context_id=0,
                 order="acquire",
             )
         # The producer writes through the generic/network path, whereas TMA
@@ -306,30 +439,43 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
     ctx.epoch += 1
 
     cfg = ctx.config
-    if ctx.world_size > 1:
-        node_block, num_node_chunks = _ag.get_node_transfer_config(A.numel())
-        ctx.ag_stream.wait_stream(current_stream)
-        with torch.cuda.stream(ctx.ag_stream):
-            _ag.push_2d_all_gather_kernel[(ctx.world_size, )](
+    if ctx.nnodes > 1:
+        node_block, num_node_chunks = get_node_transfer_config(A.numel())
+        ctx.ag_internode_stream.wait_stream(current_stream)
+        with torch.cuda.stream(ctx.ag_internode_stream):
+            _all_gather_inter_node_kernel[(ctx.nnodes - 1, )](
                 ctx.workspace,
                 ctx.dist_ctx,
-                ctx.rank % ctx.local_world_size,
-                ctx.rank // ctx.local_world_size,
-                ctx.epoch,
+                RANK=ctx.rank,
                 LOCAL_WORLD_SIZE=ctx.local_world_size,
                 WORLD_SIZE=ctx.world_size,
                 ELEM_PER_RANK=A.numel(),
                 NUM_NODE_CHUNKS=num_node_chunks,
-                NUM_LOCAL_CHUNKS=triton.cdiv(A.numel(), cfg.ag_block),
                 NODE_BLOCK=node_block,
-                BLOCK=cfg.ag_block,
-                # The consumer supplies completion in the overlapped path.
-                # The serial baseline needs AG's result-ready completion CTA.
-                WAIT_FOR_ALL=not overlap,
                 num_warps=cfg.ag_num_warps,
             )
-        if not overlap:
-            current_stream.wait_stream(ctx.ag_stream)
+    if ctx.local_world_size > 1:
+        ctx.ag_intranode_stream.wait_stream(current_stream)
+        with torch.cuda.stream(ctx.ag_intranode_stream):
+            _all_gather_intra_node_kernel[(1, )](
+                ctx.workspace,
+                ctx.dist_ctx,
+                ctx.epoch,
+                RANK=ctx.rank,
+                LOCAL_WORLD_SIZE=ctx.local_world_size,
+                WORLD_SIZE=ctx.world_size,
+                ELEM_PER_RANK=A.numel(),
+                NUM_LOCAL_CHUNKS=triton.cdiv(A.numel(), cfg.ag_block),
+                BLOCK=cfg.ag_block,
+                num_warps=cfg.ag_num_warps,
+            )
+    if not overlap and ctx.world_size > 1:
+        if ctx.nnodes > 1:
+            current_stream.wait_stream(ctx.ag_internode_stream)
+        if ctx.local_world_size > 1:
+            current_stream.wait_stream(ctx.ag_intranode_stream)
+        _wait_all_gather_kernel[(1, )](ctx.dist_ctx, ctx.epoch, RANK=ctx.rank, WORLD_SIZE=ctx.world_size,
+                                       num_warps=cfg.ag_num_warps)
 
     num_tiles = triton.cdiv(M, cfg.block_m) * triton.cdiv(C.shape[1], cfg.block_n)
     kernel_ag_gemm_consumer_persistent[(min(ctx.num_gemm_sms, num_tiles), )](
@@ -343,6 +489,7 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
         ctx.dist_ctx,
         RANK=ctx.rank,
         WORLD_SIZE=ctx.world_size,
+        LOCAL_WORLD_SIZE=ctx.local_world_size,
         B_STRIDE_K=B.stride(0),
         B_STRIDE_N=B.stride(1),
         TRANS_B=trans_b,
@@ -354,8 +501,10 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
         num_warps=cfg.num_warps,
         num_stages=cfg.num_stages,
     )
-    if ctx.world_size > 1:
-        current_stream.wait_stream(ctx.ag_stream)
+    if ctx.nnodes > 1:
+        current_stream.wait_stream(ctx.ag_internode_stream)
+    if ctx.local_world_size > 1:
+        current_stream.wait_stream(ctx.ag_intranode_stream)
     return C
 
 
