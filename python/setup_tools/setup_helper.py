@@ -548,9 +548,7 @@ class FlagTreeCache:
                         cache_path.unlink()
                 if local_archive.is_file():
                     print(f"[cache] extracting local archive {local_archive}")
-                    utils.tools.decompress_file(
-                        url=url, archive_path=local_archive, dst_path=path, file_name=file
-                    )
+                    utils.tools.decompress_file(url=url, archive_path=local_archive, dst_path=path, file_name=file)
                 else:
                     downloader.download(url=url, path=path, file_name=file)
                 # md5_digest identifies the extracted result. Directory results are
