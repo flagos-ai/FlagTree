@@ -20,7 +20,7 @@ Run on every node (set NODE_RANK separately):
 
     NNODES=2 NODE_RANK=0 MASTER_ADDR=10.0.0.1 NPROC_PER_NODE=4 \
         bash python/tutorials/tle/10-inter-node-allgather-gemm.sh \
-        --M 2048 --N 4096 --K 4096 --dtype bf16
+        --M 8192 --N 28672 --K 8192 --dtype bf16
 
 One context owns signal slots [0, world_size) and barrier channel 0 until
 finalize(). The current TLE runtime allocates eight signal slots, so this
@@ -564,7 +564,7 @@ def _time_ms(fn, warmup, iters):
 
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    for name, default in (("M", 2048), ("N", 4096), ("K", 4096)):
+    for name, default in (("M", 8192), ("N", 28672), ("K", 8192)):
         parser.add_argument(f"--{name}", type=int, default=default)
     parser.add_argument("--dtype", choices=("bf16", "fp16"), default=os.environ.get("DTYPE", "bf16"))
     parser.add_argument("--check-iters", type=int, default=5, help="Repeated checks with changing inputs.")
