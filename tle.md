@@ -1154,7 +1154,7 @@ tle.gpu.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
 - `cache_policy` accepts a native backend policy. `tle.gpu.CachePolicy(cache_modifier=None, l1=None, l2=None, l2_prefetch_size=None)` is NVIDIA-only. It uses native PTX modifiers and eviction controls; generic intent strings and a `backend` argument are not supported.
 - Omit the argument or pass Python `None` for the existing default path. NVIDIA `CachePolicy()` rejects an empty request; other native default constructors retain their original semantics. MThreads `"none"` is a persistence value, distinct from Python `None`.
 - Static policies are immutable and support host/JIT construction, value specialization, and constexpr worker forwarding. Policy fields must be compile-time values. Every policy applies to this copy's global-memory end without changing synchronization.
-- Backend, architecture, direction, path, or instruction-combination mismatches raise errors. Explicit controls must survive lowering and pipeline rewrites.
+- Backend, architecture, direction, path, or instruction-combination mismatches raise errors. Formal cache and eviction fields survive rewrites; final lowering preserves controls supported by the selected instruction and adapts or omits the rest with an MLIR remark.
 
 | Backend/path | Public policy | Controls |
 | --- | --- | --- |
@@ -1175,11 +1175,11 @@ tle.gpu.copy(b_desc, b_tile, [BK, BN], [k, n],
              cache_policy=tle.gpu.CachePolicy(
                  l2=tle.gpu.FractionalEvictionPolicy("evict_first")))
 ```
-NVIDIA policies require `fraction=1` and `secondary="evict_unchanged"`. Non-default `l2_prefetch_size` and simultaneous `l1`/`l2` requests are rejected. NVIDIA TMA bypasses L1 and accesses L2. Modifier and explicit L1 eviction cannot be combined. NVIDIA policy types are exported directly by `tle.gpu`; the previous `tle.gpu.nvidia.*` public path has been removed.
+NVIDIA policies require `fraction=1` and `secondary="evict_unchanged"`. Non-default `l2_prefetch_size` and simultaneous `l1`/`l2` requests are rejected. NVIDIA TMA bypasses L1 and accesses L2. Modifier and explicit L1 eviction cannot be combined. NVIDIA policy types are exported directly by `tle.gpu` (with no separate `tle.gpu.nvidia.*` subpackage).
 
 PPU ordinary `.ba` load/store, LSU kp3/kp7, and AIU kp7 remain rejected. Native strings and integers retain backend meanings. Do not infer physical L1/L2 mappings for MThreads or PPU from this interface, or recommend MThreads `none` as a universal streaming policy.
 
-Measure the complete kernel with GPU-updated inputs, warm outputs, masks/tails, and the intended cache state. Fixed-buffer and per-call-evicted results describe different workloads. API equivalence is not a new speedup. See the [complete policy guide](docs/tle-copy-cache-policy.md) for native values, direction/architecture limits and migration examples.
+Measure the complete kernel with GPU-updated inputs, warm outputs, masks/tails, and the intended cache state. Fixed-buffer and per-call-evicted results describe different workloads. API equivalence is not a new speedup. See the [complete policy guide](docs/tle-copy-cache-policy.md) for native values, direction/architecture limits and usage examples.
 
 ##### 3.3.1.2 Execution Orchestration
 

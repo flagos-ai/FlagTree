@@ -1478,8 +1478,11 @@ struct AsyncCopyGlobalToLocalOpConversion
       assert(nBytes == 16 || nBytes == 8 || nBytes == 4);
       auto srcCacheModifier =
           getNvidiaAsyncCacheModifier(op.getCache(), nBytes);
+      auto effectiveCache = op.getCache() == CacheModifier::NONE
+                                ? CacheModifier::NONE
+                                : srcCacheModifier;
       if (reportedWidths.insert(nBytes).second)
-        remarkCacheControlConversion(op, "NVIDIA cp.async", srcCacheModifier,
+        remarkCacheControlConversion(op, "NVIDIA cp.async", effectiveCache,
                                      evict,
                                      "ca/cg is selected by transfer width; "
                                      "only supported L2 eviction is emitted");

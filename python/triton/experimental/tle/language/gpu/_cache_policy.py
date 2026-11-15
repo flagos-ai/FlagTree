@@ -97,8 +97,6 @@ def _expected_policy_types(backend, path):
 def _check_architecture(backend, semantic):
     """Reject a policy whose backend name matches but whose target does not."""
     arch = getattr(getattr(semantic.builder, "options", None), "arch", None)
-    if backend == "hcu" and arch != "gfx936":
-        raise ValueError("HCU cache_policy requires gfx936")
     if backend == "nvidia" and arch is not None and not (isinstance(arch, int) or str(arch).startswith("sm")):
         raise ValueError("NVIDIA copy cache policy requires a CUDA compilation target")
 
@@ -141,4 +139,15 @@ def resolve_memory_policy(policy, pointer, is_load, cache_modifier, eviction_pol
         raise ValueError("cache_policy requires a global-memory pointer")
     # An ordinary load/store is always a pointer access, so a descriptor-only
     # policy is reported through the same path diagnostic as copy.
-    return resolve_policy(policy, False, is_load, semantic, False, False, False)
+    from . import semantic as tle_semantic
+    from .iluvatar import copy as iluvatar_copy
+    from .mthreads import common as mthreads_common
+    policy = resolve_policy(policy, False, is_load, semantic, mthreads_common.enabled(), iluvatar_copy.enabled(),
+                            tle_semantic.COMMON_IR_ENABLED)
+    # An ordinary MUSA load/store can use its original instruction when the
+    # target lacks the LSU cache-hint instruction. Explicit copies validate
+    # their own instruction and completion requirements.
+    options = getattr(semantic.builder, "options", None)
+    if policy.backend == "mthreads" and not getattr(options, "supports_lsu_cache_policy", True):
+        return None
+    return policy

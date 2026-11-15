@@ -43,7 +43,7 @@ explicit normal, and a verified bypass.
 | NVIDIA | `tle.gpu.CachePolicy`: cache modifier, single-level L1 or static L2 eviction | Same object, L2 policy only; load and store |
 | MThreads | `mthreads.LSUCachePolicy`: native inner/outer persistence and L2 controls | `mthreads.TMECachePolicy`: inner/outer persistence; load and store |
 | PPU | `ppu.CachePolicy`: native LSU modifier; `ppu.AIUCachePolicy`: supported block-pointer loads lowered to native AIU tensor copies | `ppu.AIUCachePolicy`: rank-2/rank-3 host or device descriptor loads; rank-3 uses 2D AIU slices; kp1–kp6, with kp3 aliasing kp2 |
-| HCU gfx936 | `hcu.CachePolicy`: generic global-memory modifier | Explicit policy rejected |
+| HCU | `hcu.CachePolicy`: target-specific global-memory modifier | Explicit policy rejected |
 | MetaX | `metax.CachePolicy`: SDK memory modifier | Explicit policy rejected |
 
 An object for another backend or an unsupported direction raises an error.
@@ -189,7 +189,9 @@ hint. Values 4/5 are native codes, not promises of a portable retention
 behavior. The four-value TME vocabulary must not be used to infer all LSU
 semantics.
 
-For ordinary LSU instructions these fields retain their SDK encoding. TME
+Ordinary `tl.load` and `tl.store` accept an LSU policy across MUSA targets.
+On mp_31 they emit the native SDK encoding. Other targets use the default
+load or store. Explicit LSU copies with native controls require mp_31. TME
 retains the explicit inner/outer/prefetch controls. An ordinary LSU load
 selected for `memcpy.g2s` uses that instruction's existing default controls:
 the LSU tuple and eviction hint are omitted with a remark. LSU controls are
@@ -319,7 +321,7 @@ A fixed-buffer win can disappear with rotation. API equivalence and expression
 coverage are not additional performance gains. This API does not change global
 cache budgets, stream access-policy windows, or production operator policies.
 
-## HCU gfx936
+## HCU
 
 Load modifiers are `""`, `.ca`, `.cg`, `.cs`, `.cv`; store modifiers are
 `""`, `.wb`, `.cg`, `.cs`. `.cg`/`.cs` loads and `.cs` stores select the
@@ -327,17 +329,18 @@ generic LLVM non-temporal path; `.cv` loads additionally use volatile.
 `.ca` loads and `.wb`/`.cg` stores are default aliases. They do not imply
 NVIDIA cache-level semantics. If the optimizer selects buffer/direct-to-LDS
 conversion, it forwards the existing `cache` enum to the target's buffer
-control-bit mapping. On gfx936 that mapping produces zero/default bits for
-these modifiers. Eviction priorities are omitted because buffer ops do not
-carry them. A remark reports these adjustments; compilation continues on the
-selected buffer path. A hint neither forces the generic path nor inhibits
-buffer conversion. This also means a former speedup caused by forcing generic
-memory cannot be attributed to a retained buffer cache hint.
+control-bit mapping (`glc` / `slc` on gfx936: `.cg`/`.cs` load and `.cs` store
+emit `glc slc`, `.cv` load and `.wt` store emit `glc`, `.ca` load and
+`.wb`/`.cg` store emit default bits). Eviction priorities are omitted because
+buffer ops do not carry them. A remark reports any omitted eviction priorities;
+compilation continues on the selected buffer path. A hint neither forces the
+generic path nor inhibits buffer conversion.
 For generic gfx936 global `.cg`/`.cs` loads, the address is constrained to a vector register so
 uniform-load scalarization does not discard the cache controls. This can add
 a scalar-to-vector move or increase register pressure; no additional volatile
 semantics are introduced.
-The HCU policy object accepts gfx936 global accesses and the modifiers above.
+The HCU policy object accepts global accesses on HCU targets and uses the
+cache mapping for the compilation target.
 The legacy `tl.store(..., cache_modifier=".wt")` also remains available and
 retains its existing wait lowering. The native HCU object does not accept `.wt`.
 
@@ -369,26 +372,29 @@ of an existing program that specified one of these modifiers. Loads with
 `ca/cv` and stores with `wt` retain the ordinary predicator or vector-store
 path wherever eligible. Both Python spellings follow the same rule.
 
-## Migration from the experimental common interface
+## Native NVIDIA policy API
 
-The common intent layer and public `tle.gpu.nvidia` module have been removed.
-Move NVIDIA imports directly to `triton.experimental.tle.language.gpu`;
-`CachePolicy` and `FractionalEvictionPolicy` are exported there. The old module has no compatibility alias.
+`CachePolicy` and `FractionalEvictionPolicy` are exported directly from
+`triton.experimental.tle.language.gpu` (there is no `tle.gpu.nvidia` subpackage
+or `backend` parameter).
 
-| Removed request | Native replacement |
+Generic intent strings (`"reuse"`, `"streaming"`, `"bypass"`, `"default"`) are
+rejected rather than reinterpreted; use explicit native hardware controls
+instead:
+
+| Intent | Native `tle.gpu` expression |
 | --- | --- |
-| `CachePolicy(l2="reuse")` | `CachePolicy(l2=FractionalEvictionPolicy("evict_last"))` |
-| `CachePolicy(l2="streaming")` | `CachePolicy(l2=FractionalEvictionPolicy("evict_first"))` |
-| `CachePolicy(l1="reuse")` | `CachePolicy(l1="evict_last")` |
-| `CachePolicy(l1="streaming")` | `CachePolicy(l1="evict_first")` |
-| `CachePolicy(l1="bypass")` | `CachePolicy(cache_modifier="cg")` |
-| Common all-default object | Omit `cache_policy` or pass `None` |
+| L2 retention | `CachePolicy(l2=FractionalEvictionPolicy("evict_last"))` |
+| L2 streaming | `CachePolicy(l2=FractionalEvictionPolicy("evict_first"))` |
+| L1 retention | `CachePolicy(l1="evict_last")` |
+| L1 streaming | `CachePolicy(l1="evict_first")` |
+| L1 bypass (cache global) | `CachePolicy(cache_modifier="cg")` |
+| Default behavior | Omit `cache_policy` or pass `None` |
 
-Requests with independent L1 and L2 eviction are no longer supported. A cache
+Simultaneous independent `l1` and `l2` eviction settings are rejected. A cache
 modifier plus L2 eviction remains available where the instruction permits it.
-Remove `backend`; the native type and compilation target enforce compatibility. The
-removed `reuse`, `streaming`, `bypass`, and `default` strings are rejected as
-NVIDIA L1/L2 fields; they are not silently reinterpreted.
+The target and native type enforce backend compatibility without a separate
+`backend` keyword.
 
 ## Ordinary global loads and stores
 
@@ -435,9 +441,10 @@ they are not renamed to L2-only policies. Native scoped values distinguish the
 requested hardware level. A TLE TMA copy and an NVIDIA TMA store now carry the
 same defaulted `evict` field that an NVIDIA TMA load already had.
 
-There is no `tt.cache_policy` dictionary, location tag, builder listener or
-policy-conservation pass. Rewrites reuse their existing `getCache()` and
-`getEvict()` arguments. PPU AIU rewrites that previously defaulted these fields
+Policies normalize directly onto existing `cache` and `evict` fields before
+op creation rather than adding auxiliary dictionary attributes, location tags,
+or a separate policy propagation pass. Rewrites forward their existing
+`getCache()` and `getEvict()` arguments. PPU AIU rewrites that previously defaulted these fields
 now pass them explicitly. A new rewrite must still preserve the formal fields;
 ODS does not infer the meaning of an arbitrary replacement operation.
 
@@ -493,7 +500,7 @@ load `ca` / store `wb`；它不再强制编译器保留 generic global 路径。
 | PPU AIU | 显式 AIU kp1–6 保留，kp3→kp2；普通 LSU 自动提升到 AIU 时使用 AIU 默认，不按数字推断同义 |
 | PPU 普通 async | 使用该异步路径原有默认控制 |
 | HCU gfx936 generic global | 保留 LLVM non-temporal/volatile 映射；`.cg/.cs` load 的地址使用 VGPR，两种写法一致。旧字符串 `.wt` store 继续走原 wait 路径 |
-| HCU gfx936 buffer／direct-to-LDS | 沿用已有 cache→控制位映射，当前结果为默认位 0；不携带 eviction |
+| HCU gfx936 buffer／direct-to-LDS | 映射为硬件 `glc`/`slc` 控制位（`.cg/.cs` load 与 `.cs` store 设为 `glc slc`，`.cv` load 与 `.wt` store 设为 `glc`）；不携带 eviction |
 | MetaX 普通访存 | Load `cg/cs/lu` 和 store `wb/cg/cs` 经 LLVM helper；load `ca/cv` 和 store `wt` 保留原本可用的 predicator／向量写 |
 | MetaX async | 使用该异步路径默认控制 |
 

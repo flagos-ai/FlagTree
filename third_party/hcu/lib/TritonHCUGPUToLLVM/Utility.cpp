@@ -480,8 +480,52 @@ int32_t getCtrlBitsForBufferAtomicsOnGFX_942_950(bool setSC0, bool setSC1,
   return aux;
 }
 
-static int32_t getDefaultCtrlBitsForCacheModifier(triton::CacheModifier cm) {
-  return 0;
+// Pre-gfx942 GCN/CDNA (including HCU gfx936):
+//   bit 0 = glc, bit 1 = slc
+// -------+-----+-----+-----+
+// Op     | cm  | SLC | GLC |
+// -------+-----+-----+-----+
+// Load   | .ca |  0  |  0  |
+//        | .cg |  1  |  1  |
+//        | .cs |  1  |  1  |
+//        | .cv |  0  |  1  |
+// -------+-----+-----+-----+
+// Store  | .wb |  0  |  0  |
+//        | .cg |  0  |  0  |
+//        | .cs |  1  |  1  |
+//        | .wt |  0  |  1  |
+// -------+-----+-----+-----+
+static int32_t getDefaultCtrlBitsForCacheModifier(triton::CacheModifier cm,
+                                                  bool isLoad) {
+  const int glcBit = 0b1, slcBit = 0b10;
+  int32_t aux = 0;
+  switch (cm) {
+  case triton::CacheModifier::CA:
+    aux = 0;
+    break;
+  case triton::CacheModifier::CG:
+    if (isLoad)
+      aux |= glcBit | slcBit;
+    break;
+  case triton::CacheModifier::CS:
+    aux |= glcBit | slcBit;
+    break;
+  case triton::CacheModifier::CV:
+    assert(isLoad);
+    aux |= glcBit;
+    break;
+  case triton::CacheModifier::WB:
+    assert(!isLoad);
+    aux = 0;
+    break;
+  case triton::CacheModifier::WT:
+    assert(!isLoad);
+    aux |= glcBit;
+    break;
+  default:
+    aux = 0;
+  }
+  return aux;
 }
 
 // Cache modifiers changes how data is managed in the GPU's cache hierarchy:
@@ -499,7 +543,7 @@ int32_t getCtrlBitsForCacheModifierOnTarget(
   case llvm::AMDGPU::GK_GFX950:
     return getCtrlBitsForCacheModifierOnGFX_942_950(cm, isLoad);
   default:
-    return getDefaultCtrlBitsForCacheModifier(cm);
+    return getDefaultCtrlBitsForCacheModifier(cm, isLoad);
   }
 }
 

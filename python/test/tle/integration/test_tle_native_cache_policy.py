@@ -9,6 +9,7 @@ import triton.experimental.tle.language as tle
 from triton._flagtree_backend import FLAGTREE_BACKEND
 
 BACKEND = FLAGTREE_BACKEND or "nvidia"
+HAS_TLE_SMEM = hasattr(triton._C.libtriton.ir.builder, "make_swizzled_shared_encoding_attr")
 DEVICE = "musa" if BACKEND == "mthreads" else "cuda"
 POLICY_ATTR = {
     "nvidia": "evictionPolicy = l2_evict_first",
@@ -57,6 +58,7 @@ def _policy():
     }[BACKEND]
 
 
+@pytest.mark.skipif(not HAS_TLE_SMEM, reason="TLE shared memory allocation requires TLE builder bindings")
 @pytest.mark.parametrize("n", [509, 1 << 20])
 def test_none_matches_omission_and_preserves_gpu_visibility(n):
     x = torch.zeros(n + 3, device=DEVICE)
@@ -73,6 +75,7 @@ def test_none_matches_omission_and_preserves_gpu_visibility(n):
     assert POLICY_ATTR not in kernel.asm["ttir"]
 
 
+@pytest.mark.skipif(not HAS_TLE_SMEM, reason="TLE shared memory allocation requires TLE builder bindings")
 def test_equal_native_values_share_jit_specialization():
     x = torch.zeros(512, device=DEVICE)
     first = _copy[(1, )](x, x, 512, _policy(), False)
@@ -80,6 +83,7 @@ def test_equal_native_values_share_jit_specialization():
     assert first.hash == equal.hash
 
 
+@pytest.mark.skipif(not HAS_TLE_SMEM, reason="TLE shared memory allocation requires TLE builder bindings")
 def test_native_hint_tail_after_gpu_write():
     n = (1 << 20) - 3
     x = torch.zeros(n + 3, device=DEVICE)
@@ -121,6 +125,7 @@ def test_musa_legacy_shared_copy_preserves_masked_fill(fill):
     assert ("ttg.async_copy_global_to_local" in kernel.asm["ttgir"]) == (fill == 0)
 
 
+@pytest.mark.skipif(not HAS_TLE_SMEM, reason="TLE shared memory allocation requires TLE builder bindings")
 @pytest.mark.parametrize("n", [509, 512])
 def test_native_hint_preserves_selected_copy_transport(n):
     x = torch.zeros(n + 3, device=DEVICE)
@@ -153,6 +158,19 @@ def test_cache_hint_adjustment_remark(monkeypatch, tmp_path, capfd):
     diagnostic = capfd.readouterr().err
     assert "cache hint on NVIDIA cp.async" in diagnostic
     assert "cache=cs" in diagnostic
+    from triton.backends.compiler import GPUTarget
+    from triton.backends.nvidia.compiler import CUDABackend
+    from triton.compiler import ASTSource
+    monkeypatch.setattr(CUDABackend, "make_cubin", lambda *args: b"")
+    src = ASTSource(
+        fn=_async_copy,
+        signature={"X": "*fp32", "Y": "*fp32", "N": "constexpr", "POLICY": "constexpr"},
+        constexprs={"N": 507, "POLICY": tle.gpu.CachePolicy(l2=tle.gpu.FractionalEvictionPolicy("evict_last"))},
+    )
+    capfd.readouterr()
+    kernel = triton.compile(src, target=GPUTarget("cuda", 90, 32), options={"ptx_version": 94})
+    assert "cp.async.ca.shared.global.L2::cache_hint" in kernel.asm["ptx"]
+    assert "cache hint on NVIDIA cp.async" not in capfd.readouterr().err
 
 
 @pytest.mark.skipif(BACKEND != "nvidia", reason="NVIDIA native fields")
@@ -237,6 +255,7 @@ def test_warp_specialize_object_string_and_none(priority, string):
         assert f"createpolicy.fractional.L2::{priority}" in kernel.asm["ptx"]
 
 
+@pytest.mark.skipif(not HAS_TLE_SMEM, reason="TLE shared memory allocation requires TLE builder bindings")
 def test_backend_mismatch_fails_before_launch():
     x = torch.zeros(512, device=DEVICE)
     wrong = tle.gpu.ppu.CachePolicy(4) if BACKEND == "nvidia" else tle.gpu.CachePolicy(l1="evict_first")

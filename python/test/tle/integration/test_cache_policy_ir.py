@@ -89,17 +89,19 @@ def test_hcu_hint_keeps_the_default_buffer_path(modifier):
     for kernel in (default, hinted):
         assert ".buffer_load " in kernel.asm["ttgir"]
         assert ".buffer_store " in kernel.asm["ttgir"]
-    # The gfx936 target maps these buffer modifiers to default control bits.
-    # Compare the memory intrinsic operands, excluding debug metadata.
-    def memory_instructions(kernel):
-        return [
-            re.sub(r", !dbg !\d+", "", line.strip())
-            for line in kernel.asm["llir"].splitlines()
-            if "call " in line and any(name in line for name in ("buffer.load", "buffer.store"))
-        ]
-
-    assert memory_instructions(default)
-    assert memory_instructions(default) == memory_instructions(hinted)
+        assert "global_load_" not in kernel.asm["amdgcn"]
+        assert "global_store_" not in kernel.asm["amdgcn"]
+    assembly = hinted.asm["amdgcn"]
+    loads = [line for line in assembly.splitlines() if re.search(r"buffer_load_", line)]
+    stores = [line for line in assembly.splitlines() if re.search(r"buffer_store_", line)]
+    assert loads and stores
+    if modifier in (".cg", ".cs"):
+        assert all("glc slc" in line for line in loads)
+    elif modifier == ".cv":
+        assert all("glc" in line and "slc" not in line for line in loads)
+    else:
+        assert all("glc" not in line and "slc" not in line for line in loads)
+    assert all("glc slc" in line for line in stores)
     torch.testing.assert_close(y[:253], x[:253] + 1, rtol=0, atol=0)
     assert torch.all(y[253:] == -7)
 

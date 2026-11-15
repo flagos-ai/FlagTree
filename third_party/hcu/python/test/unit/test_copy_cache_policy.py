@@ -17,7 +17,7 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-"""HCU copy policies preserve the global path even when buffer ops are enabled."""
+"""HCU cache policy validation for global-memory and buffer-op lowerings."""
 from dataclasses import FrozenInstanceError
 import re
 
@@ -67,10 +67,27 @@ def masked_copy_kernel(a, b, N: tl.constexpr, POLICY: tl.constexpr):
     tle.gpu.copy(tile, b + x, (128, ), mask=x < N, cache_policy=POLICY)
 
 
+@triton.jit
+def ordinary_memory_kernel(a, b, POLICY: tl.constexpr):
+    x = tl.arange(0, 128)
+    tl.store(b + x, tl.load(a + x, cache_policy=POLICY), cache_policy=POLICY)
+
+
+@pytest.mark.parametrize("arch", ("gfx928", "gfx936", "gfx938"))
+def test_ordinary_streaming_load_and_store_on_hcu(arch, monkeypatch):
+    pytest.importorskip("triton._C.libtriton.hcu")
+    monkeypatch.setenv("AMDGCN_USE_BUFFER_OPS", "1")
+    source = ASTSource(ordinary_memory_kernel, {"a": "*fp32", "b": "*fp32"}, {"POLICY": CachePolicy(".cs")})
+    assembly = triton.compile(source, target=GPUTarget("hip", arch, 64)).asm["amdgcn"]
+    for op in ("buffer_load_", "buffer_store_"):
+        instructions = [line for line in assembly.splitlines() if op in line]
+        assert instructions and all("glc slc" in line for line in instructions)
+
+
 @pytest.mark.parametrize("n", (1, 127, 128))
 def test_uniform_mask_keeps_vector_cache_control(n, monkeypatch):
     pytest.importorskip("triton._C.libtriton.hcu")
-    monkeypatch.setenv("AMDGCN_USE_BUFFER_OPS", "1")
+    monkeypatch.setenv("AMDGCN_USE_BUFFER_OPS", "0")
     compiled = triton.compile(
         ASTSource(masked_copy_kernel, {"a": "*fp32", "b": "*fp32"}, {"N": n, "POLICY": CachePolicy(".cs")}),
         target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4})
@@ -84,7 +101,7 @@ def test_uniform_mask_keeps_vector_cache_control(n, monkeypatch):
 @pytest.mark.parametrize("store", STORE_MODIFIERS)
 def test_gfx936_global_cache_flags(load, store, monkeypatch):
     pytest.importorskip("triton._C.libtriton.hcu")
-    monkeypatch.setenv("AMDGCN_USE_BUFFER_OPS", "1")
+    monkeypatch.setenv("AMDGCN_USE_BUFFER_OPS", "0")
     compiled = triton.compile(
         ASTSource(copy_kernel, {"a": "*fp32", "b": "*fp32"}, {"LOAD": CachePolicy(load), "STORE": CachePolicy(store)}),
         target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4})
@@ -92,6 +109,28 @@ def test_gfx936_global_cache_flags(load, store, monkeypatch):
     assert "buffer_load" not in assembly and "buffer_store" not in assembly
     loads = [line for line in assembly.splitlines() if re.search(r"global_load_", line)]
     stores = [line for line in assembly.splitlines() if re.search(r"global_store_", line)]
+    assert loads and stores
+    if load in (".cg", ".cs"):
+        assert all("glc slc" in line for line in loads)
+    elif load == ".cv":
+        assert all("glc" in line and "slc" not in line for line in loads)
+    else:
+        assert all("glc" not in line and "slc" not in line for line in loads)
+    assert all(("glc slc" in line) == (store == ".cs") for line in stores)
+
+
+@pytest.mark.parametrize("load", LOAD_MODIFIERS)
+@pytest.mark.parametrize("store", STORE_MODIFIERS)
+def test_gfx936_buffer_ops_preserve_transport(load, store, monkeypatch):
+    pytest.importorskip("triton._C.libtriton.hcu")
+    monkeypatch.setenv("AMDGCN_USE_BUFFER_OPS", "1")
+    compiled = triton.compile(
+        ASTSource(copy_kernel, {"a": "*fp32", "b": "*fp32"}, {"LOAD": CachePolicy(load), "STORE": CachePolicy(store)}),
+        target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4})
+    assembly = compiled.asm["amdgcn"]
+    assert "global_load_" not in assembly and "global_store_" not in assembly
+    loads = [line for line in assembly.splitlines() if re.search(r"buffer_load_", line)]
+    stores = [line for line in assembly.splitlines() if re.search(r"buffer_store_", line)]
     assert loads and stores
     if load in (".cg", ".cs"):
         assert all("glc slc" in line for line in loads)

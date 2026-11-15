@@ -166,7 +166,7 @@ class NativeCachePolicy:
         modifier = self.native_modifier()
         if not modifier and self.backend == "ppu":
             return ir.CACHE_MODIFIER(11), ir.EVICTION_POLICY.NORMAL
-        # An explicit HCU default retains the validated global memory path.
+        # An explicit HCU default normalizes to the direction's default alias.
         if not modifier and self.backend == "hcu":
             modifier = "ca" if is_load else "wb"
         cache = getattr(ir.CACHE_MODIFIER, modifier.lstrip(".").upper()) if modifier else ir.CACHE_MODIFIER.NONE

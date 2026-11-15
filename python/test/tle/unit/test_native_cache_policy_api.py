@@ -13,7 +13,7 @@ def resolve(policy, backend="nvidia", descriptor=False, load=True, common_ir=Fal
     return resolve_policy(policy, descriptor, load, semantic, backend == "musa", False, common_ir)
 
 
-def test_nvidia_public_exports_and_removed_namespace():
+def test_nvidia_public_exports_no_subpackage():
     for name in ("CachePolicy", "FractionalEvictionPolicy"):
         assert name in gpu.__all__
         assert getattr(gpu, name) is not None
@@ -48,13 +48,13 @@ def test_empty_nvidia_policy_requires_none():
 
 @pytest.mark.parametrize("level", ["l1", "l2"])
 @pytest.mark.parametrize("intent", ["reuse", "streaming", "bypass", "default"])
-def test_removed_generic_intents_are_rejected(level, intent):
+def test_generic_intent_strings_are_rejected(level, intent):
     with pytest.raises(ValueError if level == "l1" else TypeError):
         gpu.CachePolicy(**{level: intent})
 
 
 @pytest.mark.parametrize("backend", [None, "nvidia", "mthreads", "ppu", "hcu", "metax"])
-def test_removed_backend_argument(backend):
+def test_backend_keyword_argument_is_rejected(backend):
     with pytest.raises(TypeError, match="backend"):
         gpu.CachePolicy(l1="evict_normal", backend=backend)
 
@@ -116,10 +116,31 @@ def test_hip_target_uses_selected_backend(monkeypatch):
     import triton._flagtree_backend as selected
     policy = gpu.hcu.CachePolicy()
     monkeypatch.setattr(selected, "FLAGTREE_BACKEND", "hcu")
-    assert resolve(policy, "hip") is policy
-    with pytest.raises(ValueError, match="gfx936"):
-        resolve(policy, "hip", arch="gfx90a")
+    for arch in ("gfx928", "gfx936", "gfx938"):
+        assert resolve(policy, "hip", arch=arch) is policy
     assert resolve(None, "hip", arch="gfx90a") is None
     monkeypatch.setattr(selected, "FLAGTREE_BACKEND", "")
     with pytest.raises(ValueError, match="backend amd"):
         resolve(policy, "hip")
+
+
+def test_resolve_memory_policy_respects_common_ir_and_backend_flags(monkeypatch):
+    from triton.experimental.tle.language.gpu import _cache_policy
+    from triton.experimental.tle.language.gpu import semantic as tle_semantic
+    from triton.experimental.tle.language.gpu.iluvatar import copy as iluvatar_copy
+    from triton.experimental.tle.language.gpu.mthreads import common as mthreads_common
+    pointer = SimpleNamespace(dtype=SimpleNamespace(address_space=1))
+    semantic = SimpleNamespace(builder=SimpleNamespace(options=SimpleNamespace(arch=90)))
+    mthreads_policy = gpu.mthreads.LSUCachePolicy()
+    monkeypatch.setattr(mthreads_common, "enabled", lambda: True)
+    monkeypatch.setattr(iluvatar_copy, "enabled", lambda: False)
+    monkeypatch.setattr(tle_semantic, "COMMON_IR_ENABLED", False)
+    assert _cache_policy.resolve_memory_policy(mthreads_policy, pointer, True, "", "", semantic) is mthreads_policy
+    semantic.builder.options.supports_lsu_cache_policy = False
+    for is_load in (True, False):
+        assert _cache_policy.resolve_memory_policy(mthreads_policy, pointer, is_load, "", "", semantic) is None
+    with pytest.raises(ValueError, match="cannot be combined"):
+        _cache_policy.resolve_memory_policy(mthreads_policy, pointer, True, ".cg", "", semantic)
+    monkeypatch.setattr(tle_semantic, "COMMON_IR_ENABLED", True)
+    with pytest.raises(ValueError, match="not supported"):
+        _cache_policy.resolve_memory_policy(mthreads_policy, pointer, True, "", "", semantic)

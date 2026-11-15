@@ -19,7 +19,7 @@
 // TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 // SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-// RUN: triton-opt %s --allocate-shared-memory-nv --convert-triton-gpu-to-llvm="ptx-version=94" -reconcile-unrealized-casts | FileCheck %s
+// RUN: triton-opt %s -verify-diagnostics --allocate-shared-memory-nv --convert-triton-gpu-to-llvm="ptx-version=94" -reconcile-unrealized-casts | FileCheck %s
 
 // Explicit modifiers and eviction policies survive final vectorization.
 // Unsupported controls and old PTX versions are tested in the error fixtures.

@@ -774,11 +774,6 @@ struct BufferLoadOpConversion
     Value mask = op.getMask();
     Value other = op.getOther();
     auto cacheMod = op.getCache();
-    if (targetInfo.getArch() == "gfx936")
-      triton::remarkCacheControlConversion(
-          op, "HCU gfx936 buffer memory operation", triton::CacheModifier::NONE,
-          triton::EvictionPolicy::NORMAL,
-          "the existing target mapping emits zero cache-control bits");
 
     // Converted values
     Value llPtr = adaptor.getPtr();
@@ -859,11 +854,6 @@ struct BufferLoadToLocalOpConversion
     if (failed(validateCacheControls(op, true)))
       return failure();
     auto loc = op->getLoc();
-    if (targetInfo.getArch() == "gfx936")
-      triton::remarkCacheControlConversion(
-          op, "HCU gfx936 buffer memory operation", triton::CacheModifier::NONE,
-          triton::EvictionPolicy::NORMAL,
-          "the existing target mapping emits zero cache-control bits");
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     LLVM::HCU::BufferEmitter bufferEmitter(rewriter, loc, targetInfo);
 
@@ -1033,12 +1023,10 @@ struct AsyncCopyGlobalToLocalOpConversion
     if (failed(validateCacheControls(op, true)))
       return failure();
     triton::remarkCacheControlConversion(
-        op, "HCU direct-to-LDS copy",
-        targetInfo.getArch() == "gfx936" ? triton::CacheModifier::NONE
-                                         : op.getCache(),
+        op, "HCU direct-to-LDS copy", op.getCache(),
         triton::EvictionPolicy::NORMAL,
-        "use the existing target cache-bit mapping; gfx936 has no mapped hint "
-        "bits");
+        "direct-to-LDS copy uses the target cache-bit mapping without eviction "
+        "priorities");
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
 
@@ -1685,11 +1673,6 @@ struct BufferStoreOpConversion
     Value mask = op.getMask();
     Value data = op.getValue();
     auto cacheMod = op.getCache();
-    if (targetInfo.getArch() == "gfx936")
-      triton::remarkCacheControlConversion(
-          op, "HCU gfx936 buffer memory operation", triton::CacheModifier::NONE,
-          triton::EvictionPolicy::NORMAL,
-          "the existing target mapping emits zero cache-control bits");
 
     Value llPtr = adaptor.getPtr();
     Value llOffset = adaptor.getOffsets();

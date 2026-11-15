@@ -1121,7 +1121,7 @@ tle.gpu.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
 - `cache_policy` 接受后端原生策略。`tle.gpu.CachePolicy(cache_modifier=None, l1=None, l2=None, l2_prefetch_size=None)` 专用于 NVIDIA，字段表达原生 PTX 控制；不再接受通用意图字符串及 `backend` 参数。
 - 省略参数或传 Python `None` 保持既有默认路径。NVIDIA `CachePolicy()` 空构造报错；其他原生默认构造保持原语义。MThreads 字符串 `"none"` 是 persistence 值，与 Python `None` 不同。
 - 静态对象不可变，支持 host/JIT 构造、按值特化和 constexpr worker 转发。策略字段必须是编译期值。每个策略只作用于本次 copy 的 global-memory 端，不改变同步语义。
-- 后端、架构、方向、路径或完整指令组合不支持时明确报错。lowering 和流水改写必须保留请求的全部控制。
+- 后端、架构、方向、路径或完整指令组合不支持时明确报错。正式 cache/evict 字段在中间改写中保留，最终 lowering 按所选指令能力保留支持的控制，无法表达的部分转换或省略并输出 MLIR remark。
 
 | 后端／路径 | 公开策略类型 | 原生控制 |
 | --- | --- | --- |
@@ -1142,11 +1142,11 @@ tle.gpu.copy(b_desc, b_tile, [BK, BN], [k, n],
              cache_policy=tle.gpu.CachePolicy(
                  l2=tle.gpu.FractionalEvictionPolicy("evict_first")))
 ```
-NVIDIA 策略只接受 `fraction=1`、`secondary="evict_unchanged"`；非默认 `l2_prefetch_size` 及同时设置 `l1`/`l2` 均报错。NVIDIA TMA 旁路 L1，但访问 L2。modifier 与显式 L1 eviction 不能同时设置。NVIDIA 的策略类型统一从 `tle.gpu` 导出，旧 `tle.gpu.nvidia.*` 公开路径已删除，不提供兼容别名。
+NVIDIA 策略只接受 `fraction=1`、`secondary="evict_unchanged"`；非默认 `l2_prefetch_size` 及同时设置 `l1`/`l2` 均报错。NVIDIA TMA 旁路 L1，但访问 L2。modifier 与显式 L1 eviction 不能同时设置。NVIDIA 的策略类型统一从 `tle.gpu` 导出（不单设 `tle.gpu.nvidia.*` 子模块）。
 
 PPU 普通 `.ba` load/store、LSU kp3/kp7 和 AIU kp7 继续拒绝。各后端字符串及整数保持原生语义，不由接口推断 MThreads/PPU 的物理 L1/L2 映射，也不将 MThreads `none` 推荐为通用流式策略。
 
-必须测量完整 kernel，并验证 GPU 更新输入、预热输出覆盖、mask/tail 和实际调用场景对应的缓存状态。固定缓冲与逐次驱逐结果应分别解释；表达覆盖或 API 等价不算新增加速。完整字段、方向／架构限制与迁移示例见[策略指南](docs/tle-copy-cache-policy.md)。
+必须测量完整 kernel，并验证 GPU 更新输入、预热输出覆盖、mask/tail 和实际调用场景对应的缓存状态。固定缓冲与逐次驱逐结果应分别解释；表达覆盖或 API 等价不算新增加速。完整字段、方向／架构限制与用法示例见[策略指南](docs/tle-copy-cache-policy.md)。
 
 ##### 3.3.1.2 执行编排
 
@@ -1692,8 +1692,7 @@ TopK Selector 性能使用 `python/tutorials/tle/deepseek_v32/01-topk_selector.p
 
 原生模式使用正式的 `cache` / `evict` 字段，包括 NVIDIA 分层 eviction、
 PPU AIU 模式和 MThreads LSU 组合。改写通过已有 builder 参数传递这些字段；
-MThreads TME 保留已有 persistence、prefetch 属性。没有策略字典、location
-标记或 `copyCachePolicy` 属性搬运辅助函数。
+MThreads TME 保留已有 persistence、prefetch 属性。仅复用既有 `cache` / `evict` 字段与 TME 属性，不额外引入策略字典或独立属性搬运辅助函数。
 
 编译器根据原有布局、宽度和调度规则选择搬运路径，再按最终指令能力转换 hint。
 可表达的控制保留，其余转换或省略，并通过 MLIR remark 给出位置、请求值、
