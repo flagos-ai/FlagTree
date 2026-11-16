@@ -14,7 +14,10 @@ first copy of a remote source waits for its arrival. Inter-node sends use one
 CTA per remote node. All communication uses TLE remote, signal, signal_wait, and
 distributed_barrier; intra-node copies use SM load/store rather than
 Triton-distributed's Copy Engine.
-Context and stream organization follow tutorials 08/09. Requires SM90 or newer.
+Context and stream organization follow tutorials 08/09. NVIDIA requires SM90 or
+newer. Both backends use tensor descriptors; HCU lowers them in its compiler.
+The async proxy fence is NVIDIA-only. On 64-lane hardware, use at most 16
+communication warps (the CLI selects this automatically).
 Inter-node PUTs transfer a complete source segment up to the runtime's tensor
 construction limit (2**25 elements in this checkout); only larger segments are
 split. This limit counts elements, not bytes.
@@ -83,6 +86,11 @@ class TleAllGatherGemmConfig:
             raise ValueError("num_warps must be 4/8; ag_num_warps must be 4/8/16/32")
 
 
+def _default_config() -> TleAllGatherGemmConfig:
+    # HCU's 64-lane waves would make 32 warps exceed 1024 threads per block.
+    return TleAllGatherGemmConfig(ag_num_warps=16 if torch.version.hip else 32)
+
+
 def _validate_shape(M, N, K, world_size, local_world_size, config):
     config.validate()
     if min(M, N, K, world_size, local_world_size) < 1:
@@ -96,7 +104,7 @@ def _validate_shape(M, N, K, world_size, local_world_size, config):
     if (M // world_size) % config.block_m:
         raise ValueError("M/world_size must be divisible by block_m")
     if K % 16 or (N // world_size) % 16:
-        raise ValueError("K and N/world_size must be multiples of 16 for TMA")
+        raise ValueError("K and N/world_size must be multiples of 16")
 
 
 @dataclasses.dataclass
@@ -148,14 +156,17 @@ def create_ag_gemm_context(max_M: int, N: int, K: int, dtype: torch.dtype, rank:
     global _active_context
     if _active_context is not None:
         raise RuntimeError("reuse the existing AG GEMM context; its signal slots are already reserved")
-    config = config or TleAllGatherGemmConfig()
+    config = config or _default_config()
     _validate_shape(max_M, N, K, world_size, local_world_size, config)
     if dtype not in (torch.float16, torch.bfloat16):
         raise ValueError("AG GEMM supports float16 and bfloat16")
     if not 0 <= rank < world_size:
         raise ValueError("rank must be in [0, world_size)")
-    if torch.cuda.get_device_capability()[0] < 9:
+    if not torch.version.hip and torch.cuda.get_device_capability()[0] < 9:
         raise RuntimeError("persistent TMA GEMM requires SM90 or newer")
+    target = triton.runtime.driver.active.get_current_target()
+    if config.ag_num_warps * target.warp_size > 1024:
+        raise ValueError("ag_num_warps exceeds 1024 threads per block; use --ag-num-warps 16 or fewer")
     if dist.get_rank() != rank or dist.get_world_size() != world_size:
         raise ValueError("context topology must match the default process group")
     if int(os.environ.get("LOCAL_RANK", rank % local_world_size)) != rank % local_world_size:
@@ -345,6 +356,7 @@ def kernel_ag_gemm_consumer_persistent(
     BLOCK_K: tl.constexpr,
     GROUP_M: tl.constexpr,
     NUM_SMS: tl.constexpr,
+    IS_NVIDIA: tl.constexpr,
 ):
     """Consume one ready source-rank segment at a time, starting locally."""
     num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -383,16 +395,16 @@ def kernel_ag_gemm_consumer_persistent(
                 group_kind="block",
                 order="acquire",
             )
-        # The producer writes through the generic/network path, whereas TMA
-        # reads through the async proxy. Order that proxy after the acquire.
-        tl.inline_asm_elementwise(
-            "fence.proxy.async.global; mov.u32 $0, 0;",
-            constraints="=r",
-            args=[],
-            dtype=tl.int32,
-            is_pure=False,
-            pack=1,
-        )
+        if IS_NVIDIA:
+            # Order the generic/network producer before TMA's async proxy.
+            tl.inline_asm_elementwise(
+                "fence.proxy.async.global; mov.u32 $0, 0;",
+                constraints="=r",
+                args=[],
+                dtype=tl.int32,
+                is_pure=False,
+                pack=1,
+            )
         offs_m = pid_m * BLOCK_M
         offs_n = pid_n * BLOCK_N
         accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
@@ -517,6 +529,7 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
         BLOCK_K=cfg.block_k,
         GROUP_M=cfg.group_m,
         NUM_SMS=ctx.num_gemm_sms,
+        IS_NVIDIA=not torch.version.hip,
         num_warps=cfg.num_warps,
         num_stages=cfg.num_stages,
     )
@@ -565,8 +578,9 @@ def _parse_args(argv=None):
     parser.add_argument("--iters", type=int, default=50, help="Benchmark iterations; zero disables timing.")
     parser.add_argument("--trans-b", action="store_true", help="Back B with contiguous [N/world_size, K].")
     parser.add_argument("--gemm-sms", type=int)
+    defaults = _default_config()
     for field in dataclasses.fields(TleAllGatherGemmConfig):
-        parser.add_argument("--" + field.name.replace("_", "-"), type=int, default=field.default)
+        parser.add_argument("--" + field.name.replace("_", "-"), type=int, default=getattr(defaults, field.name))
     args = parser.parse_args(argv)
     if min(args.M, args.N, args.K, args.check_iters) < 1 or min(args.warmup, args.iters) < 0:
         parser.error("dimensions and check-iters must be positive; warmup and iters must be nonnegative")

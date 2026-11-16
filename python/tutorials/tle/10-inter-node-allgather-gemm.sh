@@ -4,8 +4,8 @@ set -euo pipefail
 # Run once per node, setting NODE_RANK=0,1,... and the same MASTER_ADDR.
 # NNODES=2 NODE_RANK=0 MASTER_ADDR=10.0.0.1 NPROC_PER_NODE=4 bash "$0" --dtype bf16
 # Use the same communication environment as tutorial 09.
-# Set CUDA_VISIBLE_DEVICES externally to select GPUs.
-export FLAGCX_IB_HCA=mlx5_0,mlx5_1,mlx5_bond_0
+# Set CUDA_VISIBLE_DEVICES (NVIDIA) or HIP_VISIBLE_DEVICES (HCU) externally.
+export FLAGCX_IB_HCA="${FLAGCX_IB_HCA:-mlx5_0,mlx5_1,mlx5_bond_0}"
 export FLAGCX_USE_HETERO_COMM="${FLAGCX_USE_HETERO_COMM:-1}"
 export FLAGCX_MEM_ENABLE="${FLAGCX_MEM_ENABLE:-1}"
 export FLAGCX_VMM_ENABLE="${FLAGCX_VMM_ENABLE:-0}"
