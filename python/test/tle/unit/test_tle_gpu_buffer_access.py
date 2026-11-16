@@ -6,8 +6,7 @@ import triton.language as tl
 import triton.experimental.tle.language as tle
 from triton._common_ir import ENABLED
 
-pytestmark = pytest.mark.skip_if_tle_unsupported("gpu.alloc",
-                                                 "gpu.buffered_tensor.slot")
+pytestmark = pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.buffered_tensor.slot")
 
 
 @triton.jit
