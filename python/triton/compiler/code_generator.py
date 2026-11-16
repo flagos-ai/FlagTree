@@ -1278,10 +1278,8 @@ class CodeGenerator(ast.NodeVisitor):
         # flagtree tle
         try:
             from ..experimental.tle import language as tle
-            tle_pipeline = tle.gpu.pipeline
             tle_range = tle.range  # flagtree reorder-loop-loads
         except (ImportError, AttributeError):
-            tle_pipeline = None
             tle_range = None
         try:
             from ..experimental.tle import language as tle
@@ -1290,10 +1288,10 @@ class CodeGenerator(ast.NodeVisitor):
             tle_dsa_pipeline = None
 
         # flagtree tle: check supported
-        if IteratorClass in (tle_pipeline, tle_range, tle_dsa_pipeline) and IteratorClass is not None:
+        if IteratorClass in (tle_range, tle_dsa_pipeline) and IteratorClass is not None:
             self._require_tle_primitive(IteratorClass)
 
-        if IteratorClass in [language.range, tle_pipeline, tle_range, tle_dsa_pipeline]:  # flagtree reorder-loop-loads
+        if IteratorClass in [language.range, tle_range, tle_dsa_pipeline]:  # flagtree reorder-loop-loads
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now

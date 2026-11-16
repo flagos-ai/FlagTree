@@ -1,4 +1,5 @@
 TLE_SUPPORTED_PRIMITIVES = [
+    ## TLE-Lite
     "extract_tile",
     "insert_tile",
     "device_mesh",
@@ -7,6 +8,8 @@ TLE_SUPPORTED_PRIMITIVES = [
     "distributed_barrier",
     "remote",
     "cumsum",
+
+    ## TLE-Struct DSA (thrive): inter-die RMA and synchronization
     "dsa.thrive.putmem",
     "dsa.thrive.getmem",
     "dsa.thrive.wait",

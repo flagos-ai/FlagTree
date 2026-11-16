@@ -54,7 +54,6 @@ def main():
         import torch
         if torch.cuda.is_available():
             integration_tests = [
-                ("integration/test_tle_pipeline_e2e.py", "TLE Pipeline End-to-End Tests"),
                 ("integration/test_tle_local_store.py", "TLE Local Pointer Integration Tests"),
                 ("integration/test_tle_tma_copy.py", "TLE TMA Copy Integration Tests"),
                 ("integration/test_tle_gemm.py", "TLE TMA gemm Integration Tests"),
@@ -86,7 +85,7 @@ def main():
         print("✅ TLE module import successful")
 
         # Test basic functionality
-        if hasattr(tle, 'gpu') and hasattr(tle.gpu, 'scope') and hasattr(tle.gpu, 'pipeline'):
+        if hasattr(tle, 'gpu') and hasattr(tle.gpu, 'scope') and hasattr(tle.gpu, 'alloc'):
             print("✅ Core functionality available")
         else:
             print("❌ Core functionality not available")
