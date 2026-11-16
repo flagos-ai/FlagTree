@@ -65,8 +65,11 @@ from triton.flagmega.runtime.workspace_diagnostics import (
 )
 
 
-def _resource_contract(codegen, target, *, requires_grid_wide_sync: bool = False, device: str | None = None):
+def _resource_contract(codegen, target, *, requires_grid_wide_sync: bool = False,
+                       device: str | None = None, diagnostic_resources=None):
     target = str(target or "")
+    if diagnostic_resources is not None and target != "nvidia-sm90":
+        raise ArtifactError("Diagnostic resources require the NVIDIA SM90 Triton runtime.")
     if target == "iluvatar-bi-v150":
         # BI-V150's driver has no CUDA cooperative-launch admission API, so a
         # grid-wide barrier is only safe when the launch grid cannot exceed
@@ -136,6 +139,7 @@ def _resource_contract(codegen, target, *, requires_grid_wide_sync: bool = False
     return ResourceContract(
         compute_num_warps=int(codegen["num_warps"]), resident_blocks_per_sm=1,
         requires_grid_wide_sync=requires_grid_wide_sync,
+        diagnostic_resources=diagnostic_resources,
     )
 
 
@@ -320,6 +324,7 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         self.kernels: tuple = kernel if isinstance(kernel, tuple) else (kernel,)
         self.kernel = self.kernels[0]
         self.codegen = manifest["codegen"]
+        self._diagnostic_resources = None
         binding = self.codegen.get("runtime_binding")
         if not isinstance(binding, Mapping):
             raise ArtifactError("TIR call-graph artifact has no runtime binding.")
@@ -668,7 +673,35 @@ class GeneratedTirCallGraphModule(RuntimeModule):
             for spec in raw_kernels
         )
 
+    def _bind_diagnostic_resources(self, context) -> None:
+        from triton.flagmega.runtime.diagnostic_resources import BoundDiagnosticResourceContract
+        if (type(context) is not BoundDiagnosticResourceContract
+                or context.artifact != str(self.artifact.resolve())
+                or self._diagnostic_resources is not None or self._prepared is not None):
+            raise ArtifactError("Diagnostic context must bind its exact artifact before preparation.")
+        context.verify_artifact(self.artifact, self.manifest, self.codegen)
+        # Check every entry now; selecting one must never leave partial coverage.
+        symbols = ([spec["symbol"] for spec in self.codegen["kernels"]]
+                   if self.codegen.get("kernels") is not None else [self.codegen["symbol"]])
+        for symbol in symbols:
+            context.for_entry(symbol).require_bound()
+        self._diagnostic_resources = context
+
+    def _bind_frozen_native(self, context) -> None:
+        from triton.flagmega.runtime.frozen_native import BoundFrozenNative
+        if type(context) is not BoundFrozenNative:
+            raise ArtifactError("Frozen native selection requires a verified per-artifact binding.")
+        context.verify_artifact(self.artifact, self.manifest, self.codegen)
+        context.validate_kernels(self.kernels)
+        self._frozen_native = context
+
     def _prepare_external(self, external_arguments: tuple[object, ...]) -> None:
+        context = getattr(self, "_diagnostic_resources", None)
+        if context is not None:
+            context.verify_artifact(self.artifact, self.manifest, self.codegen)
+        frozen = getattr(self, "_frozen_native", None)
+        if frozen is not None:
+            frozen.verify_artifact(self.artifact, self.manifest, self.codegen)
         self._require_loaded()
         self._validate_external_arguments(external_arguments)
         # All caller-owned tensors (including adapter-created outputs and
@@ -706,13 +739,18 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         target = self.manifest.get("target", "")
         with compilation_knobs(target):
             prepared = []
-            for kernel, spec in zip(self.kernels, specs, strict=True):
+            for index, (kernel, spec) in enumerate(zip(self.kernels, specs, strict=True)):
                 grid = spec['grid']
                 if 'launch_recipe' in spec:
                     from triton.flagmega.ir.launch_recipe import TaskLaunchRecipe
                     properties = _torch().cuda.get_device_properties(self._device)
                     grid = TaskLaunchRecipe.from_data(spec['launch_recipe']).resolve(
                         sm_count=int(properties.multi_processor_count))
+                context = getattr(self, "_diagnostic_resources", None)
+                if context is not None:
+                    symbol = (self.codegen["kernels"][index]["symbol"]
+                              if self.codegen.get("kernels") is not None else self.codegen["symbol"])
+                    context = context.for_entry(symbol)
                 contract = _resource_contract(
                     {**self.codegen, "num_warps": spec.get("num_warps", self.codegen["num_warps"])},
                     self.manifest.get("target"),
@@ -720,6 +758,7 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                         "requires_grid_wide_sync", _requires_grid_wide_sync(self.ir_module)
                     ),
                     device=self._device,
+                    diagnostic_resources=context,
                 )
                 options = compilation_options(
                     contract, target,
@@ -731,15 +770,26 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                     options['maxnreg'] = spec['maxnreg']
                 from triton.flagmega.runtime.program_arguments import BoundProgram, project_arguments
                 bindings = spec.get("argument_bindings")
-                instance = prepare_jit_kernel(
-                    kernel,
-                    arguments if bindings is None else project_arguments(bindings, arguments),
-                    spec["dynamic_argument_indices"],
-                    grid=grid,
-                    contract=contract,
-                    allocation_device=self._device,
-                    **options,
-                )
+                if frozen is None:
+                    instance = prepare_jit_kernel(
+                        kernel,
+                        arguments if bindings is None else project_arguments(bindings, arguments),
+                        spec["dynamic_argument_indices"],
+                        grid=grid,
+                        contract=contract,
+                        allocation_device=self._device,
+                        **options,
+                    )
+                else:
+                    instance = frozen.prepare(
+                        kernel,
+                        arguments if bindings is None else project_arguments(bindings, arguments),
+                        spec["dynamic_argument_indices"],
+                        grid=grid,
+                        contract=contract,
+                        allocation_device=self._device,
+                        **options,
+                    )
                 prepared.append(instance if bindings is None else BoundProgram(
                     instance, bindings, spec["dynamic_argument_indices"], self.codegen["dynamic_argument_indices"]))
             if self.codegen.get("kernel_program_schema") in {
@@ -840,6 +890,8 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                 )
 
     def _load_rdata(self, torch, device: str, expected_nbytes: int, *, shared_rdata=None):
+        if shared_rdata is not None and self.codegen.get("triton_readonly_device_layout") is not None:
+            raise ArtifactError("Shared readonly canonical pools cannot bind a distinct device layout.")
         if self.manifest.get("rdata") is None:
             raise ArtifactError(
                 "Executable TIR artifact requires a packed rdata image."
@@ -1842,6 +1894,9 @@ def _triton_readonly_device_pool(pool, codegen, module):
     contract = codegen.get("triton_readonly_device_layout")
     if contract is None:
         return pool
+    if codegen.get("triton_readonly_layout") is not None:
+        from triton.flagmega.codegen.triton.nvidia_readonly_layout import validate_layout_data
+        validate_layout_data(codegen, module_semantic_hash=module.semantic_hash)
     from triton.flagmega.codegen.readonly_layout import apply_readonly_layout
     return apply_readonly_layout(pool, contract, module)
 

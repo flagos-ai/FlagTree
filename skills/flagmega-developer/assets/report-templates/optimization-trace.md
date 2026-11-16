@@ -4,27 +4,25 @@
 
 | Field | Value |
 | --- | --- |
-| Run / task | <run ID, requested objective> |
-| Input / numerical contract | <checkpoint identity, dtype/rounding, state, shapes> |
-| Hardware / backend / reference | <device, runtime, clean reference revision/config> |
-| Primary metric / acceptance | <units, timing boundary, scenarios and rule> |
-| Iteration qualification / counters | <complete numerical pass is required; attempt IDs remain separate; qualified baseline 0, candidate indices and receipts or none> |
-| Current baseline / candidate / accepted best | <exact IDs, accepted artifact or none> |
-| Current status / unmet gates | <actual status, independent review/device/performance/reproduction> |
-| Public data / iteration figure | <Git-managed links or not_run reason> |
+| Run / task | <run ID and objective> |
+| Input / numerical contract | <input identity and agreed profile> |
+| Hardware / backend / reference | <device/runtime and clean reference pin> |
+| Primary metric / acceptance | <units, boundary, scenarios and rule> |
+| Iteration qualification / counters | <complete numerical receipt/allocation; attempt and qualified iteration counters> |
+| Current baseline / candidate / accepted best | <exact IDs/artifact or none with reason> |
+| Current status / unmet gates | <milestone/revision state, clear gain and applicable signature gates; each pending owner/action> |
+| Public data / iteration figure | <tracked figure/scripts and local data identities or not_run with reason> |
 
 ## Iteration index
 
 | Entry ID | Attempt | Iteration | Kind | Baseline / trial / revision | Status | Primary result |
 | --- | --- | --- | --- | --- | --- | --- |
-| <stable ID, link to entry> | <attempt index or not_applicable with reason> | <qualified index or not_assigned with reason> | <kind> | <IDs> | <status> | <metric or not_run reason> |
+| <stable ID linked to entry> | <attempt or not_applicable with reason> | <qualified index or not_assigned with reason> | <kind> | <IDs matching entry metadata> | <revision outcome and milestone open/achieved> | <primary metric/gain/uncertainty or not_run with reason> |
 
 ## Entries
 
-<Insert every meaningful entry using trace-entry.md in actual order. Preserve
-baseline failures, repairs, regressions and rejected/unaccepted candidates.>
+<Insert trace-entry.md entries in actual order. Link each revision plan.md/tracking.md and authentic signoff receipts. Retain failed/no-gain revisions, repairs and corrections; preserve required headings, metadata and table columns. Numeric iteration qualification does not achieve a milestone.>
 
 ## Remaining work and final handoff
 
-<Next action, all unmet criteria, accepted exact artifact/reproduction only when
-proven; iteration dataset/figure coverage and any explicitly omitted scope.>
+<Next owner/action and all unmet gates. Declare a milestone achieved only with a clear matched primary-workload performance gain beyond noise, all agreed acceptance and applicable signatures. Link selected revision/measurement/reproduction receipts; state figure coverage and omitted scope.>

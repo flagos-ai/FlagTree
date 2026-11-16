@@ -72,7 +72,7 @@ class PackedMatMul(OpDefinition):
             "output_data_type": DType(attrs["output_data_type"]),
             "rhs_layout": "k_major",
             "reduction_order": attrs["reduction_order"],
-        })
+        }, allow_split_k4=True)
 
     @classmethod
     def ir_attrs(cls, attrs: Mapping[str, object]) -> Mapping[str, object]:

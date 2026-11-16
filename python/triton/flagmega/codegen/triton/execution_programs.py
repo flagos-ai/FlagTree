@@ -74,7 +74,18 @@ def _execution_policy(module, node, default):
     if maxnreg is not None and (type(maxnreg) is not int or maxnreg < 8 or maxnreg > 256 or maxnreg % 8):
         raise IRVerificationError('kernel_maxnreg must be a multiple of eight in [8, 256].',
                                   stage=module.stage, node_id=node.id)
-    return mesh, kind, warps, maxnreg
+    from triton.flagmega.ir.tir.kernel_dispatch import kernel_dispatch_for_call
+    dispatch = kernel_dispatch_for_call(module, node)
+    parameters = dispatch.parameters if dispatch is not None else node.attrs.get('parameters', {})
+    geometry = parameters.get('program_grid')
+    if geometry is not None:
+        geometry = tuple(geometry)
+        expected = (*mesh.shape, *(1 for _ in range(3 - len(mesh.shape)))) if mesh.kind is ExecutionMeshKind.FIXED else ()
+        if (len(geometry) != 3 or any(type(v) is not int or v <= 0 for v in geometry)
+                or geometry != expected or parameters.get('program_owner_mapping') != 'x-fast'):
+            raise IRVerificationError('Explicit fixed grid differs from its declared physical mesh/mapping.',
+                                      stage=module.stage, node_id=node.id)
+    return mesh, kind, warps, maxnreg, geometry
 
 
 def _root_unit(module, node, kernels, default, function_name=None):
@@ -138,7 +149,7 @@ def plan_execution_programs(module, target, kernels):
             'function': function,
             'calls': tuple(group['calls']),
             'num_warps': warps,
-            'grid': recipe.grid_upper_bound if recipe else (domain.physical_level_size('b'), 1, 1),
+            'grid': recipe.grid_upper_bound if recipe else group['key'][4] or (domain.physical_level_size('b'), 1, 1),
             'execution_mesh': mesh.to_data(),
             'program_kind': group['kind'].value,
             'data_placement': domain.to_data(),
@@ -168,8 +179,8 @@ def plan_execution_programs(module, target, kernels):
                 steps.append(unit)
                 plan_function(unit.callee)
                 continue
-            identity, (mesh, kind, requested_warps, maxnreg), members = unit
-            key = (mesh.fusion_key, kind, requested_warps, maxnreg)
+            identity, (mesh, kind, requested_warps, maxnreg, geometry), members = unit
+            key = (mesh.fusion_key, kind, requested_warps, maxnreg, geometry)
             if group is None or mesh.fusion_key is None or group['key'] != key:
                 if group is not None:
                     steps.append(emit_group(name, group))

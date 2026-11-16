@@ -33,6 +33,7 @@
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
 
@@ -149,6 +150,41 @@ public:
       auto tensorType = RankedTensorType::get(
           dstType.getShape(), dstType.getElementType(), dstType.getEncoding());
 
+      Value nativeDstMemDesc = dstMemDesc;
+#if !defined(__HCU__)
+      if (auto plain = dyn_cast<SwizzledSharedEncodingAttr>(dstType.getEncoding());
+          plain && plain.getVec() == 1 && plain.getPerPhase() == 1 &&
+          plain.getMaxPhase() == 1) {
+        auto elementType = dstType.getElementType();
+        if (!elementType.isIntOrFloat())
+          return op.emitOpError("native TMA destination view requires integer "
+                                "or floating-point elements");
+        unsigned elementBits = elementType.getIntOrFloatBitWidth();
+        if (elementBits != 8 && elementBits != 16 && elementBits != 32 &&
+            elementBits != 64)
+          return op.emitOpError("native TMA destination view requires 8, 16, "
+                                "32 or 64-bit elements; FP4 is unsupported");
+        if (dstType.getAllocShape().take_back(dstType.getRank()) !=
+            dstType.getShape())
+          return op.emitOpError("native TMA destination view requires a "
+                                "contiguous complete allocation slice");
+        auto nativeEncoding = NVMMASharedEncodingAttr::get(
+            op.getContext(), 0, false, elementBits, false,
+            getCTALayout(dstType.getEncoding()));
+        auto nativeType = MemDescType::get(
+            dstType.getShape(), elementType, nativeEncoding,
+            dstType.getMemorySpace(), dstType.getMutableMemory(),
+            dstType.getAllocShape());
+        if (toLinearLayout(dstType) != toLinearLayout(nativeType))
+          return op.emitOpError("native TMA destination view requires an "
+                                "identical physical shared-memory mapping");
+        // Reinterpret only the native TMA destination, preserving the original
+        // shared allocation, affine base, dynamic stage and consumer layout.
+        nativeDstMemDesc = rewriter.create<MemDescReinterpretOp>(
+            loc, nativeType, dstMemDesc);
+      }
+#endif
+
       Value pred = rewriter.create<arith::ConstantIntOp>(loc, 1, 1);
 
       // Create TMA indices
@@ -171,7 +207,7 @@ public:
             loc, userBarrier, static_cast<int32_t>(expectBytes.getInt()), pred);
         auto tmaLoad =
             rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
-                op.getLoc(), op.getSrc(), indices, userBarrier, dstMemDesc,
+                op.getLoc(), op.getSrc(), indices, userBarrier, nativeDstMemDesc,
                 pred);
         tmaLoad.setEvict(op.getEvict());
       } else {
@@ -213,7 +249,7 @@ public:
         // Perform async TMA copy from global to existing shared memory
         auto tmaLoad =
             rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
-                op.getLoc(), op.getSrc(), indices, mbarrierAlloc, dstMemDesc,
+                op.getLoc(), op.getSrc(), indices, mbarrierAlloc, nativeDstMemDesc,
                 pred);
         tmaLoad.setEvict(op.getEvict());
 

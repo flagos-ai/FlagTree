@@ -112,6 +112,20 @@ class BlockEncoding(distributed_encoding):
             raise ValueError("BlockEncoding fields must have the same rank")
         if sorted(self.order) != list(range(rank)):
             raise ValueError(f"BlockEncoding order must be a permutation of 0..{rank - 1}")
+        # Reject non-positive extents. A renderer that scales a layout to a
+        # launch's warp count divides, e.g. warps_per_cta[i] * num_warps //
+        # consumer_warps in the kernel templates. When the counts are not
+        # multiples that division truncates: it yields 0 for num_warps=4 or 6
+        # against consumer_warps=8, and silently under-reports for 12. Without
+        # this check the encoding is accepted and the wrong layout is emitted
+        # instead of the build failing, so a per-program warp count would be
+        # correct only when it happens to divide evenly.
+        for name, values in (("size_per_thread", self.size_per_thread),
+                             ("threads_per_warp", self.threads_per_warp),
+                             ("warps_per_cta", self.warps_per_cta)):
+            if any(value < 1 for value in values):
+                raise ValueError(
+                    f"BlockEncoding {name} entries must be positive; got {values}")
         for basis in self.cga_layout:
             if len(basis) != rank:
                 raise ValueError("BlockEncoding cga_layout basis rank mismatch")
@@ -1552,9 +1566,11 @@ class pipe_writer(_pipe_endpoint):
         super().__init__(pipe)
 
     @tl.builtin
-    def acquire(self, iter, _semantic: TLESemantic | None = None):
+    def acquire(self, iter, trace=None, _semantic: TLESemantic | None = None):
         stage, phase = self.pipe._stage_phase(iter, _semantic=_semantic)
-        _semantic.builder.create_pipe_writer_acquire(self.pipe.identity, self.pipe._field_handles(_semantic),
+        from .trace import pipe_trace_identity
+        identity = pipe_trace_identity(self.pipe.identity, iter, trace, _semantic)
+        _semantic.builder.create_pipe_writer_acquire(identity, self.pipe._field_handles(_semantic),
                                                      stage.handle, phase.handle,
                                                      self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
                                                      self.pipe._field_names())
@@ -1588,9 +1604,11 @@ class pipe_reader(_pipe_endpoint):
         return list(self.field_names)
 
     @tl.builtin
-    def wait(self, iter, _semantic: TLESemantic | None = None):
+    def wait(self, iter, trace=None, _semantic: TLESemantic | None = None):
         stage, phase = self.pipe._stage_phase(iter, _semantic=_semantic)
-        is_closed = _semantic.builder.create_pipe_reader_wait(self.pipe.identity, self.pipe._field_handles(_semantic),
+        from .trace import pipe_trace_identity
+        identity = pipe_trace_identity(self.pipe.identity, iter, trace, _semantic)
+        is_closed = _semantic.builder.create_pipe_reader_wait(identity, self.pipe._field_handles(_semantic),
                                                               stage.handle, phase.handle,
                                                               self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
                                                               self.pipe._field_names(), self.reader_name or "",
@@ -1599,9 +1617,11 @@ class pipe_reader(_pipe_endpoint):
         return pipe_wait_result(slot, tl.tensor(is_closed, tl.int1))
 
     @tl.builtin
-    def release(self, iter, _semantic: TLESemantic | None = None):
+    def release(self, iter, trace=None, _semantic: TLESemantic | None = None):
         stage, _ = self.pipe._stage_phase(iter, _semantic=_semantic)
-        _semantic.builder.create_pipe_reader_release(self.pipe.identity, self.pipe._field_handles(_semantic), stage.handle,
+        from .trace import pipe_trace_identity
+        identity = pipe_trace_identity(self.pipe.identity, iter, trace, _semantic)
+        _semantic.builder.create_pipe_reader_release(identity, self.pipe._field_handles(_semantic), stage.handle,
                                                      self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
                                                      self.pipe._field_names(), self.reader_name or "",
                                                      self._reader_field_names())

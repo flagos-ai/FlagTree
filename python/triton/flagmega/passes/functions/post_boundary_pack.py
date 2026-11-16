@@ -8,6 +8,7 @@ from triton.flagmega.diagnostics import DumpScope
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.passes.manager import FunctionalPass, PassManager
 from triton.flagmega.passes.functions.function_boundary_layout import propagate_function_boundary_layouts
+from triton.flagmega.passes.functions.rotary_output_cast import absorb_rotary_output_casts
 from triton.flagmega.passes.rewriter import DataflowPass, EGraphRulesPass
 from triton.flagmega.rules.neutral import post_boundary_auto_packing_neutral_rules
 from triton.flagmega.rules.neutral.fuse_norm_stats_input_cast import fuse_norm_stats_input_cast_rule
@@ -45,14 +46,14 @@ def post_function_boundary_pack_propagation(module: IRModule, target) -> IRModul
         dumper = DumpScope.current()
         if iteration:
             dumper = dumper.create_sub_dumper(f"Iterations/{iteration:02d}")
-        result = _propagation_round(current, rules, dumper)
+        result = _propagation_round(current, rules, target.pre_post_ops_rules(), dumper)
         if result.semantic_hash == current.semantic_hash:
             return result
         current = result
     raise IRVerificationError("Post-boundary pack/layout propagation did not reach a fixed point.", stage=module.stage)
 
 
-def _propagation_round(module, rules, dumper):
+def _propagation_round(module, rules, boundary_rules, dumper):
     # Equality saturation stores a class for every graph node. Once a full
     # model has crossed the function boundary, the selected representation is
     # already materialized and the remaining propagation rules are local
@@ -65,6 +66,9 @@ def _propagation_round(module, rules, dumper):
             max_iterations=16,
         ).run(module)
         current = propagate_function_boundary_layouts(current)
+        current = absorb_rotary_output_casts(current)
+        current = DataflowPass("AbsorbSupportedNumericBoundaries", tuple(boundary_rules),
+                               rewrite_constants=False).run(current)
         current = DataflowPass(
             "PackResultProducers",
             (embedding_producer_rule(), interleaved_projection_producer_rule(), rotary_embedding_producer_rule(), mhc_pre_producer_rule(),
@@ -88,6 +92,12 @@ def _propagation_round(module, rules, dumper):
         # Local rules may expose a new parameter Pack (e.g. a RoPE table).
         # Reconcile the reusable ABI before pushing caller demands further.
         FunctionalPass("PropagateExposedFunctionLayouts", propagate_function_boundary_layouts)
+    ).add(
+        FunctionalPass("AbsorbRotaryOutputCasts", absorb_rotary_output_casts)
+    ).add(
+        # Preserve each conversion inside a backend-supported Fusion; this
+        # includes BF16 narrowing followed by FP32 widening of a residual.
+        DataflowPass("AbsorbSupportedNumericBoundaries", tuple(boundary_rules), rewrite_constants=False)
     ).add(
         # Rebuild shared/stateful producers once, at their original position.
         # This is a dataflow transformation: an effectful cos/sin generator

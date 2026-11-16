@@ -16,6 +16,7 @@ from math import prod
 from typing import Any, Sequence
 
 from triton.flagmega.errors import RuntimeContractError
+from triton.flagmega.runtime.diagnostic_resources import BoundDiagnosticEntry
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,7 @@ class ResourceContract:
     # n_spills" apart from "this ptxas-reporting backend's metadata is
     # missing/broken" -- which is exactly the case that must still raise.
     reports_ptxas_resource_fields: bool = True
+    diagnostic_resources: BoundDiagnosticEntry | None = None
 
     def __post_init__(self) -> None:
         positive = (
@@ -70,6 +72,12 @@ class ResourceContract:
             raise RuntimeContractError("Prepared launch available_sm_count must be positive.")
         if self.spill_tolerance_bytes < 0:
             raise RuntimeContractError("Prepared launch spill_tolerance_bytes must not be negative.")
+        if self.diagnostic_resources is not None:
+            if type(self.diagnostic_resources) is not BoundDiagnosticEntry:
+                raise RuntimeContractError("Diagnostic resource policy requires a bound typed entry.")
+            self.diagnostic_resources.require_bound()
+            if not self.reports_ptxas_resource_fields or not self.forbid_spills or self.spill_tolerance_bytes != 0:
+                raise RuntimeContractError("Diagnostic resources preserve the ordinary zero-spill/PTXAS policy.")
 
 
 class PreparedKernel:
@@ -97,6 +105,8 @@ class PreparedKernel:
         self._pointer_alignments = _compiled_pointer_alignments(compiled_kernel, self._arguments)
         self.grid = _normalize_grid(grid)
         self.contract = contract
+        from triton.experimental.tle.grid_barrier_runtime import validate_launch_contract
+        validate_launch_contract(compiled_kernel.metadata, self.grid)
         self._global_scratch = _prepare_global_scratch(compiled_kernel, self._arguments, self.grid,
                                                      allocation_device=allocation_device)
         self._scratch_stream = None
@@ -132,6 +142,8 @@ class PreparedKernel:
             "global_scratch_bytes": 0 if self._global_scratch is None else self._global_scratch.nbytes,
             "cooperative_grid": bool(getattr(compiled.metadata, "launch_cooperative_grid", False)),
             "grid": list(self.grid),
+            **({} if self.contract.diagnostic_resources is None
+               else self.contract.diagnostic_resources.policy_report),
         }
 
     def launch(self, *dynamic_arguments: object, stream=None) -> None:
@@ -352,6 +364,24 @@ def prepare_jit_kernel(
     )
 
 
+def prepare_compiled_kernel(
+    compiled,
+    arguments: Sequence[object],
+    dynamic_argument_indices: Sequence[int],
+    *,
+    grid: Sequence[int],
+    contract: ResourceContract,
+    allocation_device=None,
+) -> PreparedKernel:
+    """Validate an explicitly selected compiled kernel through ordinary preparation."""
+    if compiled is None:
+        raise RuntimeContractError("Frozen native preparation requires a compiled kernel.")
+    normalized_grid = _normalize_grid(grid)
+    _validate_resources(compiled, contract, normalized_grid)
+    return PreparedKernel(compiled, arguments, dynamic_argument_indices, grid=normalized_grid,
+                          contract=contract, allocation_device=allocation_device)
+
+
 def _validate_resources(compiled, contract: ResourceContract, grid: Sequence[int] = (1,)) -> None:
     # Shared usage is available before driver loading. A failed load may cache
     # an error launcher without initializing the driver register counters.
@@ -365,6 +395,8 @@ def _validate_resources(compiled, contract: ResourceContract, grid: Sequence[int
             f"Compiled kernel needs {resident_shared} shared-memory bytes for "
             f"{contract.resident_blocks_per_sm} resident block(s); SM capacity is "
             f"{contract.shared_memory_capacity_bytes}.")
+    if contract.diagnostic_resources is not None:
+        contract.diagnostic_resources.verify_identity(compiled)
     # Materialize the module/function and resource counters without launching.
     _ = compiled.run
     if contract.requires_grid_wide_sync and not contract.cooperative_launch_admission:
@@ -405,7 +437,11 @@ def _validate_resources(compiled, contract: ResourceContract, grid: Sequence[int
             f"{contract.resident_blocks_per_sm} resident block(s); SM capacity is "
             f"{contract.register_file_capacity_per_sm}.")
     resources = _spill_resource_report(compiled, contract)
-    if contract.forbid_spills and resources["spill_bytes"] > contract.spill_tolerance_bytes:
+    if contract.diagnostic_resources is not None:
+        # Physical limits above and assembler evidence remain mandatory. This
+        # verifies an exact reviewed native footprint, never a spill tolerance.
+        contract.diagnostic_resources.verify(compiled, resources, _normalize_grid(grid))
+    elif contract.forbid_spills and resources["spill_bytes"] > contract.spill_tolerance_bytes:
         raise RuntimeContractError(
             f"Compiled kernel has {resources['spill_store_bytes']} spill-store bytes and "
             f"{resources['spill_load_bytes']} spill-load bytes with {registers} registers/thread, "

@@ -84,6 +84,7 @@ public:
     addIllegalDialect<mlir::gpu::GPUDialect>();
 #ifdef __TLE__
     addIllegalDialect<tle::TleDialect>();
+    addLegalOp<tle::TraceEventOp>();
 #endif
     addLegalOp<mlir::UnrealizedConversionCastOp>();
 
@@ -104,6 +105,7 @@ public:
     addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect, math::MathDialect,
                     NVVM::NVVMDialect, mlir::gpu::GPUDialect>();
     addIllegalDialect<tle::TleDialect>();
+    addLegalOp<tle::TraceEventOp>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
     addDynamicallyLegalOp<tle::DSLRegionOp, tle::YieldOp>(
         [&](Operation *op) -> bool {
@@ -177,7 +179,8 @@ struct ConvertTritonGPUToLLVM
       mlir::triton::tle::populatePackOpToLLVMPatterns(typeConverter, patterns,
                                                       benefit);
       mlir::triton::tle::populateDistributedBarrierOpToLLVMPatterns(
-          typeConverter, patterns, benefit);
+          typeConverter, patterns, benefit,
+          computeCapability >= 90 && ptxVersion >= 86);
       mlir::triton::tle::populateExtractTileOpToLLVMPatterns(
           typeConverter, patterns, targetInfo, benefit);
       mlir::triton::tle::populateInsertTileOpToLLVMPatterns(
@@ -190,6 +193,8 @@ struct ConvertTritonGPUToLLVM
           typeConverter, targetInfo, patterns, benefit);
       mlir::triton::tle::populateWGMMASharedOperandFenceOpToLLVMPatterns(
           typeConverter, patterns, benefit);
+      mlir::triton::tle::populateFenceProxyAsyncGlobalOpToLLVMPatterns(
+          typeConverter, patterns, computeCapability, ptxVersion, benefit);
       mlir::triton::tle::populateTMAStoreCommitGroupOpToLLVMPatterns(
           typeConverter, patterns, benefit);
       mlir::triton::tle::populateSignalOpToLLVMPatterns(typeConverter, patterns,

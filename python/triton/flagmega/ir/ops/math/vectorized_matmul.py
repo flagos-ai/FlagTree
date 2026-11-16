@@ -46,7 +46,7 @@ class VectorizedMatMul(OpDefinition):
             attrs[name] = tuple(value)
         if len(attrs["output_axes"]) != len(attrs["output_lanes"]):
             raise IRSchemaError("VectorizedMatMul output axes and lanes must have equal length.")
-        return normalize_output_data_type(normalize_reduction_order(attrs))
+        return normalize_output_data_type(normalize_reduction_order(attrs, allow_split_k4=True))
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -54,7 +54,7 @@ class VectorizedMatMul(OpDefinition):
         rhs = cls.rhs.type_of(inputs)
         assert isinstance(lhs, TensorType) and isinstance(rhs, TensorType)
         lhs_logical = _logical_type(lhs, tuple(attrs["lhs_axes"]))
-        validate_reduction_order(attrs, lhs, 0 if attrs["transpose_a"] else 1)
+        validate_reduction_order(attrs, lhs_logical, 0 if attrs["transpose_a"] else 1)
         rhs_logical = _logical_type(rhs, tuple(attrs["rhs_axes"]))
         lm, lk = (lhs_logical.shape[1], lhs_logical.shape[0]) if attrs["transpose_a"] else lhs_logical.shape
         rk, rn = (rhs_logical.shape[1], rhs_logical.shape[0]) if attrs["transpose_b"] else rhs_logical.shape

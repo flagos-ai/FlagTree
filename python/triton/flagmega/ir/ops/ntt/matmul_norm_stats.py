@@ -93,7 +93,7 @@ class MatMulNormStats(OpDefinition):
             "use_mean": bool(attrs["use_mean"]),
             "output_data_type": attrs.get("output_data_type"),
             "reduction_order": attrs["reduction_order"],
-        }))
+        }, allow_split_k4=True))
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:

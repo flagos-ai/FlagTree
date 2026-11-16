@@ -253,11 +253,9 @@ class VectorizedBinary(SameTypePointwiseOp):
     def cost(cls, node: Node) -> OpCost:
         tensor = tensor_of(cls.working_representation(node.type, node.attrs))
         elements = tensor_elements(tensor)
-        if elements is not None:
-            elements *= tensor.dtype.lane_count
         size = tensor_nbytes(tensor)
         return OpCost(flops=elements, bytes_read=None if size is None else size * 2,
-                      bytes_written=tensor_nbytes(node.type))
+                      bytes_written=tensor_nbytes(tensor_of(node.type)))
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
@@ -273,7 +271,7 @@ class VectorizedBinary(SameTypePointwiseOp):
         written = tensor_nbytes(local(return_type))
         if elements is None or any(size is None for size in (*reads, written)):
             return None
-        return OpCostFactors(cpu_cycles=elements * working.dtype.lane_count,
+        return OpCostFactors(cpu_cycles=elements,
                              block_local_memory_load_bytes=sum(reads),
                              block_local_memory_store_bytes=written)
 

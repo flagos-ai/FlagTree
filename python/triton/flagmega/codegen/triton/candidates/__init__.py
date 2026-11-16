@@ -8,6 +8,7 @@ from triton.flagmega.targets.nvidia.partitioned_linear import PartitionedLinearC
 from triton.flagmega.targets.nvidia.partitioned_block_scaled_linear import PartitionedBlockScaledLinearCandidateProvider
 
 from .add_norm_stats import AddNormStatsCandidateProvider
+from .vectorized_add_norm_stats import VectorizedAddNormStatsCandidateProvider
 from .attention_primitives import AttentionPrimitiveSemanticTIRCandidateProvider
 from .core import (
     TritonCandidateContext,
@@ -19,6 +20,9 @@ from .delta_rule import DeltaRuleCandidateProvider
 from .interleaved_projection import InterleavedProjectionCandidateProvider
 from .dense_matmul import DenseMatmulCandidateProvider, MatMulNormStatsCandidateProvider
 from .dense_matmul_glu import DenseMatmulGluCandidateProvider
+from .rms_packed_dense_matmul_glu import RmsPackedDenseMatmulGluCandidateProvider
+from .partial_rms_packed_dense_matmul_glu import PartialRmsPackedDenseMatmulGluCandidateProvider
+from .split_k_dense_glu import SplitKDenseGluCandidateProvider
 from .distributed_boxing import DistributedBoxingCandidateProvider
 from .gather_reduce_add_norm_apply import (
     GatherReduceAddNormApplyCandidateProvider,
@@ -71,6 +75,9 @@ def default_triton_candidate_registry() -> TritonCandidateProviderRegistry:
             InterleavedProjectionCandidateProvider(),
             MatmulGluCandidateProvider(),
             DenseMatmulGluCandidateProvider(),
+            RmsPackedDenseMatmulGluCandidateProvider(),
+            PartialRmsPackedDenseMatmulGluCandidateProvider(),
+            SplitKDenseGluCandidateProvider(),
             EmbeddingCandidateProvider(),
             GreedySampleCandidateProvider(),
             RmsNormCandidateProvider(),
@@ -87,6 +94,7 @@ def default_triton_candidate_registry() -> TritonCandidateProviderRegistry:
             DenseMatmulCandidateProvider(),
             MatMulNormStatsCandidateProvider(),
             AddNormStatsCandidateProvider(),
+            VectorizedAddNormStatsCandidateProvider(),
             GdnCandidateProvider(),
             DistributedBoxingCandidateProvider(),
     ):
@@ -107,6 +115,8 @@ __all__ = [
     "AddNormStatsCandidateProvider",
     "GatherReduceAddNormApplyCandidateProvider",
     "DenseMatmulGluCandidateProvider",
+    "RmsPackedDenseMatmulGluCandidateProvider",
+    "PartialRmsPackedDenseMatmulGluCandidateProvider",
     "ElementwiseCandidateProvider",
     "DistributedBoxingCandidateProvider",
     "EmbeddingCandidateProvider",

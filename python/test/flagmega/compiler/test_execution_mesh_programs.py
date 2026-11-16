@@ -12,6 +12,57 @@ from triton.flagmega.codegen.triton.tir_package import describe_tir_package
 from triton.flagmega.targets import NvidiaSm90Target
 
 
+def split_glu_graph():
+    class Graph(fm.Module):
+        def forward(self):
+            a = self.input('A',fm.tensor_type('bfloat16',(1,2048)))
+            w = self.input('W',fm.tensor_type('bfloat16',(2048,12288)))
+            partial = fm.F.ntt.split_k_dense_glu_projection(a,w,name='projection',metadata={
+                'execution_mesh':fm.ExecutionMesh.fixed((48,2)), 'kernel_program_kind':'ordinary',
+                'kernel_num_warps':8,'kernel_maxnreg':64})
+            output = fm.F.ntt.split_k_dense_glu_epilogue(partial,name='epilogue',metadata={
+                'execution_mesh':fm.ExecutionMesh.fixed((24,)), 'kernel_program_kind':'ordinary','kernel_num_warps':8})
+            self.function('main',(a,w),(output,))
+    return Graph(dialect='nn',stage='imported',entry='main').build()
+
+
+def test_normal_split_glu_exports_real_two_dimensional_grid_and_independent_options(tmp_path):
+    from triton.flagmega.passes.tir.split_k_dense_glu import split_k_dense_glu_policy
+    from triton.flagmega.artifacts import write_artifact
+    compiler = Compiler()
+    compiler.target = NvidiaSm90Target()
+    compiler.target.distribution_policy = split_k_dense_glu_policy(compiler.target)
+    module = compiler.compile(split_glu_graph()).module
+    artifact = write_artifact(module,tmp_path/'island',target=compiler.target.name,emit_executable=True,codegen_backend='triton')
+    import json
+    package = json.loads((artifact/'artifact.json').read_text())['codegen']
+    assert [p['grid'] for p in package['kernels']]==[[48,2,1],[24,1,1]]
+    assert package['kernels'][0]['maxnreg']==64
+    assert 'maxnreg' not in package['kernels'][1]
+    from triton.flagmega.runtime import load
+    runtime = load(artifact)
+    assert [spec['grid'] for spec in runtime._kernel_launch_specs()]==[(48,2,1),(24,1,1)]
+    reloaded = fm.load_module(fm.emit_module(module,tmp_path/'split_glu.py'))
+    assert describe_tir_package(reloaded)['kernels']==describe_tir_package(module)['kernels']
+
+
+def test_independent_mesh_program_does_not_inherit_unused_parent_barrier_groups():
+    from triton.flagmega.passes.tir.split_k_dense_glu import split_k_dense_glu_policy
+    from triton.flagmega.codegen.triton.kernel_programs import describe_kernel_programs
+    compiler = Compiler()
+    compiler.target = NvidiaSm90Target()
+    compiler.target.distribution_policy = split_k_dense_glu_policy(compiler.target)
+    module = compiler.compile(split_glu_graph()).module
+    descriptor = describe_tir_package(module)
+    # A surrounding 128-owner native program may use this subgroup. Neither
+    # independent GU program has any corresponding rendezvous in its schedule.
+    descriptor['grid_barrier_axis_groups'] = ({'key':'1x16','axes':(1,),
+        'shape':(16,),'axis_names_repr':"('block_x',)",'shape_repr':'(16,)'},)
+    programs = describe_kernel_programs(module,
+        {'programs':module.metadata['kernel_program_partition']},descriptor)['programs']
+    assert all(p['mesh_context']['grid_barrier_axis_groups']==() for p in programs)
+
+
 def graph(*, dynamic_kind='persistent', dynamic_warps=None, dynamic_max_ctas=None,
           dynamic_maxnreg=None, second_dynamic=False, work_size=4096, annotate=True):
     class Graph(fm.Module):

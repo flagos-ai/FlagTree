@@ -82,12 +82,59 @@ SmallVector<int64_t> expandToRank(ArrayRef<int64_t> shape, int rank) {
   return result;
 }
 
+#ifdef __TLE__
+// TLE raw maps carry an explicit destination-layout contract. Follow only
+// local SCF ties; native public arguments and call boundaries stay opaque.
+static bool hasTLECopyBoundTensorMap(Value descriptor) {
+  SmallVector<Value> worklist{descriptor};
+  SmallVector<Value> visited;
+  bool foundOwnedRoot = false;
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    if (llvm::is_contained(visited, value))
+      continue;
+    visited.push_back(value);
+    if (auto result = dyn_cast<OpResult>(value)) {
+      Operation *owner = result.getOwner();
+      if (isa<mlir::triton::nvidia_gpu::ReinterpretTensorDescOp>(owner)) {
+        if (!owner->getAttrOfType<UnitAttr>("tle.copy_bound_tensor_map"))
+          return false;
+        foundOwnedRoot = true;
+      } else if (isa<scf::ForOp, scf::WhileOp, scf::IfOp>(owner)) {
+        auto tied = getTiedArgs(owner, result.getResultNumber());
+        worklist.append(tied.begin(), tied.end());
+        if (auto whileOp = dyn_cast<scf::WhileOp>(owner))
+          worklist.push_back(
+              whileOp.getYieldOp().getOperand(result.getResultNumber()));
+      } else {
+        return false;
+      }
+    } else if (auto argument = dyn_cast<BlockArgument>(value)) {
+      Operation *owner = argument.getOwner()->getParentOp();
+      if (isa<scf::ForOp, scf::WhileOp>(owner)) {
+        auto offset = isa<scf::ForOp>(owner);
+        auto tied = getTiedArgs(owner, argument.getArgNumber() - offset);
+        worklist.append(tied.begin(), tied.end());
+        if (auto whileOp = dyn_cast<scf::WhileOp>(owner))
+          worklist.push_back(
+              whileOp.getYieldOp().getOperand(argument.getArgNumber()));
+      } else {
+        return false;
+      }
+    }
+  }
+  return foundOwnedRoot;
+}
+#endif
+
 std::optional<UseInfo> getUseInfo(Operation *op) {
   UseInfo info;
   info.use = op;
 #ifdef __TLE__
   if (auto copy = dyn_cast<ttg::TMACopyOp>(op)) {
-    if (op->hasAttr("tle.logical_tma_copy_bytes")) {
+    if (isa<TensorDescType>(copy.getSrc().getType()) &&
+        (op->hasAttr("tle.logical_tma_copy_bytes") ||
+         hasTLECopyBoundTensorMap(copy.getSrc()))) {
       auto dst = cast<ttg::MemDescType>(copy.getDst().getType());
       info.descriptor = cast<TypedValue<TensorDescType>>(copy.getSrc());
       info.desiredSharedEncoding = dst.getEncoding();
@@ -329,6 +376,11 @@ void assignMemoryLayouts(FuncOp &func) {
                                   info->shape});
     } else {
       bool forcedToDefault = isa<CallOp, ReturnOp, ReinterpretTensorDescOp>(op);
+#ifdef __TLE__
+      if (isa<ReinterpretTensorDescOp>(op) &&
+          op->getAttrOfType<UnitAttr>("tle.copy_bound_tensor_map"))
+        forcedToDefault = false;
+#endif
       auto einfo =
           internEncoding(encodings, EncodingInfo{{}, {}, {}, forcedToDefault});
 

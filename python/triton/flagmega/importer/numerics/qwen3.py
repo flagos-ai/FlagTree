@@ -60,7 +60,10 @@ def apply_qwen3_vllm_profile(module):
     def cast(value, dtype, name):
         if value.type.dtype == dtype:
             return value
-        return emit("tensors.cast", name, (value,), {"dtype": dtype.value})
+        # These conversions declare the profile's materialization boundaries.
+        # Fusion may own the conversion, but must retain its requested rounding.
+        return emit("tensors.cast", name, (value,),
+                    {"dtype": dtype.value, "rounding_contract": "preserve"})
 
     def norm(source, inputs, *, wide_output):
         value, weight = inputs

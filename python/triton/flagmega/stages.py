@@ -12,6 +12,7 @@ from triton.flagmega.ir import IRModule, ProvenanceRecord, verify_module
 from triton.flagmega.passes.target_independent import decompose_complex_ops
 from triton.flagmega.passes.tir.fuse_attention_gate import fuse_attention_gate
 from triton.flagmega.passes.tir.fuse_distributed_ops import fuse_distributed_ops
+from triton.flagmega.passes.g3_adapter_inventory import check_g3_adapters
 from triton.flagmega.passes.norm_stats import (
     finalize_norm_stats_bindings,
     fuse_norm_stats_apply,
@@ -52,6 +53,7 @@ from triton.flagmega.rules.neutral import auto_packing_neutral_rules
 from triton.flagmega.rules.ntt.decompose_paged_attention import (
     decompose_paged_attention_rule,
     paged_attention_split_plan,
+    paged_attention_work,
 )
 from triton.flagmega.codegen.triton.kernel_dispatch import selected_kernel_nodes
 from triton.flagmega.targets.base import Target
@@ -172,8 +174,16 @@ def _apply_packing(module: IRModule, target: Target) -> IRModule:
 
 
 def _decompose_paged_attention(module: IRModule, target: Target) -> IRModule:
+    # The split count is a property of the attention work (context geometry and
+    # the GQA group), not of the mesh shape; the mesh only says which split
+    # counts are expressible.
+    work = paged_attention_work(module)
+    if work is None:
+        # No paged attention in this module, so there is no attention work to
+        # plan a split for and the rule would match nothing.
+        return module
     split_axis, split_count = paged_attention_split_plan(
-        target.distributed_placements(module)
+        target.distributed_placements(module), work
     )
     return DataflowRewriter((
         decompose_paged_attention_rule(split_axis, split_count),
@@ -348,11 +358,26 @@ register_stage(Stage(
     lambda module, _target: form_add_norm_stats(module),
     compatible_input_stages=frozenset({"stats_threaded"}),
 ))
+def _packing_g3_checkpoint(module, _target):
+    result = remove_unused_functions(module)
+    check_g3_adapters(result, checkpoint="02_AutoPackingPass/After")
+    return result
+
+
+def _distribution_g3_checkpoint(module, target):
+    from triton.flagmega.passes.rewriter import DataflowPass
+    result = fuse_attention_gate(module)
+    result = DataflowPass("AbsorbSupportedNumericBoundariesAfterDistribution", target.pre_post_ops_rules(),
+                          rewrite_constants=False).run(result)
+    check_g3_adapters(result, checkpoint="03_AutoDistributedPass/After")
+    return result
+
+
 register_stage(Stage(
     "remove-unused-functions",
     "stats_combined",
     "unused_functions_removed",
-    lambda module, _target: remove_unused_functions(module),
+    _packing_g3_checkpoint,
 ))
 register_stage(Stage(
     "pre-distribution-freeze",
@@ -446,7 +471,7 @@ register_stage(Stage(
     "fuse-attention-gate",
     "vector_contracts_lowered",
     "attention_gate_fused",
-    lambda module, _target: fuse_attention_gate(module),
+    _distribution_g3_checkpoint,
 ))
 register_stage(Stage(
     "fuse-norm-stats-apply",

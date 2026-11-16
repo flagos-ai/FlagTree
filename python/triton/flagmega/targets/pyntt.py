@@ -24,7 +24,9 @@ from triton.flagmega.targets.ntt import NttTarget
 from triton.flagmega.targets.ntt_options import NttTargetOptions, PyNttTargetOptions
 from triton.flagmega.targets.pyntt_split import PyNttDistributedSplitCandidateProvider
 from triton.flagmega.rules.ntt.decompose_paged_attention import (
+    PagedAttentionWork,
     paged_attention_split_plan,
+    paged_attention_work,
 )
 
 
@@ -160,4 +162,9 @@ class PyNttTarget(NttTarget):
         super().register_post_auto_packing_passes(registry)
         registry.add("DecomposePagedAttention", "decompose-paged-attention")
 
-__all__ = ["PyNttTarget", "paged_attention_split_plan"]
+__all__ = [
+    "PagedAttentionWork",
+    "PyNttTarget",
+    "paged_attention_split_plan",
+    "paged_attention_work",
+]

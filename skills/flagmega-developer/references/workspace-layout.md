@@ -1,381 +1,251 @@
-# Workspace layout and maintenance
+# Workspace layout
 
-Use this reference when initializing, resuming, maintaining or exporting an
-optimization run. Orchestrator owns the directory contract and overall trace.
-New runs use this layout; honor explicit user paths and record equivalent or
-legacy mappings without moving existing artifacts or deleting user files.
+`WORK_DIR` is the model/backend directory, e.g.
+`python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800`.
+`MILESTONE_DIR=WORK_DIR/.local/milestones/mNNN`;
+`REVISION_DIR=MILESTONE_DIR/revisions/rNNN`.
+The [catalog](../assets/workspace-templates/deliverables.json) defines each delivery's
+path, writer, consumers, template and script; use the delivery map below to dispatch.
+Inspect one template with workspace.py catalog --kind KIND before preparing it.
+prepare --output NAME creates a versioned file within the default delivery directory.
 
-## Roots and versions
+## 1. Workflow
 
-- `DELIVERY_DIR`: the model/workload/hardware tutorial or delivery directory.
-  Reuse the applicable directory under `python/tutorials/flagmega/` when one
-  exists. Choose a descriptive new directory when the task needs a new delivery.
-- `RUN_ID`: a unique UTC timestamp plus workload slug, for example
-  `20261103T142500Z-glm53-h800-tp4-b1`. A run fixes its workload, numerical,
-  reference and measurement contracts.
-- `WORK_DIR="$DELIVERY_DIR/.local/runs/$RUN_ID"`: private run records and outputs.
-- `BASELINE_DIR="$WORK_DIR/baselines/b0001"`: initial baseline. Shared core fixes
-  create `b0002`, etc.; retain earlier versions and identify which one every
-  comparison uses.
-- `TRIAL_DIR="$WORK_DIR/trials/t0001-consumer-layout/revisions/r0001"`: one
-  hypothesis and implementation revision. A different hypothesis gets a new
-  trial ID; a repair or changed evaluated source/IR/recipe/ABI gets a new revision.
+1. Follow the numbered [orchestrator cycle](agents/orchestrator.md#cycle-transitions).
+   orchestrator dispatches setup; graph optimizer runs workspace.py init and owns
+   physical paths/.gitignore/workspace.json. orchestrator freezes task details and
+   maintains dashboard.md as the sole table-based management record.
+2. Establish the measured baseline under .local/baseline/ through the same technical
+   owners, synchronizing root artifacts/figures as outputs and states change.
+   Baseline establishment is not a performance milestone. If reviewer
+   confirms the baseline already meets the goal and all acceptance, seal its reviewed snapshot and end;
+   otherwise orchestrator opens m000/r000 with fixed metric/baseline/rule and a plan owner.
+3. Prepare draft plan.md and tracking.md at revision creation; profile current
+   inputs, analyze with experts, then finalize the expert-owned signed plan before
+   optimization. reviewer maintains tracking/coverage.
+   Each agent receives named inputs, produces its assigned templates/real outputs
+   and signs its own phase. Keep no-gain/failed revisions and all raw receipts.
+   Follow the [revision boundary](agents/orchestrator.md#revision-boundary): create
+   a new revision for a new independent hypothesis, even if final acceptance of a
+   previous measured revision remains pending. Keep its result and outstanding
+   evidence attached to the owning revision. Preserve frozen execution paths and
+   authentic original receipt identities when correcting a late revision assignment;
+   record the new ownership and reused evidence explicitly rather than rewriting
+   old signed receipts or moving files used by a live job.
+4. reviewer verifies gain/acceptance/signatures and issues release.json. graph
+   optimizer maintains latest working artifacts; graph profiler maintains latest
+   working figures/readme, including kernel profiler's current figures. These updates
+   occur immediately at build/export/capture/measurement/review/state changes, with
+   visible pending/running/failed/verified status and exact provenance, without
+   waiting for release. Reviewer release separately seals accepted snapshots.
+   orchestrator consumes verdict/publication
+   receipts and marks achieved only under the [gain gate](agents/orchestrator.md#milestone-gate).
 
-Use IDs that are single path components: letters, digits, `.`, `_` and `-`,
-starting with a letter or digit. Allocate IDs exclusively; never reuse a run,
-baseline, trial or evaluated revision directory to overwrite its contents.
-Changes to workload, numerical/reference configuration or measurement boundary
-start a separate run or explicitly recorded comparison cohort; keep their
-results separate from the original contract.
+## 2. Checklist
 
-## Standard layout
+<a id="delivery-map"></a>
 
-```text
-DELIVERY_DIR/                         # Git-managed delivery
-  .gitignore
-  readme.md                          # reproduction, accepted scope and limits
-  optimization-trace.md              # public summary of meaningful trials
-  optimize.py, accuracy.py, ...       # actual reproduction/validation entrypoints
-  render_results.py                  # regenerates public figures from public data
-  local_optimizations/                # required importable implementations/plans
-  generated_kernels.py or .cpp        # accepted backend source snapshot, when applicable
-  figures/
-    <metric>.svg                      # latest public SVG for each figure only
-  results/
-    <export-id>/                      # compact data, receipts and historical exports
-      summary.json or summary.json.gz
-      performance-history.csv.gz
-      <metric>-<export-id>.svg        # archived version and provenance
-  .local/                            # ignored process workspace
-    runs/<run-id>/
-      task.yaml                      # fixed task/reference/measurement contract
-      workspace.json                 # roots, path mappings, caches and versions
-      state.json                     # current phase, assignments and gates
-      trace.jsonl                    # append-only overall event record
-      trace.md                       # human-readable full optimization trace
-      metrics/
-        performance-history.jsonl    # Verifier's append-only measurement ledger
-      agents/<agent-id>/<assignment-id>/
-        request.md                   # dispatched task, scope and expected handoff
-        inputs.json                  # run/trial/revision and input identities/paths
-        response.md                  # agent findings/actions and output references
-      baselines/<baseline-id>/
-        imported.py
-        dumps/, results/, logs/
-        validation.json
-        artifact/
-      trials/<trial-id>/revisions/<revision-id>/
-        hypothesis.md
-        implementation.json
-        review.json
-        validation.json
-        source/                      # exact scripts/overrides/patches for this revision
-        plans/, dumps/, profiles/
-        plans/expert-baselines.json  # searched implementations, contracts, targets
-        results/, logs/              # raw requests, correctness, resources, telemetry
-        results/expert-baseline-comparison.json  # measured/proven outcomes and gaps
-        figures/                     # draft or diagnostic figures for this revision
-        artifact/
-      exports/<export-id>/
-        export.json                  # source revision, gates, data/file hashes
-        files/                       # staged public files before promotion
-        reproduction/
-          artifact/, results/, logs/
-          reproduction.json          # fresh public-package rebuild and test receipt
-    cache/                           # reusable verified readonly/JIT data, if local
-    locks/                           # run ownership and device-lease records
-    worktrees/                       # isolated implementation checkouts, if used
+| Workspace delivery | Producer / sole writer | Agent inputs / consumers | Template and executable |
+| --- | --- | --- | --- |
+| Root dashboard.md; frozen .local/task.yaml; milestone.json, revision.json; agents/*/request.json | orchestrator | All workers read the dashboard; orchestrator updates it from terminal evidence and manages only by its rows plus flow | Catalog dashboard/task/milestone/revision/request; workspace.py prepare; requests cite dashboard rows/flow steps |
+| .gitignore, .local/workspace.json and physical directory setup | graph optimizer | All agents resolve paths, environment and bindings | Catalog gitignore/workspace; workspace.py init |
+| .local/cache/weights, kernels, comparison | graph optimizer: weights/full builds; kernel optimizer supplies native-build receipts; graph profiler: comparison data | Optimizers/profilers/reviewer consume pinned inputs/cache, not unversioned assumptions | Catalog cache-manifest + job; real acquisition/build command via workspace.py run, manifest --kind cache |
+| Root/milestone/revision artifacts/ (.py/.il and other IR/generated code) | graph optimizer integrates/exports/synchronizes; kernel optimizer supplies owned native code | Experts inspect; profilers execute pinned build/data; reviewer validates/reproduces | Catalog benchmark-build/job/artifact-manifest; real compiler via bound entrypoint, manifest --kind artifacts, sync for current views; publish for reviewed snapshots |
+| .local/baseline and revision build/ (native binary/data bindings) | graph optimizer or kernel optimizer in declared disjoint scopes | Profilers/reviewer need full runnable source/data/library/manifest | Catalog job/native-manifest/kernel-native-manifest; full-build manifest belongs to graph optimizer, assignment-native manifest to kernel optimizer; run/manifest --kind native |
+| tests/ | reviewer owns independent CI adapter; optimizers supply causal regression cases | CI/reviewer run tests; orchestrator consumes receipts | Catalog ci + bound entrypoint; workspace.py run |
+| benchmark/build_artifacts.py | graph optimizer | Profilers/reviewer reproduce the actual full build | Catalog benchmark-build, entrypoint.py + job/run |
+| benchmark/{benchmark_model,compare_backends,profile_operators,render_results}.py | graph profiler | reviewer consumes samples, capture/monitoring receipts | Catalog benchmark-model/backends/operators/render; real bindings + job/run/renderers |
+| benchmark/profile_kernel.py; profiles/kernel/CAPTURE_ID/{harness,reports,analysis}/ | kernel profiler | Kernel/graph expert diagnoses; reviewer audits NCU/raw/clocks/census/controls | Catalog benchmark-kernel/capture-kernel/controls/kernel-trace + job/run; render_kernel_swimlane.py |
+| profiles/{graph,operators}/CAPTURE_ID/ | graph profiler | graph expert diagnoses; reviewer audits scope/clocks/overhead | Catalog capture-graph/graph-profile/figure-data + job/run; render_workspace_figures.py |
+| Revision figures/: full model timeline/time-sorted operator bars, milestone/revision histories/backend SVGs; operator/kernel swimlanes | graph profiler: graph/operator/history/backend; kernel profiler: operator/kernel swimlanes | Experts analyze bottlenecks; reviewer audits raw-to-chart; graph profiler consumes kernel SVGs for publication | Catalog figure-graph/figure-operators/figure-milestones/figure-history/figure-backends/kernel-trace; the two renderers |
+| Root/milestone figures/, root readme.md; .local/reports/ live packets and .local/views/ synchronization/publication manifests | graph profiler synchronizes latest actual files and status; original profiler authorship retained | Users/agents read current results; orchestrator consumes synchronization receipt; reviewer accepts exact snapshots | Catalog readme/release; readme template, workspace.py sync for current figures/readme, publish for reviewed snapshots |
+| Revision plan.md, results/baselines.json; expert contract.md/inventory.json | Designated plan owner: graph expert for graph/joint, kernel expert for kernel-only; each expert owns its assignment contract | Optimizers/profilers/reviewer consume approved hypothesis/contracts/acceptance | Catalog plan/baselines/contract/inventory; plan/agent templates, workspace.py prepare |
+| Revision tracking.md, results/tracking-snapshots/, agent-coverage.json | reviewer | All agents read phase identities/events; orchestrator consumes readiness/signature verdict | Catalog tracking/coverage; tracking template, prepare and workspace.py snapshot |
+| results/{implementation,kernel-implementation}.json | Respective graph/kernel optimizer | Expert/reviewer inspects self-checks; profilers consume executable pins | Catalog implementation/kernel-implementation; prepare + actual job/manifest receipts |
+| results/{review,validation,baseline-comparison,release}.json | reviewer | orchestrator consumes verdict; publishers consume exact approved release | Matching catalog templates; prepare, actual independent jobs and hash-bound release |
+| results/{graph-profile,kernel-profile}.json | Respective graph/kernel profiler | Expert/reviewer/orchestrator consume actual capture/analysis gate receipts | Matching catalog templates; prepare + real capture jobs/renderers |
+| agents/*/{response.md,handoff.json} | Assigned actual agent | Named recipient/plan owner/reviewer/orchestrator consume signed scoped handoff | Catalog response/handoff; agent template + handoff JSON |
+| .local/metrics/performance-history.jsonl; .local/optimization-trace.md; revision results/trace-entry.md | reviewer | graph profiler renders history/comparisons; all agents read immutable provenance | Catalog measurement/trace/trace-entry; append-measurement, trace validator |
+| .local/jobs/JOB_ID/{stdout.log,stderr.log,receipt.json}; optional logs/raw telemetry | Actual executing optimizer/profiler/reviewer | reviewer audits; orchestrator consumes terminal state/resource handoff | Catalog job; workspace.py run retains actual exit/output hashes |
+
+1. Root dashboard/artifacts/figures/tests/benchmark/readme/.gitignore are tracked; .local is
+   ignored. Root/milestone/revision artifacts contain no weights/packed payloads,
+   compilation cache or native binary. These stay in local cache/build, with manifests.
+   Every `artifacts/` contains only `generated/` and `ir/`: latest exported
+   model/kernel codegen and latest real compiler dumps, respectively. Do not
+   accumulate old revisions inside either directory. Manifests, dump indexes,
+   publication metadata and historical snapshots stay outside `artifacts/` in
+   `.local` view/build/revision locations. Measurement/profile/raw/log payloads,
+   tests, benchmark/helper scripts and execution/review receipts also stay there.
+   `artifacts/ir/` includes real imported/final IR and key stages such as vectorized,
+   packed, distributed and TIR/bufferized snapshots. Preserve chronological pass
+   identity and complete function sets in named subdirectories, with source and
+   semantic hashes in the external manifest. Export retained compiler dumps directly; keep
+   all finer-grained pass dumps locally for diagnosis.
+2. Live cumulative milestone/revision SVGs and readme are refreshed on every output or state
+   change in .local/reports/REPORT_ID/{results,figures}/: graph profiler writes
+   data/SVG/readme and synchronizes root working views immediately; reviewer
+   subsequently audits/signs release to seal accepted snapshots. These reuse actual
+   measured source records and identify their current review status
+   and never modify an achieved milestone or frozen revision. A live history refresh
+   merges updated figures into the existing working root view; it preserves other
+   graph/operator/backend SVGs. A full working revision synchronization replaces
+   its managed view; reviewed publication seals the reviewed snapshot separately.
+   Every milestone has milestone.json, artifacts/, figures/ and revisions/.
+   Every revision has revision.json, plan.md, tracking.md, artifacts/figures and
+   named owners. Add results/profiles/agents/build only as required by real tasks.
+3. Latest root working views are actual current file copies, not symlinks into .local;
+   review/achievement status is explicit and does not gate visibility. Accepted
+   milestone/revision snapshots remain separately reviewed and immutable.
+   Artifact publication archives superseded or out-of-contract files under
+   `.local/` and enforces the two-directory layout on every refresh. Historical
+   evidence remains outside the current artifact view. Other publication kinds
+   retire only their earlier managed files, preserving unrelated files. Synchronization
+   receipts pin source files and authoritative state. Keep build/NUM/measurement/
+   review status separate, including the current attempt's failure and the identity
+   of retained last-built source when a new build has not produced source yet.
+   Open milestones label the actual revision verdict; achieved milestones freeze
+   the selected winning view. Preserve failed/no-gain revision evidence and all
+   measurement rows; iteration numbering does not establish achievement.
+4. Templates start pending with empty signatures/measurements. IR, kernels,
+   weights, reports and raw samples come from real bound compiler/tool commands;
+   templates define their manifests/jobs, not fabricated payloads. entrypoint.py
+   requires a real MODULE:FUNCTION binding supplied by its owning agent.
+
+Current-view synchronization uses `workspace.py sync --work-dir W --agent OWNER
+--kind artifacts|figures|readme --record RECORD.json`. The producer's
+`flagmega.working-sync/v1` record names a unique sync_id, source_id, actual
+structured status, agent_name/agent_id, current base_view_sha256, files with
+workspace-relative source/destination paths and sha256, explicit selected
+source_manifest {path, sha256}, and input_pins. A dependency/ancestor pin cannot
+identify the current selection; source labels and paths do not replace hashes. Use
+retain_previous for a partial or status-only refresh. Source and state pins are
+checked before updating the managed root files. Receipts and copied versions stay
+immutable under `.local/working/KIND/SYNC_ID/`; `.local/views/root-KIND.json`
+identifies the current generation. Artifacts belong to graph optimizer;
+figures/readme belong to graph profiler. Refresh within the same flow cycle using
+producer/state hooks or an active watcher; do not defer to review or milestone
+completion. Reviewed `publish` seals its exact snapshot without rolling back a
+newer working view.
+
+For artifact state refresh, the producer can use `workspace.py refresh` as an
+event hook or `workspace.py watch --watch-interval 2 --stop-file STOP_FILE` with
+the same owner/work-dir/kind and a `flagmega.working-watch/v1` record. Its pinned
+source_manifest, files, source identity and dashboard_path identify the selected
+source and authoritative management table. The current watch spec is
+flagmega.working-watch/v2 and reads dashboard.md; do not create state.json or a
+JSON management mirror. A managed watcher needs a real PID/start identity, log,
+status/stop control and verified liveness; a stopped test is not continuous
+refresh. Unchanged state creates no heartbeat versions. A watcher for an older
+source stops when superseded; the next producer installs its new pinned watcher
+or hooks, preserving current-source ownership.
+
+<a id="signatures"></a>
+
+1. Plan names applicable agents by phase. orchestrator signs flow scope; affected
+   experts/optimizers/profilers approve their scope; reviewer signs validation scope
+   and independence. Plan owner alone writes plan/approval references; reviewer
+   alone writes tracking, phase snapshots and authentic signoff references.
+2. Each actual agent signs its own handoff: name/context/assignment, phase/decision/
+   UTC, milestone/revision, plan version/hash, inspected source/manifest scope,
+   tracking snapshot sequence/hash and evidence pins. Nobody signs for another
+   context. Unaffected scopes need explicit not_applicable reasons.
+3. Plan approvals hash the frozen body excluding signature section; tracking
+   approvals hash frozen phase snapshots excluding signature section. Save those
+   snapshots under results/tracking-snapshots/. New phases use new assignments or
+   versioned receipts; never overwrite a file already referenced by hash.
+4. Append events/corrections and preserve original failures/verdicts. New events
+   do not renew prior approvals; changed plan/source/artifacts invalidate affected
+   signatures and need renewed approvals. reviewer audits completeness; orchestrator
+   advances flow using that signed verdict. No-gain or unsigned work stays open.
+
+## 3. Index
+
+1. [Agent registry/flow](agents/orchestrator.md), [reviewer/gain and history](agents/reviewer.md).
+2. [Delivery templates and owners](../assets/workspace-templates/deliverables.json), [workspace helper](../scripts/workspace.py),
+   [entrypoint adapter](../assets/workspace-templates/entrypoint.py), [readme template](../assets/workspace-templates/readme.md).
+3. SVG inputs and actual examples are indexed below; all example data is synthetic.
+   [Graph/history/backend renderer](../scripts/render_workspace_figures.py),
+   [operator/kernel renderer and method](kernel-trace-method.md), [plan](../assets/revision-templates/plan.md),
+   [tracking](../assets/revision-templates/tracking.md), [coverage](../assets/agent-templates/agent-coverage.json).
+   Latest root views retain these canonical template layouts and coverage before
+   review, during failures and while measurements are pending. For missing captures,
+   render an explicit pending version of the corresponding template, with no
+   fabricated clock window or numeric points. Supplemental status charts do not
+   replace required figures. Each figure receipt pins its template and renderer.
+   Genuine partial GPU leader captures may use explicit `observed_role_leaders`
+   scope and `observed_window_ns`, with pinned source/health/nominal clock evidence
+   and one actual CTA's consumer/producer leader envelopes. Unknown resolution
+   stays null and calibration/alignment stays pending, visibly labeled. This
+   mode excludes unobserved prefix/tail and D2H and cannot establish engine busy,
+   all-warp coverage or whole-model time. The existing `whole_model` mode still
+   requires its full execution window, known positive resolution and validated
+   common clock; do not promote a partial capture to that mode.
+   Preserve mutable state/metadata/ledger inputs and template/renderer dependencies
+   as immutable snapshots in each render packet. Figure provenance uses those
+   snapshot paths; current synchronization additionally pins live state for
+   freshness. A later state/source change must not break historical validation.
+4. Example below; [NCU layout reference](https://github.com/mit-han-lab/ncu-report-skill/blob/d1887948c7d53690cfe6605f59c1329b8a1c6bb5/reference/00-directory-layout.md) keeps each capture's harness/reports/analysis together.
+
+| Figure | Input template | SVG example | Script / owner |
+| --- | --- | --- | --- |
+| Graph: full model start-to-end timeline | [graph.json](../assets/workspace-figures/graph.json) | [graph.svg](../assets/workspace-figures/graph.svg) | render_workspace_figures.py / graph profiler |
+| Graph: operator-time bars sorted descending | [operators.json](../assets/workspace-figures/operators.json) | [operators.svg](../assets/workspace-figures/operators.svg) | render_workspace_figures.py / graph profiler |
+| Operator/kernel microanalysis swimlane | [example.json](../assets/kernel-swimlane/example.json) | [example.svg](../assets/kernel-swimlane/example.svg) | render_kernel_swimlane.py / kernel profiler |
+| Milestone curve + concise performance-point table | [milestones.json](../assets/workspace-figures/milestones.json) | [milestones.svg](../assets/workspace-figures/milestones.svg) | render_workspace_figures.py / graph profiler |
+| Revision curve + concise performance-point table | [history.json](../assets/workspace-figures/history.json) | [history.svg](../assets/workspace-figures/history.svg) | render_workspace_figures.py / graph profiler |
+| FlagMega/vLLM/SGLang/llama.cpp comparison | [backends.json](../assets/workspace-figures/backends.json) | [backends.svg](../assets/workspace-figures/backends.svg) | render_workspace_figures.py / graph profiler |
+
+```sh
+python skills/flagmega-developer/scripts/render_workspace_figures.py skills/flagmega-developer/assets/workspace-figures/milestones.json --output /tmp/milestones.svg
 ```
 
-Create only directories and entrypoints the task actually uses. The tree is
-the placement contract, not a request to create empty public scripts or fake
-results. Large checkpoints and shared caches may stay outside this tree;
-record their paths, source identities and reuse policy in `workspace.json`.
-Device leases must use a scheduler or lock namespace shared by all GPU jobs;
-per-run lock files alone do not coordinate other runs or worktrees.
+```text
+python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/
+├── .local/
+│   ├── task.yaml                                 # frozen task detail, orchestrator -> all agents
+│   ├── workspace.json                            # graph optimizer -> all agents
+│   ├── cache/{weights,kernels,comparison}/        # technical owners -> workers/reviewer
+│   ├── baseline/{artifacts,figures,results}/       # baseline evidence, not achieved m
+│   ├── milestones/m000/
+│   │   ├── milestone.json                        # orchestrator -> all agents
+│   │   ├── {artifacts,figures}/                   # publishers -> latest milestone view
+│   │   └── revisions/
+│   │       ├── r000/                             # no_gain, retained
+│   │       └── r001/
+│   │           ├── revision.json                 # orchestrator -> assigned owners
+│   │           ├── plan.md                       # plan expert -> workers/reviewer
+│   │           ├── tracking.md                   # reviewer -> all agents
+│   │           ├── artifacts/                    # graph optimizer -> profilers/reviewer
+│   │           ├── figures/                      # graph/kernel profiler -> reviewer
+│   │           ├── agents/*/                     # request + actual signed response/handoff
+│   │           ├── results/                      # named result owners -> downstream
+│   │           └── profiles/kernel/c0001/{harness,reports,analysis}/
+│   ├── reports/REPORT_ID/{results,figures}/         # live history/readme, independently reviewed
+│   ├── jobs/JOB_ID/{stdout.log,stderr.log,receipt.json}
+│   ├── metrics/performance-history.jsonl          # reviewer -> graph profiler
+│   └── optimization-trace.md                      # reviewer -> all agents
+├── artifacts/{generated/,ir/}                    # latest codegen and IR only; metadata in .local
+├── dashboard.md                                  # sole management table, orchestrator -> all agents
+├── figures/{graph-trace.svg,operator-latency.svg,operators/,performance-vs-milestone.svg,performance-vs-iteration.svg,backend-comparison.svg}
+├── tests/check_correctness.py
+├── benchmark/{build_artifacts.py,benchmark_model.py,compare_backends.py,profile_operators.py,profile_kernel.py,render_results.py}
+├── readme.md
+└── .gitignore                                    # /.local
+```
 
-## Initialization and resume
+```sh
+# Run each command in its named owner context; paths here are illustrative.
+python skills/flagmega-developer/scripts/workspace.py init --work-dir /tmp/flagmega-example --agent graph_optimizer
+python skills/flagmega-developer/scripts/workspace.py prepare --kind milestone --work-dir /tmp/flagmega-example --milestone m000 --agent orchestrator
+python skills/flagmega-developer/scripts/workspace.py prepare --kind revision --work-dir /tmp/flagmega-example --milestone m000 --revision r000 --agent orchestrator
+python skills/flagmega-developer/scripts/workspace.py prepare --kind plan --work-dir /tmp/flagmega-example --milestone m000 --revision r000 --agent graph_expert
+python skills/flagmega-developer/scripts/workspace.py prepare --kind tracking --work-dir /tmp/flagmega-example --milestone m000 --revision r000 --agent reviewer
+```
 
-Before dispatching implementation or diagnostic work, Orchestrator:
+## 4. Lessons
 
-1. Selects `DELIVERY_DIR` and inspects its existing files, Git status and ignore
-   rules. Ensures `/.local` is ignored by repository-controlled rules; add that
-   entry to the delivery's `.gitignore` when needed, preserving other rules.
-   Use the slash-free `/.local` pattern so it also covers an external-storage
-   symlink: `/.local/` matches directories but leaves that symlink unignored.
-   Verify with `git check-ignore -v --no-index <delivery>/.local` and
-   `git ls-files -- <delivery>/.local <delivery>/.local/**`. For a real directory,
-   also check a child probe; Git rejects child paths beyond a symlink.
-   An ignore rule does not untrack files;
-   report an existing tracked process path rather than silently removing it
-   from Git. Do not force-add ignored process files.
-2. Allocates a fresh `RUN_ID` and creates its run root exclusively. On a
-   collision, choose another ID; an existing path is a resume target, not an
-   initialization target. Create initial `baselines/b0001/` and the run records.
-3. Writes `task.yaml`: model/checkpoint and initial compiler/source identity,
-   including dirty changes; numerical profile, shapes/scenarios, state and
-   runtime ABI; devices/topology/runtime versions; actual reference execution;
-   primary metric, guardrails, acceptance thresholds and agreed resources/budget.
-4. Writes `workspace.json` with the schema version, roots, run ID, baseline and
-   revision paths, external inputs/caches, source/worktree mappings and ignore
-   policy. Writes initial `state.json` and an initialization trace event. State
-   records pending work, assigned agents/devices, gate status and current best
-   accepted artifact; a proposed candidate is not the accepted best.
-   Initializes the readable run trace and adds the pending run to the public
-   `optimization-trace.md`, preserving existing run summaries and their status.
-5. Creates an assignment directory before each dispatch. `request.md` states
-   the role, scope, required outputs and permitted write locations; `inputs.json`
-   pins contract/source/IR/artifact identities and evidence paths. Create only
-   assignments that are actually dispatched.
-
-If the build entrypoint supports a preplanned recipe, Orchestrator may create
-`input/recipe.json` before dispatch and pin its original bytes in the request.
-The build must admit only a real input directory containing that one ordinary
-file, with an explicitly supplied recipe whose parsed JSON matches it. Preserve
-the registered bytes; do not replace the file with a reformatted copy. Reject
-extra files, empty input directories, symlinks, missing or mismatched recipes,
-and existing build outputs before mutating the workspace. Record this admission
-contract and its boundary checks when changing a build wrapper; do not delete
-preplanned inputs to bypass an existing-output guard.
-
-For resume, verify the task contract, source/target/artifact identities, path
-mappings and current device ownership. Reconcile state against durable events
-and receipts; interrupted work remains pending until its actual outcome is
-known. Preserve earlier records and allocate a new assignment/revision when
-inputs change. Never truncate the overall trace or relabel a stale review pass.
-Rebuild missing reservation/allocation entries in the state view from their
-existing pinned receipts. Verify that qualified assignments and the next
-iteration counter agree; a counter alone is not evidence of qualification.
-Keep an active unqualified attempt separate from the last qualified iteration.
-
-## Writers and agent interaction records
-
-Use [Agent flow](agent-flow.md#workspace-and-handoffs) for the contents and gate
-semantics of hypothesis, implementation, review and validation handoffs.
-
-| File or area | Owner and update rule |
-| --- | --- |
-| `task.yaml`, `workspace.json` | Orchestrator initializes them; contract/path amendments are versioned and recorded in trace. |
-| `state.json`, `trace.jsonl`, `trace.md` | Orchestrator is the single writer; state/view updates use a temporary file and atomic replacement. |
-| `metrics/performance-history.jsonl` | Verifier is the single writer; append every attempt and later verdict correction, preserve old records. |
-| Assignment `request.md`, `inputs.json` | Orchestrator writes before dispatch; inputs remain pinned for that assignment. |
-| `expert-coverage.json` | Orchestrator records all four domain dispositions, exact revision identities and actual per-phase expert/context/assignment/report bindings. Update the current view atomically; preserve prior versions and dispatch/correction events. Joint coordination does not count as separate domain work. |
-| Assignment `response.md` and assigned evidence | The assigned agent writes its own response; Orchestrator records the receipt and links it to trace. |
-| `hypothesis.md` | Main Architect consolidates expert inputs for the specified revision. |
-| `implementation.json`, `source/`, `plans/`, build outputs | Main Optimizer integrates actual domain implementations and their provenance. |
-| Domain review responses, `review.json` | Independent reviewers own their responses; main Architect consolidates the review record. |
-| `validation.json`, formal `results/` | Validator records actual outcomes and their exact candidate identities. |
-| Export receipt and public overall trace | Orchestrator stages/updates them; Validator verifies data, provenance and applicable gates. |
-
-Assignments use distinct IDs even when an agent or role is reused. Record the
-actual instance/context and whether a reviewer is independent of design and
-implementation. Keep requests, responses, review findings and fix receipts;
-tool/chat messages may supplement these records but cannot replace them.
-New domain assignments use the canonical `agents/<domain>_<role>/aNNNN/`
-directories and files in [Expert workspaces](expert-workspaces.md). Preserve
-legacy directory mappings and frozen evidence instead of renaming old runs.
-Agents send shared-state updates to Orchestrator instead of concurrently
-editing the overall trace or another agent's response.
-Generate file pins from the actual bytes and exchange their structured records;
-do not hand-transcribe long hashes from chat summaries. Display abbreviations
-only as shorthand for a linked full pin. Resolve a mismatch against the frozen
-receipt and actual file before using that evidence.
-
-Validate activation schema and bindings against the existing frozen proposal
-before creating the activation file. Then pin the written activation and verify
-those exact bytes immediately before launching the command. A validator that
-returns a file pin must receive an existing file; do not ask it to pin an
-activation that has not been written. Preserve failed preparation receipts and
-reissue time-sensitive device clearance before retrying a launch.
-
-Use the [role-specific Markdown templates](agent-report-templates.md) for agent
-responses and the strict public trace document/entry templates. Orchestrator
-reserves attempt IDs, assigns iteration IDs only after complete numerical
-qualification, and assigns the active Verifier ledger writer. State records
-`next_attempt_index`, `attempt_reservations`, `next_iteration_index` and
-`iteration_assignments` separately. Each iteration assignment pins Verifier's
-complete numerical receipt and the exact artifact; unqualified revisions keep
-a null iteration and explicit reason. Other agents send
-diagnostic/self-check performance receipts to Verifier, preserving the actual
-measurement author and kind. See [Performance history](performance-history.md).
-
-## Overall optimization trace
-
-`trace.jsonl` is the durable append-only event history. Each meaningful event
-has an event ID/sequence, UTC timestamp, run/trial/revision/baseline IDs as
-applicable, actor/assignment, phase/action, pinned inputs, output/evidence paths,
-status and decision with its reason. Record metric changes with the scenario,
-measurement boundary, baseline and actual sample provenance. Append corrections
-as new events; preserve earlier failures and verdicts.
-
-Orchestrator updates `trace.md` after a completed assignment, gate, repair,
-measurement or next-action decision. This readable view contains:
-
-- The task contract, baseline versions and current scope/status.
-- Every meaningful trial/revision in order: bottleneck evidence, conditional
-  benefit, experts, implementation, source/IR/artifact identities and handoffs.
-- Review findings, repairs, re-review and numerical/resource/performance results,
-  including failed, skipped and not-run items; actual measurements versus estimates.
-- Links to that revision's raw results, profiles, draft figures and receipts.
-- The accepted best, rejected directions with reasons, unresolved work and next action.
-
-`DELIVERY_DIR/optimization-trace.md` is the Git-managed public counterpart.
-Summarize all meaningful trial outcomes, including rejected candidates and
-regressions, without copying agent transcripts or dumping raw logs. Include
-run/trial/revision and baseline identity, change and owner, expected effect,
-measured per-scenario outcome, review/acceptance/reproduction status, decision
-and links to published results/figures. Update it after meaningful decisions
-when those outcomes belong in the delivery; at handoff it must reflect the
-actual delivered revision and every unmet criterion.
-
-Public trace and readme link to Git-managed data and figures. Local archive
-pointers may be identified as optional evidence, but public commands and
-figure rendering cannot require private trace, agent records or `.local/` code.
-
-## Figures and Git-managed files
-
-Honor `workspace.json.artifact_layout` before applying the default shareable
-layout below. Record user-selected paths there and in the delivery readme.
-For a user-requested local-results/final-figures layout, use
-`results: .local/results`, `process_figures: .local/figures`, and
-`final_figures: figures`, with an explicit list of final figure names. Keep
-diagnostic/WG/operator plots and historical versions in the local archive even
-after review; their required analysis and evidence remain in scope. Renderers,
-dashboard links and future exports must use that layout, rather than recreate
-the old root directories. Preserve frozen evidence bytes and record relocation
-mappings; resolve historical pins through the mapping instead of rewriting
-their scientific contents. State that redrawing final figures requires the
-local data. A later request for a self-contained shareable package is separate.
-
-Record requested chart formats in `artifact_layout.figure_formats`. For an
-SVG-only request, use `["svg"]`: remove redundant PNG outputs, default bitmap
-generation and PNG download controls, and update image links to the SVGs.
-Retain figures that have no SVG equivalent. Keep historical review records
-unchanged and document any removed delivery copies or changed presentation code
-in a format-migration receipt; do not repeat scientific profiling for this change.
-
-When simplifying a multi-scenario performance chart, preserve the declared
-statistic and data lineage. If the user chooses a geometric mean, first compute
-each scenario's throughput from its qualified latency samples, then take the
-geometric mean across the same complete scenario set. Select one documented
-cohort per iteration by evidence quality and chronology, never measured speed;
-exclude diagnostic/control overlays. Record the source measurement IDs and
-whether the reference is contemporaneously matched or a fixed reference.
-
-| Content | Placement and Git policy |
-| --- | --- |
-| Optimization process, complete traces, agent interaction documents | Run records under `.local/runs/`; ignored. |
-| Raw requests/state comparisons, telemetry, profiler exports, logs, IR dumps, temporary tensors | The exact revision's `results/`, `profiles/`, `logs/`, `dumps/` under `.local/`; ignored. |
-| Draft or per-trial diagnostic figures | The exact revision's private `figures/`; ignored until deliberately exported. |
-| Full artifacts, rdata, compiled libraries, checkpoints, caches and worktrees | `.local/` or recorded external storage; ignored/untracked. Generated source alone is not a runnable artifact. |
-| Required optimization implementations, overrides, semantic inputs and selection/reproduction scripts | Git-managed `local_optimizations/` and delivery entrypoints. Save failed/temporary implementation snapshots privately. |
-| Reusable compiler changes and regressions | Git-managed compiler sources and normal compiler test tree. Tutorial-only tests and temporary probes stay in `.local/`. |
-| Public trace, readme, accepted source snapshot, compact shareable result data and formal figures | Git-managed delivery root; latest SVGs in `figures/`, data/receipts/history in `results/`. Preserve actual scope/status; estimates and diagnostic results are labeled accordingly. |
-
-Draft figures are generated from a pinned revision's raw data. Publish compact
-shareable data as `results/<export-id>/summary.json` (or an equivalent explicit
-public path), with source/artifact/baseline identities, scenario/configuration,
-measurement boundaries, sample/warmup counts, relevant samples/statistics and
-gate status. Public rendering uses these committed inputs and `render_results.py`.
-If the user explicitly places figure data or history in `.local/`, record that
-override and its actual path. Keep only latest SVGs public and document that
-rerendering requires the private data; do not claim private-free reproduction.
-Do not put required public data in `figures/data/`: this repository ignores that
-path. Check the destination's ignore rules before export instead of force-adding.
-
-Keep versioned data and SVG exports under `results/<export-id>/`; keep only the
-latest SVG for each figure under `figures/`, with stable names such as
-`decode-tps-vs-iteration.svg`. Update that SVG, its data link and README caption
-together, retaining historical provenance in `results/`. Do not overwrite a historical accepted figure
-with a draft and leave its accepted label unchanged. Diagnostic/regression plots
-may be exported when useful to the task, with their failed/unaccepted scope
-explicit; they do not make a candidate accepted.
-
-At handoff publish the latest `figures/performance-vs-iteration.svg` (or a name
-reflecting the chosen metric) with its compact dataset under `results/<export-id>/`.
-This is one cumulative figure across qualified
-iterations, with workload/contract curves or compact workload panels, rather
-than a figure or panel for each iteration. Verifier checks coverage of meaningful
-iterations, regressions and unaccepted measurements, with their actual status.
-Separate workloads, incompatible cohorts and measurement kinds; an unmeasured
-failure has no invented latency. Public rendering reads committed data rather
-than the private ledger.
-
-For each execution-based candidate verification, also save
-`profiles/operator-latency-<verification-id>.json` and
-`figures/operator-latency-<verification-id>.svg` under that exact revision.
-Retain previous verification figures. Verifier links raw profiling data,
-measurement IDs, source identity, attribution and overhead in its report and
-`validation.json`; Orchestrator links them from the trace. Public export copies
-the latest relevant SVGs to Git-managed `figures/` and the self-contained
-datasets, receipts and versioned exports to `results/<export-id>/`.
-
-Use the [verification boundary](performance-history.md#operator-latency-after-verification)
-when grouping preflights, scenarios and repeats. Keep pending profile/export work
-in state without making it a prerequisite for unrelated ordinary checks; record
-each actual run and failure. Required public handoff checks still apply.
-
-For kernel development, also retain
-`profiles/kernel/<capture-id>/` with the raw `.ncu-rep`, counter export, actual
-WG/hardware events and identity/clock/coverage manifest, plus
-`figures/kernel-swimlane-<capture-id>.svg`. Keep baseline/candidate and repeated
-capture identities separate. Include capture commands, failure receipts,
-overhead and independent analysis; never include sudo credentials. Public
-exports contain self-contained trace data and rendering inputs for the relevant
-WG and hardware-module swimlanes. Follow [Kernel microprofiling](kernel-microprofiling.md)
-for interval semantics, required coverage and completion gates.
-
-Stage public outputs in `WORK_DIR/exports/<export-id>/files/`. `export.json`
-records the source trial/revision, matching review and validation identities,
-reproduction status, source dataset and every promoted file's hash. Validator
-checks the applicable gates, sample coverage, computed statistics, captions and
-artifact/data identity. Promote the coherent file set only after these checks;
-public source data embeds the provenance needed without the private receipt.
-
-Before handoff, inspect changed/staged Git paths and confirm `.local/` remains
-ignored and untracked. Public reproduction must rebuild from the checkpoint
-plus Git-managed code/plans; public figures must render with `.local/` unavailable.
-Do not silently move essential code out of an ignored run by changing its path:
-copy the reviewed implementation into the importable public package, rebuild
-from that package, and verify identity and acceptance before claiming reproduction.
-
-For a byte-identical package relocation, verify source-file content hashes,
-importable module names, dependency/target/recipe configuration, typed IR and
-generated implementation against the reviewed revision. A filesystem-root
-change alone can reuse that review when these execution inputs remain identical;
-record the old/new roots and copy hashes rather than rewriting earlier identity.
-If source, effective imports/registration, configuration, IR, generated code or
-ABI changes, create a new candidate revision and obtain affected re-review.
-If equivalence is unknown, do not assume the old review applies.
-
-Build the public-package artifact and save its logs/results under
-`WORK_DIR/exports/<export-id>/reproduction/`, leaving the reviewed original
-artifact intact. `reproduction.json` links original/rebuilt input and artifact
-identities, the matching review, path mappings and actual acceptance results.
-Rebuilt artifact metadata or binary hashes may differ; record and test the new
-artifact, and investigate code/contract differences before reusing review.
-Changes confined to figure rendering or result packaging use a new export ID
-and figure checks; they do not revise the model candidate unless they also
-change compilation, runtime execution or the measurement contract.
-
-## Maintenance and retention
-
-Freeze implementation inputs, source snapshots, plans, IR and artifacts when
-a revision enters review. Preserve completed handoffs, verdicts and raw evidence;
-later phases add their own records without overwriting earlier evidence. Only
-build outputs of an unfrozen, unreviewed and unmeasured revision are mutable.
-A fix creates a new revision; re-review and validation bind to that revision.
-Shared core fixes create a new baseline version and rebuild both sides.
-
-Keep state/trace updates serialized, record actual process exits and refresh
-paths/identities after resume. Reuse immutable caches only under verified source
-and recipe identity. Never clean another agent's active outputs, referenced
-readonly data, the active baseline or accepted deliverable.
-Protect candidates still pending review, validation, reproduction or export.
-
-Closed trials may shed redundant large build outputs after records, source/final
-IR, plans, reproduction inputs and raw evidence are retained. Archive transfers
-verify content and update `workspace.json`/trace before any redundant copy is
-removed; retain a discoverable archive location. Rejected trials, interaction
-documents and overall trace remain available. Mark interrupted or incomplete
-runs honestly and preserve their last durable state for resumption.
+1. A directory is a container; every delivery has an owner and named downstream inputs.
+2. Generic runners preserve real execution receipts; the worker owns model/tool bindings and their validity.
+3. Pending templates and signature scaffolds cannot prove measurements, review or milestone achievement.
+4. Fresh checkout reproduction uses tracked scripts/data acquisition; historical redraw uses retained raw pins. Unavailable backends remain gaps.

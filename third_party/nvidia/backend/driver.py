@@ -813,6 +813,9 @@ class CudaLauncher(object):
 
         self.num_ctas = getattr(metadata, "num_ctas", 1)
         self.launch = wrap_handle_tensordesc(mod.launch, signature, tensordesc_meta)
+        if getattr(triton._C.libtriton, "tle", None) is not None:
+            from triton.experimental.tle.grid_barrier_runtime import bind_launch_contract
+            self.launch = bind_launch_contract(self.launch, metadata)
         self.global_scratch_size = metadata.global_scratch_size
         self.global_scratch_align = metadata.global_scratch_align
         self.profile_scratch_size = metadata.profile_scratch_size

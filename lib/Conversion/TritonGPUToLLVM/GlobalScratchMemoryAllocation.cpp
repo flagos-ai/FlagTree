@@ -28,6 +28,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #ifdef __TLE__
 #include "tle/dialect/include/Transforms/GridBarrierScratch.h"
+#include "tle/dialect/include/Transforms/GridBarrierScratchCheck.h"
 #endif
 
 using namespace mlir;
@@ -73,7 +74,7 @@ static void allocateGMem(Operation *parentOp,
       align = alloc.getAlignment();
 #ifdef __TLE__
     } else if ((nbytes = tle::getGridBarrierScratchBytes(op)) != 0) {
-      align = 4;
+      align = tle::getGridBarrierScratchAlignment(op);
 #endif
     } else if (auto callOp = dyn_cast<triton::CallOp>(op)) {
       auto callable = callOp.resolveCallable();
@@ -109,6 +110,12 @@ class TritonGPUGlobalScratchAllocationPass
 public:
   void runOnOperation() override {
     ModuleOp mod = getOperation();
+#ifdef __TLE__
+    if (failed(tle::verifyHierarchicalGridScratchFrames(mod))) {
+      signalPassFailure();
+      return;
+    }
+#endif
 
     bool seenKernel = false;
 

@@ -23,21 +23,65 @@ def bank_row_strides(module, plan):
     Their call records already hold absolute row addresses, so grouping
     alone must not introduce another runtime row displacement.
     """
-    groups = {
-        f"{node.id}.{field.name}"
-        for node in module.nodes if node.op in {"builtin.parameter_bank", "tir.parameter_bank"}
-        for field in node.attrs["schema"].fields
+    dynamic_rows = {
+        row.id for row in module.nodes
+        if row.op in {"control.bank_get", "tir.bank_get"}
+        and module.node_map[row.inputs[1]].op not in {"builtin.scalar_const", "tir.scalar_const"}
     }
+    if not dynamic_rows:
+        return {}
     result = {}
+    buffers = plan.buffer_map
     for buffer in plan.buffers:
-        if getattr(buffer, "rdata_group", None) not in groups:
+        source = buffer
+        seen = set()
+        while source.id not in seen:
+            seen.add(source.id)
+            if source.source_node in dynamic_rows and source.role == "parameter_bank_row":
+                # The logical row identity distinguishes a dynamic row-0 base
+                # from a separately selected constant row sharing its storage.
+                result["buffer:" + buffer.id] = source.nbytes
+                break
+            if source.alias_of is None:
+                break
+            source = buffers[source.alias_of]
+    return result
+
+
+def function_pool_origins(bindings, row_strides=None, *, entry=None):
+    """Expose closed-call pool origins independently of signature savings.
+
+    The same _origin proof drives pooled function arguments. A legal owned
+    pointer stays owned when the argument-count heuristic keeps its explicit
+    pointer ABI. No storage metadata or pointer expression is rewritten here.
+    """
+    calls = {}
+    for caller, binding in bindings.items():
+        for event in binding["call_abi"]["events"]:
+            if event["kind"] == "function_call":
+                calls.setdefault(str(event["callee"]), []).append((caller, event))
+    result = {}
+    for name, rows in calls.items():
+        if name not in bindings or name == entry:
             continue
-        span = buffer.mem_span
-        size = getattr(getattr(span, "size", None), "fixed_value", None)
-        if size is None:
-            size = getattr(getattr(span, "size", None), "value", None)
-        if isinstance(size, int) and size > 0:
-            result[str(getattr(span.buffer, "id", span.buffer))] = size
+        origins_by_name = {}
+        for argument in bindings[name]["arguments"]:
+            if argument.get("runtime_value_kind", "pointer") != "pointer":
+                continue
+            origins = [_origin(bindings[caller], argument, event, row_strides)
+                       for caller, event in rows]
+            if any(origin is None for origin in origins):
+                continue
+            if len({(origin[0], origin[2]) for origin in origins}) != 1:
+                continue
+            alignment = gcd(*(gcd(origin[5], origin[4]) if origin[4] else origin[5]
+                              for origin in origins))
+            origins_by_name[argument["name"]] = {
+                "schema": "flagmega.closed-function-pool-origin/v1",
+                "storage": origins[0][0], "alignment_bytes": alignment,
+                "calls": tuple((caller, str(event["call"])) for caller, event in rows),
+            }
+        result[name] = origins_by_name
     return result
 
 
@@ -165,7 +209,8 @@ def _origin(caller: Mapping, argument: Mapping, event: Mapping,
         itemsize = int(abi["scalar_itemsize"])
         if itemsize <= 0 or offset % itemsize:
             raise CodegenError("Function pool ABI requires scalar-aligned byte offsets.")
-        stride = int((row_strides or {}).get(str(abi.get("physical_buffer")), 0))
+        stride = int((row_strides or {}).get("buffer:" + str(abi.get("buffer")),
+                     (row_strides or {}).get(str(abi.get("physical_buffer")), 0)))
         alignment = abi.get("alignment_bytes", 1)
     else:
         storage = str(argument["storage"])

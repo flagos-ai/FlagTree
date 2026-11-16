@@ -38,10 +38,57 @@
 #include <optional>
 
 #include "tle/dialect/include/IR/VerifyUtils.h"
+#include "tle/dialect/include/IR/TraceEffects.h"
+#include "tle/dialect/include/Transforms/GridBarrierScratch.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
 namespace mlir::triton::tle {
+
+static LogicalResult verifyTraceTarget(Operation *op) {
+  auto module = op->getParentOfType<ModuleOp>();
+  if (auto target = module->getAttrOfType<StringAttr>("ttg.target"))
+    if (!target.getValue().starts_with("cuda:"))
+      return op->emitOpError("typed trace requires the NVIDIA warp-specialize backend");
+  return success();
+}
+
+LogicalResult PipeTraceContextOp::verify() {
+  if (getSiteAttr().getInt() < 0)
+    return emitOpError("typed trace site must be nonnegative");
+  for (Operation *user : getResult().getUsers())
+    if (!isa<PipeWriterAcquireOp, PipeReaderWaitOp, PipeReaderReleaseOp>(user) ||
+        user->getOperand(0) != getResult())
+      return emitOpError("pipe trace context may only annotate acquire/wait/release identities");
+  return verifyTraceTarget(*this);
+}
+
+LogicalResult TraceEventOp::verify() {
+  if (!((getKind() >= 256 && getKind() <= 261) || getKind() == 263 ||
+        getKind() == 272 || getKind() == 273 || getKind() == 280 || getKind() == 281))
+    return emitOpError("typed trace event kind must be a supported pipe or module event");
+  if (getSiteAttr().getInt() < 0)
+    return emitOpError("typed trace site must be nonnegative");
+  if ((getKind() == 280 && getSite() > 3) || (getKind() == 281 && getSite() > 1))
+    return emitOpError("census trace point is outside its fixed record");
+  return verifyTraceTarget(*this);
+}
+
+void TraceEventOp::getEffects(SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), ProfileScratchResource::get());
+  effects.emplace_back(MemoryEffects::Write::get(), ProfileScratchResource::get());
+}
+
+LogicalResult CensusMarkOp::verify() {
+  if (getPoint() < 0 || getPoint() > (getMapping() ? 1 : 3))
+    return emitOpError("census point is outside its fixed record");
+  return verifyTraceTarget(*this);
+}
+
+void CensusMarkOp::getEffects(SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(), ProfileScratchResource::get());
+  effects.emplace_back(MemoryEffects::Write::get(), ProfileScratchResource::get());
+}
 
 namespace {
 // Triton shared-memory pointers map to LLVM address space 3 (NVVM shared).
@@ -586,6 +633,12 @@ LogicalResult BarrierArriveOp::verify() {
       getOperation()->getAttrOfType<StringAttr>("backend").getValue();
   if (backend == "named" && getArriveCount() != 1)
     return emitOpError("named barrier arrive requires arrive_count = 1");
+  if (auto participants = getParticipantCountAttr()) {
+    if (participants.getInt() <= 0)
+      return emitOpError("participant_count must be positive");
+    if (backend != "mbarrier" || !getPhase() || getArriveCount() != 1)
+      return emitOpError("participant arrival requires explicit mbarrier phase and unit arrive_count");
+  }
   return verifyBarrierBackend(getOperation(), backend, bool(getPhase()),
                               getNamedId(), getNamedNumThreads());
 }
@@ -1138,6 +1191,33 @@ LogicalResult ExclusiveCumsumOp::verify() {
 LogicalResult DistributedBarrierOp::verify() {
   auto *op = getOperation();
   auto spaceAttr = op->getAttrOfType<StringAttr>("space");
+  const bool hierarchical = isHierarchicalGridBarrier(op);
+  const bool flags = isFlagsGridBarrier(op);
+  if (op->hasAttr("tle.grid_barrier_protocol")) {
+    auto protocol = op->getAttrOfType<StringAttr>("tle.grid_barrier_protocol");
+    auto kind = op->getAttrOfType<StringAttr>("group_kind");
+    if (!protocol || (!hierarchical && !flags) || spaceAttr ||
+        !kind || (kind.getValue() != "grid" && kind.getValue() != "grid_axis") ||
+        getSrc() || op->hasAttr("tle.census"))
+      return emitOpError("hierarchical8 requires grid/grid_axis without communicator or census");
+    if (auto module = op->getParentOfType<ModuleOp>())
+      if (auto target = module->getAttrOfType<StringAttr>("ttg.target"))
+        if (!target.getValue().starts_with("cuda:"))
+          return emitOpError("hierarchical8 requires the NVIDIA backend");
+  }
+  if (flags && failed(getFlagsGridLayout(op)))
+    return failure();
+  if (!flags && (op->hasAttr("tle.flags_domain") || op->hasAttr("tle.flags_launch_grid")))
+    return emitOpError("flags launch attributes require explicit flags32 protocol");
+  if (op->hasAttr("tle.census")) {
+    auto kind = op->getAttrOfType<StringAttr>("group_kind");
+    if (!op->getAttrOfType<UnitAttr>("tle.census") || spaceAttr || !kind ||
+        (kind.getValue() != "grid" && kind.getValue() != "grid_axis") ||
+        !getSrc() || !getSrc().getType().isInteger(32))
+      return emitOpError("census requires a grid/grid_axis barrier and scalar i32 occurrence source");
+    if (failed(verifyTraceTarget(*this)))
+      return failure();
+  }
 
   if (spaceAttr) {
     StringRef space = spaceAttr.getValue();
@@ -1255,6 +1335,25 @@ LogicalResult DistributedBarrierOp::verify() {
         return emitOpError() << "group extent " << extent
                              << " must divide domain extent " << domainExtent
                              << " on axis " << axis;
+    }
+    if (hierarchical) {
+      // Bound all products before the i32 coordinate/offset lowering. Each
+      // group reserves eight128-byte leaf slots and one root slot.
+      uint64_t domainSize = 1;
+      uint64_t participants = 1;
+      constexpr uint64_t limit = std::numeric_limits<int32_t>::max();
+      for (int32_t extent : domainShapeAttr.asArrayRef()) {
+        if (domainSize > limit / extent)
+          return emitOpError("hierarchical8 domain size exceeds signed i32");
+        domainSize *= extent;
+      }
+      for (int32_t extent : shapeAttr.asArrayRef()) {
+        if (participants > limit / extent)
+          return emitOpError("hierarchical8 participant count exceeds signed i32");
+        participants *= extent;
+      }
+      if (domainSize / participants > limit / kHierarchicalGridGroupBytes)
+        return emitOpError("hierarchical8 scratch size exceeds signed i32");
     }
   }
 

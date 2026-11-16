@@ -36,7 +36,7 @@ from triton.flagmega.ir.ops.tensors._k_major import (
 )
 from triton.flagmega.ir.type_pattern import has_rank, is_tensor
 from triton.flagmega.ir.types import DType
-from triton.flagmega.ir.ops.math.matmul import matmul_value, normalize_output_data_type, normalize_reduction_order, validate_reduction_order
+from triton.flagmega.ir.ops.math.matmul import SPLIT_K4_REDUCTION_ORDER, matmul_value, normalize_output_data_type, normalize_reduction_order, validate_reduction_order
 
 
 @op_definition(
@@ -69,13 +69,17 @@ class PackedDenseMatMul(OpDefinition):
             )
         if mesh_interleaved and logical_n is None:
             raise IRSchemaError("Mesh-interleaved PackedDenseMatMul requires logical_n.")
-        return normalize_output_data_type(normalize_reduction_order(attrs))
+        return normalize_output_data_type(normalize_reduction_order(attrs, allow_split_k4=True))
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         lhs_type = cls.lhs.type_of(inputs)
         validate_reduction_order(attrs, lhs_type, 1)
         weight_type = cls.weight.type_of(inputs)
+        if attrs.get("reduction_order") == SPLIT_K4_REDUCTION_ORDER and isinstance(weight_type, DistributedType) and (
+            weight_type.partial is not None or weight_type.axis_policies[0] != SBP.broadcast()
+        ):
+            raise IRSchemaError("An ordered MMA reduction cannot consume partial or K-sharded packed weights.")
         lhs = tensor_of(lhs_type)
         weight = tensor_of(weight_type)
         shape = tuple(dimension.fixed_value for dimension in weight.shape)

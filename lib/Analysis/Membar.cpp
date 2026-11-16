@@ -26,8 +26,11 @@
 #include "triton/Analysis/Membar.h"
 #ifdef __TLE__
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/IR/ExactSMEM.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -592,6 +595,69 @@ static void addEffectIntervals(const Allocation *allocation, Value value,
   }
 }
 
+// Reuse only a proven first effective CTA barrier of an explicit TLE wait.
+// Keep dependency state pending until that actual barrier is visited.
+static bool isTleWaitBarrierExecutionRegion(Region *region) {
+  if (!region)
+    return false;
+  Operation *parent = region->getParentOp();
+  if (isa<FunctionOpInterface>(parent))
+    return true;
+  if (auto ws = dyn_cast<ttg::WarpSpecializeOp>(parent))
+    return region == &ws.getDefaultRegion();
+  auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(parent);
+  if (!partitions)
+    return false;
+  auto ws = dyn_cast_or_null<ttg::WarpSpecializeOp>(partitions->getParentOp());
+  if (!ws || partitions->getParentRegion() != &ws.getPartitionOpHolder())
+    return false;
+  for (Region &partition : partitions->getRegions())
+    if (&partition == region)
+      return true;
+  return false;
+}
+
+static bool hasTleOwnedWaitMergeBarrier(Operation *op) {
+  if (!isa<ttg::AsyncWaitOp>(op) ||
+      !op->getAttrOfType<UnitAttr>(tt::tle::kTleExplicitAsyncWaitGroupAttr))
+    return false;
+
+  Region *region = op->getParentRegion();
+  if (!isTleWaitBarrierExecutionRegion(region))
+    return false;
+  llvm::SmallPtrSet<Block *, 8> visited;
+  visited.insert(op->getBlock());
+  Operation *next = op->getNextNode();
+  while (next) {
+    if (next->getParentRegion() != region)
+      return false;
+    if (isa<gpu::BarrierOp, ttg::LocalBarrierOp>(next))
+      return true;
+    if (auto branch = dyn_cast<cf::BranchOp>(next)) {
+      Block *destination = branch.getDest();
+      if (destination->getParent() != region || destination->empty() ||
+          !visited.insert(destination).second)
+        return false;
+      next = &destination->front();
+      continue;
+    }
+    if (next->getNumRegions() != 0 ||
+        next->hasTrait<OpTrait::IsTerminator>() || isa<CallOpInterface>(next) ||
+        isa<ttg::AsyncWaitOp, ttg::AsyncCommitGroupOp,
+            ttg::AsyncCopyGlobalToLocalOp>(next))
+      return false;
+    auto memoryEffects = dyn_cast<MemoryEffectOpInterface>(next);
+    if (!memoryEffects)
+      return false;
+    SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>> effects;
+    memoryEffects.getEffects(effects);
+    if (!effects.empty())
+      return false;
+    next = next->getNextNode();
+  }
+  return false;
+}
+
 } // namespace
 #endif
 
@@ -816,6 +882,10 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
 
   if (isa<triton::gpu::AsyncWaitOp, triton::nvidia_gpu::TMAStoreWaitOp>(op) &&
       !isa<gpu::BarrierOp, triton::gpu::LocalBarrierOp>(op->getNextNode())) {
+#ifdef __TLE__
+    if (hasTleOwnedWaitMergeBarrier(op))
+      return;
+#endif
     // If the current op is an async wait and the next op is not a barrier we
     // insert a barrier op and sync
     builder->setInsertionPointAfter(op);

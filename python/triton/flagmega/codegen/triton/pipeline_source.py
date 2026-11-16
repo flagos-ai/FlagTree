@@ -105,12 +105,20 @@ def build_pipeline_source_schedule(
         plan_function_pool_abis(bindings, row_strides, entry=module.entry)
         if pool_function_arguments else ({}, [])
     )
+    from triton.flagmega.passes.tir.lower_transfer_pipeline_regions import program_host_functions, native_program_function
+    host_functions = program_host_functions(module)
 
-    def build_function(name, in_loop=False):
+    def build_function(name, in_loop=False, incoming_readiness=None):
         # The entry is never a loop body, so keep it on one key: a second
         # copy would be emitted as an uncalled device function.
         key = (name, bool(in_loop) and name != module.entry)
+        incoming_contract = None if incoming_readiness is None else (
+            incoming_readiness.before_call_id, incoming_readiness.readonly_parameters)
         if key in definitions:
+            if definitions[key].get("incoming_readiness_contract") != incoming_contract:
+                raise CodegenError(
+                    "One reusable function must have one incoming readiness ABI; "
+                    "use distinct typed functions for ungated and gated invocations.")
             return definitions[key]
         if name in active:
             raise CodegenError("Recursive pipeline function: " + " -> ".join((*active, name)))
@@ -134,8 +142,22 @@ def build_pipeline_source_schedule(
             signature, pool_abi, bool(offset_tables)
         )
         builder.in_loop = bool(in_loop)
+        builder.incoming_readiness = incoming_readiness
         builder.loop_variable = _induction_formal(module, name) if in_loop else None
+        builder.host_scope = name in host_functions
         schedule = builder.build(body, context)
+        native_schedules = {}
+        if name in host_functions:
+            for request in module.metadata['kernel_program_partition']:
+                if request.get('function', module.entry) != name:
+                    continue
+                local = native_program_function(module, function, request)
+                native = _PipelineSourceBuilder(module, bindings, encoded_calls, kernel_event_factory,
+                    build_function, descriptor_instantiator, pool_abis, bool(offset_tables))
+                native.descriptor_specs = builder.descriptor_specs
+                native.row_index_formal = builder.row_index_formal
+                native_schedules[request['symbol']] = native.build(
+                    _top_level_region(local.body, name) or local.body, context)
         source_signature = function_pool_signature(
             (*signature, *builder.descriptor_specs.parameters()), pool_abi,
             has_tables=bool(offset_tables),
@@ -149,7 +171,11 @@ def build_pipeline_source_schedule(
             "function_pool_abi": pool_abi,
             "host_tensor_descriptor_specs": builder.descriptor_specs,
             "schedule": schedule,
+            **({'host_control_scope': True, 'native_program_schedules': native_schedules}
+               if name in host_functions else {}),
         }
+        if incoming_contract is not None:
+            result["incoming_readiness_contract"] = incoming_contract
         definitions[key] = result
         active.pop()
         return result
@@ -161,7 +187,7 @@ def build_pipeline_source_schedule(
         "host_tensor_descriptor_specs": root["host_tensor_descriptor_specs"],
         "device_functions": [
             definition for (name, _in_loop), definition in definitions.items()
-            if name != module.entry
+            if name != module.entry or name in host_functions
         ],
         "function_offset_tables": offset_tables,
     }
@@ -206,6 +232,9 @@ class _PipelineSourceBuilder:
         self.producer_events: list[dict[str, object]] = []
         self.auxiliary_events: list[dict[str, object]] = []
         self.auxiliary_event_keys: set[tuple[str, ...]] = set()
+        self.incoming_readiness = None
+        self.incoming_readiness_uses = 0
+        self.host_scope = False
 
     def build(
         self, region: ProducerConsumerRegion | Sequential, context: _Context
@@ -223,6 +252,8 @@ class _PipelineSourceBuilder:
             raise CodegenError(
                 f"Pipeline entry @{context.function_name} has no leaf transfer stage."
             )
+        if self.incoming_readiness is not None and self.incoming_readiness_uses != 1:
+            raise CodegenError("Imported readiness must be consumed once at its typed mutable transfer.")
         # A wrap-around wait guards the arena bytes this body's own later
         # stages refill, so its release belongs after them, not next to the
         # wait.  Each role body is appended to independently because the
@@ -362,6 +393,7 @@ class _PipelineSourceBuilder:
                     for value in self.handoffs
                     if value["semantic"]
                 ),
+                *(('_flagmega_incoming_source_reader',) if self.incoming_readiness is not None else ()),
             ],
             "auxiliary_endpoints": [
                 str(endpoint)
@@ -591,6 +623,14 @@ class _PipelineSourceBuilder:
                     })
                 continue
             if isinstance(statement, PipelineStage):
+                if (role == "producer" and self.incoming_readiness is not None
+                        and statement.operation.call_id == self.incoming_readiness.before_call_id):
+                    output.append({
+                        "kind": "handoff", "endpoint": "_flagmega_incoming_source_reader",
+                        "action": "wait", "release": False, "deferred_release": False,
+                        "index": "0", "wrap_around": False, "acquire": False,
+                    })
+                    self.incoming_readiness_uses += 1
                 before = len(self.stages)
                 before_events = len(output)
                 self._visit_stage(
@@ -664,7 +704,14 @@ class _PipelineSourceBuilder:
                 "Entry pipeline source generation expects materialized "
                 "PrimFunctionCall stages."
             )
-        self._visit_call(operation, role, context, output, staged=True)
+        incoming_reader = None
+        if stage.source_readiness is not None:
+            if self.in_loop:
+                raise CodegenError("Imported readiness does not support repeated call epochs.")
+            incoming_reader = self._handoff(
+                (*region_path, stage.source_readiness.handoff_id))["reader_name"]
+        self._visit_call(operation, role, context, output, staged=True,
+                         source_readiness=stage.source_readiness, incoming_reader=incoming_reader)
 
     @staticmethod
     def _static_bound(value):
@@ -678,6 +725,8 @@ class _PipelineSourceBuilder:
         output: list[dict[str, object]],
         *,
         staged: bool,
+        source_readiness=None,
+        incoming_reader=None,
     ) -> None:
         primitive = self.module.kernel_callable_map.get(call.callee)
         if primitive is not None:
@@ -691,6 +740,11 @@ class _PipelineSourceBuilder:
                 dispatch.microkernel is not None
                 and dispatch.microkernel.transfer_pipeline is not None
             )
+            if self.host_scope:
+                if role != 'consumer' or staged or source_readiness is not None:
+                    raise CodegenError('A host invocation cannot carry native pipeline endpoints.')
+                output.append(self._kernel_event(context, call))
+                return
             if staged != is_pipeline:
                 raise CodegenError(
                     f"Pipeline role structure for call {call.call_id!r} differs "
@@ -759,6 +813,7 @@ class _PipelineSourceBuilder:
                 "role": role,
                 "symbol": f"{event['symbol']}__{role}",
                 "arguments": arguments,
+                **({"census_endpoint": endpoints[0]} if event.get("census_selected") else {}),
                 "trip_scoped_pipe": bool(commits),
                 "trip_scoped_dynamic": dynamic,
                 # Instantiated writer endpoints, so the enclosing loop can
@@ -781,19 +836,28 @@ class _PipelineSourceBuilder:
             )
         nested = self._nested_context(context, call, execution.name)
         region = _top_level_region(execution.body, execution.name)
-        if staged != (region is not None):
+        if not self.host_scope and staged != (region is not None):
             raise CodegenError(
                 f"Call {call.call_id!r} PipelineStage placement differs from "
                 f"ExecutionFunction @{execution.name}."
             )
         key = (*context.call_path, call.call_id)
         instance = self.function_instances.get(key)
-        definition = self.function_builder(execution.name, self.in_loop)
+        definition = self.function_builder(execution.name, self.in_loop, source_readiness)
         if instance is None:
-            resources, names = instantiate_resources(
-                definition["schedule"], nested.shared_by_name,
-                f"_flagmega_{_identifier('__'.join(key))}",
-            )
+            if self.host_scope:
+                if role != 'consumer' or staged or source_readiness is not None:
+                    raise CodegenError('A host call cannot transport CTA pipeline state.')
+                resources, names = {'stages': [], 'handoffs': []}, {}
+            else:
+                resources, names = instantiate_resources(
+                    definition["schedule"], nested.shared_by_name,
+                    f"_flagmega_{_identifier('__'.join(key))}",
+                )
+            if source_readiness is not None:
+                if not incoming_reader:
+                    raise CodegenError("An imported readiness formal lacks a caller reader endpoint.")
+                names['_flagmega_incoming_source_reader'] = incoming_reader
             self.stages.extend(resources["stages"])
             # A callee invoked from a structured loop performs its handoffs
             # once per iteration, so their slots must be reusable.
@@ -828,13 +892,21 @@ class _PipelineSourceBuilder:
                 "descriptor_argument_bindings": dict(zip(
                     definition["host_tensor_descriptor_specs"].parameters(),
                     self.descriptor_specs.argument_bindings[descriptor_binding_start:], strict=True)),
-                "drained_stages": tuple(names[value] for value in definition["schedule"]["drained_stage_ids"]),
+                "drained_stages": () if self.host_scope else tuple(names[value] for value in definition["schedule"]["drained_stage_ids"]),
             }
             self.function_instances[key] = instance
             self.drained_stage_ids.update(instance["drained_stages"])
-            if definition["schedule"]["auxiliary_events"]:
+            if not self.host_scope and definition["schedule"]["auxiliary_events"]:
                 self.auxiliary_events.append(self._function_event(call, definition, instance, "auxiliary"))
-        output.append(self._function_event(call, definition, instance, role))
+        if self.host_scope:
+            arguments = tuple(instance['arguments'])
+            output.append({'kind': 'function_call', 'call': call.call_id, 'callee': call.callee,
+                'symbol': definition['symbol'], 'arguments': ', '.join(arguments),
+                'argument_expressions': arguments, 'descriptor_argument_bindings': instance['descriptor_argument_bindings'],
+                'endpoint_bindings': {}, 'drained_stages': (), 'barrier_before': False,
+                'host_invocation': True})
+        else:
+            output.append(self._function_event(call, definition, instance, role))
 
     @staticmethod
     def _function_event(call, definition, instance, role):
@@ -890,14 +962,21 @@ class _PipelineSourceBuilder:
                 f"Pipeline call {call.call_id!r} has no encoded kernel ABI in "
                 f"@{context.function_name}."
             ) from error
+        actual_by_formal = context.actual_by_formal
+        if "census_layer_actual" in encoded:
+            from .trace_config import CENSUS_LAYER_ARGUMENT
+            actual_by_formal = {**actual_by_formal, CENSUS_LAYER_ARGUMENT:
+                               _substitute(str(encoded["census_layer_actual"]), actual_by_formal)}
         event = self.kernel_event_factory(
             context.function_name,
             encoded,
-            context.actual_by_formal,
+            actual_by_formal,
             context.storage_roots,
             key,
             self.descriptor_specs,
         )
+        if "census_layer_actual" in encoded:
+            event["census_selected"] = True
         # Pipeline source is built only from a materialized ExecutionFunction;
         # all required synchronization is already present as Barrier nodes in
         # that body.  ``barrier_before`` is retained by the flat package path
@@ -1380,12 +1459,15 @@ def _compact_duplicate_function_actuals(root_schedule, definitions):
     SSA identity proofs and are deliberately excluded here.
     """
     schedules = tuple({id(schedule): schedule for schedule in (
-        root_schedule, *(definition["schedule"] for definition in definitions)
+        root_schedule, *(definition["schedule"] for definition in definitions),
+        *(schedule for definition in definitions for schedule in definition.get('native_program_schedules', {}).values())
     )}.values())
     events = [event for schedule in schedules
               for role in ("consumer", "producer", "auxiliary")
               for event in schedule[f"{role}_events"]]
     for definition in definitions:
+        if definition.get('host_control_scope'):
+            continue
         calls = [event for event in events if event["kind"] == "function_call"
                  and event["callee"] == definition["function"]]
         if not calls:

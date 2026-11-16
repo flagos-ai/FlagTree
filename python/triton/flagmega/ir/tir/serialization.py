@@ -68,6 +68,8 @@ def tir_to_data(node: TIRNode) -> dict[str, object]:
         result.pop("carry_scope", None)
     if node.kind == "for_loop" and getattr(node, "call_id", None) is None:
         result.pop("call_id", None)
+    if node.kind == "pipeline_stage" and getattr(node, "source_readiness", None) is None:
+        result.pop("source_readiness", None)
     return result
 
 

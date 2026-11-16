@@ -1,0 +1,116 @@
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "split_k_dense_glu" and call.variant == "projection" %}
+{{ call.symbol }}__N256 = tl.constexpr(tle.gpu.BlockEncoding([1], [32], [8], [0]))
+{{ call.symbol }}__X8 = tl.constexpr(tle.gpu.BlockEncoding([8], [32], [8], [0]))
+@triton.jit
+def {{ call.symbol }}__producer(W_map, X_map, Ws, Xs, full0, full1, full2,
+                 empty0, empty1, empty2):
+    BN: tl.constexpr = 256
+    BK: tl.constexpr = 64
+    KS: tl.constexpr = 1024
+    STAGES: tl.constexpr = 3
+    TILES: tl.constexpr = 16
+    bx = tl.program_id(0)
+    bs = tl.program_id(1)
+    tle.gpu.tensor_map_fenceproxy_acquire(W_map)
+    tle.gpu.tensor_map_fenceproxy_acquire(X_map)
+    for g in tl.range(0, TILES, loop_unroll_factor=1):
+        slot = g % STAGES
+        phase = (g // STAGES) % 2
+        if slot == 0:
+            tle.gpu.barrier_wait(empty0, phaseIdx=phase)
+        elif slot == 1:
+            tle.gpu.barrier_wait(empty1, phaseIdx=phase)
+        else:
+            tle.gpu.barrier_wait(empty2, phaseIdx=phase)
+        wd = tle.gpu.reinterpret_tensor_map(W_map, Ws.slot(slot))
+        k0 = bs * KS + g * BK
+        if slot == 0:
+            tle.gpu.copy(wd, Ws.slot(slot), [BK, BN], [k0, bx * BN], barrier=full0)
+        elif slot == 1:
+            tle.gpu.copy(wd, Ws.slot(slot), [BK, BN], [k0, bx * BN], barrier=full1)
+        else:
+            tle.gpu.copy(wd, Ws.slot(slot), [BK, BN], [k0, bx * BN], barrier=full2)
+        xd = tle.gpu.reinterpret_tensor_map(X_map, Xs.slot(slot))
+        if slot == 0:
+            tle.gpu.copy(xd, Xs.slot(slot), [1, BK], [0, k0], barrier=full0, expect_bytes=128)
+        elif slot == 1:
+            tle.gpu.copy(xd, Xs.slot(slot), [1, BK], [0, k0], barrier=full1, expect_bytes=128)
+        else:
+            tle.gpu.copy(xd, Xs.slot(slot), [1, BK], [0, k0], barrier=full2, expect_bytes=128)
+
+
+@triton.jit
+def {{ call.symbol }}__consumer(A, P, Ws, Xs, full0, full1, full2,
+                    empty0, empty1, empty2):
+    BN: tl.constexpr = 256
+    BK: tl.constexpr = 64
+    KS: tl.constexpr = 1024
+    N: tl.constexpr = 12288
+    STAGES: tl.constexpr = 3
+    TILES: tl.constexpr = 16
+    bx = tl.program_id(0)
+    bs = tl.program_id(1)
+    j = tle.gpu.set_layout(tl.arange(0, BN), {{ call.symbol }}__N256)
+    acc = tle.gpu.set_layout(tl.zeros((BN,), tl.float32), {{ call.symbol }}__N256)
+    for ko in tl.range(0, TILES, loop_unroll_factor=1):
+        slot = ko % STAGES
+        phase = (ko // STAGES) % 2
+        if slot == 0:
+            tle.gpu.barrier_wait(full0, phaseIdx=phase)
+        elif slot == 1:
+            tle.gpu.barrier_wait(full1, phaseIdx=phase)
+        else:
+            tle.gpu.barrier_wait(full2, phaseIdx=phase)
+        tl.debug_barrier()
+        for packet in tl.range(0, BK // 8, loop_unroll_factor=4):
+            k8 = packet * 8 + tle.gpu.set_layout(tl.arange(0, 8), {{ call.symbol }}__X8)
+            x_packet = tle.gpu.set_layout(tl.load(tle.gpu.local_ptr(Xs.slot(slot), (0, k8), [8])), {{ call.symbol }}__X8)
+            for element in tl.static_range(0, 8):
+                selection = tle.gpu.set_layout(tl.full((1,), element, tl.int32), {{ call.symbol }}__X8)
+                x = tl.gather(x_packet, selection, axis=0).reshape(()).to(tl.float32)
+                kk = packet * 8 + element
+                w = tl.load(tle.gpu.local_ptr(Ws.slot(slot), (kk, j), [BN])).to(tl.float32)
+                # One ordered FP32 accumulator per donor output column/thread.
+                acc = tl.fma(x, w, acc)
+        # Each consumer releases its last shared reads before one empty credit.
+        if slot == 0:
+            tle.gpu.barrier_arrive(empty0, arrive_count=1, phaseIdx=phase, participant_count=256)
+        elif slot == 1:
+            tle.gpu.barrier_arrive(empty1, arrive_count=1, phaseIdx=phase, participant_count=256)
+        else:
+            tle.gpu.barrier_arrive(empty2, arrive_count=1, phaseIdx=phase, participant_count=256)
+    tl.store(P + bs * N + bx * BN + j, acc)
+
+
+@triton.jit
+def {{ call.symbol }}__implementation(A, W, P, W_map, X_map):
+    """W and X contribute two arrivals to one full completion per epoch."""
+    tl.static_assert(A.dtype.element_ty == tl.bfloat16)
+    tl.static_assert(W.dtype.element_ty == tl.bfloat16)
+    tl.static_assert(P.dtype.element_ty == tl.float32)
+    tl.static_assert(W_map.dtype.element_ty == tl.uint8)
+    tl.static_assert(X_map.dtype.element_ty == tl.uint8)
+    Ws = tle.gpu.alloc([3, 64, 256], tl.bfloat16,
+                       nv_mma_shared_layout=False, alignment_bytes=128)
+    Xs = tle.gpu.alloc([3, 1, 64], tl.bfloat16,
+                       nv_mma_shared_layout=False, alignment_bytes=128)
+    full0 = tle.gpu.alloc_barrier(arrive_count=2, expect_bytes=32768)
+    full1 = tle.gpu.alloc_barrier(arrive_count=2, expect_bytes=32768)
+    full2 = tle.gpu.alloc_barrier(arrive_count=2, expect_bytes=32768)
+    empty0 = tle.gpu.alloc_barrier(arrive_count=256, init=tle.gpu.READY)
+    empty1 = tle.gpu.alloc_barrier(arrive_count=256, init=tle.gpu.READY)
+    empty2 = tle.gpu.alloc_barrier(arrive_count=256, init=tle.gpu.READY)
+    tle.gpu.warp_specialize([
+        ({{ call.symbol }}__consumer, (A, P, Ws, Xs, full0, full1, full2,
+                           empty0, empty1, empty2)),
+        ({{ call.symbol }}__producer, (W_map, X_map, Ws, Xs, full0, full1, full2,
+                       empty0, empty1, empty2)),
+    ], [1], [32])
+
+{{ entry.kernel_decorator(call, prefer_inline=true) }}
+def {{ call.symbol }}({{ call.signature }}):
+    {{ call.symbol }}__implementation({{ call.source }}, {{ call.weight }}, {{ call.result }}, weight_descriptor, value_descriptor)
+{% endif %}
+{% endfor %}

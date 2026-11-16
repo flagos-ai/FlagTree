@@ -79,6 +79,8 @@ def write_artifact(
     codegen_backend: str = "triton",
     cpp_max_registers: int | None = None,
     cpp_operator_profile: str | None = None,
+    triton_trace=None,
+    readonly_layout_policy=None,
     dumper: Dumper | None = None,
     rdata_cache_dir: str | Path | None = None,
     readonly_source=None,
@@ -98,6 +100,14 @@ def write_artifact(
     if cpp_operator_profile is not None:
         from triton.flagmega.codegen.cpp.operator_profile import validate_option
         validate_option(cpp_operator_profile, target=target, codegen_backend=codegen_backend,
+                        emit_executable=emit_executable)
+    if triton_trace is not None:
+        from triton.flagmega.codegen.triton.trace_config import validate_option
+        validate_option(triton_trace, target=target, codegen_backend=codegen_backend,
+                        emit_executable=emit_executable)
+    if readonly_layout_policy is not None:
+        from triton.flagmega.codegen.readonly_layout_policy import validate_option
+        validate_option(readonly_layout_policy, target=target, codegen_backend=codegen_backend,
                         emit_executable=emit_executable)
     verify_module(module)
     if codegen_backend not in CODEGEN_BACKENDS:
@@ -134,7 +144,8 @@ def write_artifact(
         final_ir = emit_module(module, ir_dir / "final.py")
         codegen = (
             _render_codegen_package(module, destination, target=target, codegen_backend=codegen_backend,
-                                    cpp_max_registers=cpp_max_registers, cpp_operator_profile=cpp_operator_profile, dumper=dumper)
+                                    cpp_max_registers=cpp_max_registers, cpp_operator_profile=cpp_operator_profile,
+                                    triton_trace=triton_trace, readonly_layout_policy=readonly_layout_policy, dumper=dumper)
             if emit_executable else None
         )
         rdata = rdata_future.result() if rdata_future is not None else None
@@ -183,6 +194,15 @@ def write_artifact(
             sections.append(record_section(
                 destination, resolve_artifact_path(destination, record["source"]),
                 name=program_source_section_name(record), kind=PROGRAM_SOURCE_KIND))
+        if codegen.get("triton_readonly_layout") is not None:
+            sections.append(record_section(
+                destination, destination / codegen["triton_readonly_layout"]["file"],
+                name="codegen.readonly_layout", kind="flagmega.triton-readonly-layout/v1"))
+        if codegen.get("triton_trace") is not None:
+            for field in ("config", "dictionary"):
+                sections.append(record_section(
+                    destination, destination / codegen["triton_trace"][field + "_file"],
+                    name=f"diagnostic.trace.{field}", kind=f"diagnostic.trace-{field}/v1"))
         # A C++ package is only loadable through its built library, so the
         # library is a verified section too: a hand-edited or stale .so is
         # rejected at load time exactly as a stale generated source is.
@@ -233,10 +253,13 @@ def _render_codegen_package(
     codegen_backend: str,
     cpp_max_registers: int | None = None,
     cpp_operator_profile: str | None = None,
+    triton_trace=None,
+    readonly_layout_policy=None,
     dumper: Dumper | None,
 ) -> dict[str, object]:
     if codegen_backend == "triton":
-        return render_triton_package(module, destination, dumper=dumper)
+        return render_triton_package(module, destination, dumper=dumper, triton_trace=triton_trace,
+                                     readonly_layout_policy=readonly_layout_policy)
     from triton.flagmega.codegen.cpp import render_cpp_package_artifact
 
     return render_cpp_package_artifact(
@@ -268,6 +291,10 @@ def refresh_artifact_codegen(
             or manifest.get("codegen_backend", "triton") != "triton"
             or manifest.get("flagmega_artifact_version") != ARTIFACT_VERSION):
         raise ArtifactError("Codegen refresh requires a current executable Triton artifact.")
+    if manifest.get("codegen", {}).get("triton_trace") is not None:
+        raise ArtifactError("Diagnostic trace artifacts require fresh emission with an explicit trace configuration.")
+    if manifest.get("codegen", {}).get("triton_readonly_layout") is not None:
+        raise ArtifactError("Readonly device-layout artifacts require fresh emission with an explicit policy.")
     original_hash = module.semantic_hash
     if kernel_rewrite is not None:
         try:
@@ -449,6 +476,9 @@ def load_artifact(
             raise ArtifactError("Artifact codegen descriptor does not match its source section.")
         if not str(codegen.get("kind", "")) or not str(codegen.get("symbol", "")):
             raise ArtifactError("Artifact codegen descriptor requires non-empty kind and symbol.")
+        if codegen.get("triton_readonly_layout") is not None or "codegen.readonly_layout" in by_name:
+            from triton.flagmega.codegen.triton.nvidia_readonly_layout import validate_layout_section
+            validate_layout_section(artifact, codegen, by_name, module.semantic_hash)
         records = program_source_records(codegen)
         expected_programs = {program_source_section_name(record): record for record in records}
         actual_programs = {name: section for name, section in by_name.items()

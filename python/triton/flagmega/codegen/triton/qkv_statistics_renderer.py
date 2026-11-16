@@ -35,14 +35,20 @@ def _logical_view_abi(source, value_type):
     tensor = value_type.tensor
     shape = tuple(dim.fixed_value for dim in tensor.shape)
     lanes = prod(tensor.dtype.lanes) if isinstance(tensor.dtype, VectorType) else 1
-    if source["dtype"] != tensor.dtype.value or int(source.get("scalar_lane_count", 1)) != lanes:
-        raise CodegenError("Fused QKV view cannot change its backing dtype or lanes.")
+    scalar = tensor.dtype.elem_type if isinstance(tensor.dtype, VectorType) else tensor.dtype
+    if (int(source.get("scalar_lane_count", 1)) != lanes
+            or (source["scalar_dtype"] != scalar.value
+                and (source["scalar_dtype"], scalar.value) != ("float32", "bfloat16"))):
+        raise CodegenError("Fused QKV materialized view requires matching lanes and a supported rounding boundary.")
     coordinates = tuple(f"shard_coord_{axis}" for axis in range(value_type.placement.rank))
     shard = local_shard_descriptor(value_type, coordinates)
     capacity = tuple(dim.fixed_value for dim in shard.local_capacity_shape)
     strides = _dense_strides(capacity)
     return {
-        **dict(source), "logical_shape": shape, "local_capacity_shape": capacity,
+        # This is the virtual result AFTER the owner sum, not a storage alias.
+        # Every physical load uses the separate partial_sources ABI above.
+        **dict(source), "dtype": tensor.dtype.value, "scalar_dtype": scalar.value,
+        "logical_shape": shape, "local_capacity_shape": capacity,
         "active_shape_expressions": tuple(emit_dimension(dim) for dim in shard.active_shape),
         "logical_coordinate_expressions": tuple(
             emit_dimension(axis.map_local_to_global(f"local_coord_{index}"))
@@ -52,7 +58,7 @@ def _logical_view_abi(source, value_type):
     }
 
 
-def partial_qkv_access(source, domain, layout, member):
+def partial_qkv_access(source, domain, layout, member, *, materialized_dtype):
     from .kernel_call_renderers import (
         _compact_source_coordinates, _linear_owner_expression, _static_shape, _triton_dtype,
     )
@@ -93,4 +99,5 @@ def partial_qkv_access(source, domain, layout, member):
         "offset": emit_local_scalar_offset(abi, local, lane_coordinate=f"(({linear}) % {lanes})"),
         "member": member, "member_count": count, "member_width": 1 << (count - 1).bit_length(),
         "scalar_dtype": _triton_dtype(str(abi["scalar_dtype"])),
+        "materialized_dtype": materialized_dtype,
     }

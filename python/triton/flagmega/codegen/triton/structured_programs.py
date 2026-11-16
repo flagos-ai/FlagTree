@@ -134,13 +134,24 @@ class _StructuredPrograms:
                                 and all(e['kind'] == 'barrier' for e in pending)):
                 projected_events.extend(pending)
                 self.trailing_controls[name] = ()
-            projected = _describe_program_partition(self.module, local,
-                {**descriptor, 'entry_events': projected_events}, function_name=name,
-                complete_scope=not any(n == name for n, _ in self.controls))
-            for program, launch in zip(projected['programs'], projected['kernels'], strict=True):
-                self.templates[program['symbol']] = (name, {
-                    **program, **{key: descriptor[key] for key in (
-                        'signature_arguments', 'typed_signature_arguments', 'signature', 'scalar_arguments')}}, launch)
+            native = self.definitions.get(name, {}).get('native_program_schedules')
+            projections = []
+            if native is not None:
+                for request in local:
+                    schedule = native[request['symbol']]
+                    projections.append(_describe_program_partition(self.module, [request],
+                        {**descriptor, 'entry_events': schedule['consumer_events'],
+                         'pipeline_schedule': schedule if schedule['stages'] else None},
+                        function_name=name, complete_scope=True))
+            else:
+                projections.append(_describe_program_partition(self.module, local,
+                    {**descriptor, 'entry_events': projected_events}, function_name=name,
+                    complete_scope=not any(n == name for n, _ in self.controls)))
+            for projected in projections:
+                for program, launch in zip(projected['programs'], projected['kernels'], strict=True):
+                    self.templates[program['symbol']] = (name, {
+                        **program, **{key: descriptor[key] for key in (
+                            'signature_arguments', 'typed_signature_arguments', 'signature', 'scalar_arguments')}}, launch)
 
     def edge_value(self, edge, environment, induction):
         kind, abi = edge['actual_runtime_value_kind'], edge['actual_abi']

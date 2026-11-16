@@ -1,213 +1,143 @@
-# Low-overhead kernel tracing from IKET
+# Operator/kernel profiling, recorder and swimlanes
 
-Use this method when introducing or changing in-kernel instrumentation,
-especially for warp specialization, producer/consumer pipelines and async
-transfers. It extracts the event-design and profiling method from NVIDIA IKET;
-it does not require replacing the compiler/backend or installing IKET for every
-task. The [mandatory microprofiling flow](kernel-microprofiling.md) still governs
-NCU, scope, hardware lanes, failure handling and independent acceptance.
+Operator microanalysis uses the kernel swimlane: kernel profiler owns captures/analysis/swimlanes; kernel optimizer owns production
+recorder integration. reviewer independently audits evidence and ordinary acceptance;
+orchestrator owns leases/failure state. See [kernel profiler](agents/kernel-profiler.md).
 
-## Select the collection path first
+## 1. Workflow
 
-| Required result | Collection path | Evidence boundary |
-| --- | --- | --- |
-| Additional in-kernel WG diagnosis with supported IKET kernels | Compile IKET events, use `run-iket`, retain its raw output and Perfetto trace; collect mandatory NCU in a separate run | Separate executions: compare mechanisms, but do not align their intervals or infer concurrent hardware activity |
-| WG stages and NCU hardware samples from the same invocation | Use opt-in device instrumentation compatible with NCU; borrow applicable IKET event/encoding ideas without requiring its runtime injector | Verify actual invocation, timebase, replay/pass identity and full coverage before producing a shared axis |
+1. Declare the smallest hypothesis-testing layer/tile/window and complete cooperative
+   warp/dependency scope. Pin workload/native/library/GPU-model/launch/provider semantics. Apply
+   [GPU model equivalence](../SKILL.md#gpu-model-equivalence); record the actual
+   card for execution provenance rather than requiring one physical card.
+2. Before expensive model preparation/formal capture, run a small real NCU smoke
+   capture under the device lease. Before tuning, inspect baseline NCU and actual
+   WG/module evidence; recapture each evaluated revision's affected scope in the same cycle.
+3. Choose compatible recorder/provider, validate a small complete capture and
+   ordinary/disabled/minimal/full controls; normalize reviewed intervals for the renderer.
+4. Inspect actual SVGs and independently audit raw-to-chart scope/timebase/attribution,
+   waits/overlap/bubbles and perturbation. Retain separate capture/analysis gate states.
 
-The documented `run-iket` runtime conflicts with NCU, Nsight Systems and other
-CUPTI profilers. It also uses sizing and collection passes. Do not nest these
-profilers, use IKET to bypass an NCU failure, or relabel different executions as
-one capture. Recheck compatibility for the installed versions. A standalone
-IKET run can complete a separate diagnostic substep; it does not complete this
-workflow's mandatory NCU gate or a requested same-invocation joint analysis.
+## 2. Checklist
 
-## Design events around the pipeline
+<a id="capture-gates"></a>
 
-Start with a coarse event map of each real role, then add detail where it can
-answer the bottleneck question. A useful map is producer acquire → issue/commit
-→ consumer wait → compute → release/reuse. Include loop fill and drain, buffer
-slot/phase changes, and final outstanding completions. KernelOptimizer owns the
-map and implementation; KernelArchitect checks the question and semantics.
+1. Retain NCU version/command/sections/metrics, source/workload/launch, replay/cache/
+   clock settings, actual exit, raw .ncu-rep and inspected usable export. Empty,
+   wrong-kernel or unusable metrics fail even at exit0. Installed tool behavior
+   follows the [profiler guide](https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html).
+2. Any NCU error sets paused_ncu_error: stop new optimization/build/benchmark
+   dispatch, safely quiesce owned jobs and retain failures. Narrow initial-capture/
+   harness repairs are allowed; only a successful inspected capture closes the gate.
+   Instrumented timing/another profiler cannot bypass an explicit NCU requirement.
+   Other platforms need an explicitly agreed equivalent native provider/tool.
+3. Reuse user-authorized sudo access; otherwise explain actual error and the precise
+   command requiring authorization. Keep credentials in private stdin/channels,
+   never argv/logs/persistent files/whole-file sourcing; do not silently alter drivers/
+   sudoers. Each retry has a new capture ID, causal repair and stopping condition.
+4. Store REVISION_DIR/profiles/kernel/CAPTURE_ID reports/raw/manifest/analysis plus
+   revision SVG/data/renderer/review pins; graph profiler publishes reviewed latest SVGs under root figures/.
+   NCU, WG coverage, hardware activity and analysis
+   are separate gates; missing intervals remain unavailable/pending, not idle or accepted.
 
-Use stable event names or IDs for repeated phases. Put tile/iteration or
-transaction identity in a small typed payload instead of generating a new name
-per iteration. IKET's documented encoding can widen above 30 unique names;
-treat that as an IKET implementation detail, not a universal event limit. Do
-not remove required observations merely to stay below it.
+<a id="raw-trace-contract"></a>
 
-Specify payload width and signedness explicitly and verify the installed API,
-raw ABI and decoder preserve them. In the documented CuTe DSL API, plain
-Python literals use 32-bit payloads; use explicit `cutlass.Int64` or
-`cutlass.Float64` for corresponding 64-bit literals. Token-range endpoints
-must use matching payload types. Never silently narrow a required value. If a
-backend needs a hi32/lo32 representation, bind both halves to the same
-observer, correlation ID, epoch and selected active lane, and verify lossless
-round-trip decoding. Include the extra records in capacity and overhead counts.
+1. Preserve invocation/rank/device/SM/CTA, actual WG/warp membership, role/layer/
+   tile/iteration, mask/observer census, expected/observed events, capacity/drop/
+   overflow/unmatched pairs, operation/module/correlation and buffer/epoch/barrier.
+   Include all cooperating groups, executed divergence and drain endpoints;
+   leader events describe that observer, not every warp/device.
+2. Retain raw integer timestamps, source/resolution/calibration/offset uncertainty
+   and replay/pass/window IDs. Per-SM clocks cannot align by unrelated origin
+   subtraction; separate launches/passes are distinct executions, not one shared axis.
+3. observed_activity means provider-established activity at declared scope/resolution;
+   inflight_envelope is issue/commit-to-completion/wait-return lifetime, not continuous
+   engine busy. sampled/inferred/unknown remain visibly distinct. Coarse bins require
+   verified boundaries and user agreement, never invented per-WG engine endpoints.
+4. Name actual CUDA/SIMT/matrix/TMA/cp.async/load-store paths and module-to-WG
+   attribution. Unused modules need proof; relevant missing activity stays unavailable.
+   Interval unions/intersections use same-execution clocks and explicit window/A/B
+   denominators. Report fill/steady/drain, starvation/backpressure/reuse/sync waits,
+   producer lead/lag and critical-path impact; envelopes establish possible concurrency only.
 
-Use point markers for instantaneous observations, stack ranges only for LIFO
-nesting, and token/explicit-ID ranges for overlapping or cross-iteration
-operations. A sentinel for an operation not yet started must not generate a
-fake start/end event. Close every executed dynamic range, including the drain
-iteration and divergent paths that actually run.
+<a id="recorder-method"></a>
 
-Place warp-level events on warp-uniform paths where possible. Record active
-mask and leader/payload selection semantics. IKET payloads select an active
-lane; this does not preserve every participating thread's value. A pipeline
-with distinct thread-level producers inside one warp needs explicit observer
-IDs and lossless recording of each required producer. Do not collapse them
-into one warp event or invent extra physical warp groups.
+1. Standalone IKET is additional diagnosis alongside separate NCU. Same-invocation
+   WG/NCU hardware analysis needs NCU-compatible instrumentation. Document installed
+   runtime/provider compatibility; run-iket sizing/collection conflicts with NCU/CUPTI.
+   SASS-patching emitters are not standalone recorders by copying timer/write sequences.
+2. Stable event IDs carry explicit payload width/signedness across API/raw ABI/decoder;
+   wider-than-32-bit CuTe literals need explicit types. Lossless hi/lo halves retain
+   observer/correlation/epoch/mask binding. Sentinel/unexecuted work emits no fake range;
+   LIFO ranges nest, concurrent/cross-iteration work uses tokens. Separate issue and completion.
+3. Timestamp before bookkeeping; hoist static metadata/owned stream bases, evaluate
+   bounded disjoint cursors/vector stores/compact IDs. Version ABI/decoder and preserve
+   dynamic identities/drop detection; no silent wrap. Prove timer encoding/granularity/
+   wrap/epoch reconstruction or keep full integer time. Inspect actual PTX/SASS for
+   timer/store/address/spill placement; volatile/clobbers are not sync/completion proof.
+4. Compare device-kernel durations/event counts/resources on matched implementation/
+   workload/launch/reset/boundary: tracing removed, recording disabled, minimal actual
+   recording, full events, full with/without NCU. Pin distinct binaries/registers/shared/
+   spills/residency. Host time or combined setup deltas are not pure event/profiler cost;
+   do not subtract mean overhead from individual intervals or add barriers creating the schedule.
 
-For asynchronous operations, record issue/commit and completion observation
-separately. An endpoint immediately after TMA/cp.async/MMA issue measures the
-issue path. A wait-return endpoint observes readiness and may lag actual
-completion. Their envelope is not a hardware-engine busy interval. Show actual
-module activity using the required hardware provider or accepted NCU samples.
+<a id="renderer"></a>
 
-Coarse-to-fine instrumentation controls event density, not coverage authority:
-retain every cooperating WG and dependency in the declared capture scope.
-Diagnostic subsets need explicit scope labels. Display selection/aggregation
-does not authorize dropping required raw events.
+Copy [example.json](../assets/kernel-swimlane/example.json), replace synthetic
+intervals with reviewed evidence and use the standard-library renderer:
 
-## Keep the recorder's hot path small
+```sh
+python skills/flagmega-developer/scripts/render_kernel_swimlane.py \
+  skills/flagmega-developer/assets/kernel-swimlane/example.json \
+  --output /tmp/kernel-swimlane.svg --summary /tmp/kernel-swimlane-summary.json
+```
 
-Inspect the existing recorder before assuming that inline assembly makes it
-cheap. Count state loads/stores, address calculations, counter updates and
-record bytes at each event, in addition to timer instructions. Use the
-following design choices when they fit the actual ABI and ownership model:
-
-- **Observe before bookkeeping.** Capture the intended timestamp before trace
-  counter updates and record stores that would delay that observation. Keep
-  event placement relative to the model operation explicit. An entry marker
-  after recorder initialization is not the hardware kernel start.
-- **Hoist stable metadata.** Put source identity, event dictionaries and known
-  launch geometry in a manifest/header. Cache a stream's buffer base and cursor
-  in registers when their lifetimes and resource cost permit it. Avoid reading
-  configuration and updating a global count for every record when a final
-  commit can preserve capacity, ordering and failure detection.
-- **Use owned, bounded streams.** Prefer disjoint per-observer append regions
-  over a contended global append counter. Check capacity and preserve explicit
-  overflow/drop and incomplete-stream evidence. Do not wrap and silently
-  overwrite earlier events. Size from the lowered schedule/census where
-  possible; for dynamic workloads retain a verified bound or sizing evidence.
-- **Encode only what is needed on the hot path.** Evaluate compact event IDs,
-  small payloads and aligned/vector stores. Version the raw ABI and decoder.
-  Reconstruct static fields only from pinned, unambiguous metadata; do not
-  discard dynamic branch/mask/SM/buffer/transaction information needed by the
-  trace contract. Verify lossless decoding against actual records and census.
-- **Make ordinary builds clean.** Prefer compile-time removal of tracing for
-  the uninstrumented performance artifact. Verify actual generated code;
-  runtime-disabled instrumentation can still consume registers/instructions.
-
-These are adaptation candidates, not claims about IKET's private runtime.
-The public CUDA C++ IKET emitter demonstrates early timer reads, compact IDs,
-small shared-memory writes and `pmevent` anchors. Those sites depend on
-`run-iket` SASS patching and metadata: its scratch address, event-bit encoding
-and marker instructions are not a standalone general-purpose trace buffer.
-Do not copy that sequence into an NCU recorder and assume it records events.
-
-If using a shortened timer or embedding IDs into timestamp bits, prove the
-target's timer granularity, reserved bits, wrap interval, full-width anchor and
-epoch reconstruction across all streams. Preserve integer timestamps until
-subtracting a validated origin. IKET documents 32 ns event granularity; that
-does not establish another recorder's clock or NCU sampling resolution.
-Keep full-width time or a separate ID field when the encoding proof is absent.
-
-## Verify generated code and execution
-
-Inspect PTX **and actual SASS/native instructions** for the changed capture
-sites. Locate timer reads, configuration/state accesses, spills and final
-record stores. Prove that stores use the intended captured timestamp and that
-compiler motion did not move the observation across the operation of interest.
-`asm volatile` and a compiler memory clobber are not device synchronization or
-proof that an asynchronous operation completed. Do not add synchronization that
-creates the pipeline behavior being measured.
-
-Query actual registers, shared/local memory, spills, launch geometry and
-residency. Shared-memory staging or long-lived cursor registers can reduce
-global traffic while increasing occupancy cost. Compare the generated ordinary
-and diagnostic implementations, and pass the agreed numerical/state checks.
-
-Validate a small complete capture before scaling up: expected groups/events,
-pairing, masks/ownership, slot/epoch reuse, capacity/drop counts, ordering,
-clock calibration and the raw-to-decoded mapping. Preserve failed captures.
-For a shared NCU axis also inspect the actual pass/group, usable timestamp
-vectors and full workload coverage; `merged_samples=0` alone does not prove an
-untruncated trace. Declare alignment criteria and endpoint semantics before
-capture. An entry observation delayed by bookkeeping calls for a causal
-recorder/observation repair, not retries until one passes or a fitted offset.
-
-Changed recorder code or ABI gets a new native identity. Revalidate affected
-resources, NUM, clocks, census and joined captures; do not carry a calibration
-or acceptance receipt across an unverified identity change.
-
-## Measure perturbation before interpreting trace improvements
-
-These controls establish the limits of instrumented pipeline conclusions.
-Ordinary uninstrumented correctness and performance checks can proceed under
-the [candidate prerequisites](agent-flow.md#candidate-checks-and-acceptance)
-while controls are prepared. Final microprofile acceptance still requires the
-applicable controls; an ncu failure continues to pause optimization. Reuse a
-verified recorder when its contracts hold instead of redesigning tracing for
-each kernel candidate.
-
-Separate compiler effects, per-event cost and profiler overhead. Use matched
-device-kernel timing boundaries and preserve raw samples and executed event
-counts. Useful controls are:
-
-| Control | What to compare |
+| Normalized object | Contract |
 | --- | --- |
-| Ordinary artifact with tracing removed | Correctness and actual uninstrumented kernel/model performance |
-| Trace-capable artifact with recording disabled | Code-generation/resource cost of the instrumentation path |
-| Minimal actual instrumentation | Combined minimal recorder/profiler cost; retain real event sites and required backend setup |
-| Intended full event set | Incremental event cost, resource effects and the pipeline used for diagnosis |
+| Document/panel | schema_version=1, explicit synthetic, integer window_ns, title/panels; panel label/invocation/scope/timebase/lanes |
+| Timebase/lane | source/positive integer resolution_ns; alignment synthetic/validated_common/wg_only; unique lane ID, wg/hardware kind, scope/intervals; status captured/unavailable/not_used/not_applicable |
+| Interval | Panel-unique ID, integer relative start_ns/end_ns, label/kind/evidence; retain provenance/tile/buffer/correlation |
+| Phase/dependency/bubble | Explicit fill/steady/drain boundaries; arrows reference interval IDs; positive wait spans classify starvation/backpressure/buffer_reuse/synchronization/unknown with reason/evidence and critical_path true/false/null |
 
-For `run-iket`, follow its documented minimal-event versus full-event procedure
-using trace-reported GPU kernel durations under the same profiling setup. The
-tool must recognize the minimally instrumented kernel. Treat the duration
-difference as an estimate of incremental event overhead; state the event/warp
-count denominator for any amortized figure. An enabled but unprofiled IKET
-binary is a separate compiler sanity check, not that overhead experiment.
-Minimal profiled minus minimal unprofiled timing includes recorder/injection
-changes as well as profiling. Report this combined effect; do not call it pure
-profiler cost without a control that isolates that component.
+1. Fixed palette: index yellow, transfer light blue, tensor blue, SIMT orange,
+   wait vermilion, sync purple, store green, unknown gray. Observed solid,
+   envelope faint/long dashed, sampled hatch, inferred short dashed, unknown crosshatch.
+   Width defaults1500, range900–4000; [preview](../assets/kernel-swimlane/example.svg) is synthetic.
+2. Preserve overlaps in subtracks without inventing warps, points as vertical marks
+   and true short durations. Hardware-on-WG axis needs validated_common; independent
+   invocations compare scale, not concurrency. Subtract validated integer origins
+   before conversion; cropping never moves completion to the crop boundary.
+3. Summary uses interval unions by evidence, avoiding double counting. Observed
+   index/transfer/tensor/SIMT/store direct_work_union_ns is null when absent;
+   uncovered time is not idle/utilization. Missing/unused lanes have null work.
+   Bubble classification/criticality is analyst-supplied, not automatic diagnosis.
+4. Retain complete raw scope/census/clock/drop/manifest and SVG/data/renderer pins.
+   Provide overview/indexed details; inspect actual rendering, gallery selection,
+   failed loads/stale exports and any bitmap selection binding. Respect SVG-only.
+   CPU parser/storage preflight and merged_samples=0 do not prove full capture.
+   Reuse only verified bindings/fixtures/epochs/resets/warmup and allowed sessions;
+   retain fresh-process requirements and never double-count control receipts as samples.
 
-For our NCU-compatible recorder, keep the underlying kernel implementation,
-workload, launch and device timing boundary matched, and pin every diagnostic
-native variant. Use one native binary for recording-mode toggles when supported;
-otherwise report compilation/resource differences as part of the measured
-delta. Separately quantify the effect of NCU on the full recorder. Host wall
-time includes loading, injection, export and decoding and does not isolate
-per-event overhead. Keep
-end-to-end uninstrumented timing for the model's performance objective.
+## 3. Index
 
-Do not subtract a measured average overhead from individual trace intervals.
-Compare source/SASS/resource changes and measured distributions to decide
-whether the new recorder perturbs the pipeline less. A smaller record or fewer
-instructions alone does not establish lower execution overhead.
+1. [Kernel expert](agents/kernel-expert.md), [execution gates](agents/orchestrator.md#execution-gates),
+   [ordinary verification](agents/reviewer.md), [workspace layout](workspace-layout.md).
+2. [IKET guide, CUTLASS 954c8d7](https://github.com/NVIDIA/cutlass/blob/954c8d7be60d730cc3f51e8f1ffe9850dce054d5/media/docs/pythonDSL/guides/iket_profiling.rst)
+   and [official frontend](https://github.com/NVIDIA/cutlass/blob/954c8d7be60d730cc3f51e8f1ffe9850dce054d5/python/CuTeDSL/cutlass/cute/experimental/iket/iket.py).
+3. [Independent CUDA emitter 75d44af](https://github.com/revollllt/iket-cuda/blob/75d44af866b3b7147381ee0e6454bc9efa4aa94e/include/iket/iket.cuh): pin adopted revision and inspect per-file license.
+4. [Renderer](../scripts/render_kernel_swimlane.py), [JSON template](../assets/kernel-swimlane/example.json),
+   [agent report](../assets/report-templates/agent.md).
 
-## Handoff and source provenance
+## 4. Lessons
 
-Include the event/role map, selected collection path and profiler compatibility;
-recorder/native/decoder identities; upstream symbols or mechanisms actually
-adopted; format/capacity/wrap proofs; inspected SASS locations; NUM, raw census
-and timebase results; perturbation controls; and independent review. Emit the
-required actual WG/module SVGs with compact regeneration data, explicit scope,
-resolution, evidence classes and links to full raw evidence. Use an overview
-and indexed details for dense data; verify the actual SVGs render.
-
-Keep ownership in the existing KernelOptimizer/KernelArchitect/Verifier flow.
-Do not create a standing profiling-agent role or weaken the NCU/sudo gate.
-Distinguish literal code reuse, ABI compatibility and independently implemented
-ideas. Inspect per-file licensing before copying source; the CUTLASS CuTe DSL
-subtree has its own terms, and a public repository is not by itself a code-copy
-license. This reference summarizes methods and includes no copied recorder.
-
-Primary sources inspected for this method:
-
-- [NVIDIA IKET guide, CUTLASS revision 954c8d7](https://github.com/NVIDIA/cutlass/blob/954c8d7be60d730cc3f51e8f1ffe9850dce054d5/media/docs/pythonDSL/guides/iket_profiling.rst): event placement, warp semantics, compatibility, sizing and overhead experiments.
-- [Official IKET frontend at the same revision](https://github.com/NVIDIA/cutlass/blob/954c8d7be60d730cc3f51e8f1ffe9850dce054d5/python/CuTeDSL/cutlass/cute/experimental/iket/iket.py): marker/range/token API; this file emits IR operations, not the runtime's recorder assembly.
-- [CUDA C++ IKET emitter, revision 75d44af](https://github.com/revollllt/iket-cuda/blob/75d44af866b3b7147381ee0e6454bc9efa4aa94e/include/iket/iket.cuh): an author's IKET 0.5 ABI emitter, with inline PTX and `run-iket` dependencies; not an official portable recorder API.
-
-Pin the versions actually used in a task and recheck their supported ABI,
-target and compatibility. These revisions are provenance, not a requirement to
-install old versions or use an undocumented ABI.
+1. Follow wait → buffer/epoch dependency → upstream issue/readiness → producer
+   lateness → critical-path impact, with counters/instructions and falsification.
+2. Issue is not completion; wait return can lag readiness. Missing clocks/controls
+   block trace interpretation, not unrelated ordinary checks; actual NCU error pause still applies.
+3. Historical build/sparse_mla/tle_flashmla_vs_flashmla_trace.svg supplies stacked
+   light panels/relative scale/WG-Producer style, not a runtime dependency. Its
+   valid-stage timing is instrumentation-inflated; overloaded CSV role/issue events
+   and shared initial Q waits cannot become hardware busy intervals or repeated tile waits.
+4. IKET's 32ns encoding is implementation-specific; smaller records do not prove
+   lower perturbation. Changed native/recorder/decoder identities reopen affected
+   clocks/census/resources/reviews, not unrelated completed acceptance.

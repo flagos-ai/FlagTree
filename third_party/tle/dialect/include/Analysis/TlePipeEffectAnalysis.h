@@ -66,6 +66,7 @@ bool isAsyncCopyComplete(triton::gpu::AsyncCopyGlobalToLocalOp copy,
 
 bool isCtaInvariantSpecialRegisterRead(Operation *op);
 bool canInterleaveBeforePipeMetadataOp(Operation *op);
+bool hasOnlyProfileScratchEffects(Operation *op);
 
 } // namespace mlir::triton::tle
 

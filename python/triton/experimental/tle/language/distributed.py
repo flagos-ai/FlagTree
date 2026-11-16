@@ -1367,7 +1367,7 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
                         order: attr.MemoryOrder | MemoryOrder | str | int | None = MemoryOrder.ACQ_REL,
                         _semantic: TLESemantic | None = None, index: int | None = 0, context_id: int = 0,
                         memory_scope: attr.SyncScope | MemoryScope | str = MemoryScope.SYSTEM,
-                        barrier_count: int | None = None):
+                        barrier_count: int | None = None, census=None, protocol=None, launch_grid=None):
     """
     M3 entrypoint: distributed synchronization primitive.
     Dispatch order:
@@ -1389,6 +1389,14 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
     ``index`` selects the barrier channel and ``context_id`` selects the
     pre-created FlagCX device context.
     Both values must agree across all participants in the barrier.
+    ``protocol=None`` keeps the existing implementation. Explicit
+    ``protocol="hierarchical8"`` selects eight leaf counters and a root on
+    NVIDIA SM90+/PTX8.6+ mesh grid barriers. Scratch is normally allocated;
+    fixed participation and serialized reuse of each instance are required.
+    ``protocol="flags32"`` uses one packed uint32 epoch flag per CTA and a
+    cooperating role warp. It additionally requires an explicit compile-time
+    ``launch_grid=(X,Y,Z)`` with the same population as the logical mesh.
+    Every direct/prepared launch must match that exact physical tuple.
     - cluster mesh: cluster/submesh synchronization
     - block mesh: cooperative grid synchronization
     - device space: index may be a CTA-uniform scalar int32 tensor when
@@ -1400,6 +1408,75 @@ def distributed_barrier(mesh: device_mesh | None = None, device_dptr=None,
     mesh = tl._unwrap_if_constexpr(mesh)
     if mesh is not None and not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh or None, got {type(mesh).__name__}")
+
+    protocol = tl._unwrap_if_constexpr(protocol)
+    launch_grid = tl._unwrap_if_constexpr(launch_grid)
+    if isinstance(launch_grid, tl.tuple):
+        launch_grid = tuple(tl._unwrap_if_constexpr(value) for value in launch_grid.values)
+    if protocol == "flags32":
+        if (mesh is None or not _mesh_uses_grid_barrier(mesh)
+                or tl._unwrap_if_constexpr(space) is not None
+                or tl._unwrap_if_constexpr(census) is not None
+                or device_dptr is not None or barrier_count is not None):
+            raise ValueError("flags32 requires a mesh grid barrier without census or communicator")
+        from triton.experimental.tle.grid_barrier_runtime import _dimensions
+        domain, population = _dimensions(mesh.launch_shape)
+        grid, launched = _dimensions(launch_grid, rank=3)
+        if population != launched:
+            raise ValueError("flags32 physical launch and logical domain populations differ")
+        _apply_mesh_grid_launch(mesh, _semantic)
+        builder = _semantic.builder
+        if not hasattr(builder, "create_flags_grid_barrier"):
+            raise ValueError("flags32 requires a rebuilt NVIDIA TLE compiler")
+        axes, shape = mesh.grid_group_axes, mesh.grid_group_shape
+        builder.create_flags_grid_barrier(
+            'grid_axis' if axes is not None else 'grid',
+            list(shape) if shape is not None else [], list(axes) if axes is not None else [],
+            list(domain), list(grid))
+        return None
+    if launch_grid is not None:
+        raise ValueError("launch_grid is only supported by flags32")
+    if protocol is not None:
+        if protocol != "hierarchical8":
+            raise ValueError("grid barrier protocol must be None or 'hierarchical8'")
+        if (mesh is None or not _mesh_uses_grid_barrier(mesh)
+                or tl._unwrap_if_constexpr(space) is not None
+                or tl._unwrap_if_constexpr(census) is not None
+                or device_dptr is not None or barrier_count is not None):
+            raise ValueError("hierarchical8 requires a mesh grid barrier without census or communicator")
+        count = 1
+        for extent in mesh.launch_shape:
+            count *= extent
+        if count <= 0 or count > 0x7fffffff:
+            raise ValueError("hierarchical8 launch population must fit positive signed i32")
+        _apply_mesh_grid_launch(mesh, _semantic)
+        builder = _semantic.builder
+        if not hasattr(builder, "create_hierarchical_grid_barrier"):
+            raise ValueError("hierarchical8 requires a rebuilt NVIDIA TLE compiler")
+        axes, shape = mesh.grid_group_axes, mesh.grid_group_shape
+        builder.create_hierarchical_grid_barrier(
+            'grid_axis' if axes is not None else 'grid',
+            list(shape) if shape is not None else [], list(axes) if axes is not None else [],
+            list(mesh.launch_shape) if axes is not None else [])
+        return None
+
+    census = tl._unwrap_if_constexpr(census)
+    if census is not None:
+        if mesh is None or not _mesh_uses_grid_barrier(mesh) or tl._unwrap_if_constexpr(space) is not None:
+            raise ValueError('census is supported only on mesh-driven grid/grid-axis barriers')
+        from .gpu.census import census_occurrence
+        occurrence = census_occurrence(census, _semantic)
+        _apply_mesh_grid_launch(mesh, _semantic)
+        builder = _semantic.builder
+        if not hasattr(builder, 'create_census_grid_barrier'):
+            raise ValueError('census grid barrier requires a rebuilt NVIDIA TLE compiler')
+        axes = mesh.grid_group_axes
+        shape = mesh.grid_group_shape
+        builder.create_census_grid_barrier(
+            occurrence, 'grid_axis' if axes is not None else 'grid',
+            list(shape) if shape is not None else [], list(axes) if axes is not None else [],
+            list(mesh.launch_shape) if axes is not None else [])
+        return None
 
     # A mesh-less intra communicator is the single-channel local contract.
     # Mesh-bearing calls retain the unified team/context/scope contract.

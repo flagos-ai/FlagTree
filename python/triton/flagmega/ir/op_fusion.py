@@ -4,10 +4,14 @@
 
 from dataclasses import replace
 from functools import wraps
+from itertools import product
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.fusion import Fusion
 from triton.flagmega.ir.model import Node, TensorType, DistributedType, TupleType
+from triton.flagmega.ir.distributed_type import SBPPartial
+from triton.flagmega.ir.distributed_inference import tensor_of
+from triton.flagmega.ir.model import logical_type
 
 
 def has_ops(attrs):
@@ -54,6 +58,15 @@ def result_fields(result_type):
     return result_type.fields if isinstance(result_type, TupleType) else (result_type, )
 
 
+def has_partial_type(value_type):
+    """Partial ownership can be encoded in the value or an axis policy."""
+    if isinstance(value_type, TupleType):
+        return any(has_partial_type(field) for field in value_type.fields)
+    return isinstance(value_type, DistributedType) and (
+        value_type.partial is not None
+        or any(isinstance(policy, SBPPartial) for policy in value_type.axis_policies))
+
+
 def post_type(result_type, attrs):
     fields = result_fields(result_type)
     post = attrs.get("post_ops", ())
@@ -64,6 +77,105 @@ def post_type(result_type, attrs):
     if any(not isinstance(value, (TensorType, DistributedType)) for value in (*fields, *types)):
         raise IRSchemaError("PreOps/PostOps require tensor results, not Ref/state/opaque values.")
     return TupleType(types) if isinstance(result_type, TupleType) else types[0]
+
+
+def _type_node(value):
+    return Node("__fusion_type", "builtin.var", (), value, attrs={"name": "__fusion_type"})
+
+
+def _semantic_choice_maps(definition, choices, attrs):
+    bodies = {parameter.input_index: attrs.get("pre_ops", {}).get(parameter.name)
+              for parameter in definition.input_parameters}
+    maps = []
+    for index, values in enumerate(choices):
+        by_type = {}
+        for value in values:
+            try:
+                effective = bodies[index].infer_type(value) if bodies.get(index) is not None else value
+            except IRSchemaError:
+                continue
+            by_type.setdefault(effective, []).append(value)
+        maps.append(by_type)
+    return tuple(maps)
+
+
+def _inverse_fusion_types(body, output_type):
+    """Invert a closed unary type relation, never its numerical values.
+
+    Conversion/packing inverses reuse the original operations' type inference
+    and axes, including exact split-grain scaling. Unknown relations remain
+    undeclared. Every answer is validated through the unmodified full body.
+    """
+    from triton.flagmega.ir.ops.core import get_definition
+    from triton.flagmega.ir.types import data_type_to_data
+    if logical_type(output_type) != logical_type(body.output_type) or has_partial_type(output_type):
+        return ()
+    path, value_id = [], body.output
+    nodes = {node.id: node for node in body.nodes}
+    while value_id != body.parameter.id:
+        node = nodes[value_id]
+        if len(node.inputs) != 1:
+            return None
+        path.append(node)
+        value_id = node.inputs[0]
+    values = (output_type,)
+    for node in path:
+        original_input = nodes[node.inputs[0]].type
+        results = []
+        for requested in values:
+            try:
+                if node.op == "tensors.cast":
+                    kind = get_definition(node.op).infer_call_type(
+                        (_type_node(requested),), {"dtype": data_type_to_data(tensor_of(original_input).dtype)})
+                    inverse = ((kind,),)
+                elif node.op == "ntt.vectorized_cast":
+                    kind = get_definition(node.op).infer_call_type(
+                        (_type_node(requested),), {**node.attrs,
+                        "new_type": data_type_to_data(tensor_of(original_input).dtype)})
+                    inverse = ((kind,),)
+                elif node.op == "tensors.pack":
+                    from triton.flagmega.ir.ops.tensors.pack import _pack_axes
+                    axes = _pack_axes(node.attrs, len(node.attrs["lanes"]), tensor_of(original_input).rank)
+                    kind = get_definition("tensors.unpack").infer_call_type((_type_node(requested),), {"axes": axes})
+                    inverse = ((kind,),)
+                elif node.op == "tensors.unpack":
+                    from triton.flagmega.ir.ops.tensors.unpack import _unpack_axes
+                    source = tensor_of(original_input)
+                    axes = _unpack_axes(node.attrs, source)
+                    kind = get_definition("tensors.pack").infer_call_type(
+                        (_type_node(requested),), {"axes": axes, "lanes": source.dtype.lanes[:len(axes)]})
+                    inverse = ((kind,),)
+                else:
+                    inverse = get_definition(node.op).infer_distributed_input_types(
+                        requested, (original_input,), node.attrs)
+                if inverse is None:
+                    return None
+                for inputs in inverse:
+                    if (len(inputs) == 1 and logical_type(inputs[0]) == logical_type(original_input)
+                            and get_definition(node.op).infer_call_type(
+                                (_type_node(inputs[0]),), node.attrs) == requested):
+                        results.append(inputs[0])
+            except IRSchemaError:
+                continue
+        values = tuple(dict.fromkeys(results))
+        if not values:
+            return ()
+    return tuple(value for value in values if body.infer_type(value) == output_type)
+
+
+def _inverse_post_types(result_type, attrs):
+    fields = result_fields(result_type)
+    post = attrs.get("post_ops", ())
+    if not post:
+        return (result_type,)
+    if len(post) != len(fields):
+        return ()
+    choices = tuple(_inverse_fusion_types(body, field) if body is not None else (field,)
+                    for body, field in zip(post, fields))
+    if any(value is None for value in choices):
+        return None
+    return tuple(TupleType(values) if isinstance(result_type, TupleType) else values[0]
+                 for values in product(*choices))
 
 
 def install_op_fusion(definition):
@@ -79,6 +191,9 @@ def install_op_fusion(definition):
     cost = definition.cost.__func__
     cost_factors = definition.cost_factors.__func__
     materialize_numpy = definition.materialize_numpy.__func__
+    input_tuples = definition.distributed_input_type_tuples.__func__
+    output_candidates = definition.distributed_output_type_candidates.__func__
+    inverse_inputs = definition.infer_distributed_input_types.__func__
 
     @wraps(normalize)
     def normalized(cls, attrs):
@@ -102,7 +217,14 @@ def install_op_fusion(definition):
         if not cls.infer_effect(operands, bare).is_pure:
             raise IRSchemaError("PreOps/PostOps cannot cross an effectful operator boundary.")
         result = infer(cls, operands, bare)
-        if any(
+        if getattr(cls, "supports_materialized_pre_ops_partial_results", False):
+            # Explicit operation capability: local preprocessing may precede
+            # a new additive partial result, but never transform a partial or
+            # apply a PostOp to one. Both storage and effective input types
+            # matter because Fusion may change the latter's representation.
+            if attrs.get("post_ops") or any(has_partial_type(value.type) for value in (*inputs, *operands)):
+                raise IRSchemaError("Partial-result PreOps require materialized original/effective inputs and no PostOps.")
+        elif any(
                 isinstance(value, DistributedType) and value.partial is not None
                 for value in (*[operand.type for operand in inputs], *result_fields(result))):
             raise IRSchemaError("PreOps/PostOps require materialized values, not partial reductions.")
@@ -216,6 +338,83 @@ def install_op_fusion(definition):
         return replace(metric, **arithmetic, block_local_memory_load_bytes=sum(reads),
                        block_local_memory_store_bytes=sum(writes))
 
+    @wraps(input_tuples)
+    def distributed_inputs(cls, choices, attrs):
+        if not has_ops(attrs):
+            yield from input_tuples(cls, choices, attrs)
+            return
+        maps = _semantic_choice_maps(cls, choices, attrs)
+        for effective in input_tuples(cls, tuple(tuple(values) for values in maps), split_ops(attrs)):
+            if len(effective) != len(maps) or any(value not in mapping for value, mapping in zip(effective, maps)):
+                continue
+            for storage in product(*(mapping[value] for value, mapping in zip(effective, maps))):
+                try:
+                    cls.infer_call_type(tuple(_type_node(value) for value in storage), attrs)
+                except IRSchemaError:
+                    continue
+                yield tuple(storage)
+
+    @wraps(output_candidates)
+    def distributed_outputs(cls, choices, output_type, attrs):
+        if not has_ops(attrs):
+            return output_candidates(cls, choices, output_type, attrs)
+        maps = _semantic_choice_maps(cls, choices, attrs)
+        post = attrs.get("post_ops", ())
+        fields = result_fields(output_type)
+        if post and len(post) != len(fields):
+            return ()
+        base_fields = tuple(body.input_type if body is not None else field
+                            for body, field in zip(post, fields)) if post else fields
+        base_type = TupleType(base_fields) if isinstance(output_type, TupleType) else base_fields[0]
+        results = []
+        for candidate in output_candidates(cls, tuple(tuple(values) for values in maps), base_type, split_ops(attrs)):
+            try:
+                result = post_type(candidate, attrs) if post else candidate
+            except IRSchemaError:
+                continue
+            if logical_type(result) == logical_type(output_type):
+                results.append(result)
+        return tuple(dict.fromkeys(results))
+
+    @wraps(inverse_inputs)
+    def distributed_inverse(cls, output_type, logical_inputs, attrs):
+        if not has_ops(attrs):
+            return inverse_inputs(cls, output_type, logical_inputs, attrs)
+        try:
+            operands = semantic_inputs(cls, tuple(_type_node(value) for value in logical_inputs), attrs)
+        except IRSchemaError:
+            return ()
+        bases = _inverse_post_types(output_type, attrs)
+        if bases is None:
+            return None
+        bodies = {parameter.input_index: attrs.get("pre_ops", {}).get(parameter.name)
+                  for parameter in cls.input_parameters}
+        results = []
+        for base in bases:
+            tuples = inverse_inputs(cls, base, tuple(value.type for value in operands), split_ops(attrs))
+            if tuples is None:
+                return None
+            for effective in tuples:
+                if len(effective) != len(logical_inputs):
+                    continue
+                choices = tuple(_inverse_fusion_types(bodies[index], value) if bodies.get(index) is not None
+                                else (value,) for index, value in enumerate(effective))
+                if any(value is None for value in choices):
+                    return None
+                for storage in product(*choices):
+                    if any(logical_type(value) != logical_type(original)
+                           for value, original in zip(storage, logical_inputs)):
+                        continue
+                    try:
+                        if cls.infer_call_type(tuple(_type_node(value) for value in storage), attrs) == output_type:
+                            results.append(tuple(storage))
+                    except IRSchemaError:
+                        continue
+        return tuple(dict.fromkeys(results))
+
+    definition.distributed_input_type_tuples = classmethod(distributed_inputs)
+    definition.distributed_output_type_candidates = classmethod(distributed_outputs)
+    definition.infer_distributed_input_types = classmethod(distributed_inverse)
     definition.normalize_attrs = classmethod(normalized)
     definition.ir_attrs = classmethod(serialized)
     definition.infer_type = classmethod(inferred)

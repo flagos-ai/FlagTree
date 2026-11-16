@@ -24,10 +24,18 @@ from triton.flagmega.ir.ops.ntt.paged_attention_combine import PagedAttentionCom
 from triton.flagmega.ir.ops.ntt.paged_attention_gated_combine import PagedAttentionGatedCombine
 from triton.flagmega.ir.ops.ntt.paged_attention_partial import PagedAttentionPartial
 from triton.flagmega.ir.ops.ntt.vectorized_cast import VectorizedCast
+from triton.flagmega.ir.ops.ntt.vectorized_add_norm_stats import VectorizedAddNormStats
 from triton.flagmega.ir.ops.ntt.vectorized_rope import VectorizedRoPE
+from triton.flagmega.ir.ops.ntt.rms_packed_dense_matmul_glu import RmsPackedDenseMatMulGlu
+from triton.flagmega.ir.ops.ntt.partial_rms_packed_dense_matmul_glu import PartialRmsPackedDenseMatMulGlu
 from triton.flagmega.ir.ops.ntt.sparse_experts import DispatchedExpertsGateUp, SparseExpertsDownCombine
+from triton.flagmega.ir.ops.ntt.split_k_dense_glu import SplitKDenseGluProjection, SplitKDenseGluEpilogue
 
 __all__ = [
+    "SplitKDenseGluProjection",
+    "SplitKDenseGluEpilogue",
+    "RmsPackedDenseMatMulGlu",
+    "PartialRmsPackedDenseMatMulGlu",
     "DispatchedExpertsGateUp",
     "SparseExpertsDownCombine",
     "GatherReduceAddNormApply",
@@ -42,6 +50,7 @@ __all__ = [
     "PagedAttentionGatedCombine",
     "PagedAttentionPartial",
     "VectorizedCast",
+    "VectorizedAddNormStats",
     "VectorizedRoPE",
     "can_materialize_sum_partial",
     "can_materialize_packed_qkv",

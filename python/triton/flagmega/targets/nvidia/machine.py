@@ -187,6 +187,7 @@ class NvidiaSm90Machine:
 
 @lru_cache(maxsize=1)
 def _sm90_implementation_model():
+    from triton.flagmega.targets.nvidia.split_k_dense_glu import split_k_dense_glu_implementations
     from triton.flagmega.targets.nvidia.delta_rule import resident_delta_rule_implementations
     from triton.flagmega.targets.nvidia.sparse_experts_ordered import ordered_sparse_experts_implementations
     from triton.flagmega.targets.nvidia.dense_matmul import (
@@ -213,6 +214,7 @@ def _sm90_implementation_model():
     glu = ordered_mma_glu_implementations()
     recurrent = resident_delta_rule_implementations()
     experts = ordered_sparse_experts_implementations()
+    split_glu = split_k_dense_glu_implementations()
     preferences = {
         **base.preferences,
         "dense_matmul": (*base.preferences["dense_matmul"],
@@ -222,9 +224,10 @@ def _sm90_implementation_model():
         **{value.family: (*base.preferences.get(value.family, tuple(
             item.id for item in base.implementations if item.family == value.family)), value.id)
            for value in experts},
+        'split_k_dense_glu': tuple(value.id for value in split_glu),
     }
     return replace(base, name="nvidia-sm90-ordered/v1", implementations=(
-        *implementations, *ordered, *glu, *recurrent, *experts), preferences=preferences)
+        *implementations, *ordered, *glu, *recurrent, *experts, *split_glu), preferences=preferences)
 
 
 class NvidiaSm89Machine(NvidiaSm90Machine):

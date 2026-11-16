@@ -1,0 +1,263 @@
+{
+  "schema": "flagmega.current-native-backend-input/v1",
+  "actor": "/root/graph_profiler",
+  "purpose": "Explicit current cohort selection; registered values remain diagnostics and retain independent source/device/boundary",
+  "cohorts": [
+    {
+      "backend": "sglang",
+      "cohort": "ordinary_no_events",
+      "measurement_id": "reference-runtime-v6-torch-uuid-sglang-ordinary_no_events-000",
+      "physical_gpu_uuid": "GPU-5b5e235a-09a2-fe8b-7754-916b7eb85976",
+      "source_manifest": {
+        "path": ".local/agents/dispatch/collect_sglang_uuid_and_repair_torch_interface/source-manifest.json",
+        "sha256": "434868875dba897eda48c3535cda630040afa322163973af731d63baa496d935",
+        "bytes": 8887
+      },
+      "source_verdict": {
+        "path": ".local/agents/dispatch/review_torch_uuid_interface_and_reference_v6_readiness/approval.json",
+        "sha256": "c1344aded60855f49d31864c5d61b1b58a59d2118b04de714ef0998f3645a690",
+        "bytes": 11633
+      },
+      "report": {
+        "path": ".local/cache/comparison/reference-runtime-v6-torch-uuid-sglang-ordinary_no_events-000.json",
+        "sha256": "238bf2d64da55c751bf9ff9551e1ea659c72c414b085e15c6adcb90cb1a8a3a9",
+        "bytes": 1262295
+      },
+      "job_receipt": {
+        "path": ".local/jobs/reference-runtime-v6-torch-uuid-sglang-ordinary_no_events-000/receipt.json",
+        "sha256": "7f237b5391efa4285a8cb8b4ff65ad08e622efba95bb48a0aecca64520352bcc",
+        "bytes": 43890
+      },
+      "control_config": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/leases/reference-v6-gpu3-20261114T200226Z/activated-configs/reference-runtime-v6-torch-uuid-sglang-ordinary_no_events-000.json",
+        "sha256": "d4d62169877bf24e0b626d7e38f19bce2ace88a2b8156eb8f2be2d5d173748b9",
+        "bytes": 15215
+      },
+      "review_qualification": "unreviewed diagnostic; independent runtime/stream/KV/timing/isolation and three rotated rounds pending"
+    },
+    {
+      "backend": "sglang",
+      "cohort": "event_instrumented",
+      "measurement_id": "reference-runtime-v6-torch-uuid-sglang-event_instrumented-000",
+      "physical_gpu_uuid": "GPU-5b5e235a-09a2-fe8b-7754-916b7eb85976",
+      "source_manifest": {
+        "path": ".local/agents/dispatch/collect_sglang_uuid_and_repair_torch_interface/source-manifest.json",
+        "sha256": "434868875dba897eda48c3535cda630040afa322163973af731d63baa496d935",
+        "bytes": 8887
+      },
+      "source_verdict": {
+        "path": ".local/agents/dispatch/review_torch_uuid_interface_and_reference_v6_readiness/approval.json",
+        "sha256": "c1344aded60855f49d31864c5d61b1b58a59d2118b04de714ef0998f3645a690",
+        "bytes": 11633
+      },
+      "report": {
+        "path": ".local/cache/comparison/reference-runtime-v6-torch-uuid-sglang-event_instrumented-000.json",
+        "sha256": "1e86793cf0b8d31a4d04222eb88767392dfe71e3f41911ec6a63999aeb4500d9",
+        "bytes": 1293957
+      },
+      "job_receipt": {
+        "path": ".local/jobs/reference-runtime-v6-torch-uuid-sglang-event_instrumented-000/receipt.json",
+        "sha256": "74a824575f8b8c289413e19325c69eebb8460ade429487294a69a747472f7565",
+        "bytes": 43693
+      },
+      "control_config": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/leases/reference-v6-gpu3-20261114T200226Z/activated-configs/reference-runtime-v6-torch-uuid-sglang-event_instrumented-000.json",
+        "sha256": "baf3425acca3767fb889cdd8ad4d44ea28a96ae918791fd58a2537c89579639d",
+        "bytes": 15215
+      },
+      "review_qualification": "unreviewed diagnostic; independent runtime/stream/KV/timing/isolation and three rotated rounds pending"
+    },
+    {
+      "backend": "vllm",
+      "cohort": "ordinary_no_events",
+      "measurement_id": "reference-runtime-v6-torch-uuid-vllm-ordinary_no_events-000",
+      "physical_gpu_uuid": "GPU-5b5e235a-09a2-fe8b-7754-916b7eb85976",
+      "source_manifest": {
+        "path": ".local/agents/dispatch/collect_sglang_uuid_and_repair_torch_interface/source-manifest.json",
+        "sha256": "434868875dba897eda48c3535cda630040afa322163973af731d63baa496d935",
+        "bytes": 8887
+      },
+      "source_verdict": {
+        "path": ".local/agents/dispatch/review_torch_uuid_interface_and_reference_v6_readiness/approval.json",
+        "sha256": "c1344aded60855f49d31864c5d61b1b58a59d2118b04de714ef0998f3645a690",
+        "bytes": 11633
+      },
+      "report": {
+        "path": ".local/cache/comparison/reference-runtime-v6-torch-uuid-vllm-ordinary_no_events-000.json",
+        "sha256": "c3a1604f6afa44326bcc56a1bc53698d75b5f485aec7effbd8d45a5ffaf7da3d",
+        "bytes": 1878054
+      },
+      "job_receipt": {
+        "path": ".local/jobs/reference-runtime-v6-torch-uuid-vllm-ordinary_no_events-000/receipt.json",
+        "sha256": "0aa54e12034ed7bc9d748622e27213698710b7ddd64f0eebaab2d14e0911f2a2",
+        "bytes": 61055
+      },
+      "control_config": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/leases/reference-v6-gpu3-20261114T200226Z/activated-configs/reference-runtime-v6-torch-uuid-vllm-ordinary_no_events-000.json",
+        "sha256": "a0b39510f16c6624e96805ef108181e3f1a86b4e3771e805b9f92f59bf9a5eca",
+        "bytes": 15488
+      },
+      "review_qualification": "unreviewed diagnostic; independent runtime/stream/KV/timing/isolation and three rotated rounds pending"
+    },
+    {
+      "backend": "vllm",
+      "cohort": "event_instrumented",
+      "measurement_id": "reference-runtime-v6-torch-uuid-vllm-event_instrumented-000",
+      "physical_gpu_uuid": "GPU-5b5e235a-09a2-fe8b-7754-916b7eb85976",
+      "source_manifest": {
+        "path": ".local/agents/dispatch/collect_sglang_uuid_and_repair_torch_interface/source-manifest.json",
+        "sha256": "434868875dba897eda48c3535cda630040afa322163973af731d63baa496d935",
+        "bytes": 8887
+      },
+      "source_verdict": {
+        "path": ".local/agents/dispatch/review_torch_uuid_interface_and_reference_v6_readiness/approval.json",
+        "sha256": "c1344aded60855f49d31864c5d61b1b58a59d2118b04de714ef0998f3645a690",
+        "bytes": 11633
+      },
+      "report": {
+        "path": ".local/cache/comparison/reference-runtime-v6-torch-uuid-vllm-event_instrumented-000.json",
+        "sha256": "fe55bec04fc429abaaedcaf0b65d30c4826e21cff91715f4781fa5e428525a19",
+        "bytes": 2058578
+      },
+      "job_receipt": {
+        "path": ".local/jobs/reference-runtime-v6-torch-uuid-vllm-event_instrumented-000/receipt.json",
+        "sha256": "28001fbea72a561e5893b86a3f62cd3656644b85d75ab1591d95044dcc7fc9d6",
+        "bytes": 38334
+      },
+      "control_config": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/leases/reference-v6-gpu3-20261114T200226Z/activated-configs/reference-runtime-v6-torch-uuid-vllm-event_instrumented-000.json",
+        "sha256": "7ef5d6c943bff676694e8fdb0f7f4d7a53c0bf20ce3557f7be0588a99b9a20f2",
+        "bytes": 15488
+      },
+      "review_qualification": "unreviewed diagnostic; independent runtime/stream/KV/timing/isolation and three rotated rounds pending"
+    },
+    {
+      "backend": "flashrt",
+      "cohort": "ordinary_no_events",
+      "measurement_id": "flashrt-public-native-v1-ordinary_no_events-000",
+      "physical_gpu_uuid": "GPU-5b5e235a-09a2-fe8b-7754-916b7eb85976",
+      "source_manifest": {
+        "path": ".local/agents/dispatch/resume_flashrt_native_matched_adapter_after_reference_and_figures/source-manifest.json",
+        "sha256": "ed8b19cd75231ac7ee398a59641cb4cae706e98f75d36e6274f3e5128870934f",
+        "bytes": 12699
+      },
+      "source_verdict": {
+        "path": ".local/agents/dispatch/review_flashrt_public_matched_adapter_execution/approval.json",
+        "sha256": "f7135c8c72c4e3aede1d4da4b3bbeb29014ec8e6dab67e01295f4b091869ff20",
+        "bytes": 23110
+      },
+      "report": {
+        "path": ".local/cache/comparison/flashrt-public-native-v1-ordinary_no_events-000.json",
+        "sha256": "c28aaf74d1d4b6cd905927f59dd099b58e762d461033f4ea21f6c63d0f6f02d2",
+        "bytes": 11196959
+      },
+      "job_receipt": {
+        "path": ".local/jobs/flashrt-public-native-v1-ordinary_no_events-000/receipt.json",
+        "sha256": "7bbeec60fd99f8cd1b48621c66f033e0c5e0bef0f7fd230b8b9d5360ae18b34e",
+        "bytes": 30365
+      },
+      "control_config": {
+        "path": ".local/leases/flashrt-timing-gpu3-20261114T210441Z/activated-configs/flashrt-public-native-v1-ordinary_no_events-000.json",
+        "sha256": "7d27ddcbef85e9f492457e4cd0330922a23ceb98f6fc9724b4bfebc0448b4f1f",
+        "bytes": 23802
+      },
+      "label": "FlashRT-derived dense BF16 H800 Qwen3-1.7B native port; upstreama007ef0 + signedCMake/Pythonadaptation",
+      "NUM_prerequisite": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/agents/dispatch/execute_flashrt_public_native_first_num_gpu3/handoff.json",
+        "sha256": "7d7889bf7fa2405ebd5ab1a9158606e9caa63c6c09b86977c6cb5c61ed782760",
+        "bytes": 5153
+      },
+      "timing_evidence": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/agents/dispatch/execute_flashrt_public_native_matched_timing_gpu3/handoff.json",
+        "sha256": "a29d2da4a373c9402d8e72d73793cd57b55ddab93363be891cb005f1a9e8ea8f",
+        "bytes": 6166
+      },
+      "review_qualification": "FlashRT-derived dense BF16 H800 Qwen3-1.7B native port; upstream a007ef0 + signed CMake/Python adaptation. Actual full5 own64/63 NUM and native eager/graph fullKV/final-logits parity passed producer checks; independent final NUM/stream/timing review pending. Available diagnostics only; ordinaryHOST, eventDEVICE and instrumentedHOST retain distinct scopes. Monitor gap observations are not continuous isolation; eventHOST outlier retained; observer perturbation and3rotated matched rounds pending."
+    },
+    {
+      "backend": "flashrt",
+      "cohort": "event_instrumented",
+      "measurement_id": "flashrt-public-native-v1-event_instrumented-000",
+      "physical_gpu_uuid": "GPU-5b5e235a-09a2-fe8b-7754-916b7eb85976",
+      "source_manifest": {
+        "path": ".local/agents/dispatch/resume_flashrt_native_matched_adapter_after_reference_and_figures/source-manifest.json",
+        "sha256": "ed8b19cd75231ac7ee398a59641cb4cae706e98f75d36e6274f3e5128870934f",
+        "bytes": 12699
+      },
+      "source_verdict": {
+        "path": ".local/agents/dispatch/review_flashrt_public_matched_adapter_execution/approval.json",
+        "sha256": "f7135c8c72c4e3aede1d4da4b3bbeb29014ec8e6dab67e01295f4b091869ff20",
+        "bytes": 23110
+      },
+      "report": {
+        "path": ".local/cache/comparison/flashrt-public-native-v1-event_instrumented-000.json",
+        "sha256": "a1d76f66986b6c846d2b7ec5d384f54674492aa3adc33d54cba2acb52ca9ee56",
+        "bytes": 11228964
+      },
+      "job_receipt": {
+        "path": ".local/jobs/flashrt-public-native-v1-event_instrumented-000/receipt.json",
+        "sha256": "4ac21d90ec0c18ee8b12a73c9e4755b24c7d8fa0dec6be267079c925e9e233d8",
+        "bytes": 31644
+      },
+      "control_config": {
+        "path": ".local/leases/flashrt-timing-gpu3-20261114T210441Z/activated-configs/flashrt-public-native-v1-event_instrumented-000.json",
+        "sha256": "081ff68aa343396b7406c0b0328c5628cef07838dc6d932f810e801c510d57f4",
+        "bytes": 23802
+      },
+      "label": "FlashRT-derived dense BF16 H800 Qwen3-1.7B native port; upstreama007ef0 + signedCMake/Pythonadaptation",
+      "NUM_prerequisite": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/agents/dispatch/execute_flashrt_public_native_first_num_gpu3/handoff.json",
+        "sha256": "7d7889bf7fa2405ebd5ab1a9158606e9caa63c6c09b86977c6cb5c61ed782760",
+        "bytes": 5153
+      },
+      "timing_evidence": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/agents/dispatch/execute_flashrt_public_native_matched_timing_gpu3/handoff.json",
+        "sha256": "a29d2da4a373c9402d8e72d73793cd57b55ddab93363be891cb005f1a9e8ea8f",
+        "bytes": 6166
+      },
+      "review_qualification": "FlashRT-derived dense BF16 H800 Qwen3-1.7B native port; upstream a007ef0 + signed CMake/Python adaptation. Actual full5 own64/63 NUM and native eager/graph fullKV/final-logits parity passed producer checks; independent final NUM/stream/timing review pending. Available diagnostics only; ordinaryHOST, eventDEVICE and instrumentedHOST retain distinct scopes. Monitor gap observations are not continuous isolation; eventHOST outlier retained; observer perturbation and3rotated matched rounds pending."
+    },
+    {
+      "backend": "tilefoundry",
+      "cohort": "event_instrumented",
+      "measurement_id": "results/t277-tilefoundry-device/device-000",
+      "physical_gpu_uuid": "GPU-73c1a37e-d3c0-dc24-b81d-6a5563ebe677",
+      "source_manifest": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/milestones/m000/revisions/r000/results/tilefoundry-device-baseline/source-manifest-v001.json",
+        "sha256": "50494542a57bebab9a852f42306ef0ba111f4c5bebdd53fa7eff43d38ce91a8d",
+        "bytes": 10201
+      },
+      "source_verdict": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/milestones/m000/revisions/r000/agents/dispatch/review_v2_and_r000_evidence/handoff.json",
+        "sha256": "a5d0f0f591bb0bc641738ac5a921a813911831bd21f6556024fc85b4e595ef0a",
+        "bytes": 5010
+      },
+      "report": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/milestones/m000/revisions/r000/results/tilefoundry-device-baseline/measurement-device-000.json",
+        "sha256": "42c0de54ffd0a60400956f133e44c69be956ce0fc86a9e352ee10f08d2cc315f",
+        "bytes": 653817
+      },
+      "job_receipt": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/jobs/results/t277-tilefoundry-device/device-000/receipt.json",
+        "sha256": "6cda5fddf9ffb963afe5cda89dc819bb995f20c2c8c06f629bf638be5660e341",
+        "bytes": 166015
+      },
+      "control_config": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/milestones/m000/revisions/r000/results/tilefoundry-device-baseline/GPUtrue-config-002.json",
+        "sha256": "01d12a7f99b9d104975ca904129d7bb08f94d965fffb1c76db69ce8dd515f118",
+        "bytes": 15429
+      },
+      "NUM_prerequisite": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/baseline/results/reference-GPU3-num-tilefoundry-000/measurement.json",
+        "sha256": "bf83c57480147f8245922d39374d057c2e65b3c060de0ef9898abe19bda2cce7",
+        "bytes": 613929
+      },
+      "actual_timing_summary": {
+        "path": "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/milestones/m000/revisions/r000/results/tilefoundry-device-baseline/actual-summary.json",
+        "sha256": "6ba763018168729b4c77a42bf2cea8c91e867063aa5aa111f9e3f94eba1f861a",
+        "bytes": 13500
+      },
+      "review_qualification": "Producer-audited real native full5 DEVICE/own960/945intervals; reused original native NUM/full28 BF16KV; existing native CPU source review retained. New timing independent review and three matched rotations pending. Event HOST remains instrumented HOST, old ordinary HOST stays separate; no all5 win or HBM60 claim."
+    }
+  ]
+}

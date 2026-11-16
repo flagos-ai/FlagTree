@@ -52,6 +52,10 @@ void populateWGMMASharedOperandFenceOpToLLVMPatterns(
     mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
     unsigned benefit = 1);
 
+void populateFenceProxyAsyncGlobalOpToLLVMPatterns(
+    mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
+    int computeCapability, int ptxVersion, unsigned benefit = 1);
+
 void populateTMAStoreCommitGroupOpToLLVMPatterns(
     mlir::LLVMTypeConverter &typeConverter, mlir::RewritePatternSet &patterns,
     unsigned benefit = 1);

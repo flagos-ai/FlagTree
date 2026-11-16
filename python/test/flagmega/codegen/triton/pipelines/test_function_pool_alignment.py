@@ -146,7 +146,9 @@ def test_static_checkpoint_groups_are_not_dynamic_parameter_bank_rows():
     for name in ("bank.weight", "decoder.weight"):
         buffers.append(SimpleNamespace(rdata_group=name, mem_span=SimpleNamespace(
             size=SimpleNamespace(fixed_value=64), buffer=SimpleNamespace(id=name))))
-    assert bank_row_strides(module, SimpleNamespace(buffers=buffers)) == {"bank.weight": 64}
+    # Merely declaring a bank no longer makes every static field read
+    # dynamically indexed; only an actual dynamic BankGet carries a stride.
+    assert bank_row_strides(module, SimpleNamespace(buffers=buffers)) == {}
 
 
 def test_weaker_caller_view_and_unknown_alignment_are_not_strengthened():

@@ -69,6 +69,9 @@ from triton.flagmega.ir.ops.nn.gated_norm_apply import GatedNormApply
 from triton.flagmega.ir.ops.nn.norm_apply import NormApply
 from triton.flagmega.ir.ops.nn.norm_stats import NormStats
 from triton.flagmega.ir.ops.nn.packed_dense_matmul_glu import PackedDenseMatMulGlu
+from triton.flagmega.ir.ops.ntt.rms_packed_dense_matmul_glu import RmsPackedDenseMatMulGlu
+from triton.flagmega.ir.ops.ntt.partial_rms_packed_dense_matmul_glu import PartialRmsPackedDenseMatMulGlu
+from triton.flagmega.ir.ops.ntt.split_k_dense_glu import SplitKDenseGluProjection, SplitKDenseGluEpilogue
 from triton.flagmega.ir.ops.nn.packed_matmul_glu import PackedMatMulGlu
 from triton.flagmega.ir.ops.nn.packed_qwen3_paged_attention import PackedQwen3PagedAttention
 from triton.flagmega.ir.ops.nn.paged_attention import PagedAttention
@@ -97,6 +100,7 @@ from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache import (
 from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache_pair import UpdatePagedAttentionKVCachePair
 from triton.flagmega.ir.ops.nn.vectorized_rms_norm import VectorizedRMSNorm
 from triton.flagmega.ir.ops.ntt.add_norm_stats import AddNormStats
+from triton.flagmega.ir.ops.ntt.vectorized_add_norm_stats import VectorizedAddNormStats
 from triton.flagmega.ir.ops.ntt.gather_reduce_add_norm_apply import (
     GatherReduceAddNormApply,
 )
@@ -1932,6 +1936,18 @@ class _tensors:
 
 class _ntt:
     @staticmethod
+    @_op_function(SplitKDenseGluProjection)
+    def split_k_dense_glu_projection(value: Node, weight: Node, *,
+                                    name: str | None = None, metadata: Metadata = None) -> Node:
+        return SplitKDenseGluProjection.construct(value, weight, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(SplitKDenseGluEpilogue)
+    def split_k_dense_glu_epilogue(partial: Node, *,
+                                 name: str | None = None, metadata: Metadata = None) -> Node:
+        return SplitKDenseGluEpilogue.construct(partial, name=name, metadata=metadata)
+
+    @staticmethod
     @_op_function(DispatchedExpertsGateUp)
     def dispatched_experts_gate_up(q: Node, router_expert_ids: Node, gate_input_scale: Node, gate_weight: Node,
                                   gate_proj_scale: Node, up_input_scale: Node, up_weight: Node, up_proj_scale: Node,
@@ -2056,6 +2072,44 @@ class _ntt:
             name=name,
             metadata=metadata,
         )
+
+    @staticmethod
+    @_op_function(RmsPackedDenseMatMulGlu)
+    def rms_packed_dense_matmul_glu(
+        raw: Node, scale: Node, bias: Node, gate_weight: Node, up_weight: Node, *,
+        epsilon: float, norm_tree_group_size: int, norm_partial_group_size: int, norm_math_mode: str = "fast",
+        round_before_scale: bool = False, activation: str = "silu", round_activation: bool = True,
+        gate_clamp_max: float | None = None, up_clamp: float | None = None,
+        packed_layout: str = "k_major_n8_k16", reduction_order: str = "relaxed",
+        name: str | None = None, metadata: Metadata = None,
+    ) -> Node:
+        """Normalize raw FP32, materialize BF16, then execute packed GLU."""
+        return RmsPackedDenseMatMulGlu.construct(
+            raw, scale, bias, gate_weight, up_weight, epsilon=epsilon,
+            norm_tree_group_size=norm_tree_group_size, norm_partial_group_size=norm_partial_group_size,
+            norm_math_mode=norm_math_mode,
+            round_before_scale=round_before_scale, activation=activation, round_activation=round_activation,
+            gate_clamp_max=gate_clamp_max, up_clamp=up_clamp, packed_layout=packed_layout,
+            reduction_order=reduction_order, name=name, metadata=metadata)
+
+    @staticmethod
+    @_op_function(PartialRmsPackedDenseMatMulGlu)
+    def partial_rms_packed_dense_matmul_glu(
+        raw: Node, scale: Node, bias: Node, gate_weight: Node, up_weight: Node, partial_stats: Node, *,
+        epsilon: float, norm_tree_group_size: int, norm_partial_group_size: int, norm_math_mode: str = "fast",
+        round_before_scale: bool = False, activation: str = "silu", round_activation: bool = True,
+        gate_clamp_max: float | None = None, up_clamp: float | None = None,
+        packed_layout: str = "k_major_n8_k16", reduction_order: str = "relaxed",
+        name: str | None = None, metadata: Metadata = None,
+    ) -> Node:
+        """Reduce explicit Sum-partial statistics, normalize raw, and execute GLU."""
+        return PartialRmsPackedDenseMatMulGlu.construct(
+            raw, scale, bias, gate_weight, up_weight, partial_stats, epsilon=epsilon,
+            norm_tree_group_size=norm_tree_group_size, norm_partial_group_size=norm_partial_group_size,
+            norm_math_mode=norm_math_mode,
+            round_before_scale=round_before_scale, activation=activation, round_activation=round_activation,
+            gate_clamp_max=gate_clamp_max, up_clamp=up_clamp, packed_layout=packed_layout,
+            reduction_order=reduction_order, name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(GatherReduceNormApply)
@@ -2349,6 +2403,19 @@ class _ntt:
             name=name,
             metadata=metadata,
         )
+
+    @staticmethod
+    @_op_function(VectorizedAddNormStats)
+    def vectorized_add_norm_stats(
+        lhs: Node, rhs: Node, *, local_reduction_order: str,
+        binary_op: str = "add", lhs_pack=None, rhs_pack=None, result_unpack=None,
+        axis: int = -1, use_mean: bool = False, name: str | None = None, metadata: Metadata = None,
+    ) -> Node:
+        """Return packed residual values and explicit ordered local statistics."""
+        return VectorizedAddNormStats.construct(lhs, rhs, binary_op=binary_op,
+            lhs_pack=lhs_pack, rhs_pack=rhs_pack, result_unpack=result_unpack,
+            axis=axis, use_mean=use_mean, local_reduction_order=local_reduction_order,
+            name=name, metadata=metadata)
 
     @staticmethod
     @_op_function(VectorizedCast)

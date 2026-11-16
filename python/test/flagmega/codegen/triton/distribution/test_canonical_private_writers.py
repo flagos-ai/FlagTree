@@ -27,7 +27,18 @@ def test_boxing_writer_uses_destination_allocation_and_iteration_domain():
     # even if that source is private. An input's memory scope is not the
     # destination's allocation scope (also true for cache/indexer publication).
     destination["memory_sharing_scope"] = "chip"
-    assert _canonical_writer_active(destination, iteration_abi=iteration) == "(shard_coord2 == 0)"
+    # One writer per disjoint source shard on every chip: the chip axis is a
+    # private allocation instance and is never elected away.  Which physical
+    # block is elected is a placement choice, so assert the contract.
+    from python.test.flagmega.codegen.triton.distribution.test_rank_generic_mesh import (
+        _owner_coordinates,
+    )
+
+    owners = _owner_coordinates(
+        _canonical_writer_active(destination, iteration_abi=iteration), (4, 8, 16)
+    )
+    assert len({coordinate[0] for coordinate in owners}) == 4
+    assert len(owners) == 4 * 8
     destination["memory_sharing_scope"] = "block"
     assert _canonical_writer_active(destination, iteration_abi=iteration) == "True"
 

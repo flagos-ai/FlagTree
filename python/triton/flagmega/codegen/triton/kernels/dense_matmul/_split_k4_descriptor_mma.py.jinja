@@ -1,0 +1,38 @@
+{# Each logical batch owns a distinct K32 part of every K128 block. These
+   four FP32 carries persist across all six epochs on four slots; the final pair tree
+   is part of the explicit split_k4_k32_mma_k16_pairtree semantic order. #}
+{{ call.symbol }}__split_mma_layout = tl.constexpr(tle.gpu.MmaEncoding(
+    [2, 0], [4, 1, 2], [1, 16, 8],
+))
+{{ call.symbol }}__split_lhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(0, {{ call.symbol }}__split_mma_layout, 2))
+{{ call.symbol }}__split_rhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(1, {{ call.symbol }}__split_mma_layout, 2))
+
+@triton.jit
+def {{ call.symbol }}__split_k4_stage(weight_stage, dense_local_k_start, dense_source, dense_accumulator):
+    dense_batch = tl.arange(0, 4)
+    dense_k32 = tl.arange(0, 32)
+    dense_n16 = tl.arange(0, 16)
+    for dense_mma_k in tl.range(0, {{ call.block_k }}, 128):
+        dense_stage_k = dense_mma_k + dense_batch[:, None, None] * 32 + dense_k32[None, :, None]
+        dense_stage_n = dense_n16[None, None, :]
+        dense_pointer = tle.gpu.local_ptr(weight_stage, (
+            dense_stage_k // 16, dense_stage_n // 8,
+            (dense_stage_n % 8) // 4,
+            (dense_stage_n % 4) * 16 + dense_stage_k % 16), [4, 32, 16])
+        dense_b = tle.gpu.set_layout(tl.load(dense_pointer), {{ call.symbol }}__split_rhs_layout)
+        dense_lhs_k = dense_local_k_start + dense_mma_k + dense_batch[:, None, None] * 32 + dense_k32[None, None, :]
+        dense_lhs_k = tl.broadcast_to(dense_lhs_k, (4, 16, 32))
+        dense_lhs_pointer = tle.gpu.local_ptr(dense_source, (
+            tl.zeros((4, 16, 32), tl.int32), dense_lhs_k), [4, 16, 32])
+        dense_a = tle.gpu.set_layout(tl.load(dense_lhs_pointer), {{ call.symbol }}__split_lhs_layout)
+        dense_accumulator = tl.dot(dense_a, dense_b, dense_accumulator)
+    return dense_accumulator
+
+@triton.jit
+def {{ call.symbol }}__split_k4_finalize(dense_accumulator):
+    dense_p0 = tl.gather(dense_accumulator, tl.full((1, 16, 16), 0, tl.int32), 0)
+    dense_p1 = tl.gather(dense_accumulator, tl.full((1, 16, 16), 1, tl.int32), 0)
+    dense_p2 = tl.gather(dense_accumulator, tl.full((1, 16, 16), 2, tl.int32), 0)
+    dense_p3 = tl.gather(dense_accumulator, tl.full((1, 16, 16), 3, tl.int32), 0)
+    dense_matrix = tl.reshape((dense_p0 + dense_p1) + (dense_p2 + dense_p3), (16, 16))
+    return tl.reshape(tl.gather(dense_matrix, tl.full((1, 16), 0, tl.int32), 0), (16,))

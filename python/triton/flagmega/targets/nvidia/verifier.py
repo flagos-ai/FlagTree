@@ -332,6 +332,9 @@ def verify_sm90_module(
 
 
 def _pipeline_execution_functions(module: IRModule) -> frozenset[str]:
+    if module.metadata.get('kernel_program_execution') is not None:
+        from triton.flagmega.passes.tir.lower_transfer_pipeline_regions import _pipeline_execution_functions as native_domains
+        return native_domains(module)
     result = {
         function.name
         for function in module.execution_functions

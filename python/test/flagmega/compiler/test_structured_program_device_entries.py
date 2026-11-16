@@ -9,6 +9,54 @@ from python.test.flagmega.passes.auto_distributed.test_loop_yield_reshard import
 from python.test.flagmega.compiler.test_structured_execution_programs import mixed_calls_module
 
 
+def mixed_pipeline_calls_module():
+    from triton.flagmega import ir as fm
+    class Graph(fm.Module):
+        def forward(self):
+            kind = fm.tensor_type('bfloat16',(1,2048))
+            value = self.input('formal',kind)
+            weight = self.weight('weight',fm.tensor_type('bfloat16',(2048,2048)),source='memory',key='weight')
+            projection = fm.F.math.matmul(value,weight,transpose_b=True,reduction_order='relaxed',name='projection',
+                metadata={'execution_mesh':fm.ExecutionMesh.fixed((8,16))})
+            middle = fm.F.math.add(projection,projection,name='independent',metadata={'execution_mesh':'*'})
+            result = fm.F.math.add(middle,middle,name='result',metadata={'execution_mesh':fm.ExecutionMesh.fixed((8,16))})
+            self.function('worker',(value,),(result,),attrs={'reusable':True,'noinline':True,'calling_convention':'device'})
+            actual = self.input('actual',kind)
+            published = fm.F.math.add(actual,actual,name='published')
+            first = fm.F.builtin.call(published,callee='worker',result_type=result.type,name='first')
+            second = fm.F.builtin.call(first,callee='worker',result_type=result.type,name='second')
+            self.function('main',(actual,),(second,))
+    return Graph(dialect='high_level',stage='imported',entry='main').build()
+
+
+def compile_mixed_pipeline_calls():
+    from triton.flagmega.selection import override_plan
+    compiler = Compiler()
+    proposal = compiler.compile(mixed_pipeline_calls_module(),stop_after='propose-tir').module
+    point = next(p for p in proposal.selection_points if p.id=='tir.projection.vectorized.compute')
+    candidate = 'tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv'
+    assert candidate in {c.id for c in point.candidates}
+    selected = compiler.run_stage(proposal,'lower-tir',plan=override_plan(proposal,((point.id,candidate),))).module
+    return compiler.compile(selected).module
+
+
+def test_host_calls_publish_global_sources_to_independent_native_pipelines(tmp_path):
+    from triton.flagmega import ir as fm
+    from triton.flagmega.codegen.triton.renderer import render_triton_package
+    module = compile_mixed_pipeline_calls()
+    descriptor = describe_tir_package(module)
+    assert descriptor['kernel_program_schema']=='flagmega.kernel-programs/v6-structured'
+    pipelines = [p for p in descriptor['programs'] if p['pipeline_schedule'] is not None]
+    assert pipelines
+    assert all(p['pipeline_schedule']['producer_events'] and p['pipeline_schedule']['consumer_events'] for p in pipelines)
+    assert not isinstance(module.execution_function_map['main'].body.fields[0],fm.ProducerConsumerRegion)
+    assert not isinstance(module.execution_function_map['worker'].body.fields[0],fm.ProducerConsumerRegion)
+    rendered = render_triton_package(module,tmp_path)
+    compute = [s for s in rendered['kernels'] if s['invocation_kind']=='program']
+    assert len({s['entry_symbol'] for s in compute})==4
+    assert len(compute)==7
+
+
 def _record_device_receipt(tmp_path, runtime, module, case):
     import json
     import os

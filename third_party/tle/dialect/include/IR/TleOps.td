@@ -40,6 +40,34 @@ class Tle_Op<string mnemonic, list<Trait> traits = []>
     : Op<Tle_Dialect, mnemonic,
          !listconcat(traits, [VerifyTensorLayoutsTrait])> {}
 
+// Diagnostic metadata only: the result preserves the exact pipe identity.
+// The pipe pass consumes this alias after its existing effect/commit proofs.
+def Tle_PipeTraceContextOp : Tle_Op<"pipe_trace_context", [Pure]> {
+  let arguments = (ins I32:$identity, I32:$layer, I32:$iteration, I32Attr:$site);
+  let results = (outs I32:$result);
+  let assemblyFormat = "$identity `,` $layer `,` $iteration attr-dict";
+  let hasVerifier = 1;
+}
+
+// Observable profile-resource effects; never a pure or erasable observation.
+def Tle_TraceEventOp : Tle_Op<"trace_event", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let arguments = (ins I32:$layer, I32:$iteration, I32:$slot, I32:$phase,
+                       I32Attr:$kind, I32Attr:$site);
+  let assemblyFormat = "$layer `,` $iteration `,` $slot `,` $phase attr-dict";
+  let hasVerifier = 1;
+}
+
+// Lowered before WS call-context rewriting so logical thread identity is real.
+def Tle_CensusMarkOp : Tle_Op<"census_mark", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let arguments = (ins I32:$occurrence, I32Attr:$point, BoolAttr:$mapping);
+  let assemblyFormat = "$occurrence attr-dict";
+  let hasVerifier = 1;
+}
+
 // Begin TLE-Lite
 def Tle_ExtractTileOp : Tle_Op<"extract_tile", [Pure]> {
   let summary = "Extract a tile from a tensor with static offsets";
@@ -308,6 +336,19 @@ def Tle_ExclusiveCumsumOp : Tle_Op<"exclusive_cumsum", [Pure, SameOperandsAndRes
   let hasVerifier = 1;
 }
 
+def Tle_FenceProxyAsyncGlobalOp : Tle_Op<"fence_proxy_async_global", [
+  MemoryEffects<[MemRead, MemWrite]>
+]> {
+  let summary = "order global generic- and async-proxy memory accesses";
+  let description = [{
+    This per-thread fence orders global memory through the generic and async
+    proxies. It neither synchronizes participants nor acquires a tensor-map
+    descriptor. Cross-thread publication must be established separately.
+    NVIDIA lowering requires SM90 or newer and PTX ISA 8.0 or newer.
+  }];
+  let assemblyFormat = "attr-dict";
+}
+
 def Tle_WGMMASharedOperandFenceOp : Tle_Op<"wgmma_shared_operand_fence"> {
   let arguments = (ins
     Variadic<TTG_MemDescType>:$deps,
@@ -445,7 +486,8 @@ def Tle_BarrierArriveOp : Tle_Op<"barrier.arrive"> {
     StrAttr:$backend,
     I32Attr:$arrive_count,
     I32Attr:$named_id,
-    I32Attr:$named_num_threads
+    I32Attr:$named_num_threads,
+    OptionalAttr<I32Attr>:$participant_count
   );
   let assemblyFormat = "$barrier (`,` $phase^)? attr-dict `:` qualified(type($barrier))";
   let hasVerifier = 1;
@@ -483,6 +525,20 @@ def Tle_DistributedBarrierOp : Tle_Op<"distributed_barrier",
     OptionalAttr<DenseI32ArrayAttr>:$group_domain_shape
   );
   let hasVerifier = 1;
+  let description = [{
+    The optional source is a communicator for explicit-space barriers. Only
+    when the explicit `tle.census` unit attribute is present on grid/grid_axis,
+    it instead carries the scalar i32 diagnostic occurrence. The barrier and
+    its counter allocation remain unchanged; no other kind accepts this mode.
+    Explicit `tle.grid_barrier_protocol = "hierarchical8"` selects the
+    TLE-owned eight-leaf/root protocol and its normal scratch layout, only on
+    grid/grid_axis without census. An absent attribute retains the default.
+    Explicit `tle.grid_barrier_protocol = "flags32"` instead selects packed
+    single-writer epoch flags. It requires independent static
+    `tle.flags_domain` and physical `tle.flags_launch_grid` attributes;
+    normal scratch planning exports a host launch contract. Existing
+    group_domain_shape remains exclusive to grid_axis membership.
+  }];
 }
 
 def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [

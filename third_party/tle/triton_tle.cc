@@ -155,6 +155,10 @@ void init_triton_tle_ir(py::module &&m) {
 
   // Add TLE extensions to the existing TritonOpBuilder class
   builder_cls
+      .def("create_tle_gpu_fence_proxy_async_global",
+           [](TritonOpBuilder &self) {
+             self.create<tle::FenceProxyAsyncGlobalOp>();
+           })
       .def("create_tle_gpu_tensor_map_fenceproxy_acquire",
            [](TritonOpBuilder &self, Value descriptor) {
              self.create<ttng::TensormapFenceproxyAcquireOp>(descriptor);
@@ -164,8 +168,10 @@ void init_triton_tle_ir(py::module &&m) {
               bool isSigned) -> Value {
              auto descriptorType = tt::TensorDescType::get(
                  self.getContext(), cast<RankedTensorType>(blockType), isSigned);
-             return self.create<ttng::ReinterpretTensorDescOp>(descriptorType,
-                                                             descriptor);
+             auto result = self.create<ttng::ReinterpretTensorDescOp>(
+                 descriptorType, descriptor);
+             result->setAttr("tle.copy_bound_tensor_map", self.getBuilder().getUnitAttr());
+             return result;
            })
       // TLE-Lite
       .def(
@@ -736,16 +742,29 @@ void init_triton_tle_ir(py::module &&m) {
            })
       .def("create_barrier_arrive_mbarrier",
            [](TritonOpBuilder &self, Value barrier, int32_t arriveCount,
-              py::object phase) -> void {
+              py::object phase, py::object participantCount) -> void {
              auto &builder = self.getBuilder();
              Value phaseValue;
              if (!phase.is_none())
                phaseValue = py::cast<Value>(phase);
+             IntegerAttr participants;
+             if (!participantCount.is_none()) {
+               if (py::isinstance<py::bool_>(participantCount) ||
+                   !py::isinstance<py::int_>(participantCount))
+                 throw py::value_error("participant_count must be a positive int32");
+               int64_t count = py::cast<int64_t>(participantCount);
+               if (count <= 0 || count > INT32_MAX || arriveCount != 1 ||
+                   !phaseValue)
+                 throw py::value_error("participant arrival requires positive int32, unit credit and phase");
+               participants = builder.getI32IntegerAttr(count);
+             }
              self.create<tle::BarrierArriveOp>(
                  barrier, phaseValue, builder.getStringAttr("mbarrier"),
                  builder.getI32IntegerAttr(arriveCount),
-                 builder.getI32IntegerAttr(0), builder.getI32IntegerAttr(0));
-           })
+                 builder.getI32IntegerAttr(0), builder.getI32IntegerAttr(0),
+                 participants);
+           }, py::arg("barrier"), py::arg("arrive_count"), py::arg("phase"),
+           py::arg("participant_count") = py::none())
       .def("create_barrier_arrive_named",
            [](TritonOpBuilder &self, Value barrier, int32_t namedId,
               int32_t numThreads) -> void {
@@ -754,7 +773,7 @@ void init_triton_tle_ir(py::module &&m) {
                  barrier, Value(), builder.getStringAttr("named"),
                  builder.getI32IntegerAttr(1),
                  builder.getI32IntegerAttr(namedId),
-                 builder.getI32IntegerAttr(numThreads));
+                 builder.getI32IntegerAttr(numThreads), IntegerAttr());
            })
       .def("create_memdesc_subslice",
            [](TritonOpBuilder &self, Type resultType, Value src,
@@ -835,6 +854,132 @@ void init_triton_tle_ir(py::module &&m) {
                  identity, fields, stage, phase, builder.getI32IntegerAttr(capacity),
                  builder.getStringAttr(scope), pipeNameAttr,
                  builder.getArrayAttr(fieldNameAttrs));
+           })
+      .def("create_pipe_trace_context",
+           [](TritonOpBuilder &self, Value identity, Value layer,
+              Value iteration, int32_t site) -> Value {
+             auto &builder = self.getBuilder();
+             return self.create<tle::PipeTraceContextOp>(
+                 builder.getI32Type(), identity, layer, iteration,
+                 builder.getI32IntegerAttr(site));
+           })
+      .def("create_tle_trace_event",
+           [](TritonOpBuilder &self, Value layer, Value iteration,
+              Value slot, Value phase, int32_t kind, int32_t site) -> void {
+             auto &builder = self.getBuilder();
+             self.create<tle::TraceEventOp>(
+                 layer, iteration, slot, phase,
+                 builder.getI32IntegerAttr(kind), builder.getI32IntegerAttr(site));
+           })
+      .def("get_tle_ws_trace_ctas_attr",
+           [](TritonOpBuilder &self, std::vector<int32_t> ctas) -> Attribute {
+             return DenseI32ArrayAttr::get(self.getBuilder().getContext(), ctas);
+           })
+      .def("configure_tle_ws_trace",
+           [](TritonOpBuilder &self, int32_t capacity,
+              std::optional<std::vector<int32_t>> ctas) {
+             auto &builder = self.getBuilder();
+             auto *block = builder.getInsertionBlock();
+             auto module = block ? block->getParentOp()->getParentOfType<ModuleOp>() : ModuleOp();
+             if (!module || capacity <= 0 || capacity > (1 << 20))
+               throw py::value_error("invalid trace module/capacity configuration");
+             if (module->hasAttr("tle.census.occurrences") || module->hasAttr("tle.census.ctas"))
+               throw py::value_error("ring trace and census require separate modules/profile ABIs");
+             if (ctas) {
+               int32_t previous = -1;
+               if (ctas->empty())
+                 throw py::value_error("trace typed CTAs must be nonempty");
+               for (int32_t cta : *ctas) {
+                 if (cta < 0 || cta <= previous)
+                   throw py::value_error("trace typed CTAs must be strictly increasing nonnegative i32 IDs");
+                 previous = cta;
+               }
+             }
+             auto existingCapacity = module->getAttrOfType<IntegerAttr>("tle.ws_trace.capacity");
+             auto existingCTAs = module->getAttrOfType<DenseI32ArrayAttr>("tle.ws_trace.typed_ctas");
+             bool hasCapacity = module->hasAttr("tle.ws_trace.capacity");
+             bool hasCTAs = module->hasAttr("tle.ws_trace.typed_ctas");
+             if (hasCapacity) {
+               if (!existingCapacity || existingCapacity.getInt() != capacity ||
+                   hasCTAs != ctas.has_value() ||
+                   (hasCTAs && (!existingCTAs || existingCTAs.asArrayRef() != ArrayRef<int32_t>(*ctas))))
+                 throw py::value_error("conflicting ring trace module configuration");
+               return;
+             }
+             if (hasCTAs)
+               throw py::value_error("trace typed CTAs require an existing capacity configuration");
+             // Validate every input and conflict before publishing either attr.
+             module->setAttr("tle.ws_trace.capacity", builder.getI32IntegerAttr(capacity));
+             if (ctas)
+               module->setAttr("tle.ws_trace.typed_ctas", DenseI32ArrayAttr::get(builder.getContext(), *ctas));
+           })
+      .def("configure_tle_census",
+           [](TritonOpBuilder &self, int32_t occurrences, int32_t ctas) {
+             auto &builder = self.getBuilder();
+             auto module = builder.getInsertionBlock()->getParentOp()->getParentOfType<ModuleOp>();
+             if (!module || occurrences <= 0 || ctas <= 0 || occurrences > 65536 || ctas > 65536)
+               throw py::value_error("invalid census module/count configuration");
+             if (module->hasAttr("tle.ws_trace.capacity") || module->hasAttr("tle.ws_trace.typed_ctas"))
+               throw py::value_error("census and ring trace require separate modules/profile ABIs");
+             for (auto [name, value] : {std::pair<const char *, int32_t>{"tle.census.occurrences", occurrences},
+                                      {"tle.census.ctas", ctas}}) {
+               auto existing = module->getAttrOfType<IntegerAttr>(name);
+               if (module->hasAttr(name) && (!existing || existing.getInt() != value))
+                 throw py::value_error("conflicting census module configuration");
+               module->setAttr(name, builder.getI32IntegerAttr(value));
+             }
+           })
+      .def("create_tle_census_mark",
+           [](TritonOpBuilder &self, Value occurrence, int32_t point, bool mapping) {
+             auto &builder = self.getBuilder();
+             self.create<tle::CensusMarkOp>(occurrence, builder.getI32IntegerAttr(point), builder.getBoolAttr(mapping));
+           })
+      .def("create_flags_grid_barrier",
+           [](TritonOpBuilder &self, const std::string &kind,
+              const std::vector<int32_t> &shape, const std::vector<int32_t> &axes,
+              const std::vector<int32_t> &domain, const std::vector<int32_t> &grid) {
+             auto &b = self.getBuilder();
+             auto *ctx = b.getContext();
+             auto op = self.create<tle::DistributedBarrierOp>(
+                 Value(), StringAttr(), StringAttr(), tle::MemoryOrderAttr(), b.getStringAttr(kind),
+                 IntegerAttr(), IntegerAttr(), tle::SyncScopeAttr(),
+                 shape.empty() ? IntegerAttr() : b.getI32IntegerAttr(shape.size()),
+                 shape.empty() ? DenseI32ArrayAttr() : DenseI32ArrayAttr::get(ctx, shape),
+                 axes.empty() ? DenseI32ArrayAttr() : DenseI32ArrayAttr::get(ctx, axes), DenseI32ArrayAttr(),
+                 kind == "grid_axis" ? DenseI32ArrayAttr::get(ctx, domain) : DenseI32ArrayAttr());
+             op->setAttr("tle.grid_barrier_protocol", b.getStringAttr("flags32"));
+             op->setAttr("tle.flags_domain", DenseI32ArrayAttr::get(ctx, domain));
+             op->setAttr("tle.flags_launch_grid", DenseI32ArrayAttr::get(ctx, grid));
+           })
+      .def("create_hierarchical_grid_barrier",
+           [](TritonOpBuilder &self, const std::string &kind,
+              const std::vector<int32_t> &shape, const std::vector<int32_t> &axes,
+              const std::vector<int32_t> &domain) {
+             auto &b = self.getBuilder();
+             auto *ctx = b.getContext();
+             auto op = self.create<tle::DistributedBarrierOp>(
+                 Value(), StringAttr(), StringAttr(), tle::MemoryOrderAttr(), b.getStringAttr(kind),
+                 IntegerAttr(), IntegerAttr(), tle::SyncScopeAttr(),
+                 shape.empty() ? IntegerAttr() : b.getI32IntegerAttr(shape.size()),
+                 shape.empty() ? DenseI32ArrayAttr() : DenseI32ArrayAttr::get(ctx, shape),
+                 axes.empty() ? DenseI32ArrayAttr() : DenseI32ArrayAttr::get(ctx, axes), DenseI32ArrayAttr(),
+                 domain.empty() ? DenseI32ArrayAttr() : DenseI32ArrayAttr::get(ctx, domain));
+             op->setAttr("tle.grid_barrier_protocol", b.getStringAttr("hierarchical8"));
+           })
+      .def("create_census_grid_barrier",
+           [](TritonOpBuilder &self, Value occurrence, const std::string &kind,
+              const std::vector<int32_t> &shape, const std::vector<int32_t> &axes,
+              const std::vector<int32_t> &domain) {
+             auto &b = self.getBuilder();
+             auto *ctx = b.getContext();
+             auto op = self.create<tle::DistributedBarrierOp>(
+                 occurrence, StringAttr(), StringAttr(), tle::MemoryOrderAttr(), b.getStringAttr(kind),
+                 IntegerAttr(), IntegerAttr(), tle::SyncScopeAttr(),
+                 shape.empty() ? IntegerAttr() : b.getI32IntegerAttr(shape.size()),
+                 shape.empty() ? DenseI32ArrayAttr() : DenseI32ArrayAttr::get(ctx, shape),
+                 axes.empty() ? DenseI32ArrayAttr() : DenseI32ArrayAttr::get(ctx, axes), DenseI32ArrayAttr(),
+                 domain.empty() ? DenseI32ArrayAttr() : DenseI32ArrayAttr::get(ctx, domain));
+             op->setAttr("tle.census", b.getUnitAttr());
            })
       .def("create_pipe_writer_commit",
            [](TritonOpBuilder &self, Value identity,

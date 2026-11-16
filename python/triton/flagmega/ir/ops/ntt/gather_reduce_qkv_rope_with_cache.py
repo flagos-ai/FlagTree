@@ -180,7 +180,7 @@ class GatherReduceQKVRoPEWithCache(OpDefinition):
                 "GatherReduceQKVRoPEWithCache expects three partial Q/K/V values."
             )
         logical_values = tuple(
-            _reshape_physical_value(value, value_type)
+            _reshape_physical_value(value.to(dtype=context.torch_dtype(tensor_of(value_type).dtype)), value_type)
             for value, value_type in zip(values, logical_type.fields, strict=True)
         )
         # Reference evaluation represents a distributed partial by its full
@@ -285,7 +285,7 @@ def _validate_partial_and_view_types(
             )
         if not (
             source.placement == combined.placement == view.placement
-            and tensor_of(source).dtype == tensor_of(combined).dtype == tensor_of(view).dtype
+            and tensor_of(combined).dtype == tensor_of(view).dtype
             and tensor_elements(tensor_of(combined)) == tensor_elements(tensor_of(view))
         ):
             raise IRSchemaError(

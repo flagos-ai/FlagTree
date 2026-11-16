@@ -25,4 +25,15 @@ def fuse_distributed_ops(module, *, fusion_rules=()):
          *fusion_rules),
         rewrite_constants=False,
     ).run(module)
+    # Promotion may introduce a typed narrowing combine. Private statistics
+    # consume it above; other materialized users retain ordinary boxing and
+    # per-field rounding before target pre/post-op fusion.
+    from triton.flagmega.rules.ntt.packed_qkv_parallel_linear_combine import lower_packed_qkv_parallel_linear_combine_rule
+    lowered = DataflowPass("LowerQKVMaterializationRounding",
+                           (lower_packed_qkv_parallel_linear_combine_rule(materialize_rounding=True),),
+                           rewrite_constants=False).run(rewritten)
+    if lowered is not rewritten and fusion_rules:
+        lowered = DataflowPass("FuseQKVMaterializationRounding", fusion_rules,
+                               rewrite_constants=False).run(lowered)
+    rewritten = lowered
     return lower_sparse_experts(fuse_attention_gate(rewritten))

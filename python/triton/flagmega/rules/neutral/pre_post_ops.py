@@ -12,6 +12,9 @@ from triton.flagmega.ir.fusion import Fusion
 from triton.flagmega.ir.ops.core import get_definition
 from triton.flagmega.pattern_match import CallPattern, OpPattern, VArgsPattern, is_call, wildcard
 from triton.flagmega.rules import RewriteResult, RewriteRule
+from triton.flagmega.rules.neutral.post_ops_view import shape_only_replacements
+from triton.flagmega.rules.neutral._utility import make_node
+from triton.flagmega.ir.distributed_inference import tensor_of
 
 BOUNDARY_OPS = ("tensors.cast", "ntt.vectorized_cast", "math.sigmoid", "math.silu", "math.vectorized_unary")
 
@@ -63,12 +66,13 @@ def _pre_rule(definition, parameter, boundary, can_fuse):
 
 def _post_rule(definition, boundary, can_fuse):
     arguments = VArgsPattern(lambda nodes: tuple(wildcard() for _ in nodes))
-    producer = CallPattern(OpPattern(definition.op_name), arguments, "producer").with_user_count(1)
+    producer = CallPattern(OpPattern(definition.op_name), arguments, "producer")
     pattern = is_call(OpPattern(boundary), producer, name="root")
 
     def rewrite(match, module):
         root, producer = match["root"], match["producer"]
-        if not producer.effect.is_pure or not root.effect.is_pure:
+        if any(not node.effect.is_pure or getattr(node.type, "partial", None) is not None
+               or getattr(node.type, "exclusive", None) is not None for node in (producer, root)):
             return root
         body = Fusion.from_call(root, producer)
         post = producer.attrs.get("post_ops", ())
@@ -78,7 +82,30 @@ def _post_rule(definition, boundary, can_fuse):
             if post[0] is not None:
                 body = post[0].then(body)
         candidate = replace(producer, id=root.id, type=root.type, attrs={**producer.attrs, "post_ops": (body, )})
-        return RewriteResult(candidate, removed_ids=(producer.id, )) if can_fuse(candidate, module) else root
+        if not can_fuse(candidate, module):
+            return root
+        proof = shape_only_replacements(module, producer, candidate, root.id)
+        if proof is None:
+            return root
+        extras, anchor = proof
+        if extras:
+            # The transaction inserts helpers before references but keeps the
+            # root's public SSA name at its original position. Retain one pure
+            # producer there and expose its already-converted result through
+            # a same-type storage alias. The alias performs no conversion;
+            # both numeric boundaries and rounding live in the supported body.
+            candidate = replace(candidate, id=producer.id)
+            replacement = make_node("tensors.bitcast", root.id, (candidate,),
+                                    {"dtype": tensor_of(candidate.type).dtype}, root.metadata)
+            if replacement.type != root.type:
+                return root
+            proof = shape_only_replacements(module, producer, candidate, root.id)
+            if proof is None:
+                return root
+            extras, anchor = proof
+            return RewriteResult(replacement, (candidate,), extra_replacements=extras,
+                                 removed_ids=(producer.id,), insertion_before=anchor)
+        return RewriteResult(candidate, extra_replacements=extras, removed_ids=(producer.id,), insertion_before=anchor)
 
     return RewriteRule(f"FusePostOps.{definition.op_name}.{boundary}", pattern, rewrite, supports_fusion=True)
 

@@ -20,6 +20,8 @@
 
 # flagtree tle
 from . import mthreads
+from .trace import trace_configure, trace_event
+from .census import census_configure, census_mark, census_mapping
 from .core import (
     pipeline,
     range,
@@ -37,6 +39,7 @@ from .core import (
     wgmma,
     wgmma_wait,
     set_layout,
+    fence_proxy_async_global,
     tensor_map_fenceproxy_acquire,
     reinterpret_tensor_map,
 )
@@ -50,6 +53,11 @@ storage_kind = memory_space
 
 __all__ = [
     "mthreads",
+    "trace_configure",
+    "trace_event",
+    "census_configure",
+    "census_mark",
+    "census_mapping",
     "pipeline",
     "range",
     "alloc",
@@ -65,6 +73,7 @@ __all__ = [
     "wgmma",
     "wgmma_wait",
     "set_layout",
+    "fence_proxy_async_global",
     "tensor_map_fenceproxy_acquire",
     "reinterpret_tensor_map",
     "storage_kind",

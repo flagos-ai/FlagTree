@@ -128,6 +128,9 @@ def {{ call.symbol }}__producer(
 {{ entry.mesh_coordinates() }}
 {% set key_writer = call.pipeline_channels[0].writer_parameter %}
 {% set value_writer = call.pipeline_channels[1].writer_parameter %}
+    # Caller readiness acquires published KV writes; bridge their generic
+    # global proxy to this issuer's subsequent async-global TMA reads.
+    tle.gpu.fence_proxy_async_global()
     tle.gpu.tensor_map_fenceproxy_acquire({{ call.key_descriptor }})
     tle.gpu.tensor_map_fenceproxy_acquire({{ call.value_descriptor }})
     attention_state_offsets = 0
@@ -248,11 +251,15 @@ def {{ call.symbol }}__consumer(
     # range for the final MMA accumulator store would join the query-load and
     # accumulator-store layout domains. Tile helpers inline within this op.
     query_dimension = tl.arange(0, {{ call.head_dim }})
-    query_load_mask = tl.arange(0, {{ call.q_head_group_size }}) == 0
+    # The tile carries the whole GQA group because m16n8k16 computes those rows
+    # anyway; this owner holds local_query_heads of them, contiguously from its
+    # rebased head pointer.  Rows beyond its ownership stay masked.
+    query_head_row = tl.arange(0, {{ call.q_head_group_size }})
+    query_load_mask = query_head_row < {{ call.local_query_heads }}
     query_value = tle.gpu.set_layout(
         tl.load(
             {{ call.query }}
-            + tl.zeros(({{ call.q_head_group_size }}, 1), tl.int32)
+            + query_head_row[:, None] * {{ call.query_head_stride }}
             + (query_dimension[None, :] // {{ call.query_lanes }}) * {{ call.query_dim_stride }}
             + query_dimension[None, :] % {{ call.query_lanes }},
             mask=query_load_mask[:, None],
@@ -298,7 +305,7 @@ def {{ call.symbol }}__consumer(
         {{ call.block_n }},
     ):
         token = token_start + tl.arange(0, {{ call.block_n }})
-        attention_row_mask = tl.arange(0, {{ call.q_head_group_size }}) == 0
+        attention_row_mask = tl.arange(0, {{ call.q_head_group_size }}) < {{ call.local_query_heads }}
         attention_mask = attention_row_mask[:, None] & (token[None, :] < token_end)
         key_ready = {{ key_reader }}.wait(sequence)
         probability, previous_scale, updated_max, has_context = (
@@ -327,7 +334,7 @@ def {{ call.symbol }}__consumer(
         sequence += 1
 
     statistics_row = tl.arange(0, {{ call.q_head_group_size }})
-    statistics_mask = statistics_row == 0
+    statistics_mask = statistics_row < {{ call.local_query_heads }}
     tl.store(
         {{ call.partial_max }} + statistics_row,
         # The shared partial-state ABI uses natural-log scores. Internally
@@ -343,7 +350,7 @@ def {{ call.symbol }}__consumer(
     )
     accumulator_row = tl.arange(0, {{ call.q_head_group_size }})
     accumulator_dimension = tl.arange(0, {{ call.head_dim }})
-    accumulator_mask = accumulator_row == 0
+    accumulator_mask = accumulator_row < {{ call.local_query_heads }}
     tl.store(
         {{ call.partial_accumulator }}
         + accumulator_row[:, None] * {{ call.head_dim }}

@@ -25,6 +25,7 @@ NATIVE_VECTOR_COMPUTE_OPS = frozenset({
     "nn.sparse_experts_gate_up",
     "nn.sparse_experts_combine",
     "ntt.add_norm_stats",
+    "ntt.vectorized_add_norm_stats",
     "ntt.matmul_norm_stats",
     "ntt.packed_matmul",
     "ntt.vectorized_cast",

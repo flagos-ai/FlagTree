@@ -44,9 +44,12 @@ def {{ call.symbol }}({{ call.signature }}):
             value = tl.where(
                 token_id == {{ call.padding_idx }}, 0.0, value,
             ).to(tl.bfloat16)
+{% for line in call.fusion_post_lines | default(()) %}
+        {{ line }}
+{% endfor %}
         tl.store(
             {{ call.result }} + ({{ call.result_offset }}),
-            value,
+            {{ call.fusion_post_value if call.fusion_post_lines else "value" }},
             mask=local_mask & ({{ call.writer_active }}),
         )
 {% endfilter %}

@@ -1,0 +1,1110 @@
+{
+  "schema": "flagmega.deliverables/v1",
+  "agents": [
+    "orchestrator",
+    "graph expert",
+    "graph optimizer",
+    "kernel expert",
+    "kernel optimizer",
+    "graph profiler",
+    "kernel profiler",
+    "reviewer"
+  ],
+  "entries": {
+    "task": {
+      "scope": "work",
+      "path": ".local/task.yaml",
+      "owners": [
+        "orchestrator"
+      ],
+      "consumers": [
+        "orchestrator",
+        "graph expert",
+        "graph optimizer",
+        "kernel expert",
+        "kernel optimizer",
+        "graph profiler",
+        "kernel profiler",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.task/v1",
+        "objective": null,
+        "reference": null,
+        "workload": null,
+        "primary_metric": null,
+        "direction": null,
+        "acceptance": {},
+        "gain_rule": null
+      }
+    },
+    "workspace": {
+      "scope": "work",
+      "path": ".local/workspace.json",
+      "owners": [
+        "graph optimizer"
+      ],
+      "consumers": [
+        "orchestrator",
+        "graph expert",
+        "graph optimizer",
+        "kernel expert",
+        "kernel optimizer",
+        "graph profiler",
+        "kernel profiler",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.workspace/v1",
+        "paths": {
+          "cache": ".local/cache",
+          "baseline": ".local/baseline",
+          "milestones": ".local/milestones",
+          "artifacts": "artifacts",
+          "figures": "figures",
+          "tests": "tests",
+          "benchmark": "benchmark"
+        },
+        "environment": {},
+        "bindings": {}
+      }
+    },
+    "milestone": {
+      "scope": "milestone",
+      "path": "milestone.json",
+      "owners": [
+        "orchestrator"
+      ],
+      "consumers": [
+        "orchestrator",
+        "graph expert",
+        "graph optimizer",
+        "kernel expert",
+        "kernel optimizer",
+        "graph profiler",
+        "kernel profiler",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.milestone/v1",
+        "objective": null,
+        "baseline": null,
+        "primary_metric": null,
+        "direction": null,
+        "gain_rule": null,
+        "status": "open",
+        "achieved_revision": null,
+        "reviewer_verdict": null,
+        "measurement_ids": [],
+        "signoff_receipts": [],
+        "release_receipt": null
+      }
+    },
+    "revision": {
+      "scope": "revision",
+      "path": "revision.json",
+      "owners": [
+        "orchestrator"
+      ],
+      "consumers": [
+        "orchestrator",
+        "graph expert",
+        "graph optimizer",
+        "kernel expert",
+        "kernel optimizer",
+        "graph profiler",
+        "kernel profiler",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.revision/v1",
+        "status": "pending",
+        "plan_owner": "graph expert",
+        "tracking_owner": "reviewer",
+        "required_agents_by_phase": {
+          "plan": [],
+          "tracking": []
+        },
+        "allowed_writes": {}
+      }
+    },
+    "plan": {
+      "scope": "revision",
+      "path": "plan.md",
+      "owners": [
+        "plan_owner"
+      ],
+      "consumers": [
+        "orchestrator",
+        "graph expert",
+        "graph optimizer",
+        "kernel expert",
+        "kernel optimizer",
+        "graph profiler",
+        "kernel profiler",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "template": "assets/revision-templates/plan.md"
+    },
+    "tracking": {
+      "scope": "revision",
+      "path": "tracking.md",
+      "owners": [
+        "reviewer"
+      ],
+      "consumers": [
+        "orchestrator",
+        "graph expert",
+        "graph optimizer",
+        "kernel expert",
+        "kernel optimizer",
+        "graph profiler",
+        "kernel profiler",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "template": "assets/revision-templates/tracking.md"
+    },
+    "request": {
+      "scope": "assignment",
+      "path": "request.json",
+      "owners": [
+        "orchestrator"
+      ],
+      "consumers": [
+        "assigned agent"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.request/v1",
+        "recipient": null,
+        "phase": null,
+        "inputs": [],
+        "allowed_writes": [],
+        "check_ids": [],
+        "prerequisites": [],
+        "resources": {},
+        "outputs": [],
+        "stop_condition": null
+      },
+      "purpose": "Assignment names dashboard row IDs and flow steps; technical detail is evidence, dashboard + flow alone controls management."
+    },
+    "response": {
+      "scope": "assignment",
+      "path": "response.md",
+      "owners": [
+        "assigned agent"
+      ],
+      "consumers": [
+        "recipient",
+        "reviewer",
+        "orchestrator"
+      ],
+      "generator": "workspace.py prepare",
+      "template": "assets/report-templates/agent.md"
+    },
+    "handoff": {
+      "scope": "assignment",
+      "path": "handoff.json",
+      "owners": [
+        "assigned agent"
+      ],
+      "consumers": [
+        "recipient",
+        "reviewer",
+        "plan_owner",
+        "orchestrator"
+      ],
+      "generator": "workspace.py prepare",
+      "template": "assets/agent-templates/handoff.json"
+    },
+    "contract": {
+      "scope": "assignment",
+      "path": "contract.md",
+      "owners": [
+        "graph expert",
+        "kernel expert"
+      ],
+      "consumers": [
+        "plan_owner",
+        "graph optimizer",
+        "kernel optimizer",
+        "profilers",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "template": "assets/report-templates/agent.md"
+    },
+    "inventory": {
+      "scope": "assignment",
+      "path": "inventory.json",
+      "owners": [
+        "graph expert",
+        "kernel expert"
+      ],
+      "consumers": [
+        "optimizers",
+        "profilers",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.inventory/v1",
+        "check_groups": [],
+        "values": [],
+        "functions": [],
+        "tuple_fields": [],
+        "physical_abi": [],
+        "resources": [],
+        "findings": []
+      }
+    },
+    "baselines": {
+      "scope": "revision",
+      "path": "results/baselines.json",
+      "owners": [
+        "plan_owner"
+      ],
+      "consumers": [
+        "optimizers",
+        "profilers",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.baselines/v1",
+        "current": null,
+        "adopted_sources": [],
+        "alternatives": [],
+        "targets": [],
+        "contracts": [],
+        "falsifiers": []
+      }
+    },
+    "implementation": {
+      "scope": "revision",
+      "path": "results/implementation.json",
+      "owners": [
+        "graph optimizer"
+      ],
+      "consumers": [
+        "reviewer",
+        "orchestrator",
+        "downstream agents"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.implementation/v1",
+        "status": "pending",
+        "input_identities": {},
+        "checks": [],
+        "measurements": [],
+        "findings": [],
+        "open_gates": [],
+        "evidence": []
+      }
+    },
+    "kernel-implementation": {
+      "scope": "revision",
+      "path": "results/kernel-implementation.json",
+      "owners": [
+        "kernel optimizer"
+      ],
+      "consumers": [
+        "reviewer",
+        "orchestrator",
+        "downstream agents"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.kernel-implementation/v1",
+        "status": "pending",
+        "input_identities": {},
+        "checks": [],
+        "measurements": [],
+        "findings": [],
+        "open_gates": [],
+        "evidence": []
+      }
+    },
+    "review": {
+      "scope": "revision",
+      "path": "results/review.json",
+      "owners": [
+        "reviewer"
+      ],
+      "consumers": [
+        "reviewer",
+        "orchestrator",
+        "downstream agents"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.review/v1",
+        "status": "pending",
+        "input_identities": {},
+        "checks": [],
+        "measurements": [],
+        "findings": [],
+        "open_gates": [],
+        "evidence": []
+      }
+    },
+    "validation": {
+      "scope": "revision",
+      "path": "results/validation.json",
+      "owners": [
+        "reviewer"
+      ],
+      "consumers": [
+        "reviewer",
+        "orchestrator",
+        "downstream agents"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.validation/v1",
+        "status": "pending",
+        "input_identities": {},
+        "checks": [],
+        "measurements": [],
+        "findings": [],
+        "open_gates": [],
+        "evidence": [],
+        "clear_measured_gain": false,
+        "all_acceptance_complete": false,
+        "required_signatures_complete": false,
+        "primary_metric": null,
+        "gain": null,
+        "uncertainty": null,
+        "scenario_results": []
+      }
+    },
+    "baseline-comparison": {
+      "scope": "revision",
+      "path": "results/baseline-comparison.json",
+      "owners": [
+        "reviewer"
+      ],
+      "consumers": [
+        "reviewer",
+        "orchestrator",
+        "downstream agents"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.baseline-comparison/v1",
+        "status": "pending",
+        "input_identities": {},
+        "checks": [],
+        "measurements": [],
+        "findings": [],
+        "open_gates": [],
+        "evidence": []
+      }
+    },
+    "graph-profile": {
+      "scope": "revision",
+      "path": "results/graph-profile.json",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "reviewer",
+        "orchestrator",
+        "downstream agents"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.graph-profile/v1",
+        "status": "pending",
+        "input_identities": {},
+        "checks": [],
+        "measurements": [],
+        "findings": [],
+        "open_gates": [],
+        "evidence": []
+      }
+    },
+    "kernel-profile": {
+      "scope": "revision",
+      "path": "results/kernel-profile.json",
+      "owners": [
+        "kernel profiler"
+      ],
+      "consumers": [
+        "reviewer",
+        "orchestrator",
+        "downstream agents"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.kernel-profile/v1",
+        "status": "pending",
+        "input_identities": {},
+        "checks": [],
+        "measurements": [],
+        "findings": [],
+        "open_gates": [],
+        "evidence": []
+      }
+    },
+    "coverage": {
+      "scope": "revision",
+      "path": "results/agent-coverage.json",
+      "owners": [
+        "reviewer"
+      ],
+      "consumers": [
+        "orchestrator",
+        "all agents"
+      ],
+      "generator": "workspace.py prepare",
+      "template": "assets/agent-templates/agent-coverage.json"
+    },
+    "capture-graph": {
+      "scope": "capture-graph",
+      "path": "manifest.json",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "experts",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.capture/v1",
+        "status": "pending",
+        "provider": null,
+        "command_receipt": null,
+        "source_manifest": null,
+        "device": null,
+        "invocation": null,
+        "scope": null,
+        "timebase": {},
+        "coverage": {},
+        "raw_files": [],
+        "controls": [],
+        "analysis": [],
+        "measurement_ids": []
+      }
+    },
+    "capture-kernel": {
+      "scope": "capture-kernel",
+      "path": "manifest.json",
+      "owners": [
+        "kernel profiler"
+      ],
+      "consumers": [
+        "experts",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.capture/v1",
+        "status": "pending",
+        "provider": null,
+        "command_receipt": null,
+        "source_manifest": null,
+        "device": null,
+        "invocation": null,
+        "scope": null,
+        "timebase": {},
+        "coverage": {},
+        "raw_files": [],
+        "controls": [],
+        "analysis": [],
+        "measurement_ids": []
+      }
+    },
+    "controls": {
+      "scope": "capture-kernel",
+      "path": "analysis/controls.json",
+      "owners": [
+        "kernel profiler"
+      ],
+      "consumers": [
+        "kernel expert",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.controls/v1",
+        "status": "pending",
+        "variants": [],
+        "native_resource_pins": [],
+        "duration_receipts": [],
+        "event_counts": [],
+        "interpretation_limits": []
+      }
+    },
+    "kernel-trace": {
+      "scope": "capture-kernel",
+      "path": "analysis/swimlane.json",
+      "owners": [
+        "kernel profiler"
+      ],
+      "consumers": [
+        "kernel expert",
+        "reviewer"
+      ],
+      "generator": "render_kernel_swimlane.py",
+      "template": "assets/kernel-swimlane/example.json",
+      "purpose": "Operator/kernel microanalysis swimlane.",
+      "example": "assets/kernel-swimlane/example.svg"
+    },
+    "figure-data": {
+      "scope": "revision",
+      "path": "results/figure-data.json",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "reviewer"
+      ],
+      "generator": "render_workspace_figures.py",
+      "body": {
+        "schema_version": 1,
+        "synthetic": false,
+        "title": "<figure title>",
+        "kind": "series",
+        "metric": "<primary metric>",
+        "unit": "<unit>",
+        "cohort": "<matched workload/device/statistic>",
+        "provenance": [],
+        "rows": [],
+        "x_axis": "revision"
+      }
+    },
+    "readme": {
+      "scope": "revision",
+      "path": "results/readme.md",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "reviewer",
+        "orchestrator",
+        "workspace users"
+      ],
+      "generator": "workspace.py sync --kind readme (latest working view); workspace.py publish --kind readme (reviewed snapshot)",
+      "template": "assets/workspace-templates/readme.md",
+      "live_report": "Refresh after every authoritative output/state change using --report-id; preserve winning revision snapshots."
+    },
+    "trace": {
+      "scope": "work",
+      "path": ".local/optimization-trace.md",
+      "owners": [
+        "reviewer"
+      ],
+      "consumers": [
+        "orchestrator",
+        "graph expert",
+        "graph optimizer",
+        "kernel expert",
+        "kernel optimizer",
+        "graph profiler",
+        "kernel profiler",
+        "reviewer"
+      ],
+      "generator": "validate_trace.py",
+      "template": "assets/report-templates/optimization-trace.md"
+    },
+    "trace-entry": {
+      "scope": "revision",
+      "path": "results/trace-entry.md",
+      "owners": [
+        "reviewer"
+      ],
+      "consumers": [
+        "orchestrator"
+      ],
+      "generator": "validate_trace.py",
+      "template": "assets/report-templates/trace-entry.md"
+    },
+    "measurement": {
+      "scope": "revision",
+      "path": "results/measurement.json",
+      "owners": [
+        "reviewer"
+      ],
+      "consumers": [
+        "profilers",
+        "orchestrator"
+      ],
+      "generator": "workspace.py append-measurement",
+      "body": {
+        "schema": "flagmega.measurement/v1",
+        "measurement_id": null,
+        "measured_by": null,
+        "recorded_by": "reviewer",
+        "kind": null,
+        "metric": null,
+        "unit": null,
+        "direction": null,
+        "boundary": null,
+        "cohort": null,
+        "variant": null,
+        "scenario": null,
+        "raw_samples": [],
+        "statistics": {},
+        "monitoring": [],
+        "source_manifest": null,
+        "validity": "pending",
+        "decision": "pending",
+        "evidence": []
+      }
+    },
+    "job": {
+      "scope": "revision",
+      "path": "results/job.json",
+      "owners": [
+        "graph optimizer",
+        "kernel optimizer",
+        "graph profiler",
+        "kernel profiler",
+        "reviewer"
+      ],
+      "consumers": [
+        "reviewer",
+        "orchestrator"
+      ],
+      "generator": "workspace.py run",
+      "body": {
+        "schema": "flagmega.job/v1",
+        "job_id": null,
+        "argv": [],
+        "cwd": ".",
+        "expected_outputs": [],
+        "input_identities": {},
+        "measurement_ids": [],
+        "purpose": null,
+        "input_files": []
+      }
+    },
+    "cache-manifest": {
+      "scope": "work",
+      "path": ".local/cache/{cache_kind}/manifest.json",
+      "owners": [
+        "graph optimizer",
+        "graph profiler"
+      ],
+      "consumers": [
+        "optimizers",
+        "profilers",
+        "reviewer"
+      ],
+      "generator": "workspace.py run / manifest --kind cache",
+      "body": {
+        "schema": "flagmega.cache/v1",
+        "kind": null,
+        "inputs": [],
+        "acquisition_job": null,
+        "recipe": null,
+        "files": [],
+        "source_ids": []
+      }
+    },
+    "artifact-manifest": {
+      "scope": "revision",
+      "path": "results/artifact-manifest.json",
+      "owners": [
+        "graph optimizer"
+      ],
+      "consumers": [
+        "profilers",
+        "reviewer"
+      ],
+      "generator": "workspace.py manifest --kind artifacts",
+      "body": {
+        "schema": "flagmega.files/v1",
+        "kind": "artifacts",
+        "input_identities": {},
+        "files": []
+      }
+    },
+    "native-manifest": {
+      "scope": "revision",
+      "path": "build/manifest.json",
+      "owners": [
+        "graph optimizer"
+      ],
+      "consumers": [
+        "profilers",
+        "reviewer"
+      ],
+      "generator": "workspace.py manifest --kind native",
+      "body": {
+        "schema": "flagmega.files/v1",
+        "kind": "native",
+        "input_identities": {},
+        "files": []
+      }
+    },
+    "release": {
+      "scope": "revision",
+      "path": "results/release.json",
+      "owners": [
+        "reviewer"
+      ],
+      "consumers": [
+        "graph optimizer",
+        "graph profiler",
+        "orchestrator"
+      ],
+      "generator": "workspace.py publish",
+      "body": {
+        "schema": "flagmega.release/v1",
+        "status": "pending",
+        "publication_status": null,
+        "files": {
+          "artifacts": [],
+          "figures": [],
+          "readme": []
+        },
+        "validation_receipt": null,
+        "signoff_receipts": []
+      },
+      "purpose": "Reviewer acceptance of exact snapshots; never required for latest working-state visibility."
+    },
+    "benchmark-build": {
+      "scope": "work",
+      "path": "benchmark/build_artifacts.py",
+      "owners": [
+        "graph optimizer"
+      ],
+      "consumers": [
+        "profilers",
+        "reviewer"
+      ],
+      "generator": "workspace.py run",
+      "template": "assets/workspace-templates/entrypoint.py"
+    },
+    "benchmark-model": {
+      "scope": "work",
+      "path": "benchmark/benchmark_model.py",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "reviewer"
+      ],
+      "generator": "workspace.py run",
+      "template": "assets/workspace-templates/entrypoint.py"
+    },
+    "benchmark-backends": {
+      "scope": "work",
+      "path": "benchmark/compare_backends.py",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "reviewer"
+      ],
+      "generator": "workspace.py run",
+      "template": "assets/workspace-templates/entrypoint.py"
+    },
+    "benchmark-operators": {
+      "scope": "work",
+      "path": "benchmark/profile_operators.py",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "reviewer"
+      ],
+      "generator": "workspace.py run",
+      "template": "assets/workspace-templates/entrypoint.py"
+    },
+    "benchmark-kernel": {
+      "scope": "work",
+      "path": "benchmark/profile_kernel.py",
+      "owners": [
+        "kernel profiler"
+      ],
+      "consumers": [
+        "kernel expert",
+        "reviewer"
+      ],
+      "generator": "workspace.py run",
+      "template": "assets/workspace-templates/entrypoint.py"
+    },
+    "ci": {
+      "scope": "work",
+      "path": "tests/check_correctness.py",
+      "owners": [
+        "reviewer"
+      ],
+      "consumers": [
+        "CI",
+        "orchestrator"
+      ],
+      "generator": "workspace.py run",
+      "template": "assets/workspace-templates/entrypoint.py"
+    },
+    "gitignore": {
+      "scope": "work",
+      "path": ".gitignore",
+      "owners": [
+        "graph optimizer"
+      ],
+      "consumers": [
+        "Git",
+        "all agents"
+      ],
+      "generator": "workspace.py init",
+      "template": "assets/workspace-templates/gitignore"
+    },
+    "tracking-snapshot": {
+      "scope": "revision",
+      "path": "results/tracking-snapshots/{sequence}.md",
+      "owners": [
+        "reviewer"
+      ],
+      "consumers": [
+        "all signing agents",
+        "orchestrator"
+      ],
+      "template": "assets/revision-templates/tracking.md",
+      "generator": "workspace.py snapshot (frozen sections 1-3)",
+      "generated": true
+    },
+    "job-receipt": {
+      "scope": "work",
+      "path": ".local/jobs/{job_id}/receipt.json",
+      "owners": [
+        "executing worker"
+      ],
+      "consumers": [
+        "reviewer",
+        "orchestrator"
+      ],
+      "body": {
+        "schema": "flagmega.job-receipt/v1",
+        "job_id": null,
+        "agent_name": null,
+        "job_sha256": null,
+        "argv": [],
+        "cwd": null,
+        "started_at_utc": null,
+        "ended_at_utc": null,
+        "status": "pending",
+        "exit_code": null,
+        "logs": [],
+        "outputs": [],
+        "measurement_ids": [],
+        "input_identities": {}
+      },
+      "generator": "workspace.py run",
+      "generated": true
+    },
+    "publication-receipt": {
+      "scope": "revision",
+      "path": "results/publication-{view}.json",
+      "owners": [
+        "graph optimizer",
+        "graph profiler"
+      ],
+      "consumers": [
+        "orchestrator",
+        "reviewer"
+      ],
+      "body": {
+        "schema": "flagmega.publication/v1",
+        "agent_name": null,
+        "kind": null,
+        "milestone_id": null,
+        "revision_id": null,
+        "release_sha256": null,
+        "publication_status": null,
+        "published_at_utc": null,
+        "files": []
+      },
+      "generator": "workspace.py publish",
+      "generated": true
+    },
+    "figure-graph": {
+      "scope": "revision",
+      "path": "results/figure-graph.json",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "reviewer"
+      ],
+      "template": "assets/workspace-figures/graph.json",
+      "generator": "render_workspace_figures.py",
+      "example": "assets/workspace-figures/graph.svg",
+      "purpose": "Full model timeline from declared execution start to end; preserve unclassified gaps.",
+      "working_view": "Use maintained template/layout in canonical root figures immediately; pending data uses explicit pending rendering, never synthetic example values or replacement status cards."
+    },
+    "figure-operators": {
+      "scope": "revision",
+      "path": "results/figure-operators.json",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "reviewer"
+      ],
+      "template": "assets/workspace-figures/operators.json",
+      "generator": "render_workspace_figures.py",
+      "purpose": "Graph-level operator total durations sorted descending; operator microanalysis is the kernel swimlane.",
+      "example": "assets/workspace-figures/operators.svg",
+      "working_view": "Use maintained template/layout in canonical root figures immediately; pending data uses explicit pending rendering, never synthetic example values or replacement status cards."
+    },
+    "figure-history": {
+      "scope": "revision",
+      "path": "results/figure-history.json",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "reviewer"
+      ],
+      "template": "assets/workspace-figures/history.json",
+      "generator": "render_workspace_figures.py",
+      "example": "assets/workspace-figures/history.svg",
+      "working_view": "Use maintained template/layout in canonical root figures immediately; pending data uses explicit pending rendering, never synthetic example values or replacement status cards."
+    },
+    "figure-backends": {
+      "scope": "revision",
+      "path": "results/figure-backends.json",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "reviewer"
+      ],
+      "template": "assets/workspace-figures/backends.json",
+      "generator": "render_workspace_figures.py",
+      "example": "assets/workspace-figures/backends.svg",
+      "working_view": "Use maintained template/layout in canonical root figures immediately; pending data uses explicit pending rendering, never synthetic example values or replacement status cards."
+    },
+    "capture-operators": {
+      "scope": "capture-operators",
+      "path": "manifest.json",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "experts",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "body": {
+        "schema": "flagmega.capture/v1",
+        "status": "pending",
+        "provider": null,
+        "command_receipt": null,
+        "source_manifest": null,
+        "device": null,
+        "invocation": null,
+        "scope": null,
+        "timebase": {},
+        "coverage": {},
+        "raw_files": [],
+        "controls": [],
+        "analysis": [],
+        "measurement_ids": []
+      }
+    },
+    "benchmark-render": {
+      "scope": "work",
+      "path": "benchmark/render_results.py",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "reviewer"
+      ],
+      "template": "assets/workspace-templates/render_results.py",
+      "generator": "render_results.py --renderer graph/kernel"
+    },
+    "kernel-native-manifest": {
+      "scope": "assignment",
+      "path": "native-manifest.json",
+      "owners": [
+        "kernel optimizer"
+      ],
+      "consumers": [
+        "profilers",
+        "reviewer"
+      ],
+      "generator": "workspace.py manifest --kind native",
+      "body": {
+        "schema": "flagmega.files/v1",
+        "kind": "native",
+        "input_identities": {},
+        "files": []
+      }
+    },
+    "view-manifest": {
+      "scope": "work",
+      "path": ".local/views/{scope}-{view}.json",
+      "owners": [
+        "graph optimizer",
+        "graph profiler"
+      ],
+      "consumers": [
+        "reviewer",
+        "workspace users"
+      ],
+      "body": {
+        "schema": "flagmega.view/v1",
+        "agent_name": null,
+        "kind": null,
+        "scope": null,
+        "milestone_id": null,
+        "revision_id": null,
+        "release_sha256": null,
+        "files": []
+      },
+      "generator": "workspace.py publish",
+      "generated": true
+    },
+    "figure-milestones": {
+      "scope": "revision",
+      "path": "results/figure-milestones.json",
+      "owners": [
+        "graph profiler"
+      ],
+      "consumers": [
+        "reviewer",
+        "orchestrator"
+      ],
+      "template": "assets/workspace-figures/milestones.json",
+      "example": "assets/workspace-figures/milestones.svg",
+      "generator": "render_workspace_figures.py",
+      "purpose": "Cumulative performance per milestone with a concise table matching actual numerical points one-to-one; add rows only when performance changes, keeping detailed gains/baselines in the source packet.",
+      "live_report": "Refresh after every authoritative output/state change using --report-id; preserve archived milestone/revision figures.",
+      "working_view": "Use maintained template/layout in canonical root figures immediately; pending data uses explicit pending rendering, never synthetic example values or replacement status cards."
+    },
+    "dashboard": {
+      "scope": "work",
+      "path": "dashboard.md",
+      "owners": [
+        "orchestrator"
+      ],
+      "consumers": [
+        "orchestrator",
+        "graph expert",
+        "graph optimizer",
+        "kernel expert",
+        "kernel optimizer",
+        "graph profiler",
+        "kernel profiler",
+        "reviewer"
+      ],
+      "generator": "workspace.py prepare",
+      "template": "assets/workspace-templates/dashboard.md",
+      "purpose": "Sole table-based management record: time, done/current/remaining work, owners, flow/evidence/prerequisites. No state.json or JSON management mirror."
+    }
+  }
+}

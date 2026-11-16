@@ -1,6 +1,6 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Owner-local N tiles preserve Q/K/V slices and explicit BF16 partials."""
+"""Owner-local N tiles preserve Q/K/V slices and declared partial precision."""
 
 from dataclasses import replace
 from functools import lru_cache
@@ -68,12 +68,26 @@ def test_n_tiling_does_not_weaken_input_or_partial_contract(violation):
     if violation in {"rows", "reduction"}:
         changed = replace(original, tensor=fm.tensor_type("bfloat16", (2, 2048) if violation == "rows" else (1, 1536)))
     elif violation == "output_dtype":
-        changed = replace(original, tensor=replace(original.tensor, dtype=fm.VectorType(fm.DType.FLOAT32, (8,))))
+        changed = replace(original, tensor=replace(original.tensor, dtype=fm.VectorType(fm.DType.FLOAT16, (8,))))
     else:
         changed = replace(original, partial=None if violation == "missing_partial" else fm.SBP.partial((1,), fm.ReduceOp.SUM))
     ids = _candidate_ids(_context(module, parameter_types={name: changed}))
     assert not {implementation_id(kind, descriptor) for kind in ("gemv", "mma")
                 for descriptor in ("single", "table")}.intersection(ids)
+
+
+def test_n_tiling_accepts_uniform_fp32_accumulators_and_rejects_mixed_fields():
+    from triton.flagmega import ir as fm
+    from .test_packed_qkv_mma_candidate import _candidate_ids, _context
+    module = tiled_module("mma", "table", (4096, 512, 512), 2)
+    context = _context(module)
+    output_types = {name: context.function.parameter_map[name].type for name in context.dispatch.outputs}
+    assert all(value.tensor.dtype.elem_type == fm.DType.FLOAT32 for value in output_types.values())
+    assert implementation_id('mma', 'table') in _candidate_ids(context)
+    name = context.dispatch.outputs[1]
+    original = output_types[name]
+    changed = replace(original, tensor=replace(original.tensor, dtype=fm.VectorType(fm.DType.BFLOAT16, (8,))))
+    assert implementation_id('mma', 'table') not in _candidate_ids(_context(module, parameter_types={name: changed}))
 
 
 @pytest.mark.parametrize("kind", ("gemv", "mma"))
@@ -126,6 +140,8 @@ def check_exact_coordinates_and_partials(module, identity, widths, input_extent,
     kernel, = (definition for definition in module.kernel_definitions
                if definition.dispatch.microkernel.implementation == identity)
     source_type = kernel.parameter_map[kernel.dispatch.arguments[0]].type
+    partial_type = kernel.parameter_map[kernel.dispatch.outputs[0]].type
+    partial_dtype = getattr(torch, partial_type.tensor.dtype.elem_type.value)
     reductions = set()
     for owner in product(*(range(extent) for extent in source_type.placement.hierarchy)):
         axis = local_shard_descriptor(source_type, owner).axes[-1]
@@ -135,7 +151,7 @@ def check_exact_coordinates_and_partials(module, identity, widths, input_extent,
     runtime.run_into(value, *outputs)
     torch.cuda.synchronize()
     for name, output in zip(names, outputs):
-        partials = [(dyadic[:, list(indices)] @ weights[name][list(indices)].double()).to(torch.bfloat16).double()
+        partials = [(dyadic[:, list(indices)] @ weights[name][list(indices)].double()).to(partial_dtype).double()
                     for indices in sorted(reductions)]
         expected = torch.stack(partials).sum(0).to(torch.bfloat16)
         torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)

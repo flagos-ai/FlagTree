@@ -58,6 +58,9 @@ def lower_transfer_pipeline_regions(module: IRModule) -> IRModule:
     structured control flow requires explicit task control-flow lowering.
     """
 
+    host_functions = program_host_functions(module)
+    if host_functions:
+        verify_program_publication(module, host_functions)
     pipeline_functions = _pipeline_execution_functions(module)
     repeated = _repeated_execution_functions(module)
     execution_functions = tuple(
@@ -65,7 +68,7 @@ def lower_transfer_pipeline_regions(module: IRModule) -> IRModule:
             function, module, pipeline_functions,
             repeated=function.name in repeated,
         )
-        if function.name in pipeline_functions
+        if function.name in pipeline_functions and function.name not in host_functions
         else function
         for function in module.execution_functions
     )
@@ -88,6 +91,7 @@ def lower_transfer_pipeline_regions(module: IRModule) -> IRModule:
 
 
 def _pipeline_execution_functions(module: IRModule) -> frozenset[str]:
+    host_functions = program_host_functions(module)
     result = {
         function.name
         for function in module.execution_functions
@@ -100,7 +104,7 @@ def _pipeline_execution_functions(module: IRModule) -> frozenset[str]:
     while changed:
         changed = False
         for function in module.execution_functions:
-            if function.name in result:
+            if function.name in result or function.name in host_functions:
                 continue
             if any(
                 call.callee in result
@@ -108,7 +112,107 @@ def _pipeline_execution_functions(module: IRModule) -> frozenset[str]:
             ):
                 result.add(function.name)
                 changed = True
-    return frozenset(result)
+    return frozenset(result - host_functions)
+
+
+def program_host_functions(module):
+    """Host control scopes cannot inherit a callee's CTA pipeline lifetime."""
+    from triton.flagmega.ir.program_execution import verify_program_execution, ProgramInvocation
+    plan = verify_program_execution(module)
+    if plan is None:
+        return frozenset()
+    return frozenset(function.function for function in plan.functions
+        if len(function.steps) != 1 or not isinstance(function.steps[0], ProgramInvocation))
+
+
+def verify_program_publication(module, host_functions):
+    """Check actual frame effects at ordered, chip-global launch boundaries."""
+    from triton.flagmega.ir.program_execution import verify_program_execution, ProgramInvocation
+    from triton.flagmega.ir.memory_effect import MemoryAccessMode
+    from triton.flagmega.ir.bufferization import MemorySharingScope
+    from triton.flagmega.passes.tir.bufferize.call_accesses import CallAccessResolver
+    from triton.flagmega.passes.tir.bufferize.synchronization import _node_accesses
+    plan = verify_buffer_plan(module)
+    execution = verify_program_execution(module)
+    requests = {p['symbol']: p for p in module.metadata['kernel_program_partition']}
+    if any('depends_on' in p for p in requests.values()):
+        raise IRVerificationError('Host pipeline publication requires the verified sequential program stream.')
+    launch = module.metadata.get('launch_contract', {}).get('grid_mesh', {})
+    if any(size != 1 and level in ('n', 'c') for size, level in
+           zip(launch.get('hierarchy', ()), launch.get('hierarchy_levels', ''), strict=True)):
+        raise IRVerificationError('Chip-local launch completion cannot publish a peer-device pipeline source.')
+    resolver = CallAccessResolver(module, plan, _node_accesses)
+    for function in execution.functions:
+        if function.function not in host_functions:
+            continue
+        bindings = dict(plan.function_map[function.function].values)
+        history = []
+        for ordinal, step in enumerate(function.steps):
+            identities = requests[step.symbol]['calls'] if isinstance(step, ProgramInvocation) else (step.call,)
+            accesses = []
+            for identity in identities:
+                # A uniform native loop is an indivisible typed program item.
+                node = module.node_map.get(identity)
+                if node is None:
+                    node = next((n for n in module.nodes if n.op == 'control.for'
+                                 and identity == f'{function.function}.{n.id}_iv'), None)
+                if node is None:
+                    raise IRVerificationError('Program publication has no physical executable item.')
+                accesses.extend(resolver.accesses(function.function, node, bindings))
+            _verify_publication_accesses(accesses, history, function.function, ordinal, plan)
+            history.extend((ordinal, access) for access in accesses)
+
+
+def _verify_publication_accesses(accesses, history, function, ordinal, plan):
+    """A retired physical frame is dead only after complete ordered writes."""
+    from triton.flagmega.ir.memory_effect import MemoryAccessMode
+    from triton.flagmega.ir.bufferization import MemorySharingScope
+    initialized = []
+    for access in accesses:
+        for before, writer in history if access.effect.physical_mode & MemoryAccessMode.READ else ():
+            if (before == ordinal or writer.physical_id != access.physical_id
+                    or not writer.effect.physical_mode & MemoryAccessMode.WRITE
+                    or max(writer.offset, access.offset) >= min(writer.offset + writer.nbytes, access.offset + access.nbytes)):
+                continue
+            begin, end = max(writer.offset, access.offset), min(writer.offset + writer.nbytes, access.offset + access.nbytes)
+            cursor = begin
+            for lo, hi in sorted((value.offset, value.offset + value.nbytes) for value in initialized
+                    if value.physical_id == access.physical_id):
+                if lo > cursor:
+                    break
+                cursor = max(cursor, hi)
+            if cursor >= end:
+                # Earlier writes in this native invocation completely
+                # initialize the reused byte span. A retired frame's
+                # old value is no longer live at this read.
+                continue
+            if access.sharing_scope is not MemorySharingScope.CHIP or writer.sharing_scope is not MemorySharingScope.CHIP:
+                raise IRVerificationError(f'A Shared/BLOCK/private value crosses a native program publication boundary: '
+                    f'@{function} step{before} {writer.node}/{writer.buffer} '
+                    f'{writer.sharing_scope.value} [{writer.offset},{writer.offset+writer.nbytes}) -> '
+                    f'step{ordinal} {access.node}/{access.buffer} {access.sharing_scope.value} '
+                    f'[{access.offset},{access.offset+access.nbytes}), role={plan.buffer_map[access.buffer].role}.')
+        if access.effect.physical_mode & MemoryAccessMode.WRITE:
+            initialized.append(access)
+
+
+def native_program_function(module, function, request):
+    """Lower one verified contiguous native program with a fresh pipe arena."""
+    owned = set(request['calls'])
+    selected, pending = [], []
+    for statement in function.body.fields:
+        if isinstance(statement, Barrier):
+            pending.append(statement)
+            continue
+        identity = (f'{function.name}.{statement.call_id}_iv' if isinstance(statement, For)
+                    else getattr(statement, 'call_id', None))
+        if identity in owned:
+            selected.extend((*pending, statement))
+        pending = []
+    if not selected:
+        raise IRVerificationError('Native program has no complete physical call span.')
+    local = replace(function, body=Sequential(tuple(selected)))
+    return _lower_execution_function(local, module, _pipeline_execution_functions(module), repeated=False)
 
 
 def _repeated_execution_functions(module: IRModule) -> frozenset[str]:
@@ -228,7 +332,7 @@ def _lower_execution_function(
         {} if plan is None
         else {value.id: value.physical_access_span for value in plan.buffers}
     )
-    _add_execution_source_handoffs(
+    source_barrier_indices = _add_execution_source_handoffs(
         execution_order,
         stages,
         consumer_after,
@@ -242,8 +346,9 @@ def _lower_execution_function(
     )
     producer = _build_producer(
         function.body, stages, drains, producer_before,
-        keep_source_barriers=_producer_needs_source_barriers(
-            execution_order, stages, source_spans
+        source_barrier_paths=_source_publication_paths(
+            function.body, execution_order, stages, source_spans,
+            source_barrier_indices, repeated=repeated,
         ),
     )
     return replace(
@@ -334,6 +439,7 @@ def _add_execution_source_handoffs(
     source_spans,
     source_requirements=None,
 ):
+    publication_indices = set()
     handoff_index = sum(len(values) for values in consumer_after.values())
     call_indices = {value.call_id: index for index, value in enumerate(execution_order)
                     if isinstance(value, (PrimFunctionCall, KernelInvoke))}
@@ -357,7 +463,10 @@ def _add_execution_source_handoffs(
             if id(predecessor) in stages and requirement[0] == "block":
                 ready = predecessor_index
             else:
-                ready = _first_publication(execution_order, predecessor_index + 1, index, requirement)
+                publication = _publication_barrier_indices(
+                    execution_order, predecessor_index + 1, index, requirement
+                )
+                ready = None if publication is None else publication[-1]
                 if ready is None:
                     scope = "Block" if requirement[0] == "block" else "Chip"
                     raise IRVerificationError(
@@ -365,26 +474,51 @@ def _add_execution_source_handoffs(
                         f"reads a source after {predecessor_id!r} without an effective "
                         f"{scope} barrier (source publication barrier required)."
                     )
+                publication_indices.update(publication)
             release_index = ready if release_index is None else max(release_index, ready)
         if release_index is not None:
             handoff = PipelineHandoff(f"{function_name}_source_handoff_{handoff_index}")
             handoff_index += 1
             _append_unique(consumer_after[id(execution_order[release_index])], handoff)
             _append_unique(producer_before[id(call)], handoff)
+    return frozenset(publication_indices)
 
 
 def _first_publication(order, start, end, requirement):
+    indices = _publication_barrier_indices(order, start, end, requirement)
+    return None if indices is None else indices[-1]
+
+
+def _publication_barrier_indices(order, start, end, requirement):
+    """Select exact occurrences proving the existing first publication point.
+
+    Barrier ranges describe the consumer hazard that created each barrier;
+    their scope can publish other sources too. Keep the scope proof, including
+    multiple axis-group barriers when one alone does not cover the source.
+    """
     from triton.flagmega.passes.tir.bufferize.barrier_coverage import BarrierCoverage
 
-    coverage = BarrierCoverage()
+    def covers(indices):
+        coverage = BarrierCoverage()
+        for index in indices:
+            barrier = order[index]
+            scope = synchronization_scope_name(barrier.scope)
+            coverage.apply((scope, barrier.axis_group_axes, requirement[2]), None)
+        return coverage.covers(requirement)
+
+    candidates = []
     for index in range(start, end):
-        barrier = order[index]
-        if not isinstance(barrier, Barrier):
+        if not isinstance(order[index], Barrier):
             continue
-        scope = synchronization_scope_name(barrier.scope)
-        coverage.apply((scope, barrier.axis_group_axes, requirement[2]), None)
-        if coverage.covers(requirement):
-            return index
+        candidates.append(index)
+        if covers(candidates):
+            # Drop redundant earlier scopes without moving the handoff. The
+            # last barrier is necessary: no preceding prefix covered the edge.
+            for candidate in tuple(candidates[:-1]):
+                without = [value for value in candidates if value != candidate]
+                if covers(without):
+                    candidates = without
+            return tuple(candidates)
     return None
 
 
@@ -626,23 +760,45 @@ def _add_source_handoffs(
             dispatch.arguments[source_index]
             for source_index in pipeline.read_argument_indices
         }
-        for predecessor in reversed(execution_order[:index]):
-            if not sources.intersection(_statement_writes(predecessor)):
-                continue
-            predecessor_stage = stages.get(id(predecessor))
-            if predecessor_stage is None:
-                raise IRVerificationError(
-                    f"Transfer-pipeline stage {stage.stage_id!r} in "
-                    f"@{function_name} reads a source after an ordinary write; "
-                    "a first-class block barrier is required before task handoff."
+        # Resolve each source separately. A set-level intersection says only
+        # that *some* source is written here, so stopping at the first hit
+        # leaves every source whose writer sits further back unresolved -- and
+        # an ordinary (unsynchronized) write to one of those is exactly the
+        # violation below, silently unreported. Scanning backwards per source
+        # keeps the nearest writer of each, which is the one that determines
+        # that source's readiness.
+        release_index = None
+        for source in sorted(sources):
+            for offset in reversed(range(index)):
+                predecessor = execution_order[offset]
+                if source not in _statement_writes(predecessor):
+                    continue
+                if stages.get(id(predecessor)) is None:
+                    raise IRVerificationError(
+                        f"Transfer-pipeline stage {stage.stage_id!r} in "
+                        f"@{function_name} reads a source after an ordinary "
+                        "write; a first-class block barrier is required "
+                        "before task handoff."
+                    )
+                # One edge orders them all: the consumer body is straight-line,
+                # so a commit after the latest stage predecessor already
+                # implies every earlier one has run. A handoff is a real
+                # mbarrier rendezvous, so emitting one per intersecting source
+                # would add redundant waits carrying no extra ordering.
+                release_index = (
+                    offset if release_index is None
+                    else max(release_index, offset)
                 )
+                break
+        if release_index is not None:
             handoff = PipelineHandoff(
                 f"{function_name}_source_handoff_{handoff_index}"
             )
             handoff_index += 1
-            _append_unique(consumer_after[id(predecessor)], handoff)
+            _append_unique(
+                consumer_after[id(execution_order[release_index])], handoff
+            )
             _append_unique(producer_before[id(dispatch)], handoff)
-            break
 
 
 def _append_unique(values: list[PipelineHandoff], value: PipelineHandoff) -> None:
@@ -690,11 +846,32 @@ def _producer_needs_source_barriers(execution_order, stages, source_spans) -> bo
     )
 
 
+def _source_publication_paths(
+    body, execution_order, stages, source_spans, publication_indices, *, repeated
+):
+    """Use predecessor proof only where it covers the source lifetime.
+
+    Current source requirements do not describe loop backedges. Keep the
+    existing participation for repeated mutable functions and counted loops;
+    pruning those needs a separate backedge proof. A later write in an acyclic
+    schedule is not a predecessor of the earlier source read.
+    """
+    mutable = _producer_needs_source_barriers(execution_order, stages, source_spans)
+    cyclic = repeated or any(isinstance(value, For) for value in _descendants(body))
+    occurrences = _execution_occurrences(body)
+    if mutable and cyclic:
+        return frozenset(path for path, statement in occurrences
+                         if isinstance(statement, Barrier))
+    return frozenset(occurrences[index][0] for index in publication_indices)
+
+
 def _build_producer(
-    body, stages, drains, producer_before, *, keep_source_barriers=True
+    body, stages, drains, producer_before, *, keep_source_barriers=True,
+    source_barrier_paths=None, path=(),
 ) -> Sequential:
     fields = []
-    for field in body.fields:
+    for index, field in enumerate(body.fields):
+        field_path = (*path, index)
         fields.extend(producer_before.get(id(field), ()))
         stage = stages.get(id(field))
         if stage is not None:
@@ -703,25 +880,19 @@ def _build_producer(
                 fields.append(PipelineDrain(stage.stage_id, arena_reuse=True))
             continue
         if isinstance(field, Barrier):
-            # A barrier inside a warp-specialize partition synchronizes only
-            # that partition's warp group, so the consumer's barriers order
-            # the consumer's memory operations and nothing else.  The producer
-            # also accesses the same global arenas directly -- its TMA loads
-            # read state the consumer wrote earlier in the same function --
-            # and the transfer pipe only orders the shared-memory slots it
-            # hands over, never those global accesses.  Keeping the barrier on
-            # the producer side gives its global reads the same acquire point
-            # the consumer's have, so both partitions observe one order.
-            # Immutable sources have no consumer publication dependency.
-            # Shared slot reuse is already guarded by drains and handoffs;
-            # replaying consumer barriers would serialize independent loads.
-            if keep_source_barriers:
+            # Producer global reads acquire the selected source-publication
+            # scopes. Slot reuse remains guarded by unchanged drains/handoffs.
+            # Legacy PrimFunctions retain their existing barrier membership.
+            keep = (keep_source_barriers if source_barrier_paths is None
+                    else field_path in source_barrier_paths)
+            if keep:
                 fields.append(field)
             continue
         if isinstance(field, Sequential):
             nested = _build_producer(
                 field, stages, drains, producer_before,
                 keep_source_barriers=keep_source_barriers,
+                source_barrier_paths=source_barrier_paths, path=field_path,
             )
             if nested.fields:
                 fields.append(nested)
@@ -731,29 +902,34 @@ def _build_producer(
             nested = _build_producer(
                 field.body, stages, drains, producer_before,
                 keep_source_barriers=keep_source_barriers,
+                source_barrier_paths=source_barrier_paths, path=(*field_path, -1),
             )
             if nested.fields:
                 fields.append(replace(field, body=nested))
     return replace(body, fields=tuple(fields))
 
 
-def _execution_order(body: Sequential) -> tuple[object, ...]:
-    """Flatten Sequential and counted loops; other structures stay atomic.
+def _execution_occurrences(body: Sequential, path=()):
+    """Stable pre-rewrite paths: Sequential field indices, -1 for For.body.
 
-    A counted loop runs its body a proven number of times and the region
-    mirrors the loop on both sides, so its stages participate in the same
-    straight-line push/pop order as the enclosing function's.
+    No names, value equality, or object identity define a barrier occurrence.
+    Both selection and rewriting use the unchanged input schedule tree.
     """
-
     result = []
-    for statement in body.fields:
+    for index, statement in enumerate(body.fields):
+        field_path = (*path, index)
         if isinstance(statement, Sequential):
-            result.extend(_execution_order(statement))
+            result.extend(_execution_occurrences(statement, field_path))
         elif isinstance(statement, For) and statement.domain.step is not None:
-            result.extend(_execution_order(statement.body))
+            result.extend(_execution_occurrences(statement.body, (*field_path, -1)))
         else:
-            result.append(statement)
+            result.append((field_path, statement))
     return tuple(result)
+
+
+def _execution_order(body: Sequential) -> tuple[object, ...]:
+    """Flatten Sequential and counted loops; other structures stay atomic."""
+    return tuple(statement for _, statement in _execution_occurrences(body))
 
 
 def _validate_structured_pipeline_placement(

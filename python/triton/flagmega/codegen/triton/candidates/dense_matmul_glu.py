@@ -40,61 +40,7 @@ class DenseMatmulGluCandidateProvider:
         reduction_extent = _local_scalar_last_axis_extent(source_type)
 
         def applicable(implementation) -> bool:
-            if not _supports_reduction_order(implementation, node.attrs):
-                return False
-            if implementation.parameters.get("descriptor_kind") == "table" and any(
-                not isinstance(context.module.node_map[value].type, DistributedType)
-                for value in node.inputs[1:3]
-            ):
-                return False
-            # The GLU family pins both of its weights canonical, so a single
-            # tensor map over either one obliges every chip to hold that whole
-            # weight.  Same rule the plain dense_matmul provider applies.
-            if any(
-                not supports_descriptor_weight_storage(
-                    implementation, context.module.node_map[value].type
-                )
-                for value in node.inputs[1:3]
-            ):
-                return False
-            block_k = implementation.parameters.get("block_k")
-            tile_n = implementation.parameters.get("tile_n")
-            required_reduction_extent = implementation.contract.get(
-                "required_local_reduction_extent"
-            )
-            if (
-                required_reduction_extent is not None
-                and reduction_extent != required_reduction_extent
-            ):
-                return False
-            lhs_stage_extent = implementation.parameters.get("lhs_stage_extent")
-            if lhs_stage_extent is not None and (
-                reduction_extent is None
-                or not isinstance(lhs_stage_extent, int)
-                or isinstance(lhs_stage_extent, bool)
-                or lhs_stage_extent < reduction_extent
-                or lhs_stage_extent & (lhs_stage_extent - 1)
-            ):
-                return False
-            if implementation.contract.get("requires_full_reduction_tiles", False):
-                if (
-                    reduction_extent is None
-                    or not isinstance(block_k, int)
-                    or reduction_extent % block_k
-                ):
-                    return False
-            return (
-                not implementation.contract.get(
-                    "requires_contiguous_local_tiles", False
-                )
-                or _supports_packed_contiguous_descriptor_tiles(
-                    node,
-                    context.module,
-                    block_k=block_k,
-                    tile_n=tile_n,
-                    allow_output_tail=implementation.contract.get("supports_masked_output_tiles", False),
-                )
-            )
+            return dense_glu_implementation_applicable(node, context.module, implementation)
 
         variants = tuple(
             context.configure_implementation(
@@ -272,3 +218,64 @@ def _local_scalar_last_axis_extent(value) -> int | None:
         else 1
     )
     return shape[-1].fixed_value * lane_count
+
+
+def dense_glu_implementation_applicable(node, module, implementation):
+    """Shared physical tile proof; callers provide the declared GLU input type."""
+    source_type = module.node_map[node.inputs[0]].type
+    reduction_extent = _local_scalar_last_axis_extent(source_type)
+    if not _supports_reduction_order(implementation, node.attrs):
+        return False
+    if implementation.parameters.get("descriptor_kind") == "table" and any(
+        not isinstance(module.node_map[value].type, DistributedType)
+        for value in node.inputs[1:3]
+    ):
+        return False
+    # The GLU family pins both of its weights canonical, so a single
+    # tensor map over either one obliges every chip to hold that whole
+    # weight.  Same rule the plain dense_matmul provider applies.
+    if any(
+        not supports_descriptor_weight_storage(
+            implementation, module.node_map[value].type
+        )
+        for value in node.inputs[1:3]
+    ):
+        return False
+    block_k = implementation.parameters.get("block_k")
+    tile_n = implementation.parameters.get("tile_n")
+    required_reduction_extent = implementation.contract.get(
+        "required_local_reduction_extent"
+    )
+    if (
+        required_reduction_extent is not None
+        and reduction_extent != required_reduction_extent
+    ):
+        return False
+    lhs_stage_extent = implementation.parameters.get("lhs_stage_extent")
+    if lhs_stage_extent is not None and (
+        reduction_extent is None
+        or not isinstance(lhs_stage_extent, int)
+        or isinstance(lhs_stage_extent, bool)
+        or lhs_stage_extent < reduction_extent
+        or lhs_stage_extent & (lhs_stage_extent - 1)
+    ):
+        return False
+    if implementation.contract.get("requires_full_reduction_tiles", False):
+        if (
+            reduction_extent is None
+            or not isinstance(block_k, int)
+            or reduction_extent % block_k
+        ):
+            return False
+    return (
+        not implementation.contract.get(
+            "requires_contiguous_local_tiles", False
+        )
+        or _supports_packed_contiguous_descriptor_tiles(
+            node,
+            module,
+            block_k=block_k,
+            tile_n=tile_n,
+            allow_output_tail=implementation.contract.get("supports_masked_output_tiles", False),
+        )
+    )

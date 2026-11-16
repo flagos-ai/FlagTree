@@ -58,6 +58,8 @@ class PackedQKVMicroKernelProvider:
             raise CodegenError(
                 "Canonical Packed-QKV microkernel selection requires Q/K/V outputs."
             )
+        if dispatch.semantic_attrs.get("reduction_order", "relaxed") not in ("relaxed", "mma_k16"):
+            raise CodegenError("Packed-QKV reduction_order must be relaxed or mma_k16.")
         implementations = tuple(
             implementation
             for implementation in context.implementations(
@@ -142,6 +144,12 @@ def _applicable(context: TIRMicroKernelContext, contract) -> bool:
     if required_output_dtype is not None and any(
         _scalar_dtype(value.dtype).value != required_output_dtype
         for value in outputs
+    ):
+        return False
+    supported_output_dtypes = contract.get("supported_output_dtypes")
+    if supported_output_dtypes is not None and (
+        len({_scalar_dtype(value.dtype) for value in outputs}) != 1
+        or any(_scalar_dtype(value.dtype).value not in supported_output_dtypes for value in outputs)
     ):
         return False
     if contract.get("requires_matching_output_lanes", False) and any(

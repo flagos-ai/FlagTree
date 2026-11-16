@@ -56,6 +56,8 @@ TIR_PACKAGE_DESCRIPTOR_SCHEMA = "flagmega.triton-package-descriptor/v1"
 def describe_tir_package(
     module: IRModule, *, pool_function_arguments: bool = True,
     specialize_readonly_layout: bool = False,
+    triton_trace=None,
+    readonly_layout_policy=None,
 ) -> dict[str, object]:
     """Derive source-generation facts solely from executable TIR contracts.
 
@@ -100,13 +102,33 @@ def describe_tir_package(
         )
         for name in function_names
     }
+    from .function_pool_abi import bank_row_strides, function_pool_origins
+    owned_origins = (function_pool_origins(
+        bindings, bank_row_strides(module, verify_buffer_plan(module)), entry=module.entry)
+        if pool_function_arguments else {})
     encoded_calls = {
         name: prepare_kernel_calls(
             bindings[name]["call_abi"]["kernel_calls"],
             function_name=name,
+            owned_pool_origins=owned_origins.get(name),
         )
         for name in function_names
     }
+    nvidia_readonly_plan = None
+    if readonly_layout_policy is not None:
+        from .nvidia_readonly_layout import plan_readonly_layout, finish_layout_data
+        nvidia_readonly_plan = plan_readonly_layout(
+            module, (call for calls in encoded_calls.values() for call in calls), readonly_layout_policy)
+        encoded_calls = {
+            name: prepare_kernel_calls(bindings[name]["call_abi"]["kernel_calls"], function_name=name,
+                                       readonly_device_views=nvidia_readonly_plan.views,
+                                       owned_pool_origins=owned_origins.get(name))
+            for name in function_names
+        }
+    trace_plan = None
+    if triton_trace is not None:
+        from .trace_config import TracePlan
+        trace_plan = TracePlan(module, bindings, encoded_calls, triton_trace)
     _verify_package_call_closure(package_plan, bindings)
 
     cooperative = bool(plan_launch.get("cooperative_grid", False))
@@ -224,7 +246,8 @@ def describe_tir_package(
                 call["partial_owner_index"] = "0"
 
     platform, architecture = module_template_target(module)
-    readonly_layout = None
+    readonly_layout = (None if nvidia_readonly_plan is None else
+                       dict(nvidia_readonly_plan.data["device_layout"]))
     if platform == "corex" and architecture == "bi_v150" and int(plan_launch["num_warps"]) == 16:
         from triton.flagmega.codegen.triton.corex_sme_abi import attach_flat_sme_calls
         attach_flat_sme_calls(encoded_calls, source_schedule)
@@ -354,6 +377,8 @@ def describe_tir_package(
         "replicated_block_runtime_pool": replicated_block_runtime_pool,
         "render_calls": wrappers,
         **({"triton_readonly_device_layout": readonly_layout} if readonly_layout is not None else {}),
+        **({"triton_readonly_layout": finish_layout_data(nvidia_readonly_plan, plain_package_value(descriptor_specs))}
+           if nvidia_readonly_plan is not None else {}),
         "entry_events": entry_events,
         "pipeline_schedule": pipeline_schedule,
         "device_functions": source_schedule["device_functions"] if source_schedule else [],
@@ -374,6 +399,8 @@ def describe_tir_package(
         **mesh,
         **_shared_template_context(wrappers),
     }
+    if trace_plan is not None:
+        trace_plan.finish(descriptor)
     descriptor.update(describe_kernel_programs(module, package_plan, descriptor))
     if "persistent_window_resources" in module.metadata:
         from triton.flagmega.ir.persistent_window import plan_window_resources
@@ -642,6 +669,12 @@ def _kernel_source_event(
     *,
     memory_dependencies,
 ) -> dict[str, object]:
+    if "trace_layer_actual" in call:
+        from .trace_config import LAYER_ARGUMENT
+        actual_by_formal = {
+            **actual_by_formal,
+            LAYER_ARGUMENT: _substitute(str(call["trace_layer_actual"]), actual_by_formal),
+        }
     descriptor_arguments = _instantiate_descriptor_requests(
         call, storage_roots, descriptor_specs, call_path
     )

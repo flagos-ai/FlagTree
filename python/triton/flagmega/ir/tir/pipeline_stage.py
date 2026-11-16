@@ -11,6 +11,7 @@ from triton.flagmega.ir.tir.base import TIRStmt, tir_node
 from triton.flagmega.ir.tir.kernel_dispatch import KernelDispatch
 from triton.flagmega.ir.tir.prim_function_call import PrimFunctionCall
 from triton.flagmega.ir.tir.kernel_invoke import KernelInvoke
+from triton.flagmega.ir.tir.pipeline_readiness import PipelineReadiness
 
 
 @tir_node("pipeline_stage")
@@ -25,6 +26,7 @@ class PipelineStage(TIRStmt):
 
     stage_id: str
     operation: KernelDispatch | PrimFunctionCall | KernelInvoke
+    source_readiness: PipelineReadiness | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.stage_id, str) or not self.stage_id.strip():
@@ -33,6 +35,11 @@ class PipelineStage(TIRStmt):
             raise IRSchemaError(
                 "PipelineStage requires a KernelDispatch or PrimFunctionCall."
             )
+        if self.source_readiness is not None and (
+            not isinstance(self.source_readiness, PipelineReadiness)
+            or not isinstance(self.operation, PrimFunctionCall)
+        ):
+            raise IRSchemaError("Imported source readiness requires a typed execution-function call.")
 
 
 __all__ = ["PipelineStage"]

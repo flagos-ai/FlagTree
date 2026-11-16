@@ -152,6 +152,22 @@ def _applicable(context, contract, parameters) -> bool:
         for key, value in observed.items()
     ):
         return False
+    if contract.get("requires_local_query_heads_within_one_kv_group"):
+        logical_query_shape = _fixed_shape(query)
+        num_kv_heads = cache_shape[-2]
+        local_query_heads = query_shape[head_axis]
+        if logical_query_shape is None or num_kv_heads <= 0 or local_query_heads <= 0:
+            return False
+        num_query_heads = logical_query_shape[head_axis]
+        if num_query_heads % num_kv_heads:
+            return False
+        # One KV stream has to feed every owner-local query row, so the owned
+        # rows must be a whole sub-block of a single GQA group.  This admits
+        # the one-head ownership the key replaced, and any grouped ownership
+        # whose rows still share a KV head.
+        group_size = num_query_heads // num_kv_heads
+        if local_query_heads > group_size or group_size % local_query_heads:
+            return False
     block_n = int(parameters.get("block_n", 1))
     block_k = int(parameters.get("block_k", query_head_dim))
     return (

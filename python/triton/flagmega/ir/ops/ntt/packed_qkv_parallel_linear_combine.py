@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from math import prod
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_type import ReduceOp, SBPPartial, local_tensor_type
-from triton.flagmega.ir.model import DistributedType, IRType, Node, TupleType
+from triton.flagmega.ir.model import DType, DistributedType, IRType, Node, TupleType
+from triton.flagmega.ir.types import VectorType
 from triton.flagmega.ir.ops.core import (
     CostKind,
     OpCost,
@@ -33,7 +35,11 @@ from triton.flagmega.ir.type_pattern import is_ir_type
     display_name="NTT.PackedQKVParallelLinearCombine",
 )
 class PackedQKVParallelLinearCombine(OpDefinition):
-    """A target-neutral collective boundary for a three-field Q/K/V tuple."""
+    """Sum Q/K/V components, then round to each materialized result dtype.
+
+    FP32 partial storage may materialize BF16 results without rounding each
+    owner first. Equal-dtype historical combines retain their contract.
+    """
 
     qkv = input_parameter(is_ir_type())
     output_type = attribute_parameter(positional=True)
@@ -60,8 +66,10 @@ class PackedQKVParallelLinearCombine(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
-        del node, context
-        return cls.qkv.read(arguments)
+        # Evaluator distributed values represent the complete logical sum.
+        return tuple(value.to(dtype=context.torch_dtype(field.tensor.dtype if isinstance(field, DistributedType)
+                                                        else field.dtype))
+                     for value, field in zip(cls.qkv.read(arguments), node.type.fields, strict=True))
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
@@ -95,7 +103,8 @@ class PackedQKVParallelLinearCombine(OpDefinition):
             if size is None:
                 return None
             fan_in = prod(before.placement.hierarchy[axis] for axis in before.partial.axes)
-            loads += size * fan_in
+            input_local = replace(local, dtype=before.tensor.dtype)
+            loads += tensor_nbytes(input_local) * fan_in
             stores += size
             additions += prod(d.fixed_value for d in local.shape) * getattr(local.dtype, "lane_count", 1) * (fan_in - 1)
         return OpCostFactors(block_local_memory_load_bytes=loads, block_local_memory_store_bytes=stores,
@@ -126,9 +135,21 @@ def can_materialize_packed_qkv(input_type: IRType, output_type: IRType) -> bool:
     ):
         return False
     return all(
-        can_materialize_sum_partial(source, target)
+        can_materialize_qkv_field(source, target)
         for source, target in zip(input_fields, output_fields)
     )
+
+
+def can_materialize_qkv_field(source, target) -> bool:
+    """Allow only the declared FP32 accumulator → BF16 result narrowing."""
+    if can_materialize_sum_partial(source, target):
+        return True
+    before, after = source.tensor.dtype, target.tensor.dtype
+    if not (isinstance(before, VectorType) and isinstance(after, VectorType)
+            and before.elem_type is DType.FLOAT32 and after.elem_type is DType.BFLOAT16
+            and before.lanes == after.lanes):
+        return False
+    return can_materialize_sum_partial(replace(source, tensor=replace(source.tensor, dtype=after)), target)
 
 
 def _is_materialized(value_type: IRType) -> bool:

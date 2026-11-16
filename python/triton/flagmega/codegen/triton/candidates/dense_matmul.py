@@ -127,6 +127,8 @@ class DenseMatmulCandidateProvider:
                 if output_extent is not None
                 and reduction_extent is not None
                 and _supports_reduction_order(implementation, node.attrs)
+                and (not (node.attrs.get("post_ops") and node.attrs.get("output_data_type") == "bfloat16")
+                     or implementation.contract.get("supports_projection_widening_post_ops", False))
                 and (implementation.contract.get("required_input_dtype", _scalar_dtype(input_type).value)
                      == _scalar_dtype(input_type).value)
                 and (implementation.contract.get("required_output_dtype", _scalar_dtype(output_type).value)
@@ -894,9 +896,21 @@ class MatMulNormStatsCandidateProvider:
 
 
 def _supports_reduction_order(implementation, attrs):
-    return (attrs.get("reduction_order", "relaxed") == "relaxed"
-            or (implementation.facts.get("ordered_mma_accumulation", False)
-                and implementation.parameters.get("accumulation_splits", 1) == 1))
+    from triton.flagmega.ir.ops.math.matmul import SPLIT_K4_REDUCTION_ORDER
+
+    order = attrs.get("reduction_order", "relaxed")
+    split_k4 = implementation.facts.get("split_k4_ordered_mma_accumulation", False)
+    split_mode = implementation.parameters.get("accumulation_mode") == "split_k4_mma"
+    if split_k4 or split_mode:
+        return (order == SPLIT_K4_REDUCTION_ORDER
+                and split_k4 is True and split_mode
+                and not implementation.facts.get("ordered_mma_accumulation", False)
+                and implementation.parameters.get("accumulation_splits", 1) == 1)
+    if order == "relaxed":
+        return True
+    return (order == "mma_k16"
+            and implementation.facts.get("ordered_mma_accumulation", False)
+            and implementation.parameters.get("accumulation_splits", 1) == 1)
 
 
 def _supports_lhs_staging(implementation, value_type) -> bool:

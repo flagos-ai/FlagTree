@@ -36,6 +36,7 @@ from triton.flagmega.ir.distributed_inference import (
     tensor_of,
 )
 from triton.flagmega.ir.ops.math._quantized import matrix_width
+from triton.flagmega.ir.ops.math.matmul import SPLIT_K4_REDUCTION_ORDER
 from triton.flagmega.ir.ops.tensors._k_major import parse_k_major_layout
 from triton.flagmega.ir.ops.ntt.packed_qkv_parallel_linear_combine import (
     can_materialize_packed_qkv, )
@@ -624,7 +625,7 @@ class MatMulCandidateProvider(DistributedCandidateProviderBase):
                     fallback,
                     "matmul-K-sbp-partial",
                 ))
-        if node.attrs.get("reduction_order", "relaxed") == "mma_k16":
+        if node.attrs.get("reduction_order", "relaxed") in ("mma_k16", SPLIT_K4_REDUCTION_ORDER):
             # Independent M/N work preserves an ordered K accumulator;
             # independently completed K sums change its rounding order.
             values = [candidate for candidate in values
@@ -1226,6 +1227,7 @@ class BinaryCandidateProvider(TypeInferenceCandidateProvider):
         "math.add",
         "math.mul",
         "math.vectorized_binary",
+        "ntt.vectorized_add_norm_stats",
     })
     def __init__(self):
         super().__init__(self.op_names)

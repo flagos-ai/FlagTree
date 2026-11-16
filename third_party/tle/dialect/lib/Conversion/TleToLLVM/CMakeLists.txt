@@ -3,6 +3,7 @@ set(TLE_TO_LLVM_SRC
     DSLRegionOpToLLVM.cpp
     ExclusiveCumsumOpToLLVM.cpp
     ExtractOpToLLVM.cpp
+    FenceProxyAsyncGlobalOpToLLVM.cpp
     LocalPointersOpToLLVM.cpp
     NodeTransferOpToLLVM.cpp
     PackOpToLLVM.cpp

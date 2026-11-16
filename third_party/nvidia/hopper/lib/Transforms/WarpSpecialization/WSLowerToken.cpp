@@ -143,6 +143,10 @@ static int getTMACopyLoadSize(ttg::TMACopyOp copy) {
 static bool canInterleaveBeforeTmaCopyCommit(Operation *op) {
   if (op->getNumRegions() != 0 || op->hasTrait<OpTrait::IsTerminator>())
     return false;
+#ifdef __TLE__
+  if (ttle::hasOnlyProfileScratchEffects(op))
+    return true;
+#endif
   return isMemoryEffectFree(op);
 }
 
@@ -318,6 +322,8 @@ static Value getMemDescRoot(Value value) {
 static bool canInterleaveBeforeInferredParticipantCommit(Operation *op) {
   if (op->getNumRegions() != 0 || op->hasTrait<OpTrait::IsTerminator>())
     return false;
+  if (ttle::hasOnlyProfileScratchEffects(op))
+    return true;
   if (ttle::isCtaInvariantSpecialRegisterRead(op))
     return true;
   if (isMemoryEffectFree(op))
@@ -337,6 +343,8 @@ static bool canInterleaveBeforeInferredParticipantCommit(Operation *op) {
 static bool canInterleaveBeforeTleMixedTmaCommit(Operation *op) {
   if (op->getNumRegions() != 0 || op->hasTrait<OpTrait::IsTerminator>())
     return false;
+  if (ttle::hasOnlyProfileScratchEffects(op))
+    return true;
   if (ttle::isCtaInvariantSpecialRegisterRead(op))
     return true;
   if (isMemoryEffectFree(op))

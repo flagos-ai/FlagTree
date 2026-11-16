@@ -141,16 +141,19 @@ def {{ call.symbol }}({{ call.signature }}):
 {% endif %}
         dense_result = tl.sum(dense_accumulator, axis=1)
 {% endif %}
+{% for line in call.fusion_post_lines | default(()) %}
+        {{ line }}
+{% endfor %}
         {% if dense_n_masked %}
         tl.store(
             {{ call.result }} + ({{ call.result_offset }}),
-            dense_result.to({{ call.output_type }}),
+            {% if call.fusion_post_lines | default(()) %}{{ call.fusion_post_value }}{% else %}dense_result.to({{ call.output_type }}){% endif %},
             mask=dense_n_mask,
         )
         {% else %}
         tl.store(
             {{ call.result }} + ({{ call.result_offset }}),
-            dense_result.to({{ call.output_type }}),
+            {% if call.fusion_post_lines | default(()) %}{{ call.fusion_post_value }}{% else %}dense_result.to({{ call.output_type }}){% endif %},
         )
         {% endif %}
 {% endfilter %}

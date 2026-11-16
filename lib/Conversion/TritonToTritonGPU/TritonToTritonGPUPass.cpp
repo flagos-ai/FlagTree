@@ -1627,6 +1627,7 @@ void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
       TleDSLRegionOpPattern, TleExtractTileOpPattern, TleInsertTileOpPattern,
 #ifdef __TLE__
       TleSetLayoutOpPattern,
+      GenericOpPattern<tle::CensusMarkOp>,
 #endif
       GenericOpPattern<tle::LocalPointersOp>,
       GenericOpPattern<tle::RemotePointersOp>,

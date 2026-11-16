@@ -31,7 +31,7 @@ namespace mlir::triton::tle {
 
 void populateDistributedBarrierOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
-    PatternBenefit benefit);
+    PatternBenefit benefit, bool supportsAcquireFence);
 
 } // namespace mlir::triton::tle
 

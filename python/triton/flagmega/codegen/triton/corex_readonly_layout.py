@@ -2,57 +2,15 @@
 # SPDX-License-Identifier: MIT
 """Owner-contiguous readonly K walks for proven BI-V150 packed weights."""
 
-from math import prod
-
-from triton.flagmega.codegen.readonly_layout import READONLY_DEVICE_LAYOUT_SCHEMA, readonly_roots
+from triton.flagmega.codegen.readonly_layout import (
+    READONLY_DEVICE_LAYOUT_SCHEMA, readonly_roots, owner_major_weight_records,
+)
 from triton.flagmega.codegen.triton.physical_access import emit_buffer_pointer
 from triton.flagmega.errors import CodegenError
-from triton.flagmega.ir import (
-    ContiguousSplit, DistributedBufferStorageKind, block_owner_axes,
-    block_owner_count, verify_buffer_plan,
-)
+from triton.flagmega.ir import verify_buffer_plan
 
 
-def _weight_layout_records(plan, binding, n, k, stride):
-    abi = binding["abi"]
-    group, groups = n * 16, k // 16
-    owners = int(abi.get("owner_count", 0))
-    if (abi.get("storage_kind") != "canonical_global"
-            or abi.get("coordinate_space") != "canonical_global"
-            or abi.get("scalar_dtype") != "bfloat16"
-            or owners <= 1 or stride != owners * group
-            or abi["logical_shape"][0] != groups
-            or abi["local_capacity_shape"][0] != groups
-            or prod(abi["logical_shape"]) * abi["scalar_lane_count"] != groups * stride):
-        return None
-    distributed = plan.buffer_map[binding["actual"]].distributed_type
-    splits = [(axis, stage) for axis, policy in enumerate(distributed.axis_policies)
-              for stage in getattr(policy, "stages", ())]
-    # shard_index spans the complete block mesh. A subset of block axes needs
-    # a different index expression and cannot use this permutation.
-    block_axes = tuple(axis for axis, level in enumerate(distributed.placement.hierarchy_levels)
-                       if level == "b")
-    if (len(splits) != 1 or splits[0][0] != 1
-            or not isinstance(splits[0][1].distribution, ContiguousSplit)
-            or tuple(splits[0][1].hierarchy_axes) != tuple(block_owner_axes(distributed))
-            or tuple(block_owner_axes(distributed)) != block_axes
-            or block_owner_count(distributed) != owners
-            or not isinstance(abi.get("owner_index_expression"), str)
-            or not abi["owner_index_expression"]):
-        return None
-    roots = readonly_roots(plan, plan.buffer_map[binding["actual"]])
-    if not roots:
-        return None
-    records = []
-    for buffer in roots:
-        if (buffer.distributed_storage_kind is not DistributedBufferStorageKind.CANONICAL_GLOBAL
-                or buffer.nbytes != groups * stride * 2
-                or buffer.shape != tuple(abi["logical_shape"])
-                or block_owner_count(buffer.distributed_type) != owners):
-            raise CodegenError("COREX readonly layout disagrees with its concrete call buffer.")
-        records.append({"buffer": buffer.id, "offset": buffer.offset, "nbytes": buffer.nbytes,
-                        "shape": [groups, owners, group, 2], "axes": [1, 0, 2, 3]})
-    return records
+_weight_layout_records = owner_major_weight_records
 
 
 def select_readonly_layouts(module, calls):

@@ -152,6 +152,56 @@ def test_residual_rounds_at_attention_boundary_not_at_layer_return(model):
     assert not torch.equal(output, output.bfloat16().float())
 
 
+def test_profile_residual_rounding_survives_normal_decomposition(model):
+    from triton.flagmega.passes.target_independent import decompose_complex_ops
+
+    selected = apply_qwen3_vllm_profile(model)
+    lowered = decompose_complex_ops(selected)
+    hidden = selected.function_map["decode_layer"].parameters[0]
+    generator = torch.Generator().manual_seed(73)
+    value = torch.randn(1, 16, generator=generator).bfloat16().float() + .003
+    projection = torch.randn(1, 16, generator=generator).bfloat16()
+    expected = value.bfloat16().float() + projection.float()
+    before = evaluate(selected, "decode_layer_after_attention",
+                      {hidden: value, "decode_layer_attention_output": projection})
+    # Cut the projection at the same already-rounded value on both sides.
+    # Its widening may remain a Cast or become the projection's output dtype;
+    # this witness isolates the independent residual materialization boundary.
+    projection_input = lowered.node_map["decode_layer_after_attention"].inputs[1]
+    after = evaluate(lowered, "decode_layer_after_attention",
+                     {hidden: value, projection_input: projection.float()})
+    torch.testing.assert_close(before, expected, rtol=0, atol=0)
+    torch.testing.assert_close(after, expected, rtol=0, atol=0)
+    assert not torch.equal(expected, value + projection.float())
+
+
+@pytest.mark.parametrize("projection,wide", (
+    ("decode_layer_attention_output", "decode_layer_after_attention.projection_wide"),
+    ("decode_layer_mlp_down", "decode_layer_output.projection_wide"),
+))
+def test_profile_projection_rounding_survives_normal_decomposition(model, projection, wide):
+    from triton.flagmega.passes.target_independent import decompose_complex_ops
+
+    selected = apply_qwen3_vllm_profile(model)
+    matmul = selected.node_map[projection]
+    source = fragment(selected, wide, matmul.inputs)
+    lowered = decompose_complex_ops(source)
+    generator = torch.Generator().manual_seed(83)
+    operands = {}
+    for name in matmul.inputs:
+        value_type = selected.node_map[name].type
+        assert value_type.dtype == fm.DType.BFLOAT16
+        shape = tuple(dimension.fixed_value for dimension in value_type.shape)
+        operands[name] = torch.randn(shape, generator=generator).bfloat16()
+    lhs, rhs = (operands[name] for name in matmul.inputs)
+    expected = torch.nn.functional.linear(lhs, rhs).float()
+    before = TorchEvaluator(DictWeightResolver({})).run(source, operands)[0]
+    after = TorchEvaluator(DictWeightResolver({})).run(lowered, operands)[0]
+    torch.testing.assert_close(before, expected, rtol=0, atol=0)
+    torch.testing.assert_close(after, expected, rtol=0, atol=0)
+    assert not torch.equal(expected, torch.nn.functional.linear(lhs.float(), rhs.float()))
+
+
 def test_import_profile_and_normal_pass_preserve_wide_activation(model, tmp_path):
     from triton.flagmega.passes.target_independent import decompose_complex_ops
 

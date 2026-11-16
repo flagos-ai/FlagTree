@@ -1821,7 +1821,7 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
                 "rhs_layout": "k_major",
                 "required_input_dtype": "bfloat16",
                 "required_weight_dtype": "bfloat16",
-                "required_output_dtype": "bfloat16",
+                "supported_output_dtypes": ("bfloat16", "float32"),
                 "required_input_lanes": (),
                 "required_weight_lanes": (8, 2, 8),
                 "required_weight_rank": 3,
@@ -1888,7 +1888,7 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
                 "rhs_layout": "k_major",
                 "required_input_dtype": "bfloat16",
                 "required_weight_dtype": "bfloat16",
-                "required_output_dtype": "bfloat16",
+                "supported_output_dtypes": ("bfloat16", "float32"),
                 "required_input_lanes": (),
                 "required_weight_lanes": (8, 2, 8),
                 "required_weight_rank": 3,
@@ -1957,7 +1957,10 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
                 "required_query_lanes": (8, ),
                 "required_cache_lanes": (8, ),
                 "required_local_query_tokens": 1,
-                "required_local_query_heads": 1,
+                # The m16n8k16 tile carries the whole GQA group, so any
+                # owner-local head count that is a whole sub-block of one KV
+                # group is served by this implementation's single KV stream.
+                "requires_local_query_heads_within_one_kv_group": True,
                 "required_scalar_head_dim": 128,
             },
             requires=("tma", "warp_specialize", "mma_v3"),
@@ -2067,6 +2070,10 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
     staged = next(value for value in implementations if value.id == (
         "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats_lhs8192"
     ))
+    from .nvidia.dense_lhs_staging import dense_lhs_staging_implementations
+    implementations += dense_lhs_staging_implementations(next(
+        value for value in implementations if value.id == (
+            "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv")), staged.shared_workspaces[1])
     implementations += (replace(
         staged,
         id=staged.id + "_async",
@@ -2193,6 +2200,15 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
             *attention_preferences["paged_attention_partial"],
         ),
     }
+    # These templates emit the declared BF16 projection rounding before a
+    # register-only F32 widening PostOps body. Other variants remain ineligible
+    # for that contract until their own epilogue emitter supports it.
+    implementations = tuple(
+        replace(implementation, contract={**implementation.contract, "supports_projection_widening_post_ops": True})
+        if implementation.family == "dense_matmul" and implementation.variant in {
+            "packed_k_major_gemv", "packed_tensor_descriptor_smem_pipeline_gemv"}
+        else implementation for implementation in implementations
+    )
     return TritonImplementationModel(implementations, preferences, "nvidia-sm90/v45")
 
 

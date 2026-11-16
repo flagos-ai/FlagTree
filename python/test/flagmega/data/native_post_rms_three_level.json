@@ -1,0 +1,11 @@
+{
+  "source": "python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/runs/20261110T055836Z-qwen3-h800-decode/agents/vector_architect/a0003/evidence/reduction-order-witness.npz",
+  "source_sha256": "77817c71a47e6173f7bbfad321808b679b2f60347c128033f8dd18a9b1d6bd09",
+  "row": 3,
+  "schema": "independent-b13-rms-hierarchy/v1",
+  "expected_bits": "0x45795ac0",
+  "initial_two_level_bits": "0x45795abf",
+  "rule": "square FP32; contiguous16 XOR8..1; contiguous32 XOR16..1; final4 XOR2,1; +0; no GPU/rsqrt claim",
+  "fixture_sha256": "54b8629a3270c5482e4617cd10094934be8d43e2ec77cbaee7eff35ef55d66ff",
+  "scope_correction": "Pure separate-RN mathematical hierarchy witness only. Actual fast native may contract square/add into FMA; this is not a bit-exact native oracle."
+}

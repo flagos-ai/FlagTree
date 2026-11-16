@@ -474,12 +474,16 @@ class BufferPlanner:
         # Index each bank field's row-0 member so a row access can bind to it
         # and let codegen stride by the runtime row index.
         self.bank_group_members = {}
+        self.bank_group_rows = {}
         for node in bank_nodes:
-            if int(node.metadata.get("bank_row", -1)) != 0:
-                continue
             bank_id = str(node.metadata["parameter_bank"])
             field_index = int(node.metadata["bank_field_index"])
             leaves = self.bindings.get(node.id, ())
+            row_index = int(node.metadata["bank_row"])
+            self.bank_group_rows.setdefault(bank_id, {}).setdefault(
+                field_index, {}).setdefault(row_index, []).extend(leaves)
+            if row_index != 0:
+                continue
             self.bank_group_members.setdefault(bank_id, {}).setdefault(
                 field_index, []).extend(leaves)
         self.bank_group_members = {
@@ -2389,7 +2393,7 @@ class BufferPlanner:
         ))
 
     def _plan_bank_row(self, function, node, live_start, live_end):
-        """Bind one bank row to the index-0 member of each field's group.
+        """Resolve constants exactly; retain the supported loop-row ABI.
 
         The group members are contiguous and identically typed, so a runtime
         row index is a byte stride away. Codegen reads the row index from the
@@ -2404,6 +2408,9 @@ class BufferPlanner:
             )
         members = self.bank_group_members.get(bank_id, {})
         schema = self.module.node_map[bank_id].attrs["schema"]
+        from .bank_indexing import bank_row_index
+
+        selected_row = bank_row_index(self.module, function, node, bank_id)
         row_types = {
             index: value for index, value in enumerate(
                 node.type.fields if hasattr(node.type, "fields") else ()
@@ -2412,6 +2419,8 @@ class BufferPlanner:
         ids: list[str] = []
         for index, field in enumerate(schema.fields):
             leaves = members.get(index)
+            if leaves is not None and selected_row is not None:
+                leaves = tuple(self.bank_group_rows[bank_id][index][selected_row])
             if leaves is None:
                 # A literal field, or one whose transform was absorbed into a
                 # fused field, has no stored rows. Plan it at the type the row
@@ -2427,7 +2436,16 @@ class BufferPlanner:
                     prefix=f"{node.id}.{index}",
                 ))
                 continue
-            ids.extend(leaves)
+            for leaf_index, source_id in enumerate(leaves):
+                source = self.descriptors[source_id]
+                buffer_id = f"{node.id}.{index}" + (f".{leaf_index}" if len(leaves) > 1 else "")
+                view = source.subview(buffer_id, dtype=source.dtype, shape=source.shape,
+                    strides=source.strides, byte_offset=0, byte_size=source.nbytes,
+                    source_node=node.id, role="parameter_bank_row")
+                self.descriptors[buffer_id] = view
+                self.alias_analysis.add_alias(buffer_id, source_id, byte_offset=0,
+                    nbytes=source.nbytes, kind=AliasKind.VIEW)
+                ids.append(buffer_id)
         return tuple(ids)
 
     def _bank_of_value(self, value_id):

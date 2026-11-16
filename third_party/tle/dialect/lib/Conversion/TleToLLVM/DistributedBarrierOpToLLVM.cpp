@@ -32,6 +32,7 @@
 #include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
 #include "third_party/nvidia/include/TritonNVIDIAGPUToLLVM/PTXAsmFormat.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/GridBarrierScratch.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
@@ -104,8 +105,210 @@ FailureOr<int32_t> getOrCreateSubmeshScratchOffset(ModuleOp mod) {
 
 struct DistributedBarrierOpConversion
     : public ConvertOpToLLVMPattern<tle::DistributedBarrierOp> {
-  using ConvertOpToLLVMPattern<
-      tle::DistributedBarrierOp>::ConvertOpToLLVMPattern;
+  DistributedBarrierOpConversion(LLVMTypeConverter &typeConverter,
+                                 PatternBenefit benefit,
+                                 bool supportsAcquireFence)
+      : ConvertOpToLLVMPattern(typeConverter, benefit),
+        supportsAcquireFence(supportsAcquireFence) {}
+
+  const bool supportsAcquireFence;
+
+  LogicalResult lowerFlagsGridBarrier(
+      tle::DistributedBarrierOp op, ConversionPatternRewriter &rewriter,
+      Value groupBase, Value localRank, Value logicalTid) const {
+    auto layout = tle::getFlagsGridLayout(op);
+    if (failed(layout))
+      return failure();
+    auto loc = op.getLoc();
+    auto *ctx = rewriter.getContext();
+    TritonLLVMOpBuilder b(loc, rewriter);
+    auto i32Ty = IntegerType::get(ctx, 32);
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto ptrTy = cast<LLVM::LLVMPointerType>(groupBase.getType());
+    auto assembly = [&](StringRef code, StringRef constraints,
+                        ValueRange inputs) -> Value {
+      return LLVM::InlineAsmOp::create(rewriter, loc, i32Ty, inputs, code,
+          constraints, true, false, LLVM::TailCallKind::None,
+          LLVM::AsmDialectAttr::get(ctx, LLVM::AsmDialect::AD_ATT), ArrayAttr()).getResult(0);
+    };
+    Block *initial = rewriter.getInsertionBlock();
+    Block *end = initial->splitBlock(rewriter.getInsertionPoint());
+    Block *work = rewriter.createBlock(end);
+    Block *round = rewriter.createBlock(end);
+    round->addArgument(i32Ty, loc);
+    Block *poll = rewriter.createBlock(end);
+    Block *next = rewriter.createBlock(end);
+    Block *acquired = rewriter.createBlock(end);
+
+    rewriter.setInsertionPointToEnd(initial);
+    rewriter.create<mlir::gpu::BarrierOp>(loc);
+    Value scanner = b.icmp_ult(logicalTid, b.i32_val(32));
+    rewriter.create<LLVM::CondBrOp>(loc, scanner, work, ValueRange{}, end, ValueRange{});
+
+    rewriter.setInsertionPointToEnd(work);
+    Value ownOffset = b.mul(localRank, b.i32_val(4));
+    Value own = b.gep(ptrTy, i8Ty, groupBase, ownOffset);
+    // A single owner reads its prior epoch. Broadcast precedes its only store,
+    // so no peer lane derives a target from the newly published value.
+    Value target = assembly(
+        "{ .reg .pred leader; .reg .b32 previous, next;\n"
+        "mov.b32 previous, 0; setp.eq.u32 leader, $2, 0;\n"
+        "@leader ld.relaxed.gpu.u32 previous, [$1];\n"
+        "add.u32 next, previous, 1;\n"
+        "shfl.sync.idx.b32 $0, next, 0, 31, 0xffffffff;\n"
+        "@leader st.release.gpu.u32 [$1], $0;\n}",
+        "=&r,l,r,~{memory}", ValueRange{own, logicalTid});
+    rewriter.create<LLVM::BrOp>(loc, ValueRange{b.i32_val(0)}, round);
+
+    rewriter.setInsertionPointToEnd(round);
+    Value roundIndex = round->getArgument(0);
+    Value peer = b.add(b.mul(roundIndex, b.i32_val(32)), logicalTid);
+    Value peerOffset = b.mul(peer, b.i32_val(4));
+    Value address = b.gep(ptrTy, i8Ty, groupBase, peerOffset);
+    rewriter.create<LLVM::BrOp>(loc, ValueRange{}, poll);
+
+    rewriter.setInsertionPointToEnd(poll);
+    // Fixed peer-to-lane mapping preserves the preceding successful strong
+    // read's coherence lower bound on subsequent epochs. Together with the
+    // one-generation publication lead bound, modular subtraction handles
+    // wrap/fast overwrites without accepting ancient coherent values.
+    Value observed = assembly(
+        "{ .reg .pred valid; mov.b32 $0, $4;\n"
+        "setp.lt.u32 valid, $2, $3;\n"
+        "@valid ld.relaxed.gpu.u32 $0, [$1];\n}",
+        "=&r,l,r,r,r,~{memory}",
+        ValueRange{address, peer, b.i32_val(layout->participants), target});
+    Value reached = b.icmp_ult(b.sub(observed, target), b.i32_val(0x80000000u));
+    Value all = assembly(
+        "{ .reg .pred reached, complete; setp.ne.u32 reached, $1, 0;\n"
+        "vote.sync.all.pred complete, reached, 0xffffffff;\n"
+        "selp.u32 $0, 1, 0, complete;\n}",
+        "=r,r", ValueRange{b.zext(i32Ty, reached)});
+    rewriter.create<LLVM::CondBrOp>(loc, b.icmp_ne(all, b.i32_val(0)),
+                                   next, ValueRange{}, poll, ValueRange{});
+
+    rewriter.setInsertionPointToEnd(next);
+    Value nextRound = b.add(roundIndex, b.i32_val(1));
+    Value more = b.icmp_ult(nextRound, b.i32_val((layout->participants + 31) / 32));
+    rewriter.create<LLVM::CondBrOp>(loc, more, round, ValueRange{nextRound},
+                                   acquired, ValueRange{});
+
+    rewriter.setInsertionPointToEnd(acquired);
+    // Every acquiring lane executes this once, after every successful peer
+    // read. The original role tail barrier relays all lanes' acquired writes.
+    PTXBuilder ptx;
+    auto &fence = *ptx.create<>("fence.acquire.gpu");
+    fence();
+    ptx.launch(rewriter, loc, LLVM::LLVMVoidType::get(ctx));
+    rewriter.create<LLVM::BrOp>(loc, ValueRange{}, end);
+    rewriter.setInsertionPointToStart(end);
+    rewriter.create<mlir::gpu::BarrierOp>(loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+  LogicalResult lowerHierarchicalGridBarrier(
+      tle::DistributedBarrierOp op, ConversionPatternRewriter &rewriter,
+      Value groupBase, Value localRank, Value expectedCTAs,
+      Value workerPred) const {
+    auto loc = op.getLoc();
+    auto *ctx = rewriter.getContext();
+    TritonLLVMOpBuilder b(loc, rewriter);
+    auto i32Ty = IntegerType::get(ctx, 32);
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto ptrTy = cast<LLVM::LLVMPointerType>(groupBase.getType());
+    auto emitLoad = [&](Value ptr) -> Value {
+      PTXBuilder ptx;
+      auto &load = *ptx.create<>("ld.relaxed.gpu.u32");
+      auto *result = ptx.newOperand("=r", true);
+      auto *address = ptx.newAddrOperand(ptr, "l");
+      load(result, address);
+      return ptx.launch(rewriter, loc, i32Ty);
+    };
+    auto emitArrival = [&](Value ptr, Value add) -> Value {
+      PTXBuilder ptx;
+      auto &atom = *ptx.create<>("atom.add.release.gpu.u32");
+      auto *result = ptx.newOperand("=r", true);
+      auto *address = ptx.newAddrOperand(ptr, "l");
+      auto *increment = ptx.newOperand(add, "r");
+      atom(result, address, increment);
+      return ptx.launch(rewriter, loc, i32Ty);
+    };
+    auto emitAcquire = [&]() {
+      PTXBuilder ptx;
+      auto &fence = *ptx.create<>("fence.acquire.gpu");
+      fence();
+      ptx.launch(rewriter, loc, LLVM::LLVMVoidType::get(ctx));
+    };
+    auto phaseDiffers = [&](Value before, Value now) {
+      return b.icmp_ne(b.and_(b.xor_(before, now), b.i32_val(0x80000000u)),
+                       b.i32_val(0));
+    };
+
+    Block *initial = rewriter.getInsertionBlock();
+    Block *end = initial->splitBlock(rewriter.getInsertionPoint());
+    Block *work = rewriter.createBlock(end);
+    Block *leafWait = rewriter.createBlock(end);
+    Block *rootArrival = rewriter.createBlock(end);
+    Block *rootWait = rewriter.createBlock(end);
+    Block *acquired = rewriter.createBlock(end);
+
+    rewriter.setInsertionPointToEnd(initial);
+    rewriter.create<mlir::gpu::BarrierOp>(loc);
+    rewriter.create<LLVM::CondBrOp>(loc, workerPred, work, ValueRange{},
+                                    end, ValueRange{});
+
+    rewriter.setInsertionPointToEnd(work);
+    Value buckets = b.select(b.icmp_ult(expectedCTAs,
+                                      b.i32_val(tle::kHierarchicalGridBuckets)),
+                             expectedCTAs, b.i32_val(tle::kHierarchicalGridBuckets));
+    Value bucket = b.urem(localRank, buckets);
+    Value leader = b.icmp_ult(localRank, buckets);
+    Value leafSize = b.add(b.i32_val(1), b.udiv(
+        b.sub(b.sub(expectedCTAs, b.i32_val(1)), bucket), buckets));
+    Value leafOffset =
+        b.mul(bucket, b.i32_val(tle::kHierarchicalGridSlotBytes));
+    Value rootOffset = b.i32_val(tle::kHierarchicalGridRootOffset);
+    Value leaf = b.gep(ptrTy, i8Ty, groupBase, leafOffset);
+    Value root = b.gep(ptrTy, i8Ty, groupBase, rootOffset);
+    // This read must precede this CTA's leaf arrival. A post-arrival snapshot
+    // could observe this epoch's completed root sense and wait for the next.
+    Value rootPhase = emitLoad(root);
+    Value leafAdd = b.select(leader,
+        b.sub(b.i32_val(0x80000000u), b.sub(leafSize, b.i32_val(1))),
+        b.i32_val(1));
+    Value oldLeaf = emitArrival(leaf, leafAdd);
+    rewriter.create<LLVM::CondBrOp>(loc, leader, leafWait, ValueRange{},
+                                    rootWait, ValueRange{});
+
+    rewriter.setInsertionPointToEnd(leafWait);
+    Value leafComplete = phaseDiffers(oldLeaf, emitLoad(leaf));
+    rewriter.create<LLVM::CondBrOp>(loc, leafComplete, rootArrival, ValueRange{},
+                                    leafWait, ValueRange{});
+
+    rewriter.setInsertionPointToEnd(rootArrival);
+    // Import every leaf release before publishing this leaf at the root.
+    emitAcquire();
+    Value rootAdd = b.select(b.icmp_eq(bucket, b.i32_val(0)),
+        b.sub(b.i32_val(0x80000000u), b.sub(buckets, b.i32_val(1))),
+        b.i32_val(1));
+    emitArrival(root, rootAdd);
+    rewriter.create<LLVM::BrOp>(loc, ValueRange{}, rootWait);
+
+    rewriter.setInsertionPointToEnd(rootWait);
+    Value rootComplete = phaseDiffers(rootPhase, emitLoad(root));
+    rewriter.create<LLVM::CondBrOp>(loc, rootComplete, acquired, ValueRange{},
+                                    rootWait, ValueRange{});
+
+    rewriter.setInsertionPointToEnd(acquired);
+    emitAcquire();
+    rewriter.create<LLVM::BrOp>(loc, ValueRange{}, end);
+
+    rewriter.setInsertionPointToStart(end);
+    rewriter.create<mlir::gpu::BarrierOp>(loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
 
   LogicalResult lowerClusterBarrier(tle::DistributedBarrierOp op,
                                     ConversionPatternRewriter &rewriter) const {
@@ -123,12 +326,18 @@ struct DistributedBarrierOpConversion
   }
 
   LogicalResult lowerGridBarrier(tle::DistributedBarrierOp op,
-                                 ConversionPatternRewriter &rewriter) const {
+                                 ConversionPatternRewriter &rewriter,
+                                 Value censusOccurrence = {}) const {
     auto loc = op.getLoc();
     auto *ctx = rewriter.getContext();
     TritonLLVMOpBuilder b(loc, rewriter);
     auto i8Ty = IntegerType::get(ctx, 8);
     auto i32Ty = IntegerType::get(ctx, 32);
+
+    if (tle::isHierarchicalGridBarrier(op) && !supportsAcquireFence)
+      return op.emitOpError("hierarchical8 requires NVIDIA SM90+ and PTX ISA8.6+");
+    if (tle::isFlagsGridBarrier(op) && !supportsAcquireFence)
+      return op.emitOpError("flags32 requires NVIDIA SM90+ and PTX ISA8.6+");
 
     auto mod = op->getParentOfType<ModuleOp>();
     if (!mod)
@@ -217,6 +426,8 @@ struct DistributedBarrierOpConversion
           coord = b.udiv(coord, b.i32_val(strides[axis]));
         if (domainShape[axis] != 1)
           coord = b.urem(coord, b.i32_val(domainShape[axis]));
+        else
+          coord = b.i32_val(0);
         int32_t extent = extentByAxis[axis];
         int32_t groupsOnAxis = domainShape[axis] / extent;
         Value groupCoord = coord;
@@ -236,7 +447,7 @@ struct DistributedBarrierOpConversion
     if (isAxisGroup)
       scratchByteOffset =
           b.add(scratchByteOffset,
-                b.mul(groupIndex, b.i32_val(kGridScratchBytes)));
+                b.mul(groupIndex, b.i32_val(tle::getGridBarrierGroupBytes(op))));
     Value arrivedBytePtr = b.gep(globalPtrTy, i8Ty, globalScratchBase,
                                  scratchByteOffset);
     Value arrivedPtr = b.bitcast(arrivedBytePtr, globalI32PtrTy);
@@ -253,12 +464,26 @@ struct DistributedBarrierOpConversion
                         b.icmp_eq(blockIdZ, b.i32_val(0)));
     }
     Value workerPred = isThread0;
+    auto emitCensus = [&](int32_t point) {
+      if (!censusOccurrence)
+        return;
+      tle::TraceEventOp::create(rewriter, loc, censusOccurrence, threadId,
+          b.i32_val(0), b.i32_val(0), rewriter.getI32IntegerAttr(280),
+          rewriter.getI32IntegerAttr(point));
+    };
 
     Value gridDimZ = rewriter.create<NVVM::GridDimZOp>(loc, i32Ty);
     Value totalCTAs = b.mul(gridDimX, gridDimY);
     totalCTAs = b.mul(totalCTAs, gridDimZ);
     Value expectedCTAs =
         isAxisGroup ? b.i32_val(participantCount) : totalCTAs;
+
+    if (tle::isHierarchicalGridBarrier(op))
+      return lowerHierarchicalGridBarrier(op, rewriter, arrivedPtr,
+          isAxisGroup ? localRank : linearBlockId, expectedCTAs, workerPred);
+    if (tle::isFlagsGridBarrier(op))
+      return lowerFlagsGridBarrier(op, rewriter, arrivedPtr,
+          isAxisGroup ? localRank : linearBlockId, threadId);
 
     Block *curBlock = rewriter.getInsertionBlock();
     Block *endBlock = curBlock->splitBlock(rewriter.getInsertionPoint());
@@ -287,21 +512,24 @@ struct DistributedBarrierOpConversion
       atom(dstOpr, ptrOpr, addOpr);
       return ptxBuilder.launch(rewriter, loc, i32Ty);
     };
-    auto emitLoadAcquireGpu = [&](Value ptr) -> Value {
+    auto emitLoadPollGpu = [&](Value ptr) -> Value {
       ::mlir::triton::PTXBuilder ptxBuilder;
-      auto &ld = *ptxBuilder.create<>("ld.acquire.gpu.u32");
+      auto &ld = *ptxBuilder.create<>(supportsAcquireFence
+                                          ? "ld.relaxed.gpu.u32"
+                                          : "ld.acquire.gpu.u32");
       auto *dstOpr = ptxBuilder.newOperand("=r", /*init=*/true);
       auto *ptrOpr = ptxBuilder.newAddrOperand(ptr, "l");
       ld(dstOpr, ptrOpr);
       return ptxBuilder.launch(rewriter, loc, i32Ty);
     };
 
+    emitCensus(0);
     Value oldArrive = emitAtomAddReleaseGpu(arrivedPtr, nb);
     rewriter.create<LLVM::BrOp>(loc, ValueRange{oldArrive}, waitBlock);
 
     rewriter.setInsertionPointToEnd(waitBlock);
     Value oldArriveArg = waitBlock->getArgument(0);
-    Value currentArrive = emitLoadAcquireGpu(arrivedPtr);
+    Value currentArrive = emitLoadPollGpu(arrivedPtr);
     Value xorVal = b.xor_(oldArriveArg, currentArrive);
     Value flippedBit = b.and_(xorVal, b.i32_val(0x80000000u));
     Value hasFlipped = b.icmp_ne(flippedBit, b.i32_val(0));
@@ -310,6 +538,16 @@ struct DistributedBarrierOpConversion
                                     ValueRange{oldArriveArg});
 
     rewriter.setInsertionPointToEnd(workerDoneBlock);
+    if (supportsAcquireFence) {
+      // The successful strong read followed by this fence forms the acquire
+      // pattern. Failed polls need no acquire; the trailing role barrier still
+      // publishes the leader's acquired writes to every participating thread.
+      ::mlir::triton::PTXBuilder ptxBuilder;
+      auto &fence = *ptxBuilder.create<>("fence.acquire.gpu");
+      fence();
+      ptxBuilder.launch(rewriter, loc, LLVM::LLVMVoidType::get(ctx));
+    }
+    emitCensus(1);
     rewriter.create<LLVM::BrOp>(loc, ValueRange{}, endBlock);
 
     rewriter.setInsertionPointToEnd(doneBlock);
@@ -317,6 +555,7 @@ struct DistributedBarrierOpConversion
 
     rewriter.setInsertionPointToStart(endBlock);
     rewriter.create<mlir::gpu::BarrierOp>(loc);
+    emitCensus(2);
     rewriter.eraseOp(op);
     return success();
   }
@@ -555,7 +794,8 @@ struct DistributedBarrierOpConversion
     if (auto kindAttr = op->getAttrOfType<StringAttr>(kGroupKindAttr)) {
       if (kindAttr.getValue() == "grid" ||
           kindAttr.getValue() == "grid_axis")
-        return lowerGridBarrier(op, rewriter);
+        return lowerGridBarrier(op, rewriter,
+                                op->hasAttr("tle.census") ? adaptor.getSrc() : Value());
       if (kindAttr.getValue() == "submesh")
         return lowerSubmeshBarrier(op, rewriter);
       return lowerClusterBarrier(op, rewriter);
@@ -564,10 +804,25 @@ struct DistributedBarrierOpConversion
   }
 };
 
+struct CensusMarkOpConversion : public ConvertOpToLLVMPattern<tle::CensusMarkOp> {
+  using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
+  LogicalResult matchAndRewrite(tle::CensusMarkOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    TritonLLVMOpBuilder b(op.getLoc(), rewriter);
+    Value logicalTid = getThreadId(rewriter, op.getLoc());
+    rewriter.replaceOpWithNewOp<tle::TraceEventOp>(op, adaptor.getOccurrence(), logicalTid,
+        b.i32_val(0), b.i32_val(0), rewriter.getI32IntegerAttr(op.getMapping() ? 281 : 280),
+        op.getPointAttr());
+    return success();
+  }
+};
+
 } // namespace
 
 void tle::populateDistributedBarrierOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
-    PatternBenefit benefit) {
-  patterns.add<DistributedBarrierOpConversion>(typeConverter, benefit);
+    PatternBenefit benefit, bool supportsAcquireFence) {
+  patterns.add<DistributedBarrierOpConversion>(typeConverter, benefit,
+                                             supportsAcquireFence);
+  patterns.add<CensusMarkOpConversion>(typeConverter, benefit);
 }

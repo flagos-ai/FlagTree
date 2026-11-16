@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "synthetic": true,
+  "title": "Full model execution timeline",
+  "kind": "timeline",
+  "metric": "Decode throughput",
+  "unit": "ns",
+  "cohort": "SYNTHETIC: matched workload/device/statistic illustration",
+  "provenance": [],
+  "x_axis": "revision",
+  "uncertainty_method": "Synthetic uncertainty interval",
+  "invocation": "synthetic-invocation-0",
+  "timebase": {
+    "source": "synthetic-clock",
+    "resolution_ns": 1,
+    "alignment": "synthetic"
+  },
+  "rows": [
+    {
+      "label": "operator A",
+      "status": "captured",
+      "intervals": [
+        {
+          "id": "a0",
+          "start_ns": 0,
+          "end_ns": 4000,
+          "kind": "tensor",
+          "evidence": "inferred"
+        }
+      ]
+    },
+    {
+      "label": "operator B",
+      "status": "captured",
+      "intervals": [
+        {
+          "id": "b0",
+          "start_ns": 2000,
+          "end_ns": 8000,
+          "kind": "transfer",
+          "evidence": "inflight_envelope"
+        },
+        {
+          "id": "b1",
+          "start_ns": 7000,
+          "end_ns": 9500,
+          "kind": "simt",
+          "evidence": "inferred"
+        }
+      ]
+    },
+    {
+      "label": "unobserved operator",
+      "status": "unavailable",
+      "intervals": []
+    }
+  ],
+  "scope": "whole_model",
+  "window_ns": [
+    0,
+    12000
+  ],
+  "chart_role": "full_model_timeline"
+}

@@ -31,8 +31,12 @@ from triton.flagmega.ir import (
     Node,
     PURE,
     SBPPartial,
+    TensorLayout,
     TensorType,
     TupleType,
+    VectorType,
+    is_local_shard_subview,
+    sharded_view_error,
     verify_module,
 )
 from triton.flagmega.ir.entry_abi import redirect_entry_abi
@@ -243,6 +247,7 @@ def _propagate_one_iteration(
 
     raw_parameter_restores: dict[str, Node] = {}
     raw_parameter_use_nodes: dict[str, frozenset[str]] = {}
+    narrowed_raw_views: dict[str, Node] = {}
     for function_name, layout in layouts.items():
         owned = {node.id for node in function_nodes(module, layout.function)}
         for item in layout.inputs.values():
@@ -280,6 +285,22 @@ def _propagate_one_iteration(
                     "parameter_index": item.index,
                 },
             )
+            if not output_needs_logical_source:
+                narrowed = _narrow_snapshot_owner_demand(
+                    raw_parameter_restores[item.parameter_id],
+                    item.target_type,
+                    raw_users,
+                    node_map,
+                    users,
+                    owned,
+                    function_output_roots,
+                )
+                if narrowed is not None:
+                    restore, cast, view = narrowed
+                    raw_parameter_restores[item.parameter_id] = restore
+                    narrowed_raw_views[cast.id] = cast
+                    removed_substitutions[view.id] = cast.id
+                    removed_owners[view.id] = cast.id
             raw_parameter_use_nodes[item.parameter_id] = raw_users
 
     source_helpers: dict[str, list[Node]] = {}
@@ -333,6 +354,7 @@ def _propagate_one_iteration(
     for original in module.nodes:
         if original.id in removed_substitutions:
             continue
+        original = narrowed_raw_views.get(original.id, original)
 
         if original.id in parameter_layouts:
             item = parameter_layouts[original.id]
@@ -1190,6 +1212,69 @@ def _estimate_variant_cost(
         (local_cost + adapter_cost) * call_count
         - satisfied_demands * _LOCAL_TRANSFORM_COST_SCALE
     )
+
+
+def _narrow_snapshot_owner_demand(
+    restore: Node,
+    source_type: DistributedType,
+    raw_users: frozenset[str],
+    node_map: Mapping[str, Node],
+    users: Mapping[str, tuple[Node, ...]],
+    owned: set[str],
+    function_outputs: set[str],
+) -> tuple[Node, Node, Node] | None:
+    """Retain a private snapshot, restricted to a unique byte-view demand.
+
+    A bitcast followed by a narrowing view does not consume every broadcast
+    replica. Move its ownership demand before the copy without changing the
+    element representation or replacing that copy with a source alias.
+    """
+    if restore.op != "distributed.boxing" or len(raw_users) != 1:
+        return None
+    cast = node_map[next(iter(raw_users))]
+    if (cast.op != "tensors.bitcast" or cast.effect != PURE
+            or len(cast.inputs) != 1 or cast.id in function_outputs):
+        return None
+    consumers = users.get(cast.id, ())
+    if len(consumers) != 1:
+        return None
+    view = consumers[0]
+    if (view.op != "distributed.sharded_view" or view.effect != PURE
+            or view.id not in owned or view.id in function_outputs
+            or any(user.id not in owned for user in users.get(view.id, ()))):
+        return None
+    types = (source_type, restore.type, cast.type, view.type)
+    if (not all(isinstance(value, DistributedType) for value in types)
+            or any(value.partial is not None or value.exclusive is not None for value in types)
+            or any(value.placement != source_type.placement for value in types)
+            or any(value.tensor.layout != TensorLayout() for value in types)):
+        return None
+    before, after = restore.type.tensor, cast.type.tensor
+    if (not isinstance(before.dtype, VectorType) or not isinstance(after.dtype, VectorType)
+            or before.dtype.elem_type != after.dtype.elem_type
+            or before.dtype.itemsize != after.dtype.itemsize or before.shape != after.shape
+            or cast.type.tensor != view.type.tensor
+            or cast.type.axis_policies != restore.type.axis_policies):
+        return None
+    target = replace(restore.type, axis_policies=view.type.axis_policies)
+    if (target == restore.type or target == source_type
+            or sharded_view_error(restore.type, target) is not None
+            or sharded_view_error(source_type, target) is not None
+            or not is_local_shard_subview(restore.type, target)
+            or not is_local_shard_subview(source_type, target)):
+        return None
+    # An identity Boxing may be removed downstream; its snapshot lifetime has
+    # not been proved here, so retain the original restore for that case.
+    # Deliberately retain Boxing: the ordinary realization policy can select
+    # ShardedView for this owner subset, which would discard snapshot lifetime.
+    narrowed_restore = replace(
+        restore,
+        type=target,
+        attrs={"new_type": target},
+        metadata={**dict(restore.metadata), "owner_demand": view.id},
+    )
+    narrowed_cast = replace(cast, type=view.type)
+    return narrowed_restore, narrowed_cast, view
 
 
 def _make_compatibility_view(

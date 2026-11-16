@@ -583,6 +583,9 @@ class CUDABackend(BaseBackend):
         metadata["global_scratch_align"] = src.get_int_attr("ttg.global_scratch_memory_alignment")
         metadata["profile_scratch_size"] = src.get_int_attr("ttg.profile_scratch_memory_size") or 0
         metadata["profile_scratch_align"] = src.get_int_attr("ttg.profile_scratch_memory_alignment") or 1
+        if tle is not None:
+            from triton.experimental.tle.grid_barrier_runtime import export_launch_contract
+            export_launch_contract(src, metadata)
         ret = str(llvm_mod)
         del llvm_mod
         del context

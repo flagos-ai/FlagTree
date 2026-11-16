@@ -1,192 +1,114 @@
-# Iluvatar BI-V150 (COREX) memory bandwidth characteristics
+# BI-V150 memory and execution notes
 
-Target-specific memory behavior that inverts the vectorization guidance most
-CUDA experience teaches. Read this before tuning any bandwidth-bound kernel on
-this backend, and before attributing a read-bound kernel's shortfall to the
-HBM itself.
+graph expert and kernel expert use these **historical** measurements and
+investigations (vendor confirmation 2026-10-08, last investigation 2026-10-09).
+Verify current source/device behavior before applying recorded conclusions.
 
-## Avoid vectorized loads; wide loads lose ~45% of read bandwidth
+## 1. Workflow
 
-**Vendor-confirmed (Iluvatar, 2026-10-08): avoid vectorized loads on BI-V150.**
+1. Recorded one CUDA device = one die: 16 MPs, 1.5GHz, 32GB, 16MB L2,
+   cc7.1, warpSize64; dual-die board reported by ixsmi. Per-die peak819.2GB/s.
+2. Separate one-CTA/MP grid-synchronized admission from ordinary high-occupancy
+   launches; inspect actual native width/resources before claiming bandwidth limits.
+3. Compare coalesced narrow/wide loads or double-buffered SME under matched
+   geometry/workload; preserve publication/ABI and verify separately from timing.
+4. For hangs/wrong values, pin source/native/environment, check fresh XID, and use
+   bounded independent-process repros. Distinguish confirmed repairs from refuted
+   explanations; do not remove required synchronization as a symptom workaround.
 
-**Theoretical peak is 819.2 GB/s per die** (2048-bit bus at 1.6 GHz DDR, from
-`cudaDeviceProp.memoryBusWidth` / `memoryClockRate`). BI-V150 is a dual-die
-board (`ixsmi -q` reports `MultiGPU Board: Yes` and `GPU Position: 0|1`), so
-one CUDA device is one die: 16 MPs at 1.5 GHz, 32 GB, 16 MB L2, cc 7.1, and
-**`warpSize` 64**.
+## 2. Checklist
 
-Measured achievable bandwidth, as a fraction of that per-die peak:
+<a id="bandwidth"></a>
 
-| path | GB/s | % peak | per-MP rate |
-|---|---|---|---|
-| store, any width | 749 | 91% | 31 B/cyc |
-| SME G2S, double-buffered | 730 | 89% | — |
-| SME G2S, naive (drain every iteration) | 690 | 84% | — |
-| **32-bit load** | **676** | **82%** | 6.9 ld/cyc |
-| 64-bit load | 589 | 72% | 3.1 ld/cyc |
-| **128-bit load (`float4`)** | **373** | **46%** | 0.97 ld/cyc |
-| 16-bit load | 574 | 70% | 12.0 ld/cyc |
+| Recorded path | GB/s | Peak fraction |
+| --- | --- | --- |
+| Stores, any width | 749 | 91% |
+| SME double-buffered / drain each iteration | 730 / 690 | 89% / 84% |
+| 32-bit / 64-bit load | 676 / 589 | 82% / 72% |
+| 128-bit / 16-bit load | 373 / 574 | 46% / 70% |
 
-**Root cause: load-instruction issue rate, not HBM and not latency.** Wide
-loads cap at roughly one load instruction per cycle per MP, so a 128-bit load
-moves only 16 B/cycle/MP while scalar loads sustain ~28 B/cycle/MP. Stores are
-unaffected at every width. Three independent observations localize the cap to
-the SM side rather than the memory system: read bandwidth is flat from 32K to
-2M resident threads (a latency bound would improve with occupancy), dependent
-load latency is 122 ns, and read bandwidth scales linearly from 1 to 16 MPs
-(28 → 390 GB/s with 128-bit loads) and then stops dead.
+Wide loads capped near1 load/MP-cycle versus scalar6.9; flat over32K–2M resident
+threads, dependent latency122ns and scaling1–16 MPs supported the recorded issue
+bottleneck. One-CTA/MP favors128-bit; high occupancy can reverse the ordering:
 
-**How to apply.**
+| CTAs, 1024 threads, 512MiB | 32-bit | 64-bit | 128-bit GB/s |
+| --- | --- | --- | --- |
+| 16 | 169 | 324 | 353 |
+| 32 | 320 | 541 | 366 |
+| 64 | 596 | 588 | 382 |
+| 128 | 658 | 569 | 366 |
+| 256 | 660 | 574 | 367 |
+| 1024 | 664 | 591 | 383 |
+| 2048 | 676 | 604 | 389 |
 
-- Opt out with the `disable_load_vectorize` compile option, set like any other
-  Corex option — as a launch kwarg, or via `options=` on `triton.compile`:
+1. Backend getVectorSize's128-bit cap cited Trial74's16-CTA result and has no
+   occupancy input. Recorded cooperative_launch_admission=False restricted grid
+   barriers to available_sm_count. Ordinary launches above~4 CTAs/MP need width
+   comparison, not a global default rollback. Diagnostic disable_load_vectorize=True
+   maps to lower-to-LLVM disable-load-vectorize, leaving TTIR/TTGIR/stores/atomics/SME;
+   a64-CTA/MP reduction measured342→455GB/s.
+2. Coalesced grid-stride matters: per-thread contiguous ranges measured40–64GB/s;
+   extra address streams did not help. Below16MB tests L2, saturation~128MiB;
+   float4 copy453/triad405/D2D589 inherited read limits, stores stayed width-insensitive.
+3. SME next-stage issue before sl_waitcnt gave730GB/s; four tiles/warp gave698.
+   ABI: native ext_vector_type(4), abase={gptr_lo,gptr_hi,-1,positive stride multiple64},
+   16-row×64-byte tile/warp, __ivcorex_sme_load_16x1b64 and __ivcorex_sl_waitcnt(0).
+   CUDA int4 struct is incompatible; recorded ivcore11 lacked plain cp_async builtins.
+4. Inspect actual sme_load/dword/dwordx2/dwordx4 instructions and spills. Timed
+   atomic verification/single accumulators can measure serialization/latency;
+   torch.add(a,a,out=c) is not distinct-buffer triad. Preserve exact covered bytes.
+   Position-varying stores743.7/742.6 and incompressible bits735 ruled out elision/
+   compression in the recorded749 result; redirected stdout alone cannot diagnose a hang.
 
-  ```python
-  kernel[grid](x, out, BLOCK_SIZE=1024, disable_load_vectorize=True)
-  ```
+<a id="known-issues"></a>
 
-  It becomes the `disable-load-vectorize` option on
-  `convert-triton-iluvatargpu-to-llvm`, so only lower-to-LLVM acts on it: the
-  TTIR/TTGIR handed to the pass is byte-identical either way, and contiguity
-  analysis, every earlier pass, stores, atomics and SME async copies are all
-  unaffected. Measured on a read-bound reduction at 64 CTAs/MP: 342 GB/s
-  vectorized (4-wide loads) vs 455 GB/s scalar, a 1.33x gain.
-- Prefer scalar/narrow loads in bandwidth-bound kernels on this target. Do not
-  widen loads to `float4`/128-bit for throughput; that choice costs 45% of read
-  bandwidth here even though it is the right default on NVIDIA.
-- Keep stores wide if convenient — the store path reaches 91% of peak at every
-  width and is not the bottleneck.
-- In Triton this surfaces through the block shape: a pure streaming read at
-  `BLOCK=256` measured 654 GB/s, while `BLOCK >= 1024` (which Triton
-  vectorizes) dropped to ~450 GB/s. When a read-bound Triton kernel
-  underperforms, test a narrower `BLOCK` before assuming a memory-system limit.
-- Extra independent address streams per thread do not help once the load width
-  is right (1 stream beat 2 and 4 at every launch shape with 32-bit loads).
-- Coalescing still dominates everything else: assigning each thread its own
-  contiguous region collapses to 40-64 GB/s, about 7x worse than a grid-stride
-  pattern. Never give threads contiguous per-thread ranges.
-- Working sets below ~16 MB measure L2, not HBM; bandwidth saturates by
-  ~128 MiB.
-- Mixed kernels written with `float4` inherit the read limit: copy 453 GB/s
-  (2x traffic), triad 405 GB/s (3x), `cudaMemcpy` D2D 589 GB/s. PyTorch matches
-  the 128-bit figures (`sum` 344, `fill_` 635, 3-buffer triad 581) because it
-  also vectorizes loads.
+| Historical issue | Evidence / causal limit |
+| --- | --- |
+| Lazy loading | Vendor-confirmed2026-09-20: real token load/create_state/prepare/run_into hung3/3 with fresh XID24; eager passed3/3 ~10.2–10.3s after reset. Set CUDA_MODULE_LOADING=0 before first device touch on this target; later loader.py initialization cannot repair earlier CUDA initialization. XID22 was related. |
+| Stale block_table | execute_decode refreshes width columns; captured replay bypasses initial validation. Historical clamp existed, but three corruption/replay injections completed: unproved cause of the hang, not a causal final fix. |
+| Acquire visibility | Trials72–73 lost finite Qwen logits without ml_lsa_wbinv. Preserve release/acquire; “barrier tax”4.3–4.7ms was actually N8/K16 down projection4.46ms/layer. Larger tiles kept barriers and reduced full model~134→16ms. |
+| Producer publication | Trials103–106 reproduced wrong payload in resident16-CTA exchange. Elected release after CTA barrier did not publish other warps' writes; per-thread membar.gl before rendezvous/elected arrival fixed the coherence defect, retaining acquire. Grid/grid-axis regression and500 bitwise replays passed. |
+| Primitive scope | barrier.alu is CTA convergence without full memory fence; vote.all is warp scope. Asymmetric/skew probes completed, so it is not an arrival counter. Barrier0-only conversion cannot rescope LLVM intrinsics; base8288/8296 attribution refuted an earlier8-producer/0-consumer claim. Scope alone did not explain the hang. |
+| Isolated WS tt.call | promoteOperands read enclosing shared/scratch/profile bases before partition inlining. __ILUVATAR_TLE__ captureIntoPartition added explicit captures and reread after append; default/partition compile passed~2.65s. The SME hang had tt.call0, so this fix was separate. |
+| Multi-step SME pipe | Open at the recorded investigation; preserve the bounded reproducer/latest refutations below and verify current status. |
 
-## The backend's 128-bit cap is tuned for one CTA per SM
+<a id="sme-pipe-reproducer"></a>
 
-`getVectorSize()` in
-`third_party/iluvatar/backend/lib/TritonILUVATARGPUToLLVM/Utility.cpp` raises
-the global-load vector width to 128 bits for this target, with a comment citing
-"C++ float4 microbenchmark, perf-iteration/ITERATION.md Trial 74: 366 GB/s vs
-167 GB/s at 16 CTAs". **That measurement is reproducible and its conclusion is
-correct at 16 CTAs, but the ordering inverts at higher occupancy.** Measured
-read bandwidth per load width against CTA count (block = 1024 threads, 512 MiB
-buffer):
+1. third_party/iluvatar/python/test/unit/tle/test_sme_pipe_device_execution.py:
+   capacity2,4 producer/16 default warps,4 steps; only SME layout/encoding/input_stride
+   changes. no-SME match=True, SME RC124; FLAGTREE_RUN_HANGING_SME_PIPE=1 opt-in.
+   Prior compile-only loops/WS tests did not prove this device path.
+2. Same-group4-step SME passed2.48s; cross-group wait/release without tile reads
+   still hung. Correctly unrolled C++771 SASS lines/16 SME/8 req/8 wait passed,
+   versus Triton908/16/8/8; the initial314-line4-SME replica was not equivalent.
+   Restoring four missing same-block pre-arrival wbinv fences9→5→9 repaired
+   coherence but retained the hang. Histogram/count agreement is not CFG equivalence.
+3. Stock single-step was probabilistic (2 pass/4 hang, later4/3); removing publication
+   rendezvous gave8/0 but multi-step SME still0/4 and0/6 versus no-SME2/0.
+   All-lane arrival/drop-close/scratch/fixed-stage probes also hung; native constant-false
+   guards once accidentally disabled all rendezvous, invalidating that experiment.
+4. Latest mask hypothesis was REFUTED: save206 overwritten213/restore217 before
+   req218 was real; all-lane polling removed double saves23→18 with req4 and paired
+   restore, still0 pass/7 hang. Do not promote mask narrowing/lane0 polling to root
+   cause. Vendor-emitted wait/req (IR waitcnt0), blocl/mov_v2s differences remained leads.
 
-| CTAs | CTAs/MP | 32-bit | 64-bit | 128-bit | winner |
-|---|---|---|---|---|---|
-| 16 | 1.0 | 169 | 324 | **353** | 128-bit |
-| 32 | 2.0 | 320 | **541** | 366 | 64-bit |
-| 64 | 4.0 | **596** | 588 | 382 | 32-bit, 1.56x |
-| 128 | 8.0 | **658** | 569 | 366 | 32-bit, 1.80x |
-| 256 | 16.0 | **660** | 574 | 367 | 32-bit, 1.80x |
-| 1024 | 64.0 | **664** | 591 | 383 | 32-bit, 1.73x |
-| 2048 | 128.0 | **676** | 604 | 389 | 32-bit, 1.74x |
+## 3. Index
 
-At one CTA per SM there is too little memory-level parallelism to saturate
-anything, so moving more bytes per issued instruction wins and 128-bit is the
-right choice. Past ~4 CTAs/MP the binding constraint becomes the ~1 load
-instruction/cycle/MP issue limit, and wide loads plateau near 373 GB/s while
-scalar loads keep climbing to ~676.
+1. [Graph expert](../../agents/graph-expert.md), [kernel expert](../../agents/kernel-expert.md).
+2. [Causal validation](../../agents/reviewer.md), [profiling](../../kernel-trace-method.md).
+3. Current backend getVectorSize/emitIluvatarSmeTileLoads and runtime admission;
+   publication test: third_party/iluvatar/python/test/unit/tle/test_grid_barrier_publication.py.
+4. Historical call sites: serving execute_decode/_paged_attention_state.py,
+   paged_attention_partial decode.py.jinja/kernel_call_renderers.py,
+   CallOpConversion::promoteOperands/captureIntoPartition; inspect actual versions.
 
-**This matters because the two regimes correspond to two different kinds of
-FlagMega kernel on this target.** A megakernel using in-kernel grid barriers
-(`tle.distributed_barrier`) is structurally pinned to one CTA per SM: this
-backend reports `cooperative_launch_admission=False`, so
-`_validate_resources` in `python/triton/flagmega/runtime/prepared.py` rejects
-any grid larger than `available_sm_count` to avoid a barrier deadlock — 16 CTAs
-on a 16-MP die. Those kernels sit exactly at Trial 74's operating point and the
-128-bit cap is right for them. Ordinary (non-grid-synchronized) kernels launch
-many CTAs per SM, land in the inverted regime, and are the ones that lose up to
-1.8x read bandwidth to the same cap.
+## 4. Lessons
 
-`getVectorSize()` takes only the pointer and axis info; it has no occupancy or
-CTA-count input, so it cannot distinguish these cases automatically. When
-tuning a read-bound kernel that is **not** grid-barrier-constrained, do not
-assume the backend's default width is right for it — set
-`disable_load_vectorize=True` and measure. The default is deliberately
-unchanged, since narrowing it would regress the megakernel case the 128-bit cap
-was added for.
-
-Stores are insensitive to width at every CTA count (32-bit vs 128-bit within
-0.97-1.04x from 16 to 1024 CTAs), so this concerns loads only and wide stores
-need no special handling.
-
-## Getting past 82%: the SME G2S path, double-buffered
-
-For read-bound kernels, the SME global-to-shared engine is the only measured
-way past the scalar-load ceiling, because it does not return data through the
-LSU/register path. It reaches 89% of peak, close to the store path's 91% — but
-only when double-buffered.
-
-Issue the next stage's tiles **before** `sl_waitcnt` drains the current stage.
-Naive issue-wait-consume gives 84%; double-buffering gives 89%. Counter to
-intuition, more tiles in flight per warp made it worse (730 → 698 GB/s going
-from 1 to 4 tiles per warp), so prefer one tile per warp with a moderate block
-size.
-
-ABI, per `emitIluvatarSmeTileLoads` in
-`third_party/iluvatar/include/triton/Conversion/TritonGPUToLLVM/Utility.h`:
-
-```c
-__ivcorex_sme_load_16x1b64(smem_addr_i32, abase_i32x4, gmem_byte_off, 0);
-// abase = { gptr_lo, gptr_hi, -1, row_stride_bytes }
-// row stride must be a positive multiple of 64 bytes
-// one 16-row x 64-byte (1 KB) tile per warp per instruction
-__ivcorex_sl_waitcnt(0);  // drain outstanding G2S transactions
-```
-
-`abase` must be a native `ext_vector_type(4)` int, **not** CUDA's `int4`
-struct — passing `int4` fails to compile.
-
-**ivcore11 has SME G2S but not plain `cp_async`.** The `__ivcorex_cp_async_*`
-builtins report `needs target feature async-copy` on ivcore11 (they are
-available on ivcore10/ivcore20), and forcing
-`-Xclang -target-feature -Xclang +async-copy` crashes codegen. Use the SME
-builtins on this target.
-
-Always confirm SME actually fired by grepping the device assembly for
-`sme_load` before trusting a measurement:
-
-```sh
-clang++ -std=c++17 -O3 --cuda-path=/usr/local/corex \
-  --cuda-gpu-arch=ivcore11 -D__MR__ --cuda-device-only -S kernel.cu -o kernel.s
-grep -c sme_load kernel.s
-```
-
-The same check distinguishes real load widths: `ml_lsa_load_a64_dwordx4` is
-128-bit, `dwordx2` is 64-bit, `dword` is 32-bit. High per-thread unroll or
-stream counts silently spill wide loads down to `dwordx2`, which will confound
-any conclusion drawn without reading the assembly.
-
-## Measurement notes
-
-Establishing the numbers above required discarding several self-inflicted
-measurement errors; repeat benchmarks here with these in mind.
-
-- Do not put an `atomicAdd` on a single address inside a timed kernel as a
-  verification counter — the serialized atomics dominated the timing and
-  flattened every result to ~370 GB/s. Verify in a separate untimed kernel.
-- Derive byte counts from the exact loop geometry. A `chunk = n/max(R,W)`
-  helper over-reported read bandwidth as 574 GB/s because the loop covered only
-  part of the buffer.
-- A read loop with a single accumulator measures load latency, not bandwidth.
-- `torch.add(a, a, out=c)` is 2x traffic, not 3x; use distinct buffers for a
-  real triad.
-- Confirm a fast store figure is genuine traffic. The 749 GB/s store result was
-  validated three ways: a position-dependent pattern read back on the host,
-  per-iteration-varying data (743.7 vs 742.6 GB/s, ruling out repeat-store
-  elision), and incompressible hashed bits (735 GB/s, ruling out memory
-  compression).
-- Benchmark stdout redirected to a file is block-buffered; use `stdbuf -o0` or
-  stderr, or a hang looks like a silent failure with no output at all.
+1. Faulting/missing-arrival CTAs can masquerade as protocol deadlocks; inspect
+   actual XID, initialized metadata and publication before blaming the waiting counter.
+2. Per-store instrumentation can mask races; compile-only/instrumented passes do
+   not prove ordinary multi-step correctness. Confirmed fixes may leave original hangs open.
+3. COREX synchronize can hold GIL, preventing reader/watchdog snapshots during wedges;
+   use bounded separate processes. Historical resets do not authorize shared-device resets.
+4. Single-run exclusions were unreliable. Preserve statistical effects, true repairs
+   and latest refutations; reuse measured occupancy-specific conclusions, not stale universal defaults.

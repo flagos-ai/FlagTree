@@ -83,8 +83,8 @@ def {{ call.symbol }}({{ call.signature }}):
 {% endfor %}
 {%- endmacro %}
 
-{% macro stage_barrier(axis_group_key=none) -%}
-{% if distributed_entry %}    tle.distributed_barrier({% if axis_group_key %}FLAGMEGA_GRID_AXIS_GROUP_{{ axis_group_key }}{% else %}FLAGMEGA_GRID_MESH{% endif %}{% if mesh_requires_device_dptr | default(false) %}, device_dptr=device_dptr{% endif %})
+{% macro stage_barrier(axis_group_key=none, census=none) -%}
+{% if distributed_entry %}    tle.distributed_barrier({% if axis_group_key %}FLAGMEGA_GRID_AXIS_GROUP_{{ axis_group_key }}{% else %}FLAGMEGA_GRID_MESH{% endif %}{% if mesh_requires_device_dptr | default(false) %}, device_dptr=device_dptr{% endif %}{% if census is not none %}, census={{ census }}{% endif %})
 {% else %}    tl.debug_barrier()
 {% endif %}{%- endmacro %}
 

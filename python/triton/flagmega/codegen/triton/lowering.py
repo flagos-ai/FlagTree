@@ -40,6 +40,7 @@ _VECTORIZABLE_SEMANTIC_OPS = frozenset({
     "nn.gated_norm_apply",
     "ntt.matmul_norm_stats",
     "ntt.add_norm_stats",
+    "ntt.vectorized_add_norm_stats",
     "ntt.packed_matmul",
     "ntt.vectorized_cast",
     "tensors.cast",

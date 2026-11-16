@@ -37,6 +37,9 @@
 #include "triton/Tools/LayoutUtils.h"
 #include "triton/Tools/LinearLayout.h"
 #include "llvm/ADT/STLExtras.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Tools/SharedStoreOwnership.h"
+#endif
 #include "llvm/Support/MathExtras.h"
 
 #include <functional>
@@ -520,6 +523,11 @@ lowerLdStShared(Location loc, MLIRContext *ctx, LinearLayout cvt,
 
   bool isStore = !valsArray.empty();
   auto b = TritonLLVMOpBuilder(loc, rewriter);
+#ifdef __TLE__
+  Value storePredicate =
+      isStore ? triton::tle::sharedStoreOwnerPredicate(loc, rewriter, cvt)
+              : b.true_val();
+#endif
 
   auto emitLdSt = [&](RewriterBase &rewriter, Location loc,
                       ArrayRef<Value> vals, Value shmemAddr, int idx,
@@ -528,8 +536,13 @@ lowerLdStShared(Location loc, MLIRContext *ctx, LinearLayout cvt,
     if (isStore) {
       Value valsVec =
           packLLVector(loc, ArrayRef<Value>(vals).slice(idx, length), rewriter);
+#ifdef __TLE__
+      targetInfo.storeDShared(rewriter, loc, shmemAddr, std::nullopt, valsVec,
+                              storePredicate);
+#else
       targetInfo.storeDShared(rewriter, loc, shmemAddr, std::nullopt, valsVec,
                               /*pred=*/b.true_val());
+#endif
       return {};
     } else {
       assert(vals.empty());

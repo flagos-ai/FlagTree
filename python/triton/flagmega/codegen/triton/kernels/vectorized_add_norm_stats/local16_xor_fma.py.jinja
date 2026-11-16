@@ -1,0 +1,55 @@
+# flagmega-kernel: vectorized_add_norm_stats/local16_xor_fma platform=nvidia
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+import triton.experimental.tle.language as tle
+{% for call in render_calls %}
+{% if call.family == "vectorized_add_norm_stats" and call.variant == "local16_xor_fma" %}
+{{ call.symbol }}__local_layout = tl.constexpr(tle.gpu.BlockEncoding([1], [32], [{{ num_warps }}], [0]))
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    local_offsets = tle.gpu.set_layout(tl.arange(0, 16), {{ call.symbol }}__local_layout)
+    local_mask = (local_offsets < 16) & ({{ call.active }})
+    lhs_value = tl.load(
+        {{ call.lhs }} + (({{ call.lhs_offset }}) + tl.zeros_like(local_offsets)),
+        mask=local_mask & ({{ call.lhs_read_active }}), other={{ call.lhs_other }},
+    )
+    rhs_value = tl.load(
+        {{ call.rhs }} + (({{ call.rhs_offset }}) + tl.zeros_like(local_offsets)),
+        mask=local_mask & ({{ call.rhs_read_active }}), other={{ call.rhs_other }},
+    )
+{% for line in call.fusion_lines %}
+    {{ line }}
+{% endfor %}
+{% if call.fusion_lines %}
+    raw_value = ({{ call.fusion_value }}).to(tl.float32)
+{% else %}
+    raw_value = (lhs_value + rhs_value).to(tl.float32)
+{% endif %}
+    tl.store(
+        {{ call.result }} + (({{ call.result_offset }}) + tl.zeros_like(local_offsets)),
+        raw_value, mask=local_mask,
+    )
+    stats_input = tl.where(local_mask, raw_value, 0.0)
+    stats_value = tl.inline_asm_elementwise(
+        """{
+        .reg .f32 square, peer, accum;
+        mul.rn.f32 square, $1, $1;
+        shfl.sync.bfly.b32 peer, square, 8, 31, -1;
+        fma.rn.f32 accum, $1, $1, peer;
+        shfl.sync.bfly.b32 peer, accum, 4, 31, -1;
+        add.rn.f32 accum, accum, peer;
+        shfl.sync.bfly.b32 peer, accum, 2, 31, -1;
+        add.rn.f32 accum, accum, peer;
+        shfl.sync.bfly.b32 peer, accum, 1, 31, -1;
+        add.rn.f32 $0, accum, peer;
+        }""",
+        constraints="=f,f", args=[stats_input], dtype=tl.float32, is_pure=True, pack=1,
+    )
+    tl.store(
+        {{ call.stats }} + ({{ call.stats_offset }}) + tl.zeros_like(local_offsets),
+        stats_value, mask=(local_offsets == 0) & ({{ call.stats_active }}),
+    )
+
+
+{% endif %}
+{% endfor %}

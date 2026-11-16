@@ -30,6 +30,7 @@ from triton.flagmega.ir.tir.prim_call_binding import PrimCallBinding
 from triton.flagmega.ir.tir.prim_function_call import PrimFunctionCall
 from triton.flagmega.ir.tir.pipeline_drain import PipelineDrain
 from triton.flagmega.ir.tir.pipeline_handoff import PipelineHandoff
+from triton.flagmega.ir.tir.pipeline_readiness import PipelineReadiness
 from triton.flagmega.ir.tir.pipeline_stage import PipelineStage
 from triton.flagmega.ir.tir.producer_consumer_region import ProducerConsumerRegion
 from triton.flagmega.ir.tir.range import Range
@@ -91,6 +92,7 @@ class T:
     pipeline_stage = PipelineStage
     pipeline_drain = PipelineDrain
     pipeline_handoff = PipelineHandoff
+    pipeline_readiness = PipelineReadiness
     producer_consumer_region = ProducerConsumerRegion
 
     LoopMode = LoopMode

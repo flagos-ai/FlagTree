@@ -323,6 +323,9 @@ def verify_execution_functions(module) -> None:
                 stage=module.stage,
             )
 
+    from triton.flagmega.passes.tir.route_pipeline_readiness import verify_pipeline_readiness
+    verify_pipeline_readiness(module)
+
 
 def _repeated_execution_function_names(module) -> frozenset[str]:
     names = {value.name for value in getattr(module, "execution_functions", ())}

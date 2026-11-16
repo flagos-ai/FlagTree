@@ -12,7 +12,7 @@ from triton.flagmega.passes.tir.fuse_distributed_ops import fuse_distributed_ops
 
 
 def qkv_statistics_graph(*, shared_stats=False, narrowing=False, use_mean=False, head_dim=64, rotary_dim=None,
-                         heads_tuple=(4, 2, 2), dimension_sharded=False, hierarchy_levels="bb"):
+                         heads_tuple=(4, 2, 2), dimension_sharded=False, hierarchy_levels="bb", partial_dtype="bfloat16"):
     mesh = fm.Placement((2, 2), "yx", hierarchy_levels)
     broad = fm.SBP.broadcast()
     vector = fm.vector_type("bfloat16", (8,))
@@ -22,7 +22,8 @@ def qkv_statistics_graph(*, shared_stats=False, narrowing=False, use_mean=False,
          else (broad, fm.SBP.split_block_cyclic((1,), head_dim // 8))), mesh,
     ) for heads in heads_tuple)
     materialized = fm.TupleType(fields)
-    partial = fm.TupleType(tuple(replace(field, partial=fm.SBP.partial((0,))) for field in fields))
+    partial = fm.TupleType(tuple(replace(field, tensor=replace(field.tensor, dtype=fm.vector_type(partial_dtype, (8,))),
+                                         partial=fm.SBP.partial((0,))) for field in fields))
     config = PagedAttentionStateConfig(1, heads_tuple[1], head_dim, block_size=4, num_blocks=2, lanes=8)
 
     class Graph(fm.Module):
@@ -98,16 +99,18 @@ def test_observed_statistics_and_lossy_casts_prevent_fusion(kwargs):
 
 @pytest.mark.parametrize("use_mean", [False, True])
 @pytest.mark.parametrize("round_before_scale", [False, True])
-def test_fused_statistics_preserve_query_and_all_cache_bytes(use_mean, round_before_scale):
+@pytest.mark.parametrize("partial_dtype", ["bfloat16", "float32"])
+def test_fused_statistics_preserve_query_and_all_cache_bytes(use_mean, round_before_scale, partial_dtype):
     torch = pytest.importorskip("torch")
     from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator, create_paged_attention_state
-    source, config = qkv_statistics_graph(use_mean=use_mean)
+    source, config = qkv_statistics_graph(use_mean=use_mean, partial_dtype=partial_dtype)
     source = replace(source, nodes=tuple(replace(node, attrs={
         **dict(node.attrs), "q_round_before_scale": round_before_scale, "k_round_before_scale": round_before_scale,
     }) if node.id == "apply" else node for node in source.nodes))
     fused = fuse_distributed_ops(source)
     generator = torch.Generator().manual_seed(764)
-    partials = tuple(torch.randn((1, heads * 8, 8), generator=generator).bfloat16() for heads in (4, 2, 2))
+    partials = tuple(torch.randn((1, heads * 8, 8), generator=generator).to(getattr(torch, partial_dtype))
+                     for heads in (4, 2, 2))
     values = {"partials": partials}
     for node in source.nodes:
         if node.op == "builtin.var" and node.id != "partials" and isinstance(node.type, fm.DistributedType):

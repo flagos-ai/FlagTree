@@ -62,8 +62,11 @@ def {{ call.symbol }}({{ call.signature }}):
         partials=tl.sum(partials.reshape(256,2,4),1)
         partials=tl.sum(partials.reshape(256,2,2),1)
         partials=tl.sum(partials.reshape(256,2,1),1)
-        result=partials.reshape(256)
-        tl.store(tle.gpu.set_layout({{ call.corex_flat_sme_gemv.result }}+ns+tl.arange(0,256),tle.gpu.SlicedEncoding(1,ae)),result.to({{ call.output_type }}),mask=tl.arange(0,256)<active_rows)
+        dense_result=partials.reshape(256)
+{% for line in call.fusion_post_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+        tl.store(tle.gpu.set_layout({{ call.corex_flat_sme_gemv.result }}+ns+tl.arange(0,256),tle.gpu.SlicedEncoding(1,ae)),{% if call.fusion_post_lines | default(()) %}{{ call.fusion_post_value }}{% else %}dense_result.to({{ call.output_type }}){% endif %},mask=tl.arange(0,256)<active_rows)
 
 {% endif %}
 {% endfor %}

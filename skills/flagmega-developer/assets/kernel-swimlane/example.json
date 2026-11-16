@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "title": "Kernel pipeline comparison — FlagMega swimlane template",
+  "subtitle": "Light theme, shared relative scale, explicit dependencies and evidence classes",
+  "synthetic": true,
+  "window_ns": [0, 32000],
+  "panels": [
+    {
+      "label": "Baseline — illustrative producer starvation",
+      "invocation": "synthetic-baseline",
+      "scope": "One CTA; two consumer WGs and one producer role",
+      "timebase": {"source": "illustrative relative ns", "resolution_ns": 32, "alignment": "synthetic"},
+      "note": "All timings are invented for the template. Producer copy envelopes do not establish TMA busy time.",
+      "phases": [
+        {"label": "fill", "start_ns": 0, "end_ns": 10000},
+        {"label": "steady state", "start_ns": 10000, "end_ns": 29000},
+        {"label": "drain", "start_ns": 29000, "end_ns": 32000}
+      ],
+      "lanes": [
+        {"id": "wg0", "label": "WG0 / Consumer 0", "kind": "wg", "scope": "Physical warps 4–7; illustrative", "status": "captured", "intervals": [
+          {"id": "wait-k0", "start_ns": 1000, "end_ns": 10000, "kind": "wait", "label": "wait K0 ready", "evidence": "inferred", "tile": "p0", "buffer": "K[0], epoch 0"},
+          {"id": "qk0", "start_ns": 10000, "end_ns": 13000, "kind": "tensor", "label": "QK", "evidence": "inferred", "tile": "p0"},
+          {"id": "softmax0", "start_ns": 13000, "end_ns": 15000, "kind": "simt", "label": "softmax", "evidence": "inferred", "tile": "p0"},
+          {"id": "pv0", "start_ns": 15000, "end_ns": 18000, "kind": "tensor", "label": "PV", "evidence": "inferred", "tile": "p0"},
+          {"id": "wait-k1", "start_ns": 18000, "end_ns": 21000, "kind": "wait", "label": "wait K1 ready", "evidence": "inferred", "tile": "p1"},
+          {"id": "qk1", "start_ns": 21000, "end_ns": 24000, "kind": "tensor", "label": "QK", "evidence": "inferred", "tile": "p1"},
+          {"id": "softmax1", "start_ns": 24000, "end_ns": 26000, "kind": "simt", "label": "softmax", "evidence": "inferred", "tile": "p1"},
+          {"id": "pv1", "start_ns": 26000, "end_ns": 29000, "kind": "tensor", "label": "PV", "evidence": "inferred", "tile": "p1"}
+        ]},
+        {"id": "wg1", "label": "WG1 / Consumer 1", "kind": "wg", "scope": "Physical warps 8–11; illustrative", "status": "captured", "intervals": [
+          {"id": "peer-wait", "start_ns": 1000, "end_ns": 10200, "kind": "wait", "label": "wait K0 ready", "evidence": "inferred", "tile": "p0"},
+          {"id": "peer-qk", "start_ns": 10200, "end_ns": 13200, "kind": "tensor", "label": "QK", "evidence": "inferred", "tile": "p0"},
+          {"id": "peer-softmax", "start_ns": 13200, "end_ns": 15200, "kind": "simt", "label": "softmax", "evidence": "inferred", "tile": "p0"},
+          {"id": "peer-pv", "start_ns": 15200, "end_ns": 18200, "kind": "tensor", "label": "PV", "evidence": "inferred", "tile": "p0"}
+        ]},
+        {"id": "producer", "label": "Producer", "kind": "wg", "scope": "Physical warps 0–3; illustrative", "status": "captured", "intervals": [
+          {"id": "index0", "start_ns": 0, "end_ns": 3000, "kind": "index", "label": "index / offset", "evidence": "inferred", "tile": "p0"},
+          {"id": "issue0", "start_ns": 3000, "end_ns": 3300, "kind": "transfer", "label": "TMA issue", "evidence": "inferred", "tile": "p0", "correlation_id": "K0"},
+          {"id": "flight0", "start_ns": 3000, "end_ns": 10000, "kind": "transfer", "label": "K0 in-flight envelope", "evidence": "inflight_envelope", "tile": "p0", "correlation_id": "K0"},
+          {"id": "ready0", "start_ns": 10000, "end_ns": 10000, "kind": "sync", "label": "K0 completion observed", "evidence": "inferred", "correlation_id": "K0"},
+          {"id": "index1", "start_ns": 11000, "end_ns": 14000, "kind": "index", "label": "index / offset", "evidence": "inferred", "tile": "p1"},
+          {"id": "flight1", "start_ns": 14000, "end_ns": 21000, "kind": "transfer", "label": "K1 in-flight envelope", "evidence": "inflight_envelope", "tile": "p1", "correlation_id": "K1"},
+          {"id": "ready1", "start_ns": 21000, "end_ns": 21000, "kind": "sync", "label": "K1 completion observed", "evidence": "inferred", "correlation_id": "K1"}
+        ]},
+        {"id": "cuda", "label": "CUDA Core / SIMT", "kind": "hardware", "scope": "SM 0; modeled activity", "status": "captured", "intervals": [
+          {"id": "hw-index", "start_ns": 0, "end_ns": 3000, "kind": "index", "label": "producer indexing", "evidence": "inferred"},
+          {"id": "hw-softmax", "start_ns": 13000, "end_ns": 15000, "kind": "simt", "label": "softmax", "evidence": "inferred"}
+        ]},
+        {"id": "tensor", "label": "Tensor Core", "kind": "hardware", "scope": "SM 0; modeled concurrent work", "status": "captured", "intervals": [
+          {"id": "hw-qk0", "start_ns": 10000, "end_ns": 13000, "kind": "tensor", "label": "WG0 QK", "evidence": "inferred"},
+          {"id": "hw-qk1", "start_ns": 10200, "end_ns": 13200, "kind": "tensor", "label": "WG1 QK", "evidence": "inferred"},
+          {"id": "hw-pv", "start_ns": 15000, "end_ns": 18000, "kind": "tensor", "label": "PV", "evidence": "inferred"}
+        ]},
+        {"id": "tma", "label": "TMA activity", "kind": "hardware", "scope": "SM 0; busy intervals unavailable", "status": "unavailable", "intervals": []}
+      ],
+      "dependencies": [{"from": "ready0", "to": "wait-k0", "label": "K0 readiness"}, {"from": "ready1", "to": "wait-k1", "label": "K1 readiness"}],
+      "bubbles": [
+        {"interval": "wait-k0", "classification": "starvation", "critical_path": true, "reason": "Consumer waits for K0; follow the producer issue and completion observations.", "evidence": "Synthetic dependency example; real diagnosis requires matching counters/instructions."},
+        {"interval": "wait-k1", "classification": "starvation", "critical_path": null, "reason": "K1 becomes ready after the consumer requests it; whole-kernel criticality is unresolved.", "evidence": "Synthetic example of an explicitly unknown critical-path result."}
+      ]
+    },
+    {
+      "label": "Candidate — illustrative earlier producer progress",
+      "invocation": "synthetic-candidate",
+      "scope": "Same illustrative CTA and role topology",
+      "timebase": {"source": "illustrative relative ns", "resolution_ns": 32, "alignment": "synthetic"},
+      "note": "A shorter illustrated wait is a hypothesis, not a measured speedup or root-cause proof.",
+      "phases": [
+        {"label": "fill", "start_ns": 0, "end_ns": 6000},
+        {"label": "steady state", "start_ns": 6000, "end_ns": 22000},
+        {"label": "drain", "start_ns": 22000, "end_ns": 25000}
+      ],
+      "lanes": [
+        {"id": "wg0", "label": "WG0 / Consumer 0", "kind": "wg", "scope": "Physical warps 4–7; illustrative", "status": "captured", "intervals": [
+          {"id": "wait-k0", "start_ns": 1000, "end_ns": 6000, "kind": "wait", "label": "wait K0 ready", "evidence": "inferred", "tile": "p0"},
+          {"id": "qk0", "start_ns": 6000, "end_ns": 9000, "kind": "tensor", "label": "QK", "evidence": "inferred", "tile": "p0"},
+          {"id": "softmax0", "start_ns": 9000, "end_ns": 11000, "kind": "simt", "label": "softmax", "evidence": "inferred", "tile": "p0"},
+          {"id": "pv0", "start_ns": 11000, "end_ns": 14000, "kind": "tensor", "label": "PV", "evidence": "inferred", "tile": "p0"},
+          {"id": "qk1", "start_ns": 14000, "end_ns": 17000, "kind": "tensor", "label": "QK", "evidence": "inferred", "tile": "p1"},
+          {"id": "softmax1", "start_ns": 17000, "end_ns": 19000, "kind": "simt", "label": "softmax", "evidence": "inferred", "tile": "p1"},
+          {"id": "pv1", "start_ns": 19000, "end_ns": 22000, "kind": "tensor", "label": "PV", "evidence": "inferred", "tile": "p1"}
+        ]},
+        {"id": "wg1", "label": "WG1 / Consumer 1", "kind": "wg", "scope": "Physical warps 8–11; illustrative", "status": "captured", "intervals": [
+          {"id": "peer-wait", "start_ns": 1000, "end_ns": 6200, "kind": "wait", "label": "wait K0 ready", "evidence": "inferred", "tile": "p0"},
+          {"id": "peer-qk", "start_ns": 6200, "end_ns": 9200, "kind": "tensor", "label": "QK", "evidence": "inferred", "tile": "p0"},
+          {"id": "peer-softmax", "start_ns": 9200, "end_ns": 11200, "kind": "simt", "label": "softmax", "evidence": "inferred", "tile": "p0"},
+          {"id": "peer-pv", "start_ns": 11200, "end_ns": 14200, "kind": "tensor", "label": "PV", "evidence": "inferred", "tile": "p0"}
+        ]},
+        {"id": "producer", "label": "Producer", "kind": "wg", "scope": "Physical warps 0–3; illustrative", "status": "captured", "intervals": [
+          {"id": "index0", "start_ns": 0, "end_ns": 1000, "kind": "index", "label": "index / offset", "evidence": "inferred", "tile": "p0"},
+          {"id": "flight0", "start_ns": 1000, "end_ns": 6000, "kind": "transfer", "label": "K0 in-flight envelope", "evidence": "inflight_envelope", "tile": "p0"},
+          {"id": "ready0", "start_ns": 6000, "end_ns": 6000, "kind": "sync", "label": "K0 completion observed", "evidence": "inferred"},
+          {"id": "index1", "start_ns": 2000, "end_ns": 3000, "kind": "index", "label": "index / offset", "evidence": "inferred", "tile": "p1"},
+          {"id": "flight1", "start_ns": 3000, "end_ns": 8000, "kind": "transfer", "label": "K1 in-flight envelope", "evidence": "inflight_envelope", "tile": "p1"}
+        ]},
+        {"id": "cuda", "label": "CUDA Core / SIMT", "kind": "hardware", "scope": "SM 0; modeled activity", "status": "captured", "intervals": [
+          {"id": "hw-index", "start_ns": 0, "end_ns": 1000, "kind": "index", "label": "producer indexing", "evidence": "inferred"},
+          {"id": "hw-softmax", "start_ns": 9000, "end_ns": 11000, "kind": "simt", "label": "softmax", "evidence": "inferred"}
+        ]},
+        {"id": "tensor", "label": "Tensor Core", "kind": "hardware", "scope": "SM 0; modeled concurrent work", "status": "captured", "intervals": [
+          {"id": "hw-qk0", "start_ns": 6000, "end_ns": 9000, "kind": "tensor", "label": "WG0 QK", "evidence": "inferred"},
+          {"id": "hw-qk1", "start_ns": 6200, "end_ns": 9200, "kind": "tensor", "label": "WG1 QK", "evidence": "inferred"},
+          {"id": "hw-pv", "start_ns": 11000, "end_ns": 14000, "kind": "tensor", "label": "PV", "evidence": "inferred"}
+        ]},
+        {"id": "tma", "label": "TMA activity", "kind": "hardware", "scope": "SM 0; busy intervals unavailable", "status": "unavailable", "intervals": []}
+      ],
+      "dependencies": [{"from": "ready0", "to": "wait-k0", "label": "K0 readiness"}],
+      "bubbles": [
+        {"interval": "wait-k0", "classification": "starvation", "critical_path": true, "reason": "Producer makes K0 ready earlier; compare with the baseline on the same relative scale.", "evidence": "Synthetic prediction; validate with uninstrumented timing and actual WG/module captures."}
+      ]
+    }
+  ]
+}

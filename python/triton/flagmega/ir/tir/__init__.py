@@ -57,6 +57,7 @@ from triton.flagmega.ir.tir.kernel_definition import KernelDefinition
 from triton.flagmega.ir.tir.kernel_invoke import KernelInvoke
 from triton.flagmega.ir.tir.pipeline_drain import PipelineDrain
 from triton.flagmega.ir.tir.pipeline_handoff import PipelineHandoff
+from triton.flagmega.ir.tir.pipeline_readiness import PipelineReadiness
 from triton.flagmega.ir.tir.pipeline_stage import PipelineStage
 from triton.flagmega.ir.tir.producer_consumer_region import ProducerConsumerRegion
 from triton.flagmega.ir.tir.range import Range
@@ -87,7 +88,7 @@ __all__ = [
     "AliasInfo", "AliasKind", "Barrier", "BarrierScope", "Binary", "Block", "Buffer", "BufferDescriptor", "BufferTuple",
     "BufferLoad", "BufferPlan", "BufferRegion", "BufferStore", "CallMemoryPoolBinding", "Evaluate", "ExecutionFunction", "For", "FunctionMemoryPool",
     "DistributedBufferStorageKind", "IfThenElse", "Immediate", "InplaceAliasCandidate", "KernelDispatch", "KernelExecutionKind", "Let", "LoopMode", "LoopPartition", "MemSpan",
-    "MemoryPoolFrame", "PhysicalAllocation", "PhysicalBuffer", "PipelineDrain", "PipelineHandoff",
+    "MemoryPoolFrame", "PhysicalAllocation", "PhysicalBuffer", "PipelineDrain", "PipelineHandoff", "PipelineReadiness",
     "PipelineStage", "PrimCallBinding", "PrimFunction", "PrimFunctionCall", "PrimParameter", "ProducerConsumerRegion",
     "PrimParameterRole", "Range", "Return", "ReturnBinding", "ScalarVar", "Sequential",
     "T", "TIRAuxiliaryConsumerContract", "TIRCost", "TIRMicroKernelSelection", "TIRNode", "TIRRewriter", "TIRSharedWorkspaceDescriptor", "TIRStmt", "TIRTransferPipelineChannel", "TIRTransferPipelineContract", "TIRValue", "TIRVisitor",

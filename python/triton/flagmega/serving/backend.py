@@ -71,10 +71,11 @@ class ArtifactBackend:
         self.prepare_ms = (time.perf_counter() - started) * 1000
 
     @classmethod
-    def load(cls, artifact, *, device="cuda:0", **kwargs):
+    def load(cls, artifact, *, device="cuda:0", frozen_native=None, **kwargs):
         from triton.flagmega.runtime import load
         started = time.perf_counter()
-        model = load(artifact, device=device)
+        model = (load(artifact, device=device) if frozen_native is None
+                 else load(artifact, device=device, frozen_native=frozen_native))
         elapsed = (time.perf_counter() - started) * 1000
         try:
             result = cls(model, **kwargs)

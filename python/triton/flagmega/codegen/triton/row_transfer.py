@@ -3,7 +3,7 @@
 """Proof obligations for an unmasked owner-local asynchronous row copy."""
 
 from itertools import product
-from math import prod
+from math import gcd, prod
 
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import DistributedType, TensorType, local_shard_descriptor, logical_type, type_from_data
@@ -26,7 +26,7 @@ def has_full_static_rows(value_type) -> bool:
     return prod(dim.fixed_value for dim in value.shape[:-1]) == 1 and value.shape[-1].fixed_value > 0
 
 
-def validate_async_row_copy(abi, copy_tile: int) -> None:
+def validate_async_row_copy(abi, copy_tile: int, *, owned_pool_origin=None) -> None:
     """Prove full tiles, contiguous physical elements, and aligned owner bases.
 
     No SBP spelling implies physical contiguity. Compact storage uses local
@@ -44,7 +44,21 @@ def validate_async_row_copy(abi, copy_tile: int) -> None:
     if (not shape or prod(shape[:-1]) != 1 or lanes <= 0
             or shape[-1] * lanes % copy_tile or strides[-1] != lanes):
         reject("a contiguous scalar row with complete copy tiles")
-    if not abi.get("pooled", False) or int(abi.get("alignment_bytes", 0)) < 16:
+    owned = abi.get("pooled", False)
+    alignment = int(abi.get("alignment_bytes", 0))
+    if owned_pool_origin is not None:
+        proof = owned_pool_origin
+        if (proof.get("schema") != "flagmega.closed-function-pool-origin/v1"
+                or proof.get("storage") not in {"rdata", "workspace"}
+                or not proof.get("calls")
+                or type(proof.get("alignment_bytes")) is not int
+                or proof["alignment_bytes"] <= 0
+                or proof["alignment_bytes"] & (proof["alignment_bytes"] - 1)
+                or "view_byte_offset" in abi):
+            reject("a complete closed-function pool-origin proof")
+        owned = True
+        alignment = gcd(proof["alignment_bytes"], int(abi.get("pool_byte_offset", 0)))
+    if not owned or alignment < 16:
         reject("an owned pool with a proven 16-byte-aligned view")
     if int(abi.get("pool_byte_offset", 0)) % 16 or int(abi.get("pool_scope_stride_bytes", 0)) % 16:
         reject("16-byte-aligned pool offsets and scope strides")

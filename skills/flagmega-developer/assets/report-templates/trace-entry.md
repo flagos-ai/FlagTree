@@ -4,50 +4,42 @@
 
 | Field | Value |
 | --- | --- |
-| Entry / run / UTC | <stable entry ID, run ID, actual timestamp/range> |
-| Attempt | <reserved attempt index or not_applicable with reason> |
-| Iteration / kind | <qualified index or not_assigned with reason; baseline/trial/repair/environment/reference/export/correction> |
-| Numerical qualification | <passed: complete task numerical receipt, exact artifact and allocation; or not_qualified/not_applicable with reason> |
-| Baseline / trial / revision / cohort | <IDs; not_applicable with reason when absent> |
-| Owners / assignments | <actual roles/agents/assignment IDs> |
-| Status | <actual stage/verdict; unaccepted scope explicit> |
+| Entry / run / UTC | <stable entry ID / run ID / actual timestamp> |
+| Attempt | <reserved attempt or not_applicable with reason> |
+| Iteration / kind | <qualified index or not_assigned with reason / entry kind> |
+| Numerical qualification | <passed: complete numerical receipt/artifact/allocation; or not_qualified/not_applicable with reason> |
+| Baseline / trial / revision / cohort | <IDs matching index; absent IDs need reasons> |
+| Owners / assignments | <canonical eight-type agent / actual context / assignment IDs> |
+| Status | <actual state and unaccepted scope> |
 
 #### 1. Problem and evidence
 
-<Concrete trigger/bottleneck, baseline observations and pinned evidence.>
+<Concrete trigger, observed baseline fact and pinned evidence.>
 
 #### 2. Plan and conditional benefit
 
-<Mechanism, assumptions/units/model, expected whole-workload range or bound,
-best-known domain baselines with source/date and matched SOTA targets,
-counter-cost/falsification; not_applicable reason for non-performance entries.>
+<Link revision plan.md/tracking.md, applicable plan signatures and fixed baseline/gain rule. State mechanism, whole-workload benefit/units/assumptions, counter-cost/falsifier and expert baseline/target pins; non-performance entries give a reason.>
 
 #### 3. Changes and execution identities
 
-<Implemented change, core versus local ownership, source/recipe/IR/artifact
-identities, resume stage and invalidated plans or unchanged-contract proof.>
+<Actual change and ownership; source/recipe/IR/artifact pins; earliest resume and invalidated plans or unchanged-lineage proof.>
 
 #### 4. Review and validation
 
 | Gate | Criterion / scope | Actual result / exit | Evidence |
 | --- | --- | --- | --- |
-| <build/IR/review/numerical/state/resource/reproduction> | <rule> | <pass/fail/skip/not_run> | <identity/receipt link> |
+| <applicable shared/expert gate> | <fixed rule> | <pass/fail/not_run with reason> | <actual evidence and scoped agent signature receipt/pin> |
 
 #### 5. Performance records
 
 | Measurement ID / attempt / iteration / cohort | Variant / scenario / kind / boundary | Samples / mean / median / p95 / throughput | Comparison / validity | Evidence |
 | --- | --- | --- | --- | --- |
-| <ledger IDs> | <actual scope> | <values with units or null reason> | <comparable reference/delta/gates or not_applicable reason> | <public data/hash, optional private archive> |
+| <ledger IDs or aggregate with constituent IDs> | <actual execution scope> | <values/unit or null with reason> | <matched delta/gates or not_applicable with reason> | <local sample data/hash and tracked figure/script links> |
 
 #### 6. Decision and next action
 
-<Accept/reject/repair/continue, reason, predicted versus observed effect and
-expert target attainment or remaining gap, next owner/task. Do not imply that
-a source review passes device/performance or that a ceiling proves attainment.>
+<Revision improved/no_gain/rejected/invalid/pending and reason; actual primary gain/uncertainty versus fixed rule, remaining gates/signatures and next owner/action. Milestone stays open until clear measured improvement and all agreed gates/signatures; then link milestone.json and selected revision. Numeric qualification alone is insufficient.>
 
 #### 7. Published data and figures
 
-<Cumulative iteration-history figure and this verification's operator-latency SVG
-with raw/public dataset links, identities, statistic/unit and coverage;
-export/provenance status; explicit not_run reason and next owner/action when
-pending. Public reproduction cannot require private files.>
+<Link cumulative iteration and per-verification operator figures/data; exact identities, units/coverage and provenance status. Missing outputs retain a reason/owner/action. Tracked scripts rebuild local inputs; exact historical redraw uses retained local samples.>

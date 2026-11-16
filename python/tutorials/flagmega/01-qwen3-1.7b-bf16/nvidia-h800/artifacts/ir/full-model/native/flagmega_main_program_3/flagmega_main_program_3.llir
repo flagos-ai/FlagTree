@@ -1,0 +1,130 @@
+; ModuleID = 'LLVMDialectModule'
+source_filename = "LLVMDialectModule"
+target datalayout = "e-p3:32:32-p4:32:32-p5:32:32-p6:32:32-p7:32:32-i64:64-i128:128-i256:256-v16:16-v32:32-n16:32:64"
+
+; Function Attrs: nounwind
+define ptx_kernel void @flagmega_main_program_3(ptr addrspace(1) readnone captures(none) %0, ptr addrspace(1) readnone captures(none) %1, ptr addrspace(1) readnone captures(none) %2, ptr addrspace(1) readnone captures(none) %3, ptr addrspace(1) readnone captures(none) %4, i32 %5, i1 %6, ptr addrspace(1) readnone captures(none) %7, ptr addrspace(1) readnone captures(none) %8, i32 %9, ptr addrspace(1) readnone captures(none) %10, ptr addrspace(1) readnone captures(none) %11, ptr addrspace(1) readnone captures(none) %12, i32 %13, ptr addrspace(1) readnone captures(none) %14, ptr addrspace(1) readnone captures(none) %15, ptr addrspace(1) readnone captures(none) %16, i32 %17, ptr addrspace(1) %18, ptr addrspace(1) readnone captures(none) %19, ptr addrspace(1) %20, i64 %21, ptr addrspace(1) readnone captures(none) %22, ptr addrspace(1) readnone captures(none) %23) local_unnamed_addr #0 !dbg !5 {
+  %25 = getelementptr i64, ptr addrspace(1) %18, i64 %21, !dbg !8
+  %26 = getelementptr i8, ptr addrspace(1) %25, i64 72, !dbg !9
+  %27 = tail call i64 asm sideeffect "mov.u64 $0, 0x0;\0A\09ld.global.b64 { $0 }, [ $1 + 0 ];", "=l,l"(ptr addrspace(1) %26) #4, !dbg !10
+  %28 = getelementptr i8, ptr addrspace(1) %20, i64 %27, !dbg !11
+  tail call fastcc void @"_flagmega_artifact_40eafe6e7f949ba9_flagmega_main_program_3._flagmega_build_flagmega_main_program_3.<locals>._flagmega_function_decode_layer_gu_epilogue__consumer__Pi64_Pu8__"(ptr addrspace(1) %28), !dbg !12
+  ret void, !dbg !13
+}
+
+; Function Attrs: noinline nounwind
+define internal fastcc void @"_flagmega_artifact_40eafe6e7f949ba9_flagmega_main_program_3._flagmega_build_flagmega_main_program_3.<locals>._flagmega_function_decode_layer_gu_epilogue__consumer__Pi64_Pu8__"(ptr addrspace(1) %0) unnamed_addr #1 !dbg !14 {
+  %2 = getelementptr i8, ptr addrspace(1) %0, i64 157696, !dbg !16
+  %3 = getelementptr i8, ptr addrspace(1) %0, i64 145408, !dbg !17
+  %4 = tail call i32 @llvm.nvvm.read.ptx.sreg.ctaid.x(), !dbg !18
+  %5 = shl i32 %4, 8, !dbg !22
+  %6 = tail call i32 @llvm.nvvm.read.ptx.sreg.tid.x(), !dbg !23
+  %7 = and i32 %6, 255, !dbg !23
+  %8 = or disjoint i32 %5, %7, !dbg !24
+  %9 = sext i32 %8 to i64, !dbg !25
+  %10 = getelementptr float, ptr addrspace(1) %2, i64 %9, !dbg !25
+  %11 = tail call i32 asm sideeffect "mov.u32 $0, 0x0;\0A\09ld.global.b32 { $0 }, [ $1 + 0 ];", "=r,l"(ptr addrspace(1) %10) #4, !dbg !26
+  %12 = bitcast i32 %11 to float, !dbg !26
+  %13 = getelementptr i8, ptr addrspace(1) %0, i64 206848, !dbg !27
+  %14 = getelementptr float, ptr addrspace(1) %13, i64 %9, !dbg !28
+  %15 = tail call i32 asm sideeffect "mov.u32 $0, 0x0;\0A\09ld.global.b32 { $0 }, [ $1 + 0 ];", "=r,l"(ptr addrspace(1) %14) #4, !dbg !29
+  %16 = bitcast i32 %15 to float, !dbg !29
+  %17 = fadd float %12, %16, !dbg !30
+  %18 = getelementptr i8, ptr addrspace(1) %0, i64 182272, !dbg !31
+  %19 = getelementptr float, ptr addrspace(1) %18, i64 %9, !dbg !32
+  %20 = tail call i32 asm sideeffect "mov.u32 $0, 0x0;\0A\09ld.global.b32 { $0 }, [ $1 + 0 ];", "=r,l"(ptr addrspace(1) %19) #4, !dbg !33
+  %21 = bitcast i32 %20 to float, !dbg !33
+  %22 = getelementptr i8, ptr addrspace(1) %0, i64 231424, !dbg !34
+  %23 = getelementptr float, ptr addrspace(1) %22, i64 %9, !dbg !35
+  %24 = tail call i32 asm sideeffect "mov.u32 $0, 0x0;\0A\09ld.global.b32 { $0 }, [ $1 + 0 ];", "=r,l"(ptr addrspace(1) %23) #4, !dbg !36
+  %25 = bitcast i32 %24 to float, !dbg !36
+  %26 = fadd float %21, %25, !dbg !37
+  %27 = fptrunc float %17 to bfloat, !dbg !38
+  %28 = fpext bfloat %27 to float, !dbg !39
+  %29 = fptrunc float %26 to bfloat, !dbg !40
+  %30 = fpext bfloat %29 to float, !dbg !41
+  %31 = fsub float 0.000000e+00, %28, !dbg !42
+  %32 = fmul float %31, 0x3FF7154760000000, !dbg !43
+  %33 = tail call float @llvm.nvvm.ex2.approx.f(float %32), !dbg !43
+  %34 = fadd float %33, 1.000000e+00, !dbg !44
+  %35 = tail call float @llvm.nvvm.div.full(float %28, float %34), !dbg !45
+  %36 = fmul float %35, %30, !dbg !46
+  %37 = getelementptr bfloat, ptr addrspace(1) %3, i64 %9, !dbg !47
+  %38 = fptrunc float %36 to bfloat, !dbg !48
+  %39 = bitcast bfloat %38 to i16, !dbg !49
+  tail call void asm sideeffect "st.global.b16 [ $1 + 0 ], { $0 };", "c,l"(i16 %39, ptr addrspace(1) %37) #4, !dbg !49
+  ret void, !dbg !50
+}
+
+; Function Attrs: mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none)
+declare noundef range(i32 0, 2147483647) i32 @llvm.nvvm.read.ptx.sreg.ctaid.x() #2
+
+; Function Attrs: mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none)
+declare noundef range(i32 0, 1024) i32 @llvm.nvvm.read.ptx.sreg.tid.x() #2
+
+; Function Attrs: mustprogress nocallback nofree nosync nounwind willreturn memory(none)
+declare float @llvm.nvvm.ex2.approx.f(float) #3
+
+; Function Attrs: mustprogress nocallback nofree nosync nounwind willreturn memory(none)
+declare float @llvm.nvvm.div.full(float, float) #3
+
+attributes #0 = { nounwind "nvvm.reqntid"="256" }
+attributes #1 = { noinline nounwind "nvvm.reqntid"="256" }
+attributes #2 = { mustprogress nocallback nofree nosync nounwind speculatable willreturn memory(none) }
+attributes #3 = { mustprogress nocallback nofree nosync nounwind willreturn memory(none) }
+attributes #4 = { nounwind }
+
+!llvm.dbg.cu = !{!0, !2}
+!llvm.module.flags = !{!3, !4}
+
+!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !1, producer: "triton", isOptimized: true, runtimeVersion: 0, emissionKind: LineTablesOnly)
+!1 = !DIFile(filename: "flagmega_main_program_3.py", directory: "/root/repos/flagtree/python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/milestones/m000/revisions/r016/build/full-model-integration-c000/model/attempt-009/runtime-artifact/program_sources")
+!2 = distinct !DICompileUnit(language: DW_LANG_C, file: !1, producer: "triton", isOptimized: true, runtimeVersion: 0, emissionKind: LineTablesOnly)
+!3 = !{i32 2, !"Debug Info Version", i32 3}
+!4 = !{i32 4, !"nvvm-reflect-ftz", i32 1}
+!5 = distinct !DISubprogram(name: "flagmega_main_program_3", linkageName: "flagmega_main_program_3", scope: !1, file: !1, line: 285, type: !6, scopeLine: 285, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !0)
+!6 = !DISubroutineType(cc: DW_CC_normal, types: !7)
+!7 = !{}
+!8 = !DILocation(line: 316, column: 231, scope: !5)
+!9 = !DILocation(line: 316, column: 256, scope: !5)
+!10 = !DILocation(line: 316, column: 172, scope: !5)
+!11 = !DILocation(line: 316, column: 164, scope: !5)
+!12 = !DILocation(line: 316, column: 86, scope: !5)
+!13 = !DILocation(line: 316, column: 4, scope: !5)
+!14 = distinct !DISubprogram(name: "_flagmega_artifact_40eafe6e7f949ba9_flagmega_main_program_3._flagmega_build_flagmega_main_program_3.<locals>._flagmega_function_decode_layer_gu_epilogue__consumer__Pi64_Pu8__", linkageName: "_flagmega_artifact_40eafe6e7f949ba9_flagmega_main_program_3._flagmega_build_flagmega_main_program_3.<locals>._flagmega_function_decode_layer_gu_epilogue__consumer__Pi64_Pu8__", scope: !1, file: !1, line: 271, type: !15, scopeLine: 271, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !2)
+!15 = !DISubroutineType(cc: DW_CC_nocall, types: !7)
+!16 = !DILocation(line: 280, column: 149, scope: !14)
+!17 = !DILocation(line: 280, column: 274, scope: !14)
+!18 = !DILocation(line: 252, column: 22, scope: !19, inlinedAt: !20)
+!19 = distinct !DILexicalBlockFile(scope: !14, file: !1, discriminator: 0)
+!20 = !DILocation(line: 264, column: 118, scope: !19, inlinedAt: !21)
+!21 = !DILocation(line: 280, column: 196, scope: !19)
+!22 = !DILocation(line: 252, column: 27, scope: !19, inlinedAt: !20)
+!23 = !DILocation(line: 252, column: 65, scope: !19, inlinedAt: !20)
+!24 = !DILocation(line: 252, column: 33, scope: !19, inlinedAt: !20)
+!25 = !DILocation(line: 253, column: 20, scope: !19, inlinedAt: !20)
+!26 = !DILocation(line: 253, column: 16, scope: !19, inlinedAt: !20)
+!27 = !DILocation(line: 253, column: 37, scope: !19, inlinedAt: !20)
+!28 = !DILocation(line: 253, column: 45, scope: !19, inlinedAt: !20)
+!29 = !DILocation(line: 253, column: 33, scope: !19, inlinedAt: !20)
+!30 = !DILocation(line: 253, column: 25, scope: !19, inlinedAt: !20)
+!31 = !DILocation(line: 254, column: 20, scope: !19, inlinedAt: !20)
+!32 = !DILocation(line: 254, column: 27, scope: !19, inlinedAt: !20)
+!33 = !DILocation(line: 254, column: 16, scope: !19, inlinedAt: !20)
+!34 = !DILocation(line: 280, column: 196, scope: !14)
+!35 = !DILocation(line: 254, column: 59, scope: !19, inlinedAt: !20)
+!36 = !DILocation(line: 254, column: 40, scope: !19, inlinedAt: !20)
+!37 = !DILocation(line: 254, column: 32, scope: !19, inlinedAt: !20)
+!38 = !DILocation(line: 255, column: 14, scope: !19, inlinedAt: !20)
+!39 = !DILocation(line: 255, column: 30, scope: !19, inlinedAt: !20)
+!40 = !DILocation(line: 256, column: 14, scope: !19, inlinedAt: !20)
+!41 = !DILocation(line: 256, column: 30, scope: !19, inlinedAt: !20)
+!42 = !DILocation(line: 257, column: 34, scope: !19, inlinedAt: !20)
+!43 = !DILocation(line: 257, column: 33, scope: !19, inlinedAt: !20)
+!44 = !DILocation(line: 257, column: 26, scope: !19, inlinedAt: !20)
+!45 = !DILocation(line: 257, column: 20, scope: !19, inlinedAt: !20)
+!46 = !DILocation(line: 257, column: 42, scope: !19, inlinedAt: !20)
+!47 = !DILocation(line: 258, column: 17, scope: !19, inlinedAt: !20)
+!48 = !DILocation(line: 258, column: 30, scope: !19, inlinedAt: !20)
+!49 = !DILocation(line: 258, column: 20, scope: !19, inlinedAt: !20)
+!50 = !DILocation(line: 280, column: 4, scope: !14)

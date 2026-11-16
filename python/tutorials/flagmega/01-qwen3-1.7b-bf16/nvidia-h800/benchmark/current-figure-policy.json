@@ -1,0 +1,8 @@
+{
+  "schema": "flagmega.current-figure-policy/v1",
+  "publish_root_status": false,
+  "root_status_deletion": {
+    "path": ".local/agents/dispatch/fix_current_figures_user_feedback/status-deletion-0001.json",
+    "sha256": "c2839d62f3fe43aeeefaedbef862a36becea3eee632ca14c72b5d2addd52445a"
+  }
+}

@@ -16,6 +16,8 @@
 #include "llvm/ADT/DenseSet.h"
 #ifdef __TLE__
 #include "tle/dialect/include/Tools/FlagcxWarpGroupScope.h"
+#include "tle/dialect/include/Tools/WarpSpecializeTrace.h"
+#include "tle/dialect/include/Tools/TypedTrace.h"
 #endif
 
 namespace mlir::triton {
@@ -715,12 +717,28 @@ static void rewritePartitionRegions(WarpSpecializeOp ws, Block *switchLoop,
 
     // The shared memory is only live for the entry into the region, so put
     // another barrier here.
+#ifdef __TLE__
+    tle::WarpSpecializeTrace::emit(b, ws->getParentOfType<LLVM::LLVMFuncOp>(),
+                                  tle::WarpSpecializeTrace::WorkerCaptureWaitBegin);
+#endif
     createAllBarrier(b, kSwitchLoopBarrierIdx);
+#ifdef __TLE__
+    tle::WarpSpecializeTrace::emit(b, ws->getParentOfType<LLVM::LLVMFuncOp>(),
+                                  tle::WarpSpecializeTrace::WorkerBodyBegin);
+#endif
 
     // Rewrite all warp returns.
     partition->walk([&](WarpReturnOp op) {
       TritonLLVMIRRewriter b(op.getLoc(), op);
+#ifdef __TLE__
+      tle::WarpSpecializeTrace::emit(b, ws->getParentOfType<LLVM::LLVMFuncOp>(),
+                                    tle::WarpSpecializeTrace::WorkerBodyEnd);
+#endif
       createAllBarrier(b, kSwitchLoopBarrierIdx);
+#ifdef __TLE__
+      tle::WarpSpecializeTrace::emit(b, ws->getParentOfType<LLVM::LLVMFuncOp>(),
+                                    tle::WarpSpecializeTrace::WorkerJoinEnd);
+#endif
       if (auto actRegs = ws.getActualRegisters()) {
         createRegRealloc(b, (*actRegs)[partition->getRegionNumber() + 1],
                          lowRegs);
@@ -778,6 +796,11 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
                            "module missing 'ttg.total-num-warps' attribute");
   }
   unsigned totalNumThreads = totalNumWarpsAttr.getInt() * threadsPerWarp;
+#ifdef __TLE__
+  if (failed(tle::WarpSpecializeTrace::configure(
+          func, totalNumWarpsAttr.getInt(), defaultNumWarps, threadsPerWarp)))
+    return failure();
+#endif
 
   // Determine how many registers the worker warps can surrender before they
   // begin execution.
@@ -826,6 +849,9 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   // Tell PTXAS this value is warp-uniform.
   wid = targetInfo.shuffleIdx(b, b.getLoc(), wid, 0);
   Value isDefault = b.icmp_ult(wid, b.i32_val(defaultNumWarps));
+#ifdef __TLE__
+  tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::KernelEntry);
+#endif
   LLVM::CondBrOp::create(b, b.getLoc(), isDefault, entry, switchLoop);
 
   // Forward arguments from the header into the old entry block.
@@ -837,6 +863,9 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   hoistCtaUniformCapturesToHeader(func, wsOps, header);
 #endif
   b.setInsertionPointToStart(entry);
+#ifdef __TLE__
+  tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::DefaultDispatch);
+#endif
   if (maxnreg)
     createRegRealloc(b, maxnreg.getInt(), defRegs);
 
@@ -848,7 +877,13 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   b.setInsertionPointToStart(switchLoop);
   if (maxnreg)
     createRegRealloc(b, maxnreg.getInt(), lowRegs);
+#ifdef __TLE__
+  tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::WorkerWaitBegin);
+#endif
   createAllBarrier(b, kSwitchLoopBarrierIdx);
+#ifdef __TLE__
+  tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::WorkerWaitEnd);
+#endif
   Value statePtr = LLVM::getSharedMemoryBase(b.getLoc(), b, targetInfo, func);
   Value relWid = b.sub(wid, b.i32_val(defaultNumWarps));
 
@@ -861,6 +896,11 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   // All threads in a warp reading from the same smem address will not create
   // bank conflicts and is better than predicated load.
   Value warpState = b.load(i8_ty, warpStatePtr);
+#ifdef __TLE__
+  if (module->hasAttr("tle.ws_trace.capacity"))
+    tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::WorkerDispatch,
+                                  b.zext(i32_ty, warpState));
+#endif
 
   // Pull the partition regions out. Switch based on the state ID to the right
   // partition.
@@ -902,8 +942,17 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
   Block *defaultBlock = new Block;
   funcBlocks.insert(std::next(switchLoop->getIterator()), defaultBlock);
   b.setInsertionPointToStart(defaultBlock);
+#ifdef __TLE__
+  tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::UnassignedWaitBegin);
+#endif
   createAllBarrier(b, kSwitchLoopBarrierIdx);
+#ifdef __TLE__
+  tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::UnassignedWaitMiddle);
+#endif
   createAllBarrier(b, kSwitchLoopBarrierIdx);
+#ifdef __TLE__
+  tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::UnassignedWaitEnd);
+#endif
   auto latchBr = LLVM::BrOp::create(b, b.getLoc(), switchLoop);
   disableLICM(latchBr);
 
@@ -950,15 +999,30 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
 
     // First barrier releases the waiting warpgroups. The second barrier ensures
     // they have read the captures before the memory is released upon entry.
+#ifdef __TLE__
+    tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::DefaultReleaseBegin);
+#endif
     createAllBarrier(b, kSwitchLoopBarrierIdx);
+#ifdef __TLE__
+    tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::DefaultReleaseMiddle);
+#endif
     if (auto actRegs = ws.getActualRegisters())
       createRegRealloc(b, defRegs, actRegs->front());
     createAllBarrier(b, kSwitchLoopBarrierIdx);
+#ifdef __TLE__
+    tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::DefaultBodyBegin);
+#endif
     LLVM::BrOp::create(b, b.getLoc(), &ws.getDefaultRegion().front());
 
     ws.getDefaultRegion().walk([&, ws = ws](WarpYieldOp op) mutable {
       TritonLLVMIRRewriter b(op.getLoc(), op);
+#ifdef __TLE__
+      tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::DefaultBodyEnd);
+#endif
       createAllBarrier(b, kSwitchLoopBarrierIdx);
+#ifdef __TLE__
+      tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::DefaultJoinEnd);
+#endif
       if (auto actRegs = ws.getActualRegisters())
         createRegRealloc(b, actRegs->front(), defRegs);
       b.replaceOpWithNewOp<LLVM::BrOp>(op, op.getOperands(), after);
@@ -981,9 +1045,18 @@ static LogicalResult lowerWarpSpecialize(LLVM::LLVMFuncOp func,
     Value cst = b.i8_val(partitionStateCounter);
     for (int32_t i : llvm::seq(maxNumWarps))
       b.store(cst, b.gep(ptrTy, i8_ty, statePtr, LLVM::GEPArg(i)));
+#ifdef __TLE__
+    tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::DefaultExitWaitBegin);
+#endif
     createAllBarrier(b, kSwitchLoopBarrierIdx);
+#ifdef __TLE__
+    tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::KernelExit);
+#endif
   });
   b.setInsertionPointToStart(switchExit);
+#ifdef __TLE__
+  tle::WarpSpecializeTrace::emit(b, func, tle::WarpSpecializeTrace::KernelExit);
+#endif
   LLVM::ReturnOp::create(b, b.getLoc(), ValueRange());
 
   return success();
@@ -1037,6 +1110,10 @@ struct ConvertWarpSpecializeToLLVM
     for (LLVM::LLVMFuncOp kernel : kernels)
       if (failed(lowerWarpSpecialize(kernel, targetInfo)))
         return signalPassFailure();
+#ifdef __TLE__
+    if (failed(tle::lowerTypedTraceEvents(mod)))
+      return signalPassFailure();
+#endif
   }
 };
 } // namespace

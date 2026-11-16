@@ -1,0 +1,19 @@
+{
+  "schema": "flagmega.current-diagnostic-input/v1",
+  "handoff": {
+    "path": ".local/agents/dispatch/execute_ncu_001_diagnostic_gpu3/handoff.json",
+    "sha256": "82f374cacf49c83f66949efde5daa75db594d6325ac47467628fe4e88471cd10"
+  },
+  "dimensional_proof": {
+    "path": ".local/agents/dispatch/diagnose_source_counters_illegal_memory/P2-values-and-dimensional-proof-v1.json",
+    "sha256": "c0eca9a9d088e507f506a03d248fe1ae4c9f935aeb718187fd3102e16f17293d"
+  },
+  "P1_stages": {
+    "path": ".local/baseline/profiles/kernel/ncu-001-diagnostic-preparation-v2/probes/P1-ordinary-control/harness/replay-3523371-71185261/stages.jsonl",
+    "sha256": "025da02c2d05551534e0d6342cd7b306a0192447ed6970249bc9a3df03374a49"
+  },
+  "P1_observations_source": {
+    "path": ".local/baseline/profiles/kernel/ncu-001-diagnostic-preparation-v2/harness/observations.py",
+    "sha256": "dbd0d069ba720ef685181f8dbbf0cee78cf4f43969e7e56c9e8e24ff03eac99e"
+  }
+}

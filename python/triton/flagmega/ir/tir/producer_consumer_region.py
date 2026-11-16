@@ -78,6 +78,11 @@ def _collect_structure(body: Sequential, role: str) -> _RegionStructure:
                 )
             seen_stages.add(statement.stage_id)
             stage_ids.append(statement.stage_id)
+            if role == "producer" and statement.source_readiness is not None:
+                identifier = statement.source_readiness.handoff_id
+                if identifier in handoffs:
+                    raise IRSchemaError("Imported source readiness consumes a handoff more than once.")
+                handoffs.add(identifier)
             return
         if isinstance(statement, PipelineDrain):
             if statement.stage_id not in seen_stages:

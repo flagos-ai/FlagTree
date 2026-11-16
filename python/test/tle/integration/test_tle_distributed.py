@@ -28,6 +28,20 @@ BLOCK_CLUSTER_SUBMESH_COL0 = BLOCK_CLUSTER_MESH_2X2[:, 0]
 BLOCK_CLUSTER_SUBMESH_COL1 = BLOCK_CLUSTER_MESH_2X2[:, 1]
 
 
+def _assert_grid_acquire_pattern(ptx):
+    version = re.search(r"\.version\s+(\d+)\.(\d+)", ptx)
+    target = re.search(r"\.target\s+sm_(\d+)", ptx)
+    assert version is not None and target is not None
+    isa = int(version[1]) * 10 + int(version[2])
+    if int(target[1]) >= 90 and isa >= 86:
+        assert "ld.relaxed.gpu.u32" in ptx
+        assert "fence.acquire.gpu" in ptx
+        assert "ld.acquire.gpu.u32" not in ptx
+    else:
+        assert "ld.acquire.gpu.u32" in ptx
+        assert "fence.acquire.gpu" not in ptx
+
+
 def _has_cluster_cuda() -> bool:
     return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9
 
@@ -1355,10 +1369,9 @@ class TestTLEDistributed:
         assert compiled.metadata.launch_cooperative_grid is True
         assert 'group_kind = "grid"' in compiled.asm["ttgir"]
         ptx = compiled.asm["ptx"]
-        # Match CUDA cooperative_groups/details/sync.h semantics:
-        # atom.add.release.gpu + ld.acquire.gpu polling.
+        # Release arrival plus the target-supported acquire pattern.
         assert "atom.add.release.gpu.u32" in ptx
-        assert "ld.acquire.gpu.u32" in ptx
+        _assert_grid_acquire_pattern(ptx)
         assert "atom.global.or.b32" not in ptx
 
         _distributed_barrier_grid_counter_kernel[(grid, )](
@@ -1396,7 +1409,7 @@ class TestTLEDistributed:
         assert 'group_kind = "grid"' in compiled.asm["ttgir"]
         ptx = compiled.asm["ptx"]
         assert "atom.add.release.gpu.u32" in ptx
-        assert "ld.acquire.gpu.u32" in ptx
+        _assert_grid_acquire_pattern(ptx)
 
         for _ in range(256):
             counter.zero_()

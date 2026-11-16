@@ -9,6 +9,34 @@ from triton.flagmega.passes.tir import lower_transfer_pipeline_regions
 from .helpers import module, pipeline_dispatch, prim_function
 
 
+def test_retired_private_frames_require_complete_writes_before_the_first_read():
+    import pytest
+    from types import SimpleNamespace
+    from triton.flagmega.errors import IRVerificationError
+    from triton.flagmega.ir.bufferization import MemorySharingScope
+    from triton.flagmega.ir.memory_effect import MemoryAccessMode, MemoryAccessScope, MemoryEffect
+    from triton.flagmega.passes.tir.bufferize.synchronization import _Access
+    from triton.flagmega.passes.tir.lower_transfer_pipeline_regions import _verify_publication_accesses
+    def access(mode, start=0, size=512, *, physical='private-frame', scope=MemorySharingScope.BLOCK):
+        return _Access('read' if mode==MemoryAccessMode.READ else 'write','value','block_local_data',
+            physical,start,size,'read' if mode==MemoryAccessMode.READ else 'write',None,None,
+            MemoryEffect(mode,MemoryAccessScope.BLOCK),('whole_resource',None),False,False,scope)
+    old = access(MemoryAccessMode.WRITE)
+    read = access(MemoryAccessMode.READ)
+    plan = SimpleNamespace(buffer_map={'value':SimpleNamespace(role='temporary')})
+    check = lambda values: _verify_publication_accesses(values,[(0,old)],'main',2,plan)
+    check([access(MemoryAccessMode.WRITE,0,256),access(MemoryAccessMode.WRITE,256,256),read])
+    for values in ([read,access(MemoryAccessMode.WRITE)],
+                   [access(MemoryAccessMode.WRITE,0,256),read],
+                   [access(MemoryAccessMode.WRITE,0,256),access(MemoryAccessMode.WRITE,257,255),read],
+                   [access(MemoryAccessMode.WRITE,physical='different-frame'),read]):
+        with pytest.raises(IRVerificationError,match='Shared/BLOCK/private'):
+            check(values)
+    global_write = access(MemoryAccessMode.WRITE,scope=MemorySharingScope.CHIP)
+    global_read = access(MemoryAccessMode.READ,scope=MemorySharingScope.CHIP)
+    _verify_publication_accesses([global_read],[(0,global_write)],'main',2,plan)
+
+
 def _region(result):
     function = result.prim_functions[0]
     return function.body.fields[0]

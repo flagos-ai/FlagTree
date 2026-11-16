@@ -6,10 +6,10 @@ from collections.abc import Mapping
 from dataclasses import replace
 
 from triton.flagmega.errors import CodegenError, IRSchemaError
-from triton.flagmega.ir import DistributedType, DType, Node, NoneType, TensorType, VectorType, type_from_data
+from triton.flagmega.ir import DistributedType, DType, Node, NoneType, TensorType, TupleType, VectorType, type_from_data
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.fusion import Fusion, iter_fusions
-from triton.flagmega.ir.op_fusion import has_ops, semantic_inputs, split_ops
+from triton.flagmega.ir.op_fusion import has_ops, has_partial_type, semantic_inputs, split_ops
 from triton.flagmega.ir.ops.core import get_definition
 
 POINTWISE_OPS = frozenset({
@@ -17,6 +17,7 @@ POINTWISE_OPS = frozenset({
     "tensors.cast", "ntt.vectorized_cast"
 })
 FUSION_FAMILIES = {**{op: "elementwise" for op in POINTWISE_OPS}, "nn.softmax": "softmax",
+                   "ntt.vectorized_add_norm_stats": "vectorized_add_norm_stats",
                    "tensors.broadcast_to": "broadcast_to", "math.reduce_sum": "reduce_sum",
                    "distributed.boxing": "distributed_boxing", "distributed.force_boxing": "distributed_boxing"}
 _EXPRESSIONS = POINTWISE_OPS | {"builtin.splat_const", "builtin.scalar_const"}
@@ -62,6 +63,8 @@ def require_fusion(node, inputs, *, family=None):
     if not has_ops(node.attrs):
         return
     expected = FUSION_FAMILIES.get(node.op)
+    if expected is None and _producer_widening_cast(node, inputs):
+        expected = "embedding" if node.op == "nn.embedding" else "dense_matmul"
     if expected is None and _packed_accumulator_cast(node, inputs):
         # Dense kernels accumulate in FP32 and round at the final store.
         # Keep this explicit boundary separate from automatic generic fusion:
@@ -76,7 +79,16 @@ def require_fusion(node, inputs, *, family=None):
                        or getattr(kind, "partial", None) is not None or getattr(kind, "exclusive", None) is not None
                        for kind in (inputs[0].type, target))):
             raise CodegenError("Numeric Boxing fusion requires a materialized tensor ownership copy with PostOps only.")
-    types = [value.type for value in inputs] + [node.type]
+    raw_type = node.type
+    if expected == "vectorized_add_norm_stats":
+        definition = get_definition(node.op)
+        operands = semantic_inputs(definition, inputs, node.attrs)
+        if (node.attrs.get("post_ops") or not isinstance(node.type, TupleType)
+                or len(node.type.fields) != 2
+                or any(has_partial_type(value.type) for value in (*inputs, *operands))):
+            raise CodegenError("VectorizedAddNormStats supports materialized input PreOps and two explicit outputs only.")
+        raw_type = node.type.fields[0]
+    types = [value.type for value in inputs] + [raw_type]
     for value_type in types:
         if isinstance(value_type, DistributedType) and value_type.partial is not None:
             raise CodegenError("PreOps/PostOps require materialized values, not partial reductions.")
@@ -90,7 +102,7 @@ def require_fusion(node, inputs, *, family=None):
         # is supported by elementwise's coordinate mapper, not by this kernel.
         if expected == "softmax" and any(isinstance(tensor_of(value.type).dtype, VectorType) for value in body.nodes):
             raise CodegenError("Softmax fusion requires scalar element types.")
-    vector_axes(node.attrs, tensor_of(node.type).rank)
+    vector_axes(node.attrs, tensor_of(raw_type).rank)
     definition = get_definition(node.op)
     inferred = definition.infer_call_type(inputs, node.attrs)
     if inferred != node.type:
@@ -131,6 +143,31 @@ def _packed_accumulator_cast(node, inputs):
             and scalar(body.input_type) is DType.FLOAT32 and scalar(body.output_type) is DType.BFLOAT16)
 
 
+def _producer_widening_cast(node, inputs):
+    post = node.attrs.get("post_ops", ())
+    if (node.op not in {"nn.embedding", "ntt.packed_matmul"} or node.attrs.get("pre_ops")
+            or len(post) != 1 or post[0] is None):
+        return False
+    body = post[0]
+    if (len(body.nodes) != 2 or body.nodes[-1].op not in {"tensors.cast", "ntt.vectorized_cast"}
+            or scalar_type(body.input_type) is not DType.BFLOAT16
+            or scalar_type(body.output_type) is not DType.FLOAT32
+            or not _coordinate_preserving_casts(body)):
+        return False
+    if node.op == "nn.embedding":
+        return len(inputs) == 2 and (node.attrs.get("weight_encoding") is not None
+                                     or scalar_type(inputs[1].type) is DType.BFLOAT16)
+    return (len(inputs) == 4 and all(isinstance(value.type, NoneType) for value in inputs[2:])
+            and not node.attrs.get("fused_reduce", False)
+            and node.attrs.get("output_data_type") == DType.BFLOAT16.value
+            and all(scalar_type(value.type) is DType.BFLOAT16 for value in inputs[:2]))
+
+
+def _can_fuse_producer_widening(node, module):
+    return (_producer_widening_cast(node, tuple(module.node_map[name] for name in node.inputs))
+            and can_fuse(node, module))
+
+
 def can_fuse(node, module):
     try:
         require_fusion(node, tuple(module.node_map[value] for value in node.inputs))
@@ -143,8 +180,11 @@ def fusion_rules():
     from triton.flagmega.rules.neutral.pre_post_ops import pre_post_ops_rules
     from triton.flagmega.rules.neutral.commute_cast_view import commute_cast_view_rules
     from triton.flagmega.rules.neutral.post_ops_view import post_ops_through_view_rules
+    producers = ("nn.embedding", "ntt.packed_matmul")
     return (*commute_cast_view_rules(), *pre_post_ops_rules(FUSION_FAMILIES, can_fuse),
-            *post_ops_through_view_rules(("distributed.boxing", "distributed.force_boxing"), can_fuse))
+            *post_ops_through_view_rules(("distributed.boxing", "distributed.force_boxing"), can_fuse),
+            *pre_post_ops_rules(producers, _can_fuse_producer_widening),
+            *post_ops_through_view_rules(producers, _can_fuse_producer_widening))
 
 
 def scalar_type(value_type):
@@ -198,16 +238,32 @@ def emit_body(body, source, prefix):
 
 def raw_semantics(raw):
     from triton.flagmega.codegen.triton.tensor_transform_renderers import _tensor_type
-    from triton.flagmega.codegen.triton.kernel_call_renderers import _buffer
+    from triton.flagmega.codegen.triton.kernel_call_renderers import _buffer, _parameter
     attrs = decode_fusion_attrs(raw["semantic_attrs"])
     definition = get_definition(raw["semantic_op"])
-    inputs = tuple(
-        Node(f"arg{index}", "builtin.var", (), _tensor_type(_buffer(raw, "inputs", parameter.name)["abi"]))
-        for index, parameter in enumerate(definition.input_parameters))
+    inputs = []
+    for index, parameter in enumerate(definition.input_parameters):
+        binding = _parameter(raw, "inputs", parameter.name)
+        if not binding.get("buffers") and parameter.check_type(NoneType()):
+            inputs.append(Node(f"arg{index}", "builtin.none", (), NoneType()))
+        else:
+            inputs.append(Node(f"arg{index}", "builtin.var", (),
+                               _tensor_type(_buffer(raw, "inputs", parameter.name)["abi"])))
+    inputs = tuple(inputs)
     operands = semantic_inputs(definition, inputs, attrs)
     result_type = definition.infer_call_type(operands, split_ops(attrs))
     return attrs, Node("base", definition.op_name, tuple(value.id for value in operands), result_type,
                        attrs=split_ops(attrs)), inputs
+
+
+def producer_post_program(raw, value):
+    if not has_ops(raw.get("semantic_attrs", {})):
+        return {"fusion_post_lines": (), "fusion_post_value": ""}
+    attrs, base, _ = raw_semantics(raw)
+    # The producer's declared result dtype is a real materialization boundary
+    # even when its register accumulator is wider than its external storage.
+    lines, result = emit_body(attrs["post_ops"][0], f"({value}).to({triton_type(base.type)})", "_fm_producer_post")
+    return {"fusion_post_lines": lines, "fusion_post_value": result}
 
 
 def elementwise_program(raw):

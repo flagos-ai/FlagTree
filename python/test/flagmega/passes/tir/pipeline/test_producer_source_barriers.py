@@ -47,7 +47,10 @@ def test_readonly_producer_does_not_wait_on_consumer_barriers(scope, write_after
 def test_mutable_source_retains_its_partition_publication_order(scope, write_after):
     graph = _source_graph(scope, source_written=True, write_after=write_after)
     region = lower_transfer_pipeline_regions(graph).execution_function_map["main"].body.fields[0]
-    expected = [value for value in graph.execution_function_map["main"].body.fields if isinstance(value, fm.Barrier)]
+    barriers = [value for value in graph.execution_function_map["main"].body.fields if isinstance(value, fm.Barrier)]
+    # An acyclic later write is not a predecessor; only the actual source
+    # publication cut belongs to the producer in the forward-write case.
+    expected = [] if write_after else barriers[:1]
     assert [value for value in region.produce_body.fields if isinstance(value, fm.Barrier)] == expected
     if not write_after:
         handoff, = [value for value in region.produce_body.fields if isinstance(value, fm.PipelineHandoff)]

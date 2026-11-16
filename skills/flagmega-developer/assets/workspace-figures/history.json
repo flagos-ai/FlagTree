@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "synthetic": true,
+  "title": "Full-model performance versus revision",
+  "kind": "series",
+  "metric": "Full-model decode throughput",
+  "unit": "tokens/s",
+  "cohort": "SYNTHETIC: matched workload/device/statistic illustration",
+  "provenance": [],
+  "x_axis": "revision",
+  "uncertainty_method": "Synthetic uncertainty interval",
+  "rows": [
+    {
+      "label": "FlagMega",
+      "x": 0,
+      "value": 100,
+      "low": 98,
+      "high": 102,
+      "main_improvement": "起始基线",
+      "status": "qualified"
+    },
+    {
+      "label": "FlagMega",
+      "x": 1,
+      "value": 100.3,
+      "low": 98,
+      "high": 103,
+      "main_improvement": "调整访存布局（收益未证实）",
+      "status": "no_gain"
+    },
+    {
+      "label": "FlagMega",
+      "x": 2,
+      "value": 115,
+      "low": 113,
+      "high": 117,
+      "main_improvement": "融合相邻计算并减少中间存储",
+      "status": "achieved"
+    },
+    {
+      "label": "FlagMega",
+      "x": 3,
+      "value": null,
+      "reason": "not yet measured"
+    }
+  ],
+  "direction": "higher",
+  "chart_role": "revision_history",
+  "milestones": [
+    {
+      "milestone_id": "m000",
+      "revision_id": "r001",
+      "series": "FlagMega",
+      "point_x": 2,
+      "baseline_point_x": 0,
+      "baseline_id": "initial baseline",
+      "baseline_value": 100,
+      "value": 115,
+      "main_improvement": "Fuse producer and consumer; remove intermediate materialization",
+      "status": "achieved"
+    },
+    {
+      "milestone_id": "m001",
+      "revision_id": null,
+      "series": "FlagMega",
+      "point_x": 3,
+      "baseline_point_x": 2,
+      "baseline_id": "m000/r001",
+      "baseline_value": 115,
+      "value": null,
+      "main_improvement": "Awaiting profile-driven optimization plan",
+      "status": "open",
+      "reason": "not yet measured"
+    }
+  ],
+  "performance_table": {
+    "source": "revision_table covers baseline and every revision; measured entries match selected full-model curve points",
+    "columns": [
+      "Revision",
+      "整模 Decode TPS / 状态",
+      "主要优化点"
+    ],
+    "record_policy": "Only measured full-model values create curve points. revision_table includes baseline and every revision; missing values carry explicit model_status and create no curve point. Standalone timings never substitute for model TPS.",
+    "optimization_policy": "Each numerical row supplies main_improvement from its implemented source and verified plan; baseline identifies the starting baseline. Missing explanations stay explicit and never invent optimizations."
+  }
+}

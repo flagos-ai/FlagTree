@@ -47,8 +47,17 @@ def _register_builtin_packages() -> None:
 _register_builtin_packages()
 
 
-def load(path: str | Path, *, device: str | None = None, shared_rdata=None):
+def load(path: str | Path, *, device: str | None = None, shared_rdata=None, diagnostic_resources=None,
+         frozen_native=None):
     artifact = Path(path).resolve()
+    if frozen_native is not None:
+        from triton.flagmega.runtime.frozen_native import FrozenNativeSpecializations
+        if type(frozen_native) is not FrozenNativeSpecializations:
+            raise ArtifactError("frozen_native requires typed FrozenNativeSpecializations.")
+    if diagnostic_resources is not None:
+        from triton.flagmega.runtime.diagnostic_resources import DiagnosticResourceContract
+        if type(diagnostic_resources) is not DiagnosticResourceContract:
+            raise ArtifactError("diagnostic_resources requires a typed DiagnosticResourceContract.")
     # The runtime adapter digests the rdata payload when it maps the pool, scoped
     # to the chip segment this rank reads, so loading must not hash it as well.
     manifest, module = load_artifact(artifact, verify_rdata_payload=False)
@@ -57,6 +66,11 @@ def load(path: str | Path, *, device: str | None = None, shared_rdata=None):
         raise ArtifactError("FlagMega artifact does not contain an executable package.")
     kind = str(codegen.get("kind", ""))
     target = str(manifest.get("target", ""))
+    diagnostic_context = None
+    frozen_context = None if frozen_native is None else frozen_native.bind(artifact, manifest)
+    if diagnostic_resources is not None:
+        # Bind source/config/evidence bytes before source import or device load.
+        diagnostic_context = diagnostic_resources.bind(artifact, manifest)
     if target == "iluvatar-bi-v150":
         # CUDA's default lazy module loading breaks this COREX backend's
         # device-code resolution -- vendor-confirmed 2026-09-20, and
@@ -77,6 +91,10 @@ def load(path: str | Path, *, device: str | None = None, shared_rdata=None):
         # already touched a CUDA device beforehand.
         os.environ["CUDA_MODULE_LOADING"] = "0"
     adapter = package_registry.resolve(kind, target)
+    if frozen_context is not None and adapter.factory is not create_tir_runtime:
+        raise ArtifactError("Frozen native selection requires the normal TIR call-graph adapter.")
+    if diagnostic_context is not None and adapter.factory is not create_tir_runtime:
+        raise ArtifactError("This adapter does not support diagnostic resource contracts.")
     if str(manifest.get("codegen_backend", "triton")) == "cpp":
         # A C++ package is already compiled; its generated source is kept for
         # inspection and hash verification, not imported. The adapter opens the
@@ -92,6 +110,16 @@ def load(path: str | Path, *, device: str | None = None, shared_rdata=None):
             generated = _import_source(source, module_name)
         kernel = _resolve_kernel(generated, codegen, source)
     result = adapter.factory(artifact, manifest, module, kernel)
+    if frozen_context is not None:
+        from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+        if not isinstance(result, GeneratedTirCallGraphModule):
+            raise ArtifactError("Frozen native selection requires the normal TIR call graph.")
+        result._bind_frozen_native(frozen_context)
+    if diagnostic_context is not None:
+        from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
+        if not isinstance(result, GeneratedTirCallGraphModule):
+            raise ArtifactError("Diagnostic resources require the normal TIR call-graph runtime.")
+        result._bind_diagnostic_resources(diagnostic_context)
     if shared_rdata is not None:
         from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
         if device is None or not isinstance(result, GeneratedTirCallGraphModule):

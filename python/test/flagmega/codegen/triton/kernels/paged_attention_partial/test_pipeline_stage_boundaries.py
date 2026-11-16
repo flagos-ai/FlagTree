@@ -25,6 +25,8 @@ def test_mma_tile_helpers_inline_inside_attention_op_roles():
         "query_lanes": 8,
         "accumulator_dim_stride": 1,
         "q_head_group_size": 2,
+        "local_query_heads": 1,
+        "query_head_stride": 128,
         "block_n": 64,
         "block_size": 256,
         "head": "shard_coord0",

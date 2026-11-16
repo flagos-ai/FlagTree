@@ -6,13 +6,16 @@ from __future__ import annotations
 
 from typing import Mapping, Sequence
 
-from triton.flagmega.errors import IRSchemaError
+from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.distributed_inference import all_broadcast, placement_of, split_policy, tensor_of
 from triton.flagmega.ir.distributed_type import SBPSplit
 from triton.flagmega.ir.model import DistributedType, IRType, Node, SBP, SBPPartial, TensorType, tensor_type
 from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_parameter, input_parameter, op_definition, tensor_nbytes
 from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import DType, VectorType
+
+
+SPLIT_K4_REDUCTION_ORDER = "split_k4_k32_mma_k16_pairtree"
 
 
 @op_definition("math.matmul", namespace="math", functional_name="matmul", display_name="Math.MatMul")
@@ -30,7 +33,7 @@ class MatMul(OpDefinition):
         attrs = super().normalize_attrs(attributes)
         if any(not isinstance(attrs[name], bool) for name in ("transpose_a", "transpose_b")):
             raise IRSchemaError("F.math.matmul transpose flags must be bool.")
-        return normalize_output_data_type(normalize_reduction_order(attrs))
+        return normalize_output_data_type(normalize_reduction_order(attrs, allow_split_k4=True))
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -43,6 +46,8 @@ class MatMul(OpDefinition):
         lhs_m_axis, lhs_k_axis = (1, 0) if attrs["transpose_a"] else (0, 1)
         validate_reduction_order(attrs, lhs_type, lhs_k_axis)
         rhs_k_axis, rhs_n_axis = (1, 0) if attrs["transpose_b"] else (0, 1)
+        if attrs.get("reduction_order") == SPLIT_K4_REDUCTION_ORDER:
+            validate_reduction_order(attrs, rhs_type, rhs_k_axis)
         lm, lk = lhs.shape[lhs_m_axis], lhs.shape[lhs_k_axis]
         rk, rn = rhs.shape[rhs_k_axis], rhs.shape[rhs_n_axis]
         if lk != rk:
@@ -124,11 +129,12 @@ def normalize_output_data_type(attrs):
     return attrs
 
 
-def normalize_reduction_order(attrs):
-    """An explicit MMA order forbids reassociating the K accumulation."""
+def normalize_reduction_order(attrs, *, allow_split_k4=False):
+    """Keep exact orders distinct; shared projection families opt in explicitly."""
     order = attrs.get("reduction_order", "relaxed")
-    if order not in ("relaxed", "mma_k16"):
-        raise IRSchemaError("MatMul reduction_order must be 'relaxed' or 'mma_k16'.")
+    allowed = ("relaxed", "mma_k16", SPLIT_K4_REDUCTION_ORDER) if allow_split_k4 else ("relaxed", "mma_k16")
+    if order not in allowed:
+        raise IRSchemaError(f"MatMul reduction_order must be one of {allowed}.")
     if order == "relaxed":
         attrs.pop("reduction_order", None)
     else:
@@ -137,7 +143,8 @@ def normalize_reduction_order(attrs):
 
 
 def validate_reduction_order(attrs, lhs_type, k_axis):
-    if attrs.get("reduction_order", "relaxed") != "mma_k16":
+    order = attrs.get("reduction_order", "relaxed")
+    if order not in ("mma_k16", SPLIT_K4_REDUCTION_ORDER):
         return
     dtype = tensor_of(lhs_type).dtype
     scalar = dtype.elem_type if isinstance(dtype, VectorType) else dtype
@@ -147,10 +154,23 @@ def validate_reduction_order(attrs, lhs_type, k_axis):
         lhs_type.partial is not None or lhs_type.axis_policies[k_axis] != SBP.broadcast()
     ):
         raise IRSchemaError("An ordered MMA reduction cannot reassociate independently accumulated K shards.")
+    if order == SPLIT_K4_REDUCTION_ORDER:
+        # Four F32 carries consume K=128*q+32*b+j, b=0..3, j=0..31.
+        # Each carry takes its two K16 updates in order for every ascending q;
+        # only the final (P0+P1)+(P2+P3) tree precedes output conversion.
+        # Callers with packed axes must supply the scalar logical tensor type.
+        k = tensor_of(lhs_type).shape[k_axis]
+        if not k.is_fixed or k.fixed_value <= 0 or k.fixed_value % 128:
+            raise IRSchemaError("The split-K4 MMA reduction requires complete positive static K128 groups.")
 
 
 def matmul_value(lhs, rhs, output_data_type, context, *, reduction_order=None):
     """F32 output consumes the accumulator, never a previously rounded BF16 result."""
+    if reduction_order == SPLIT_K4_REDUCTION_ORDER:
+        raise EvaluationError(
+            "An exact evaluator for split_k4_k32_mma_k16_pairtree is not implemented; "
+            "ordinary GEMM does not preserve its four K16 carries and final pair tree."
+        )
     dtype = context.torch_dtype(DType(output_data_type)) if output_data_type is not None else lhs.dtype
     if dtype == context.torch.float32 and lhs.is_floating_point():
         if (reduction_order == "mma_k16" and lhs.is_cuda

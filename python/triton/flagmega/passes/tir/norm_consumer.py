@@ -111,7 +111,18 @@ def _rms_contract(norm: Node, module: IRModule) -> dict[str, object] | None:
 
 
 def _constant_splat_value(node: Node, module: IRModule) -> float | None:
-    while node.op in _TRANSPARENT_ADAPTERS and len(node.inputs) == 1:
+    def view(value, nodes):
+        if value.op in _TRANSPARENT_ADAPTERS and len(value.inputs) == 1:
+            return True
+        if value.op not in {'tensors.bitcast', 'tensors.pack', 'tensors.unpack'} or len(value.inputs) != 1:
+            return False
+        source = logical_type(nodes[value.inputs[0]].type).dtype
+        result = logical_type(value.type).dtype
+        source = source.elem_type if isinstance(source, VectorType) else source
+        result = result.elem_type if isinstance(result, VectorType) else result
+        return source == result
+
+    while view(node, module.node_map):
         node = module.node_map[node.inputs[0]]
     if node.op == "builtin.splat_const":
         return float(node.attrs["value"])
@@ -128,8 +139,7 @@ def _constant_splat_value(node: Node, module: IRModule) -> float | None:
     observed: set[str] = set()
     while (
         source is not None
-        and source.op in _TRANSPARENT_ADAPTERS
-        and len(source.inputs) == 1
+        and view(source, nodes)
         and source.id not in observed
     ):
         observed.add(source.id)

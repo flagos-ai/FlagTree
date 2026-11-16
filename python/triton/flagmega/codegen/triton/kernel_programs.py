@@ -62,6 +62,11 @@ def target_kernel_programs(module, capability):
             raise IRVerificationError(
                 "Kernel program num_warps exceeds the target resource contract.", stage=module.stage
             )
+        # num_warps is owned by TIR/Kernel and constrained by Distribution: see
+        # ir/tir/execution_function.py. It is validated per program because the
+        # register budget is a property of the program, not of the operators,
+        # so it must be re-derived after a partition change rather than
+        # inherited from a whole-model figure.
         grid = request.get("grid")
         tasks = request.get("tasks_per_owner", 1)
         if type(tasks) is not int or tasks < 1:
@@ -150,6 +155,20 @@ def _task_owner_partition(request, descriptor, selected):
         from triton.flagmega.ir.distributed_type import placement_from_data
         domain = placement_from_data(request['data_placement'])
         logical = [domain.physical_level_size('b'), 1, 1]
+    if tasks == 1 and grid != logical and 'execution_mesh' in request:
+        mesh_shape = tuple(request['execution_mesh'].get('shape', ()))
+        expected = list((*mesh_shape, *(1 for _ in range(3 - len(mesh_shape)))))
+        if (len(mesh_shape) == 2 and grid == expected and grid[0] * grid[1] == logical[0]
+                and selected and all(tuple(c.get('parameters', {}).get('program_grid', ())) == tuple(grid)
+                    and c.get('parameters', {}).get('program_owner_mapping') == 'x-fast'
+                    and not c.get('internal_grid_barriers', 0) for c in selected)
+                and not any(int(buffer.get('abi', {}).get('pool_scope_stride_bytes', 0))
+                    for call in selected for side in ('inputs', 'outputs')
+                    for binding in call[side] for buffer in binding.get('buffers', ()))):
+            # The selected grid/mapping is already part of the typed program
+            # request and is rebuilt by the runtime verifier. One owner per
+            # CTA needs no additional interleaved-task runtime ABI.
+            return None
     if (len(grid) != 3 or any(type(v) is not int or v <= 0 for v in grid)
             or tasks == 1 and grid != logical
             or tasks > 1 and (logical[1:] != [1, 1] or grid != [logical[0] * tasks, 1, 1])):
@@ -330,10 +349,21 @@ def _describe_program_partition(module, raw, descriptor, *, function_name=None, 
         launches.append(launch)
         mesh_context = {}
         if 'execution_mesh' in request:
-            from triton.flagmega.codegen.triton.tir_package import _mesh_context
+            from triton.flagmega.codegen.triton.tir_package import _mesh_context, _attach_grid_barrier_axis_groups
             mesh_context = _mesh_context(request['data_placement'])
             mesh_context.update(distributed_entry=True, use_tle=True,
                                 dynamic_execution=request['execution_mesh']['kind'] == 'dynamic')
+            # An outlined native namespace owns only the rendezvous reached by
+            # its schedule. Parent groups may not exist in this program's mesh.
+            mesh_context['grid_barrier_axis_groups'] = _attach_grid_barrier_axis_groups(
+                visited_events, None, mesh_context)
+        inline_function = None
+        if any(c.get('facts', {}).get('warp_specialized_entry') for c in selected.values()) and used_functions:
+            # Native warp specialization must be lowered in the kernel entry,
+            # including through an ordinary distributed ABI wrapper.
+            if len(used_functions) != 1:
+                raise CodegenError('Warp-specialized entries require one direct inline function boundary.')
+            inline_function = next(iter(used_functions))
         programs.append(
             {
                 "symbol": symbol,
@@ -345,6 +375,7 @@ def _describe_program_partition(module, raw, descriptor, *, function_name=None, 
                 **({"tasks_per_owner": task_owner["tasks_per_owner"]} if task_owner else {}),
                 "completed_device_barriers": completion_elisions,
                 **({'mesh_context': mesh_context} if mesh_context else {}),
+                **({'entry_inline_function': inline_function} if inline_function else {}),
             }
         )
     if streams is not None:

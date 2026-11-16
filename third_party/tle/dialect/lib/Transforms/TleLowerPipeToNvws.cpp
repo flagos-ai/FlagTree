@@ -266,6 +266,10 @@ static LogicalResult inlinePipeHelperCalls(ModuleOp module) {
 
 static Value canonicalizePipeField(Value field) {
   while (true) {
+    if (auto trace = field.getDefiningOp<PipeTraceContextOp>()) {
+      field = trace.getIdentity();
+      continue;
+    }
     if (auto result = dyn_cast<OpResult>(field)) {
       if (auto begin = dyn_cast<PipeCallBeginOp>(result.getOwner())) {
         field = begin.getArguments()[result.getResultNumber()];
@@ -291,6 +295,27 @@ static Value canonicalizePipeField(Value field) {
     break;
   }
   return field;
+}
+
+// Called only after all commit/drain analyses have succeeded. The metadata
+// alias has no effects and identifies the same pipe root during those proofs.
+static void emitPipeTrace(OpBuilder &builder, Operation *op, Value stage,
+                          Value phase, int32_t kind) {
+  auto trace = getPipeIdentity(op).getDefiningOp<PipeTraceContextOp>();
+  if (!trace)
+    return;
+  Location loc = op->getLoc();
+  if (!phase) {
+    Value capacity = arith::ConstantIntOp::create(builder, loc, getPipeCapacity(op), 32);
+    Value one = arith::ConstantIntOp::create(builder, loc, 1, 32);
+    Value cycle = arith::DivUIOp::create(builder, loc, trace.getIteration(), capacity);
+    phase = arith::AndIOp::create(builder, loc, cycle, one);
+  } else if (phase.getType().isInteger(1)) {
+    phase = arith::ExtUIOp::create(builder, loc, builder.getI32Type(), phase);
+  }
+  TraceEventOp::create(builder, loc, trace.getLayer(), trace.getIteration(),
+                      stage, phase, builder.getI32IntegerAttr(kind), trace.getSiteAttr());
+  op->getParentOfType<ModuleOp>()->setAttr("tle.ws_trace.typed", builder.getUnitAttr());
 }
 
 static bool isNvwsTokenValue(Value value) {
@@ -1099,6 +1124,8 @@ static LogicalResult verifyTmaCopyTypes(ttg::TMACopyOp op) {
 static bool canInterleaveBeforeTmaPipeCommit(Operation *op) {
   if (op->getNumRegions() != 0 || op->hasTrait<OpTrait::IsTerminator>())
     return false;
+  if (hasOnlyProfileScratchEffects(op))
+    return true;
   if (isCtaInvariantSpecialRegisterRead(op))
     return true;
   if (isMemoryEffectFree(op))
@@ -2001,6 +2028,7 @@ public:
 
       if (auto acquire = dyn_cast<PipeWriterAcquireOp>(op)) {
         if (state.oneShot) {
+          emitPipeTrace(builder, op, acquire.getStage(), acquire.getPhase(), 263);
           acquire.erase();
           continue;
         }
@@ -2017,9 +2045,11 @@ public:
           return;
         }
         Value token = getWarpSpecializeCaptureForUse(op, state.token);
+        emitPipeTrace(builder, op, acquire.getStage(), acquire.getPhase(), 256);
         auto nvwsOp = ttnvws::ProducerAcquireOp::create(
             builder, loc, token, acquire.getStage(), acquire.getPhase());
         setRoleTaskId(op, nvwsOp.getOperation(), *taskId);
+        emitPipeTrace(builder, op, acquire.getStage(), acquire.getPhase(), 257);
         acquire.erase();
         continue;
       }
@@ -2189,9 +2219,11 @@ public:
           return;
         }
         Value token = getWarpSpecializeCaptureForUse(op, state.token);
+        emitPipeTrace(builder, op, wait.getStage(), wait.getPhase(), 258);
         auto nvwsOp = ttnvws::ConsumerWaitOp::create(
             builder, loc, token, wait.getStage(), wait.getPhase());
         setRoleTaskId(op, nvwsOp.getOperation(), *taskId);
+        emitPipeTrace(builder, op, wait.getStage(), wait.getPhase(), 259);
         if (!wait.getIsClosed().use_empty()) {
           Value isClosed;
           if (state.oneShot) {
@@ -2246,6 +2278,7 @@ public:
           signalPassFailure();
           return;
         }
+        emitPipeTrace(builder, op, release.getStage(), {}, 263);
         release.erase();
         continue;
       }
@@ -2268,11 +2301,23 @@ public:
       SmallVector<Value> releasedFields;
       for (Value field : release.getFields())
         releasedFields.push_back(getWarpSpecializeCaptureForUse(op, field));
+      emitPipeTrace(builder, op, release.getStage(), {}, 260);
       auto nvwsOp = ttnvws::ConsumerReleaseOp::create(
           builder, loc, token, release.getStage(), releasedFields,
           releaseCountAttr);
       setRoleTaskId(op, nvwsOp.getOperation(), *taskId);
+      emitPipeTrace(builder, op, release.getStage(), {}, 261);
       release.erase();
+    }
+
+    SmallVector<PipeTraceContextOp> traceContexts;
+    module.walk([&](PipeTraceContextOp trace) { traceContexts.push_back(trace); });
+    for (PipeTraceContextOp trace : llvm::reverse(traceContexts)) {
+      if (!trace.use_empty()) {
+        trace.emitOpError("diagnostic pipe identity escaped its lifecycle operation");
+        return signalPassFailure();
+      }
+      trace.erase();
     }
 
     // An empty stream has no data commit from which to infer its count.

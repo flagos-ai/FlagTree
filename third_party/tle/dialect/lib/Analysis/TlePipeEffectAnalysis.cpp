@@ -22,6 +22,7 @@
  */
 
 #include "tle/dialect/include/Analysis/TlePipeEffectAnalysis.h"
+#include "tle/dialect/include/IR/TraceEffects.h"
 
 #include "tle/dialect/include/Analysis/TleMemoryEffectAnalysis.h"
 #include "tle/dialect/include/IR/Dialect.h"
@@ -105,6 +106,18 @@ bool isProvenGlobalPointer(Value value) {
 
 bool isNonSharedPointer(Value value) { return isProvenGlobalPointer(value); }
 
+bool hasOnlyProfileScratchEffects(Operation *op) {
+  auto interface = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!interface)
+    return false;
+  SmallVector<MemoryEffects::EffectInstance> effects;
+  interface.getEffects(effects);
+  return !effects.empty() && llvm::all_of(effects, [](const auto &effect) {
+    return effect.getResource() == ProfileScratchResource::get() &&
+           isa<MemoryEffects::Read, MemoryEffects::Write>(effect.getEffect());
+  });
+}
+
 Value stripConvertLayouts(Value value) {
   Value current = value;
   while (auto cvt = current.getDefiningOp<ttg::ConvertLayoutOp>())
@@ -187,6 +200,8 @@ bool isCtaInvariantSpecialRegisterRead(Operation *op) {
 bool canInterleaveBeforePipeMetadataOp(Operation *op) {
   if (op->getNumRegions() != 0 || op->hasTrait<OpTrait::IsTerminator>())
     return false;
+  if (hasOnlyProfileScratchEffects(op))
+    return true;
   if (isCtaInvariantSpecialRegisterRead(op))
     return true;
   if (isMemoryEffectFree(op))

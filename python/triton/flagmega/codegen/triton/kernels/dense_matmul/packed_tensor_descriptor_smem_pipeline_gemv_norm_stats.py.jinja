@@ -12,7 +12,9 @@
 {% if render_calls is defined %}
 {% for call in render_calls %}
 {% if call.family == "dense_matmul" and call.variant == "packed_tensor_descriptor_smem_pipeline_gemv_norm_stats" %}
-{% if call.accumulation_mode | default("simt") == "ordered_mma" %}
+{% if call.accumulation_mode | default("simt") == "split_k4_mma" %}
+{% include "kernels/dense_matmul/_split_k4_descriptor_mma.py.jinja" %}
+{% elif call.accumulation_mode | default("simt") == "ordered_mma" %}
 {% include "kernels/dense_matmul/_ordered_descriptor_mma.py.jinja" %}
 {% endif %}
 {{ call.symbol }}__weight_layout = tl.constexpr(
@@ -259,7 +261,9 @@ def {{ call.symbol }}__consumer(
             (dense_local_n_offsets < {{ call.local_n_capacity }})
             & ({{ call.result_active }})
         )
-{% if call.accumulation_mode | default("simt") == "ordered_mma" %}
+{% if call.accumulation_mode | default("simt") == "split_k4_mma" %}
+        dense_accumulator = tle.gpu.set_layout(tl.zeros((4, 16, 16), tl.float32), {{ call.symbol }}__split_mma_layout)
+{% elif call.accumulation_mode | default("simt") == "ordered_mma" %}
         dense_accumulator = tle.gpu.set_layout(tl.zeros((16, {{ call.tile_n }}), tl.float32), {{ call.symbol }}__mma_layout)
 {% else %}
         dense_partial = tle.gpu.set_layout(
@@ -284,7 +288,11 @@ def {{ call.symbol }}__consumer(
                 tle.gpu.async_wait_group(0)
                 tl.debug_barrier()
 {% endif %}
-{% if call.accumulation_mode | default("simt") == "ordered_mma" %}
+{% if call.accumulation_mode | default("simt") == "split_k4_mma" %}
+            dense_accumulator = {{ call.symbol }}__split_k4_stage(
+                dense_pipeline_ready.slot.weight, dense_local_k_start,
+                {{ call.pipeline_consumer_workspaces[0].parameter }}, dense_accumulator)
+{% elif call.accumulation_mode | default("simt") == "ordered_mma" %}
             dense_accumulator = {{ call.symbol }}__ordered_mma_stage(
                 dense_pipeline_ready.slot.weight, dense_local_k_start,
 {% if call.pipeline_consumer_workspaces %}
@@ -305,7 +313,9 @@ def {{ call.symbol }}__consumer(
             )
 {% endif %}
             {{ reader }}.release(dense_pipeline_sequence)
-{% if call.accumulation_mode | default("simt") == "ordered_mma" %}
+{% if call.accumulation_mode | default("simt") == "split_k4_mma" %}
+        dense_accumulator = {{ call.symbol }}__split_k4_finalize(dense_accumulator)
+{% elif call.accumulation_mode | default("simt") == "ordered_mma" %}
         dense_matrix = tle.gpu.set_layout(tl.trans(dense_accumulator), {{ call.symbol }}__weight_layout)
         dense_mma_rows = tle.gpu.set_layout(tl.arange(0, 16), {{ call.symbol }}__lhs_layout)
         dense_accumulator = tl.sum(tl.where(dense_mma_rows[None, :] == 0, dense_matrix, 0.0), axis=1)

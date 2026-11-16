@@ -7,7 +7,7 @@ from __future__ import annotations
 import itertools
 import keyword
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from math import prod
 
 from triton.flagmega.codegen.triton.broadcast_renderer import broadcast_to_call
@@ -48,6 +48,9 @@ from triton.flagmega.codegen.triton.softmax_renderer import softmax_call
 from triton.flagmega.codegen.triton.sparse_experts.down import sparse_experts_down_call
 from triton.flagmega.codegen.triton.sparse_experts.gate_up import sparse_experts_gate_up_call
 from triton.flagmega.codegen.triton.sparse_experts.routes import sparse_experts_routes_call
+from triton.flagmega.codegen.triton.split_k_dense_glu import (
+    split_k_dense_glu_call,
+)
 from triton.flagmega.codegen.triton.tensor_descriptor_planner import (
     packed_distributed_tensor_map_table_request,
     packed_owner_prefix_tensor_map_table_request,
@@ -58,6 +61,7 @@ from triton.flagmega.codegen.triton.tensor_transform_renderers import (
     vector_relayout_call,
 )
 from triton.flagmega.codegen.triton.top_k_renderer import top_k_call
+from triton.flagmega.codegen.triton.vectorized_add_norm_stats_renderer import vectorized_add_norm_stats_call
 from triton.flagmega.errors import CodegenError, IRSchemaError
 from triton.flagmega.ir import (
     DistributedType,
@@ -121,6 +125,8 @@ def prepare_kernel_calls(
     raw_calls,
     *,
     function_name: str,
+    readonly_device_views=None,
+    owned_pool_origins=None,
 ) -> list[dict[str, object]]:
     """Lower bufferized PrimFunction calls to structured template operands."""
 
@@ -161,8 +167,30 @@ def prepare_kernel_calls(
                 f"TIR call {call['call']!r} has no renderer for "
                 f"{family}/{call['variant']}."
             )
-        call.update(encoder(raw))
+        encoder_raw = raw
+        if owned_pool_origins:
+            encoder_raw = {**raw, "owned_pool_origins": owned_pool_origins}
+        if readonly_device_views:
+            device_views = {}
+            for argument in raw.get("inputs", ()):
+                for binding in argument.get("buffers", ()):
+                    view = readonly_device_views.get(binding["actual"])
+                    if view is not None:
+                        if family != "dense_matmul_glu" or argument["formal"] not in {"gate_weight", "up_weight"}:
+                            raise CodegenError("Readonly device view reached an incompatible family operand.")
+                        device_views[argument["formal"]] = view
+            if device_views:
+                encoder_raw = {**encoder_raw, "readonly_device_views": device_views}
+        call.update(encoder(encoder_raw))
         call["participation_active"] = _exclusive_participation_active(raw)
+        norm_owner = _canonical_norm_stats_execution_active(raw, call)
+        if norm_owner is not None:
+            participation = call["participation_active"]
+            call["participation_active"] = (
+                norm_owner if participation == "True" else participation
+                if norm_owner in {"True", participation}
+                else f"({participation}) & ({norm_owner})"
+            )
         from triton.flagmega.codegen.triton.fusion import decode_fusion_attrs, require_fusion
         from triton.flagmega.ir.op_fusion import has_ops
         if has_ops(raw.get("semantic_attrs", {})):
@@ -178,13 +206,34 @@ def prepare_kernel_calls(
                     inputs.append(Node(f"arg{i}", "builtin.var", (),
                                        _tensor_type(_buffer(raw, "inputs", parameter.name)["abi"])))
             inputs = tuple(inputs)
-            output_type = _tensor_type(_buffer(raw, "outputs", "result")["abi"])
+            output_type = _kernel_output_type(raw)
             require_fusion(Node("call", raw["semantic_op"], tuple(value.id for value in inputs), output_type,
                                 attrs=attrs), inputs, family=family)
         _bind_host_tensor_descriptor_parameters(call)
         _bind_transfer_pipeline_parameters(call, raw)
         calls.append(call)
     return calls
+
+
+def _kernel_output_type(raw):
+    """Recover the semantic result from the compiler-owned physical formals.
+
+    Materialization preserves a tensor as ``result`` and exposes a tuple as
+    ``result_0``, ``result_1``, etc. Reconstruct by field index, independently
+    of physical binding-list order, so PreOps validation sees every result.
+    """
+    from triton.flagmega.codegen.triton.tensor_transform_renderers import _tensor_type
+    from triton.flagmega.ir import TupleType
+
+    outputs = raw.get("outputs", ())
+    names = tuple(p.get("formal") if isinstance(p, Mapping) else None for p in outputs)
+    if names == ("result",):
+        return _tensor_type(_buffer(raw, "outputs", "result")["abi"])
+    expected = tuple(f"result_{index}" for index in range(len(names)))
+    if (not names or any(not isinstance(name, str) for name in names)
+            or len(set(names)) != len(names) or set(names) != set(expected)):
+        raise CodegenError("TIR output formals must be result or contiguous tuple fields result_0, result_1, ... .")
+    return TupleType(tuple(_tensor_type(_buffer(raw, "outputs", name)["abi"]) for name in expected))
 
 
 def _bind_host_tensor_descriptor_parameters(call: dict[str, object]) -> None:
@@ -646,6 +695,7 @@ def _static_shape(abi: Mapping[str, object], key: str) -> tuple[int, ...]:
 
 
 def _embedding_call(raw) -> dict[str, object]:
+    from triton.flagmega.codegen.triton.fusion import producer_post_program
     indices = _buffer(raw, "inputs", "indices")
     weight = _buffer(raw, "inputs", "weight")
     result = _buffer(raw, "outputs", "result")
@@ -659,7 +709,7 @@ def _embedding_call(raw) -> dict[str, object]:
         declared = tuple(raw.get("semantic_attrs", {}).get("output_lanes", ()))
         if (encoding not in {"IQ4_XS", "Q4_K"} or weight["abi"].get("scalar_dtype") != "uint8"
                 or tuple(weight["abi"].get("scalar_lane_shape", ()))
-                or result_abi.get("scalar_dtype") != "bfloat16"
+                or (result_abi.get("scalar_dtype") != "bfloat16" and not raw.get("semantic_attrs", {}).get("post_ops"))
                 or tuple(result_abi.get("scalar_lane_shape", ())) != declared
                 or lanes != prod(declared)):
             raise CodegenError("Native embedding requires scalar UINT8 rows and declared BF16 decoded output lanes.")
@@ -713,6 +763,7 @@ def _embedding_call(raw) -> dict[str, object]:
     if encoding is not None and hidden % 256:
         raise CodegenError("Native GGUF quantized embedding requires hidden size divisible by 256.")
     return {
+        **producer_post_program(raw, "value"),
         "indices": _pointer(indices),
         "indices_offset": _owner_local_operand_offset(indices["abi"], (global_token,)),
         "rows": local_shape[0],
@@ -3951,6 +4002,90 @@ def _flatten_lane_components(
     return " + ".join(terms) if terms else "0"
 
 
+def _canonical_norm_stats_execution_active(raw, call) -> str | None:
+    """Elect computation only when the existing writer sees a complete replica.
+
+    Logical B distribution alone does not prove physical sharing. Operation
+    scratch, partial/private storage and internal synchronization keep their
+    original participants; pooled input/result storage is not operation scratch.
+    """
+    if (raw.get("family") != "norm_stats" or raw.get("variant") != "local"
+            or raw.get("semantic_op") != "nn.norm_stats"
+            or raw.get("implementation") != "tir.norm_stats.local"
+            or raw.get("execution_kind") != "local_shard"
+            or _FAMILY_ENCODERS.get("norm_stats") is not _norm_stats_call):
+        return None
+    facts = raw.get("facts", {})
+    if (facts.get("internal_grid_barriers", 0) or raw.get("workspaces")
+            or raw.get("shared_workspaces")
+            or any(value for fields in (raw, facts) for name, value in fields.items()
+                   if name.startswith("pipeline_") or name in {"effects", "side_effects", "side_effecting"})):
+        return None
+    if len(raw.get("inputs", ())) != 1 or len(raw.get("outputs", ())) != 1:
+        return None
+    parameters = (raw["inputs"][0], raw["outputs"][0])
+    if any(len(parameter.get("buffers", ())) != 1 for parameter in parameters):
+        return None
+    abis = (_buffer(raw, "inputs", "input")["abi"],
+            _buffer(raw, "outputs", "result")["abi"])
+    if any(abi.get("storage_kind") != "canonical_global"
+           or abi.get("coordinate_space") != "canonical_global"
+           or abi.get("memory_sharing_scope") != "chip" for abi in abis):
+        return None
+    placements = []
+    for index, abi in enumerate(abis):
+        distributed = abi.get("distributed_type")
+        if distributed is None:
+            return None
+        if not isinstance(distributed, Mapping):
+            raise CodegenError("Complete NormStats requires a valid distributed ABI.")
+        placement = distributed.get("placement")
+        if not isinstance(placement, Mapping):
+            raise CodegenError("Complete NormStats has no placement ABI.")
+        hierarchy = placement.get("hierarchy")
+        if (not isinstance(hierarchy, (tuple, list)) or not hierarchy
+                or any(type(extent) is not int or extent <= 0 for extent in hierarchy)):
+            raise CodegenError("Complete NormStats placement extents must be positive integers.")
+        levels = placement.get("hierarchy_levels", "") or "b" * len(hierarchy)
+        if (not isinstance(levels, str) or len(levels) != len(hierarchy)
+                or any(level not in "bcd" for level in levels)):
+            raise CodegenError("Complete NormStats placement levels must match its rank.")
+        policies = distributed.get("axis_policies")
+        shape = _static_shape(abi, "local_capacity_shape")
+        if (not isinstance(policies, (tuple, list)) or len(policies) != len(shape)
+                or any(not isinstance(policy, Mapping)
+                       or policy.get("kind") not in {"broadcast", "split"} for policy in policies)):
+            raise CodegenError("Complete NormStats has invalid axis policies.")
+        if distributed.get("partial") is not None or any(
+                policy["kind"] != "broadcast" for policy in policies):
+            return None
+        if tuple(abi.get("logical_shape", ())) != shape:
+            return None
+        exclusive = distributed.get("exclusive")
+        if exclusive is not None:
+            if not isinstance(exclusive, Mapping):
+                raise CodegenError("Complete NormStats has an invalid E domain.")
+            axes = exclusive.get("axes", ())
+            owners = exclusive.get("owner_coordinates")
+            owners = (0,) * len(axes) if owners is None else owners
+            if (not isinstance(axes, (tuple, list)) or not isinstance(owners, (tuple, list))
+                    or not axes or len(axes) != len(owners)
+                    or any(type(axis) is not int or not 0 <= axis < len(hierarchy) for axis in axes)
+                    or len(set(axes)) != len(axes)
+                    or any(type(owner) is not int or not 0 <= owner < hierarchy[axis]
+                           for axis, owner in zip(axes, owners))):
+                raise CodegenError("Complete NormStats has invalid E owner coordinates.")
+            # The unchanged canonical writer elects block coordinate zero for
+            # complete B storage. An output domain excluding it proves no owner.
+            if index == 1 and any(levels[axis] == "b" and owner != 0
+                                  for axis, owner in zip(axes, owners)):
+                return None
+        placements.append(placement)
+    if placements[0] != placements[1]:
+        return None
+    return call["writer_active"]
+
+
 def _norm_stats_call(raw) -> dict[str, object]:
     reduction_layout = raw["parameters"].get("reduction_layout", "default")
     if not isinstance(reduction_layout, str) or reduction_layout not in {"default", "contiguous_8"}:
@@ -4142,8 +4277,32 @@ def _dense_matmul_mma_call(raw) -> dict[str, object]:
 
 
 def _dense_matmul_call(raw) -> dict[str, object]:
+    from triton.flagmega.codegen.triton.fusion import producer_post_program
     if str(raw.get("semantic_op", "")) == "ntt.matmul_norm_stats":
         return _dense_matmul_norm_stats_call(raw)
+    # A split carry is a different mathematical order, never an implementation
+    # choice for relaxed or complete-K MMA semantics (including direct TIR).
+    split_order = "split_k4_k32_mma_k16_pairtree"
+    split_mode = raw.get("parameters", {}).get("accumulation_mode") == "split_k4_mma"
+    if (split_mode or raw.get("semantic_attrs", {}).get("reduction_order") == split_order
+            or raw.get("facts", {}).get("split_k4_ordered_mma_accumulation") is True):
+        if (
+            not split_mode
+            or raw.get("semantic_attrs", {}).get("reduction_order") != split_order
+            or raw.get("variant") != "packed_tensor_descriptor_smem_pipeline_gemv"
+            or raw.get("semantic_op") != "ntt.packed_matmul"
+            or raw.get("facts", {}).get("split_k4_ordered_mma_accumulation") is not True
+            or raw.get("facts", {}).get("ordered_mma_accumulation", False)
+        ):
+            raise CodegenError("Split-K4 descriptor MMA requires its exact semantic order, variant, and unique fact.")
+    variant = str(raw["variant"])
+    if ("mma_rhs_load" in raw.get("parameters", {})
+            and variant != "packed_tensor_descriptor_smem_pipeline_gemv"):
+        raise CodegenError("Direct MMA RHS load requires the packed descriptor pipeline.")
+    if (raw.get("semantic_attrs", {}).get("post_ops")
+            and raw["semantic_attrs"].get("output_data_type") == "bfloat16"
+            and variant not in {"packed_k_major_gemv", "packed_tensor_descriptor_smem_pipeline_gemv"}):
+        raise CodegenError(f"DenseMatMul variant {variant!r} has no BF16 projection widening epilogue.")
     if str(raw["variant"]) == "mma":
         return _dense_matmul_mma_call(raw)
     source = _buffer(raw, "inputs", "lhs")
@@ -4246,7 +4405,6 @@ def _dense_matmul_call(raw) -> dict[str, object]:
             "_flagmega_dense_matmul_split_k_n_packed_k_major_gemv_accumulate"
         ),
     }
-    variant = str(raw["variant"])
     reduction_tile = raw["parameters"][
         "split_k_block_k" if variant.startswith("split_k") else "block_k"
     ]
@@ -4407,6 +4565,8 @@ def _dense_matmul_call(raw) -> dict[str, object]:
                 f"DenseMatMul has unsupported descriptor kind {descriptor_kind!r}."
             )
     result = {
+        **producer_post_program(raw, "dense_accumulator" if variant == "packed_tensor_descriptor_smem_pipeline_gemv"
+                                else "dense_result"),
         "source": _pointer(source),
         "weight": weight_pointer,
         "result": _pointer(result),
@@ -4559,9 +4719,29 @@ def _dense_matmul_call(raw) -> dict[str, object]:
         if variant == "packed_tensor_descriptor_smem_pipeline_gemv":
             parameters = raw["parameters"]
             accumulation_mode = parameters.get("accumulation_mode", "simt")
-            if accumulation_mode not in {"simt", "ordered_mma"}:
-                raise CodegenError("Packed descriptor accumulation must be simt or ordered_mma.")
+            if accumulation_mode not in {"simt", "ordered_mma", "split_k4_mma"}:
+                raise CodegenError("Packed descriptor accumulation must be simt, ordered_mma, or split_k4_mma.")
             mma_block_k = parameters.get("mma_block_k", 128)
+            if accumulation_mode == "split_k4_mma" and (
+                type(mma_block_k) is not int or mma_block_k != 128
+                or type(parameters.get("accumulation_splits", 1)) is not int
+                or parameters.get("accumulation_splits", 1) != 1
+                or block_k != 1024 or tile_n != 16
+                or parameters.get("block_k") != 1024 or parameters.get("tile_n") != 16
+                or result["local_k_capacity"] != 6144
+                or int(parameters["consumer_warps"]) != 8
+                or int(parameters["worker_width"]) != 32
+                or pipeline.get("capacity") != 4
+                or parameters.get("lhs_stage_extent") != 8192
+                or parameters.get("lhs_copy_tile") != 1024
+                or parameters.get("lhs_copy_kind") != "async"
+                or "mma_rhs_load" in parameters
+                or source_abi["scalar_dtype"] != "bfloat16"
+                or weight_abi["scalar_dtype"] != "bfloat16"
+                or int(source_abi.get("scalar_lane_count", 1)) != 1
+                or packed_layout != "k_major_n8_k16"
+            ):
+                raise CodegenError("Split-K4 descriptor MMA requires the fixed BF16 K6144/K128/N16, eight-warp, four-slot staged-LHS contract.")
             if accumulation_mode == "ordered_mma" and (
                 type(mma_block_k) is not int or mma_block_k < 16 or mma_block_k % 16
                 or block_k % mma_block_k or tile_n % 8
@@ -4569,6 +4749,16 @@ def _dense_matmul_call(raw) -> dict[str, object]:
             ):
                 raise CodegenError("Ordered descriptor MMA requires complete BF16 K16/N8 tiles.")
             result.update(accumulation_mode=accumulation_mode, mma_block_k=mma_block_k)
+            if "mma_rhs_load" in parameters:
+                if (parameters["mma_rhs_load"] != "direct_dot"
+                        or accumulation_mode != "ordered_mma"
+                        or source_abi["scalar_dtype"] != "bfloat16"
+                        or weight_abi["scalar_dtype"] != "bfloat16"
+                        or packed_layout != "k_major_n8_k16"):
+                    raise CodegenError(
+                        "MMA RHS load must be direct_dot with ordered BF16 packed descriptor tiles."
+                    )
+                result["mma_rhs_load"] = "direct_dot"
             reduction_group = int(parameters["reduction_group"])
             consumer_warps = int(parameters["consumer_warps"])
             worker_width = int(parameters["worker_width"])
@@ -4619,7 +4809,71 @@ def _dense_matmul_call(raw) -> dict[str, object]:
                 "consumer_warps": consumer_warps,
                 "worker_width": worker_width,
             })
+    _configure_dense_lhs_staging(raw, result)
     return result
+
+
+def _configure_dense_lhs_staging(raw, result) -> None:
+    """Validate the shared consumer row independently of the dense epilogue."""
+
+    lhs_stage_extent = raw["parameters"].get("lhs_stage_extent")
+    lhs_copy_kind = raw["parameters"].get("lhs_copy_kind", "sync")
+    if lhs_copy_kind not in ("sync", "async"):
+        raise CodegenError("LHS copy kind must be explicitly 'sync' or 'async'.")
+    if lhs_copy_kind == "async" and lhs_stage_extent is None:
+        raise CodegenError("LHS async copy requires a typed staging workspace.")
+    if lhs_stage_extent is not None:
+        copy_tile = raw["parameters"].get("lhs_copy_tile")
+        if (
+            str(raw["variant"]) != "packed_tensor_descriptor_smem_pipeline_gemv"
+            or isinstance(lhs_stage_extent, bool)
+            or not isinstance(lhs_stage_extent, int)
+            or _buffer(raw, "inputs", "lhs")["abi"]["scalar_dtype"] != "bfloat16"
+            or lhs_stage_extent < result["local_k_capacity"]
+            or lhs_stage_extent <= 0
+            or lhs_stage_extent & (lhs_stage_extent - 1)
+            or isinstance(copy_tile, bool)
+            or not isinstance(copy_tile, int)
+            or copy_tile <= 0
+            or copy_tile & (copy_tile - 1)
+            or lhs_stage_extent % copy_tile
+        ):
+            raise CodegenError(
+                "Packed DenseMatMul LHS staging requires a power-of-two "
+                "capacity covering the local input and a dividing copy tile."
+            )
+        workspaces = result["shared_workspaces"]
+        pipeline = result["pipeline_contract"]
+        if (
+            len(workspaces) != 2
+            or tuple(pipeline.get("consumer_shared_workspace_indices", ())) != (1,)
+            or workspaces[1].get("name") != "lhs_stage"
+            or tuple(workspaces[1].get("shape", ())) != (1, lhs_stage_extent)
+            or workspaces[1].get("dtype") != "bfloat16"
+            or workspaces[1].get("alignment_bytes", 0) < 128
+            or not workspaces[1].get("matrix_compatible", False)
+        ):
+            raise CodegenError(
+                "Packed DenseMatMul LHS staging requires one typed, "
+                "128-byte-aligned consumer workspace matching its capacity."
+            )
+        copy_denominator = result["consumer_warps"] * result["worker_width"] * 2
+        if copy_tile % copy_denominator:
+            raise CodegenError(
+                "Packed DenseMatMul LHS copy cannot partition its consumer warps."
+            )
+        result.update({
+            "lhs_copy_kind": lhs_copy_kind,
+            "lhs_stage_extent": lhs_stage_extent,
+            "lhs_copy_tile": copy_tile,
+            "input_copy_size_per_thread": copy_tile // copy_denominator,
+        })
+        if lhs_copy_kind == "async":
+            from triton.flagmega.codegen.triton.row_transfer import validate_async_row_copy
+
+            lhs = _buffer(raw, "inputs", "lhs")
+            validate_async_row_copy(lhs["abi"], copy_tile,
+                owned_pool_origin=raw.get("owned_pool_origins", {}).get(lhs.get("runtime_argument")))
 
 
 def _dense_matmul_norm_stats_call(raw) -> dict[str, object]:
@@ -4663,61 +4917,6 @@ def _dense_matmul_norm_stats_call(raw) -> dict[str, object]:
         },
     }
     result = _dense_matmul_call(base_raw)
-    lhs_stage_extent = raw["parameters"].get("lhs_stage_extent")
-    lhs_copy_kind = raw["parameters"].get("lhs_copy_kind", "sync")
-    if lhs_copy_kind not in ("sync", "async"):
-        raise CodegenError("LHS copy kind must be explicitly 'sync' or 'async'.")
-    if lhs_copy_kind == "async" and lhs_stage_extent is None:
-        raise CodegenError("LHS async copy requires a typed staging workspace.")
-    if lhs_stage_extent is not None:
-        copy_tile = raw["parameters"].get("lhs_copy_tile")
-        if (
-            variant != "packed_tensor_descriptor_smem_pipeline_gemv_norm_stats"
-            or isinstance(lhs_stage_extent, bool)
-            or not isinstance(lhs_stage_extent, int)
-            or lhs_stage_extent < result["local_k_capacity"]
-            or lhs_stage_extent <= 0
-            or lhs_stage_extent & (lhs_stage_extent - 1)
-            or isinstance(copy_tile, bool)
-            or not isinstance(copy_tile, int)
-            or copy_tile <= 0
-            or copy_tile & (copy_tile - 1)
-            or lhs_stage_extent % copy_tile
-        ):
-            raise CodegenError(
-                "Packed MatMulNormStats LHS staging requires a power-of-two "
-                "capacity covering the local input and a dividing copy tile."
-            )
-        workspaces = result["shared_workspaces"]
-        pipeline = result["pipeline_contract"]
-        if (
-            len(workspaces) != 2
-            or tuple(pipeline.get("consumer_shared_workspace_indices", ())) != (1,)
-            or workspaces[1].get("name") != "lhs_stage"
-            or tuple(workspaces[1].get("shape", ())) != (1, lhs_stage_extent)
-            or workspaces[1].get("dtype") != "bfloat16"
-            or workspaces[1].get("alignment_bytes", 0) < 128
-            or not workspaces[1].get("matrix_compatible", False)
-        ):
-            raise CodegenError(
-                "Packed MatMulNormStats LHS staging requires one typed, "
-                "128-byte-aligned consumer workspace matching its capacity."
-            )
-        copy_denominator = result["consumer_warps"] * result["worker_width"] * 2
-        if copy_tile % copy_denominator:
-            raise CodegenError(
-                "Packed MatMulNormStats LHS copy cannot partition its consumer warps."
-            )
-        result.update({
-            "lhs_copy_kind": lhs_copy_kind,
-            "lhs_stage_extent": lhs_stage_extent,
-            "lhs_copy_tile": copy_tile,
-            "input_copy_size_per_thread": copy_tile // copy_denominator,
-        })
-        if lhs_copy_kind == "async":
-            from triton.flagmega.codegen.triton.row_transfer import validate_async_row_copy
-
-            validate_async_row_copy(_buffer(raw, "inputs", "lhs")["abi"], copy_tile)
     residual = _buffer(raw, "inputs", "addend")
     value = _buffer(raw, "outputs", "result_0")
     stats = _buffer(raw, "outputs", "result_1")
@@ -4862,7 +5061,9 @@ def _dense_matmul_norm_stats_call(raw) -> dict[str, object]:
 
 def _dense_matmul_glu_call(raw) -> dict[str, object]:
     variant = str(raw["variant"])
-    source = _buffer(raw, "inputs", "value")
+    explicit_rms = raw.get("semantic_op") in {"ntt.rms_packed_dense_matmul_glu",
+                                                   "ntt.partial_rms_packed_dense_matmul_glu"}
+    source = _buffer(raw, "inputs", "raw" if explicit_rms else "value")
     gate_weight = _buffer(raw, "inputs", "gate_weight")
     up_weight = _buffer(raw, "inputs", "up_weight")
     result = _buffer(raw, "outputs", "result")
@@ -5004,6 +5205,13 @@ def _dense_matmul_glu_call(raw) -> dict[str, object]:
             ("up_weight_descriptor", up_weight),
         ):
             abi = binding["abi"]
+            device_view = raw.get("readonly_device_views", {}).get(parameter.removesuffix("_descriptor"))
+            if device_view is not None:
+                from .nvidia_readonly_layout import OwnerMajorWeightView
+                if not isinstance(device_view, OwnerMajorWeightView):
+                    raise CodegenError("Readonly descriptor requires a validated typed device view.")
+                abi = device_view.resolve(abi)
+                result.setdefault("device_weight_layouts", {})[parameter] = device_view.to_data()
             # Same contract the DenseMatMul descriptor path states: a table
             # names one resident owner component per entry, so it describes the
             # local shape of whatever storage the weight has, while a single map
@@ -5280,10 +5488,96 @@ def _dense_matmul_glu_call(raw) -> dict[str, object]:
                     lhs_stage_extent // copy_denominator
                 ),
             })
+    if explicit_rms:
+        result["norm_stage"] = _explicit_rms_glu_stage(raw, source, result)
+    return result
+
+
+def _explicit_rms_glu_stage(raw, source, call):
+    """Serialize explicit normalization from actual planned buffer views."""
+    partial_input = raw.get("semantic_op") == "ntt.partial_rms_packed_dense_matmul_glu"
+    formals = ("raw", "scale", "bias", "gate_weight", "up_weight")
+    if partial_input:
+        formals += ("partial_stats",)
+    attrs, parameters = raw.get("semantic_attrs", {}), raw["parameters"]
+    pipeline = raw.get("transfer_pipeline", {})
+    channels = pipeline.get("channels", ())
+    if (str(raw["variant"]) != "packed_tensor_descriptor_smem_pipeline_gemv"
+            or tuple(value["formal"] for value in raw["inputs"]) != formals
+            or call.get("descriptor_kind") != "table" or not call.get("paired_weight_fields")
+            or call.get("lhs_stage_extent") != 2048 or call.get("local_m_capacity") != 1
+            or len(channels) != 1 or tuple(channels[0].get("source_argument_indices", ())) != (3, 4)
+            or tuple(pipeline.get("consumer_shared_workspace_indices", ())) != (2,)
+            or attrs.get("norm_tree_group_size") != 16
+            or attrs.get("norm_partial_group_size") != 32
+            or attrs.get("norm_math_mode", "fast") != "fast"
+            or attrs.get("round_before_scale", False)
+            or type(parameters.get("norm_bias_is_zero")) is not bool):
+        raise CodegenError("Explicit RMS GLU requires its reviewed explicit-input, full-row three-level staging contract.")
+    workspaces = raw.get("shared_workspaces", ())
+    if (len(workspaces) != 3 or workspaces[2].get("dtype") != "bfloat16"
+            or tuple(workspaces[2].get("shape", ())) != (1, 2048)):
+        raise CodegenError("Explicit RMS GLU requires the real 4096-byte BF16 LHS workspace.")
+    bindings = {"raw": source, "scale": _buffer(raw, "inputs", "scale"),
+                "bias": _buffer(raw, "inputs", "bias")}
+    result = {"schema": "flagmega.rms-glu-stage/v1", "extent": 2048,
+              "tree_group_size": 16, "tree_groups": 128,
+              "partial_group_size": 32, "final_groups": 4,
+              "epsilon": float(attrs["epsilon"]), "math_mode": "fast",
+              "round_before_scale": False, "input_dtype": "float32",
+              "normalized_dtype": "bfloat16", "bias_is_zero": parameters["norm_bias_is_zero"]}
+    for role, binding in bindings.items():
+        abi = binding["abi"]
+        expected_shape = (1, 2048) if role == "raw" else (2048,)
+        if (abi.get("scalar_dtype") != ("float32" if role == "raw" else "bfloat16")
+                or abi.get("scalar_lane_count", 1) != 1
+                or _static_shape(abi, "logical_shape") != expected_shape
+                or _static_shape(abi, "local_capacity_shape") != expected_shape
+                or tuple(abi.get("scalar_storage_strides", ())) != ((2048, 1) if role == "raw" else (1,))
+                or abi.get("coordinate_space") != "canonical_global"
+                or abi.get("storage_kind") != "canonical_global"
+                or abi.get("memory_sharing_scope") != "chip"
+                or abi.get("pool_scope_local", False)):
+            raise CodegenError(f"Explicit RMS GLU {role} must expose a scalar, complete canonical row in shared global storage.")
+        domain = _scalar_last_axis_domain(abi, "dense_glu_norm_k", owner=f"Explicit RMS GLU {role}")
+        result[role] = _pointer(binding)
+        result[role + "_offset"] = domain["offset"]
+    if partial_input:
+        partial = _buffer(raw, "inputs", "partial_stats")
+        abi = partial["abi"]
+        distributed = abi.get("distributed_type", {})
+        placement = distributed.get("placement", {})
+        description = distributed.get("partial", {})
+        axes = tuple(description.get("axes", ()))
+        hierarchy = tuple(placement.get("hierarchy", ()))
+        if (abi.get("scalar_dtype") != "float32" or abi.get("scalar_itemsize") != 4
+                or abi.get("scalar_lane_count", 1) != 1
+                or _static_shape(abi, "logical_shape") != (1, 1, 1)
+                or _static_shape(abi, "local_capacity_shape") != (1, 1, 1)
+                or abi.get("coordinate_space") != "local"
+                or abi.get("storage_kind") != "compact_per_owner"
+                or abi.get("component_stride_scalar_elements") != 1
+                or abi.get("owner_count") != 128
+                or abi.get("placement_owner_count") != 128
+                or abi.get("memory_sharing_scope") != "chip"
+                or abi.get("pool_scope_local", False)
+                or tuple(abi.get("scalar_storage_strides", ())) != (1, 1, 1)
+                or description.get("reduce_op") != "sum"
+                or axes != (0, 1) or hierarchy != (8, 16)
+                or placement.get("hierarchy_levels") != "bb"
+                or tuple(p.get("kind") for p in distributed.get("axis_policies", ())) != ("broadcast",) * 3):
+            raise CodegenError("Explicit RMS GLU partial statistics require 128 distinct FP32 Sum owners in 512-byte chip-visible compact storage.")
+        owner = _partial_group_owner_expression_for_axes(abi, axes, "dense_glu_norm_partial_lane")
+        local = emit_local_scalar_offset(abi, ("0", "0", "0"))
+        result.update(schema="flagmega.rms-glu-stage/v2", statistics_source="partial_owners",
+                      partial_owner_count=128, partial_scalar_dtype="float32",
+                      partial_stats=emit_storage_pointer(abi, str(partial["runtime_argument"])),
+                      partial_stats_offset=f"({owner}) + ({local})")
     return result
 
 
 def _qkv_parallel_linear_call(raw) -> dict[str, object]:
+    variant = str(raw["variant"])
     source = _buffer(raw, "inputs", "input")
     weight = _buffer(raw, "inputs", "q_weight_qkv_fused")
     outputs = tuple(
@@ -5507,12 +5801,12 @@ def _qkv_parallel_linear_call(raw) -> dict[str, object]:
         )
     if any(
         int(output["abi"].get("owner_count", 0)) != weight_shape[0]
-        or str(output["abi"].get("scalar_dtype")) != "bfloat16"
+        or str(output["abi"].get("scalar_dtype")) not in {"bfloat16", "float32"}
         or tuple(output["abi"].get("scalar_lane_shape", ())) != (8,)
         for output in outputs
     ):
         raise CodegenError(
-            "PackedQKV MMA output owner counts or BF16 vector lanes differ."
+            "PackedQKV MMA output owner counts or supported floating-point vector lanes differ."
         )
     # The immutable packed backing is [owner,K/16,N/8]<N8,KPack2,K8>.
     # Present a strided [owner,N/8,K/16,2,64] tensor map so the Shared tile is
@@ -5716,9 +6010,11 @@ def _encode_qkv_rope_with_cache(
         for source, head, prefix in zip(partial_sources, (q_context, k_context), ("qkv_q", "qkv_k")):
             for name, domain in (("partial_reduce", "reduce_domain"), ("partial_input", "apply_domain"),
                                  ("partial_partner", "partner_domain")):
-                head[name] = partial_qkv_access(source, head[domain], qkv_layout, f"{prefix}_partial_member")
+                head[name] = partial_qkv_access(source, head[domain], qkv_layout, f"{prefix}_partial_member",
+                                               materialized_dtype=head["input_type"])
         v_context["partial_input"] = partial_qkv_access(
-            partial_sources[2], v_context, qkv_layout, "qkv_v_partial_member")
+            partial_sources[2], v_context, qkv_layout, "qkv_v_partial_member",
+            materialized_dtype=_triton_dtype(str(v["abi"]["scalar_dtype"])))
 
     cache_abi = state[0]["abi"]
     cache_shape = _static_shape(cache_abi, "logical_shape")
@@ -6660,6 +6956,7 @@ def _paged_attention_partial_call(raw) -> dict[str, object]:
     query_lanes = tuple(int(value) for value in query_abi["scalar_lane_shape"])
     cache_lanes = tuple(int(value) for value in cache_abi["scalar_lane_shape"])
     local_query_shape = _static_shape(query_abi, "local_capacity_shape")
+    local_query_heads = local_query_shape[head_axis]
     cache_strides = tuple(
         int(value) for value in cache_abi["scalar_storage_strides"]
     )
@@ -6676,13 +6973,13 @@ def _paged_attention_partial_call(raw) -> dict[str, object]:
         or str(query_abi["scalar_dtype"]) != "bfloat16"
         or str(cache_abi["scalar_dtype"]) != "bfloat16"
         or local_query_shape[layout.index("seq")] != 1
-        or local_query_shape[head_axis] != 1
+        or local_query_heads < 1
         or len(cache_strides) != 6
     ):
         raise CodegenError(
-            "Paged-attention MMA requires one owner-local BF16x8 decode head, "
-            "a complete K dimension, eight consumer warps, and a page-aligned "
-            "attention tile."
+            "Paged-attention MMA requires at least one owner-local BF16x8 "
+            "decode head, a complete K dimension, eight consumer warps, and a "
+            "page-aligned attention tile."
         )
     descriptor_shape = (
         cache_shape[0],
@@ -6761,16 +7058,93 @@ def _paged_attention_partial_call(raw) -> dict[str, object]:
         "block_k": block_k,
         "num_stages": num_stages,
         "q_head_group_size": query_shape[head_axis] // cache_shape[-2],
+        "local_query_heads": local_query_heads,
+        "query_head_stride": int(query_abi["scalar_storage_strides"][head_axis]),
         "consumer_warps": consumer_warps,
         "worker_width": worker_width,
         "producer_warps": int(parameters["producer_warps"]),
         "producer_registers": int(parameters["producer_registers"]),
     })
-    if result["q_head_group_size"] <= 0:
+    if result["q_head_group_size"] <= 0 or query_shape[head_axis] % cache_shape[-2]:
         raise CodegenError(
-            "Paged-attention MMA requires at least one query head per KV head."
+            "Paged-attention MMA requires a whole number of query heads per "
+            "KV head."
         )
+    _verify_paged_attention_mma_head_rows(
+        int(result["q_head_group_size"]),
+        local_query_heads,
+        head_axis,
+        query_head_dim,
+        {
+            "partial_max": max_abi,
+            "partial_sum": partial_sum["abi"],
+            "partial_accumulator": partial_accumulator["abi"],
+        },
+    )
     return result
+
+
+def _verify_paged_attention_mma_head_rows(
+    q_head_group_size: int,
+    local_query_heads: int,
+    head_axis: int,
+    query_head_dim: int,
+    partial_state: Mapping[str, Mapping[str, object]],
+) -> None:
+    """Prove the MMA tile's owned head rows stay inside the owner's own span.
+
+    The tile always carries ``q_head_group_size`` rows because ``m16n8k16``
+    computes them whether or not they are owned; ``local_query_heads`` of them
+    belong to this participant.  Publishing rows ``1..`` therefore depends on
+    three facts that the tile shape does not imply, so each is checked against
+    the bufferized partial-state ABI rather than assumed by the template:
+
+    1. the owned rows are a whole sub-block of one GQA group, so a single KV
+       stream feeds them and ``head // q_head_group_size`` is their one KV head;
+    2. the partial-state head strides are exactly the ones the template
+       publishes with -- ``1`` scalar for the statistics and ``head_dim`` for
+       the accumulator -- so a row step lands on the next row of this owner's
+       span and never in the next owner's;
+    3. the owner's head-axis capacity is wholly active, because this template
+       carries no per-row active predicate, only the owned-row mask.
+    """
+
+    if (
+        local_query_heads > q_head_group_size
+        or q_head_group_size % local_query_heads
+    ):
+        raise CodegenError(
+            "Paged-attention MMA requires the owner-local query heads to be a "
+            "whole sub-block of one KV group: "
+            f"{local_query_heads} of {q_head_group_size}."
+        )
+    expected_head_strides = {
+        "partial_max": 1,
+        "partial_sum": 1,
+        "partial_accumulator": query_head_dim,
+    }
+    for name, abi in partial_state.items():
+        strides = tuple(int(value) for value in abi["scalar_storage_strides"])
+        expected = expected_head_strides[name]
+        if strides[head_axis] != expected:
+            raise CodegenError(
+                f"Paged-attention MMA publishes {name} head rows with stride "
+                f"{expected}, but its owner-local ABI stride is "
+                f"{strides[head_axis]}."
+            )
+        capacity = _static_shape(abi, "local_capacity_shape")[head_axis]
+        if capacity < local_query_heads:
+            raise CodegenError(
+                f"Paged-attention MMA owns {local_query_heads} query heads but "
+                f"{name} has room for {capacity}."
+            )
+        active = str(tuple(abi["active_shape_expressions"])[head_axis])
+        if active != str(capacity):
+            raise CodegenError(
+                f"Paged-attention MMA has no per-row active predicate, so "
+                f"{name} must be wholly active on its head axis; capacity "
+                f"{capacity} against active extent {active!r}."
+            )
 
 
 def _paged_attention_combine_call(raw) -> dict[str, object]:
@@ -7923,11 +8297,55 @@ def _distributed_unique_writer_active(
     for axis in reversed(unused_axes):
         selected_coordinates[axis] = ordinal % hierarchy[axis]
         ordinal //= hierarchy[axis]
-    conditions = [
-        f"({_mesh_coordinate(axis, len(hierarchy))} == {selected_coordinates[axis]})"
-        for axis in unused_axes
-    ]
+    # A constant coordinate on a redundant axis makes every value's owner set
+    # contain the mesh's low corner, so values that split *different* axes of
+    # one mesh elect intersecting owners: a value split on the last axis takes
+    # row 0 while a value split on the first takes column 0, and both claim
+    # block 0.  Each role still has exactly one writer per shard, so this is a
+    # work-placement defect rather than a store-ownership one, but it
+    # concentrates several roles onto one block while peers of the same launch
+    # own nothing and idle.
+    #
+    # Offsetting the elected coordinate by the value's own split ordinal keeps
+    # one owner per shard and the same owner count while walking that owner
+    # across the redundant axis.  The walk alone is not enough: two values whose
+    # split and redundant axes are swapped would walk the *same* diagonal and
+    # collide along all of it.  Biasing each walk by the value's own split
+    # orientation separates them.  Both terms are rendered mesh-coordinate
+    # expressions over the value's own ABI, so this needs no knowledge of the
+    # other values in the call and changes no address derivation.
+    split_axes = sorted(used)
+    orientation_bias = (split_axes[0] + 1) if split_axes else 0
+    conditions = []
+    for axis in unused_axes:
+        coordinate = _mesh_coordinate(axis, len(hierarchy))
+        extent = hierarchy[axis]
+        selected = (selected_coordinates[axis] + orientation_bias) % extent
+        if extent <= 1 or not split_axes:
+            conditions.append(f"({coordinate} == {selected_coordinates[axis]})")
+            continue
+        offset = _distributed_split_ordinal(hierarchy, split_axes)
+        conditions.append(
+            f"({coordinate} == ({selected} + {offset}) % {extent})"
+        )
     return " & ".join(conditions) if conditions else "True"
+
+
+def _distributed_split_ordinal(
+    hierarchy: tuple[int, ...], split_axes: Sequence[int]
+) -> str:
+    """Render the row-major ordinal of a value's own split coordinates.
+
+    This is the shard identity the value is elected *for*.  Using it to offset
+    the elected coordinate on a redundant axis spreads one value's owners
+    across that axis instead of pinning all of them to one coordinate.
+    """
+
+    coordinates = _mesh_coordinates(len(hierarchy))
+    expression = coordinates[split_axes[0]]
+    for axis in split_axes[1:]:
+        expression = f"({expression} * {hierarchy[axis]} + {coordinates[axis]})"
+    return expression
 
 
 def _distributed_unique_writer_index(
@@ -8274,6 +8692,7 @@ def _access_in_result_domain(
 
 
 _FAMILY_ENCODERS = {
+    "split_k_dense_glu": split_k_dense_glu_call,
     "delta_rule_coefficients": delta_rule_coefficients_call,
     "delta_rule_log_prefix": delta_rule_log_prefix_call,
     "delta_rule_block_update": delta_rule_block_update_call,
@@ -8311,6 +8730,7 @@ _FAMILY_ENCODERS = {
     "gdn_convolution": _gdn_convolution_call,
     "gdn_recurrent": _gdn_recurrent_call,
     "add_norm_stats": _add_norm_stats_call,
+    "vectorized_add_norm_stats": vectorized_add_norm_stats_call,
     "gather_reduce_add_norm_stats": _gather_reduce_add_norm_stats_call,
     "gather_reduce_add_norm_apply": _gather_reduce_add_norm_apply_call,
     "gather_reduce_norm_apply": _gather_reduce_norm_apply_call,

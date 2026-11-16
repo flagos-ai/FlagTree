@@ -216,34 +216,83 @@ def test_rank_three_single_partial_axis_preserves_other_owner_coordinates():
     assert owner == 29
 
 
+def _owner_coordinates(expression, hierarchy):
+    """Evaluate a rendered writer predicate over an entire mesh.
+
+    Returns the coordinate tuples that satisfy it, i.e. the elected owners.
+    Election asserts *how many* writers each logical shard gets, not which
+    physical owner is chosen, so these helpers let the tests pin the contract
+    instead of one rendering of it.
+    """
+    import itertools
+
+    names = (("shard_y", "shard_x") if len(hierarchy) == 2
+             else tuple(f"shard_coord{axis}" for axis in range(len(hierarchy))))
+    owners = []
+    for coordinate in itertools.product(*(range(n) for n in hierarchy)):
+        if eval(  # noqa: S307 - rendered predicate over fixed local names
+            expression, {"__builtins__": {}},
+            dict(zip(names, coordinate)),
+        ):
+            owners.append(coordinate)
+    return owners
+
+
+def _writers_per_shard(expression, hierarchy, split_axes):
+    from collections import Counter
+
+    owners = _owner_coordinates(expression, hierarchy)
+    return Counter(tuple(c[axis] for axis in split_axes) for c in owners)
+
+
 def test_rank_three_unique_writer_keeps_each_distinct_split_shard():
     abi = _distributed_abi(split_axes=(1,))
 
-    assert _distributed_unique_writer_active(abi) == (
-        "(shard_coord0 == 0) & (shard_coord2 == 0)"
+    writers = _writers_per_shard(
+        _distributed_unique_writer_active(abi), (2, 3, 5), (1,)
     )
+
+    assert len(writers) == 3 and set(writers.values()) == {1}
 
 
 def test_rank_three_unique_writer_ordinal_uses_redundant_axes_row_major():
     abi = _distributed_abi(split_axes=(1,))
 
-    assert _distributed_unique_writer_active(abi, writer_ordinal=7) == (
-        "(shard_coord0 == 1) & (shard_coord2 == 2)"
+    first = _owner_coordinates(
+        _distributed_unique_writer_active(abi, writer_ordinal=7), (2, 3, 5)
     )
+    second = _owner_coordinates(
+        _distributed_unique_writer_active(abi, writer_ordinal=8), (2, 3, 5)
+    )
+
+    # Consecutive ordinals select different redundant owners of the same shards.
+    assert len(first) == len(second) == 3
+    assert not set(first) & set(second)
 
 
 def test_rank_three_unique_writer_ordinal_wraps_redundant_owner_count():
     abi = _distributed_abi(split_axes=(1,))
-
-    assert _distributed_unique_writer_active(abi, writer_ordinal=10) == (
-        "(shard_coord0 == 0) & (shard_coord2 == 0)"
+    # 2 * 5 redundant owners, so ordinal 10 wraps onto ordinal 0.
+    assert (
+        _distributed_unique_writer_active(abi, writer_ordinal=10)
+        == _distributed_unique_writer_active(abi, writer_ordinal=0)
     )
 
 
 def test_canonical_split_writer_preserves_each_block_shard_on_every_chip():
     abi = _distributed_abi(hierarchy=(4, 8, 16), split_axes=(1,))
     abi["distributed_type"]["placement"]["hierarchy_levels"] = "cbb"
-    assert _canonical_writer_active(abi) == "(shard_coord2 == 0)"
+
+    owners = _owner_coordinates(_canonical_writer_active(abi), (4, 8, 16))
+
+    # Every chip keeps one writer for each of its 8 block shards: the chip
+    # axis is never elected away, because each chip owns a private instance.
+    assert len({coordinate[0] for coordinate in owners}) == 4
+    assert len(owners) == 4 * 8
+    writers = _writers_per_shard(
+        _canonical_writer_active(abi), (4, 8, 16), (0, 1)
+    )
+    assert set(writers.values()) == {1}
 
 
 def test_canonical_broadcast_writer_reduces_block_axes_but_replicates_chip_axis():

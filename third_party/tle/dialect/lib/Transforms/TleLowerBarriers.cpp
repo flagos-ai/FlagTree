@@ -23,6 +23,8 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/PatternMatch.h"
@@ -97,6 +99,116 @@ static BarrierAllocOp findBarrierAlloc(Value value) {
   return {};
 }
 
+// This bounded proof runs on original SCF, before any barrier operation is
+// erased. Scalar arithmetic over CTA-uniform roots cannot select partial lanes.
+static bool isUniformParticipantValue(Value value,
+                                      llvm::DenseSet<Value> &visiting) {
+  if (!value || !isa<IntegerType, IndexType>(value.getType()) ||
+      !visiting.insert(value).second)
+    return false;
+  bool uniform = false;
+  if (auto arg = dyn_cast<BlockArgument>(value)) {
+    if (auto loop = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp()))
+      if (value == loop.getInductionVar())
+        uniform = isUniformParticipantValue(loop.getLowerBound(), visiting) &&
+                  isUniformParticipantValue(loop.getUpperBound(), visiting) &&
+                  isUniformParticipantValue(loop.getStep(), visiting);
+  } else if (Operation *def = value.getDefiningOp()) {
+    if (isa<arith::ConstantOp, triton::GetProgramIdOp,
+            triton::GetNumProgramsOp>(def))
+      uniform = true;
+    else if (def->getName().getDialectNamespace() == "arith" &&
+             def->getNumRegions() == 0 && isMemoryEffectFree(def))
+      uniform = llvm::all_of(def->getOperands(), [&](Value operand) {
+        return isUniformParticipantValue(operand, visiting);
+      });
+  }
+  visiting.erase(value);
+  return uniform;
+}
+
+static bool isUniformParticipantValue(Value value) {
+  llvm::DenseSet<Value> visiting;
+  return isUniformParticipantValue(value, visiting);
+}
+
+static Region *getParticipantDomain(BarrierArriveOp op) {
+  Region *region = op->getParentRegion();
+  while (region && region->hasOneBlock()) {
+    Operation *parent = region->getParentOp();
+    if (auto loop = dyn_cast<scf::ForOp>(parent)) {
+      if (!isUniformParticipantValue(loop.getLowerBound()) ||
+          !isUniformParticipantValue(loop.getUpperBound()) ||
+          !isUniformParticipantValue(loop.getStep()))
+        return nullptr;
+    } else if (auto cond = dyn_cast<scf::IfOp>(parent)) {
+      if (!isUniformParticipantValue(cond.getCondition()))
+        return nullptr;
+    } else if (auto ws = dyn_cast<ttg::WarpSpecializeOp>(parent)) {
+      if (region != &ws.getDefaultRegion() ||
+          ws->getParentOfType<ttg::WarpSpecializeOp>())
+        return nullptr;
+      return region;
+    } else if (auto partitions =
+                   dyn_cast<ttg::WarpSpecializePartitionsOp>(parent)) {
+      auto ws = dyn_cast<ttg::WarpSpecializeOp>(partitions->getParentOp());
+      if (!ws || ws->getParentOfType<ttg::WarpSpecializeOp>())
+        return nullptr;
+      return region;
+    } else if (auto function = dyn_cast<FunctionOpInterface>(parent)) {
+      return region == &function.getFunctionBody() ? region : nullptr;
+    } else {
+      return nullptr;
+    }
+    region = parent->getParentRegion();
+  }
+  return nullptr;
+}
+
+static bool sameParticipantScalar(Value a, Value b) {
+  if (a == b)
+    return true;
+  auto ac = a.getDefiningOp<arith::ConstantOp>();
+  auto bc = b.getDefiningOp<arith::ConstantOp>();
+  return ac && bc && ac.getValue() == bc.getValue();
+}
+
+static Value participantSlotIndex(Value value) {
+  while (value) {
+    if (auto view = value.getDefiningOp<ttg::MemDescIndexOp>())
+      return view.getIndex();
+    auto arg = dyn_cast<BlockArgument>(value);
+    if (!arg)
+      return {};
+    auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(
+        arg.getOwner()->getParentOp());
+    if (!partitions)
+      return {};
+    auto ws = dyn_cast<ttg::WarpSpecializeOp>(partitions->getParentOp());
+    if (!ws || arg.getArgNumber() >= ws.getExplicitCaptures().size())
+      return {};
+    value = ws.getExplicitCaptures()[arg.getArgNumber()];
+  }
+  return {};
+}
+
+static bool areExclusiveParticipantBranches(Operation *a, Operation *b) {
+  for (Operation *parent = a->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    auto cond = dyn_cast<scf::IfOp>(parent);
+    if (!cond)
+      continue;
+    // A common uniform if places the operations in opposite branches.
+    bool aThen = cond.getThenRegion().isAncestor(a->getParentRegion());
+    bool aElse = cond.getElseRegion().isAncestor(a->getParentRegion());
+    bool bThen = cond.getThenRegion().isAncestor(b->getParentRegion());
+    bool bElse = cond.getElseRegion().isAncestor(b->getParentRegion());
+    if ((aThen && bElse) || (aElse && bThen))
+      return true;
+  }
+  return false;
+}
+
 #if !defined(__HCU__)
 static std::pair<Value, Value>
 createNamedBarrierOperands(OpBuilder &builder, Location loc, Operation *op) {
@@ -147,6 +259,67 @@ struct TritonTleLowerBarriers
     for (BarrierArriveOp op : arrives)
       recordBackend(op.getOperation(), op.getBarrier());
 
+    // Opt-in collective semantics must be proven while allocation, phase and
+    // partition/control information are still intact. Default ops bypass this.
+    SmallVector<BarrierArriveOp> participantArrives;
+    for (BarrierArriveOp op : arrives) {
+      auto participants = op.getParticipantCountAttr();
+      if (!participants)
+        continue;
+      BarrierAllocOp alloc = findBarrierAlloc(op.getBarrier());
+      Region *domain = getParticipantDomain(op);
+      std::optional<int> warps = ttg::maybeLookupNumWarps(op);
+      auto threads = module->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
+      Value index = participantSlotIndex(op.getBarrier());
+      if (!alloc || alloc.getArriveCount() != participants.getInt() ||
+          alloc.getExpectBytesAttr() || namedAllocs.contains(alloc) ||
+          alloc->getParentOfType<FunctionOpInterface>() !=
+              op->getParentOfType<FunctionOpInterface>()) {
+        op.emitOpError("participant arrival requires a known non-TX non-named allocation with matching pending count");
+        signalPassFailure();
+        return;
+      }
+      if (!domain || !warps || !threads || *warps <= 0 ||
+          threads.getInt() <= 0 ||
+          int64_t(*warps) * threads.getInt() != participants.getInt() ||
+          !isUniformParticipantValue(op.getPhase()) ||
+          !index || !isUniformParticipantValue(index)) {
+        op.emitOpError("participant arrival requires exact logical execution domain and uniform participation");
+        signalPassFailure();
+        return;
+      }
+      for (BarrierArriveOp previous : participantArrives) {
+        if (findBarrierAlloc(previous.getBarrier()) == alloc &&
+            sameParticipantScalar(participantSlotIndex(previous.getBarrier()), index) &&
+            sameParticipantScalar(previous.getPhase(), op.getPhase()) &&
+            !areExclusiveParticipantBranches(previous, op)) {
+          op.emitOpError("duplicate participant arrival for the same slot and phase");
+          signalPassFailure();
+          return;
+        }
+      }
+      participantArrives.push_back(op);
+    }
+
+    // Freeze init-only runs in the original IR. Lowering named waits or dead
+    // allocations must not make formerly separated allocations adjacent.
+    llvm::DenseSet<Operation *> deferInitPublication;
+    auto isEntryMbarrierAlloc = [&](BarrierAllocOp op) {
+      if (!mbarrierAllocs.contains(op.getOperation()) ||
+          namedAllocs.contains(op.getOperation()))
+        return false;
+      auto function = dyn_cast<FunctionOpInterface>(op->getParentOp());
+      return function &&
+             op->getBlock() == &function.getFunctionBody().front();
+    };
+    for (BarrierAllocOp op : allocs) {
+      if (!isEntryMbarrierAlloc(op))
+        continue;
+      auto next = dyn_cast_or_null<BarrierAllocOp>(op->getNextNode());
+      if (next && isEntryMbarrierAlloc(next))
+        deferInitPublication.insert(op.getOperation());
+    }
+
     for (BarrierWaitOp op : waits) {
       OpBuilder builder(op);
       Location loc = op.getLoc();
@@ -175,8 +348,15 @@ struct TritonTleLowerBarriers
       StringRef backend = op->getAttrOfType<StringAttr>("backend").getValue();
       if (backend == "mbarrier") {
         int64_t count = getI32Attr(op.getOperation(), "arrive_count");
-        builder.create<ttng::ArriveBarrierOp>(loc, op.getBarrier(),
+        if (auto participants = op.getParticipantCountAttr()) {
+          auto arrive = builder.create<ttng::ArriveBarrierOp>(
+              loc, op.getBarrier(), static_cast<uint32_t>(participants.getInt()));
+          arrive.setParticipantArrive(true);
+          arrive.setReleaseFence(true);
+        } else {
+          builder.create<ttng::ArriveBarrierOp>(loc, op.getBarrier(),
                                               static_cast<uint32_t>(count));
+        }
       } else {
 #if defined(__HCU__)
         op.emitOpError("named barrier lowering is only supported on NVIDIA "
@@ -226,9 +406,10 @@ struct TritonTleLowerBarriers
           ownedBarrierSlots[alloc].push_back(slot);
         }
       }
-      // InitBarrierOp is executed by one thread. Publish initialization before
-      // other threads can wait on a READY barrier or start a TMA transaction.
-      builder.create<mlir::gpu::BarrierOp>(loc);
+      // InitBarrierOp is executed by one thread. The last allocation in an
+      // original init-only run publishes every initializer before any use.
+      if (!deferInitPublication.contains(op.getOperation()))
+        builder.create<mlir::gpu::BarrierOp>(loc);
       op.getResult().replaceAllUsesWith(alloc);
       op.erase();
     }

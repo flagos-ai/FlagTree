@@ -20,6 +20,27 @@ from triton.flagmega.selection import apply_plan, override_plan
 from triton.flagmega.targets import NvidiaSm90Target
 
 
+@pytest.mark.parametrize('cause', ['flattened','wrong_mesh','private_pool','missing_mapping'])
+def test_split_glu_grid_requires_the_matching_global_owner_abi(cause):
+    from triton.flagmega.codegen.triton.kernel_programs import _task_owner_partition
+    mesh = fm.ExecutionMesh.fixed((48,2)).to_data()
+    request = {'grid':[48,2,1], 'execution_mesh':mesh,
+               'data_placement':fm.Placement((48,2),'xy','bb').to_data()}
+    descriptor = {'grid':[96,1,1]}
+    selected = [{'parameters':{'program_grid':(48,2,1),'program_owner_mapping':'x-fast'},
+                 'inputs':[{'buffers':[{'abi':{}}]}],'outputs':[]}]
+    if cause=='flattened':
+        request['grid']=[24,4,1]
+    elif cause=='wrong_mesh':
+        request['execution_mesh']=fm.ExecutionMesh.fixed((24,4)).to_data()
+    elif cause=='private_pool':
+        selected[0]['inputs'][0]['buffers'][0]['abi']['pool_scope_stride_bytes']=128
+    else:
+        selected[0]['parameters'].pop('program_owner_mapping')
+    with pytest.raises(CodegenError,match='explicit task-to-owner ABI'):
+        _task_owner_partition(request,descriptor,selected)
+
+
 def graph(*, export_mid=True, packed=False):
     class Graph(fm.Module):
         def forward(self):

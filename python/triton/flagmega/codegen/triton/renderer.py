@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -54,6 +55,8 @@ def render_triton_package(
     output_dir: str | Path,
     *,
     dumper: Dumper | None = None,
+    triton_trace=None,
+    readonly_layout_policy=None,
 ) -> dict[str, object]:
     verify_module(
         module,
@@ -64,7 +67,9 @@ def render_triton_package(
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
     spec = renderer_registry.resolve(module)
-    descriptor = spec.describe(module)
+    descriptor = (spec.describe(module) if triton_trace is None and readonly_layout_policy is None else
+                  describe_tir_package(module, specialize_readonly_layout=True, triton_trace=triton_trace,
+                                       readonly_layout_policy=readonly_layout_policy))
     from triton.flagmega.errors import CodegenError
     for call in descriptor.get("render_calls", ()):
         required = call.get("facts", {}).get("required_codegen_backend")
@@ -96,6 +101,17 @@ def render_triton_package(
         },
         **program_sources,
     }
+    if readonly_layout_policy is not None:
+        from .nvidia_readonly_layout import write_layout_manifest
+        write_layout_manifest(destination, package)
+    if triton_trace is not None:
+        trace = package["triton_trace"]
+        for field in ("config", "dictionary"):
+            name = f"trace-{field}.json"
+            text = json.dumps(trace[field], indent=2, sort_keys=True) + "\n"
+            (destination / name).write_text(text, encoding="utf-8")
+            trace[field + "_file"] = name
+            trace[field + "_file_sha256"] = hashlib.sha256(text.encode()).hexdigest()
     dump_schedules(module, dumper)
     dump_codegen(module, package, source, dumper)
     return package

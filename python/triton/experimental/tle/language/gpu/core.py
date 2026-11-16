@@ -117,6 +117,24 @@ def set_layout(value, layout, _semantic=None):
 
 
 @tl.builtin
+def fence_proxy_async_global(_semantic=None):
+    """Order global-memory accesses between the generic and async proxies.
+
+    This per-thread fence does not synchronize threads or acquire a tensor-map
+    descriptor. Cross-thread synchronization must be established separately;
+    reader-side placement requires acquiring publication before the fence.
+    Requires NVIDIA SM90 / PTX 8.0.
+    """
+    builder = _semantic.builder
+    if not hasattr(builder, "create_tle_gpu_fence_proxy_async_global"):
+        raise RuntimeError(
+            "fence_proxy_async_global requires a Triton build with "
+            "__TLE__ global async-proxy fence support"
+        )
+    builder.create_tle_gpu_fence_proxy_async_global()
+
+
+@tl.builtin
 def tensor_map_fenceproxy_acquire(descriptor, _semantic=None):
     """Acquire host-written tensor-map data before its first TMA use."""
     if not isinstance(descriptor, tl.tensor) or not isinstance(
@@ -453,7 +471,10 @@ def alloc(
         dtype: Data type
         layout: Memory layout encoding (optional). An explicit shared encoding
             describes a physical MemDesc and preserves its leading extent;
-            layout=None selects automatic logical-matrix storage planning.
+            layout=None selects automatic logical-matrix storage planning for
+            rank-2 matrices and rank-3 staged matrices. Higher-rank buffers
+            preserve a physical leading extent and require power-of-two
+            trailing dimensions under either automatic or explicit layouts.
         scope: Storage type (default to shared memory)
         init_value: Optional initial register tensor with the padded matrix shape.
             For a 3D allocation, a matrix initializes every slot with the same
@@ -566,10 +587,12 @@ def alloc(
             _semantic.builder, unwrapped_shape))
         if use_mthreads_buffer:
             mthreads_buffer.validate_shape(unwrapped_shape)
-        # A plain linear MemDesc describes a physical arena, not a logical
-        # matrix. Its byte extent need not fit a ranked register tensor.
+        # Linear arenas and higher-rank staging buffers are physical MemDescs,
+        # not logical matrices. Automatic and explicit shared encodings must
+        # preserve the same leading allocation extent for these buffers.
+        physical_layout = isinstance(layout, tle.shared_layout) or (layout is None and len(unwrapped_shape) > 3)
         physical_buffer = (len(unwrapped_shape) == 1 and not nv_mma_shared_layout) or (
-            isinstance(layout, tle.shared_layout) and all(dim & (dim - 1) == 0 for dim in unwrapped_shape[1:]))
+            physical_layout and all(dim & (dim - 1) == 0 for dim in unwrapped_shape[1:]))
         non_power_payload_axes = ([] if use_mthreads_buffer or physical_buffer else
                                   [axis for axis, dim in enumerate(payload_shape, payload_offset) if dim & (dim - 1)])
         if len(non_power_payload_axes) > 1:
@@ -951,12 +974,30 @@ def barrier_wait(barr, phaseIdx=None, _semantic: TLESemantic | None = None, _gen
 
 
 @tl.builtin
-def barrier_arrive(barr, arrive_count=1, phaseIdx=None, _semantic: TLESemantic | None = None, _generator=None) -> None:
-    """Arrive on a TLE GPU barrier slot."""
+def barrier_arrive(barr, arrive_count=1, phaseIdx=None, participant_count=None, _semantic: TLESemantic | None = None, _generator=None) -> None:
+    """Arrive on a barrier; opt-in participants each release one credit."""
     slot = _barrier_slot(barr, _semantic)
     arrive_count = _require_barrier_int(arrive_count, "arrive_count")
     if arrive_count <= 0:
         raise ValueError("arrive_count must be positive")
+
+    participant_count = _unwrap_barrier_constexpr(participant_count)
+    if participant_count is not None:
+        if (isinstance(participant_count, bool) or not isinstance(participant_count, int)
+                or participant_count <= 0 or participant_count > 2147483647):
+            raise ValueError("participant_count must be a positive compile-time int32")
+        if arrive_count != 1:
+            raise ValueError("participant arrival requires arrive_count = 1")
+        if phaseIdx is None:
+            raise ValueError("participant arrival requires an explicit mbarrier phaseIdx")
+        if slot.expect_bytes is not None:
+            raise ValueError("participant arrival does not support TX expect_bytes")
+        if slot.arrive_count != participant_count or slot.allocation_key is None:
+            raise ValueError("participant_count must match a known barrier allocation pending count")
+        from triton._flagtree_backend import FLAGTREE_BACKEND
+        if (mthreads_common.enabled() or iluvatar_copy.enabled()
+                or tle_semantic.COMMON_IR_ENABLED or FLAGTREE_BACKEND):
+            raise ValueError("participant arrival is supported only on the NVIDIA mbarrier route")
 
     if phaseIdx is None:
         if slot.expect_bytes is not None:
@@ -975,7 +1016,10 @@ def barrier_arrive(barr, arrive_count=1, phaseIdx=None, _semantic: TLESemantic |
 
     phase = _barrier_phase_tensor(phaseIdx, slot.init, _semantic)
     _record_barrier_backend(slot, "mbarrier", _semantic)
-    _semantic.builder.create_barrier_arrive_mbarrier(slot.handle, arrive_count, phase.handle)
+    if participant_count is None:
+        _semantic.builder.create_barrier_arrive_mbarrier(slot.handle, arrive_count, phase.handle)
+    else:
+        _semantic.builder.create_barrier_arrive_mbarrier(slot.handle, arrive_count, phase.handle, participant_count)
 
 
 def _require_wgmma_int(value, name: str) -> int:
@@ -1250,6 +1294,7 @@ def copy(
     is_async: bool = False,
     eviction_policy: str = "",
     input_stride=None,
+    expect_bytes=None,
     _semantic: TLESemantic | None = None,
 ) -> None:
     """
@@ -1282,6 +1327,12 @@ def copy(
             to specify the starting coordinates within the tensor. Required for TMA copy.
         barrier: Optional TLE GPU mbarrier completion barrier for global-to-shared TMA copy.
             The barrier must come from ``tle.gpu.alloc_barrier(s)(expect_bytes=...)``.
+        expect_bytes: Optional positive compile-time byte count for this explicit
+            NVIDIA descriptor-to-shared TMA copy. It must equal the complete
+            typed descriptor and destination tile payload. None uses the
+            barrier's allocation-time default without changing legacy routes.
+            Each copy contributes its own transaction bytes and one arrival;
+            a shared completion barrier must be initialized for all arrivals.
         mask: Optional elementwise mask for standard pointer-tensor copies. For
             global-to-local copies, masked elements are written to local memory
             as ``other`` (zero by default). For local-to-global copies, masked
@@ -1352,6 +1403,40 @@ def copy(
     """
     mthreads_enabled = mthreads_common.enabled()
     iluvatar_enabled = iluvatar_copy.enabled()
+    copy_expect_bytes = tl._unwrap_if_constexpr(expect_bytes)
+    if copy_expect_bytes is not None:
+        if (isinstance(copy_expect_bytes, builtins.bool)
+                or not isinstance(copy_expect_bytes, builtins.int)
+                or not 0 < copy_expect_bytes <= 2147483647):
+            raise ValueError("copy expect_bytes must be a positive compile-time int32 integer")
+        from triton._flagtree_backend import FLAGTREE_BACKEND
+        if mthreads_enabled or iluvatar_enabled or tle_semantic.COMMON_IR_ENABLED or FLAGTREE_BACKEND:
+            raise ValueError("copy expect_bytes is supported only by NVIDIA TMA")
+        if (not isinstance(src, tl.tensor_descriptor)
+                or isinstance(src, tle._logical_tensor_descriptor)
+                or not isinstance(dst, tle.buffered_tensor)
+                or dst.type.storage is not tle.smem or barrier is None
+                or tl._unwrap_if_constexpr(is_async)
+                or input_stride is not None):
+            raise ValueError("copy expect_bytes requires a complete typed descriptor-to-shared TMA copy with an explicit barrier")
+        static_shape = tl._unwrap_if_constexpr(shape)
+        if isinstance(static_shape, tl.tuple):
+            static_shape = static_shape.values
+        if not isinstance(static_shape, (tuple, list)):
+            raise ValueError("copy expect_bytes requires a complete static tile shape")
+        static_shape = tuple(tl._unwrap_if_constexpr(dim) for dim in static_shape)
+        if any(isinstance(dim, builtins.bool) or not isinstance(dim, builtins.int) or dim <= 0
+               for dim in static_shape):
+            raise ValueError("copy expect_bytes requires positive static tile dimensions")
+        if static_shape != tuple(src.block_shape) or static_shape != tuple(dst.shape):
+            raise ValueError("copy expect_bytes shape must exactly match descriptor.block_shape and destination.shape")
+        if src.dtype != dst.dtype or src.dtype.is_ptr() or src.dtype.primitive_bitwidth % 8:
+            raise ValueError("copy expect_bytes requires matching byte-addressable scalar element types")
+        tile_bytes = src.dtype.primitive_bitwidth // 8
+        for extent in static_shape:
+            tile_bytes *= extent
+        if copy_expect_bytes != tile_bytes:
+            raise ValueError(f"copy expect_bytes must equal the complete typed tile payload ({tile_bytes})")
     cache_policy = tl._unwrap_if_constexpr(cache_policy)
     if mthreads_enabled:
         cache_policy = mthreads_copy.normalize_cache_policy(cache_policy)
@@ -1540,7 +1625,8 @@ def copy(
             if direction != CopyDirection.GM_TO_LOCAL:
                 raise ValueError("TMA copy barrier is only supported for global-to-shared TMA copy")
             barrier_slot = _tma_completion_barrier_slot(barrier, _semantic)
-            expect_bytes = barrier_slot.expect_bytes
+            expect_bytes = (barrier_slot.expect_bytes if copy_expect_bytes is None
+                            else copy_expect_bytes)
 
         logical_desc = isinstance(desc, tle._logical_tensor_descriptor)
         copy_shape_args = ()

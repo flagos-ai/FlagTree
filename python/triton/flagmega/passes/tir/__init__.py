@@ -11,6 +11,7 @@ from .projection_logits_argmax import (
     find_projection_logits_argmax_matches,
 )
 from .norm_consumer import NormConsumerMatch, find_norm_consumer_matches
+from .fuse_rms_packed_dense_glu import CompleteRmsGluMatch, find_complete_rms_glu_matches, fuse_rms_packed_dense_glu
 from .materialize_kernel_functions import (
     MaterializeKernelPrimFunctionsPass,
     materialize_kernel_prim_functions,
@@ -61,6 +62,10 @@ __all__ = [
     "canonicalize_packed_qkv_weights",
     "fuse_bank_qkv_weights",
     "find_norm_consumer_matches",
+    "CompleteRmsGluMatch",
+    "find_complete_rms_glu_matches",
+    "fuse_rms_packed_dense_glu",
+    "fuse_partial_rms_packed_dense_matmul_glu",
     "find_projection_logits_argmax_matches",
     "find_projection_residual_norm_matches",
     "fuse_gather_reduce_add_norm_apply",
@@ -77,3 +82,5 @@ __all__ = [
     "lower_transfer_pipeline_regions",
     "lower_tuple_boxing",
 ]
+
+from .fuse_partial_rms_packed_dense_matmul_glu import fuse_partial_rms_packed_dense_matmul_glu

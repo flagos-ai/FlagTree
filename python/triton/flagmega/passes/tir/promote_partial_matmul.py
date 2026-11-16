@@ -5,7 +5,7 @@
 from collections import defaultdict
 from dataclasses import replace
 
-from triton.flagmega.ir import DType, DistributedType, NoneType, VectorType, logical_type, verify_module
+from triton.flagmega.ir import DType, DistributedType, NoneType, TupleType, VectorType, logical_type, verify_module
 from triton.flagmega.ir.op_fusion import has_ops
 from triton.flagmega.rules.neutral._utility import make_node
 
@@ -37,6 +37,28 @@ def promote_partial_matmul(module):
         return result
 
     for node in module.nodes:
+        if (node.op == "ntt.packed_qkv_parallel_linear" and isinstance(node.type, TupleType)
+                and node.id not in escaped and not has_ops(node.attrs)
+                and all(isinstance(field, DistributedType) and field.partial is not None
+                        and isinstance(field.tensor.dtype, VectorType)
+                        and field.tensor.dtype.elem_type == DType.BFLOAT16 for field in node.type.fields)
+                and all(isinstance(source[value].type, NoneType) for value in node.inputs[4:])):
+            consumers = users[node.id]
+            if consumers and all(
+                    consumer.op in {"distributed.boxing", "distributed.force_boxing",
+                                    "ntt.packed_qkv_parallel_linear_combine"}
+                    and isinstance(consumer.type, TupleType)
+                    and all(isinstance(field, DistributedType) and field.partial is None
+                            for field in consumer.type.fields)
+                    and not has_ops(consumer.attrs) for consumer in consumers):
+                wide = make_node(node.op, node.id, tuple(source[value] for value in node.inputs),
+                                 {**node.attrs, "output_data_type": "float32"}, node.metadata)
+                promoted[node.id] = wide
+                for consumer in consumers:
+                    reductions[consumer.id] = (make_node(
+                        "ntt.packed_qkv_parallel_linear_combine", consumer.id, (wide,),
+                        {"output_type": consumer.type}, consumer.metadata),)
+            continue
         if (node.op not in {"math.matmul", "ntt.packed_matmul"}
                 or not isinstance(node.type, DistributedType) or node.type.partial is None
                 or node.id in escaped or has_ops(node.attrs)):
