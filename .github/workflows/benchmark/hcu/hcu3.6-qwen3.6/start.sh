@@ -47,6 +47,7 @@ if [[ -f "$PID_FILE" ]]; then
     fi
 fi
 bash "${SCRIPT_DIR}/clear_fuser_process.sh"
+rm -f /dev/shm/* 2>/dev/null || true
 
 start=$(date +%s)
 
