@@ -54,6 +54,18 @@ on:
         required: false
         type: string
         default: ''
+      flaggems-vllm-tag:
+        description: >-
+          FlagGems-vllm tag to test after FlagGems, in the same job and against
+          the same FlagTree build. Empty (default) skips every FlagGems-vllm step.
+        required: false
+        type: string
+        default: ''
+      flaggems-vllm-pre-command:
+        description: 'Multiline script to run before FlagGems-vllm tests'
+        required: false
+        type: string
+        default: ''
       flagtree-build-command:
         description: 'Multiline script to build and install FlagTree'
         required: true
@@ -112,6 +124,13 @@ jobs:
           BEST_DIR="${FLAGGEMS_CI_DIR}/Baseline/best_FlagGems_${{ inputs.flaggems-tag }}"
           echo "FLAGGEMS_REPO_DIR=$FLAGGEMS_REPO_DIR" >> $GITHUB_OUTPUT
           echo "best_dir=$BEST_DIR" >> $GITHUB_OUTPUT
+
+          # FlagGems-vllm paths, used only when flaggems-vllm-tag is set.
+          # Kept apart from FlagGems so neither run overwrites the other.
+          VLLM_REPO_DIR="${FLAGGEMS_CI_DIR}/FlagGemsVllm/test_${DATE}_${{ github.event.pull_request.number }}"
+          VLLM_BEST_DIR="${FLAGGEMS_CI_DIR}/Baseline/best_FlagGemsVllm_${{ inputs.flaggems-vllm-tag }}"
+          echo "VLLM_REPO_DIR=$VLLM_REPO_DIR" >> $GITHUB_OUTPUT
+          echo "vllm_best_dir=$VLLM_BEST_DIR" >> $GITHUB_OUTPUT
 
           # Append KEY=VALUE lines produced by the user-provided setup command to GITHUB_ENV
           if [ -n '${{ inputs.env-setup-command }}' ]; then
@@ -235,11 +254,126 @@ jobs:
           app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
           app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
 
+      # ------------------------------------------------------------------
+      # FlagGems-vllm: runs after FlagGems in the same job, so FlagTree is
+      # built once. Gated on the build, not on success(), so a FlagGems
+      # failure does not hide the FlagGems-vllm result.
+      # ------------------------------------------------------------------
+      - name: Clone FlagGems-vllm Repo
+        if: ${{ !cancelled() && inputs.flaggems-vllm-tag != '' && steps.check_backend.outputs.should_skip != 'true' && steps.build.outcome == 'success' }}
+        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+        with:
+          repo-url: 'https://github.com/flagos-ai/FlagGems-vllm.git'
+          ref: ${{ inputs.flaggems-vllm-tag }}
+          clone-dir: ${{ steps.setup.outputs.VLLM_REPO_DIR }}
+
+      - name: Run FlagGems-vllm Test
+        id: run-vllm-test
+        if: ${{ !cancelled() && inputs.flaggems-vllm-tag != '' && steps.check_backend.outputs.should_skip != 'true' && steps.build.outcome == 'success' }}
+        uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        with:
+          flaggems-path: '${{ steps.setup.outputs.VLLM_REPO_DIR }}/FlagGems-vllm'
+          gpus: '${{ steps.setup.outputs.gpus }}'
+          output-base-dir: '${{ env.FLAGGEMS_CI_DIR }}/PR_vllm'
+          pr-number: '${{ github.event.pull_request.number }}'
+          first-parameter-only: 'true'
+          pre-command: ${{ inputs.flaggems-vllm-pre-command }}
+          flaggems-tag: ${{ inputs.flaggems-vllm-tag }}
+          backend: ${{ inputs.backend }}
+          repo-kind: flaggems-vllm
+
+      - name: Compare FlagGems-vllm with Baseline
+        id: compare-vllm-baseline
+        if: ${{ !cancelled() && steps.run-vllm-test.outcome == 'success' }}
+        uses: flagos-ai/FlagTree/.github/actions/compare-flaggems-test@main
+        with:
+          baseline-dir: '${{ steps.setup.outputs.vllm_best_dir }}'
+          candidate-dir: '${{ steps.run-vllm-test.outputs.test-output-dir }}'
+          fail-on-missing-baseline: 'true'
+
+      - name: Collect FlagGems-vllm Record
+        id: collect-vllm
+        if: ${{ always() && inputs.flaggems-vllm-tag != '' && steps.check_backend.outputs.should_skip != 'true' }}
+        continue-on-error: true
+        uses: flagos-ai/FlagTree/.github/actions/collect-gems-record@main
+        with:
+          output-dir: ${{ steps.run-vllm-test.outputs.test-output-dir }}
+          baseline-dir: ${{ steps.setup.outputs.vllm_best_dir }}
+          ledger-dir: ${{ env.FLAGGEMS_CI_DIR }}/Ledger
+          kind: test
+          backend: ${{ inputs.backend }}
+          # record_id is pr-<n>-<backend>-<variant>: the vllm prefix keeps this
+          # row from overwriting the FlagGems one.
+          variant: ${{ inputs.variant != '' && format('vllm-{0}', inputs.variant) || 'vllm' }}
+          runner: ${{ inputs.runner }}
+          flaggems-tag: ${{ inputs.flaggems-vllm-tag }}
+          flagtree-sha: ${{ github.event.pull_request.head.sha }}
+          flagtree-branch: ${{ github.base_ref }}
+          pr-number: ${{ github.event.pull_request.number }}
+          pr-url: ${{ github.event.pull_request.html_url }}
+          actor: ${{ github.actor }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          build-outcome: ${{ steps.build.outcome }}
+          test-outcome: ${{ steps.run-vllm-test.outcome }}
+          notify: 'true'
+          table-base: flaggems_runs
+
+      - name: Report FlagGems-vllm Record to Feishu
+        if: ${{ always() && steps.collect-vllm.outputs.record-file != '' }}
+        continue-on-error: true
+        uses: flagos-ai/FlagTree/.github/actions/report-feishu@main
+        with:
+          record: ${{ steps.collect-vllm.outputs.record-file }}
+          table-name: ${{ steps.collect-vllm.outputs.table-name }}
+          schema: ${{ steps.collect-vllm.outputs.schema-file }}
+          dedup-field: record_id
+          app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
+          app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
+          app-token: ${{ secrets.FLAGTREE_FEISHU_BITABLE_APP_TOKEN }}
+
+      - name: Notify Feishu Chat (FlagGems-vllm)
+        if: ${{ always() && steps.collect-vllm.outputs.notification-file != '' }}
+        continue-on-error: true
+        uses: flagos-ai/FlagTree/.github/actions/notify-feishu@main
+        with:
+          notification: ${{ steps.collect-vllm.outputs.notification-file }}
+          chat-id: ${{ secrets.FLAGTREE_FLAGGEMS_CICD_FEISHU_CHAT_ID }}
+          app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
+          app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
+
       - name: Cleanup FlagGems Repo
         if: always()
         shell: bash
         env:
           REPO_DIR: ${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}
+        run: |
+          set -u
+
+          if [[ -z "${REPO_DIR}" || "${REPO_DIR}" == "/" || "${REPO_DIR}" == "/root" || "${REPO_DIR}" == "/data" ]]; then
+            echo "REPO_DIR is empty or unsafe (${REPO_DIR}), skip cleanup"
+            exit 0
+          fi
+
+          for i in 1 2 3; do
+            if rm -rf "${REPO_DIR}"; then
+              echo "Cleanup succeeded on attempt $i"
+              exit 0
+            fi
+            if [[ $i -lt 3 ]]; then
+              echo "Cleanup attempt $i failed, retrying in 30s..."
+              sleep 30
+            fi
+          done
+
+          echo "::warning::Failed to remove ${REPO_DIR} after 3 attempts, dumping contents"
+          ls -la "${REPO_DIR}" 2>/dev/null | head -50 || true
+          exit 0
+
+      - name: Cleanup FlagGems-vllm Repo
+        if: always()
+        shell: bash
+        env:
+          REPO_DIR: ${{ steps.setup.outputs.VLLM_REPO_DIR }}
         run: |
           set -u
 
