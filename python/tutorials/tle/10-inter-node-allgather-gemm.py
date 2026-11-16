@@ -8,9 +8,12 @@ transpose of contiguous [N/world_size, K] storage.
 The AllGather implementation is local to this tutorial. As in Triton-distributed,
 inter-node sends and intra-node distribution run on separate streams. Four
 intra-node CTAs cooperate on one destination at a time, first distributing local
-A, then relaying remote A. Inter-node sends use one CTA per remote node. All
-communication uses TLE remote, signal, signal_wait, and distributed_barrier;
-intra-node copies use SM load/store rather than Triton-distributed's Copy Engine.
+A, then relaying remote A. Each destination uses a separate copy kernel; an
+independent signal stream waits for that copy and publishes readiness. Only the
+first copy of a remote source waits for its arrival. Inter-node sends use one
+CTA per remote node. All communication uses TLE remote, signal, signal_wait, and
+distributed_barrier; intra-node copies use SM load/store rather than
+Triton-distributed's Copy Engine.
 Context and stream organization follow tutorials 08/09. Requires SM90 or newer.
 Inter-node PUTs transfer a complete source segment up to the runtime's tensor
 construction limit (2**25 elements in this checkout); only larger segments are
@@ -107,9 +110,9 @@ class TleAllGatherGemmContext:
     local_world_size: int
     workspace: torch.Tensor
     dist_ctx: object
-    ag_intranode_sync: torch.Tensor
     ag_intranode_stream: torch.cuda.Stream
     ag_internode_stream: torch.cuda.Stream
+    ag_signal_stream: torch.cuda.Stream
     compute_stream: torch.cuda.Stream
     num_gemm_sms: int
     config: TleAllGatherGemmConfig
@@ -158,9 +161,9 @@ def create_ag_gemm_context(max_M: int, N: int, K: int, dtype: torch.dtype, rank:
     if int(os.environ.get("LOCAL_RANK", rank % local_world_size)) != rank % local_world_size:
         raise ValueError("ranks must be contiguous within each node")
     total_sms = torch.cuda.get_device_properties("cuda").multi_processor_count
-    # All intra-node CTAs must be able to make progress through their local
-    # completion barrier, even while GEMM waits for data. This is not SM pinning.
-    ag_sms = world_size // local_world_size - 1 + (INTRA_NODE_CTAS if local_world_size > 1 else 0)
+    # Leave room for copies, notifications, and network sends to progress while
+    # GEMM may wait for their signals. This is a CTA budget, not SM pinning.
+    ag_sms = world_size // local_world_size - 1 + (INTRA_NODE_CTAS + 1 if local_world_size > 1 else 0)
     available = total_sms - ag_sms
     if num_gemm_sms is None:
         num_gemm_sms = available
@@ -173,8 +176,6 @@ def create_ag_gemm_context(max_M: int, N: int, K: int, dtype: torch.dtype, rank:
         workspace = torch.empty((max_M, K), dtype=dtype, device="cuda")
     dist_ctx = tle.create_dist_tensor(workspace)
     dist_ctx.register_buffer(workspace)
-    # Per-CTA completed phase, followed by the coordinator's published phase.
-    ag_intranode_sync = torch.zeros((INTRA_NODE_CTAS + 1, ), dtype=torch.int32, device=workspace.device)
     triton.set_allocator(lambda size, alignment, stream: torch.empty(size, device=workspace.device, dtype=torch.int8))
     ctx = TleAllGatherGemmContext(
         max_M,
@@ -186,7 +187,7 @@ def create_ag_gemm_context(max_M: int, N: int, K: int, dtype: torch.dtype, rank:
         local_world_size,
         workspace,
         dist_ctx,
-        ag_intranode_sync,
+        torch.cuda.Stream(priority=-1),
         torch.cuda.Stream(priority=-1),
         torch.cuda.Stream(priority=-1),
         torch.cuda.current_stream(),
@@ -254,74 +255,58 @@ def _all_gather_inter_node_kernel(
     )
 
 
-@triton.jit(do_not_specialize=["epoch"])
+@triton.jit(do_not_specialize=["epoch", "source_rank", "peer_local_rank"])
 def _all_gather_intra_node_kernel(
     workspace,
-    sync_ptr,
     dist_ctx: tl.constexpr,
     epoch,
-    RANK: tl.constexpr,
-    LOCAL_WORLD_SIZE: tl.constexpr,
-    WORLD_SIZE: tl.constexpr,
+    source_rank,
+    peer_local_rank,
     ELEM_PER_RANK: tl.constexpr,
     NUM_LOCAL_CHUNKS: tl.constexpr,
-    NUM_CTAS: tl.constexpr,
     BLOCK: tl.constexpr,
+    WAIT_FOR_SOURCE: tl.constexpr,
 ):
-    """Cooperate on each destination, publishing one ready signal after all CTAs."""
+    """Copy one source to one local peer; kernel completion joins all copy CTAs."""
     pid = tl.program_id(0)
+    if WAIT_FOR_SOURCE:
+        # Only direct inter-node arrivals need forwarding. Copies later in the
+        # same stream inherit this acquire and do not wait on the source again.
+        tle.signal_wait(
+            dist_ctx,
+            slot_id=source_rank,
+            wait_kind="signal",
+            target=epoch,
+            group_kind="block",
+            order="acquire",
+        )
+    segment_offset = source_rank.to(tl.int64) * ELEM_PER_RANK
+    remote_dst = tle.remote(
+        dist_ctx,
+        shard_id=peer_local_rank,
+        space="device",
+        dtype=workspace.dtype.element_ty,
+        offset=segment_offset,
+    )
     offsets = tl.arange(0, BLOCK)
-    for node_step in tl.static_range(WORLD_SIZE // LOCAL_WORLD_SIZE):
-        source_node = (RANK // LOCAL_WORLD_SIZE + WORLD_SIZE // LOCAL_WORLD_SIZE - node_step) % (WORLD_SIZE //
-                                                                                                 LOCAL_WORLD_SIZE)
-        source_rank = source_node * LOCAL_WORLD_SIZE + RANK % LOCAL_WORLD_SIZE
-        segment_offset = source_rank * ELEM_PER_RANK
-        if node_step != 0:
-            tle.signal_wait(
-                dist_ctx,
-                slot_id=source_rank,
-                wait_kind="signal",
-                target=epoch,
-                group_kind="block",
-                order="acquire",
-            )
-        # Complete one destination and publish readiness before starting another.
-        for peer_step in tl.static_range(1, LOCAL_WORLD_SIZE):
-            peer_local_rank = (RANK % LOCAL_WORLD_SIZE + LOCAL_WORLD_SIZE - peer_step) % LOCAL_WORLD_SIZE
-            remote_dst = tle.remote(
-                dist_ctx,
-                shard_id=peer_local_rank,
-                space="device",
-                dtype=workspace.dtype.element_ty,
-                offset=segment_offset,
-            )
-            for chunk_id in tl.range(pid, NUM_LOCAL_CHUNKS, NUM_CTAS):
-                block_offset = chunk_id.to(tl.int64) * BLOCK
-                mask = block_offset + offsets < ELEM_PER_RANK
-                values = tl.load(workspace + segment_offset + block_offset + offsets, mask=mask)
-                tl.store(remote_dst + block_offset + offsets, values, mask=mask)
-            # Even CTAs with no chunks participate. CTA 0 acquires all writes
-            # before publishing one remote signal; peers wait before reusing
-            # their phase slots or starting another destination's copy.
-            phase = node_step * (LOCAL_WORLD_SIZE - 1) + peer_step
-            tl.debug_barrier()
-            tl.atomic_xchg(sync_ptr + pid, phase, sem="release", scope="sys")
-            if pid == 0:
-                for cta in tl.static_range(NUM_CTAS):
-                    while tl.atomic_add(sync_ptr + cta, 0, sem="acquire", scope="sys") < phase:
-                        pass
-                tle.signal(
-                    dist_ctx,
-                    peer_local_rank,
-                    slot_id=source_rank,
-                    op="inc",
-                    space="intra_node",
-                    group_kind="block",
-                )
-                tl.atomic_xchg(sync_ptr + NUM_CTAS, phase, sem="release", scope="gpu")
-            while tl.atomic_add(sync_ptr + NUM_CTAS, 0, sem="acquire", scope="gpu") < phase:
-                pass
-            tl.debug_barrier()
+    for chunk_id in tl.range(pid, NUM_LOCAL_CHUNKS, tl.num_programs(0)):
+        block_offset = chunk_id.to(tl.int64) * BLOCK
+        mask = block_offset + offsets < ELEM_PER_RANK
+        values = tl.load(workspace + segment_offset + block_offset + offsets, mask=mask)
+        tl.store(remote_dst + block_offset + offsets, values, mask=mask)
+
+
+@triton.jit(do_not_specialize=["source_rank", "peer_local_rank"])
+def _signal_all_gather_intra_node_kernel(dist_ctx: tl.constexpr, source_rank, peer_local_rank):
+    """Publish one signal after the signal stream has waited for the copy kernel."""
+    tle.signal(
+        dist_ctx,
+        peer_local_rank,
+        slot_id=source_rank,
+        op="inc",
+        space="intra_node",
+        group_kind="block",
+    )
 
 
 @triton.jit(do_not_specialize=["epoch"])
@@ -458,9 +443,6 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
         _prepare_all_gather_kernel[(1, )](ctx.dist_ctx, ctx.world_mesh, num_warps=4)
     row_begin = ctx.rank * A.shape[0]
     ctx.workspace[row_begin:row_begin + A.shape[0]].copy_(A)
-    if ctx.local_world_size > 1:
-        # Previous sends have joined this stream, so phase slots can be reused.
-        ctx.ag_intranode_sync.zero_()
     ctx.epoch += 1
 
     cfg = ctx.config
@@ -481,26 +463,36 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
             )
     if ctx.local_world_size > 1:
         ctx.ag_intranode_stream.wait_stream(current_stream)
-        with torch.cuda.stream(ctx.ag_intranode_stream):
-            _all_gather_intra_node_kernel[(INTRA_NODE_CTAS, )](
-                ctx.workspace,
-                ctx.ag_intranode_sync,
-                ctx.dist_ctx,
-                ctx.epoch,
-                RANK=ctx.rank,
-                LOCAL_WORLD_SIZE=ctx.local_world_size,
-                WORLD_SIZE=ctx.world_size,
-                ELEM_PER_RANK=A.numel(),
-                NUM_LOCAL_CHUNKS=triton.cdiv(A.numel(), cfg.ag_block),
-                NUM_CTAS=INTRA_NODE_CTAS,
-                BLOCK=cfg.ag_block,
-                num_warps=cfg.ag_num_warps,
-            )
+        for node_step in range(ctx.nnodes):
+            source_node = (ctx.node_rank + ctx.nnodes - node_step) % ctx.nnodes
+            source_rank = source_node * ctx.local_world_size + ctx.local_rank
+            for peer_step in range(1, ctx.local_world_size):
+                peer_local_rank = (ctx.local_rank + ctx.local_world_size - peer_step) % ctx.local_world_size
+                with torch.cuda.stream(ctx.ag_intranode_stream):
+                    _all_gather_intra_node_kernel[(INTRA_NODE_CTAS, )](
+                        ctx.workspace,
+                        ctx.dist_ctx,
+                        ctx.epoch,
+                        source_rank,
+                        peer_local_rank,
+                        ELEM_PER_RANK=A.numel(),
+                        NUM_LOCAL_CHUNKS=triton.cdiv(A.numel(), cfg.ag_block),
+                        BLOCK=cfg.ag_block,
+                        WAIT_FOR_SOURCE=node_step != 0 and peer_step == 1,
+                        num_warps=cfg.ag_num_warps,
+                    )
+                # Capture this copy's completion before queuing the next one.
+                # Notifications can overlap subsequent copies in the copy stream.
+                ctx.ag_signal_stream.wait_stream(ctx.ag_intranode_stream)
+                with torch.cuda.stream(ctx.ag_signal_stream):
+                    _signal_all_gather_intra_node_kernel[(1, )](ctx.dist_ctx, source_rank, peer_local_rank,
+                                                                num_warps=cfg.ag_num_warps)
     if not overlap and ctx.world_size > 1:
         if ctx.nnodes > 1:
             current_stream.wait_stream(ctx.ag_internode_stream)
         if ctx.local_world_size > 1:
             current_stream.wait_stream(ctx.ag_intranode_stream)
+            current_stream.wait_stream(ctx.ag_signal_stream)
         _wait_all_gather_kernel[(1, )](ctx.dist_ctx, ctx.epoch, RANK=ctx.rank, WORLD_SIZE=ctx.world_size,
                                        num_warps=cfg.ag_num_warps)
 
@@ -532,6 +524,7 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
         current_stream.wait_stream(ctx.ag_internode_stream)
     if ctx.local_world_size > 1:
         current_stream.wait_stream(ctx.ag_intranode_stream)
+        current_stream.wait_stream(ctx.ag_signal_stream)
     return C
 
 
