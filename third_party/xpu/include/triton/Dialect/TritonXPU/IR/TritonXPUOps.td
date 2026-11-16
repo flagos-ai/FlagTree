@@ -800,4 +800,58 @@ def TTX_RawOp : TTX_Op<"raw", []> {
     }];
 }
 
+def TTX_GetDeviceIdOp : TTX_Op<"get_device_id", [Pure]> {
+  let arguments = (ins Optional<I64>:$comm);
+  let results = (outs I32:$result);
+}
+
+def TTX_GetLocalRankOp : TTX_Op<"get_local_rank", [Pure]> {
+  let arguments = (ins I64:$comm);
+  let results = (outs I32:$result);
+}
+
+def TTX_GetNumPesOp : TTX_Op<"get_num_pes", [Pure]> {
+  let arguments = (ins I64:$comm);
+  let results = (outs I32:$result);
+}
+
+def TTX_DistributedBarrierOp : TTX_Op<"distributed_barrier"> {
+  let arguments = (ins I64:$comm, StrAttr:$kind, I32Attr:$coopKind,
+                   I32Attr:$barrierIndex, I32Attr:$order);
+  let hasVerifier = 1;
+}
+
+def TTX_RemotePointerOp : TTX_Op<"remote_pointer", [Pure]> {
+  let arguments = (ins I64:$memory, I32:$peer, I64:$offset,
+                   I32Attr:$elementBytes);
+  let results = (outs TT_Ptr:$result);
+  let hasVerifier = 1;
+}
+
+// Binds FlagCX's xshmem device state. Required once before the first xshmem op
+// in a kernel: the FlagCX device entry points do not bind on their own (see
+// kunlunxin/ir_views.h:flagcxDevInit).
+def TTX_DeviceInitOp : TTX_Op<"device_init"> {
+  let arguments = (ins I64:$comm);
+}
+
+// FlagCX signal: publish a remote slot update. $contextId selects the signal
+// arena and $slot the slot within it; $addend is present exactly when
+// $signalKind is "add".
+def TTX_SignalOp : TTX_Op<"signal"> {
+  let arguments = (ins I64:$comm, I32:$peer, I32:$slot, Optional<I64>:$addend,
+                   StrAttr:$signalKind, I32Attr:$teamKind, I32Attr:$coopKind,
+                   I32Attr:$contextId, I32Attr:$scope);
+  let hasVerifier = 1;
+}
+
+// FlagCX signal wait: "signal" and "counter" compare against $least; "shadow"
+// reads its target from FlagCX's local shadow buffer and takes no $least.
+def TTX_SignalWaitOp : TTX_Op<"signal_wait"> {
+  let arguments = (ins I64:$comm, I32:$slot, Optional<I64>:$least,
+                   StrAttr:$waitKind, I32Attr:$coopKind, I32Attr:$contextId,
+                   I32Attr:$order);
+  let hasVerifier = 1;
+}
+
 #endif // TRITONXPU_OPS

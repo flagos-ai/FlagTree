@@ -70,6 +70,7 @@ if enabled:
     atexit.register(_cleanup_flagcx_allocator_wrapper)
     flagcx = FLAGCXLibrary(so_file=_libflagcx_path())
     global comm, rank, dev_mem, dev_comm, win
+    dev_comm = None
 
     flagcx_allocator_source = """
     #include <flagcx.h>
@@ -77,7 +78,7 @@ if enabled:
 
     void* flagcx_alloc_plug(size_t size, int device, void* stream) {
     void* ptr = nullptr;
-    flagcxResult_t err = flagcxMemAlloc(&ptr, size);
+    flagcxResult_t err = flagcxMemAlloc(&ptr, size, flagcxMemSHMEM);
     if (err != flagcxSuccess) {
         return nullptr;
     }
@@ -86,7 +87,7 @@ if enabled:
 
     void flagcx_free_plug(void* ptr, size_t size, int device, void* stream) {
     if (ptr != nullptr) {
-        flagcxMemFree(ptr);
+        flagcxMemFree(ptr, flagcxMemSHMEM);
     }
     }
 
@@ -141,6 +142,10 @@ def compile_flagcx_allocator():
             "flagcx_free_plug",
         )
 
+        # torch_xmlir's per-mempool routing stops working once
+        # flagcxCommInitRank has initialized the native caching allocator, so
+        # switch process-wide before the first torch CUDA allocation.
+        torch.cuda.memory.change_current_allocator(_allocator_wrapper)
         _allocator = _allocator_wrapper.allocator()
 
     except Exception as e:
@@ -152,13 +157,14 @@ def compile_flagcx_allocator():
 
 
 def get_mem_pool():
-    init_communicator()
     """Return a cached PyTorch MemPool backed by flagcxMemAlloc."""
     global _mem_pool, _flagcx_allocator_failed_to_compile
     if _mem_pool is None and not _flagcx_allocator_failed_to_compile:
         compile_flagcx_allocator()
         if _allocator is not None:
             _mem_pool = torch.cuda.MemPool(_allocator)
+    if _mem_pool is not None:
+        init_communicator()
     return _mem_pool
 
 
@@ -191,7 +197,10 @@ def init_communicator():
     global comm, rank, _init_communicator_
     if enabled and _init_communicator_:
         return
-    dist.init_process_group(backend="nccl")
+    if FLAGTREE_BACKEND == "xpu":
+        dist.init_process_group(backend="kccl")
+    else:
+        dist.init_process_group(backend="nccl")
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     local_rank = int(os.environ.get("LOCAL_RANK", rank))
@@ -204,12 +213,15 @@ def init_communicator():
         unique_id = flagcx.flagcxGetUniqueId()
         id_bytes = bytes(unique_id.internal)
     else:
-        id_bytes = b"\x00" * 256
+        id_bytes = None
 
-    # Broadcast unique_id bytes via torch distributed
-    id_tensor = torch.frombuffer(bytearray(id_bytes), dtype=torch.uint8).cuda()
-    dist.broadcast(id_tensor, src=0)
-    id_bytes = id_tensor.cpu().numpy().tobytes()
+    # Broadcast on the host: the first torch CUDA allocation has to happen
+    # after xshmem is up, and a device broadcast would allocate through the
+    # already-switched flagcx allocator too early.
+    id_list = [id_bytes]
+    cpu_group = dist.new_group(backend="gloo")
+    dist.broadcast_object_list(id_list, src=0, group=cpu_group)
+    id_bytes = id_list[0]
 
     if rank != 0:
         unique_id = flagcx.unique_id_from_bytes(id_bytes)
@@ -217,19 +229,11 @@ def init_communicator():
     # Init FlagCX communicator
     comm = flagcx.flagcxCommInitRank(world_size, unique_id, rank)
     print(f"[Rank {rank}] FlagCX comm initialized")
+    _ensure_dev_comm()
     _init_communicator_ = True
 
 
-def create_dist_tensor(buf_tensor):
-    global comm, rank, dev_mem, dev_comm, win
-    buf_ptr = buf_tensor.data_ptr()
-    buf_size = buf_tensor.numel() * buf_tensor.element_size()
-
-    # Register buffer with symmetric window for LSA
-    win = flagcx.flagcxCommWindowRegister(comm, buf_ptr, buf_size, flags=FLAGCX_WIN_COLL_SYMMETRIC)
-    print(f"[Rank {rank}] Window registered (symmetric)")
-
-    # Create DevComm with 1 intra barrier
+def _make_dev_comm_requirements():
     reqs = flagcxDevCommRequirements()
     reqs.intraMulticast = False
     reqs.barrierCount = 8
@@ -241,9 +245,26 @@ def create_dist_tensor(buf_tensor):
     reqs.interContextCount = 4
     reqs.interSignalCount = 8
     reqs.interCounterCount = 8
+    return reqs
 
-    dev_comm = flagcx.flagcxDevCommCreate(comm, reqs)
-    print(f"[Rank {rank}] DevComm created")
+
+def _ensure_dev_comm():
+    global dev_comm
+    if dev_comm is None:
+        dev_comm = flagcx.flagcxDevCommCreate(comm, _make_dev_comm_requirements())
+        print(f"[Rank {rank}] DevComm created")
+
+
+def create_dist_tensor(buf_tensor):
+    global comm, rank, dev_mem, dev_comm, win
+    buf_ptr = buf_tensor.data_ptr()
+    buf_size = buf_tensor.numel() * buf_tensor.element_size()
+
+    # Register buffer with symmetric window for LSA
+    win = flagcx.flagcxCommWindowRegister(comm, buf_ptr, buf_size, flags=FLAGCX_WIN_COLL_SYMMETRIC, allocator=1)
+    print(f"[Rank {rank}] Window registered (symmetric)")
+
+    _ensure_dev_comm()
 
     # Create DevMem (with window)
     dev_mem = flagcx.flagcxDevMemCreate(comm, buf_ptr, buf_size, win)

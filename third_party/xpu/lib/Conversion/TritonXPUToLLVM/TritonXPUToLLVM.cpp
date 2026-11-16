@@ -7,6 +7,7 @@
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Conversion/TritonXPUToLLVM/FlagCxOpToLLVM/FlagCxOpToLLVM.h"
 #include "PatternTritonXPUOpToLLVM.h"
 
 // #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
@@ -181,6 +182,10 @@ struct ConvertTritonXPUToLLVM
     // merged into the module at the LLVM 19 stage (tle/raw/merge.py).
     mlir::triton::xpu::populateRawOpToLLVMPatterns(typeConverter, patterns,
                                                    benefit);
+    mlir::triton::xpu::populateRemotePointerOpToLLVMPatterns(typeConverter,
+                                                             patterns, benefit);
+    mlir::triton::xpu::populateFlagCxOpToLLVMPatterns(typeConverter, patterns,
+                                                      benefit);
 
     // TODO(thomas): this should probably be done in a separate step to not
     // interfere with our own lowering of arith ops. Add arith/math's patterns

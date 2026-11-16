@@ -38,7 +38,7 @@ macro(flagtree_configure_options)
   endif()
 
   set(FLAGCX_ENABLED OFF)
-  set(FLAGCX_SUPPORT_BACKENDS nvidia iluvatar)
+  set(FLAGCX_SUPPORT_BACKENDS nvidia iluvatar xpu)
   if(NOT FLAGTREE_BACKEND OR
      "${FLAGTREE_BACKEND}" IN_LIST FLAGCX_SUPPORT_BACKENDS)
     add_compile_definitions(FLAGCX_ENABLED)
@@ -827,7 +827,9 @@ endmacro()
 # libstdc++ archive, and the repeated public-LLVM archives.
 macro(flagtree_configure_backend_triton_target target)
   if(FLAGTREE_BACKEND STREQUAL "xpu")
-    target_compile_definitions(${target} PRIVATE TRITON_CONCEAL_IR=1)
+    if(TRITON_XPU_CONCEAL_IR)
+      target_compile_definitions(${target} PRIVATE TRITON_CONCEAL_IR=1)
+    endif()
   endif()
   # Link the GCC 11 static libstdc++ archive after all LLVM archives.
   if(DEFINED _GCC11_LIBSTDCXX AND _GCC11_LIBSTDCXX)

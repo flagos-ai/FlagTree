@@ -321,6 +321,77 @@ OpFoldResult BroadcastOp::fold(FoldAdaptor adaptor) {
   return {};
 }
 
+LogicalResult DistributedBarrierOp::verify() {
+  auto kind = getKindAttr().getValue();
+  if (kind != "sync" && kind != "arrive" && kind != "wait")
+    return emitOpError("kind must be sync, arrive, or wait");
+  auto coopKind = getCoopKindAttr().getInt();
+  if (coopKind < 0 || coopKind > 2)
+    return emitOpError("coopKind must be thread (0), warp (1), or block (2)");
+  if (getBarrierIndexAttr().getInt() < 0)
+    return emitOpError("barrierIndex must be non-negative");
+  auto order = getOrderAttr().getInt();
+  if (order < 0 || order > 3)
+    return emitOpError(
+        "order must be relaxed (0), acquire (1), release (2), or acq_rel (3)");
+  return success();
+}
+
+LogicalResult SignalOp::verify() {
+  auto kind = getSignalKindAttr().getValue();
+  if (kind != "inc" && kind != "add")
+    return emitOpError("signalKind must be inc or add");
+  if ((kind == "add") != (getAddend() != nullptr))
+    return emitOpError("add takes an addend operand and inc takes none");
+  auto teamKind = getTeamKindAttr().getInt();
+  if (teamKind < 0 || teamKind > 2)
+    return emitOpError("teamKind must be intra (0), inter (1), or world (2)");
+  auto coopKind = getCoopKindAttr().getInt();
+  if (coopKind < 0 || coopKind > 2)
+    return emitOpError("coopKind must be thread (0), warp (1), or block (2)");
+  if (getContextIdAttr().getInt() < 0)
+    return emitOpError("contextId must be non-negative");
+  auto scope = getScopeAttr().getInt();
+  if (scope < 0 || scope > 3)
+    return emitOpError("scope must be system (0), device (1), block (2), or "
+                       "thread (3)");
+  return success();
+}
+
+LogicalResult SignalWaitOp::verify() {
+  auto kind = getWaitKindAttr().getValue();
+  if (kind != "signal" && kind != "counter" && kind != "shadow")
+    return emitOpError("waitKind must be signal, counter, or shadow");
+  if ((kind == "shadow") == (getLeast() != nullptr))
+    return emitOpError("signal and counter take a least operand and shadow "
+                       "takes none");
+  auto coopKind = getCoopKindAttr().getInt();
+  if (coopKind < 0 || coopKind > 2)
+    return emitOpError("coopKind must be thread (0), warp (1), or block (2)");
+  if (getContextIdAttr().getInt() < 0)
+    return emitOpError("contextId must be non-negative");
+  auto order = getOrderAttr().getInt();
+  if (order < 0 || order > 3)
+    return emitOpError(
+        "order must be relaxed (0), acquire (1), release (2), or acq_rel (3)");
+  return success();
+}
+
+LogicalResult RemotePointerOp::verify() {
+  auto ptr = cast<triton::PointerType>(getResult().getType());
+  if (ptr.getAddressSpace() != 1)
+    return emitOpError("result must be a global pointer in address space 1");
+  auto pointee = ptr.getPointeeType();
+  if (!pointee.isIntOrFloat())
+    return emitOpError("result pointee must be a scalar integer or float");
+  unsigned bitWidth = pointee.getIntOrFloatBitWidth();
+  if (bitWidth < 8 || bitWidth % 8 ||
+      getElementBytesAttr().getInt() != bitWidth / 8)
+    return emitOpError(
+        "elementBytes must match the byte-addressable result pointee");
+  return success();
+}
+
 } // namespace xpu
 } // namespace triton
 } // namespace mlir

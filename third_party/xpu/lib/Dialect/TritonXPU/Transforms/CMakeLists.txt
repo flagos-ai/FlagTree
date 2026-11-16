@@ -1,4 +1,5 @@
 add_triton_library(TritonXPUTransforms
+  AddDistributedParams.cpp
   Alloca.cpp
   AsyncLoadSchedule.cpp
   CoreTiling.cpp
