@@ -1,4 +1,8 @@
 TLE_SUPPORTED_PRIMITIVES = [
+    ## TLE-Raw
+    "raw.call",
+    "raw.call_smem",
+
     ## TLE-Lite
     "load",
     "extract_tile",

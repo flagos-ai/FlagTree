@@ -52,19 +52,24 @@ Some backends support multiple Triton versions; only the latest version is shown
 
 FlagTree extension components are currently available on some backends:
 
-|Branch  |Backend|Triton version|Extension components|
-|:-------|:------|:-------------|:-------------------|
-|[main](https://github.com/flagos-ai/flagtree/tree/main)|[nvidia](/third_party/nvidia/)<br>[enflame](/third_party/enflame/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct GPU](https://github.com/flagos-ai/FlagTree/wiki/TLE#331-gpu)<br>[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
-|[main](https://github.com/flagos-ai/flagtree/tree/main)|[amd](/third_party/amd/)<br>[mthreads](/third_party/mthreads/)<br>[sunrise](/third_party/sunrise/)<br>[hcu](/third_party/hcu/)<br>[iluvatar](/third_party/iluvatar/)<br>[ppu](/third_party/ppu/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct GPU](https://github.com/flagos-ai/FlagTree/wiki/TLE#331-gpu)|
-|[main](https://github.com/flagos-ai/flagtree/tree/main)|[metax](/third_party/metax/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)|
-|[main](https://github.com/flagos-ai/flagtree/tree/main)|[tsingmicro](https://github.com/flagos-ai/FlagTree/blob/main/third_party/tsingmicro/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct DSA](https://github.com/flagos-ai/FlagTree/wiki/TLE#332-dsa)<br>[FLIR](https://github.com/flagos-ai/flir)|
-|[triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)|[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/third_party/ascend/)|3.5|[TLE-Struct DSA](https://github.com/flagos-ai/FlagTree/wiki/TLE#332-dsa)<br>[FLIR](https://github.com/flagos-ai/flir)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
-|[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|[aipu](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/third_party/aipu/)|3.3|[FLIR](https://github.com/flagos-ai/flir)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
+|Backend|Triton<br>version|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)|[TLE-Struct](https://github.com/flagos-ai/FlagTree/wiki/TLE#33-tle-struct)|[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw)|CommonIR|
+|:------|:------|:------|:------|:------|:------|
+|[nvidia](/third_party/nvidia/)|3.6|✅|✅|✅|✅|
+|[amd](/third_party/amd/)|3.6|✅|✅|||
+|[enflame](/third_party/enflame/)|3.6|✅|✅|✅||
+|[iluvatar](/third_party/iluvatar/)|3.6|✅|✅|✅||
+|[hcu](/third_party/hcu/)|3.6|✅|✅|✅||
+|[mthreads](/third_party/mthreads/)|3.6|✅|✅||
+|[thrive](/third_party/thrive/)|3.6|✅|✅|||
+|[metax](/third_party/metax/)|3.6|✅|✅|||
+|[sunrise](/third_party/sunrise/)|3.6|✅|✅|||
+|[xpu](/third_party/xpu/)|3.6||✅|✅||
+|[ppu](/third_party/ppu/)|3.6|✅|✅|✅||
+|[spacemit](/third_party/spacemit/)|3.6|✅||||
+|[tsingmicro](/third_party/tsingmicro/)|3.6|✅|✅|||
+|[ascend](/third_party/ascend/)|3.5||✅|✅|✅|
 
 ## TLE (Triton Language Extensions)
-
-If you want to use TLE on the NVIDIA backend, please use the main branch.
-For other backends, please refer to the table above.
 
 Triton provides strong productivity for kernel development, but heterogeneous AI chips and deeper performance tuning scenarios need more explicit control over distributed execution, memory access patterns, and hardware-specific primitives.
 TLE extends Triton in a layered way to bridge this gap while keeping compatibility with existing Triton workflows.
@@ -159,20 +164,15 @@ General building and installation procedure (Recommended for environments with g
 
 ```shell
 # Set FLAGTREE_BACKEND using the backend name from the table above
-export FLAGTREE_BACKEND=${backend_name}  # Do not set it on nvidia/amd/triton-shared
-
-# For Triton 3.1/3.2/3.3 (branch: triton_v3.1.x, triton_v3.2.x, triton_v3.3.x)
-cd python; python3 -m pip install . --no-build-isolation -v  # Install flagtree and uninstall triton
-
-# For Triton 3.4/3.5/3.6 (branch: triton_v3.4.x, triton_v3.5.x, main)
-python3 -m pip install . --no-build-isolation -v             # Install flagtree and uninstall triton
+export FLAGTREE_BACKEND=${backend_name}  # Do not set it on nvidia
+python3 -m pip install . --no-build-isolation -v  # Install flagtree and uninstall triton
 ```
 
 After installing `flagtree`, you can check it with:
 
 ```shell
 python3 -m pip show flagtree
-cd ${ANY_DIR_OTHER_THAN_FLAGTREE_PYTHON}; python3 -c 'import triton; print(triton.__path__)'
+python3 -c 'import triton; print(triton.__path__)'
 ```
 
 ## Source-free Installation
