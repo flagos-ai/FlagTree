@@ -296,6 +296,7 @@ function(flagtree_add_distributed_plugin)
       ${PYTHON_DIST_SRC_PATH}/triton_distributed.cc
       ${PYTHON_DIST_SRC_PATH}/passes.cc
       ${PYTHON_DIST_SRC_PATH}/ir.cc)
+    add_dependencies(TritonDistributed LLVMIRIncGen)
     target_link_libraries(
       TritonDistributed
       PRIVATE DistributedIR SIMTIR ProtonIR Python3::Module pybind11::headers)
