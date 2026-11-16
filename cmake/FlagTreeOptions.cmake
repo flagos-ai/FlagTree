@@ -120,7 +120,7 @@ endmacro()
 macro(flagtree_configure_flagprism)
   set(_flagprism_default OFF)
   # FlagPrism: enable the external tools for supported backends.
-  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame)$")
+  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax)$")
     set(_flagprism_default ON)
   endif()
   option(TRITON_BUILD_FLAGPRISM
@@ -130,10 +130,10 @@ macro(flagtree_configure_flagprism)
   if(TRITON_BUILD_FLAGPRISM)
     # FlagPrism: allow the default NVIDIA build and supported named backends.
     if(FLAGTREE_BACKEND AND
-       NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame)$")
+       NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax)$")
       message(FATAL_ERROR
         "TRITON_BUILD_FLAGPRISM is only supported when "
-        "FLAGTREE_BACKEND is ascend, iluvatar, mthreads, or enflame.")
+        "FLAGTREE_BACKEND is ascend, iluvatar, mthreads, enflame, or metax.")
     endif()
     if(TRITON_BUILD_PROTON)
       message(FATAL_ERROR

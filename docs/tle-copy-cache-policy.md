@@ -123,7 +123,7 @@ fields retain their existing lowering. TMA preserves its L2 policy and still
 rejects explicit cache operators or L1 fields. TMA has a separate instruction
 contract from non-bulk `cp.async`.
 
-For a selected non-bulk `cp.async`, the final per-thread transfer width decides
+In FlagTree's default NVIDIA build, the final per-thread transfer width of a non-bulk `cp.async` decides
 the cache operator, after layout/vectorization and mask analysis:
 
 | Requested load modifier | 16 bytes | 4 or 8 bytes |
@@ -131,9 +131,9 @@ the cache operator, after layout/vectorization and mask analysis:
 | `ca` | `ca` | `ca` |
 | Omitted, `cg`, `cs`, `lu`, `cv` | `cg` | `ca` |
 
-This follows upstream Triton's instruction selection. In particular,
-`cs -> cg` is an instruction-specific adaptation, not equivalent streaming
-semantics. `cg -> ca` for a narrow copy no longer produces a compile error.
+These width rules already apply on FlagTree `main` for legacy cache modifiers.
+For example, the instruction uses `cg` for a 16-byte `cs` request and `ca` for
+a narrow `cg` request. The compiler reports the adjustment for explicit hints.
 
 | Requested eviction | Effective non-bulk `cp.async` control |
 | --- | --- |
@@ -142,10 +142,12 @@ semantics. `cg -> ca` for a narrow copy no longer produces a compile error.
 | Native L2 `evict_normal/first/last/unchanged` | L2 policy at PTX 9.4+, otherwise omitted |
 | Legacy `eviction_policy="evict_first"/"evict_last"` | L2 policy at PTX 9.4+, otherwise omitted; the legacy values are not L1-only |
 
-The PTX gate follows upstream's ptxas cache-hint operand workaround, not the
-first ISA version that introduced the operand. It reuses the NVIDIA target's
-already selected PTX version at final lowering; no `ttg.ptx-version` attribute
-or extra compiler option is needed.
+FlagTree `main` uses the selected PTX version to guard the cache-hint operand
+against a ptxas miscompilation. The native L2 policy uses the same threshold.
+Builds without `__FLAGTREE_PIPELINE_ENHANCE__` retain upstream handling of
+legacy controls. They accept only omitted, `ca` or `cg` modifiers, pass explicit
+`ca`/`cg` through, and apply legacy `evict_first`/`evict_last` without a PTX
+version gate. The new explicitly scoped L2 policies still require PTX 9.4.
 
 TLE additionally omits L2 hints on async copies produced by its
 load-to-local-pointer-store rewrite when the copy is unmasked or belongs to
@@ -464,28 +466,20 @@ Hints change cache/instruction controls, not synchronization or visibility.
 This interface does not promise that cache lines survive another launch.
 
 
-## 中文：精简后的编译约定
+## 中文编译约定
 
-公开入口仍为 `tle.gpu.copy(..., cache_policy=...)` 和本分支扩展的
-`tl.load/store(..., cache_policy=...)`。各平台使用自己的原生策略类。
-对象在前端校验目标、方向和搬运路径，然后转换为既有 ODS `cache` / `evict`
-字段。普通 modifier、PPU AIU 模式及 MThreads LSU 三元组都有明确的枚举表示。
-旧 `evict_first/last` 的含义不变，NV L2-only 使用 `l2_evict_first/last`。
+FlagTree 上游的 MThreads descriptor-to-shared `tle.gpu.copy` 已支持
+`TMECachePolicy`。本扩展在 `tle.gpu.copy` 以及普通 `tl.load`、
+`tl.store` 上提供各后端原生策略。前端校验目标、方向与搬运路径，
+并将普通 modifier、PPU AIU 模式和 MThreads LSU 三元组编码到 ODS
+`cache` / `evict` 字段。改写须转发这些字段。TMA store 和 TLE TMA
+载体增加了带默认值的 `evict` 字段，旧 `evict_first/last` 保留上游语义。
 
-已删除策略字典、位置标记、builder 监听器和手工 `copyCachePolicy`。
-大多数改写直接沿用原有 `getCache()/getEvict()` 参数；TMA store 和 TLE TMA
-载体只补充缺失的默认 `evict` 字段。改写仍须传递正式字段，不能假定 ODS 会
-自动替任意新建指令补参数。
-
-NV 本轮收窄：`fraction` 只允许 1，`secondary` 只允许 `evict_unchanged`；
-不再支持 prefetch 或同时设置独立的 L1 与 L2 eviction。这些配置在构造时
-报错。单独 L1、单独 L2、合法的 modifier + L2、TMA first/last 保留。
-其他四个平台的原生取值范围保持不变。显式 HCU 空 modifier 规范化为
-load `ca` / store `wb`；它不再强制编译器保留 generic global 路径。
-最终约定是：先按原有布局、宽度和调度规则选择指令，再按该指令能力转换 hint。
-合法 hint 不再阻止 async、AIU 或 HCU buffer 转换，也不再因此编译失败。
-无法表达的部分改为该路径支持的控制或省略，并通过 MLIR remark 报告位置、
-请求值、实际值和原因。省略 hint 不表示语义等价，更不保证保留原先的性能收益。
+NVIDIA 的 `fraction` 支持 1，`secondary` 支持 `evict_unchanged`。
+构造器校验 prefetch 以及 L1 和 L2 同时设置的组合。HCU 显式空 modifier
+对应 load `ca`、store `wb`。编译器按布局、宽度和调度选择访存指令，
+再按指令支持的字段应用 hint。发生转换时，MLIR remark 会给出位置、
+请求策略、有效策略和原因。
 如需显示诊断，使用已有的 `MLIR_ENABLE_DIAGNOSTICS=remarks`，并在新的
 `TRITON_CACHE_DIR` 下触发编译；默认诊断级别和缓存命中不会显示 remark。
 
@@ -493,7 +487,7 @@ load `ca` / store `wb`；它不再强制编译器保留 generic global 路径。
 | --- | --- |
 | NV 普通 `ld.global/st.global` | 保留已支持的原生 modifier、单层 eviction |
 | NV TMA | 保留 L2；显式 L1、modifier 仍是非法请求 |
-| NV 非 bulk `cp.async` | 显式 `ca` 保留；其他 load modifier 在 16B 下变为 `cg`，4/8B 下变为 `ca`；L1 eviction 省略。L2 在 PTX≥9.4 时保留；TLE 的 load→local-pointer store 融合在无 mask 或无循环 worker 中仍省略 L2 |
+| NV 默认构建的非 bulk `cp.async` | 显式 `ca` 保留；其他 load modifier 在 16B 下变为 `cg`，4/8B 下变为 `ca`；L1 eviction 省略。L2 在 PTX≥9.4 时保留；TLE 的 load→local-pointer store 融合在无 mask 或无循环 worker 中仍省略 L2 |
 | MThreads LSU／TME | 普通 LSU 原生三元组、TME persistence/prefetch 各自保留 |
 | MThreads `memcpy.g2s` | 使用该异步指令默认控制，不把 LSU 三元组改名为 TME persistence |
 | PPU LSU | 保留已有 modifier→kp 映射及方向限制 |
@@ -506,9 +500,10 @@ load `ca` / store `wb`；它不再强制编译器保留 generic global 路径。
 
 后端、方向、非法值、显式 descriptor 路径和危险 PPU kp7 等检查保留。
 与 hint 无关的结构性同步回退仍保留原 `cache/evict` 字段。
-NV PTX 判断直接使用最终 lowering 的目标信息，删除了额外的
-`ttg.ptx-version` module attr。旧 `cache_modifier` / `eviction_policy`
-通过同一组正式字段遵循相同转换规则。省略策略仍走原默认路径。
+NV 使用最终 lowering 的目标 PTX 版本。关闭 `__FLAGTREE_PIPELINE_ENHANCE__`
+的构建延用上游对旧 modifier 和 eviction 的处理。新增的显式 L2 策略要求
+PTX 9.4 或更高。省略策略时沿用上游默认路径。
+
 
 实现依据：[上游 NVIDIA lowering](https://github.com/triton-lang/triton/blob/698e39e0d1e528043351f36a95007f75ea929ae8/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp#L1121-L1185)、
 [上游 L1 省略与窄 cg 转 ca 测试](https://github.com/triton-lang/triton/blob/698e39e0d1e528043351f36a95007f75ea929ae8/test/Conversion/tritongpu_to_llvm.mlir#L1087-L1183)。

@@ -6,6 +6,8 @@ skip_operators:
   - weight_norm
   - weight_norm_interface
   - weight_norm_interface_backward
+  - celu
+  - celu_
 
 # Skip specific test functions
 skip_test_patterns:

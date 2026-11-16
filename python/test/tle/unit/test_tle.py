@@ -6,7 +6,6 @@ Tests core functionality of TLE module, including:
 - Memory allocation (alloc)
 - Async copy (copy)
 - Local pointer materialization (local_ptr)
-- Pipeline iterator (pipeline)
 - Type system
 """
 
@@ -150,6 +149,10 @@ def _cuda_backend_available():
 
 class TestLayoutEncoding:
     """Test layout encoding"""
+
+    def test_layout_attachment_uses_existing_gpu_api(self):
+        assert callable(tle.gpu.set_layout)
+        assert not hasattr(tle, "encoding")
 
     def test_swizzled_shared_layout_default(self):
         """Test default swizzled shared layout creation"""
@@ -365,37 +368,6 @@ class TestCopyFrontend:
 
         with pytest.raises(ValueError, match="GPU CommonIR copy does not yet support other"):
             tle.gpu.copy(src, buffer, [16], mask=True, other=float("-inf"), _semantic=semantic)
-
-
-class TestPipeline:
-    """Test pipeline iterator"""
-
-    def test_pipeline_single_arg(self):
-        """Test single argument pipeline creation"""
-        pipe = tle.gpu.pipeline(10)
-        assert pipe.start == 0
-        assert pipe.end == 10
-        assert pipe.step == 1
-
-    def test_pipeline_range_args(self):
-        """Test range argument pipeline creation"""
-        pipe = tle.gpu.pipeline(2, 8)
-        assert pipe.start == 2
-        assert pipe.end == 8
-        assert pipe.step == 1
-
-    def test_pipeline_with_step(self):
-        """Test pipeline creation with step"""
-        pipe = tle.gpu.pipeline(0, 10, 2)
-        assert pipe.start == 0
-        assert pipe.end == 10
-        assert pipe.step == 2
-
-    def test_pipeline_with_options(self):
-        """Test pipeline creation with options"""
-        pipe = tle.gpu.pipeline(0, 10, 1, num_stages=2, loop_unroll_factor=4)
-        assert pipe.num_stages == 2
-        assert pipe.loop_unroll_factor == 4
 
 
 class TestWarpSpecializeFrontend:
@@ -633,6 +605,7 @@ class TestBufferedTensor:
         assert hasattr(tle.gpu.buffered_tensor, '_flatten_ir')
         assert hasattr(tle.gpu.buffered_tensor, 'make_permute')
         assert hasattr(tle.gpu.buffered_tensor, 'slot')
+        assert hasattr(tle.gpu.buffered_tensor, 'subslice')
 
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot")
     def test_buffered_tensor_slot_indexes_leading_dimension(self):
@@ -716,6 +689,36 @@ class TestBufferedTensor:
 
         with pytest.raises(ValueError, match="out of range"):
             buffer.subslice(start, length, dim, _semantic=semantic)
+
+    @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
+    def test_buffered_tensor_subslice_preserves_allocation_shape(self):
+        buffer, semantic = self._make_buffer([32, 1024])
+
+        view = buffer.subslice([16, 0], [8, 1024], _semantic=semantic)
+
+        assert view.handle == "subslice_handle"
+        assert view.shape == [8, 1024]
+        assert view.type.alloc_shape == [32, 1024]
+        assert semantic.builder.memdesc_subslice_args == (
+            ("memdesc", (8, 1024), "fp16", "fake_layout", "smem", (32, 1024)),
+            "base",
+            [16, 0],
+        )
+
+    @pytest.mark.parametrize(
+        ("offsets", "shape", "message"),
+        [
+            ((0, ), (8, 1024), "match the buffer rank"),
+            ((25, 0), (8, 1024), "outside extent"),
+            ((4, 0), (8, 1024), "aligned power-of-two"),
+            ((0, 0), (6, 1024), "aligned power-of-two"),
+        ],
+    )
+    def test_buffered_tensor_subslice_rejects_invalid_static_views(self, offsets, shape, message):
+        buffer, semantic = self._make_buffer([32, 1024])
+
+        with pytest.raises(ValueError, match=message):
+            buffer.subslice(offsets, shape, _semantic=semantic)
 
 
 class TestCachePolicyFrontend:
@@ -1104,7 +1107,6 @@ class TestIntegration:
         assert not hasattr(tle.gpu, 'pipe')
         assert hasattr(tle.gpu, 'copy')
         assert hasattr(tle.gpu, 'local_ptr')
-        assert hasattr(tle.gpu, 'pipeline')
         assert hasattr(tle.gpu, 'storage_kind')
         assert hasattr(tle.gpu, 'buffered_tensor')
         assert hasattr(tle.gpu, 'alloc_barriers')
@@ -1115,6 +1117,7 @@ class TestIntegration:
         assert hasattr(tle.gpu, 'READY')
         assert not hasattr(tle.gpu, 'barrier_expect_bytes')
         assert "barrier" in inspect.signature(tle.gpu.copy).parameters
+        assert "shape" in inspect.signature(tle.gpu.local_ptr).parameters
 
     def test_tle_functions_have_docstrings(self):
         """Test TLE functions have docstrings"""
@@ -1123,7 +1126,6 @@ class TestIntegration:
         assert tle.gpu.alloc.__doc__ is not None
         assert tle.gpu.copy.__doc__ is not None
         assert tle.gpu.local_ptr.__doc__ is not None
-        assert tle.gpu.pipeline.__doc__ is not None
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
     def test_tle_with_cuda(self):

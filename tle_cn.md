@@ -1118,7 +1118,7 @@ tle.gpu.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
 ```
 
 - Signature: `tle.gpu.copy(src, dst, shape, offsets=None, barrier=None, mask=None, cache_policy=None, other=None)`
-- `cache_policy` 接受后端原生策略。`tle.gpu.CachePolicy(cache_modifier=None, l1=None, l2=None, l2_prefetch_size=None)` 专用于 NVIDIA，字段表达原生 PTX 控制；不再接受通用意图字符串及 `backend` 参数。
+- `cache_policy` 接受后端原生策略。`tle.gpu.CachePolicy(cache_modifier=None, l1=None, l2=None, l2_prefetch_size=None)` 专用于 NVIDIA，字段直接指定原生 PTX modifier 和 eviction，构造器按 NVIDIA 策略类型校验参数。
 - 省略参数或传 Python `None` 保持既有默认路径。NVIDIA `CachePolicy()` 空构造报错；其他原生默认构造保持原语义。MThreads 字符串 `"none"` 是 persistence 值，与 Python `None` 不同。
 - 静态对象不可变，支持 host/JIT 构造、按值特化和 constexpr worker 转发。策略字段必须是编译期值。每个策略只作用于本次 copy 的 global-memory 端，不改变同步语义。
 - 后端、架构、方向、路径或完整指令组合不支持时明确报错。正式 cache/evict 字段在中间改写中保留，最终 lowering 按所选指令能力保留支持的控制，无法表达的部分转换或省略并输出 MLIR remark。

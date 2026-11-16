@@ -3,10 +3,10 @@
 TLE End-to-End Integration Tests
 
 Tests complete workflow of TLE pipeline functionality in real GPU environment:
-- Memory allocation (tle.gpu.alloc)
-- Copying between GM and shared memory (tle.gpu.copy)
-- Shared-memory pointer materialization (tle.gpu.local_ptr + tl.load/store)
-- Pipeline iterator (tle.gpu.pipeline)
+- Memory allocation (tle.dsa.alloc)
+- Copying between GM and shared memory (tle.dsa.copy)
+- Shared-memory pointer materialization (tle.dsa.local_ptr + tl.load/store)
+- Pipeline iterator (tle.dsa.pipeline)
 - Integration with Triton JIT
 """
 

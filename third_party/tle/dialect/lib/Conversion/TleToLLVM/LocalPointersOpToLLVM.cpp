@@ -92,8 +92,7 @@ static LLVM::LLVMFuncOp getOrInsertGetPeerPointer(ModuleOp module,
     return func;
   auto i32Ty = IntegerType::get(ctx, 32);
   auto i64Ty = IntegerType::get(ctx, 64);
-  auto floatTy = Float32Type::get(ctx);
-  auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto PtrTy = LLVM::LLVMPointerType::get(ctx);
 
   auto funcType =
       LLVM::LLVMFunctionType::get(PtrTy, {PtrTy, i64Ty, i32Ty}, false);
@@ -442,27 +441,20 @@ LogicalResult lowerDeviceSpace(Location loc, Value mem_ptr,
     return failure();
 
   auto ctx = rewriter.getContext();
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
-
-  Value comm_dev_ptr = rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, memPtr);
-
-  auto isGlobalAddrSpace = [&](auto ptrTy) -> bool {
-    auto addrSpace = ptrTy.getAddressSpace();
-    return addrSpace == static_cast<unsigned>(NVVM::NVVMMemorySpace::Global);
-  };
-
-  if (!isGlobalAddrSpace(ptrTy))
-    return failure();
+  auto genericPtrTy = LLVM::LLVMPointerType::get(ctx);
+  auto globalPtrTy = LLVM::LLVMPointerType::get(
+      ctx, static_cast<unsigned>(NVVM::NVVMMemorySpace::Global));
+  Value comm_dev_ptr =
+      rewriter.create<LLVM::IntToPtrOp>(loc, genericPtrTy, memPtr);
 
   auto getPeerPtrCall = rewriter.create<LLVM::CallOp>(
       loc, TypeRange{func.getFunctionType().getReturnType()},
       FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr, byteOffset, peer});
 
-  Value peerPtr = getPeerPtrCall.getResult();
-  auto peerPtrTy = dyn_cast<LLVM::LLVMPointerType>(peerPtr.getType());
-
-  if (!isGlobalAddrSpace(peerPtrTy))
-    return failure();
+  // The external C ABI returns a generic pointer. The remote tensor remains
+  // global memory, so restore AS1 explicitly at the call boundary.
+  Value peerPtr = rewriter.create<LLVM::AddrSpaceCastOp>(
+      loc, globalPtrTy, getPeerPtrCall.getResult());
   resultPtrs.push_back(peerPtr);
 
   return success();

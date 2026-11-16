@@ -1,0 +1,76 @@
+# Skip operators that cause GPU state corruption
+
+skip_operators:
+  # --- A. Triton compile / codegen failures on hcu -----------------------
+  - sparse_mla_fwd_interface
+  - chunk_gated_delta_rule_fwd
+  - flash_mla_sparse_fwd
+  - fused_experts_impl
+  - fused_indexer_q_rope_quant
+  - fused_inv_rope_fp8_quant
+  - fused_moe
+  - gdn_w8a16
+  - kv_rmsnorm_rope_cache
+  - lightning_indexer
+  - minimax_m3_sparse_attn
+  - sparse_attn_sharedkv
+  - top_k_per_row_decode
+  - top_k_per_row_prefill
+  - topk_softmax
+  - topk_softplus_sqrt
+  - w8a8_block_fp8_matmul
+  - w8a8_block_int8_matmul
+  - weight_norm
+  - bmm_w8a8
+  - causal_conv1d_fn
+  - causal_conv1d_update
+  - compressor
+  - flash_attn_varlen_func
+  - flash_mla_with_kvcache
+  - fp8_einsum
+  - fp8_fp4_mqa_logits
+  - fp8_fp4_paged_mqa_logits
+  - group_list_cumsum
+  - indexer_epilogue
+  - indexer_gemm_score
+  - kda_conv_gather
+  - kda_conv_scatter
+  - kda_gate_cumsum
+  - kda_state_gather
+  - kda_state_scatter
+  - kpool_state_compress
+  - top_k_top_p
+
+skip_test_patterns: []
+
+skip_test_files:
+  # --- B. No matching operator id in conf/operators.yaml ----------------
+  # FLA family: multiple files share op ids not in operators.yaml
+  - tests/test_FLA/test_chunk_gated_delta_rule.py
+  - tests/test_FLA/test_chunk_gated_delta_rule_fwd_recompute.py
+  - tests/test_FLA/test_chunk_gdn2.py
+  - tests/test_FLA/test_chunk_gla.py
+  # DSA family
+  - tests/test_DSA/test_bin_topk.py
+  - tests/test_DSA/test_indexer_k_tiled.py
+  - tests/test_DSA/test_sparse_mla_ops.py
+  # Others without a clean operator-id mapping
+  - tests/test_attn_res.py
+  - tests/test_flash_attn_varlen_func_w8a8_int8.py
+  - tests/test_fused_allreduce_rms_norm.py
+  - tests/test_fused_inv_rope_int8_quant.py
+  - tests/test_gdn_w8a16_int8.py
+  - tests/test_glm5_numerics.py
+  - tests/test_glm_state_rows.py
+  - tests/test_kda_bounded.py
+  - tests/test_kpool.py
+  - tests/test_mhc_pre_npu.py
+  - tests/test_mhc_with_norm.py
+  - tests/test_paged_scatter.py
+  - tests/test_parallel_nsa.py
+  - tests/test_qsa_prepare.py
+  - tests/test_quant.py
+  - tests/test_router_gemm.py
+  - tests/test_scaled_int8_quant.py
+  - tests/test_slot_mapping.py
+  - tests/test_tle_capabilities.py

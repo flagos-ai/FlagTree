@@ -25,7 +25,6 @@ from ._nvidia_cache_policy import (
     FractionalEvictionPolicy,
 )
 from .core import (
-    pipeline,
     range,
     alloc,
     alloc_barrier,
@@ -54,7 +53,6 @@ __all__ = [
     "hcu",
     "metax",
     "ppu",
-    "pipeline",
     "range",
     "alloc",
     "alloc_barrier",

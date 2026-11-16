@@ -238,7 +238,7 @@ struct LoadStoreConversionBase {
     return ptrElemTy && isSharedFamilyAddressSpace(ptrElemTy.getAddressSpace());
   }
 
-  unsigned getMaxVectorSizeByAlignment(Value ptr) const {
+  unsigned getMaxVectorSizeByAxisInfo(Value ptr) const {
     auto tensorTy = dyn_cast<RankedTensorType>(ptr.getType());
     if (!tensorTy)
       return 1;
@@ -258,7 +258,8 @@ struct LoadStoreConversionBase {
     unsigned maxMultipleBytes = axisInfo->getDivisibility(order[0]);
     unsigned maxMultiple = std::max<unsigned>(maxMultipleBytes / elemBytes, 1);
 
-    return std::min<unsigned>(128 / pointeeBitWidth, maxMultiple);
+    unsigned contiguous = axisInfo->getContiguity(order[0]);
+    return std::min({128 / pointeeBitWidth, maxMultiple, contiguous});
   }
 
   unsigned getTleSharedPointerVectorSize(Value ptr, unsigned vec) const {
@@ -266,11 +267,12 @@ struct LoadStoreConversionBase {
       return vec;
 
     // AxisInfo contiguity and TLE layout hints may both propose vectorized
-    // shared-memory accesses. They are legal only up to the width whose first
-    // element alignment is proven by AxisInfo divisibility.
+    // shared-memory accesses. Both pointer contiguity and first-element
+    // alignment must be proven; contiguous registers alone do not prove that
+    // gathered pointers address adjacent memory elements.
     unsigned hint = tte::inferTlePointerLayoutVectorHint(ptr);
-    unsigned alignmentBound = getMaxVectorSizeByAlignment(ptr);
-    return std::min(std::max(vec, hint), alignmentBound);
+    unsigned axisBound = getMaxVectorSizeByAxisInfo(ptr);
+    return std::min(std::max(vec, hint), axisBound);
   }
 #endif
 
@@ -1451,6 +1453,13 @@ struct AsyncCopyGlobalToLocalOpConversion
              << vecBytes << " bytes";
     }
     assert(vecBytes == 16 || vecBytes == 8 || vecBytes == 4);
+#ifndef __FLAGTREE_PIPELINE_ENHANCE__
+    if (op.getCache() != CacheModifier::NONE &&
+        op.getCache() != CacheModifier::CA &&
+        op.getCache() != CacheModifier::CG)
+      return op.emitError("cp.async supports only ca/cg cache modifiers");
+#endif
+
     auto freeVarMasks = getFreeVariableMasks(srcTy);
     // NOTE(@peterbell10): We load redundant data on different CTAs, so the data
     // is available in each CTAs respective shared memory. Otherwise, we would
@@ -1459,10 +1468,15 @@ struct AsyncCopyGlobalToLocalOpConversion
     Value threadPred =
         emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
 
-    // Keep the selected transport. Like upstream, cp.async only consumes
-    // L2 eviction on toolchains where its cache-hint operand is safe.
     auto evict =
         getNvidiaAsyncEvictionPolicy(op.getEvict(), targetInfo.getPtxVersion());
+#ifndef __FLAGTREE_PIPELINE_ENHANCE__
+    // Preserve upstream's unversioned lowering of the two legacy policies.
+    // Explicit L2 policies introduced by TLE still require PTX 9.4.
+    if (op.getEvict() == EvictionPolicy::EVICT_FIRST ||
+        op.getEvict() == EvictionPolicy::EVICT_LAST)
+      evict = op.getEvict();
+#endif
     Value l2PolicyReg =
         createCachePolicy(evict, rewriter, loc, computeCapability);
     llvm::SmallDenseSet<unsigned> reportedWidths;
@@ -1478,6 +1492,10 @@ struct AsyncCopyGlobalToLocalOpConversion
       assert(nBytes == 16 || nBytes == 8 || nBytes == 4);
       auto srcCacheModifier =
           getNvidiaAsyncCacheModifier(op.getCache(), nBytes);
+#ifndef __FLAGTREE_PIPELINE_ENHANCE__
+      if (op.getCache() != CacheModifier::NONE)
+        srcCacheModifier = op.getCache();
+#endif
       auto effectiveCache = op.getCache() == CacheModifier::NONE
                                 ? CacheModifier::NONE
                                 : srcCacheModifier;
