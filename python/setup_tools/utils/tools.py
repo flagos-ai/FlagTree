@@ -127,18 +127,26 @@ def remove_triton_in_modules(model):
         shutil.rmtree(triton_path)
 
 
-def decompress(url, content, dst_path, file_name=None):
-    file_bytes = BytesIO(content)
+def _decompress(url, source, dst_path, file_name=None, source_is_path=False):
     file_names = []
     if url.endswith(".zip"):
-        with zipfile.ZipFile(file_bytes, "r") as file:
+        with zipfile.ZipFile(source, "r") as file:
             file.extractall(path=dst_path)
             file_names = file.namelist()
     else:
-        with tarfile.open(fileobj=file_bytes, mode="r|*") as file:
+        open_args = {"name": source, "mode": "r:*"} if source_is_path else {"fileobj": source, "mode": "r|*"}
+        with tarfile.open(**open_args) as file:
             file.extractall(path=dst_path)
             file_names = file.getnames()
     os.rename(Path(dst_path) / file_names[0], Path(dst_path) / file_name)
+
+
+def decompress(url, content, dst_path, file_name=None):
+    _decompress(url, BytesIO(content), dst_path, file_name)
+
+
+def decompress_file(url, archive_path, dst_path, file_name=None):
+    _decompress(url, archive_path, dst_path, file_name, source_is_path=True)
 
 
 def get_triton_cache_path():
