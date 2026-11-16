@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sysconfig
 from pathlib import Path
+from typing import Optional
 import logging
 import platform
 from triton.tools.get_ascend_devices import is_compile_on_910_95
@@ -316,7 +317,11 @@ def _is_debug_line_info_disabled() -> bool:
     return os.getenv("TRITON_DISABLE_LINE_INFO", "true").lower() in ("true", "1")
 
 
-def _is_auto_map_parallel_blocks_enabled() -> bool:
+def _is_auto_map_parallel_blocks_enabled(enable_auto_blockify: Optional[bool] = None) -> bool:
+    # Use the same policy for the compiler loop and the launcher's block count.
+    # An explicit per-kernel option takes precedence over the environment.
+    if enable_auto_blockify is not None:
+        return enable_auto_blockify
     return os.getenv("TRITON_ALL_BLOCKS_PARALLEL", "false").lower() in ("true", "1")
 
 

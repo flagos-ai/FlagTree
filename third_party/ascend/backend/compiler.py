@@ -553,13 +553,8 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
             _compile_option_list += \
                 [f"--enable-tuning-mode={enable_tuning_mode}"]
 
-        enable_auto_blockify = metadata["enable_auto_blockify"]
-        if _is_auto_map_parallel_blocks_enabled():
-            if (enable_auto_blockify is None or enable_auto_blockify):
-                _compile_option_list += ["--enable-auto-blockify-loop"]
-        else:
-            if enable_auto_blockify:
-                _compile_option_list += ["--enable-auto-blockify-loop"]
+        if _is_auto_map_parallel_blocks_enabled(metadata["enable_auto_blockify"]):
+            _compile_option_list += ["--enable-auto-blockify-loop"]
 
         npu_compiler_path, env = _get_npucompiler_path()
         if npu_compiler_path.endswith("bishengir-compile"):
@@ -812,7 +807,7 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             _compile_option_list += \
                 [f"--enable-tuning-mode={enable_tuning_mode}"]
 
-        if _is_auto_map_parallel_blocks_enabled():
+        if _is_auto_map_parallel_blocks_enabled(metadata["enable_auto_blockify"]):
             _compile_option_list += ["--enable-auto-blockify-loop"]
         npu_compiler_path, env = _get_npucompiler_path()
         if npu_compiler_path.endswith("bishengir-compile"):
@@ -895,6 +890,7 @@ class NPUOptions:
     reg_inc_consumer: int = 0
 
     auto_blockify_size: int = 1
+    # Explicit True/False overrides TRITON_ALL_BLOCKS_PARALLEL; None inherits it.
     enable_auto_blockify: bool = None
     compile_on_910_95: bool = is_compile_on_910_95
     optimize_dynamic_offset: bool = False
@@ -1045,16 +1041,8 @@ def ttir_to_npubin(mod, metadata, opt):
                 if bisheng_options is not None:
                     _compile_option_list += [f"--append-bisheng-options={bisheng_options}"]
 
-            # Enable SIMT auto-blockify if user opted in, or if the env var is
-            # set and the user didn't explicitly opt out (matches the SIMD path
-            # at line ~541).
-            enable_auto_blockify = opt.enable_auto_blockify
-            if _is_auto_map_parallel_blocks_enabled():
-                if enable_auto_blockify is None or enable_auto_blockify:
-                    _compile_option_list += ["--enable-auto-blockify-loop"]
-            else:
-                if enable_auto_blockify:
-                    _compile_option_list += ["--enable-auto-blockify-loop"]
+            if _is_auto_map_parallel_blocks_enabled(opt.enable_auto_blockify):
+                _compile_option_list += ["--enable-auto-blockify-loop"]
 
         npu_compiler_path, env = _get_npucompiler_path()
         cmd_list = ([npu_compiler_path, src_path] + _compile_option_list + ["-o", bin_file])
