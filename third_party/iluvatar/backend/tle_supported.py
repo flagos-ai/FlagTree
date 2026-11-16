@@ -1,6 +1,9 @@
 TLE_SUPPORTED_PRIMITIVES = [
+    ## TLE-Raw
     "raw.call",
     "raw.call_smem",
+
+    ## TLE-Lite
     "load",
     "extract_tile",
     "insert_tile",
@@ -18,8 +21,10 @@ TLE_SUPPORTED_PRIMITIVES = [
     "pipe.writer.acquire",
     "pipe.writer.commit",
     "pipe.writer.close",
-    "gpu.alloc",
+
+    ## TLE-Struct GPU
     "gpu.buffered_tensor.slot",
+    "gpu.alloc",
     "gpu.copy",
     "gpu.local_ptr",
     "gpu.memory_space",
