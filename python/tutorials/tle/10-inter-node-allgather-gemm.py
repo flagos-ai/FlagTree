@@ -56,6 +56,18 @@ MAX_NODE_TRANSFER_ELEMENTS = tl.TRITON_MAX_TENSOR_NUMEL
 INTRA_NODE_CTAS = 4
 
 
+def _debug(message):
+    if os.environ.get("TLE_AG_GEMM_DEBUG") == "1":
+        print(f"[Rank {os.environ.get('RANK', '?')}] AG GEMM: {message}", flush=True)
+
+
+def _debug_sync(message):
+    if os.environ.get("TLE_AG_GEMM_DEBUG") == "1":
+        _debug(f"{message}: waiting for GPU completion")
+        torch.cuda.synchronize()
+        _debug(f"{message}: completed")
+
+
 def get_node_transfer_config(elements_per_rank: int) -> tuple[int, int]:
     """Use one network PUT per segment unless it exceeds the construction limit."""
     if elements_per_rank <= 0:
@@ -451,16 +463,19 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
         raise OverflowError("signal epoch exhausted")
 
     C = torch.empty((M, ctx.N // ctx.world_size), dtype=ctx.dtype, device=A.device)
+    _debug(f"epoch={ctx.epoch + 1} overlap={overlap}: submit prepare/local copy")
     if ctx.world_size > 1:
         _prepare_all_gather_kernel[(1, )](ctx.dist_ctx, ctx.world_mesh, num_warps=4)
     row_begin = ctx.rank * A.shape[0]
     ctx.workspace[row_begin:row_begin + A.shape[0]].copy_(A)
     ctx.epoch += 1
+    _debug("prepare/local copy submitted")
 
     cfg = ctx.config
     if ctx.nnodes > 1:
         node_block, num_node_chunks = get_node_transfer_config(A.numel())
         ctx.ag_internode_stream.wait_stream(current_stream)
+        _debug("launch inter-node transfer")
         with torch.cuda.stream(ctx.ag_internode_stream):
             _all_gather_inter_node_kernel[(ctx.nnodes - 1, )](
                 ctx.workspace,
@@ -473,6 +488,7 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
                 NODE_BLOCK=node_block,
                 num_warps=cfg.ag_num_warps,
             )
+        _debug("inter-node transfer submitted")
     if ctx.local_world_size > 1:
         ctx.ag_intranode_stream.wait_stream(current_stream)
         for node_step in range(ctx.nnodes):
@@ -480,6 +496,7 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
             source_rank = source_node * ctx.local_world_size + ctx.local_rank
             for peer_step in range(1, ctx.local_world_size):
                 peer_local_rank = (ctx.local_rank + ctx.local_world_size - peer_step) % ctx.local_world_size
+                _debug(f"launch intra-node copy source={source_rank} peer={peer_local_rank}")
                 with torch.cuda.stream(ctx.ag_intranode_stream):
                     _all_gather_intra_node_kernel[(INTRA_NODE_CTAS, )](
                         ctx.workspace,
@@ -493,13 +510,17 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
                         WAIT_FOR_SOURCE=node_step != 0 and peer_step == 1,
                         num_warps=cfg.ag_num_warps,
                     )
+                _debug(f"intra-node copy submitted source={source_rank} peer={peer_local_rank}")
                 # Capture this copy's completion before queuing the next one.
                 # Notifications can overlap subsequent copies in the copy stream.
                 ctx.ag_signal_stream.wait_stream(ctx.ag_intranode_stream)
+                _debug(f"launch notification source={source_rank} peer={peer_local_rank}")
                 with torch.cuda.stream(ctx.ag_signal_stream):
                     _signal_all_gather_intra_node_kernel[(1, )](ctx.dist_ctx, source_rank, peer_local_rank,
                                                                 num_warps=cfg.ag_num_warps)
+                _debug(f"notification submitted source={source_rank} peer={peer_local_rank}")
     if not overlap and ctx.world_size > 1:
+        _debug("submit serial AllGather wait")
         if ctx.nnodes > 1:
             current_stream.wait_stream(ctx.ag_internode_stream)
         if ctx.local_world_size > 1:
@@ -507,8 +528,10 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
             current_stream.wait_stream(ctx.ag_signal_stream)
         _wait_all_gather_kernel[(1, )](ctx.dist_ctx, ctx.epoch, RANK=ctx.rank, WORLD_SIZE=ctx.world_size,
                                        num_warps=cfg.ag_num_warps)
+        _debug_sync("serial AllGather")
 
     num_tiles = triton.cdiv(M, cfg.block_m) * triton.cdiv(C.shape[1], cfg.block_n)
+    _debug("launch GEMM")
     kernel_ag_gemm_consumer_persistent[(min(ctx.num_gemm_sms, num_tiles), )](
         ctx.workspace,
         B,
@@ -533,6 +556,7 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
         num_warps=cfg.num_warps,
         num_stages=cfg.num_stages,
     )
+    _debug("GEMM submitted")
     if ctx.nnodes > 1:
         current_stream.wait_stream(ctx.ag_internode_stream)
     if ctx.local_world_size > 1:
@@ -578,6 +602,9 @@ def _parse_args(argv=None):
     parser.add_argument("--iters", type=int, default=50, help="Benchmark iterations; zero disables timing.")
     parser.add_argument("--trans-b", action="store_true", help="Back B with contiguous [N/world_size, K].")
     parser.add_argument("--gemm-sms", type=int)
+    parser.add_argument("--serial-only", action="store_true", help="Check and benchmark only the serial TLE path.")
+    parser.add_argument("--debug", action="store_true",
+                        help="Print launch stages and synchronize check stages; use --iters 0.")
     defaults = _default_config()
     for field in dataclasses.fields(TleAllGatherGemmConfig):
         parser.add_argument("--" + field.name.replace("_", "-"), type=int, default=getattr(defaults, field.name))
@@ -589,9 +616,13 @@ def _parse_args(argv=None):
 
 def main():
     args = _parse_args()
+    if args.debug:
+        os.environ["TLE_AG_GEMM_DEBUG"] = "1"
     ctx = None
     try:
+        _debug("initialize communicator")
         tle.get_mem_pool()
+        _debug("communicator initialized; create context")
         rank, world_size = dist.get_rank(), dist.get_world_size()
         local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", world_size))
         config = TleAllGatherGemmConfig(
@@ -600,6 +631,7 @@ def main():
         dtype = {"bf16": torch.bfloat16, "fp16": torch.float16}[args.dtype]
         ctx = create_ag_gemm_context(args.M, args.N, args.K, dtype, rank, world_size, local_world_size, config,
                                      args.gemm_sms)
+        _debug_sync("context initialization")
         torch.manual_seed(1234 + rank)
         A = torch.empty((args.M // world_size, args.K), dtype=dtype, device="cuda")
         B_storage = torch.empty((args.N // world_size, args.K) if args.trans_b else (args.K, args.N // world_size),
@@ -609,9 +641,12 @@ def main():
             # Rank-specific, changing values detect stale signals and buffer reuse.
             A.normal_(mean=rank * 0.02 + iteration * 0.01, std=0.1)
             B_storage.normal_(std=0.1)
+            _debug(f"check={iteration}: launch Torch reference")
             reference = torch_ag_gemm(A, B)
-            for overlap in (True, False):
+            _debug_sync("Torch reference")
+            for overlap in ((False, ) if args.serial_only else (False, True)):
                 output = ag_gemm(A, B, ctx, overlap=overlap)
+                _debug_sync(f"TLE overlap={overlap}")
                 _rs._assert_close_on_all_ranks(
                     output,
                     reference,
@@ -622,7 +657,8 @@ def main():
                 )
         if rank == 0:
             print(
-                f"PASS: {args.check_iters} changing-input checks, both overlapped and serial TLE; "
+                f"PASS: {args.check_iters} changing-input checks, "
+                f"{'serial TLE' if args.serial_only else 'both overlapped and serial TLE'}; "
                 f"world={world_size}, local_world={local_world_size}, "
                 f"gemm_ctas={ctx.num_gemm_sms}, config={dataclasses.asdict(config)}", flush=True)
         if args.iters:
@@ -632,6 +668,8 @@ def main():
                 ("serial TLE AG + GEMM", lambda: ag_gemm(A, B, ctx, overlap=False)),
                 ("overlapped TLE AG + GEMM", lambda: ag_gemm(A, B, ctx)),
             ):
+                if args.serial_only and name == "overlapped TLE AG + GEMM":
+                    continue
                 timings[name] = _time_ms(fn, args.warmup, args.iters)
             if rank == 0:
                 for name, duration in timings.items():
