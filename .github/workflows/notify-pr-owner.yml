@@ -42,6 +42,7 @@ on:
       - "Amd3.6-Build-And-Test"
       - "Amd3.6-Gems-Baseline"
       - "Amd3.6-Gems-Test"
+      - "Code-Format-Check"
       - "Enflame3.6-GCU300-Build-And-Test"
       - "Enflame3.6-GCU300-Gems-Baseline"
       - "Enflame3.6-GCU300-Gems-Test"
@@ -118,6 +119,14 @@ jobs:
         id: settled
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # head_branch and head_repository are author-controlled strings for a
+          # fork PR, so they travel as env vars: interpolating them into the
+          # script below would let a branch name break out into shell.
+          WF_NAME: ${{ github.event.workflow_run.name }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          HEAD_REF: ${{ github.event.workflow_run.head_branch }}
         run: |
           set -uo pipefail
           RUN_ID=${{ github.event.workflow_run.id }}
@@ -146,6 +155,45 @@ jobs:
             echo "Already on attempt $ATTEMPT, this event is stale."
             echo "proceed=false" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+
+          # Code-Format-Check fixes what it can and pushes the result itself,
+          # inside the failing job, so by the time this event arrives the
+          # branch may already carry a newer commit. A superseded failure is
+          # either already fixed or about to be re-judged by the run on that
+          # newer commit: either way this message would be stale.
+          #
+          # Deliberately limited to this workflow and to pull_request.
+          #
+          # Only this workflow pushes a fix itself, so only here does a moved
+          # head mean the failing code was changed.
+          #
+          # The event restriction matters for this workflow too, since it also
+          # runs on push to main: there the head is refs/heads/main, which
+          # moves whenever anyone merges any PR, so a moved head says nothing
+          # about this failure and checking it would silence real format
+          # failures on main. A pull_request run follows a feature branch,
+          # which only this PR's own commits can move, so a moved head does
+          # mean this failure has been superseded.
+          #
+          # Unreadable head means notify: a message too many is noise, a
+          # failure swallowed is worse.
+          if [[ "$WF_NAME" == "Code-Format-Check" && "$EVENT" == "pull_request" ]]; then
+            if [[ -n "$HEAD_REPO" && -n "$HEAD_REF" ]]; then
+              CURRENT=$(gh api "repos/$HEAD_REPO/branches/$HEAD_REF" --jq '.commit.sha' 2>/dev/null | tr -d '\n' || true)
+              # gh prints the JSON error body on stdout for a 4xx, so a deleted
+              # branch arrives as `{"message":"Branch not found",...}` with a
+              # non-zero status. Only a real commit id may suppress; anything
+              # else falls through to notifying.
+              if [[ "$CURRENT" =~ ^[0-9a-f]{40}$ && "$CURRENT" != "$HEAD_SHA" ]]; then
+                echo "Head moved from $HEAD_SHA to $CURRENT, this failure is superseded."
+                echo "proceed=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "Head is still ${HEAD_SHA} (read '${CURRENT}'), nothing fixed it automatically."
+            else
+              echo "No head repository or branch on this run, cannot check for a fix; notifying."
+            fi
           fi
 
           echo "proceed=true" >> "$GITHUB_OUTPUT"
