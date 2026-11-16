@@ -246,7 +246,9 @@ class IluvatarFlagCXRegistrar(FlagCXRegistrar):
         return super()._compile_and_cache()
 
     def _copy_required_files(self):
-        src = Path(self.flagcx_src_dir) / "plugin" / "interservice" / "flagcx_wrapper.py"
+        src = Path(self.flagcx_src_dir) / "src" / "flagcx" / "api.py"
+        if not src.is_file():
+            src = Path(self.flagcx_src_dir) / "plugin" / "interservice" / "flagcx_wrapper.py"
         dst = Path(self.flagtree_dir) / "python" / "triton" / "experimental" / "tle" / "language" / "flagcx_wrapper.py"
         shutil.copy(src, dst)
         printinfo(f"flagcx_wrapper.py copied from {src} to {dst}")
