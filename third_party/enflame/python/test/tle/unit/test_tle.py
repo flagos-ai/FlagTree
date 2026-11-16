@@ -239,10 +239,13 @@ class TestCopyFrontend:
     def test_copy_signature(self):
         parameters = inspect.signature(tle.gpu.copy).parameters
         assert list(parameters) == [
-            "src", "dst", "shape", "offsets", "barrier", "mask", "cache_policy", "other", "_semantic"
+            "src", "dst", "shape", "offsets", "barrier", "mask", "cache_policy", "other", "is_async", "eviction_policy",
+            "_semantic"
         ]
         assert parameters["cache_policy"].default is None
         assert parameters["other"].default is None
+        assert parameters["is_async"].default is False
+        assert parameters["eviction_policy"].default == ""
 
     @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
     @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy")
