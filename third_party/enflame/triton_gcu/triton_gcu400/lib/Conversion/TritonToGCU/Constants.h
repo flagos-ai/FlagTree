@@ -17,8 +17,8 @@
 #ifndef KURAMA_TRITONGPU_TO_GCU_CONSTANTS_H
 #define KURAMA_TRITONGPU_TO_GCU_CONSTANTS_H
 
-#include <climits>
 #include <cstdint>
+#include <climits>
 
 namespace mlir {
 

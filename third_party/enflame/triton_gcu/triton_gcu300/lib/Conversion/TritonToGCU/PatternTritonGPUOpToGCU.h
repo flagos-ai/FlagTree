@@ -32,7 +32,7 @@ struct GCUInfo {
 };
 
 static const GCUInfo targetInfo[] = {{128, false, 4}, {512, false, 1}};
-} // namespace
+}  // namespace
 
 namespace mlir {
 namespace triton {
@@ -40,27 +40,30 @@ namespace triton {
 namespace gcu {
 class FirstLastUserAnalysis;
 class PrivateDTETagPool;
-} // namespace gcu
+}
 
 void populateReduceOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateDTETagPool &pTagPool, bool enable_i64 = false);
+    triton::gcu::PrivateDTETagPool &pTagPool,
+    bool enable_i64 = false);
 
 void populateElementwiseFusionOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateDTETagPool &pTagPool, bool enable_i64 = false);
+    triton::gcu::PrivateDTETagPool &pTagPool,
+    bool enable_i64 = false);
 
 void populateScanOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateDTETagPool &pTagPool, bool enable_i64 = false);
+    triton::gcu::PrivateDTETagPool &pTagPool,
+    bool enable_i64 = false);
 
-} // namespace triton
-} // namespace mlir
+}  // namespace triton
+}  // namespace mlir
 
 #endif

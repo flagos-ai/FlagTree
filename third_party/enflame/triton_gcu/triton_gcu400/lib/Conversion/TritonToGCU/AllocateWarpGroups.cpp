@@ -18,8 +18,8 @@
 
 #include "Constants.h"
 
-#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "Utils/TritonVersionCompat.h"
 #include "llvm/Support/DebugLog.h"
 
 #define DEBUG_TYPE "gcu-allocate-warp-groups"
@@ -38,8 +38,8 @@ using namespace mlir::triton::gpu;
 
 namespace {
 
-// 1 Given a `ttg.warp_specialize` with a certain number of existing warps, pad
-// it with extra warps until it has the same number of full warp groups as the
+// 1 Given a `ttg.warp_specialize` with a certain number of existing warps, pad it
+// with extra warps until it has the same number of full warp groups as the
 // largest partitioning. This ensures that all threads can be present to
 // surrender registers.
 // 2 set warpGroupStartIds
@@ -275,7 +275,8 @@ public:
       SmallVector<int32_t> maxnregsPerPartition(1 + arr.size());
       for (const WarpGroupInfo &wg : warpGroups) {
         for (Region *region : wg.partitions) {
-          maxnregsPerPartition[region->getRegionNumber()] = wg.maxRequestedRegs;
+          maxnregsPerPartition[region->getRegionNumber()] =
+              wg.maxRequestedRegs;
         }
       }
 

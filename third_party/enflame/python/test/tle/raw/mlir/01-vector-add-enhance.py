@@ -44,7 +44,8 @@ def _cidx(idx, v):
 
 
 def _extsi(val, ty):
-    return ir.Operation.create("arith.extsi", operands=[val], results=[ty]).result
+    return ir.Operation.create(
+        "arith.extsi", operands=[val], results=[ty]).result
 
 
 def _unroll_tar_add_interleaved(cx, cy, co, stride_tar, vec128xf32, count):
@@ -79,7 +80,8 @@ def _unroll_tar_add_batched(cx, cy, co, stride_tar, vec128xf32, count):
 
 
 def _trunci(val, ty):
-    return ir.Operation.create("arith.trunci", operands=[val], results=[ty]).result
+    return ir.Operation.create(
+        "arith.trunci", operands=[val], results=[ty]).result
 
 
 def _cidx_val(v):
@@ -88,7 +90,8 @@ def _cidx_val(v):
     return arith.constant(idx, ir.IntegerAttr.get(idx, v))
 
 
-def _make_edsl(block_size: int, num_sm: int = NUM_SM, use_batched: bool = False, nw: int = 4, uf: int = None):
+def _make_edsl(block_size: int, num_sm: int = NUM_SM, use_batched: bool = False,
+               nw: int = 4, uf: int = None):
     """Factory: DTE+L1+TAR persistent kernel.
 
     Args:
@@ -162,8 +165,11 @@ def _make_edsl(block_size: int, num_sm: int = NUM_SM, use_batched: bool = False,
         lane_off = arith.muli(lane, c_epl_idx)
         lane_off_i32 = arith.index_cast(i32, lane_off)
         thread_l1_base = arith.muli(lane, _cidx(idx, per_thread_l1))
-        lx_a, gx_a = gcu.view_local(raw_l1, f32, elems_per_lane, thread_l1_base)
-        ly_a, gy_a = gcu.view_local(raw_l1, f32, elems_per_lane, arith.addi(thread_l1_base, _cidx(idx, buf_bytes)))
+        lx_a, gx_a = gcu.view_local(raw_l1, f32, elems_per_lane,
+                                      thread_l1_base)
+        ly_a, gy_a = gcu.view_local(raw_l1, f32, elems_per_lane,
+                                      arith.addi(thread_l1_base,
+                                                 _cidx(idx, buf_bytes)))
 
         stride_tar = gcu.tar_init(c_stride)
 
@@ -183,18 +189,28 @@ def _make_edsl(block_size: int, num_sm: int = NUM_SM, use_batched: bool = False,
             rem_gt0 = arith.cmpi(arith.CmpIPredicate.sgt, rem_i32, c0_i32)
             if_op = scf.IfOp(rem_gt0)
             with ir.InsertionPoint(if_op.then_block):
-                x_ptr = gcu.int2ptr(arith.addi(x_base, byte_off), gcu_ptr_f32)
+                x_ptr = gcu.int2ptr(arith.addi(x_base, byte_off),
+                                    gcu_ptr_f32)
                 x_src_dyn = gcu.ptr2memref(x_ptr, memref_dyn_f32)
-                x_src = memref_d.reinterpret_cast(memref_epl_f32, x_src_dyn, offsets=[], sizes=[], strides=[],
-                                                  static_offsets=[0], static_sizes=[elems_per_lane], static_strides=[1])
-                y_ptr = gcu.int2ptr(arith.addi(y_base, byte_off), gcu_ptr_f32)
+                x_src = memref_d.reinterpret_cast(
+                    memref_epl_f32, x_src_dyn,
+                    offsets=[], sizes=[], strides=[],
+                    static_offsets=[0], static_sizes=[elems_per_lane],
+                    static_strides=[1])
+                y_ptr = gcu.int2ptr(arith.addi(y_base, byte_off),
+                                    gcu_ptr_f32)
                 y_src_dyn = gcu.ptr2memref(y_ptr, memref_dyn_f32)
-                y_src = memref_d.reinterpret_cast(memref_epl_f32, y_src_dyn, offsets=[], sizes=[], strides=[],
-                                                  static_offsets=[0], static_sizes=[elems_per_lane], static_strides=[1])
+                y_src = memref_d.reinterpret_cast(
+                    memref_epl_f32, y_src_dyn,
+                    offsets=[], sizes=[], strides=[],
+                    static_offsets=[0], static_sizes=[elems_per_lane],
+                    static_strides=[1])
 
-                gcu.slice_pad_async(dte, gx_a, x_src, [c0_i32], [rem_i32], zero_f32)
+                gcu.slice_pad_async(dte, gx_a, x_src,
+                                    [c0_i32], [rem_i32], zero_f32)
                 gcu.wait_dte(dte)
-                gcu.slice_pad_async(dte, gy_a, y_src, [c0_i32], [rem_i32], zero_f32)
+                gcu.slice_pad_async(dte, gy_a, y_src,
+                                    [c0_i32], [rem_i32], zero_f32)
                 gcu.wait_dte(dte)
 
                 x_l1 = gcu.ptr2int(gcu.memref2ptr(lx_a, gcu_ptr_f32))
@@ -202,27 +218,33 @@ def _make_edsl(block_size: int, num_sm: int = NUM_SM, use_batched: bool = False,
                 x_tar = gcu.tar_init(x_l1)
                 y_tar = gcu.tar_init(y_l1)
 
-                is_full = arith.cmpi(arith.CmpIPredicate.sge, rem_i32, c_epl_i32)
+                is_full = arith.cmpi(arith.CmpIPredicate.sge,
+                                     rem_i32, c_epl_i32)
                 if_full = scf.IfOp(is_full, hasElse=True)
                 with ir.InsertionPoint(if_full.then_block):
                     out_off = arith.muli(goff_i64, c4_i64)
-                    out_tar = gcu.tar_init(arith.addi(out_base_i64, out_off))
+                    out_tar = gcu.tar_init(arith.addi(out_base_i64,
+                                                       out_off))
 
                     c_step_idx = _cidx(idx, inner_step)
-                    inner_f = scf.ForOp(c0_idx, c_epl_idx, c_step_idx, [x_tar, y_tar, out_tar])
+                    inner_f = scf.ForOp(c0_idx, c_epl_idx, c_step_idx,
+                                        [x_tar, y_tar, out_tar])
                     with ir.InsertionPoint(inner_f.body):
                         cx = inner_f.inner_iter_args[0]
                         cy = inner_f.inner_iter_args[1]
                         co = inner_f.inner_iter_args[2]
 
-                        cx, cy, co = _unroll_fn(cx, cy, co, stride_tar, vec128xf32, unroll_factor)
+                        cx, cy, co = _unroll_fn(
+                            cx, cy, co, stride_tar, vec128xf32,
+                            unroll_factor)
 
                         scf.yield_([cx, cy, co])
 
                     scf.yield_([])
 
                 with ir.InsertionPoint(if_full.else_block):
-                    inner_p = scf.ForOp(c0_idx, c_epl_idx, c128_idx, [x_tar, y_tar])
+                    inner_p = scf.ForOp(c0_idx, c_epl_idx, c128_idx,
+                                        [x_tar, y_tar])
                     with ir.InsertionPoint(inner_p.body):
                         cx = inner_p.inner_iter_args[0]
                         cy = inner_p.inner_iter_args[1]
@@ -231,10 +253,12 @@ def _make_edsl(block_size: int, num_sm: int = NUM_SM, use_batched: bool = False,
                         yv, ny = gcu.tar_load(cy, stride_tar, vec128xf32)
                         res = arith.addf(xv, yv)
 
-                        chunk = arith.index_cast(i32, inner_p.induction_variable)
+                        chunk = arith.index_cast(
+                            i32, inner_p.induction_variable)
                         woff = arith.addi(goff, chunk)
                         sv = gcu.vector_step(woff, vec128xi32)
-                        mask = arith.cmpi(arith.CmpIPredicate.slt, sv, bcast_n)
+                        mask = arith.cmpi(
+                            arith.CmpIPredicate.slt, sv, bcast_n)
                         widx = arith.index_cast(idx, woff)
                         gcu.maskedstore(out_mr, widx, mask, res)
 
@@ -291,17 +315,19 @@ def add(x: torch.Tensor, y: torch.Tensor):
     else:
         bs = 49152
         kernel = add_kernel_49152
-    grid = (min(NUM_SM, triton.cdiv(n_elements, bs)), )
+    grid = (min(NUM_SM, triton.cdiv(n_elements, bs)),)
     kernel[grid](x, y, output, n_elements)
     return output
 
-
 @triton.autotune(
-    configs=[triton.Config({"BLOCK_SIZE": bs}) for bs in [2**i for i in range(14, 16)]],
+    configs=[triton.Config({"BLOCK_SIZE": bs})
+             for bs in [2 ** i for i in range(14, 16)]],
     key=["n_elements"],
 )
 @triton.jit
-def _native_add_persistent(x_ptr, y_ptr, output_ptr, n_elements, NUM_SM: tl.constexpr, BLOCK_SIZE: tl.constexpr):
+def _native_add_persistent(x_ptr, y_ptr, output_ptr, n_elements,
+                           NUM_SM: tl.constexpr,
+                           BLOCK_SIZE: tl.constexpr):
     pid = tl.program_id(axis=0)
     num_tile = (n_elements + BLOCK_SIZE - 1) // BLOCK_SIZE
     for tile_id in tl.range(pid, num_tile, NUM_SM):
@@ -316,7 +342,8 @@ def native_add_persistent(x: torch.Tensor, y: torch.Tensor):
     """Golden Triton native: persistent with inner loop."""
     output = torch.empty_like(x)
     n_elements = output.numel()
-    grid = lambda meta: (min(NUM_SM, triton.cdiv(n_elements, meta['BLOCK_SIZE'])), )
+    grid = lambda meta: (min(NUM_SM, triton.cdiv(n_elements,
+                                                 meta['BLOCK_SIZE'])),)
     _native_add_persistent[grid](x, y, output, n_elements, NUM_SM)
     return output
 
@@ -340,14 +367,15 @@ if __name__ == "__main__":
     @triton.testing.perf_report(
         triton.testing.Benchmark(
             x_names=['size'],
-            x_vals=[2**i for i in range(10, 29)],
+            x_vals=[2 ** i for i in range(10, 29)],
             line_arg='provider',
             line_vals=['edsl', 'triton', 'torch'],
             line_names=['EDSL (GB/s)', 'Triton (GB/s)', 'Torch (GB/s)'],
             ylabel='GB/s',
             plot_name='gcu400-edsl-vector-add-performance',
             args={},
-        ))
+        )
+    )
     def benchmark(size, provider):
         x = torch.rand(size, device=DEVICE, dtype=torch.float32)
         y = torch.rand(size, device=DEVICE, dtype=torch.float32)

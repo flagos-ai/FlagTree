@@ -26,7 +26,7 @@ add_mlir_conversion_library(MLIRTritonToGCU_${arch}
   TritonGCUPingpong/PipeliningUtility.cpp
   TritonGPUtoTrtionGCU.cpp
   TleToTritonGCU.cpp
-
+  
   DEPENDS
   TritonGCUTableGen_${arch}
   MLIRTritonGCUConversionPassIncGen_${arch}

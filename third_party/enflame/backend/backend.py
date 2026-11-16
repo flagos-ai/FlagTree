@@ -32,7 +32,6 @@ from types import ModuleType
 
 from triton.runtime.errors import OutOfResources
 
-
 @functools.lru_cache()
 def _version_key():
     target = os.path.join(os.path.dirname(__file__), "VERSION")
@@ -41,7 +40,9 @@ def _version_key():
     with open(target, "rb") as f:
         content = f.read()
     try:
-        caps_version = subprocess.check_output(["topscc", "--version"], stderr=subprocess.STDOUT)
+        caps_version = subprocess.check_output(
+            ["topscc", "--version"], stderr=subprocess.STDOUT
+        )
     except Exception:
         caps_version = b""
     return hashlib.sha256(content + caps_version).hexdigest()
@@ -84,7 +85,6 @@ def _make_so_cache_key(version_hash, signature, constants, **kwargs):
 
 # gcu kernel translation
 
-
 def _get_topscc_root():
     return os.getenv("CAPS_PATH", "/opt/tops")
 
@@ -93,11 +93,12 @@ def _kernel_to_fatbin(kernel: str, arch: int, enable_transform: bool):
     # print(kernel)
     with tempfile.TemporaryDirectory() as tmpdir:
         bin = os.path.join(tmpdir, "kernel.fatbin")
-        toolkit.compile(kernel, "--device-only", f"--arch=gcu{arch}", f"--output={bin}",
-                        "--enable-transform" if enable_transform else "")
+        toolkit.compile(
+            kernel, "--device-only",
+            f"--arch=gcu{arch}", f"--output={bin}",
+            "--enable-transform" if enable_transform else "")
         with open(bin, "rb") as f:
             return f.read()
-
 
 def build_gcu_ext(name, src, srcdir, extra_objects=[], extra_libraries=[]):
     suffix = sysconfig.get_config_var('EXT_SUFFIX')
@@ -134,7 +135,6 @@ def build_gcu_ext(name, src, srcdir, extra_objects=[], extra_libraries=[]):
         cc_cmd += [f"-Wl,-rpath={dir}"]
     subprocess.check_call(cc_cmd, stdout=subprocess.DEVNULL)
     return so
-
 
 #
 # GCU
@@ -227,7 +227,6 @@ def ty_to_cpp(ty):
         "index": "int64_t",
     }[ty]
 
-
 FLOAT_STORAGE_TYPE = {
     "f16": "uint16_t",
     "fp16": "uint16_t",
@@ -240,14 +239,12 @@ FLOAT_PACK_FUNCTION = {
     "bf16": "pack_bf16",
 }
 
-
 def _extracted_type(ty):
     if ty[0] == '*':
         return "PyObject*"
     if ty[0] in ("constexpr"):
         return "PyObject*"
     return ty_to_cpp(ty)
-
 
 def format_of(ty):
     return {
@@ -265,10 +262,8 @@ def format_of(ty):
         "uint64_t": "K",
     }[ty]
 
-
 _BASE_ARGS_FORMAT = "iiiKKOOOO"
 _BASE_ARGS_FORMAT_LEN = len(_BASE_ARGS_FORMAT)
-
 
 def _expand_signature(signature_values):
     """Expand tensordesc entries in the signature to match add_rewrite_tensor_descriptor_to_pointer.
@@ -302,15 +297,12 @@ def _expand_signature(signature_values):
             output.append(sig)
     return output
 
-
 def make_tensordesc_arg(arg):
     """Decompose a TensorDescriptor to the flat list expected by the launcher.
     Matches the NVIDIA meta=None path in make_tensordesc_arg."""
     _major, _minor = _triton_version()
     if _major > 3 or (_major == 3 and _minor >= 7):
-        return [
-            arg.base, *arg.shape, *arg.strides, arg.padding == "nan", arg.round_f32_to_tf32, *arg.shape, *arg.strides
-        ]
+        return [arg.base, *arg.shape, *arg.strides, arg.padding == "nan", arg.round_f32_to_tf32, *arg.shape, *arg.strides]
     else:
         return [arg.base, *arg.shape, *arg.strides, arg.padding == "nan", *arg.shape, *arg.strides]
 
@@ -336,9 +328,7 @@ def wrap_handle_tensordesc(launcher, signature):
 
     return inner
 
-
-def generate_launcher(constants, signature, arch='gcu300', no_constant_args=False, redundant_sip=False,
-                      ptr_int_args=frozenset()):
+def generate_launcher(constants, signature, arch='gcu300', no_constant_args=False, redundant_sip=False, ptr_int_args=frozenset()):
     start_desc = len(signature)
 
     # Remap constants indices and expand tensordesc entries in the signature.
@@ -413,14 +403,12 @@ def generate_launcher(constants, signature, arch='gcu300', no_constant_args=Fals
     # GCU 400/410: validate cluster dims at launch time.
     #   Supports 2D clusters: clusterDimX * clusterDimY <= 6, clusterDimZ == 1.
     #   cluster-internal CTA sharing (like NVIDIA DSMEM) is supported.
-
-
 #   Cooperative grid launch (grid-level barrier) is supported via
 #   topsLaunchAttributeCooperative on topsModuleLaunchKernelEx.
-#   (clusterDimX, clusterDimY, clusterDimZ) maps to config.blockDim.
+    #   (clusterDimX, clusterDimY, clusterDimZ) maps to config.blockDim.
     cluster_check_str = ''
     if 'gcu400' == arch or 'gcu410' == arch:
-        cluster_check_str = """
+      cluster_check_str = """
       if (clusterDimZ != 1) {
         PyErr_Format(PyExc_ValueError,
           "GCU 400/410 does not support 3-D cluster: "
@@ -440,8 +428,8 @@ def generate_launcher(constants, signature, arch='gcu300', no_constant_args=Fals
     # generate glue code
     launch_str = ''
     if 'gcu400' == arch or 'gcu410' == arch:
-        if redundant_sip:
-            launch_str += """
+      if redundant_sip:
+        launch_str += """
       topsLaunchConfig_t l_config;
       memset(&l_config, 0x0, sizeof(l_config));
       l_config.gridDim = dim3(gridX, gridY, gridZ);
@@ -465,8 +453,8 @@ def generate_launcher(constants, signature, arch='gcu300', no_constant_args=Fals
       l_config.numAttrs = 2;
       l_config.stream = stream;
       TOPS_CHECK(topsModuleLaunchKernelEx(&l_config, function, params, NULL));"""
-        else:
-            launch_str += """
+      else:
+        launch_str += """
       topsLaunchAttribute attrs[2];
       int num_attrs = 0;
       attrs[num_attrs].id = topsLaunchAttributeThreadDimension;
@@ -496,9 +484,9 @@ def generate_launcher(constants, signature, arch='gcu300', no_constant_args=Fals
       config.stream = stream;
       TOPS_CHECK(topsModuleLaunchKernelEx(&config, function, params, NULL));"""
     elif 'gcu500' == arch:
-        launch_str += 'TOPS_CHECK(topsModuleLaunchKernel(function, gridX, gridY, gridZ, num_warps * 128, 1, 1, shared_memory, stream, params, 0));'
+      launch_str += 'TOPS_CHECK(topsModuleLaunchKernel(function, gridX, gridY, gridZ, num_warps * 128, 1, 1, shared_memory, stream, params, 0));'
     else:
-        launch_str += 'TOPS_CHECK(topsModuleLaunchKernel(function, gridX, gridY, gridZ, num_warps, 1, 1, shared_memory, stream, params, 0));'
+      launch_str += 'TOPS_CHECK(topsModuleLaunchKernel(function, gridX, gridY, gridZ, num_warps, 1, 1, shared_memory, stream, params, 0));'
     src = f"""
 #include <stdbool.h>
 #include <Python.h>
@@ -721,7 +709,6 @@ def compile_module_from_src(src, name):
     spec.loader.exec_module(mod)
     return mod
 
-
 class GcuLauncher(object):
 
     def __init__(self, src, metadata):
@@ -751,9 +738,7 @@ class GcuLauncher(object):
             raise OutOfResources(grid_2, 255, "grid.z")
         self.launch(*args, **kwargs)
 
-
 class GCUDriver(object):
-
     def __init__(self):
         if os.getenv("COMPILE_ARCH"):
             self.arch = os.getenv("COMPILE_ARCH")
@@ -766,38 +751,28 @@ class GCUDriver(object):
             self.arch = ""
         import torch
         self.get_current_stream = lambda idx: torch.gcu.current_stream(idx).gcu_stream
-        self.get_current_device = lambda: torch.device(f"{device_name}:{torch.gcu.current_device()}").index
+        self.get_current_device = lambda : torch.device(f"{device_name}:{torch.gcu.current_device()}").index
         self.utils = GCUUtils()
         device = self.get_current_device()
         self.device_properties = self.utils.get_device_properties(device)
         self.arch_name = self.device_properties['arch_name']
         self.warp_size = self.device_properties['max_threads_per_block']
-        self.device_properties["version"] = int(''.join(
-            filter(str.isdigit, self.device_properties["arch_name"].split('-')[-1])))
+        self.device_properties["version"] = int(''.join(filter(str.isdigit, self.device_properties["arch_name"].split('-')[-1])))
         del self.device_properties["arch_name"]
         self.launcher_cls = GcuLauncher
 
     def get_device_properties(self, device):
         if self.arch == "gcu300":
-            return {
-                'max_shared_mem': 67108864, 'multiprocessor_count': 2, 'max_threads_per_block': 12, 'sm_clock_rate':
-                1416000, 'mem_clock_rate': 7000000, 'mem_bus_width': 384, 'version': 300
-            }
+          return {'max_shared_mem': 67108864, 'multiprocessor_count': 2, 'max_threads_per_block': 12, 'sm_clock_rate': 1416000, 'mem_clock_rate': 7000000, 'mem_bus_width': 384, 'version': 300}
         elif self.arch == "gcu400":
-            return {
-                'max_shared_mem': 67108864, 'multiprocessor_count': 2, 'max_threads_per_block': 12, 'sm_clock_rate':
-                1416000, 'mem_clock_rate': 7000000, 'mem_bus_width': 384, 'version': 400
-            }
+          return {'max_shared_mem': 67108864, 'multiprocessor_count': 2, 'max_threads_per_block': 12, 'sm_clock_rate': 1416000, 'mem_clock_rate': 7000000, 'mem_bus_width': 384, 'version': 400}
         elif self.arch == "gcu500":
-            return {
-                'max_shared_mem': 67108864, 'multiprocessor_count': 4, 'max_threads_per_block': 1024, 'sm_clock_rate':
-                1800000, 'mem_clock_rate': 9000000, 'mem_bus_width': 512, 'version': 500
-            }
+          return {'max_shared_mem': 67108864, 'multiprocessor_count': 4, 'max_threads_per_block': 1024, 'sm_clock_rate': 1800000, 'mem_clock_rate': 9000000, 'mem_bus_width': 512, 'version': 500}
         return self.device_properties
 
     def get_stream(self, idx=None):
         if self.arch in ("gcu300", "gcu400", "gcu500"):
-            return 0
+          return 0
         if idx is None:
             idx = self.get_current_device()
         try:
@@ -808,26 +783,25 @@ class GCUDriver(object):
 
     def get_arch(self):
         if self.arch == "gcu300":
-            return "dtu-enflame-tops--gcu300"
+          return "dtu-enflame-tops--gcu300"
         elif self.arch == "gcu400":
-            return "dtu-enflame-tops--gcu400"
+          return "dtu-enflame-tops--gcu400"
         elif self.arch == "gcu500":
-            return "efgcu-enflame-tops--gcu500"
+          return "efgcu-enflame-tops--gcu500"
         return self.arch_name
 
     def get_warp_size(self):
         if self.arch == "gcu300":
-            return 12
+          return 12
         elif self.arch == "gcu400":
-            return 8
+          return 8
         elif self.arch == "gcu500":
-            return 128
+          return 128
         return self.warp_size
 
     def get_benchmarker(self):
         from triton.testing import do_bench
         return do_bench
-
 
 class GCUBackend(object):
 
@@ -849,11 +823,10 @@ class GCUBackend(object):
     def get_architecture_descriptor(self, **kwargs):
         device = self.driver.get_current_device()
         device_properties = self.driver.get_device_properties(device)
-        capability = {
-            "max_threads_per_block": device_properties["max_threads_per_block"], "multiprocessor_count":
-            device_properties["multiprocessor_count"], "version": device_properties["version"], "max_shared_mem":
-            device_properties["max_shared_mem"]
-        }
+        capability = {"max_threads_per_block": device_properties["max_threads_per_block"],
+                      "multiprocessor_count": device_properties["multiprocessor_count"],
+                      "version": device_properties["version"],
+                      "max_shared_mem": device_properties["max_shared_mem"]}
         return capability
 
     def compile_kernel(self, name, kernel, enable_transform, signature, constants):
@@ -877,11 +850,12 @@ class GCUBackend(object):
     def get_num_processors(self):
         return self.get_architecture_descriptor()['max_threads_per_block']
 
-    def compile(self, name, kernel, enable_transform=False, signature={}, constants=[]):
+    def compile(self, name, kernel, enable_transform = False, signature = {}, constants = []):
         kernel_path = self.compile_kernel(name, kernel, enable_transform, signature, constants)
         with open(kernel_path, "rb") as binary:
             bin = binary.read()
-            m, func, _, _ = self.get_load_binary_fn()(name, bin, 0, self.get_current_device())
+            m, func, _, _ = self.get_load_binary_fn()(
+                name, bin, 0, self.get_current_device())
             assert func != 0, "cannot find kenrel function"
             launcher_path = self.make_launcher_stub(name, signature, constants, True)
             import importlib.util

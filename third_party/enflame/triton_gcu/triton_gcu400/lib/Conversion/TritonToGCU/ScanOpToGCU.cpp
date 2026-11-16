@@ -28,9 +28,9 @@
 #include "Dialect/MathExt/IR/MathExt.h"
 #include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "PatternTritonGPUOpToGCU.h"
 #include "TritonGCUToGCU/TritionToGCUBase.h"
-#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -1586,12 +1586,12 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
 
         // Step 2: Allocate a small SMEM buffer [numWarps] for partial sums.
         auto i32Ty = rewriter.getI32Type();
-        auto partialSumsType =
-            MemRefType::get({static_cast<int64_t>(numWarps)}, i32Ty,
-                            AffineMap{}, rewriter.getI64IntegerAttr(2));
-        Value partialSums =
-            syncAllocOp(rewriter, loc, std::make_pair(op.getOperation(), -1),
-                        userAnalysis, replaced2Origin, partialSumsType);
+        auto partialSumsType = MemRefType::get(
+            {static_cast<int64_t>(numWarps)}, i32Ty, AffineMap{},
+            rewriter.getI64IntegerAttr(2));
+        Value partialSums = syncAllocOp(
+            rewriter, loc, std::make_pair(op.getOperation(), -1), userAnalysis,
+            replaced2Origin, partialSumsType);
 
         // Step 3: Each warp writes its local total (last element of scan
         // output) into the partial sums buffer at its warp index.
@@ -1606,7 +1606,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
             } else {
               auto s = rewriter.create<arith::ConstantIndexOp>(loc, stride);
               acc = rewriter.create<arith::AddIOp>(
-                  loc, acc, rewriter.create<arith::MulIOp>(loc, warpIds[i], s));
+                  loc, acc,
+                  rewriter.create<arith::MulIOp>(loc, warpIds[i], s));
             }
             stride *= warpsPerCTA[i];
           }
@@ -1615,12 +1616,12 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
 
         auto localMemRef = dyn_cast<MemRefType>(outputs[0].getType());
         int64_t localSize = localMemRef.getNumElements();
-        Value lastIdx =
-            rewriter.create<arith::ConstantIndexOp>(loc, localSize - 1);
-        Value localTotal = rewriter.create<memref::LoadOp>(loc, outputs[0],
-                                                           ValueRange{lastIdx});
-        rewriter.create<memref::StoreOp>(loc, localTotal, partialSums,
-                                         ValueRange{warpIdx});
+        Value lastIdx = rewriter.create<arith::ConstantIndexOp>(
+            loc, localSize - 1);
+        Value localTotal = rewriter.create<memref::LoadOp>(
+            loc, outputs[0], ValueRange{lastIdx});
+        rewriter.create<memref::StoreOp>(
+            loc, localTotal, partialSums, ValueRange{warpIdx});
         rewriter.create<gpu::BarrierOp>(loc);
 
         // Step 4: Master warp computes exclusive prefix sum on partial sums.
@@ -1635,10 +1636,10 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                   loc, builder.getI32IntegerAttr(0));
               for (unsigned w = 0; w < numWarps; ++w) {
                 Value idx = builder.create<arith::ConstantIndexOp>(loc, w);
-                Value val = builder.create<memref::LoadOp>(loc, partialSums,
-                                                           ValueRange{idx});
-                builder.create<memref::StoreOp>(loc, acc, partialSums,
-                                                ValueRange{idx});
+                Value val = builder.create<memref::LoadOp>(
+                    loc, partialSums, ValueRange{idx});
+                builder.create<memref::StoreOp>(
+                    loc, acc, partialSums, ValueRange{idx});
                 acc = builder.create<arith::AddIOp>(loc, acc, val);
               }
               builder.create<scf::YieldOp>(loc);
@@ -1647,8 +1648,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
 
         // Step 5: Each warp reads its offset and adds it to every element
         // via TAR-based vectorized broadcast-add with 16-vector unroll.
-        Value offset = rewriter.create<memref::LoadOp>(loc, partialSums,
-                                                       ValueRange{warpIdx});
+        Value offset = rewriter.create<memref::LoadOp>(
+            loc, partialSums, ValueRange{warpIdx});
         Value zero32 = rewriter.create<arith::ConstantOp>(
             loc, rewriter.getI32IntegerAttr(0));
         Value hasOffset = rewriter.create<arith::CmpIOp>(
@@ -1661,14 +1662,14 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
 
               if (fullVecs > 0) {
                 triton::gcu::TritonGCUBuilder b(loc, builder);
-                auto vecTy =
-                    VectorType::get({static_cast<int64_t>(vecLen)}, i32Ty);
-                Value vOffset =
-                    builder.create<vector::BroadcastOp>(loc, vecTy, offset);
+                auto vecTy = VectorType::get(
+                    {static_cast<int64_t>(vecLen)}, i32Ty);
+                Value vOffset = builder.create<vector::BroadcastOp>(
+                    loc, vecTy, offset);
                 Value readAddr = b.tarAddr(outputs[0]);
                 Value writeAddr = b.tarAddr(outputs[0]);
-                Value tarStride =
-                    b.tarValue(static_cast<int64_t>(oaccSizeInBytes));
+                Value tarStride = b.tarValue(
+                    static_cast<int64_t>(oaccSizeInBytes));
 
                 constexpr unsigned kUnroll = 16;
                 unsigned batches = fullVecs / kUnroll;
@@ -1679,8 +1680,8 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
                   for (unsigned j = 0; j < kUnroll; ++j)
                     bufs.push_back(b.tarLoad(vecTy, readAddr, tarStride));
                   for (unsigned j = 0; j < kUnroll; ++j)
-                    bufs[j] =
-                        builder.create<arith::AddIOp>(loc, bufs[j], vOffset);
+                    bufs[j] = builder.create<arith::AddIOp>(
+                        loc, bufs[j], vOffset);
                   for (unsigned j = 0; j < kUnroll; ++j)
                     b.tarStore(bufs[j], writeAddr, tarStride);
                 }
@@ -1694,12 +1695,13 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
               unsigned scalarStart = fullVecs * vecLen;
               for (unsigned i = scalarStart;
                    i < static_cast<unsigned>(localSize); ++i) {
-                Value idx = builder.create<arith::ConstantIndexOp>(loc, i);
-                Value elem = builder.create<memref::LoadOp>(loc, outputs[0],
-                                                            ValueRange{idx});
+                Value idx =
+                    builder.create<arith::ConstantIndexOp>(loc, i);
+                Value elem = builder.create<memref::LoadOp>(
+                    loc, outputs[0], ValueRange{idx});
                 elem = builder.create<arith::AddIOp>(loc, elem, offset);
-                builder.create<memref::StoreOp>(loc, elem, outputs[0],
-                                                ValueRange{idx});
+                builder.create<memref::StoreOp>(
+                    loc, elem, outputs[0], ValueRange{idx});
               }
               builder.create<scf::YieldOp>(loc);
             });

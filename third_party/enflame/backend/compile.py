@@ -33,7 +33,6 @@ def ty_to_cpp(ty):
         "index": "int64_t",
     }[ty]
 
-
 def write_to_file(dir, file_name, src):
     path = os.path.join(dir, file_name)
     with open(path, "w") as file:
@@ -41,33 +40,16 @@ def write_to_file(dir, file_name, src):
 
     return path
 
-
 def _is_type_token(tok):
     """判断 signature 中的 token 是类型还是字面量（整数）。"""
     t = tok.strip()
     if t.startswith("*"):
         return True
     type_map = {
-        "i1",
-        "u1",
-        "i8",
-        "u8",
-        "i16",
-        "u16",
-        "i32",
-        "i64",
-        "u32",
-        "u64",
-        "fp16",
-        "f16",
-        "bf16",
-        "fp32",
-        "f32",
-        "fp64",
-        "index",
+        "i1", "u1", "i8", "u8", "i16", "u16", "i32", "i64",
+        "u32", "u64", "fp16", "f16", "bf16", "fp32", "f32", "fp64", "index",
     }
     return t in type_map
-
 
 # TODO: consider GCU400 later on
 def auto_generate_global_func_str(global_func_name, func_entry, func_signature):
@@ -158,10 +140,8 @@ if __name__ == "__main__":
     parser.add_argument("--signature", "-s", type=str, help="Signature of the kernel", required=True)
     parser.add_argument("--kernel-name", "-n", type=str, help="Name of the kernel to compile", required=True)
     parser.add_argument("--num-warps", "-w", type=int, default=1, help="Number of warps to launch the kernel")
-    parser.add_argument("--num-stages", "-ns", type=int, default=3,
-                        help="Number of stages (meta-parameter of the kernel)")
-    parser.add_argument("--enable-i64-check", "-i64", type=int, default=0,
-                        help="Enable int64 type in triton_gcu of gcu300")
+    parser.add_argument("--num-stages", "-ns", type=int, default=3, help="Number of stages (meta-parameter of the kernel)")
+    parser.add_argument("--enable-i64-check", "-i64", type=int, default=0, help="Enable int64 type in triton_gcu of gcu300")
     args = parser.parse_args()
 
     # execute python sources and extract functions wrapped in JITFunction
@@ -177,8 +157,7 @@ if __name__ == "__main__":
     spec.loader.exec_module(mod)
     kernel = getattr(mod, args.kernel_name)
     global_func_name = args.global_func_name
-    global_func_header, global_func_src = auto_generate_global_func_str(global_func_name, args.kernel_name,
-                                                                        args.signature)
+    global_func_header, global_func_src = auto_generate_global_func_str(global_func_name, args.kernel_name, args.signature)
     print(global_func_header)
     print(global_func_src)
     os.environ["GLOBAL_FUNC_PATH"] = write_to_file(out_path_dir, f"{global_func_name}.tops", global_func_src)
@@ -198,7 +177,6 @@ if __name__ == "__main__":
         except ValueError:
             pass
         return None
-
     hints = {(i, ): constexpr(s.split(":")[1]) for i, s in enumerate(signature) if ":" in s}
     hints = {k: v for k, v in hints.items() if v is not None}
     constants = {kernel.arg_names[i]: constexpr(s) for i, s in enumerate(signature)}

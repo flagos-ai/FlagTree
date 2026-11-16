@@ -3,7 +3,6 @@ import pytest
 import tempfile
 from typing import Optional, Set
 
-
 def pytest_configure(config):
     config.addinivalue_line("markers", "interpreter: indicate whether interpreter supports the test")
 

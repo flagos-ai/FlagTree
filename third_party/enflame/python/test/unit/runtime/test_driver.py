@@ -10,7 +10,6 @@ import torch_gcu
 
 import triton.language as tl
 
-
 def test_is_lazy():
     from importlib import reload
     reload(sys.modules["triton.runtime.driver"])

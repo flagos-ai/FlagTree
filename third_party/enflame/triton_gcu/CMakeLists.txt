@@ -20,3 +20,4 @@ foreach(arch ${archs})
         string(TOUPPER ${arch} ARCH)
         add_subdirectory(triton_${arch})
 endforeach()
+
