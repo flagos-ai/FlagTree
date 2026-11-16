@@ -13,3 +13,7 @@ add_triton_library(TritonHCUAnalysis
   TritonIR
   TritonGPUIR
 )
+
+if(FLAGTREE_TLE)
+  add_dependencies(TritonHCUAnalysis TleTableGen)
+endif()
