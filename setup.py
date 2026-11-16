@@ -360,8 +360,8 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
     if is_offline_build():
         return
     triton_cache_path = get_triton_cache_path()
-    if variable in os.environ:
-        return
+    # if variable in os.environ:
+    #     return
     base_dir = os.path.dirname(__file__)
     system = platform.system()
     arch = platform.machine()
@@ -369,23 +369,31 @@ def download_and_copy(name, src_func, dst_path, variable, version, url_func):
     arch = {"arm64": "sbsa", "aarch64": "sbsa"}.get(arch, arch)
     supported = {"Linux": "linux", "Darwin": "linux"}
     url = url_func(supported[system], arch, version)
-    src_path = src_func(supported[system], arch, version)
+    cache_src_path = src_func(supported[system], arch, version)
     tmp_path = os.path.join(triton_cache_path, "nvidia", name)  # path to cache the download
     dst_path = os.path.join(base_dir, "third_party", "nvidia", "backend", dst_path)  # final binary path
-    src_path = os.path.join(tmp_path, src_path)
+    src_path = os.environ.get(variable) or os.path.join(tmp_path, cache_src_path)
+    if variable in os.environ and not os.path.exists(src_path):
+        raise RuntimeError(f"{variable} points to a missing path: {src_path}")
+
     download = not os.path.exists(src_path)
+    if is_offline_build() and download:
+        raise RuntimeError(f"Offline build dependency is missing from the Triton cache: {src_path}")
+
     # flagtree: check the cached binary version in ~/.triton, skip download if it matches
-    if os.path.exists(src_path) and system == "Linux" and shutil.which(src_path) is not None:
+    if variable not in os.environ and os.path.exists(src_path) and system == "Linux" and shutil.which(
+            src_path) is not None:
         try:
             cache_version = subprocess.check_output([src_path, "--version"]).decode("utf-8").strip()
             cache_version = re.search(r"V([.|\d]+)", cache_version).group(1)
             download = download or cache_version != version
         except Exception:
             download = True
-    if download:
+    if download and not is_offline_build():
         print(f'{YELLOW}downloading and extracting {url} ... {NC}', file=sys.stderr, flush=True)
         file = tarfile.open(fileobj=open_url(url), mode="r|*")
         file.extractall(path=tmp_path)
+        src_path = os.path.join(tmp_path, cache_src_path)
     os.makedirs(os.path.split(dst_path)[0], exist_ok=True)
     print(f'copy {src_path} to {dst_path} ...', file=sys.stderr, flush=True)
     if os.path.isdir(src_path):
@@ -409,8 +417,21 @@ class CMakeBuildPy(build_py):
     def run(self) -> None:
         FLAGPRISM_SETUP.prepare_build_tree(self.build_lib)  # FlagPrism
         self.run_command('build_ext')
+        if not helper.flagtree_backend:
+            # build_ext can already be marked as completed by setuptools.
+            # Materialize cached NVIDIA tools explicitly before packaging.
+            download_and_copy_dependencies()
         helper.write_flagtree_backend_file()
         result = super().run()
+        if not helper.flagtree_backend:
+            nvidia_bin = Path(__file__).parent / "third_party" / "nvidia" / "backend" / "bin"
+            if not nvidia_bin.is_dir():
+                raise RuntimeError(f"NVIDIA tools were not generated in {nvidia_bin}")
+            shutil.copytree(
+                nvidia_bin,
+                Path(self.build_lib) / "triton" / "backends" / "nvidia" / "bin",
+                dirs_exist_ok=True,
+            )
         FLAGPRISM_SETUP.finalize_build_tree(self.build_lib)  # FlagPrism
         return result
 
@@ -903,6 +924,9 @@ setup(
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
     package_data={
+        # Standalone builds bundle the NVIDIA command-line tools downloaded by
+        # CMakeBuild so runtime compilation does not depend on a system ptxas.
+        **({"triton.backends.nvidia": ["bin/*"]} if not helper.flagtree_backend else {}),
         # Pre-built custom-op bitcode, required at runtime by
         # triton/experimental/tle/language/dsa/ascend/custom_ops/registry.py.
         # Same convention as triton/backends/*/lib/libdevice.10.bc.
