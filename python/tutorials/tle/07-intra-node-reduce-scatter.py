@@ -200,8 +200,8 @@ def _get_problem():
 
 # Generate the search space independently; all workload-dependent and
 # search-budget constraints live in _prune_reduce_scatter_config.
-CONFIG_SPACE = [
-    {"config": {
+CONFIG_SPACE = [{
+    "config": {
         "SCATTER_BLOCK_M": sm,
         "SCATTER_BLOCK_N": sn,
         "REDUCE_BLOCK_M": rm,
@@ -209,15 +209,15 @@ CONFIG_SPACE = [
         "scatter_num_warps": scatter_warps,
         "reduce_num_warps": reduce_warps,
         "scatter_grid_factor": grid_factor,
-    }}
-    for sm in (64, 128, 256)
-    for sn in (64, 128, 256)
-    for rm in (64, 128, 256)
-    for rn in (64, 128, 256)
-    for scatter_warps in (4, 8)
-    for reduce_warps in (4, 8)
-    for grid_factor in (1, 2, 4)
-]
+    }
+}
+                for sm in (64, 128, 256)
+                for sn in (64, 128, 256)
+                for rm in (64, 128, 256)
+                for rn in (64, 128, 256)
+                for scatter_warps in (4, 8)
+                for reduce_warps in (4, 8)
+                for grid_factor in (1, 2, 4)]
 
 INPUT_SEED = 0
 WARMUP_ITERS = 10
@@ -256,13 +256,16 @@ def _launch_reduce_scatter(input_tensor, ctx, *, config, compile_only=False):
     # A fast rank must not overwrite slots that a peer is still reducing
     # from the preceding call. The tuner enqueues calls back-to-back.
     entry = device_barrier_kernel.run(
-        grid=(1, ), warmup=compile_only, scatter_ctx=ctx.scatter_ctx, mesh=mesh,
+        grid=(1, ),
+        warmup=compile_only,
+        scatter_ctx=ctx.scatter_ctx,
+        mesh=mesh,
     )
     scatter = scatter_kernel_opt.run(
         input_tensor,
         ctx.scatter_buf,
-        grid=(_grid_ctas(ctx.M_per_rank, ctx.N, config["SCATTER_BLOCK_M"], config["SCATTER_BLOCK_N"],
-                         ctx.num_sms, config["scatter_grid_factor"]), ),
+        grid=(_grid_ctas(ctx.M_per_rank, ctx.N, config["SCATTER_BLOCK_M"], config["SCATTER_BLOCK_N"], ctx.num_sms,
+                         config["scatter_grid_factor"]), ),
         warmup=compile_only,
         scatter_ctx=ctx.scatter_ctx,
         M_per_rank=ctx.M_per_rank,
@@ -274,15 +277,17 @@ def _launch_reduce_scatter(input_tensor, ctx, *, config, compile_only=False):
         num_warps=config["scatter_num_warps"],
     )
     barrier = device_barrier_kernel.run(
-        grid=(1, ), warmup=compile_only, scatter_ctx=ctx.scatter_ctx, mesh=mesh,
+        grid=(1, ),
+        warmup=compile_only,
+        scatter_ctx=ctx.scatter_ctx,
+        mesh=mesh,
     )
     reduce = ring_reduce_kernel_tma.run(
         ctx.scatter_buf,
         ctx.output,
         ctx.M_per_rank,
         ctx.N,
-        grid=(_grid_ctas(ctx.M_per_rank, ctx.N, config["REDUCE_BLOCK_M"], config["REDUCE_BLOCK_N"],
-                         ctx.num_sms), ),
+        grid=(_grid_ctas(ctx.M_per_rank, ctx.N, config["REDUCE_BLOCK_M"], config["REDUCE_BLOCK_N"], ctx.num_sms), ),
         warmup=compile_only,
         LOCAL_RANK=ctx.local_rank,
         WORLD_SIZE=ctx.world_size,
@@ -314,22 +319,17 @@ def _prune_reduce_scatter_config(config, input_tensor, ctx):
     cfg = config["config"]
     sm, sn = cfg["SCATTER_BLOCK_M"], cfg["SCATTER_BLOCK_N"]
     rm, rn = cfg["REDUCE_BLOCK_M"], cfg["REDUCE_BLOCK_N"]
-    if not (
-        min(ctx.M_per_rank, ctx.N) > 0
-        and tuple(input_tensor.shape) == tuple(ctx.scatter_buf.shape) == (ctx.M_per_rank * ctx.world_size, ctx.N)
-        and tuple(ctx.output.shape) == (ctx.M_per_rank, ctx.N)
-        and input_tensor.dtype == ctx.scatter_buf.dtype == ctx.output.dtype
-        and input_tensor.dtype in (torch.float16, torch.bfloat16)
-        and input_tensor.device == ctx.scatter_buf.device == ctx.output.device
-        and all(t.is_contiguous() and t.data_ptr() % 16 == 0 for t in (input_tensor, ctx.scatter_buf, ctx.output))
-        and max(sm, rm) <= ctx.M_per_rank and max(sn, rn) <= ctx.N
-        # A TMA tile must not cross a source rank's row boundary.
-        and ctx.M_per_rank % rm == 0
-        and (ctx.N * input_tensor.element_size()) % 16 == 0
-        # Estimate two reduction tiles and barrier state; compilation checks
-        # the actual usage after these inexpensive filters.
-        and 2 * rm * rn * input_tensor.element_size() + 8 <= ctx.max_shared_memory
-    ):
+    if not (min(ctx.M_per_rank, ctx.N) > 0 and tuple(input_tensor.shape) == tuple(ctx.scatter_buf.shape) ==
+            (ctx.M_per_rank * ctx.world_size, ctx.N) and tuple(ctx.output.shape) == (ctx.M_per_rank, ctx.N)
+            and input_tensor.dtype == ctx.scatter_buf.dtype == ctx.output.dtype and input_tensor.dtype
+            in (torch.float16, torch.bfloat16) and input_tensor.device == ctx.scatter_buf.device == ctx.output.device
+            and all(t.is_contiguous() and t.data_ptr() % 16 == 0 for t in (input_tensor, ctx.scatter_buf, ctx.output))
+            and max(sm, rm) <= ctx.M_per_rank and max(sn, rn) <= ctx.N
+            # A TMA tile must not cross a source rank's row boundary.
+            and ctx.M_per_rank % rm == 0 and (ctx.N * input_tensor.element_size()) % 16 == 0
+            # Estimate two reduction tiles and barrier state; compilation checks
+            # the actual usage after these inexpensive filters.
+            and 2 * rm * rn * input_tensor.element_size() + 8 <= ctx.max_shared_memory):
         return False
 
     # Tutorial search-budget heuristics, not hardware validity requirements:
@@ -346,7 +346,10 @@ def _prune_reduce_scatter_config(config, input_tensor, ctx):
     # Pruning runs even on a tuning-cache hit. Memoize compile/load verdicts
     # for this context and workload. Grid size is not a JIT specialization.
     preflight_key = (
-        _reduce_scatter_key(input_tensor, ctx), ctx.local_rank, str(input_tensor.device), id(ctx.scatter_ctx),
+        _reduce_scatter_key(input_tensor, ctx),
+        ctx.local_rank,
+        str(input_tensor.device),
+        id(ctx.scatter_ctx),
         tuple(sorted((name, value) for name, value in cfg.items() if name != "scatter_grid_factor")),
     )
     if preflight_key not in ctx.preflight_results:
@@ -443,7 +446,8 @@ def benchmark_tle_vs_torch(input_tensor, ctx, config, *, warmup=WARMUP_ITERS, it
             samples.append(time_one(fn))
     medians = torch.tensor(
         [statistics.median(tle_times), statistics.median(torch_times)],
-        dtype=torch.float64, device=input_tensor.device,
+        dtype=torch.float64,
+        device=input_tensor.device,
     )
     dist.all_reduce(medians, op=dist.ReduceOp.MAX)
     return medians.tolist()
@@ -494,8 +498,9 @@ def main():
     input_tensor.uniform_(-1, 1, generator=generator).mul_((rank + 1) / world_size)
 
     if rank == 0:
-        print(f"shape={(M, N)} dtype={dtype} world_size={world_size}; "
-              f"{len(CONFIG_SPACE)} raw candidates, filtered by prune_fn", flush=True)
+        print(
+            f"shape={(M, N)} dtype={dtype} world_size={world_size}; "
+            f"{len(CONFIG_SPACE)} raw candidates, filtered by prune_fn", flush=True)
 
     # The decorator handles pruning, rank intersection, tuning, persistence
     # and the final execution. Changed values must reuse the cached config.
@@ -533,7 +538,12 @@ def main():
     for iteration, snapshot in enumerate(snapshots):
         integer_expected = -exact_expected if iteration == 0 else exact_expected
         _assert_close_on_all_ranks(
-            snapshot, integer_expected, shape=(M, N), stage=f"back_to_back_{iteration + 1}", atol=0.0, rtol=0.0,
+            snapshot,
+            integer_expected,
+            shape=(M, N),
+            stage=f"back_to_back_{iteration + 1}",
+            atol=0.0,
+            rtol=0.0,
         )
 
     tle_ms, torch_ms = benchmark_tle_vs_torch(input_tensor, ctx, selected, clear_l2=clear_l2)
@@ -542,9 +552,10 @@ def main():
         input_bytes = input_tensor.numel() * input_tensor.element_size()
         print(f"Benchmark: iters={BENCH_ITERS} warmup={WARMUP_ITERS} clear_l2={clear_l2}; "
               "stat=max(per-rank median)", flush=True)
-        print(f"TLE: {tle_ms:.3f} ms, {input_bytes / (tle_ms * 1e6):.2f} GB/s; "
-              f"Torch: {torch_ms:.3f} ms, {input_bytes / (torch_ms * 1e6):.2f} GB/s; "
-              f"speedup={torch_ms / tle_ms:.2f}x", flush=True)
+        print(
+            f"TLE: {tle_ms:.3f} ms, {input_bytes / (tle_ms * 1e6):.2f} GB/s; "
+            f"Torch: {torch_ms:.3f} ms, {input_bytes / (torch_ms * 1e6):.2f} GB/s; "
+            f"speedup={torch_ms / tle_ms:.2f}x", flush=True)
 
     torch.cuda.synchronize()
     dist.barrier()
