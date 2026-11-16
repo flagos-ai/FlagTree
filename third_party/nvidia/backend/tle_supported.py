@@ -26,6 +26,8 @@ TLE_SUPPORTED_PRIMITIVES = [
     "pipe.writer.close",
 
     ## TLE-Struct GPU
+    "gpu.buffered_tensor.load",  # CommonIR
+    "gpu.buffered_tensor.store",  # CommonIR
     "gpu.buffered_tensor.slot",
     "gpu.buffered_tensor.reshape",
     "gpu.buffered_tensor.subslice",
