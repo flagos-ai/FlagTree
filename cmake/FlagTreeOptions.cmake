@@ -296,7 +296,9 @@ function(flagtree_add_distributed_plugin)
       ${PYTHON_DIST_SRC_PATH}/triton_distributed.cc
       ${PYTHON_DIST_SRC_PATH}/passes.cc
       ${PYTHON_DIST_SRC_PATH}/ir.cc)
-    add_dependencies(TritonDistributed LLVMIRIncGen)
+    add_dependencies(TritonDistributed LLVMIRIncGen
+      TritonConversionPassIncGen TritonDistributedConversionPassIncGen
+      TritonDistributedToLLVMConversionPassIncGen)
     target_link_libraries(
       TritonDistributed
       PRIVATE DistributedIR SIMTIR ProtonIR Python3::Module pybind11::headers)
@@ -596,6 +598,19 @@ macro(flagtree_configure_tools_and_tests)
         ${TRITON_CORE_SOURCE_DIR}/bin ${TRITON_CORE_BINARY_DIR}/bin)
       add_subdirectory(test)
     endif()
+  endif()
+
+  # HCU shares compiler headers across backend and plugin targets.
+  if(FLAGTREE_BACKEND STREQUAL "hcu" AND TRITON_BUILD_FLAGPRISM)
+    add_dependencies(TritonHCUAnalysis TritonHCUGPUAttrDefsIncGen)
+    add_dependencies(TritonDistributedToLLVM SIMTTableGen SIMTAttrDefsIncGen)
+    if(FLAGTREE_TLE)
+      add_dependencies(TleToLLVM NVGPUTableGen NVGPUAttrDefsIncGen)
+      add_dependencies(TritonTLETransforms TritonGPUTransformsIncGen)
+      add_dependencies(NVHopperTransforms TritonGPUTransformsIncGen
+        NVWSTableGen NVWSAttrDefsIncGen)
+    endif()
+    add_dependencies(TritonProton ProtonGPUTransformsIncGen)
   endif()
 
   # When PPU backend is built, the upstream TritonGPU transforms reference
