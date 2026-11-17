@@ -2,7 +2,6 @@ add_triton_library(MetaxMmaLayout
   MmaLayout.cpp
 
   LINK_LIBS PUBLIC
-  CommonIRIR
   TritonIR
   TritonGPUIR
   TritonAnalysis
@@ -42,11 +41,8 @@ endif()
 # library consumed by TritonToTritonGPU, which those transforms depend on.
 add_triton_library(MetaxCommonIRLayouts
   AsyncCopyUtils.cpp
-  CommonIRLegalizeAsyncCopy.cpp
-  ResolveBsmLayouts.cpp
   CommonIROptimizeSharedLayouts.cpp
   CommonIROptimizeTensorTileLayouts.cpp
-  SharedLayoutUtils.cpp
   DotLayoutPlanner.cpp
   TensorLayoutRules.cpp
 

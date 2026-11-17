@@ -35,6 +35,7 @@ def CommonIROptimizeSharedLayouts
     writer continuity. Keeps allocations unchanged on conflicting or unsupported
     requirements. Adapts copy/store inputs with convert_layout, including copies
     to fixed/default buffers. Runs after Coalesce and preserves explicit layouts.
+    Reports async copies whose fixed layouts or operands cannot be supported.
   }];
   let dependentDialects = ["mlir::triton::TritonDialect",
                            "mlir::triton::gpu::TritonGPUDialect"];
@@ -52,33 +53,6 @@ def CommonIROptimizeTensorTileLayouts
                            "mlir::triton::TritonDialect",
                            "mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::tile::CommonIRDialect"];
-}
-
-def CommonIRLegalizeAsyncCopy
-    : Pass<"commonir-legalize-async-copy", "mlir::ModuleOp"> {
-  let summary = "adapt async-copy operands to native MetaX shared addressing";
-  let description = [{
-    Adapts tensor operand layouts to native MetaX async-copy addressing and
-    vectorization requirements while preserving the shared destination layout.
-    Runs at the end of TTGIR optimization, before LLVM lowering.
-  }];
-  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect"];
-}
-
-def CommonIRResolveBsmLayouts
-    : Pass<"commonir-resolve-bsm-layouts", "mlir::ModuleOp"> {
-  let summary = "resolve MetaX split-load/BSM dot and shared layouts";
-  let description = [{
-    Resolves MMA, shared and register layouts for split local_load/bsm_perm chains
-    before AccelerateMatmul. Ordinary dots keep the existing selector.
-  }];
-  let options =
-      [Option<"computeCapability", "compute-capability", "int32_t", "80",
-              "target compute capability">,
-       Option<"numWarps", "num-warps", "int32_t", "4", "warps per CTA">];
-  let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::triton::TritonDialect",
-                           "mlir::triton::gpu::TritonGPUDialect"];
 }
 
 #endif

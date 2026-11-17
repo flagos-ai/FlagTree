@@ -1,11 +1,13 @@
+// MIT License
+// Copyright (c) 2026 The FlagOS Contributors
 #include "mlir-ext/Dialect/CommonIR/Analysis/AxisInfoExt.h"
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "mlir-ext/Dialect/CommonIR/IR/LayoutHintAttrs.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Conversion/CommonIRToTTGIR/AsyncCopyUtils.h"
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h"
-#include "triton/Conversion/CommonIRToTTGIR/SharedLayoutUtils.h"
 #include "triton/Conversion/CommonIRToTTGIR/TensorLayoutRules.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/CoalesceUtils.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -17,6 +19,127 @@ namespace ttg = mlir::triton::gpu;
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h.inc"
 
 namespace {
+
+// Stage allocation/view types until all affected accesses have been checked.
+struct SharedLayoutUpdates {
+  llvm::MapVector<Value, Type> types;
+  SmallVector<OpOperand *> accesses;
+
+  Type getType(Value value) const;
+  void apply() const;
+};
+
+Value getSharedViewSource(Value value) {
+  Operation *op = value.getDefiningOp();
+  if (isa_and_nonnull<ttg::MemDescIndexOp, ttg::MemDescTransOp>(op))
+    return op->getOperand(0);
+  return {};
+}
+
+Attribute projectTranspose(Attribute encoding, ArrayRef<int64_t> shape,
+                           ArrayRef<int32_t> order) {
+  Attribute result;
+  auto *interface =
+      encoding.getDialect()
+          .getRegisteredInterface<triton::DialectInferLayoutInterface>();
+  if (!interface || failed(interface->inferTransOpEncoding(
+                        encoding, shape, order, result, /*loc=*/{})))
+    return {};
+  return result;
+}
+
+// A pipeline slot adds/drops only the leading allocation dimension.
+Attribute projectIndex(Attribute encoding, bool toRoot) {
+  auto shared = dyn_cast<ttg::SwizzledSharedEncodingAttr>(encoding);
+  if (!shared || ttg::getNumCTAs(shared) != 1)
+    return {};
+  SmallVector<unsigned> order;
+  if (toRoot) {
+    for (unsigned dim : shared.getOrder())
+      order.push_back(dim + 1);
+    order.push_back(0);
+  } else {
+    if (shared.getOrder().back() != 0)
+      return {};
+    for (unsigned dim : shared.getOrder().drop_back())
+      order.push_back(dim - 1);
+  }
+  return ttg::SwizzledSharedEncodingAttr::get(
+      encoding.getContext(), shared.getVec(), shared.getPerPhase(),
+      shared.getMaxPhase(), order,
+      ttg::CTAEncodingAttr::getDefault(encoding.getContext(), order.size()));
+}
+
+Attribute getSharedSourceEncoding(Value view, Attribute encoding) {
+  if (view.getDefiningOp<ttg::MemDescIndexOp>())
+    return projectIndex(encoding, true);
+  if (auto trans = view.getDefiningOp<ttg::MemDescTransOp>())
+    return projectTranspose(encoding, trans.getType().getShape(),
+                            triton::inversePermutation(trans.getOrder()));
+  return {};
+}
+
+Attribute getSharedViewEncoding(Value view, Attribute encoding) {
+  if (view.getDefiningOp<ttg::MemDescIndexOp>())
+    return projectIndex(encoding, false);
+  if (auto trans = view.getDefiningOp<ttg::MemDescTransOp>())
+    return projectTranspose(encoding, trans.getSrc().getType().getShape(),
+                            trans.getOrder());
+  return {};
+}
+
+Type SharedLayoutUpdates::getType(Value value) const {
+  Type type = types.lookup(value);
+  return type ? type : value.getType();
+}
+
+void SharedLayoutUpdates::apply() const {
+  for (auto [value, type] : types)
+    value.setType(type);
+}
+
+Value getSharedAllocation(Value value) {
+  while (value && !value.getDefiningOp<ttg::LocalAllocOp>())
+    value = getSharedViewSource(value);
+  return value;
+}
+
+// Does not mutate IR. Discard the updates if collection or validation fails.
+LogicalResult collectSharedLayoutUpdates(Value allocation, Attribute encoding,
+                                         SharedLayoutUpdates &updates) {
+  if (!allocation.getDefiningOp<ttg::LocalAllocOp>())
+    return failure();
+  SmallVector<std::pair<Value, Attribute>> worklist{{allocation, encoding}};
+  for (unsigned i = 0; i < worklist.size(); ++i) {
+    auto [value, layout] = worklist[i];
+    auto type = dyn_cast<ttg::MemDescType>(value.getType());
+    if (!type || !isa<ttg::SharedEncodingTrait>(layout))
+      return failure();
+    auto replacement = ttg::MemDescType::get(
+        type.getShape(), type.getElementType(), layout, type.getMemorySpace(),
+        type.getMutableMemory(), type.getAllocShape());
+    auto [it, inserted] = updates.types.try_emplace(value, replacement);
+    if (!inserted) {
+      if (it->second != replacement)
+        return failure();
+      continue;
+    }
+    for (OpOperand &use : value.getUses()) {
+      Operation *user = use.getOwner();
+      if (user->getNumResults() == 1 &&
+          getSharedViewSource(user->getResult(0)) == value) {
+        Value view = user->getResult(0);
+        Attribute projected = getSharedViewEncoding(view, layout);
+        if (!projected)
+          return failure();
+        worklist.emplace_back(view, projected);
+      } else {
+        updates.accesses.push_back(&use);
+      }
+    }
+  }
+  return success();
+}
 
 using WriterLayoutMap = llvm::MapVector<Operation *, Attribute>;
 
@@ -201,21 +324,32 @@ Attribute chooseCopyLayout(ttg::AsyncCopyGlobalToLocalOp copy,
                            ttg::MemDescType destination,
                            ModuleAxisInfoAnalysis &axisInfo,
                            const WriterLayoutMap &preferences,
-                           unsigned minVec = 1) {
-  auto shared =
-      dyn_cast<ttg::SwizzledSharedEncodingAttr>(destination.getEncoding());
+                           unsigned minVec = 1, bool emitErrors = false) {
+  auto reject = [&](StringRef message) -> Attribute {
+    if (emitErrors)
+      copy.emitOpError(message);
+    return {};
+  };
   auto source = copy.getSrc().getType();
-  auto info = axisInfo.getAxisInfo(copy.getSrc());
-  if (!shared || source.getRank() != 2 || !info ||
-      source.getShape() != destination.getShape())
-    return {};
-  auto maxVec = getAsyncCopyMaxVectorSize(copy, destination, axisInfo,
-                                          /*emitErrors=*/false);
-  if (failed(maxVec))
-    return {};
   if (Attribute preferred = preferences.lookup(copy))
     source = source.cloneWithEncoding(preferred);
-  return chooseAsyncCopyLayout(source, destination, info, minVec, *maxVec);
+  if (!isa<ttg::BlockedEncodingAttr>(source.getEncoding()) ||
+      !isa<ttg::SwizzledSharedEncodingAttr>(destination.getEncoding()))
+    return reject("requires blocked source and swizzled shared destination");
+  if (!isAsyncCopyDestinationSupported(destination))
+    return reject("native MetaX async copy does not support swizzled "
+                  "shared views with a different allocation shape");
+  auto maxVec =
+      getAsyncCopyMaxVectorSize(copy, destination, axisInfo, emitErrors);
+  if (failed(maxVec))
+    return {};
+  auto encoding = chooseAsyncCopyLayout(source, destination,
+                                        axisInfo.getAxisInfo(copy.getSrc()),
+                                        minVec, *maxVec);
+  if (!encoding)
+    return reject("cannot legalize lane-to-shared addresses and mask vector "
+                  "width for MetaX async copy");
+  return encoding;
 }
 
 LogicalResult checkSharedAccesses(const SharedLayoutUpdates &updates,
@@ -352,11 +486,12 @@ struct CommonIROptimizeSharedLayoutsPass
       ModuleAxisInfoAnalysis axisInfo(module,
                                       tile::addCommonIRAxisInfoVisitors);
       for (auto copy : remainingCopies) {
-        Attribute encoding = chooseCopyLayout(copy, copy.getResult().getType(),
-                                              axisInfo, copyPreferences);
-        if (encoding)
-          copyLayouts[copy] = encoding;
-        // The final legalizer diagnoses unsupported copies.
+        Attribute encoding = chooseCopyLayout(
+            copy, copy.getResult().getType(), axisInfo, copyPreferences,
+            /*minVec=*/1, /*emitErrors=*/true);
+        if (!encoding)
+          return signalPassFailure();
+        copyLayouts[copy] = encoding;
       }
     }
 

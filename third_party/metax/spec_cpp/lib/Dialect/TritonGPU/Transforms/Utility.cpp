@@ -525,9 +525,6 @@ Attribute inferSrcEncoding(Operation *op, Attribute encoding) {
   if (isa<triton::gpu::UpcastFpOpInterface>(op))
     return {};
 
-  if (isa<triton::gpu::BsmPermOp>(op))
-    return encoding;
-
   if (op->hasTrait<mlir::OpTrait::SameOperandsAndResultEncoding>() ||
       op->hasTrait<mlir::OpTrait::SameLoadStoreOperandsAndResultEncoding>() ||
       op->hasTrait<mlir::OpTrait::Elementwise>() ||
@@ -563,9 +560,6 @@ Attribute inferDstEncoding(Operation *op, Attribute encoding) {
   }
   if (isa<triton::gpu::UpcastFpOpInterface>(op))
     return {};
-
-  if (isa<triton::gpu::BsmPermOp>(op))
-    return encoding;
 
   if (op->hasTrait<mlir::OpTrait::SameOperandsAndResultEncoding>() ||
       op->hasTrait<mlir::OpTrait::SameLoadStoreOperandsAndResultEncoding>() ||
