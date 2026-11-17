@@ -205,7 +205,7 @@ def _stage_multipython_mlir(mlir_dst):
 
 # Language extension packages that are aliased onto the GCU one when the wheel
 # is packaged.  GCU has no CUDA/HIP semantics, but upstream code imports these
-# names directly, so both are replaced by a link to the sibling `gcu` package.
+# names directly, so both are replaced by a copy of the sibling `gcu` package.
 LANGUAGE_EXTRA_ALIASES = ("cuda", "hip")
 
 
@@ -218,34 +218,34 @@ def _remove_path(path):
 
 
 def finalize_build_tree(build_lib):
-    """Point triton/language/extra/{cuda,hip} at the GCU package (packaging hook).
+    """Fill triton/language/extra/{cuda,hip} with the GCU package.
 
     setup.py calls this right after build_py has staged the tree, at which point
     every backend's `language` directory has been copied under its vendor name:
     `triton/language/extra/cuda` comes from the NVIDIA backend and `hip` from the
     AMD one.  Neither is GCU code, yet the names are imported by upstream code,
-    so each is dropped and recreated as a symlink to the sibling `gcu` package.
+    so each is dropped and replaced by a copy of the sibling `gcu` package.
 
-    Note that the wheel is not a link-preserving container: bdist_wheel copies
-    build_lib into the archive with dir_util.copy_tree(preserve_symlinks=0), so
-    the links created here end up inside the .whl as real copies of the GCU
-    package.  The install tree therefore resolves `extra.cuda`/`extra.hip` to
-    the GCU implementation either way; only the staging tree keeps the links.
+    A copy is used instead of a symlink on purpose: build_py copies *through* a
+    link, so the vendor files of the next packaging run would land inside `gcu`,
+    and bdist_wheel resolves the links anyway (dir_util.copy_tree keeps no
+    symlinks), so the wheel always ends up carrying real files.  Copying keeps
+    the staging tree equal to the wheel and leaves nothing to clean up later.
     """
     extra_dir = os.path.join(build_lib, "triton", "language", "extra")
     if not os.path.isdir(extra_dir):
         print(f"[enflame] no {extra_dir}, skipping language extra aliases")
         return
 
-    # Without a gcu package there is nothing to point at: a dangling link would
-    # be packaged as an empty directory, which ships less than what is there now.
-    if not os.path.isdir(os.path.join(extra_dir, "gcu")):
+    gcu_dir = os.path.join(extra_dir, "gcu")
+    # Without a gcu package there is nothing to copy: an empty directory would
+    # ship less than what is there now.
+    if not os.path.isdir(gcu_dir):
         print(f"[enflame] no gcu package in {extra_dir}, skipping language extra aliases")
         return
 
     for name in LANGUAGE_EXTRA_ALIASES:
         alias_path = os.path.join(extra_dir, name)
         _remove_path(alias_path)
-        # Relative target: the link stays valid wherever the tree is installed.
-        os.symlink("gcu", alias_path, target_is_directory=True)
-        print(f"[enflame] triton/language/extra/{name} -> gcu")
+        shutil.copytree(gcu_dir, alias_path)
+        print(f"[enflame] triton/language/extra/{name} <- gcu")
