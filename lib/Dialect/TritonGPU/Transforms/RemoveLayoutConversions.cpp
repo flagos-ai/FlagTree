@@ -3483,6 +3483,76 @@ void LayoutPropagation::resolveConflicts() {
     if (Attribute original = getTensorEncoding(it.first))
       info.encodings.insert(original);
   }
+#ifdef __PPU__
+  // A value feeding tt.reduce/tt.scan must not carry warps on the reduced axis:
+  // the reduction would then need a shared-memory round trip plus a barrier on
+  // every iteration instead of staying inside one thread.
+  //
+  // Enforced here, at selection time, rather than where the offending encoding
+  // is built. insertOne is deterministic and encodings are uniqued, so a
+  // sibling expansion that legitimately builds the encoding makes it a
+  // candidate for the reduction as well, no matter how the builder is guarded:
+  // index_select_backward (PPU) synthesizes the parent from the 2D gather
+  // layout wpc=[8,1] for expansions that never reach the reduction, and that
+  // encoding still lands on the reduce input -- shared 2048 -> 16384 bytes,
+  // 6-8x slower. Rejecting only the syntheses that the reduction is reachable
+  // from leaves the other half in place and changes nothing.
+  //
+  // Keeping the candidates with the fewest warps on the axis leaves everything
+  // else to the cost model (convert count, load coalescing). Non-blocked
+  // candidates are untouched: they do not describe a warp layout on this rank
+  // and are weighed by their own rules.
+  if (enableCostBasedResolution) {
+    for (auto &it : layouts) {
+      LayoutInfo &info = it.second;
+      if (info.encodings.size() <= 1)
+        continue;
+      SmallVector<unsigned, 2> reduceAxes;
+      for (OpOperand &use : it.first.getUses()) {
+        Operation *user = use.getOwner();
+        if (auto reduceOp = dyn_cast<ReduceOp>(user))
+          reduceAxes.push_back(unsigned(reduceOp.getAxis()));
+        else if (auto scanOp = dyn_cast<ScanOp>(user))
+          reduceAxes.push_back(unsigned(scanOp.getAxis()));
+      }
+      for (unsigned axis : reduceAxes) {
+        unsigned fewestWarps = ~0u;
+        for (Attribute enc : info.encodings) {
+          auto blocked = dyn_cast<BlockedEncodingAttr>(enc);
+          if (!blocked)
+            continue;
+          ArrayRef<unsigned> warps = blocked.getWarpsPerCTA();
+          if (axis < warps.size())
+            fewestWarps = std::min(fewestWarps, warps[axis]);
+        }
+        if (fewestWarps == ~0u)
+          continue;
+        SmallVector<Attribute, 8> keep;
+        for (Attribute enc : info.encodings) {
+          auto blocked = dyn_cast<BlockedEncodingAttr>(enc);
+          if (!blocked) {
+            keep.push_back(enc);
+            continue;
+          }
+          ArrayRef<unsigned> warps = blocked.getWarpsPerCTA();
+          if (axis >= warps.size() || warps[axis] <= fewestWarps)
+            keep.push_back(enc);
+        }
+        if (keep.size() == info.encodings.size())
+          continue;
+        unsigned dropped = unsigned(info.encodings.size() - keep.size());
+        info.encodings.clear();
+        for (Attribute enc : keep)
+          info.encodings.insert(enc);
+        if (rlcDbgLevel() >= 1)
+          llvm::errs() << "[rlc] rc drop " << dropped
+                       << " reduce-axis candidate(s) with warpsPerCTA[" << axis
+                       << "] > " << fewestWarps << " from " << it.first
+                       << "\n";
+      }
+    }
+  }
+#endif // __PPU__
   // Candidate sets for component-level resolution, captured before the
   // per-value rules below collapse them.
   llvm::MapVector<Value, SmallVector<Attribute>> componentCandidates;
