@@ -2,10 +2,8 @@ from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, metax
 try:
     from triton._C.libtriton import tle
-    from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 except ImportError:
     tle = None
-    COMMON_IR_ENABLED = False
 try:
     from triton._C.libtriton import distributed
     enable_dist = True
@@ -289,7 +287,6 @@ class MACABackend(BaseBackend):
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         if COMMON_IR_ENABLED:
-            passes.commonir.add_resolve_bsm_layouts(pm, capability, opt.num_warps)
             passes.commonir.add_optimize_shared_layouts(pm)
             passes.commonir.add_optimize_tensor_tile_layouts(pm)
             passes.commonir.add_lower_tensor_tiles(pm)
@@ -347,7 +344,7 @@ class MACABackend(BaseBackend):
         passes.common.add_symbol_dce(pm)
         passes.common.add_canonicalizer(pm)
         if COMMON_IR_ENABLED:
-            passes.commonir.add_legalize_async_copy(pm)
+            passes.commonir.add_clear_layout_hints(pm)
         pm.run(mod, 'make_ttgir')
         return mod
 

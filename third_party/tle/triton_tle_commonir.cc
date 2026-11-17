@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace py = pybind11;
@@ -87,7 +88,7 @@ void init_triton_tle(py::module &&m) {
            })
       .def("create_tile_alloc",
            [](TritonOpBuilder &self, Type tileBufType,
-              Attribute targetLayout) -> Value {
+              std::optional<Attribute> targetLayout) -> Value {
              auto bufType = mlir::cast<tile::BufType>(tileBufType);
              auto op = self.create<tile::AllocOp>(
                  tileBufType, bufType.getMemorySpace(),
@@ -98,7 +99,8 @@ void init_triton_tle(py::module &&m) {
                                        tile::Layout::ND),
                  /*lifetime=*/tile::LifetimeAttr(),
                  /*comment=*/mlir::StringAttr());
-             op->setAttr("tle.gpu_layout", targetLayout);
+             if (targetLayout)
+               op->setAttr("tle.gpu_layout", *targetLayout);
              return op.getResult();
            })
       .def("create_tile_copy",

@@ -73,32 +73,47 @@ Value TTGIRLayoutAdapter::convertLayout(Value value, RankedTensorType type,
   return ttg::ConvertLayoutOp::create(builder, value.getLoc(), type, value);
 }
 
-namespace {
-void eraseDeadProducers(ModuleOp module) {
-  llvm::SetVector<Operation *> worklist;
-  module.walk([&](Operation *op) {
-    if (op->getNumRegions() == 0)
-      worklist.insert(op);
-  });
-  while (!worklist.empty()) {
-    Operation *op = worklist.pop_back_val();
-    if (!isOpTriviallyDead(op))
-      continue;
-    for (Value operand : op->getOperands())
-      if (Operation *producer = operand.getDefiningOp())
-        if (producer->getNumRegions() == 0)
-          worklist.insert(producer);
-    op->erase();
-  }
+SmallVector<Value> getLoopSlotValues(scf::ForOp loop, unsigned index) {
+  return {
+      loop.getInitArgs()[index], loop.getRegionIterArgs()[index],
+      loop.getResult(index),
+      cast<scf::YieldOp>(loop.getBody()->getTerminator()).getOperand(index)};
 }
 
-} // namespace
-
-void applyLayoutRequirements(ModuleOp module,
-                             const TensorLayoutRequirements &requirements,
-                             const TensorLayoutAdapter &adapter) {
-  tile::applyTensorLayoutRequirements(requirements, adapter);
-  eraseDeadProducers(module);
+SmallVector<Value>
+collectTensorLayoutComponent(Value seed, const TTGIRLayoutAdapter &adapter) {
+  llvm::SetVector<Value> values;
+  values.insert(seed);
+  auto addSlot = [&](scf::ForOp loop, unsigned index) {
+    for (Value value : getLoopSlotValues(loop, index))
+      values.insert(value);
+  };
+  for (unsigned i = 0; i < values.size(); ++i) {
+    Value value = values[i];
+    if (Value source = adapter.getConversionSource(value))
+      values.insert(source);
+    else if (auto arg = dyn_cast<BlockArgument>(value)) {
+      if (auto loop = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp()))
+        if (arg.getArgNumber() > 0)
+          addSlot(loop, arg.getArgNumber() - 1);
+    } else if (auto loop = value.getDefiningOp<scf::ForOp>()) {
+      addSlot(loop, cast<OpResult>(value).getResultNumber());
+    }
+    for (OpOperand &use : value.getUses()) {
+      Operation *user = use.getOwner();
+      if (auto loop = dyn_cast<scf::ForOp>(user)) {
+        if (use.getOperandNumber() >= loop.getNumControlOperands())
+          addSlot(loop, use.getOperandNumber() - loop.getNumControlOperands());
+      } else if (auto yield = dyn_cast<scf::YieldOp>(user)) {
+        if (auto loop = dyn_cast<scf::ForOp>(yield->getParentOp()))
+          addSlot(loop, use.getOperandNumber());
+      } else if (user->getNumResults() == 1 &&
+                 adapter.getConversionSource(user->getResult(0)) == value) {
+        values.insert(user->getResult(0));
+      }
+    }
+  }
+  return values.takeVector();
 }
 
 } // namespace mlir::triton::metax

@@ -73,8 +73,6 @@ TLE_PRIMITIVES = frozenset({
     "gpu.metax.barrier_shared",
     "gpu.metax.sched_bound",
     "gpu.metax.iglp",
-    "gpu.metax.local_load",
-    "gpu.metax.bsm_perm",
 
     ## TLE-Struct DSA
     "dsa.alloc",

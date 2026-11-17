@@ -22,6 +22,21 @@ namespace ttg = mlir::triton::gpu;
 
 namespace {
 
+struct DotLayoutChoice {
+  triton::DotOp dot;
+  DotLayoutPlan plan;
+};
+
+DotLayoutPlan makeDotLayoutPlan(triton::DotOp dot,
+                                ttg::MACAMmaEncodingAttr mma) {
+  auto *ctx = dot.getContext();
+  return {mma,
+          ttg::DotOperandEncodingAttr::get(
+              ctx, 0, mma, dot.getA().getType().getElementType()),
+          ttg::DotOperandEncodingAttr::get(
+              ctx, 1, mma, dot.getB().getType().getElementType())};
+}
+
 std::string hashDescription(StringRef description) {
   auto digest = llvm::SHA256::hash(llvm::arrayRefFromStringRef(description));
   return llvm::toHex(ArrayRef<uint8_t>(digest), /*LowerCase=*/true);
@@ -30,7 +45,6 @@ std::string hashDescription(StringRef description) {
 struct DotLayoutConstraints {
   int64_t m, n, k;
   bool supportsColMajor;
-  std::optional<BsmLayoutChain> bsmB;
 
   unsigned maxElements(unsigned dim, unsigned warps) const {
     return getMmaRegisterGroupLimit(dim == 0 ? m : n,
@@ -50,14 +64,6 @@ SmallVector<unsigned, 4> powerOfTwoGroupings(unsigned maximum) {
 
 FailureOr<DotLayoutConstraints>
 getDotLayoutConstraints(tt::DotOp dot, int computeCapability, int numWarps) {
-  auto bsmA = getBsmLayoutChain(dot.getA());
-  auto bsmB = getBsmLayoutChain(dot.getB());
-  if (failed(bsmA) || failed(bsmB))
-    return failure();
-  if (*bsmA) {
-    dot.emitError("BSM permutation is supported only for dot operand B");
-    return failure();
-  }
   auto aTy = cast<RankedTensorType>(dot.getA().getType());
   auto bTy = cast<RankedTensorType>(dot.getB().getType());
   auto dTy = cast<RankedTensorType>(dot.getD().getType());
@@ -74,7 +80,7 @@ getDotLayoutConstraints(tt::DotOp dot, int computeCapability, int numWarps) {
   Type bElem = bTy.getElementType();
   const bool supportsColMajor =
       (aElem.isF16() || aElem.isBF16()) && (bElem.isF16() || bElem.isBF16());
-  return DotLayoutConstraints{m, n, k, supportsColMajor, *bsmB};
+  return DotLayoutConstraints{m, n, k, supportsColMajor};
 }
 
 bool matchesExplicitDotHints(tt::DotOp dot, const DotLayoutPlan &plan) {
@@ -125,9 +131,6 @@ FailureOr<SmallVector<DotLayoutDomain>> collectDots(ModuleOp module) {
 LogicalResult validateDotLayoutCandidate(tt::DotOp dot,
                                          const DotLayoutPlan &plan,
                                          int computeCapability, int numWarps) {
-  auto constraints = getDotLayoutConstraints(dot, computeCapability, numWarps);
-  if (failed(constraints))
-    return failure();
   if (auto error =
           checkMacaDotLayout(dot, plan.mma, plan.operandA, plan.operandB,
                              computeCapability, numWarps))
@@ -147,7 +150,6 @@ generateDotLayoutPlans(tt::DotOp dot, int computeCapability, int numWarps) {
   unsigned atomK = ttg::getMmaThreadShape()[2];
 
   SmallVector<DotLayoutPlan> plans;
-  std::optional<std::string> bsmRejection;
   DenseSet<Attribute> seen;
   auto tryAppend = [&](ArrayRef<unsigned> warps, ArrayRef<unsigned> elements,
                        unsigned colMajor) {
@@ -159,12 +161,6 @@ generateDotLayoutPlans(tt::DotOp dot, int computeCapability, int numWarps) {
     if (checkMacaDotLayout(dot, plan.mma, plan.operandA, plan.operandB,
                            computeCapability, numWarps))
       return;
-    if (constraints->bsmB) {
-      if (auto error = checkBsmLayout(*constraints->bsmB, plan.operandB)) {
-        bsmRejection = std::move(error);
-        return;
-      }
-    }
     plans.push_back(std::move(plan));
   };
 
@@ -207,11 +203,7 @@ generateDotLayoutPlans(tt::DotOp dot, int computeCapability, int numWarps) {
   }
 
   if (plans.empty()) {
-    if (constraints->bsmB)
-      dot.emitError("no MMA layout supports the split load/BSM chain: ")
-          << bsmRejection.value_or("M/N/K geometry is not supported");
-    else
-      dot.emitError("no dot layout plan covers this M/N/K geometry");
+    dot.emitError("no dot layout plan covers this M/N/K geometry");
     return failure();
   }
 

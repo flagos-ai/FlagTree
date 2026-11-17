@@ -27,12 +27,8 @@ spec_path(__path__)
 from .copy import async_copy_global_to_local
 from .sync import gvm_arrive, barrier, barrier_shared
 from .scheduling import sched_bound, iglp
-from .load import local_load, bsm_perm
 
-__all__ = [
-    "async_copy_global_to_local", "gvm_arrive", "barrier", "barrier_shared", "sched_bound", "iglp", "local_load",
-    "bsm_perm"
-]
+__all__ = ["async_copy_global_to_local", "gvm_arrive", "barrier", "barrier_shared", "sched_bound", "iglp"]
 
 if FLAGTREE_BACKEND == "metax":
     from .layouts import MmaEncoding, DotOperandEncoding

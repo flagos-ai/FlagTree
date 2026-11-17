@@ -83,14 +83,14 @@ def _flash_fwd_tile(
         v_register = tl.load(current_v_ptrs)
 
     tle.gpu.metax.barrier_shared()
-    kt0_for_score = tle.gpu.metax.local_load(k0_smem, intrinsic=True, is_constant_offs=True)
+    kt0_for_score = k0_smem.load()
     score0 = tl.dot(
         q_for_score,
         kt0_for_score,
         tl.zeros((BLOCK_M, 32), tl.float32),
         input_precision="tf32",
     )
-    kt1_for_score = tle.gpu.metax.local_load(k1_smem, intrinsic=True, is_constant_offs=True)
+    kt1_for_score = k1_smem.load()
     score1 = tl.dot(
         q_for_score,
         kt1_for_score,
@@ -153,10 +153,10 @@ def _flash_fwd_tile(
 
     p0 = p0_qk.to(v_head.dtype.element_ty)
     p1 = p1_qk.to(v_head.dtype.element_ty)
-    v00 = tle.gpu.metax.local_load(v_fragments.slot(0), intrinsic=True, is_constant_offs=True)
+    v00 = v_fragments.slot(0).load()
     acc_o = tl.dot(p0, v00, acc_o, input_precision="tf32")
 
-    v10 = tle.gpu.metax.local_load(v_fragments.slot(1), intrinsic=True, is_constant_offs=True)
+    v10 = v_fragments.slot(1).load()
     acc_o = tl.dot(p1, v10, acc_o, input_precision="tf32")
 
     # Scheduling hints
@@ -254,7 +254,7 @@ def flash_fwd_hdim128_generic_kernel(
     # C prologue: gQ -> rQ -> sQ, then publish and retain the MMA Q fragment.
     q_smem.store(q_register)
     tle.gpu.metax.barrier_shared()
-    q_for_score = tle.gpu.metax.local_load(q_smem, intrinsic=True, is_constant_offs=True)
+    q_for_score = q_smem.load()
 
     # Finish the Q shared-memory reads before the main loop.
     tle.gpu.metax.barrier_shared()
@@ -423,7 +423,7 @@ def flash_fwd_hdim128_generic_kernel(
     # the shared-memory reader map and the D-contiguous global store; this
     # is the complete physical boundary that the user previously had to encode
     # as a hand-written BlockedLayout.
-    out_coalesced = tle.gpu.metax.local_load(o_smem, intrinsic=True, is_constant_offs=True)
+    out_coalesced = o_smem.load()
 
     # The shared round-trip changes ownership from the PV accumulator to a
     # D-contiguous global writer.  Rebuild offsets and mask in that ownership

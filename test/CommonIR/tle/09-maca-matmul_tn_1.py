@@ -91,12 +91,12 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, stride_bk,
 
     a_step = tl.full((BLOCK_M, BLOCK_K), BLOCK_K * stride_ak, tl.int32)
     b_step = tl.full((BLOCK_K, BLOCK_N), BLOCK_K * stride_bk, tl.int32)
-    a0 = tle.gpu.metax.local_load(a_smem.slot(0), intrinsic=True, is_constant_offs=True)
-    b0 = tle.gpu.metax.local_load(b_smem.slot(0), intrinsic=True, is_constant_offs=True)
+    a0 = a_smem.slot(0).load()
+    b0 = b_smem.slot(0).load()
     tle.gpu.metax.gvm_arrive(8)
     tle.gpu.metax.barrier_shared()
-    a1 = tle.gpu.metax.local_load(a_smem.slot(1), intrinsic=True, is_constant_offs=True)
-    b1 = tle.gpu.metax.local_load(b_smem.slot(1), intrinsic=True, is_constant_offs=True)
+    a1 = a_smem.slot(1).load()
+    b1 = b_smem.slot(1).load()
 
     a_next_offsets = a_offsets + a_step
     b_next_offsets = b_offsets + b_step
@@ -152,8 +152,8 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, stride_bk,
         tle.gpu.metax.gvm_arrive(8)
         tle.gpu.metax.barrier_shared()
 
-        b2 = tle.gpu.metax.local_load(b_smem.slot(2), intrinsic=True, is_constant_offs=True)
-        a2 = tle.gpu.metax.local_load(a_smem.slot(2), intrinsic=True, is_constant_offs=True)
+        b2 = b_smem.slot(2).load()
+        a2 = a_smem.slot(2).load()
 
         a_next_ptrs1_ptrs = tle.extract_tile(a_next_ptrs, (1, 0), [32, BLOCK_K])
         a_next_ptrs1_mask = tle.extract_tile(next_a_mask, (1, 0), [32, BLOCK_K])
@@ -169,8 +169,8 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, stride_bk,
         tle.gpu.metax.gvm_arrive(8)
         tle.gpu.metax.barrier_shared()
 
-        a3 = tle.gpu.metax.local_load(a_smem.slot(3), intrinsic=True, is_constant_offs=True)
-        b3 = tle.gpu.metax.local_load(b_smem.slot(3), intrinsic=True, is_constant_offs=True)
+        a3 = a_smem.slot(3).load()
+        b3 = b_smem.slot(3).load()
 
         a_next_ptrs2_ptrs = tle.extract_tile(a_next_ptrs, (2, 0), [32, BLOCK_K])
         a_next_ptrs2_mask = tle.extract_tile(next_a_mask, (2, 0), [32, BLOCK_K])
@@ -197,8 +197,8 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, stride_bk,
         c30 = tl.dot(a3, loop_b0, c30, input_precision="tf32")
         c03 = tl.dot(loop_a0, b3, c03, input_precision="tf32")
         tle.gpu.metax.sched_bound()
-        a0_next = tle.gpu.metax.local_load(a_smem.slot(0), intrinsic=True, is_constant_offs=True)
-        b0_next = tle.gpu.metax.local_load(b_smem.slot(0), intrinsic=True, is_constant_offs=True)
+        a0_next = a_smem.slot(0).load()
+        b0_next = b_smem.slot(0).load()
         c31 = tl.dot(a3, loop_b1, c31, input_precision="tf32")
         c13 = tl.dot(loop_a1, b3, c13, input_precision="tf32")
         tle.gpu.metax.iglp(config_2=2, config_5=1, config_6=5)
@@ -208,8 +208,8 @@ def matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, stride_bk,
         c32 = tl.dot(a3, b2, c32, input_precision="tf32")
         tle.gpu.metax.gvm_arrive(8)
         tle.gpu.metax.barrier_shared()
-        a1_next = tle.gpu.metax.local_load(a_smem.slot(1), intrinsic=True, is_constant_offs=True)
-        b1_next = tle.gpu.metax.local_load(b_smem.slot(1), intrinsic=True, is_constant_offs=True)
+        a1_next = a_smem.slot(1).load()
+        b1_next = b_smem.slot(1).load()
 
         next_next_k = loop_counter + 2
         has_next_next = next_next_k < num_k_tiles

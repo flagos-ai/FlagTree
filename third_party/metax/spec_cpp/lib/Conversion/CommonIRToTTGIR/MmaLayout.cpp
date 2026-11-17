@@ -2,14 +2,10 @@
 // Copyright (c) 2026 The FlagOS Contributors
 
 #include "triton/Conversion/CommonIRToTTGIR/MmaLayout.h"
-#include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
-#include "triton/Tools/LayoutUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
-#include <array>
-#include <cstdlib>
 #include <limits>
 
 namespace mlir::triton::metax {
@@ -30,16 +26,6 @@ ttg::MACAMmaEncodingAttr buildMmaEncoding(MLIRContext *ctx,
   return ttg::MACAMmaEncodingAttr::get(
       ctx, 2, computeCapability % 10, warpsPerCTA, elementsMNK, colMajor,
       /*isATrans=*/false, /*isBTrans=*/false, {1, 1});
-}
-
-DotLayoutPlan makeDotLayoutPlan(triton::DotOp dot,
-                                ttg::MACAMmaEncodingAttr mma) {
-  auto *ctx = dot.getContext();
-  return {mma,
-          ttg::DotOperandEncodingAttr::get(
-              ctx, 0, mma, dot.getA().getType().getElementType()),
-          ttg::DotOperandEncodingAttr::get(
-              ctx, 1, mma, dot.getB().getType().getElementType())};
 }
 
 std::optional<StringRef> checkMacaDotPreconditions(triton::DotOp dot,
@@ -140,210 +126,6 @@ checkMacaDotLayout(triton::DotOp dot, Attribute encoding, Attribute operandA,
   (void)ttg::toLinearLayout(dTy.cloneWithEncoding(mma));
   (void)ttg::toLinearLayout(aTy.cloneWithEncoding(operandA));
   (void)ttg::toLinearLayout(bTy.cloneWithEncoding(operandB));
-  return std::nullopt;
-}
-
-FailureOr<std::optional<BsmLayoutChain>> getBsmLayoutChain(Value operand) {
-  BsmLayoutChain chain;
-  auto skipConversions = [&](Value value) {
-    while (true) {
-      if (auto cvt = value.getDefiningOp<ttg::ConvertLayoutOp>()) {
-        chain.conversions.push_back(cvt);
-        value = cvt.getSrc();
-      } else if (auto hint = value.getDefiningOp<tile::SetLayoutOp>()) {
-        value = hint.getSource();
-      } else {
-        break;
-      }
-    }
-    return value;
-  };
-  Value value = skipConversions(operand);
-  chain.perm = value.getDefiningOp<ttg::BsmPermOp>();
-  if (!chain.perm)
-    return std::optional<BsmLayoutChain>();
-  chain.load =
-      skipConversions(chain.perm.getSrc1()).getDefiningOp<ttg::LocalLoadOp>();
-  if (!chain.load || chain.load.getMmaMode() != 2) {
-    chain.perm.emitError("BSM requires a local_load with mmaMode=2");
-    return failure();
-  }
-  return std::optional<BsmLayoutChain>(std::move(chain));
-}
-
-namespace {
-
-// Map each BSM output to an i32 carrier's 16-bit half, as in Gluon's
-// analyzeBsmPermPhysicalContract. Retain the mapping for the LDS address check.
-using BsmMapping = std::array<std::pair<unsigned, unsigned>, kBsmSlots>;
-std::optional<BsmMapping> getBsmMapping(unsigned n, unsigned k) {
-  if (!n || !k || n % 2 || k % 2 || uint64_t(n) * k != kBsmSlots)
-    return std::nullopt;
-  BsmMapping mapping;
-  std::array<unsigned, kBsmSlots> writes{};
-  for (unsigned j = 0; j < n * k / 2; j += 2 * n) {
-    for (unsigned v = 0; v < n / 2; ++v) {
-      unsigned source = (j / n + v) * k;
-      unsigned output = 2 * v + n * (j / k);
-      for (unsigned upper : {0u, 1u}) {
-        for (unsigned half : {0u, 1u}) {
-          for (unsigned second : {0u, 1u}) {
-            unsigned src = source + upper * n + second;
-            unsigned dst = output + (2 * upper + half) * k + second;
-            if (src >= kBsmSlots || dst >= kBsmSlots || ++writes[dst] != 1)
-              return std::nullopt;
-            mapping[dst] = {src, half};
-          }
-        }
-      }
-    }
-  }
-  if (llvm::any_of(writes, [](unsigned count) { return count != 1; }))
-    return std::nullopt;
-  return mapping;
-}
-
-// Model lowerLocalLdswithoutPerm addresses to verify that v2i32 loads and BSM
-// produce the selected B layout without hitting lowering fallbacks/assertions.
-bool checkSplitLoadAddresses(LinearLayout cvt, ttg::MemDescType shared,
-                             unsigned elementsN, const BsmMapping &mapping) {
-  auto *ctx = shared.getContext();
-  auto reg = StringAttr::get(ctx, "register");
-  auto lane = StringAttr::get(ctx, "lane");
-  auto warp = StringAttr::get(ctx, "warp");
-  auto block = StringAttr::get(ctx, "block");
-  auto offset = StringAttr::get(ctx, "offset");
-  if (!cvt.isTrivialOver({block}))
-    return false;
-  cvt = cvt.sublayout({reg, lane, warp}, {offset});
-  if (!actionRemoveBroadcastedRegs(cvt).isIdentity())
-    return false;
-
-  unsigned vec = std::min(elementsN, 8u); // 128-bit maximum / 16-bit elements
-  // The native implementation always emits v2i32, i.e. four 16-bit elements.
-  if (vec != 4)
-    return false;
-  int32_t columns = shared.getShape()[ttg::getOrder(shared)[0]];
-  std::vector<std::vector<int32_t>> tileBases = {{columns}, {1}, {2}};
-  LinearLayout tile({{reg, tileBases}}, {{offset, llvm::NextPowerOf2(columns)}},
-                    false);
-  auto permutation = regPermForDivide(cvt, tile, /*left=*/true);
-  if (!permutation)
-    return false;
-  auto permuted = permutation->apply(cvt);
-  auto bases = permuted.getBases();
-  auto &registerBases = bases[reg];
-  for (unsigned i = 0; i < tileBases.size(); ++i) {
-    if (registerBases[i] != tileBases[i])
-      return false;
-    registerBases[i] = {0};
-  }
-  for (auto dim : cvt.getInDimNames())
-    for (auto basis : bases[dim])
-      for (auto tileBasis : tileBases)
-        if (basis[0] & tileBasis[0])
-          return false;
-  LinearLayout reps(bases, permuted.getOutDims(), false);
-  LinearLayout addresses({{lane, bases[lane]}, {warp, bases[warp]}},
-                         reps.getOutDims(), false);
-  // Full buffers and slot views have no offset bits within this rank-2 shape.
-  auto [additive, strides] = actionAdditiveStrides(reps, addresses, 0);
-  if (!strides.isIdentity() || additive <= kBsmSlots / 2 ||
-      additive < 4 * vec || additive > kBsmSlots || kBsmSlots % additive)
-    return false;
-  int32_t upperOffset =
-      reps.apply({{reg, kBsmSlots / 2}, {lane, 0}, {warp, 0}})[0].second;
-  // The native split-LDS lowering still uses a fixed 512-element offset.
-  if (upperOffset != 512)
-    return false;
-
-  for (int w = 0; w < cvt.getInDimSize(warp); ++w) {
-    for (int l = 0; l < cvt.getInDimSize(lane); ++l) {
-      std::array<int32_t, kBsmSlots> raw;
-      raw.fill(-1);
-      int32_t base = addresses.apply({{lane, l}, {warp, w}})[0].second;
-      for (unsigned i = 0; i < kBsmSlots; i += additive) {
-        int32_t outer =
-            base ^ reps.apply({{reg, i}, {lane, 0}, {warp, 0}})[0].second;
-        for (unsigned j = 0; j < additive / 2; j += 2 * vec) {
-          int32_t inner =
-              outer + reps.apply({{reg, j}, {lane, 0}, {warp, 0}})[0].second;
-          for (unsigned v = 0; v < vec / 2; ++v) {
-            for (unsigned upper : {0u, 1u}) {
-              for (unsigned duplicate : {0u, 1u}) {
-                for (unsigned second : {0u, 1u}) {
-                  unsigned index = i + j + 4 * v + 2 * duplicate + second +
-                                   upper * (kBsmSlots / 2);
-                  if (index >= kBsmSlots || raw[index] != -1)
-                    return false;
-                  raw[index] =
-                      inner + 2 * v + second * columns + upper * upperOffset;
-                }
-              }
-            }
-          }
-        }
-      }
-      for (unsigned r = 0; r < kBsmSlots; ++r) {
-        auto [source, half] = mapping[r];
-        int32_t expected =
-            cvt.apply({{reg, r}, {lane, l}, {warp, w}})[0].second;
-        if (raw[source] < 0 || raw[source] + half != expected)
-          return false;
-      }
-    }
-  }
-  return true;
-}
-
-} // namespace
-
-std::optional<std::string> checkBsmLayout(BsmLayoutChain chain,
-                                          Attribute encoding,
-                                          ttg::MemDescType shared) {
-  auto dot = dyn_cast_or_null<ttg::DotOperandEncodingAttr>(encoding);
-  auto mma =
-      dot ? dyn_cast<ttg::MACAMmaEncodingAttr>(dot.getParent()) : nullptr;
-  if (!mma || dot.getOpIdx() != 1 || mma.getVersionMajor() != 2 ||
-      mma.getIsATrans() || mma.getIsBTrans())
-    return "BSM requires a non-transposed MACA v2 B operand";
-  if (std::getenv("TRITON_DISABLE_SPLIT_PERM"))
-    return "BSM split load is disabled by TRITON_DISABLE_SPLIT_PERM";
-  auto raw = cast<RankedTensorType>(chain.load.getType());
-  auto result = cast<RankedTensorType>(chain.perm.getType());
-  if (!shared)
-    shared = cast<ttg::MemDescType>(chain.load.getSrc().getType());
-  if (raw.getRank() != 2 || result.getRank() != 2 || shared.getRank() != 2 ||
-      raw.getShape() != result.getShape() ||
-      raw.getShape() != shared.getShape() ||
-      !raw.getElementType().isInteger(32) ||
-      (!result.getElementType().isF16() && !result.getElementType().isBF16()) ||
-      result.getElementType() != shared.getElementType())
-    return "BSM requires matching rank-2 f16/bf16 shared storage, i32 load "
-           "and f16/bf16 result";
-  if (!isa<ttg::SwizzledSharedEncodingAttr>(shared.getEncoding()) ||
-      shared.getAllocShape().take_back(2) != shared.getShape() ||
-      chain.load.getSrc().getDefiningOp<ttg::MemDescTransOp>())
-    return "BSM requires an untransposed swizzled shared buffer or slot view";
-  if (mma.getRepOrderForOperand(1) == ttg::getOrder(shared))
-    return "BSM requires shared order different from the MMA B register order";
-  auto elements = mma.getElementsMNK();
-  if (elements.size() != 3)
-    return "BSM requires rank-2 MMA elementsMNK";
-  auto mapping = getBsmMapping(elements[1], elements[2]);
-  if (!mapping)
-    return "BSM permutation must cover its 32 element slots exactly once";
-  auto rawLayout = ttg::toLinearLayout(raw.cloneWithEncoding(encoding));
-  auto resultLayout = ttg::toLinearLayout(result.cloneWithEncoding(encoding));
-  auto reg = StringAttr::get(raw.getContext(), "register");
-  if (rawLayout.getInDimSize(reg) != kBsmSlots ||
-      resultLayout.getInDimSize(reg) != kBsmSlots)
-    return "BSM source and result must each have 32 per-thread element slots";
-  if (!checkSplitLoadAddresses(
-          rawLayout.invertAndCompose(ttg::toLinearLayout(shared)), shared,
-          elements[1], *mapping))
-    return "split LDS addresses do not implement the selected BSM layout with "
-           "the native 512-element upper-group offset";
   return std::nullopt;
 }
 
