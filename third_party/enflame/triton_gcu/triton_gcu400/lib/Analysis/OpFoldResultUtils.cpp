@@ -40,6 +40,20 @@ Value getValue(OpBuilder &builder, Location loc, const OpFoldResult ofr) {
   }
 }
 
+Value castOffsetToI64(OpBuilder &builder, Location loc, Value value) {
+  if (value.getType().isInteger(64))
+    return value;
+  return builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), value);
+}
+
+Value castScalarToI64(OpBuilder &builder, Location loc, Value value) {
+  if (value.getType().isInteger(64))
+    return value;
+  if (isa<IndexType>(value.getType()))
+    return builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), value);
+  return builder.create<arith::ExtSIOp>(loc, builder.getI64Type(), value);
+}
+
 llvm::SmallVector<Value> getValues(OpBuilder &builder, Location loc,
                                    const llvm::SmallVector<OpFoldResult> &ofr) {
   llvm::SmallVector<Value> values;
@@ -121,6 +135,34 @@ std::optional<Value> getScalarValue(OpBuilder &builder, Location loc, Value v) {
   return v;
 }
 
+// Mirrors the recursion of getScalarValue, but only inspects the IR: it creates
+// nothing and reports nothing, so a caller can find out whether the scalar path
+// is available before it starts rewriting. Keep the two in sync.
+bool canExtractScalar(Value v) {
+  auto canExtract = [](Value value, auto &self) -> bool {
+    if (!isa<ShapedType>(value.getType()))
+      return true;
+
+    if (auto op = value.getDefiningOp<arith::ConstantOp>()) {
+      auto attr = dyn_cast<DenseElementsAttr>(op.getValue());
+      // A non-splat tensor has no single value to extract.
+      return attr && attr.isSplat();
+    }
+    if (auto op = value.getDefiningOp<triton::SplatOp>())
+      return self(op.getSrc(), self);
+    if (auto op = value.getDefiningOp<arith::SIToFPOp>())
+      return self(op.getIn(), self);
+    if (auto op = value.getDefiningOp<arith::SelectOp>()) {
+      // The condition must be a scalar i1; both arms must be scalar-like.
+      if (isa<ShapedType>(op.getCondition().getType()))
+        return false;
+      return self(op.getTrueValue(), self) && self(op.getFalseValue(), self);
+    }
+    return false;
+  };
+  return canExtract(v, canExtract);
+}
+
 OpFoldResult addOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
                      const OpFoldResult rhs) {
   auto lhsIntAttr = getIntAttr(lhs);
@@ -158,11 +200,8 @@ OpFoldResult addOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
   }
 
   return builder
-      .create<arith::AddIOp>(loc,
-                             builder.create<arith::IndexCastOp>(
-                                 loc, builder.getI64Type(), lhsValue),
-                             builder.create<arith::IndexCastOp>(
-                                 loc, builder.getI64Type(), rhsValue))
+      .create<arith::AddIOp>(loc, castOffsetToI64(builder, loc, lhsValue),
+                             castOffsetToI64(builder, loc, rhsValue))
       .getResult();
 }
 
@@ -195,9 +234,8 @@ OpFoldResult subOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
   }
 
   auto sumOp = builder.create<arith::SubIOp>(
-      loc,
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+      loc, castOffsetToI64(builder, loc, lhsValue),
+      castOffsetToI64(builder, loc, rhsValue));
   return sumOp.getResult();
 }
 
@@ -238,20 +276,16 @@ OpFoldResult mulOFRValue(OpBuilder &builder, Location loc,
     auto lhsConstOp = builder.create<arith::ConstantOp>(
         loc, builder.getIndexAttr(lhsIntAttr.value()));
     auto mulOp = builder.create<arith::MulIOp>(
-        loc,
-        builder.create<arith::IndexCastOp>(loc, builder.getI64Type(),
-                                           lhsConstOp.getResult()),
-        builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhs));
+        loc, castOffsetToI64(builder, loc, lhsConstOp.getResult()),
+        castOffsetToI64(builder, loc, rhs));
     return mulOp.getResult();
   }
 
   // 2. if lhs is not constant
   assert(!lhsIntAttr);
   auto mulOp = builder.create<arith::MulIOp>(
-      loc,
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(),
-                                         cast<Value>(lhs)),
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhs));
+      loc, castOffsetToI64(builder, loc, cast<Value>(lhs)),
+      castOffsetToI64(builder, loc, rhs));
   return mulOp.getResult();
 }
 
@@ -281,9 +315,8 @@ OpFoldResult minOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
   }
 
   auto minOp = builder.create<arith::MinSIOp>(
-      loc,
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+      loc, castOffsetToI64(builder, loc, lhsValue),
+      castOffsetToI64(builder, loc, rhsValue));
   return minOp.getResult();
 }
 
@@ -313,9 +346,8 @@ OpFoldResult maxOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
   }
 
   auto maxOp = builder.create<arith::MaxSIOp>(
-      loc,
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+      loc, castOffsetToI64(builder, loc, lhsValue),
+      castOffsetToI64(builder, loc, rhsValue));
   return maxOp.getResult();
 }
 
@@ -344,9 +376,8 @@ OpFoldResult remOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
   }
 
   auto remOp = builder.create<arith::RemSIOp>(
-      loc,
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+      loc, castOffsetToI64(builder, loc, lhsValue),
+      castOffsetToI64(builder, loc, rhsValue));
   return remOp.getResult();
 }
 
@@ -375,9 +406,8 @@ OpFoldResult divOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
   }
 
   auto divOp = builder.create<arith::DivSIOp>(
-      loc,
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+      loc, castOffsetToI64(builder, loc, lhsValue),
+      castOffsetToI64(builder, loc, rhsValue));
   return divOp.getResult();
 }
 

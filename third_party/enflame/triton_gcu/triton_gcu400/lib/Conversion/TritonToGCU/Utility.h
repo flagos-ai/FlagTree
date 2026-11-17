@@ -46,11 +46,21 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
 
 namespace triton {
 namespace gcu {
+
+/// Resolves a value to the one the IR will hold once the in-flight dialect
+/// conversion commits. Inside a conversion (rollback mode) a replacement can be
+/// registered before it actually reaches the IR.
+using ValueRemapFn = llvm::function_ref<Value(Value)>;
+
 class FirstLastUserAnalysis;
 
 struct TagInfo {
@@ -91,12 +101,19 @@ struct TagInfo {
   }
 };
 
-class PrivateTagPool {
-public:
-  PrivateTagPool(mlir::Operation *entryFunc, int32_t numWarps,
-                 bool useAsyncSharedTag, bool useAllTags = false);
+// DTE synchronization tag budget for a SIP (gcu400/410). A SIP is split into
+// `kernelSlotPerSip` kernel slots, a slot hosts at most `maxWarpPerSlot` warps,
+// and the SIP owns `dteTagSizePerSip` tags in total.
+constexpr static int32_t maxWarpPerSlot = 4;
+constexpr static int32_t dteTagSizePerSip = 11;
+constexpr static int32_t kernelSlotPerSip = 2;
 
-  ~PrivateTagPool() { updateUsedSize(); }
+class DTETagPool {
+public:
+  DTETagPool(mlir::Operation *entryFunc, int32_t numWarps,
+             bool useAsyncSharedTag, bool useAllTags = false);
+
+  ~DTETagPool() { updateUsedSize(); }
 
   TagInfo getPrivateSyncTagInfo(mlir::Operation *op);
   TagInfo tryGetPrivateAsyncTagInfo(mlir::Operation *op);
@@ -151,9 +168,12 @@ private:
 };
 
 bool isExpensiveView(triton::ExpandDimsOp op);
-/// Returns true if tt.reshape needs extra overhead instead of a zero-copy
-/// memref.reinterpret_cast
-bool isExpensiveView(Type srcTy, Type dstTy);
+
+bool isExpensiveView(triton::ReshapeOp op);
+
+bool isZeroCopy(triton::gpu::ConvertLayoutOp op);
+
+bool isZeroCopyOp(Operation *op);
 
 } // namespace gcu
 } // namespace triton
@@ -196,12 +216,15 @@ void doMemsetConfig(OpBuilder &rewriter, Location loc, Value output, Value v,
 void doMemset(OpBuilder &rewriter, triton::gcu::TagInfo tag, Operation *op,
               Value output, Value v, int totalNumElems);
 
+bool canUseSubView(Type srcType, Type dstType);
+
 Value loadFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
                         Value buffer, bool onlyThread0,
                         std::pair<Operation *, int> lastTTUser,
                         std::pair<Operation *, int> firstTTUser,
                         triton::gcu::FirstLastUserAnalysis &userAnalysis,
-                        std::map<Operation *, Operation *> &replaced2Origin);
+                        std::map<Operation *, Operation *> &replaced2Origin,
+                        bool useSubView = false);
 Value CopyFromSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag, Type type,
                         Value buffer, bool onlyThread0,
                         std::pair<Operation *, int> lastTTUser,
@@ -218,7 +241,81 @@ Value storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
                        triton::gcu::FirstLastUserAnalysis &userAnalysis,
                        std::map<Operation *, Operation *> &replaced2Origin);
 
+// Vector-load/store a per-thread block (dims `elemsPerThread` of the full
+// tensor `tensorShape`) between a private buffer (flattened to the block size)
+// and a flat shared staging buffer. Arbitrary rank: the last dim is the vector
+// width, leading dims are moved per-point (strided when the warp split is not
+// only on dim 0). Handles the GCU400 512-byte minimum granularity (masked
+// vector load/store with a partial mask when a run is < 512 bytes).
+void storeToSharedMemVector(OpBuilder &builder, Location loc, Value srcBuf,
+                            RankedTensorType srcType, Value sharedBuf);
+Value storeToSharedMemVector(
+    OpBuilder &builder, Value srcBuf, RankedTensorType srcType,
+    std::pair<Operation *, int> lastUser,
+    triton::gcu::FirstLastUserAnalysis &userAnalysis,
+    std::map<Operation *, Operation *> &replaced2Origin);
+Value loadFromSharedMemVector(
+    OpBuilder &builder, Value sharedBuf, RankedTensorType dstType,
+    MemRefType dstResTy, std::pair<Operation *, int> lastUser,
+    triton::gcu::FirstLastUserAnalysis &userAnalysis,
+    std::map<Operation *, Operation *> &replaced2Origin,
+    bool useSubView = false);
+
 MemRefType getMemRefTypeFromSharedMem(RankedTensorType tType, Type elemType);
+
+// ---------------------------------------------------------------------------
+// TLE memory-space hint helpers (tle.gpu.memory_space).
+// See Constants.h for the marker attributes.
+// ---------------------------------------------------------------------------
+
+// Create a per-warp view into an existing shared-memory tile.
+//
+// The returned memref has exactly the type of the private per-thread buffer of
+// a tensor of type `type` (identity layout, default address space), but points
+// at the warp's own chunk of the shared tile. It lets a producer write its
+// result straight into shared memory with the regular store path instead of
+// writing a private buffer and then deslicing it into the tile. This mirrors
+// the alias branch of loadFromSharedMem (memref.view over the smem base
+// address with the warp offset folded in), which is used for the read side.
+//
+// Returns a null Value when the per-warp chunk is not contiguous in the tile
+// (canUseSubView() is false), in which case the caller must fall back to a
+// private buffer.
+Value getSharedTileWarpView(OpBuilder &builder, Type type, Value sharedTile);
+
+// Build the memref type of the shared tile that holds `tensorType`: logical
+// shape, identity layout, address space 2. This is the type the type converter
+// gives a !ttg.memdesc, so local_alloc/local_load lower consistently.
+MemRefType getSharedTileType(RankedTensorType tensorType);
+
+// Last user of the local_load that consumes the ttg.local_alloc created for a
+// shared_memory hint on `producer`:
+//   producer -> ttg.local_alloc -> ttg.local_load -> users
+// The smem tile must stay alive until the last reader, so the tile dealloc is
+// placed after this user. Returns {nullptr, 0} when the pair is not found or
+// the local_load has no user (then no dealloc is emitted).
+std::pair<Operation *, int>
+getSharedTileLastUser(Value producer,
+                      triton::gcu::FirstLastUserAnalysis &userAnalysis);
+
+// Result indices recorded in the DenseI64ArrayAttr `attrName` on `op`, sorted
+// and duplicate-free. Empty when the attribute is absent.
+SmallVector<unsigned> getHintedResultIndices(Operation *op, StringRef attrName);
+
+/// Allocate a full OACC-line (512B) private stack buffer that holds at least
+/// `minElems` elements of `elemType`.  The buffer is a plain `memref.alloca`
+/// with no ``memref.dealloc``, so the buffer is invisible to MemAllocAnalysis
+/// and its lifetime is the enclosing block.  Sizing the backing buffer to a
+/// whole line keeps both sides off the pool and lets a line-wide consumer (the
+/// histogram's count drain) pair with the scalar reads on the other side, which
+/// SROA's vector promotion turns into plain SSA.
+Value allocOaccLine(OpBuilder &builder, Location loc, Type elemType,
+                    int64_t minElems);
+
+/// View the head of an OACC-line buffer as `type`.  Folded away by the memref
+/// lowering, so the view shares the backing buffer's address.
+Value oaccLineView(OpBuilder &builder, Location loc, Value backing,
+                   MemRefType type);
 
 void AnalysisYieldOperendUseStage(
     Operation *module, triton::gcu::FirstLastUserAnalysis &userAnalysis,
@@ -232,13 +329,19 @@ void GetOrderValueByStride(
     SmallVector<Value, 4> &orderShape, SmallVector<Value, 4> &orderOffset,
     SmallVector<Value, 4> &vOrder);
 
+/// True when `op` is a `triton_gcu.load` or `triton_gcu.copy_global_to_local`
+/// that carries the `offsets_are_dst` attribute, i.e. its `offsets` operand
+/// holds destination tile offsets instead of source offsets.
+bool hasOffsetsAreDst(Operation *op);
+
 Value ConfigGcuLoad(OpBuilder &rewriter, Location loc, Value srcOut,
                     mlir::Operation *op, MemRefType resultType, Value loadPtr,
                     mlir::ValueRange configStrides,
                     mlir::ValueRange configShapes, Value defaultValue,
-                    triton::gcu::TagInfo tag, bool IsShareOutput = false);
+                    triton::gcu::TagInfo tag, bool IsShareOutput = false,
+                    mlir::ValueRange configOffsets = {});
 
-memref::AllocaOp getAllocaOp(Value val);
+memref::AllocaOp getAllocaOp(Value val, triton::gcu::ValueRemapFn remap);
 
 Value ConfigGcuStore(OpBuilder &rewriter, Location loc, Value storeValue,
                      mlir::Operation *op, MemRefType storeValueType,
@@ -259,6 +362,8 @@ void ConfigMatrixLoad(OpBuilder &rewriter, Location loc,
                       ValueRange srcShapes, ValueRange srcStrides,
                       ValueRange srcOffsets, bool loadFromLocalMem);
 
+bool useMatrixStore(triton::gcu::StoreOp storeOp, Value adaptedValue,
+                    triton::gcu::ValueRemapFn remap);
 bool useMatrixStore(triton::gcu::StoreOp storeOp, Value adaptedValue);
 
 void ConfigMatrixStore(OpBuilder &rewriter, Location loc,
@@ -282,6 +387,48 @@ void mergeContinuousDims(OpBuilder &subBuilder, Location loc,
                          SmallVector<Value, 4> &mergedOffsets,
                          MemRefType &sharedMemType, MemRefType &warpMemType,
                          Value &sharedBuffer, Value &warpOutput);
+
+/// Strip a single UnrealizedConversionCastOp wrapper from a value.
+///
+/// When a MemDesc view op (subslice, trans) is lowered to a memref with a
+/// StridedLayoutAttr result type, the TypeConverter (which maps MemDescType
+/// to an identity-layout MemRefType) inserts an UnrealizedConversionCastOp to
+/// bridge the type mismatch. Consumers should call this to look through the
+/// cast and consume the underlying strided memref directly (its offset and
+/// strides are the semantically correct ones).
+Value stripUnrealizedConversionCastOp(Value v);
+
+/// Returns true when `ty` has a zero offset and row-major contiguous static
+/// strides (i.e. the layout matches a freshly allocated buffer of the same
+/// shape). Only such views may be handed to DTE lowering, which assumes a
+/// contiguous source.
+bool isContiguousRowMajor(MemRefType ty);
+
+/// Whether a shared-memory memdesc view can be a DTE destination.
+///
+/// `copy_global_to_local` lowers to a DTE whose destination address is derived
+/// from the view's base pointer only: `unwrapContiguousMemRef` in
+/// TTSmemLowerToGCU.cpp folds the view *offset* into `bufferPtr()` but never
+/// hands the view *strides* to the engine. A non-contiguous view - e.g.
+/// `buf.subslice(0, S, dim=1)` of an (M, N) buffer with S < N, or a
+/// `memdesc_trans` - is therefore not expressible as a linear destination.
+///
+/// Everything the TLE-Struct view API produces is classified conservatively:
+/// an unknown view op counts as non-contiguous. A memdesc block argument (e.g.
+/// a buffer forwarded into a warp-specialize partition) has its producer in
+/// another region, so it keeps the historical "assume contiguous" answer and
+/// never changes the fusion decision of outlined code.
+bool isContiguousMemDescView(Value memdesc);
+
+/// Returns a gcu pointer to element (0, ..., 0) of the memref view `v`.
+///
+/// Identity layout: emits gcu.memref2ptr (existing lowering).
+/// Strided layout (MemDesc view lowering result): folds the view offset into
+/// the root allocation's aligned pointer
+///   base = aligned_ptr(v) + get_memref_offset(v) * elemBytes
+/// so the returned pointer addresses the first element of the view. Handles
+/// both static and dynamic offsets; static offsets fold to a constant.
+Value getMemRefBasePtr(OpBuilder &rewriter, Value v);
 
 namespace triton {
 namespace gcu {
@@ -311,11 +458,89 @@ inline int64_t ceilDiv(int64_t lhs, int64_t rhs) {
   // C/C++'s integer division rounds towards 0.
   return lhs % rhs > 0 ? lhs / rhs + 1 : lhs / rhs;
 }
+
+inline unsigned pow2Floor(unsigned value) {
+  unsigned result = 1;
+  while (result * 2 <= value)
+    result *= 2;
+  return result;
+}
+
 int getNumWarps(ModuleOp mod);
 int getNumWarps(Operation *op);
 int getTotalNumWarps(mlir::gpu::GPUModuleOp mod);
 
+/// Architectural number of OACC registers a program may address.  A
+/// single-warp program can reach both banks, so the maximum doubles.
+int64_t getOaccMaxNum(Operation *op);
+
+/// Peak simultaneously-live tensor values in one pass of an elementwise fusion
+/// body: body-defined values (live from def to last use) and tensor arguments
+/// (live from first use to last use).  `excluded` holds values charged
+/// elsewhere, e.g. published accumulators.
+unsigned computeFusionLivePerStep(triton::gcu::ElementwiseFusionRegionOp op,
+                                  const llvm::SmallPtrSetImpl<Value> &excluded);
+
+/// Per-region unroll decision for an elementwise fusion region, shared by the
+/// fusion lowering and by AnnotateDotFusion's OACC admission check.
+struct FusionUnrollPlan {
+  unsigned loopCnt = 1;
+  unsigned livePerStep = 1;
+  unsigned oaccPerValue = 1;
+  unsigned publishedAccs = 0;
+  unsigned reservedOacc = 0;
+  unsigned freeOacc = 0;
+};
+FusionUnrollPlan computeFusionUnrollPlan(
+    triton::gcu::ElementwiseFusionRegionOp op, unsigned vectorLength,
+    unsigned maxBpe, unsigned tripCount,
+    // When set, this value (a dot result) is counted as a published
+    // accumulator even if its dot is not annotated `acc_store=none` yet.
+    // AnnotateDotFusion uses it to model the footprint the fusion will have
+    // after publishing the accumulator; the lowering passes nothing.
+    Value forcedPublishedValue = {});
+
+/// Returns true when `v` is backed by a `memref.alloca`. `remap` is used to
+/// resolve values whose replacement is only registered so far.
+bool isAllocaInputValue(Value v, ValueRemapFn remap);
 bool isAllocaInputValue(Value v);
+
+// Handoff of the local memory buffer published for an OACC accumulator by
+// TTDotOpLowering (Triton 3.5, where the dialect conversion mapping cannot
+// propagate the publish to consumers legalized later). `buffers` maps the
+// original (pre-conversion) loop-carried accumulator result to the L1 buffer
+// gcu.matrix_store writes it to; `expected` records the results that must
+// receive a publish.
+// One published OACC accumulator: `raw` is the raw accumulator value (the
+// converted loop result), `buffer` the local buffer gcu.matrix_store copies it
+// into, and `store` the publishing gcu.matrix_store itself.
+struct PublishedAccumulator {
+  Value raw;
+  Value buffer;
+  Operation *store;
+};
+
+struct AccPublishContext {
+  llvm::DenseSet<Value> expected;
+  llvm::DenseMap<Value, Value> buffers;
+  // Published accumulators, recorded so the pass can verify at the end that no
+  // consumer reads the raw (OACC) accumulator instead of the published buffer,
+  // and fix up in place the ones that were missed.
+  llvm::SmallVector<PublishedAccumulator> publishedAccumulators;
+  // The published local buffers themselves (both versions); live identity
+  // casts of them are folded back at the end of the pass.
+  llvm::DenseSet<Value> publishedBuffers;
+};
+
+// Resolve a consumer's view of a loop-carried OACC accumulator: substitute
+// `operand` with the published local buffer for `originalValue` when one
+// exists. Every pattern that consumes such a result MUST call this before
+// using the remapped operand; on Triton 3.6+ the conversion mapping delivers
+// the buffer on its own and this is a no-op lookup. Intentionally fails (no
+// silent fallback) when a publish is expected but not yet available, i.e. the
+// consumer is legalized before TTDotOpLowering; the pass reports that.
+LogicalResult resolveAccumulatorOperand(Value originalValue, Value &operand,
+                                        const AccPublishContext &ctx);
 
 class TritonGCUBuilder {
 public:
@@ -339,8 +564,9 @@ private:
   static constexpr unsigned oaccSizeInBytes = 512;
 };
 
-bool isNvLibDeviceSymbol(StringRef symbol);
 bool isMixedPrecisionSymbol(StringRef symbol);
+
+std::string toVectorizedExternSymbol(StringRef symbol);
 
 enum class LoadKind {
   Load,
