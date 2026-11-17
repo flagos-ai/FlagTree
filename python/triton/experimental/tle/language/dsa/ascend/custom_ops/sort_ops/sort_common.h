@@ -90,7 +90,9 @@ __simd_vf__ inline void unpack_proposals_c310(__ubuf__ float *src,
     AscendC::Reg::LoadAlign(idx_src0, src_u32 + base);
     AscendC::Reg::LoadAlign(idx_src1, src_u32 + base + elems);
     AscendC::Reg::DeInterleave(idx0, idx1, idx_src0, idx_src1);
-    AscendC::Reg::StoreAlign(dst_index_u32 + i, idx0, mask);
+    // vdintlv puts the even (value) lanes in dst0 and the odd (index) lanes in
+    // dst1, so the decoded indices come from idx1.
+    AscendC::Reg::StoreAlign(dst_index_u32 + i, idx1, mask);
   }
 }
 #endif

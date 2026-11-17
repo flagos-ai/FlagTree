@@ -171,8 +171,7 @@ def gather_mask_builtin_pattern_kernel(src, dst, rsvd_cnt):
     ONE_REPEAT_SORT_NUM: tl.constexpr = 32
     src_offs = tl.arange(0, ONE_REPEAT_SORT_NUM * 2)
     dst_offs = tl.arange(0, ONE_REPEAT_SORT_NUM)
-    src_ub = tle.dsa.alloc([ONE_REPEAT_SORT_NUM * 2], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(src + src_offs, src_ub, [ONE_REPEAT_SORT_NUM * 2])
+    src_t = tl.load(src + src_offs)
     # src1_pattern for indices
     src1_pattern = 2  # 10101010...101010
     reduce_mode = False
@@ -183,7 +182,7 @@ def gather_mask_builtin_pattern_kernel(src, dst, rsvd_cnt):
     src1_repeat_stride = 0
     out0 = tl.zeros([ONE_REPEAT_SORT_NUM], dtype=tl.float32)
     out1 = tl.zeros([1], dtype=tl.int64)
-    out0, out1 = tle_raw.call("ascend_gather_mask_builtin_pattern", tle.dsa.to_tensor(src_ub), src1_pattern,
+    out0, out1 = tle_raw.call("ascend_gather_mask_builtin_pattern", src_t, src1_pattern,
                               reduce_mode, mask, src0_block_stride, repeat_times, src0_repeat_stride,
                               src1_repeat_stride, out=[out0, out1])
     tl.store(dst + dst_offs, out0)
@@ -196,8 +195,7 @@ def gather_mask_custom_pattern_kernel(src, dst, rsvd_cnt):
     NUM_GROUPS: tl.constexpr = 8
     src_offs = tl.arange(0, NUM_EXPERTS * 2)
     dst_offs = tl.arange(0, NUM_GROUPS * 2)
-    src_ub = tle.dsa.alloc([NUM_EXPERTS * 2], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(src + src_offs, src_ub, [NUM_EXPERTS * 2])
+    src_t = tl.load(src + src_offs)
     src1 = tl.zeros([2], dtype=tl.uint32)
     # src1_pattern for top2
     src1 = tl.where(tl.arange(0, 2) == 0, 5, src1)  # [0b0101, 0]
@@ -209,7 +207,7 @@ def gather_mask_custom_pattern_kernel(src, dst, rsvd_cnt):
     src1_repeat_stride = 0
     out0 = tl.zeros([NUM_GROUPS * 2], dtype=tl.float32)
     out1 = tl.zeros([1], dtype=tl.int64)
-    out0, out1 = tle_raw.call("ascend_gather_mask_custom_pattern", tle.dsa.to_tensor(src_ub), src1, reduce_mode, mask,
+    out0, out1 = tle_raw.call("ascend_gather_mask_custom_pattern", src_t, src1, reduce_mode, mask,
                               src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride, out=[out0, out1])
     tl.store(dst + dst_offs, out0)
     tl.store(rsvd_cnt + tl.arange(0, 1), out1)
@@ -220,11 +218,9 @@ def pair_reduce_sum_continuous_mask_kernel(src, dst):
     NUM_GROUPS: tl.constexpr = 8
     src_offs = tl.arange(0, NUM_GROUPS * 2)
     dst_offs = tl.arange(0, NUM_GROUPS)
-    src_ub = tle.dsa.alloc([NUM_GROUPS * 2], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(src + src_offs, src_ub, [NUM_GROUPS * 2])
+    src_t = tl.load(src + src_offs)
     out = tl.zeros([NUM_GROUPS], dtype=tl.float32)
-    out = tle_raw.call("ascend_pair_reduce_sum_continuous_mask", tle.dsa.to_tensor(src_ub), 1, NUM_GROUPS * 2, 1, 1, 1,
-                       out=out)
+    out = tle_raw.call("ascend_pair_reduce_sum_continuous_mask", src_t, 1, NUM_GROUPS * 2, 1, 1, 1, out=out)
     tl.store(dst + dst_offs, out)
 
 
@@ -235,12 +231,10 @@ def sort32_kernel(src0, src1, repeat_times: tl.constexpr, dst, BLOCK_SIZE: tl.co
 
     src_offs = tl.arange(0, BLOCK_SIZE)
     dst_offs = tl.arange(0, DST_SIZE)
-    src0_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    src1_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.uint32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(src0 + src_offs, src0_ub, [BLOCK_SIZE])
-    tle.dsa.copy(src1 + src_offs, src1_ub, [BLOCK_SIZE])
+    src0_t = tl.load(src0 + src_offs)
+    src1_t = tl.load(src1 + src_offs)
     pair = tl.zeros([DST_SIZE], dtype=tl.float32)
-    pair = tle_raw.call("ascend_sort32", tle.dsa.to_tensor(src0_ub), tle.dsa.to_tensor(src1_ub), repeat_times, out=pair)
+    pair = tle_raw.call("ascend_sort32", src0_t, src1_t, repeat_times, out=pair)
     tl.store(dst + dst_offs, pair)
 
 
@@ -249,14 +243,11 @@ def sort_pack_kernel(X, OutGM, N: tl.constexpr, K: tl.constexpr, INDEX_OFFSET: t
                      TMP_SIZE: tl.constexpr):
     """Single-segment sort_1d_pack: load N f32 values from GM into UB, sort,
     then write the K proposals (2K f32) back to OutGM."""
-    NP2: tl.constexpr = triton.next_power_of_2(N)
     KP2: tl.constexpr = triton.next_power_of_2(K * 2)
     tmp = tl.zeros([TMP_SIZE], dtype=tl.float32)
-    src_ub = tle.dsa.alloc([N], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(X + tl.arange(0, NP2), src_ub, [N])
+    src_t = tl.load(X + tl.arange(0, N))
     props = tl.zeros([KP2], dtype=tl.float32)
-    props = tle_raw.call("ascend_sort_1d_pack", tle.dsa.to_tensor(src_ub), tmp, True, K, INDEX_OFFSET, SORT_IMPL,
-                         out=props)
+    props = tle_raw.call("ascend_sort_1d_pack", src_t, tmp, True, K, INDEX_OFFSET, SORT_IMPL, out=props)
     tl.store(OutGM + tl.arange(0, KP2), props)
 
 
@@ -267,15 +258,14 @@ def merge_exhaust_kernel(SrcGM, OutGM, ConsGM, WAY_CAP: tl.constexpr, WAYS: tl.c
     UB buffer at fixed offsets 0/1/2/3 * WAY_CAP; merge once, then write the
     safe prefix and the per-way consumed counts back to GM."""
     IN_LEN: tl.constexpr = 4 * WAY_CAP * 2
-    IN_P2: tl.constexpr = triton.next_power_of_2(IN_LEN)
     OUT_P2: tl.constexpr = triton.next_power_of_2(OUT_CAP * 2)
-    in_ub = tle.dsa.alloc([IN_LEN], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
+    in_t = tl.load(SrcGM + tl.arange(0, IN_LEN))
     out_t = tl.zeros([OUT_P2], dtype=tl.float32)
     cons = tl.zeros([4], dtype=tl.int32)
 
-    tle.dsa.copy(SrcGM + tl.arange(0, IN_P2), in_ub, [IN_LEN])
-    out_t, cons = tle_raw.call("ascend_merge_exhaust_sort4", tle.dsa.to_tensor(in_ub), WAYS, 0 * WAY_CAP, 1 * WAY_CAP,
-                               2 * WAY_CAP, 3 * WAY_CAP, L0, L1, L2, L3, out=[out_t, cons])
+    out_t, cons = tle_raw.call("ascend_merge_exhaust_sort4", in_t, WAYS,
+                               0 * WAY_CAP, 1 * WAY_CAP, 2 * WAY_CAP, 3 * WAY_CAP, L0, L1, L2, L3,
+                               out=[out_t, cons])
 
     tl.store(OutGM + tl.arange(0, OUT_P2), out_t)
     tl.store(ConsGM + tl.arange(0, 4), cons)
@@ -291,11 +281,11 @@ def mrgsort_kernel(src, dst, TOP_K: tl.constexpr):
     REPEAT_TIMES: tl.constexpr = 1
 
     offs = tl.arange(0, BLOCK_SIZE)
-    src_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(src + offs, src_ub, [BLOCK_SIZE])
+    src_t = tl.load(src + offs)
     pair = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
-    pair = tle_raw.call("ascend_mrgsort", tle.dsa.to_tensor(src_ub), 0, GROUP_SIZE, GROUP_SIZE * 2, GROUP_SIZE * 3,
-                        TOP_K, TOP_K, TOP_K, TOP_K, IF_EXHAUSTED_SUSPENSION, VALID_BIT, REPEAT_TIMES, out=pair)
+    pair = tle_raw.call("ascend_mrgsort", src_t, 0, GROUP_SIZE,
+                        GROUP_SIZE * 2, GROUP_SIZE * 3, TOP_K, TOP_K, TOP_K, TOP_K,
+                        IF_EXHAUSTED_SUSPENSION, VALID_BIT, REPEAT_TIMES, out=pair)
     tl.store(dst + offs, pair, mask=offs < TOP_K * 2)
 
 
@@ -303,13 +293,11 @@ def mrgsort_kernel(src, dst, TOP_K: tl.constexpr):
 def unpack_sort_kernel(SrcGM, Yv, Yi, K: tl.constexpr):
     """unpack_sort: split K proposals into two GM outputs, value (f32) and
     index (i32)."""
-    KP2: tl.constexpr = triton.next_power_of_2(K * 2)
-    s_ub = tle.dsa.alloc([K * 2], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
     dval = tl.zeros([K], dtype=tl.float32)
     didx = tl.zeros([K], dtype=tl.int32)
     offs = tl.arange(0, K)
-    tle.dsa.copy(SrcGM + tl.arange(0, KP2), s_ub, [K * 2])
-    dval, didx = tle_raw.call("ascend_unpack_sort", tle.dsa.to_tensor(s_ub), K, out=[dval, didx])
+    src_t = tl.load(SrcGM + tl.arange(0, K * 2))
+    dval, didx = tle_raw.call("ascend_unpack_sort", src_t, K, out=[dval, didx])
     tl.store(Yv + offs, dval)
     tl.store(Yi + offs, didx)
 

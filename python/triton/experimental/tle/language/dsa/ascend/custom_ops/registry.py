@@ -95,7 +95,7 @@ class duplicate_bitwise_mask:
         else:
             assert False, (f"duplicate_bitwise_mask does not support dtype {_element_dtype(out)} yet")
         self.bitcode = custom_ops_bitcode()
-        self.extra_buffers = [(tl.float16, 0)]
+        self.extra_buffers = [(tl.float16, 1)]
 
 
 @al.register_custom_op
@@ -242,7 +242,7 @@ class gather_mask_builtin_pattern:
         else:
             assert False, (f"gather_mask_builtin_pattern src0 does not support dtype {_element_dtype(src0)}")
         self.bitcode = custom_ops_bitcode()
-        self.extra_buffers = [(tl.float16, 0)]
+        self.extra_buffers = [(tl.float16, 1)]
 
 
 @al.register_custom_op
@@ -308,7 +308,7 @@ class gather_mask_custom_pattern:
             assert False, (
                 f"gather_mask_custom_pattern src1_pattern does not support dtype {_element_dtype(src1_pattern)}")
         self.bitcode = custom_ops_bitcode()
-        self.extra_buffers = [(tl.float16, 0)]
+        self.extra_buffers = [(tl.float16, 1)]
 
 
 @al.register_custom_op
@@ -348,7 +348,7 @@ class pair_reduce_sum_continuous_mask:
         else:
             assert False, (f"pair_reduce_sum_continuous_mask does not support dtype {_element_dtype(src)} yet")
         self.bitcode = custom_ops_bitcode()
-        self.extra_buffers = [(tl.float16, 0)]
+        self.extra_buffers = [(tl.float16, 1)]
 
 
 @al.register_custom_op
@@ -380,7 +380,7 @@ class sort32:
         assert _element_dtype(out) == tl.float32, (f"sort32 only supports fp32 out, got {_element_dtype(out)}")
         self.symbol = "custom_sort32"
         self.bitcode = custom_ops_bitcode()
-        self.extra_buffers = [(tl.float16, 0)]
+        self.extra_buffers = [(tl.float16, 1)]
 
 
 @al.register_custom_op
@@ -423,7 +423,7 @@ class sort_1d_pack:
         assert _element_dtype(out) == tl.float32, (f"sort_1d_pack only supports fp32 out, got {_element_dtype(out)}")
         self.symbol = "custom_sort_1d_pack_float"
         self.bitcode = custom_ops_bitcode()
-        self.extra_buffers = [(tl.float16, 0)]
+        self.extra_buffers = [(tl.float16, 1)]
 
 
 @al.register_custom_op
@@ -478,7 +478,7 @@ class merge_exhaust_sort4:
                                                     f"got {_element_dtype(out[1])}")
         self.symbol = "custom_merge_exhaust_sort4_float"
         self.bitcode = custom_ops_bitcode()
-        self.extra_buffers = [(tl.float16, 0)]
+        self.extra_buffers = [(tl.float16, 1)]
 
 
 @al.register_custom_op
@@ -517,7 +517,7 @@ class mrgsort:
         assert _element_dtype(out) == tl.float32, (f"mrgsort only supports fp32 out, got {_element_dtype(out)}")
         self.symbol = "custom_mrgsort"
         self.bitcode = custom_ops_bitcode()
-        self.extra_buffers = [(tl.float16, 0)]
+        self.extra_buffers = [(tl.float16, 1)]
 
 
 @al.register_custom_op
@@ -562,7 +562,7 @@ class unpack_sort:
                                                     f"got {_element_dtype(out[1])}")
         self.symbol = "custom_unpack_sort_float"
         self.bitcode = custom_ops_bitcode()
-        self.extra_buffers = [(tl.float16, 0)]
+        self.extra_buffers = [(tl.float16, 1)]
 
 
 # Mask buffers occupy at least one 32-byte UB block.

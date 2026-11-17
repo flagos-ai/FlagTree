@@ -81,6 +81,10 @@ if [[ "${ARCH_FAMILY}" == "c310" ]]; then
   TEMPLATE_SOURCES=(
     "${TEMPLATE_ROOT}/lib/RegBase/Vector/Sort1D.cpp"
     "${TEMPLATE_ROOT}/lib/RegBase/Vector/Copy1D.cpp"
+    "${TEMPLATE_ROOT}/lib/RegBase/Vector/VecOpI64.cpp"
+    # The mem-based arange_1d / scalar-eltwise helpers cannot build for c310;
+    # provide the two symbols sort_base.h needs.
+    "${SCRIPT_DIR}/sort_ops/regbase_compat.cpp"
   )
 else
   TEMPLATE_SOURCES=(
