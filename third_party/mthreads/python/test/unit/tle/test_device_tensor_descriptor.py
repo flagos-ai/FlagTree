@@ -27,17 +27,15 @@ def _copy(desc_ptr, out, BAD_RANK: tl.constexpr):
 
 
 def test_device_descriptor_has_no_byval_or_descriptor_allocation():
-    k = compile_musa(
-        _copy, {"desc_ptr": "*i8", "out": "*i8", "BAD_RANK": "constexpr"}, {"BAD_RANK": False}, options={"num_warps": 4}
-    )
+    k = compile_musa(_copy, {"desc_ptr": "*i8", "out": "*i8", "BAD_RANK": "constexpr"}, {"BAD_RANK": False},
+                     options={"num_warps": 4})
     assert "byval" not in k.asm["llir"]
     assert "@llvm.musa.tme.ld.tile.2d" in k.asm["llir"]
     assert k.metadata.global_scratch_size == 0
 
 
-@pytest.mark.parametrize(
-    "pointer,bad_rank,match", [("*fp32", False, "scalar global byte pointer"), ("*i8", True, "rank must agree")]
-)
+@pytest.mark.parametrize("pointer,bad_rank,match", [("*fp32", False, "scalar global byte pointer"),
+                                                    ("*i8", True, "rank must agree")])
 def test_device_descriptor_rejects_invalid_metadata(pointer, bad_rank, match):
     with pytest.raises(Exception, match=match):
         compile_musa(
@@ -53,9 +51,8 @@ def _invalid_descriptor(address, CASE: tl.constexpr):
     if CASE == 0:
         tle.gpu.mthreads.device_tensor_descriptor(address, [], [], [], tl.int8)
     elif CASE == 1:
-        tle.gpu.mthreads.device_tensor_descriptor(
-            address, [1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1], tl.int8
-        )
+        tle.gpu.mthreads.device_tensor_descriptor(address, [1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1],
+                                                  tl.int8)
     elif CASE == 2:
         tle.gpu.mthreads.device_tensor_descriptor(address, [128], [1], [0], tl.int8)
     elif CASE == 3:
@@ -78,9 +75,8 @@ def _invalid_descriptor(address, CASE: tl.constexpr):
 )
 def test_invalid_descriptor_rank_extent_and_pointer_shape(case, diagnostic):
     with pytest.raises(Exception, match=diagnostic):
-        compile_musa(
-            _invalid_descriptor, {"address": "*i8", "CASE": "constexpr"}, {"CASE": case}, options={"num_warps": 4}
-        )
+        compile_musa(_invalid_descriptor, {"address": "*i8", "CASE": "constexpr"}, {"CASE": case},
+                     options={"num_warps": 4})
 
 
 @triton.jit
@@ -115,8 +111,7 @@ def test_device_descriptor_tme_switches_payloads():
     payloads = [p.to("musa") for p in host_payloads]
     encode = triton.runtime.driver.active.utils.fill_tme_descriptor
     encoded = [
-        encode(p.data_ptr(), shape, block_shape, p.element_size(), _musa_tme_dtype_enum("i8"), 0)
-        for p in payloads
+        encode(p.data_ptr(), shape, block_shape, p.element_size(), _musa_tme_dtype_enum("i8"), 0) for p in payloads
     ]
     descriptor_bytes = 64
     # Snapshot the vendor-encoded descriptor while the host object is alive.

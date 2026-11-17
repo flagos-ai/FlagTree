@@ -1,7 +1,7 @@
 #ifdef __TLE__
 
-#include "Dialect/MUSATLE/IR/Dialect.h"
 #include "Dialect/MUSA/IR/Dialect.h"
+#include "Dialect/MUSATLE/IR/Dialect.h"
 #include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSACommon/MMAContractUtils.h"
 #include "TritonMUSACommon/MMAEncodingUtils.h"
@@ -533,10 +533,10 @@ void init_triton_musa_tle_ir(py::module m) {
   builderCls.attr("mthreads_tle_fused_pipe_consumer_version") = py::int_(1);
   builderCls
       .def("create_mthreads_device_tensor_descriptor",
-           [](TritonOpBuilder &self, mlir::Value address,
-              mlir::Type blockType, bool isSigned) -> mlir::Value {
-             auto pointer = mlir::dyn_cast<mlir::triton::PointerType>(
-                 address.getType());
+           [](TritonOpBuilder &self, mlir::Value address, mlir::Type blockType,
+              bool isSigned) -> mlir::Value {
+             auto pointer =
+                 mlir::dyn_cast<mlir::triton::PointerType>(address.getType());
              auto block = mlir::dyn_cast<mlir::RankedTensorType>(blockType);
              if (!pointer || pointer.getAddressSpace() != 1 ||
                  !pointer.getPointeeType().isInteger(8) || !block ||
@@ -544,8 +544,8 @@ void init_triton_musa_tle_ir(py::module m) {
                throw py::value_error(
                    "device tensor descriptor requires a scalar global byte "
                    "pointer and a rank-1..5 block type");
-             auto type = mlir::triton::TensorDescType::get(
-                 self.getContext(), block, isSigned);
+             auto type = mlir::triton::TensorDescType::get(self.getContext(),
+                                                           block, isSigned);
              return self.create<musa::ReinterpretTensorDescOp>(type, address);
            })
       .def("create_mthreads_local_barrier",

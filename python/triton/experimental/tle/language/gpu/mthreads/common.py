@@ -63,11 +63,8 @@ def device_tensor_descriptor(address, shape, strides, block_shape, dtype, _seman
     ordinary device pointer. The caller owns descriptor allocation and reuse.
     """
     address = _semantic.to_tensor(address)
-    if (
-        not isinstance(address.type, tl.pointer_type)
-        or address.type.address_space != 1
-        or address.type.element_ty not in (tl.int8, tl.uint8)
-    ):
+    if (not isinstance(address.type, tl.pointer_type) or address.type.address_space != 1
+            or address.type.element_ty not in (tl.int8, tl.uint8)):
         raise ValueError("device tensor descriptor requires a scalar global byte pointer")
     shape, strides = list(shape), list(strides)
     block_shape = tl._unwrap_shape(block_shape)
@@ -82,9 +79,8 @@ def device_tensor_descriptor(address, shape, strides, block_shape, dtype, _seman
     if not hasattr(builder, "create_mthreads_device_tensor_descriptor"):
         raise RuntimeError("device tensor descriptors require a newer native FlagTree binding")
     block_type = tl.block_type(dtype, block_shape)
-    handle = builder.create_mthreads_device_tensor_descriptor(
-        address.handle, block_type.to_ir(builder), dtype.is_int_signed()
-    )
+    handle = builder.create_mthreads_device_tensor_descriptor(address.handle, block_type.to_ir(builder),
+                                                              dtype.is_int_signed())
     shape = [_semantic.make_scalar(x, tl.int32) for x in shape]
     strides = [_semantic.make_scalar(tl._unwrap_if_constexpr(x), tl.int64) for x in strides]
     return tl.tensor_descriptor(handle, shape, strides, block_type)
