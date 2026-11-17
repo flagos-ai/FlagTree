@@ -147,7 +147,7 @@ build_vllm_args() {
         "${MODEL_PATH}"
         "--tensor-parallel-size" "${TENSOR_PARALLEL_SIZE:-10}"
         "--port" "${VLLM_QWEN3_PORT:-7000}"
-        "--served-model-name" "${SERVED_MODEL_NAME:-qwen}"
+        "--served-model-name" "${SERVED_MODEL_NAME:-qwen36}"
         "--max-model-len" "${MAX_MODEL_LEN:-65536}"
         "--trust-remote-code"
         "--gpu-memory-utilization" "${GPU_MEM_UTIL:-0.8}"
