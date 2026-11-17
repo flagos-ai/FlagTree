@@ -3,6 +3,7 @@
 import pytest
 import triton
 from triton._C.libtriton import ir
+from triton.compiler import ASTSource
 import triton.language as tl
 import triton.experimental.tle.language as tle
 from test_tle_utils import compile_musa, mthreads_backend, require_mthreads_libtriton
@@ -87,13 +88,11 @@ def compile_descriptor(
     )
 
 
-@pytest.mark.parametrize("gran,code", [(16, 1), (32, 2), (64, 3)])
-@pytest.mark.parametrize("fp8", [True])
-def test_native_shared_codes_are_emitted_without_scalar_descriptor_load(gran, code, fp8):
-    kernel = compile_descriptor(gran, fp8=fp8)
+def test_native_shared_sg16_code_is_emitted_without_scalar_descriptor_load():
+    kernel = compile_descriptor(16)
     text = kernel.asm["llir"]
     assert "llvm.musa.sqmma.desc." not in text
-    assert str((5 << 18) | (code << 21)) in text
+    assert str((5 << 18) | (1 << 21)) in text
     assert kernel.module is None and kernel.function is None
 
 
@@ -102,7 +101,7 @@ def test_legacy_sg16_mode_does_not_silently_accept_sg64(capfd):
     # target's semantic diagnostic is emitted on the native stderr fd.
     with pytest.raises(Exception):
         compile_descriptor(64, abi="native_mp31_sg16")
-    assert "SG16, stride-3 swizzle" in capfd.readouterr().err
+    assert "requires SG16 for 8-bit elements" in capfd.readouterr().err
 
 
 def test_noncanonical_tme_line_is_rejected_before_native_descriptor(capfd):
@@ -149,12 +148,11 @@ def test_native_descriptor_rejects_unknown_abi():
     not hasattr(ir.builder, "get_tle_linear_encoding"),
     reason="implicit-output integration requires the layout-correctness companion (#1606)",
 )
-@pytest.mark.parametrize("gran,code", [(16, 1), (32, 2), (64, 3)])
-def test_native_shared_implicit_output_companion(gran, code):
-    kernel = compile_descriptor(gran, explicit_store=False)
+def test_native_shared_implicit_output_companion():
+    kernel = compile_descriptor(16, explicit_store=False)
     text = kernel.asm["llir"]
     assert "llvm.musa.sqmma.desc." not in text
-    assert str((5 << 18) | (code << 21)) in text
+    assert str((5 << 18) | (1 << 21)) in text
     assert kernel.module is None and kernel.function is None
 
 
@@ -221,3 +219,131 @@ def test_rank_three_rejected_by_public_wgmma_frontend():
     # Python validates rank before the native explicit-layout branch is built.
     with pytest.raises(Exception, match="requires rank-2 a"):
         compile_musa(_invalid_rank_operand, {}, options={"num_warps": 4})
+
+
+# Keep both inputs as ordinary pointer-tensor copies: no descriptor or TME
+# validation can reject these layouts before the SQMMA consumer sees them.
+@triton.jit
+def _pointer_copy_dot(q, k, out, L: tl.constexpr, A: tl.constexpr, B: tl.constexpr):
+    m = tl.arange(0, 32)
+    n = tl.arange(0, 128)
+    qa = tl.reshape(tl.arange(0, 32 * 128), (32, 128))
+    kb = tl.reshape(tl.arange(0, 128 * 128), (128, 128))
+    # Ordinary GM loads followed by shared stores in local_alloc. Using
+    # init_value avoids unrelated frontend pointer/store layout inference.
+    a = tle.gpu.alloc((32, 128), tl.float8e4nv, layout=A, init_value=tl.load(q + qa))
+    b = tle.gpu.alloc((128, 128), tl.float8e4nv, layout=B, init_value=tl.load(k + kb))
+    acc = tle.gpu.set_layout(tl.zeros((32, 128), tl.float32), L)
+    pending = tle.gpu.wgmma(a, b, acc=acc, trans_b=True, out_dtype=tl.float32)
+    result = tle.gpu.set_layout(tle.gpu.wgmma_wait(0, pending), L)
+    ptr = tle.gpu.set_layout(out + m[:, None] * 128 + n[None, :], L)
+    tl.store(ptr, result)
+
+
+_ABIS = ("pointer", "sdk_scalar", "sdk_scalar_volatile", "native_mp31_sg16", "native_mp31_shared")
+_SG16 = (16, 2, 16)
+
+
+def _pointer_copy_layout(vec_per_phase_max_phase):
+    return tle.gpu.swizzled_shared_layout(
+        *vec_per_phase_max_phase, [1, 0], [1, 1], [1, 1], [1, 1], [1, 0]
+    )
+
+
+def _pointer_copy_constexprs(a, b):
+    return {
+        "L": tle.gpu.mthreads.MusaSqmmaEncoding([3, 1], [4, 1], [32, 128, 128]),
+        "A": _pointer_copy_layout(a),
+        "B": _pointer_copy_layout(b),
+    }
+
+
+def _pointer_copy_llir(abi, a, b):
+    # Run the normal frontend, layout and LLVM passes. Do not run llc: the
+    # bundled and SDK scalar toolchains accept different intrinsic signatures.
+    src = ASTSource(
+        fn=_pointer_copy_dot,
+        signature={
+            "q": "*fp8e4nv",
+            "k": "*fp8e4nv",
+            "out": "*fp32",
+            "L": "constexpr",
+            "A": "constexpr",
+            "B": "constexpr",
+        },
+        constexprs=_pointer_copy_constexprs(a, b),
+    )
+    target, backend = mthreads_backend()
+    options = backend.parse_options({"num_warps": 4, "sqmma_descriptor_abi": abi})
+    metadata = {"target": target, **vars(options)}
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    module = backend.make_ir(src, options, backend.get_codegen_implementation(options), backend.get_module_map(), context)
+    stages = {}
+    backend.add_stages(stages, options, src.language)
+    for ext, compile_ir in stages.items():
+        module = compile_ir(module, metadata)
+        if ext == "llir":
+            return module
+    raise AssertionError("Missing SQMMA LLVM lowering stage")
+
+
+@pytest.mark.parametrize("abi", _ABIS)
+def test_pointer_copies_sg16_succeed_for_both_operands(abi):
+    llir = _pointer_copy_llir(abi, _SG16, _SG16)
+    assert "llvm.musa.sqmma" in llir
+    assert "llvm.musa.tme" not in llir
+    if abi.startswith("native_"):
+        assert "llvm.musa.sqmma.desc." not in llir
+        assert str((5 << 18) | (1 << 21)) in llir
+    else:
+        assert "llvm.musa.sqmma.desc.i8" in llir
+
+
+@pytest.mark.parametrize("abi", _ABIS)
+@pytest.mark.parametrize("side", ["A", "B"])
+@pytest.mark.parametrize(
+    "layout,diagnostic",
+    [
+        pytest.param((32, 2, 8), "requires SG16 for 8-bit elements", id="SG32"),
+        pytest.param((64, 2, 4), "requires SG16 for 8-bit elements", id="SG64"),
+        pytest.param((16, 1, 8), "requires a 256-byte swizzle line and stride", id="line128"),
+        pytest.param((16, 2, 8), "requires a 256-byte swizzle line and stride", id="stride128"),
+    ],
+)
+def test_pointer_copies_invalid_consumer_layout_rejected(capfd, abi, side, layout, diagnostic):
+    a, b = (layout, _SG16) if side == "A" else (_SG16, layout)
+    with pytest.raises(Exception):
+        _pointer_copy_llir(abi, a, b)
+    assert f"SQMMA operand {side} {diagnostic}" in capfd.readouterr().err
+
+
+@pytest.mark.parametrize("abi", ["pointer", "native_mp31_sg16", "native_mp31_shared"])
+def test_pointer_copies_sg16_match_independent_device_reference(abi):
+    import torch
+
+    if not hasattr(torch, "musa") or not torch.musa.is_available():
+        pytest.skip("MUSA device is not available")
+    target, _ = mthreads_backend()
+    if target.arch not in ("ph1", "mp_31", 31):
+        pytest.skip("MP31 contract test")
+
+    generator = torch.Generator().manual_seed(1608)
+    a = torch.randint(-4, 5, (32, 128), generator=generator).to(torch.float8_e4m3fn)
+    b = torch.randint(-4, 5, (128, 128), generator=generator).to(torch.float8_e4m3fn)
+    expected = (a.double() @ b.double().T).float()
+    output = torch.empty(expected.shape, dtype=torch.float32, device="musa")
+    kernel = _pointer_copy_dot[(1,)](
+        a.to("musa"),
+        b.to("musa"),
+        output,
+        **_pointer_copy_constexprs(_SG16, _SG16),
+        num_warps=4,
+        sqmma_descriptor_abi=abi,
+    )
+    torch.musa.synchronize()
+    # Small integer inputs and sums are exact in both formats.
+    torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
+    assert "llvm.musa.sqmma" in kernel.asm["llir"]
+    assert "llvm.musa.tme" not in kernel.asm["llir"]
