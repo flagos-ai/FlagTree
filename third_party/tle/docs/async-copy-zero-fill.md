@@ -167,7 +167,7 @@ assertion (12,287 cases passed). The MThreads and Enflame copies of the TLE
 API tests both retained the old `gpu.copy` parameter list. Both existing
 host tests fail before updating their declared contract and pass afterward.
 They now check the added parameters and their backward-compatible defaults:
-`is_async=False` and `eviction_policy=""`.
+`is_async=False`, `eviction_policy=""`, and `input_stride=None`.
 No backend implementation or runtime behavior is changed by this test update.
 
 
