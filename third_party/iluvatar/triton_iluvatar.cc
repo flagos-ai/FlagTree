@@ -128,7 +128,10 @@ std::string translateLLVMIRToILUVATAR(llvm::Module &module,
     }
   }
 
-  // inline everything
+  // inline everything. NOTE: device functions the frontend marked noinline
+  // stay out-of-line; on BI-V150 they require eager module loading
+  // (CUDA_MODULE_LOADING=0) — under lazy load the call fails (XID 22),
+  // confirmed by the vendor 2026-09-20.
   for (llvm::Function &f : module.functions())
     if (!f.hasFnAttribute(llvm::Attribute::NoInline))
       f.addFnAttr(llvm::Attribute::AlwaysInline);
