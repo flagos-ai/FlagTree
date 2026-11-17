@@ -20,7 +20,9 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-__all__ = ["custom", "custom_semantic", "register_custom_op", "SyncEventSlot"]
+__all__ = [
+    "custom", "custom_semantic", "register_custom_op", "set_custom_op_arch_resolver", "SyncEventSlot"
+]
 
 import inspect
 from warnings import warn
@@ -32,6 +34,32 @@ from . import core
 
 # Registry for custom op, mapping name to its configuration.
 _custom_op_registry = {}
+
+# Callback returning the active architecture family (for example "c220" or
+# "c310"). Vendors install it so ops can declare ``supported_arches`` without
+# this module depending on any particular backend package.
+_custom_op_arch_resolver = None
+
+
+def set_custom_op_arch_resolver(resolver):
+    """Install the callback used to resolve the active architecture family."""
+    global _custom_op_arch_resolver
+    _custom_op_arch_resolver = resolver
+
+
+def _check_custom_op_arch(op_class):
+    supported = getattr(op_class, "supported_arches", None)
+    if not supported or _custom_op_arch_resolver is None:
+        return
+    arch = _custom_op_arch_resolver()
+    if arch in supported:
+        return
+    name = getattr(op_class, "name", op_class.__name__)
+    reason = getattr(op_class, "unsupported_arch_reasons", {}).get(arch)
+    detail = f": {reason}" if reason else "."
+    raise NotImplementedError(
+        f"custom op '{name}' does not support architecture family '{arch}' "
+        f"(supported: {', '.join(sorted(supported))}){detail}")
 
 
 class SyncEventSlot:
@@ -388,6 +416,7 @@ def custom_semantic(name: str, *args, _semantic=None, **kwargs):
     deprecated_message = getattr(op_class, "_deprecated_message", None)
     if deprecated_message:
         warn(deprecated_message, FutureWarning, stacklevel=3)
+    _check_custom_op_arch(op_class)
     # Convert constexpr to value in arguments.
     args = _unwrap_constexpr(args)
     kwargs = _unwrap_constexpr(kwargs)
@@ -430,7 +459,10 @@ def register_custom_op(op):
 
     Used as a class decorator. The decorated class must define a ``core`` field
     (a :class:`CORE` value), a ``pipe`` field (a :class:`PIPE` value), and for
-    non-CUBE ops a ``mode`` field (a :class:`MODE` value).
+    non-CUBE ops a ``mode`` field (a :class:`MODE` value). A class may also set
+    ``supported_arches`` to a sequence of architecture family names; the custom
+    op then fails fast when dispatched on any other family. Optional
+    ``unsupported_arch_reasons`` maps a family to a human-readable explanation.
 
     :param op: the custom op class to register.
     """
@@ -451,6 +483,15 @@ def register_custom_op(op):
         assert isinstance(op.mode, core.MODE), "Invalid 'mode' field, MODE type is required."
     if hasattr(op, 'sync_event_slots'):
         assert _is_macro_pipe(op.pipe), "sync_event_slots requires a two-pipe macro custom op"
+    supported_arches = getattr(op, 'supported_arches', None)
+    if supported_arches is not None:
+        assert isinstance(supported_arches, (tuple, list, set, frozenset)) and supported_arches, (
+            "'supported_arches' must be a non-empty sequence of architecture family names.")
+        assert all(isinstance(arch, str) for arch in supported_arches), (
+            "'supported_arches' entries must be strings.")
+    unsupported_reasons = getattr(op, 'unsupported_arch_reasons', None)
+    if unsupported_reasons is not None:
+        assert isinstance(unsupported_reasons, dict), "'unsupported_arch_reasons' must be a dict."
     # Retrieve arguments signature from __init__ method and save it.
     signature = inspect.signature(op)
     setattr(op, 'signature', signature)
