@@ -21,6 +21,10 @@ from .registry import (
     unpack_sort,
     compare_scalar,
     cast_int4_to_fp16,
+    mul_add_dst,
+    fused_mul_add,
+    mul_add_relu,
+    axpy,
 )
 
 __all__ = [
@@ -40,4 +44,8 @@ __all__ = [
     "unpack_sort",
     "compare_scalar",
     "cast_int4_to_fp16",
+    "mul_add_dst",
+    "fused_mul_add",
+    "mul_add_relu",
+    "axpy",
 ]
