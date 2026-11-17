@@ -166,7 +166,7 @@ class DownloadManager:
         self.module_offline_handler = OfflineBuildManager()
         NetConfig.headers = {'User-Agent': NetConfig.user_agent}
 
-    def download(self, url=None, path=None, file_name=None, mode=None, module=None, required=False):
+    def download(self, url=None, path=None, file_name=None, mode=None, module=None, required=False, is_decompress=True):
         if self.module_offline_handler.is_offline_build():
             self.offline_copy(module, required)
             return
@@ -176,7 +176,7 @@ class DownloadManager:
         if mode == "git" or module:
             return self.git_clone(module, required)
         else:
-            return self.general_download(is_decompress=True)
+            return self.general_download(is_decompress=is_decompress)
 
     def offline_copy(self, module, required):
         src_path = os.path.join(self.module_offline_handler.offline_build_dir, module.name)
@@ -297,6 +297,10 @@ class DownloadManager:
         if is_decompress:
             decompress(self.current_url, content=content, dst_path=self.current_dst_path,
                        file_name=self.current_file_name)
+        else:
+            output_path = Path(self.current_dst_path) / self.current_file_name
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(content)
 
 
 class OfflineBuildManager:
