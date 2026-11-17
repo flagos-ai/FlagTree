@@ -15,9 +15,9 @@
 #include "passes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/IR/CallingConv.h"
-#include "llvm/IR/InlineAsm.h"
-#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
@@ -55,10 +55,12 @@ unsigned lowerDeadTiedRegisterFences(llvm::Module &module) {
     for (auto &bb : fn)
       for (auto &inst : bb) {
         auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
-        auto *assembly = call ? llvm::dyn_cast<llvm::InlineAsm>(call->getCalledOperand()) : nullptr;
+        auto *assembly =
+            call ? llvm::dyn_cast<llvm::InlineAsm>(call->getCalledOperand())
+                 : nullptr;
         if (!assembly || !call->use_empty() || call->isMustTailCall() ||
-            call->hasOperandBundles() ||
-            call->arg_size() != 1 || !call->getType()->isFloatTy() ||
+            call->hasOperandBundles() || call->arg_size() != 1 ||
+            !call->getType()->isFloatTy() ||
             call->getArgOperand(0)->getType() != call->getType() ||
             !assembly->hasSideEffects() || !assembly->getAsmString().empty() ||
             assembly->getConstraintString() != "=R,0" ||
@@ -70,11 +72,12 @@ unsigned lowerDeadTiedRegisterFences(llvm::Module &module) {
       }
   for (auto *call : candidates) {
     auto *old = llvm::cast<llvm::InlineAsm>(call->getCalledOperand());
-    auto *type = llvm::FunctionType::get(llvm::Type::getVoidTy(module.getContext()),
-                                        {call->getArgOperand(0)->getType()}, false);
-    auto *assembly = llvm::InlineAsm::get(type, "", "R", true,
-                                         old->isAlignStack(), old->getDialect(),
-                                         old->canThrow());
+    auto *type =
+        llvm::FunctionType::get(llvm::Type::getVoidTy(module.getContext()),
+                                {call->getArgOperand(0)->getType()}, false);
+    auto *assembly =
+        llvm::InlineAsm::get(type, "", "R", true, old->isAlignStack(),
+                             old->getDialect(), old->canThrow());
     llvm::IRBuilder<> builder(call);
     auto *replacement = builder.CreateCall(assembly, {call->getArgOperand(0)});
     // O3 marks these stack-independent inline-asm calls tail even when

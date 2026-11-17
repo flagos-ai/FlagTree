@@ -12,8 +12,7 @@ def _probe(X, O, BLOCK: tl.constexpr, USED: tl.constexpr, REAL: tl.constexpr):
     i = tl.arange(0, BLOCK)
     x = tl.load(X + i)
     asm: tl.constexpr = "FOP.MOV $0, $1" if REAL else ""
-    y = tl.inline_asm_elementwise(asm, constraints="=R,0", args=[x],
-                                 dtype=tl.float32, is_pure=False, pack=1)
+    y = tl.inline_asm_elementwise(asm, constraints="=R,0", args=[x], dtype=tl.float32, is_pure=False, pack=1)
     if USED:
         tl.store(O + i, y)
     else:
@@ -24,10 +23,9 @@ def _probe(X, O, BLOCK: tl.constexpr, USED: tl.constexpr, REAL: tl.constexpr):
 @pytest.mark.parametrize("used", [False, True])
 def test_only_unused_identity_result_is_removed(enabled, used):
     k = compile_musa(_probe,
-        {"X": "*fp32", "O": "*fp32", "BLOCK": "constexpr",
-         "USED": "constexpr", "REAL": "constexpr"},
-        {"BLOCK": 1024, "USED": used, "REAL": False},
-        options={"num_warps": 4, "lower_dead_tied_register_fences": enabled})
+                     {"X": "*fp32", "O": "*fp32", "BLOCK": "constexpr", "USED": "constexpr", "REAL": "constexpr"},
+                     {"BLOCK": 1024, "USED": used, "REAL": False},
+                     options={"num_warps": 4, "lower_dead_tied_register_fences": enabled})
     expected = enabled and not used
     assert bool(k.metadata.readonly_register_fence_count) == expected
     text = k.asm["llir"]
@@ -38,10 +36,9 @@ def test_only_unused_identity_result_is_removed(enabled, used):
 
 def test_nonempty_register_instruction_is_retained():
     k = compile_musa(_probe,
-        {"X": "*fp32", "O": "*fp32", "BLOCK": "constexpr",
-         "USED": "constexpr", "REAL": "constexpr"},
-        {"BLOCK": 1024, "USED": False, "REAL": True},
-        options={"num_warps": 4, "lower_dead_tied_register_fences": True})
+                     {"X": "*fp32", "O": "*fp32", "BLOCK": "constexpr", "USED": "constexpr", "REAL": "constexpr"},
+                     {"BLOCK": 1024, "USED": False, "REAL": True},
+                     options={"num_warps": 4, "lower_dead_tied_register_fences": True})
     assert k.metadata.readonly_register_fence_count == 0
     assert 'asm sideeffect "FOP.MOV $0, $1", "=R,0"' in k.asm["llir"]
 
@@ -49,8 +46,7 @@ def test_nonempty_register_instruction_is_retained():
 def test_option_validation_and_cache():
     _, backend = mthreads_backend()
     assert not backend.parse_options({}).lower_dead_tied_register_fences
-    assert backend.parse_options({}).hash() != backend.parse_options(
-        {"lower_dead_tied_register_fences": True}).hash()
+    assert backend.parse_options({}).hash() != backend.parse_options({"lower_dead_tied_register_fences": True}).hash()
     for invalid in [1, "true", None]:
         with pytest.raises(ValueError, match="lower_dead_tied_register_fences must be a bool"):
             backend.parse_options({"lower_dead_tied_register_fences": invalid})

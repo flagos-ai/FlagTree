@@ -1249,9 +1249,8 @@ class MUSABackend(BaseBackend):
                 llvm.link_extern_libs(llvm_mod, printf_paths, force_inline=False)
 
         MUSABackend._optimize_llir_module(llvm_mod, metadata, capability)
-        metadata["readonly_register_fence_count"] = (
-            mthreads.lower_dead_tied_register_fences(llvm_mod)
-            if options.lower_dead_tied_register_fences else 0)
+        metadata["readonly_register_fence_count"] = (mthreads.lower_dead_tied_register_fences(llvm_mod)
+                                                     if options.lower_dead_tied_register_fences else 0)
         maxntidx = max(1, int(launch_num_warps) * int(options.warp_size))
         kernel_name_hint = src.get_entry_func_name() if hasattr(src, "get_entry_func_name") else ""
         mthreads.decorate_kernel_abi(llvm_mod, kernel_name_hint, maxntidx)
