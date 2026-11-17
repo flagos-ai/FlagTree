@@ -129,7 +129,11 @@ class gather_gm_to_l1:
     core = al.CORE.CUBE
     pipe = al.PIPE.PIPE_MTE2
     mode = al.MODE.SIMD
-    supported_arches = ("c220", "c310")
+    supported_arches = ("c220", )
+    unsupported_arch_reasons = {
+        "c310": "custom-op-written L1 tiles are not marked tightly coupled, so "
+                "the AIC/AIV split leaves tl.dot reading uninitialized L1",
+    }
 
     def __init__(self, src, index, tile_size, D, out=None):
         assert out is not None, "out buffer is required"

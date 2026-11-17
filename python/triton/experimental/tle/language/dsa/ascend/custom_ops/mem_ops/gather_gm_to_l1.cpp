@@ -3,11 +3,6 @@
 // Compiled standalone (AIC/Cube) into its own bitcode.
 #include "Utils.h"
 
-#if defined(__DAV_C310__)
-// A5 ND2NZ goes through the AscendC level-2 data-copy entry.
-#include "kernel_operator_data_copy_intf.h"
-#endif
-
 #define INTRINSIC_NO_ARGS(NAME) NAME()
 #define INTRINSIC(NAME, ...) NAME(__VA_ARGS__)
 
@@ -30,15 +25,6 @@ template <typename T> struct nd2nz_intrin_args {
 template <typename T>
 __aicore__ __attribute__((always_inline)) void
 copy_gm_to_cbuf_intrin_core(nd2nz_intrin_args<T> args) {
-#if defined(__DAV_C310__)
-  // A5: use the canonical ND2NZ copy; it programs MTE2_NZ_PARA and converts
-  // the element-based strides to the byte-based ISA form internally.
-  AscendC::Nd2NzParams params(args.ndNum, args.nValue, args.dValue,
-                              args.srcNdMatrixStride, args.srcDValue,
-                              args.dstNzC0Stride, args.dstNzNStride,
-                              args.dstNzMatrixStride);
-  AscendC::DataCopyGM2L1ND2NZImpl<T>(args.dst_ptr, args.src_ptr, params, 0);
-#else
   if constexpr (sizeof(T) == 2) {
     INTRINSIC(copy_gm_to_cbuf_multi_nd2nz_b16, args.dst_ptr, args.src_ptr,
               args.sid, args.ndNum, args.nValue, args.dValue,
@@ -50,7 +36,6 @@ copy_gm_to_cbuf_intrin_core(nd2nz_intrin_args<T> args) {
               args.srcNdMatrixStride, args.srcDValue, args.dstNzC0Stride,
               args.dstNzNStride, args.dstNzMatrixStride);
   }
-#endif
 }
 
 // Generic row gather: out row i <- src row index[i]. Both src rows and the
@@ -93,13 +78,6 @@ gather_gm_to_l1_impl(memref_t<__gm__ T, 2> *src,
 
     i += 1;
   }
-
-#if defined(__DAV_C310__)
-  // The cube MMAD consumer reads this L1 tile right after the custom call.
-  // Make the MTE2 copies visible before returning; the c220 path relied on the
-  // legacy mix-CV load/store insertion for this ordering.
-  INTRINSIC(pipe_barrier, PIPE_ALL);
-#endif
 }
 
 extern "C" {

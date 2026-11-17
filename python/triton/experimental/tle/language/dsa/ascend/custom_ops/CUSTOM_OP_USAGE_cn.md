@@ -141,9 +141,9 @@ tile_k = tle_raw.call(
 
 相邻索引（`index[i + 1] == index[i] + 1`）会合并为一次两行搬运。
 
-> **注意**：调用本算子的 kernel 必须传编译选项 `enable_legacy_insert_load_store_for_mix_cv=True`（kernel launch kwarg，后端转发为 bishengir-compile 的 `--enable-legacy-insert-load-store-for-mix-cv`，把 `InsertLoadStoreForMixCV` 整个 pass 回退到重构前的老版本）。CANN 9.1/9.2 重构了 `InsertLoadStoreForMixCV`，重构版把 PIPE_MTE2 custom op 的 out 规划到 GM workspace，并且 custom op 写入的 L1 buffer 不会被标记为 tightly-coupled；c310 上会报 `memref.alloc: read before first write`。回退到老版本 pass 即可绕开。
+> **注意**：c220 上调用本算子的 kernel 必须传编译选项 `enable_legacy_insert_load_store_for_mix_cv=True`（kernel launch kwarg，后端转发为 bishengir-compile 的 `--enable-legacy-insert-load-store-for-mix-cv`，把 `InsertLoadStoreForMixCV` 整个 pass 回退到重构前的老版本）。CANN 9.1/9.2 重构了 `InsertLoadStoreForMixCV`，重构版把 PIPE_MTE2 custom op 的 out 规划到 GM workspace，回退到老版本 pass 即可绕开。
 >
-> c310（950）目前**不支持**把 custom op 写入的 L1 tile 直接交给 `tl.dot`：BishengIR 只为 `hivm.copy` 的目的 buffer 打 tightly-coupled 标记，custom op 写入的 L1 buffer 在 AIC/AIV 拆分后无法配对（重构版报 `read before first write`，legacy 版则让 dot 读到未初始化的 L1，结果为 NaN）。`test_custom_ops.py` 因此在 c310 跳过本算子的 dot 用例，行 gather 的正确性由 `gather_gm_to_ub` 覆盖；c220 仍完整测试本算子。上游修复标记逻辑后可恢复。
+> c310（950）**不支持本算子**：BishengIR 只为 `hivm.copy` 的目的 buffer 打 tightly-coupled 标记，custom op 写入的 L1 buffer 在 AIC/AIV 拆分后无法与 `tl.dot` 的 L1 读取配对（重构版报 `read before first write`，legacy 版让 dot 读到未初始化的 L1，结果为 NaN）。c310 上 registry 会直接抛出 `NotImplementedError`，本算子的 c310 实现也不再编译/链接；行 gather 请改用 `gather_gm_to_ub`。`test_custom_ops.py` 在 c310 跳过本算子。
 
 完整示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_gather_gm_to_l1`）。
 
@@ -162,7 +162,7 @@ tile_v = tle_raw.call(
 
 参数含义与 `gather_gm_to_l1` 相同，区别是结果写入二维 UB half/bf16 张量。输出第一维 stride 不得小于 `D`。
 
-> **注意**：与 `gather_gm_to_l1` 相同，调用本算子的 kernel 必须传 `enable_legacy_insert_load_store_for_mix_cv=True`（PIPE_MTE2 + `__ubuf__` ABI，原因同上）。
+> **注意**：调用本算子的 kernel 必须传 `enable_legacy_insert_load_store_for_mix_cv=True`（PIPE_MTE2 + `__ubuf__` ABI，原因同上）。本算子支持 c220 和 c310。
 
 完整示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_gather_gm_to_ub`）。
 
@@ -433,13 +433,28 @@ c310 / Ascend950 是 reg-based 架构，旧的 mem-based intrinsic（`vector_dup
 实现，参考 `${ASCEND_HOME_PATH}/asc`（或 asc-devkit）中的
 `impl/basic_api/dav_3510/`。
 
-当前已适配：`mem_ops/duplicate.cpp`。其余算子逐步适配；在全部完成前可用
+c310 教程已验证除 `gather_gm_to_l1` 外的全部已注册算子：
+`duplicate_bitwise_mask`、`gather_gm_to_ub`、`gather_mask_builtin_pattern`、
+`gather_mask_custom_pattern`、`pair_reduce_sum_continuous_mask`、`sort32`、
+`sort_1d_pack`、`merge_exhaust_sort4`、`mrgsort`、`unpack_sort`、
+`compare_scalar`、`cast_int4_to_fp16`。这些算子显式声明
+`supported_arches = ("c220", "c310")`。`gather_gm_to_l1` 是例外：它写入的
+L1 tile 在 c310 上无法与 `tl.dot` 配对，因此声明
+`supported_arches = ("c220",)`，c310 上直接 gate，且不再编译/链接其 c310
+实现（见上文）。
 
-```bash
-CUSTOM_OPS_ARCH_FAMILY=c310 ALLOW_PARTIAL=1 ./build_custom_ops.sh
-```
+c310 使用注意：
 
-构建已适配算子的子集（脚本会列出被跳过的算子）。
+- sort / gather-mask / pair-reduce / duplicate 用
+  `extra_buffers = [(tl.float16, 1)]` 作为“禁止 PlanMemory in-place 复用”的
+  dummy 临时 buffer。0 元素 alloc 在 c310 不会被 `PlanMemory` 规划，会报
+  `'memref.alloc' op error: read before first write`，因此必须保留非零大小。
+- 不要把同一个 `tle.dsa.alloc` buffer 同时用作 `tle.dsa.copy` 的目的端和
+  custom op 的 `tle.dsa.to_tensor` 输入。`TritonToLinalg` 的 `UseAnalysis`
+  会把 custom op 的 MixUse 输入经 `to_tensor` 反向传播到该 buffer，并把无结果
+  的 `hivm.copy` 误判为 meta user；随后 buffer 被克隆成 `MetaUse`，DMA 写入
+  克隆而 custom op 读取原 buffer。只读输入应直接用 `tl.load`（或 block ptr）
+  传入，直到上游修复 `hivm.copy` 的 meta-user 分类。
 
 
 ## compare_scalar

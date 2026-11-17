@@ -240,6 +240,12 @@ if(ASCEND_CCEC_EXECUTABLE AND ASCEND_LLVM_LINK_EXECUTABLE AND EXISTS "${_ASCEND_
       list(GET entry_parts 0 op_src)
       list(GET entry_parts 1 op_arch)
 
+      # gather_gm_to_l1 writes L1 directly; c310 does not mark custom-op L1
+      # outputs as tightly coupled, so it is c220-only.
+      if(family STREQUAL "c310" AND op_src STREQUAL "mem_ops/gather_gm_to_l1.cpp")
+        continue()
+      endif()
+
       # Include order matters: the RegBase headers must win over the mem-based
       # Template headers on c310.
       set(_op_includes -I "${_ASCEND_TEMPLATE_INCLUDE}")
