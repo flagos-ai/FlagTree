@@ -880,7 +880,8 @@ public:
       newBound = newBound.trunc(narrowBits);
     }
 
-    Value newCst = createIntegerConstant(rewriter, op.getLoc(), cmpTy, newBound);
+    Value newCst =
+        createIntegerConstant(rewriter, op.getLoc(), cmpTy, newBound);
     rewriter.replaceOpWithNewOp<arith::CmpIOp>(op, newPred, divOp.getLhs(),
                                                newCst);
     return success();

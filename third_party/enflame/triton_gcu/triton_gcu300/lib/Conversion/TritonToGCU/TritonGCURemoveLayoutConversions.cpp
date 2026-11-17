@@ -49,7 +49,7 @@
 namespace mlir {
 #define GEN_PASS_DEF_TRITONGCUREMOVELAYOUTCONVERSIONSPASS
 #include "Conversion/Passes.h.inc"
-}  // namespace mlir
+} // namespace mlir
 
 #define DEBUG_TYPE "triton-gcu-remove-layout-conversions"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -80,7 +80,7 @@ namespace {
 //    correct order. For each op, rewrite it using the layout decided by the
 //    analysis phase.
 class LayoutPropagation {
- public:
+public:
   // Structure to keep track of the layout associated to a value.
   struct LayoutInfo {
     explicit LayoutInfo(Attribute encoding) { encodings.insert(encoding); }
@@ -127,7 +127,7 @@ class LayoutPropagation {
   // Dump the current stage of layout information.
   void dump();
 
- private:
+private:
   // map from value to layout information.
   llvm::MapVector<Value, LayoutInfo> layouts;
   // map of the values rewrite based on their encoding.
@@ -137,7 +137,7 @@ class LayoutPropagation {
 };
 
 class LayoutRematerialization {
- public:
+public:
   explicit LayoutRematerialization(FuncOp F) : funcOp(F) {}
 
   // Map the original value to the remat'ed one.
@@ -175,7 +175,7 @@ class LayoutRematerialization {
       DenseMap<Value, Attribute> &layout,
       std::function<bool(Operation *)> stopPropagation = nullptr);
 
- private:
+private:
   void updateRematMapping(SmallVector<std::tuple<Value, Value>> &values);
   // Existing tuples of (value, layout) that needs to be updated when recreating
   // scf ops. This prevents keeping track of Values that have been delete when
@@ -1655,7 +1655,7 @@ void hoistConvert(ModuleOp module) {
 class TritonGCURemoveLayoutConversionsPass
     : public mlir::impl::TritonGCURemoveLayoutConversionsPassBase<
           TritonGCURemoveLayoutConversionsPass> {
- public:
+public:
   // Cleanup convert ops.
   void cleanupConvertOps() {
     MLIRContext *context = &getContext();
@@ -1740,4 +1740,4 @@ class TritonGCURemoveLayoutConversionsPass
   }
 };
 
-}  // namespace
+} // namespace

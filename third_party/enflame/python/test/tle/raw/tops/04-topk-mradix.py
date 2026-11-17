@@ -55,15 +55,15 @@ import triton.experimental.tle.language as tle
 import triton.experimental.tle.language.raw as tle_raw
 
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
-_PROPS      = torch.gcu.get_device_properties(DEVICE.index)
-SIP_COUNT   = _PROPS.sip_count
-NUM_BLOCKS  = _PROPS.multi_processor_count
+_PROPS = torch.gcu.get_device_properties(DEVICE.index)
+SIP_COUNT = _PROPS.sip_count
+NUM_BLOCKS = _PROPS.multi_processor_count
 NUM_THREADS = _PROPS.max_threads_per_multi_processor
 MAX_GRID = SIP_COUNT
 NUM_WARPS = 4  # One hw thread with 4 radix subthreads; 8 (hetero) unsupported.
 
-GCU_VDMEM_SIZE = 0xE0000                  # 896KB per SIP
-TCLE_SINGLE_VEC_BYTES = 512               # OACC = 512B
+GCU_VDMEM_SIZE = 0xE0000  # 896KB per SIP
+TCLE_SINGLE_VEC_BYTES = 512  # OACC = 512B
 DTE_SLICE_MAX_INPUT_DIM_SIZE = 0x1000000  # 2^24
 BATCH_RADIX_NUM_UNROLLING = 16
 MAX_THREAD_NUM = 2
@@ -121,34 +121,29 @@ class TopkPattern:
         raises on them.
     """
 
-    RADIX = 0               # streaming radix; unsupported
-    HEAP = 1                # unsupported
-    QUICK = 2               # unsupported
-    BITONIC = 3             # unsupported
-    KTOP1_AXIS_SPLIT = 4    # k <= 10; routed to the radix kernel
-    SCAN = 5                # unsupported
-    SORT = 6                # unsupported
-    KTOP1_BATCH_SPLIT = 7   # k <= 10; routed to the radix kernel
-    RADIX_BATCH_SPLIT = 8   # supported: one SIP per row (topsop LEVEL=1)
-    KTOP1_SHORTCUT = 9      # k <= 10; routed to the radix kernel
+    RADIX = 0  # streaming radix; unsupported
+    HEAP = 1  # unsupported
+    QUICK = 2  # unsupported
+    BITONIC = 3  # unsupported
+    KTOP1_AXIS_SPLIT = 4  # k <= 10; routed to the radix kernel
+    SCAN = 5  # unsupported
+    SORT = 6  # unsupported
+    KTOP1_BATCH_SPLIT = 7  # k <= 10; routed to the radix kernel
+    RADIX_BATCH_SPLIT = 8  # supported: one SIP per row (topsop LEVEL=1)
+    KTOP1_SHORTCUT = 9  # k <= 10; routed to the radix kernel
 
 
-_PATTERN_NAMES = {
-    getattr(TopkPattern, name): name
-    for name in dir(TopkPattern) if not name.startswith("_")
-}
+_PATTERN_NAMES = {getattr(TopkPattern, name): name for name in dir(TopkPattern) if not name.startswith("_")}
 
-_KTOP1_PATTERNS = frozenset((TopkPattern.KTOP1_SHORTCUT,
-                             TopkPattern.KTOP1_AXIS_SPLIT,
-                             TopkPattern.KTOP1_BATCH_SPLIT))
+_KTOP1_PATTERNS = frozenset((TopkPattern.KTOP1_SHORTCUT, TopkPattern.KTOP1_AXIS_SPLIT, TopkPattern.KTOP1_BATCH_SPLIT))
 
 
 def _align_up(v: int, a: int) -> int:
     return (v + a - 1) // a * a
 
 
-@dialect(name="tops", file=Path(__file__).parent / "04-topk-mradix.tops",
-         extern_func_name="topk_mradix_l1_kernel", deferred=True)
+@dialect(name="tops", file=Path(__file__).parent / "04-topk-mradix.tops", extern_func_name="topk_mradix_l1_kernel",
+         deferred=True)
 def edsl_topk_mradix_l1(*args, **kwargs):
     ...
 
@@ -184,13 +179,12 @@ def topk_mradix_l1_launch(
     row_base = tl.program_id(0) * BLOCK_SIZE
     row_stride = tl.num_programs(0) * BLOCK_SIZE
     l1 = tle.gpu.alloc([L1_BUF_ELEMS], dtype=tl.uint32, scope=tle.gpu.smem)
-    ws = tle.gpu.alloc([L1_WS_ELEMS],  dtype=tl.uint32, scope=tle.gpu.smem)
-    tle_raw.call(
-        edsl_topk_mradix_l1,
-        [input_ptr, output_vals_ptr, output_idx_ptr,
-         tle.gpu.local_ptr(l1, (0,)), tle.gpu.local_ptr(ws, (0,)),
-         M, N, K, row_base, row_stride],
-        output_indices=[1, 2])
+    ws = tle.gpu.alloc([L1_WS_ELEMS], dtype=tl.uint32, scope=tle.gpu.smem)
+    tle_raw.call(edsl_topk_mradix_l1, [
+        input_ptr, output_vals_ptr, output_idx_ptr,
+        tle.gpu.local_ptr(l1, (0, )),
+        tle.gpu.local_ptr(ws, (0, )), M, N, K, row_base, row_stride
+    ], output_indices=[1, 2])
 
 
 def _batch_radix_is_support(n_cols: int, level: int) -> bool:
@@ -243,16 +237,14 @@ def _per_row_radix_level(n_rows: int, n_cols: int) -> int:
         level = 3
     else:
         return 0
-    if (level == 1 and n_rows <= NUM_BLOCKS and n_cols >= 256
-            and _batch_radix_is_support(n_cols, 2)):
+    if (level == 1 and n_rows <= NUM_BLOCKS and n_cols >= 256 and _batch_radix_is_support(n_cols, 2)):
         level = 2
     return level
 
 
 def topk_tuner(n_rows: int, n_cols: int, k: int) -> int:
     """TopkPattern topsop would pick for this shape (see TopkPattern)."""
-    if (n_rows >= DTE_SLICE_MAX_INPUT_DIM_SIZE
-            or n_cols >= DTE_SLICE_MAX_INPUT_DIM_SIZE):
+    if (n_rows >= DTE_SLICE_MAX_INPUT_DIM_SIZE or n_cols >= DTE_SLICE_MAX_INPUT_DIM_SIZE):
         return TopkPattern.RADIX
 
     if k <= 10:
@@ -260,9 +252,7 @@ def topk_tuner(n_rows: int, n_cols: int, k: int) -> int:
             return TopkPattern.KTOP1_SHORTCUT
         return TopkPattern.KTOP1_AXIS_SPLIT
 
-    if (_batch_radix_is_support(n_cols, 1)
-            or _batch_radix_is_support(n_cols, 2)
-            or _batch_radix_is_support(n_cols, 3)):
+    if (_batch_radix_is_support(n_cols, 1) or _batch_radix_is_support(n_cols, 2) or _batch_radix_is_support(n_cols, 3)):
         return TopkPattern.RADIX_BATCH_SPLIT
     return TopkPattern.RADIX
 
@@ -290,17 +280,16 @@ def _ktop1_shortcut_is_support(n_rows: int, n_cols: int, k: int) -> bool:
     one pass, so it is the better fit exactly in the corner described here:
     few rows, long axis, small k.
     """
-    if not (3 <= k <= 10):          # topsop: KTOP1_SHORTCUT_MIN_K .. MAXK
+    if not (3 <= k <= 10):  # topsop: KTOP1_SHORTCUT_MIN_K .. MAXK
         return False
-    if n_cols < 8192:               # topsop: KTOP1_SHORTCUT_MIN_AXIS
+    if n_cols < 8192:  # topsop: KTOP1_SHORTCUT_MIN_AXIS
         return False
     # topsop: row-bound tables, keyed by axis <= 32768 / axis > 32768.
     row_bound = (48, 48, 48, 88, 88, 96, 96, 96) if n_cols <= 32768 \
         else (20, 24, 32, 48, 48, 48, 48, 96)
     if n_rows <= 0 or n_rows > row_bound[k - 3]:
         return False
-    workers = (NUM_BLOCKS * NUM_THREADS
-               * MAX_THREAD_NUM * KTOP1_SHORTCUT_SUBTHREAD_NUM)
+    workers = (NUM_BLOCKS * NUM_THREADS * MAX_THREAD_NUM * KTOP1_SHORTCUT_SUBTHREAD_NUM)
     return workers >= n_rows
 
 
@@ -314,15 +303,12 @@ def _launch_batch_radix(x, y_vals, y_idx, n_rows, n_cols, k):
     subthreads each) covers all M rows.
     """
     if n_cols > L1_MAX_COLS:
-        raise ValueError(
-            f"N={n_cols} exceeds the one-SIP L1 capacity N<={L1_MAX_COLS}")
+        raise ValueError(f"N={n_cols} exceeds the one-SIP L1 capacity N<={L1_MAX_COLS}")
     grid_size = min(MAX_GRID, n_rows)
-    topk_mradix_l1_launch[(grid_size,)](
-        x, y_vals, y_idx,
-        n_rows, n_cols, k,
-        BLOCK_SIZE=1,          # type: ignore[arg-type]
-        num_warps=NUM_WARPS,   # type: ignore[call-arg]
-        num_stages=1,          # type: ignore[call-arg]
+    topk_mradix_l1_launch[(grid_size, )](
+        x, y_vals, y_idx, n_rows, n_cols, k, BLOCK_SIZE=1,  # type: ignore[arg-type]
+        num_warps=NUM_WARPS,  # type: ignore[call-arg]
+        num_stages=1,  # type: ignore[call-arg]
     )
     return y_vals, y_idx
 
@@ -331,7 +317,7 @@ def tle_raw_topk_mradix(
     x: torch.Tensor,
     k: int,
     out_vals: "torch.Tensor | None" = None,
-    out_idx:  "torch.Tensor | None" = None,
+    out_idx: "torch.Tensor | None" = None,
 ):
     """Top-K selection via the TLE-RAW MRADIX radix-select kernel.
 
@@ -364,8 +350,7 @@ def tle_raw_topk_mradix(
     # Both are checked before dispatch, so an oversized shape fails with one
     # message instead of overflowing VDMEM.
     if k > TOPK_K_MAX:
-        raise ValueError(
-            f"k={k} exceeds the edsl reclaim-staging limit k<={TOPK_K_MAX}")
+        raise ValueError(f"k={k} exceeds the edsl reclaim-staging limit k<={TOPK_K_MAX}")
 
     if out_vals is None:
         y_vals = torch.empty((n_rows, k), device=x.device, dtype=x.dtype)
@@ -400,10 +385,9 @@ def tle_raw_topk_mradix(
         # than one SIP per row on every shape tried. A row that needs LEVEL 2/3
         # for *capacity* has no kernel here, hence the check below.
         if not _batch_radix_is_support(n_cols, 1):
-            raise ValueError(
-                f"N={n_cols} does not fit one SIP's VDMEM: topsop runs this "
-                f"shape at LEVEL={_per_row_radix_level(n_rows, n_cols)}; this "
-                f"port implements LEVEL=1 only")
+            raise ValueError(f"N={n_cols} does not fit one SIP's VDMEM: topsop runs this "
+                             f"shape at LEVEL={_per_row_radix_level(n_rows, n_cols)}; this "
+                             f"port implements LEVEL=1 only")
         return _launch_batch_radix(x, y_vals, y_idx, n_rows, n_cols, k)
     # Every other topsop pattern is recognized (see TopkPattern) but has no
     # TLE-RAW implementation: RADIX (streaming: no level can hold the row, so
@@ -412,9 +396,8 @@ def tle_raw_topk_mradix(
     # VDMEM tile, with the histogram and the reclaimed candidates in global
     # workspace; also reached when a dim passes the DTE slice limit),
     # HEAP / QUICK / BITONIC / SCAN / SORT.
-    raise ValueError(
-        f"TopkPattern {_PATTERN_NAMES.get(pattern, pattern)} not supported "
-        f"for shape ({n_rows}, {n_cols}), k={k}")
+    raise ValueError(f"TopkPattern {_PATTERN_NAMES.get(pattern, pattern)} not supported "
+                     f"for shape ({n_rows}, {n_cols}), k={k}")
 
 
 def _assert_close_vals(a: torch.Tensor, b: torch.Tensor, tag: str):
@@ -427,12 +410,10 @@ def _assert_close_vals(a: torch.Tensor, b: torch.Tensor, tag: str):
     """
     if a.shape != b.shape:
         raise AssertionError(f"{tag}: shape mismatch {a.shape} vs {b.shape}")
-    torch.testing.assert_close(a.to("cpu"), b.to("cpu"),
-                               rtol=0.0, atol=1e-3, equal_nan=True, msg=tag)
+    torch.testing.assert_close(a.to("cpu"), b.to("cpu"), rtol=0.0, atol=1e-3, equal_nan=True, msg=tag)
 
 
-def _check_topk(x: torch.Tensor, y_vals: torch.Tensor, y_idx: torch.Tensor,
-                tag: str):
+def _check_topk(x: torch.Tensor, y_vals: torch.Tensor, y_idx: torch.Tensor, tag: str):
     """Verify one tle-raw result against torch.topk, order-insensitively.
 
     The returned order is unspecified (reclaimed order), so the values are
@@ -444,8 +425,7 @@ def _check_topk(x: torch.Tensor, y_vals: torch.Tensor, y_idx: torch.Tensor,
     _assert_close_vals(
         torch.sort(y_vals, dim=1, descending=True).values,
         torch.sort(t_vals, dim=1, descending=True).values, f"values {tag}")
-    _assert_close_vals(x.gather(1, y_idx.to(torch.int64)), y_vals,
-                       f"indices {tag}")
+    _assert_close_vals(x.gather(1, y_idx.to(torch.int64)), y_vals, f"indices {tag}")
 
 
 def run_correctness_on(x: torch.Tensor, k: int, tag: str):
@@ -458,8 +438,7 @@ def run_correctness_on(x: torch.Tensor, k: int, tag: str):
 def run_correctness(m: int, n: int, k: int):
     """Uniform random floats."""
     torch.manual_seed(42)
-    run_correctness_on(torch.rand((m, n), device=DEVICE, dtype=torch.float32),
-                       k, f"M={m} N={n} K={k}")
+    run_correctness_on(torch.rand((m, n), device=DEVICE, dtype=torch.float32), k, f"M={m} N={n} K={k}")
 
 
 def run_benchmark(m: int, n: int, k: int):
@@ -479,7 +458,7 @@ def run_benchmark(m: int, n: int, k: int):
         return torch.topk(x, k, dim=1, sorted=False)
 
     ms_tle_raw = triton.testing.do_bench(fn_mradix, warmup=50, rep=200)
-    ms_torch   = triton.testing.do_bench(fn_torch,  warmup=50, rep=200)
+    ms_torch = triton.testing.do_bench(fn_torch, warmup=50, rep=200)
     # ratio = tle-raw / torch (<1: this kernel is faster) and speedup = its
     # reciprocal, torch / tle-raw (>1: this kernel is faster).
     ratio = ms_tle_raw / ms_torch
@@ -528,49 +507,44 @@ def run_benchmark(m: int, n: int, k: int):
 #     RADIX_BATCH_SPLIT; split out because it is the S5 writeback regime
 #     (element-aligned VUI store + scalar tail) and the row stride decides
 #     which rows take the misaligned store.
-BENCH_CASES_KTOP1 = [
-    (1,   1024,    8),
-    (8,   1024,    8),
-    (16,  1024,    8),
-    (64,  128,     8),
-    (1,   16384,   8),   # KTOP1_SHORTCUT window
-]
+BENCH_CASES_KTOP1 = [(1, 1024, 8), (8, 1024, 8), (16, 1024, 8), (64, 128, 8), (1, 16384, 8),  # KTOP1_SHORTCUT window
+                     ]
 BENCH_CASES_L1 = [
     # N=4096: small-batch controls (M below SIP_COUNT, so a single wave).
-    (1,   4096,   32),
-    (1,   4096,   64),
-    (4,   4096,   32),
-    (4,   4096,   64),
-    (8,   4096,   32),
-    (8,   4096,   64),
+    (1, 4096, 32),
+    (1, 4096, 64),
+    (4, 4096, 32),
+    (4, 4096, 64),
+    (8, 4096, 32),
+    (8, 4096, 64),
     # Larger M and the widest supported row (N=32768, K=256).
-    (64,  1024,   32),
-    (64,  8192,  128),
+    (64, 1024, 32),
+    (64, 8192, 128),
     (128, 32768, 256),
 ]
 # Wide-row group: one SIP still owns a whole row, so these are the shapes
 # where the kernel is closest to VDMEM-bandwidth bound.
 BENCH_CASES_LARGE_ROW = [
-    (1,   16384,  32),
-    (1,   16384,  64),
-    (4,   16384,  32),
-    (4,   16384,  64),
-    (8,   16384,  32),
-    (8,   16384,  64),
+    (1, 16384, 32),
+    (1, 16384, 64),
+    (4, 16384, 32),
+    (4, 16384, 64),
+    (8, 16384, 32),
+    (8, 16384, 64),
 ]
 # Unaligned-K group: same 8 shapes as the correctness group of that name, so
 # a regression shows up in both. Row strides are 400B (K=100), 516B (129),
 # 544B (136), 800B (200), 928B (232), 1200B (300), 1552B (388) and 2080B
 # (520); K=100 stays on the K < VEC_LEN deslice writeback.
 BENCH_CASES_UNALIGNED_K = [
-    (32,  8192,  100),
-    (32,  8192,  129),
-    (32,  8192,  136),
-    (32,  8192,  200),
-    (16,  4096,  232),
-    (32,  8192,  300),
-    (16,  8192,  388),
-    (32,  8192,  520),
+    (32, 8192, 100),
+    (32, 8192, 129),
+    (32, 8192, 136),
+    (32, 8192, 200),
+    (16, 4096, 232),
+    (32, 8192, 300),
+    (16, 8192, 388),
+    (32, 8192, 520),
 ]
 
 
@@ -585,16 +559,14 @@ def _bench_one(provider, m, n, k):
     quantiles = [0.5, 0.2, 0.8]
 
     if provider == "torch":
-        return triton.testing.do_bench(
-            lambda: torch.topk(x, k, dim=1, sorted=False), quantiles=quantiles)
+        return triton.testing.do_bench(lambda: torch.topk(x, k, dim=1, sorted=False), quantiles=quantiles)
 
     # provider == "tle-raw": verify correctness once per (shape, provider)
     # before timing (host-side comparison, see _assert_close_vals).
     y_vals, y_idx = tle_raw_topk_mradix(x, k)
     _check_topk(x, y_vals, y_idx, f"bench M={m} N={n} K={k}")
 
-    return triton.testing.do_bench(
-        lambda: tle_raw_topk_mradix(x, k), quantiles=quantiles)
+    return triton.testing.do_bench(lambda: tle_raw_topk_mradix(x, k), quantiles=quantiles)
 
 
 def _make_topk_benchmark(plot_name, cases):
@@ -609,9 +581,7 @@ def _make_topk_benchmark(plot_name, cases):
             ylabel="us",
             plot_name=plot_name,
             args={},
-        ))(
-        lambda M, N, K, provider: tuple(
-            us * 1000.0 for us in _bench_one(provider, M, N, K)))
+        ))(lambda M, N, K, provider: tuple(us * 1000.0 for us in _bench_one(provider, M, N, K)))
 
 
 class TestTopkPerf:
@@ -627,39 +597,29 @@ class TestTopkPerf:
     def test_benchmark_topk_ktop1(self):
         """KTOP1 group (k <= 10; KTOP1_SHORTCUT / KTOP1_AXIS_SPLIT /
         KTOP1_BATCH_SPLIT all run the L1 radix edsl, see dispatch)."""
-        benchmark = _make_topk_benchmark(
-            "gcu400-tle-raw-topk-mradix-ktop1", BENCH_CASES_KTOP1)
-        benchmark.run(show_plots=True, print_data=True,
-                      save_path=self._save_path)
+        benchmark = _make_topk_benchmark("gcu400-tle-raw-topk-mradix-ktop1", BENCH_CASES_KTOP1)
+        benchmark.run(show_plots=True, print_data=True, save_path=self._save_path)
 
     def test_benchmark_topk_l1(self):
         """RADIX_BATCH_SPLIT L1 group."""
-        benchmark = _make_topk_benchmark(
-            "gcu400-tle-raw-topk-mradix-l1", BENCH_CASES_L1)
-        benchmark.run(show_plots=True, print_data=True,
-                      save_path=self._save_path)
+        benchmark = _make_topk_benchmark("gcu400-tle-raw-topk-mradix-l1", BENCH_CASES_L1)
+        benchmark.run(show_plots=True, print_data=True, save_path=self._save_path)
 
     def test_benchmark_topk_large_row(self):
         """Wide-row (N=16384) group."""
-        benchmark = _make_topk_benchmark(
-            "gcu400-tle-raw-topk-mradix-large-row", BENCH_CASES_LARGE_ROW)
-        benchmark.run(show_plots=True, print_data=True,
-                      save_path=self._save_path)
+        benchmark = _make_topk_benchmark("gcu400-tle-raw-topk-mradix-large-row", BENCH_CASES_LARGE_ROW)
+        benchmark.run(show_plots=True, print_data=True, save_path=self._save_path)
 
     def test_benchmark_topk_unaligned_k(self):
         """Unaligned-K group (K % 128 != 0, misaligned output rows)."""
-        benchmark = _make_topk_benchmark(
-            "gcu400-tle-raw-topk-mradix-unaligned-k", BENCH_CASES_UNALIGNED_K)
-        benchmark.run(show_plots=True, print_data=True,
-                      save_path=self._save_path)
+        benchmark = _make_topk_benchmark("gcu400-tle-raw-topk-mradix-unaligned-k", BENCH_CASES_UNALIGNED_K)
+        benchmark.run(show_plots=True, print_data=True, save_path=self._save_path)
 
 
 def run_correctness_mixed(m: int, n: int, k: int):
     """Mixed positive/negative values (randn)."""
     torch.manual_seed(123)
-    run_correctness_on(
-        torch.randn((m, n), device=DEVICE, dtype=torch.float32), k,
-        f"M={m} N={n} K={k} mixed +/-")
+    run_correctness_on(torch.randn((m, n), device=DEVICE, dtype=torch.float32), k, f"M={m} N={n} K={k} mixed +/-")
 
 
 def run_correctness_ties(m: int, n: int, k: int):
@@ -670,12 +630,9 @@ def run_correctness_ties(m: int, n: int, k: int):
     unspecified, so _check_topk compares value multisets.
     """
     torch.manual_seed(7)
-    run_correctness_on(
-        torch.randint(0, 4, (m, n)).to(torch.float32).to(DEVICE), k,
-        f"M={m} N={n} K={k} ties/4 levels")
-    run_correctness_on(
-        torch.full((m, n), 0.25, dtype=torch.float32, device=DEVICE), k,
-        f"M={m} N={n} K={k} ties/all-equal")
+    run_correctness_on(torch.randint(0, 4, (m, n)).to(torch.float32).to(DEVICE), k, f"M={m} N={n} K={k} ties/4 levels")
+    run_correctness_on(torch.full((m, n), 0.25, dtype=torch.float32, device=DEVICE), k,
+                       f"M={m} N={n} K={k} ties/all-equal")
 
 
 if __name__ == "__main__":
@@ -696,31 +653,16 @@ if __name__ == "__main__":
     print("=" * 60)
     print("MRADIX TopK - Correctness Tests (KTOP1 group, k<=10)")
     print("=" * 60)
-    for m, n, k in [(  1,    8,  3),
-                    (  2,   16,  4),
-                    (  4,  128,  8),
-                    (  8,  256,  4),
-                    (  8, 1024,  8),
-                    (  1, 4096,  10),
-                    ( 16,  256,  4),
-                    ( 32, 1024,  8),
-                    ( 64,  128,  8),
-                    (128,  256,  4),
-                    (  1, 16384, 8)]:   # KTOP1_SHORTCUT window
+    for m, n, k in [(1, 8, 3), (2, 16, 4), (4, 128, 8), (8, 256, 4), (8, 1024, 8), (1, 4096, 10), (16, 256, 4),
+                    (32, 1024, 8), (64, 128, 8), (128, 256, 4), (1, 16384, 8)]:  # KTOP1_SHORTCUT window
         run_correctness(m, n, k)
     print()
 
     print("=" * 60)
     print("MRADIX TopK - Correctness Tests (RADIX_BATCH_SPLIT group, k>10)")
     print("=" * 60)
-    for m, n, k in [(  1, 4096,  32),
-                    (  1, 4096,  64),
-                    (  4, 4096,  32),
-                    (  8, 4096,  64),
-                    (  2, 8192,  16),
-                    (  8, 8192, 128),
-                    ( 64, 8192, 128),
-                    (128, 32768, 256)]:
+    for m, n, k in [(1, 4096, 32), (1, 4096, 64), (4, 4096, 32), (8, 4096, 64), (2, 8192, 16), (8, 8192, 128),
+                    (64, 8192, 128), (128, 32768, 256)]:
         run_correctness(m, n, k)
     print()
 
@@ -733,14 +675,8 @@ if __name__ == "__main__":
     print("=" * 60)
     print("MRADIX TopK - Correctness Tests (unaligned-K group, K % 128 != 0)")
     print("=" * 60)
-    for m, n, k in [( 32, 8192, 100),
-                    ( 32, 8192, 129),
-                    ( 32, 8192, 136),
-                    ( 32, 8192, 200),
-                    ( 16, 4096, 232),
-                    ( 32, 8192, 300),
-                    ( 16, 8192, 388),
-                    ( 32, 8192, 520)]:
+    for m, n, k in [(32, 8192, 100), (32, 8192, 129), (32, 8192, 136), (32, 8192, 200), (16, 4096, 232),
+                    (32, 8192, 300), (16, 8192, 388), (32, 8192, 520)]:
         run_correctness(m, n, k)
     print()
 
@@ -754,22 +690,14 @@ if __name__ == "__main__":
     print("=" * 60)
     print("MRADIX TopK - Correctness Tests (duplicate values, ties at k)")
     print("=" * 60)
-    for m, n, k in [(1, 256, 8),
-                    (8, 1024, 32),
-                    (4, 4096, 128),
-                    (2, 8192, 512)]:
+    for m, n, k in [(1, 256, 8), (8, 1024, 32), (4, 4096, 128), (2, 8192, 512)]:
         run_correctness_ties(m, n, k)
     print()
 
     print("=" * 60)
     print("MRADIX TopK - Correctness Tests (large-row group)")
     print("=" * 60)
-    for m, n, k in [(1, 16384,  32),
-                    (1, 16384,  64),
-                    (4, 16384,  32),
-                    (4, 16384,  64),
-                    (8, 16384,  32),
-                    (8, 16384,  64)]:
+    for m, n, k in [(1, 16384, 32), (1, 16384, 64), (4, 16384, 32), (4, 16384, 64), (8, 16384, 32), (8, 16384, 64)]:
         run_correctness(m, n, k)
     print()
 

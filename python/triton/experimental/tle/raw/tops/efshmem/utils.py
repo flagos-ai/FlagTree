@@ -193,8 +193,7 @@ def _get_host_compiler() -> str:
                        "set EFSHMEM_HOST_CC")
 
 
-def _build_host_command(compiler: str, source_path: Path, output_path: Path,
-                        efshmem_home: Path) -> list[str]:
+def _build_host_command(compiler: str, source_path: Path, output_path: Path, efshmem_home: Path) -> list[str]:
     lib_dir = efshmem_home / "lib"
     host_lib = resolve_efshmem_host_library(efshmem_home)
     tops_lib_dir = _tops_home() / "lib"

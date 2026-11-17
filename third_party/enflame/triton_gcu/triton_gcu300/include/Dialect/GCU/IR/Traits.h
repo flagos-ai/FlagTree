@@ -23,7 +23,7 @@
 #include "mlir/Support/LogicalResult.h"
 
 namespace mlir {
-namespace OpTrait {}  // namespace OpTrait
-}  // namespace mlir
+namespace OpTrait {} // namespace OpTrait
+} // namespace mlir
 
-#endif  // GCU_DIALECT_GCU_IR_TRAITS_H
+#endif // GCU_DIALECT_GCU_IR_TRAITS_H

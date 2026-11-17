@@ -2138,10 +2138,11 @@ static bool collectDefChain(Value target, Operation *memdescToPtrOp,
 /// Clone the def chain (from memdesc_to_ptr forward) replacing the
 /// memdesc_to_ptr source with `newBase` (a remote_memdesc result).
 /// Returns the cloned value corresponding to `target`.
-static Value cloneDefChainWithNewBase(
-    OpBuilder &builder, Operation *memdescToPtrOp,
-    const SmallVectorImpl<Operation *> &chain,
-    Value newBase, Operation *insertBeforeOp) {
+static Value cloneDefChainWithNewBase(OpBuilder &builder,
+                                      Operation *memdescToPtrOp,
+                                      const SmallVectorImpl<Operation *> &chain,
+                                      Value newBase,
+                                      Operation *insertBeforeOp) {
   auto loc = memdescToPtrOp->getLoc();
 
   // Clone the chain right before insertBeforeOp (typically the original
@@ -2238,17 +2239,20 @@ static void fixRemoteAddrSpaceFuncSignatures(gpu::GPUModuleOp module) {
       for (Type t : funcTy.getInputs()) {
         Type nt = rewriteRemoteAddrSpace(t);
         newInputs.push_back(nt);
-        if (nt != t) changed = true;
+        if (nt != t)
+          changed = true;
       }
       SmallVector<Type> newResults;
       for (Type t : funcTy.getResults()) {
         Type nt = rewriteRemoteAddrSpace(t);
         newResults.push_back(nt);
-        if (nt != t) changed = true;
+        if (nt != t)
+          changed = true;
       }
 
       if (changed) {
-        auto newFuncTy = FunctionType::get(op->getContext(), newInputs, newResults);
+        auto newFuncTy =
+            FunctionType::get(op->getContext(), newInputs, newResults);
         funcOp.setFunctionType(newFuncTy);
         if (!funcOp.isDeclaration()) {
           Block &entry = funcOp.getBody().front();
@@ -2313,9 +2317,8 @@ static void postProcessRemotePointers(gpu::GPUModuleOp module) {
     builder.setInsertionPoint(remoteOp);
     auto remoteMemDesc = builder.create<triton::gcu::RemoteMemDescOp>(
         remoteOp->getLoc(), localMemDesc.getType(), localMemDesc, shardId);
-    Value replacement =
-        cloneDefChainWithNewBase(builder, m2pOp, chain, remoteMemDesc,
-                                 remoteOp);
+    Value replacement = cloneDefChainWithNewBase(builder, m2pOp, chain,
+                                                 remoteMemDesc, remoteOp);
 
     // Don't erase the original chain even if exclusive: other
     // tle.remote_pointers may still reference it.  Dead ops will be
@@ -2354,14 +2357,16 @@ static void postProcessRemotePointers(gpu::GPUModuleOp module) {
 static void postProcessMemDescIndex(gpu::GPUModuleOp module) {
   SmallVector<triton::gcu::RemoteMemDescOp> opsToProcess;
   module.walk([&](triton::gcu::RemoteMemDescOp remoteOp) {
-    auto indexOp = remoteOp.getSrc().getDefiningOp<triton::gpu::MemDescIndexOp>();
+    auto indexOp =
+        remoteOp.getSrc().getDefiningOp<triton::gpu::MemDescIndexOp>();
     if (!indexOp)
       return;
     opsToProcess.push_back(remoteOp);
   });
 
   for (auto remoteOp : opsToProcess) {
-    auto indexOp = remoteOp.getSrc().getDefiningOp<triton::gpu::MemDescIndexOp>();
+    auto indexOp =
+        remoteOp.getSrc().getDefiningOp<triton::gpu::MemDescIndexOp>();
     Value allocMemDesc = indexOp.getSrc();
     Value sliceIdx = indexOp.getIndex();
     Value shardId = remoteOp.getShardId();
@@ -2412,7 +2417,6 @@ static void postProcessMemDescIndex(gpu::GPUModuleOp module) {
     }
   }
 }
-
 
 // ===----------------------------------------------------------------------===
 // Phase 2c: Lower tle.extract_tile / tle.insert_tile

@@ -19,13 +19,13 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
-#include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
 
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"

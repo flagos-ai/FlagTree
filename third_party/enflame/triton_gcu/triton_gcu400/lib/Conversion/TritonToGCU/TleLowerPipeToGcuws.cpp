@@ -222,8 +222,8 @@ static OperandRange getPipeFields(Operation *op) {
 static Value canonicalizePipeField(Value field) {
   while (auto blockArg = dyn_cast<BlockArgument>(field)) {
     Block *block = blockArg.getOwner();
-    auto partitions = dyn_cast_or_null<ttg::WarpSpecializePartitionsOp>(
-        block->getParentOp());
+    auto partitions =
+        dyn_cast_or_null<ttg::WarpSpecializePartitionsOp>(block->getParentOp());
     if (partitions) {
       auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(partitions->getParentOp());
       if (!wsOp)
@@ -444,7 +444,8 @@ static void fixPipeSlotIndex(ModuleOp mod) {
 
     newOuterFor.getRegion().takeBody(outerFor.getRegion());
 
-    // For each group, compute tripCount and pipe_cnt_next, and fix memdesc_index.
+    // For each group, compute tripCount and pipe_cnt_next, and fix
+    // memdesc_index.
     auto yieldOp = cast<scf::YieldOp>(newOuterFor.getBody()->getTerminator());
     builder.setInsertionPoint(yieldOp);
 
@@ -465,10 +466,8 @@ static void fixPipeSlotIndex(ModuleOp mod) {
         Value stepConst = builder.create<arith::ConstantOp>(
             loc, type, builder.getIntegerAttr(type, stepVal));
         Value range = builder.create<arith::SubIOp>(loc, ubVal, lbConst);
-        Value divResult =
-            builder.create<arith::DivSIOp>(loc, range, stepConst);
-        Value remResult =
-            builder.create<arith::RemSIOp>(loc, range, stepConst);
+        Value divResult = builder.create<arith::DivSIOp>(loc, range, stepConst);
+        Value remResult = builder.create<arith::RemSIOp>(loc, range, stepConst);
         Value hasRem = builder.create<arith::CmpIOp>(
             loc, arith::CmpIPredicate::ne, remResult, zeroVal);
         Value one = builder.create<arith::ConstantOp>(
@@ -513,8 +512,7 @@ static void fixPipeSlotIndex(ModuleOp mod) {
       }
 
       Value pipeIter = builder.create<arith::AddIOp>(loc, pipeCnt, iterIndex);
-      Value newStage =
-          builder.create<arith::RemSIOp>(loc, pipeIter, capacity);
+      Value newStage = builder.create<arith::RemSIOp>(loc, pipeIter, capacity);
 
       for (auto *memdescIndexOp : memdescIndexOps)
         memdescIndexOp->setOperand(1, newStage);

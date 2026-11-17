@@ -104,8 +104,7 @@ def _get_ir(compiled):
 
 
 @triton.jit
-def _store_kernel(x_ptr, o_ptr, BLOCK: tl.constexpr, HINT: tl.constexpr,
-                  SPACE: tl.constexpr):
+def _store_kernel(x_ptr, o_ptr, BLOCK: tl.constexpr, HINT: tl.constexpr, SPACE: tl.constexpr):
     offs = tl.arange(0, BLOCK)
     v = tl.load(x_ptr + offs) * 2.0 + 1.0
     if HINT:
@@ -114,8 +113,7 @@ def _store_kernel(x_ptr, o_ptr, BLOCK: tl.constexpr, HINT: tl.constexpr,
 
 
 @triton.jit
-def _eltwise_reduce_kernel(x_ptr, o_ptr, R: tl.constexpr, C: tl.constexpr,
-                           HINT: tl.constexpr, SPACE: tl.constexpr):
+def _eltwise_reduce_kernel(x_ptr, o_ptr, R: tl.constexpr, C: tl.constexpr, HINT: tl.constexpr, SPACE: tl.constexpr):
     rows = tl.arange(0, R)
     cols = tl.arange(0, C)
     v = tl.load(x_ptr + rows[:, None] * C + cols[None, :]) * 2.0 + 1.0
@@ -131,8 +129,7 @@ def _sum_combine(a, b):
 
 
 @triton.jit
-def _reduce_kernel(x_ptr, o_ptr, R: tl.constexpr, C: tl.constexpr,
-                   HINT: tl.constexpr):
+def _reduce_kernel(x_ptr, o_ptr, R: tl.constexpr, C: tl.constexpr, HINT: tl.constexpr):
     rows = tl.arange(0, R)
     cols = tl.arange(0, C)
     x = tl.load(x_ptr + rows[:, None] * C + cols[None, :])
@@ -154,12 +151,8 @@ def _run_store(space):
     torch.manual_seed(0)
     x = torch.randn(BLOCK, device="cuda", dtype=torch.float32)
     out = torch.empty_like(x)
-    compiled = _store_kernel[(1,)](x,
-                                   out,
-                                   BLOCK=BLOCK,
-                                   HINT=space is not None,
-                                   SPACE=space or "shared_memory",
-                                   num_warps=NUM_WARPS)
+    compiled = _store_kernel[(1, )](x, out, BLOCK=BLOCK, HINT=space is not None, SPACE=space or "shared_memory",
+                                    num_warps=NUM_WARPS)
     return compiled, out, x * 2.0 + 1.0
 
 
@@ -167,27 +160,16 @@ def _run_eltwise_reduce(space):
     torch.manual_seed(0)
     x = torch.randn(ELT_ROWS, ELT_COLS, device="cuda", dtype=torch.float32)
     out = torch.empty(ELT_ROWS, device="cuda", dtype=torch.float32)
-    compiled = _eltwise_reduce_kernel[(1,)](x,
-                                            out,
-                                            R=ELT_ROWS,
-                                            C=ELT_COLS,
-                                            HINT=space is not None,
-                                            SPACE=space or "shared_memory",
-                                            num_warps=NUM_WARPS)
+    compiled = _eltwise_reduce_kernel[(1, )](x, out, R=ELT_ROWS, C=ELT_COLS, HINT=space is not None, SPACE=space
+                                             or "shared_memory", num_warps=NUM_WARPS)
     return compiled, out, (x * 2.0 + 1.0).sum(dim=1)
 
 
 def _run_reduce(hint):
     torch.manual_seed(0)
-    x = torch.randn(REDUCE_ROWS, REDUCE_COLS, device="cuda",
-                    dtype=torch.float32)
+    x = torch.randn(REDUCE_ROWS, REDUCE_COLS, device="cuda", dtype=torch.float32)
     out = torch.empty(REDUCE_ROWS, device="cuda", dtype=torch.float32)
-    compiled = _reduce_kernel[(1,)](x,
-                                    out,
-                                    R=REDUCE_ROWS,
-                                    C=REDUCE_COLS,
-                                    HINT=hint,
-                                    num_warps=NUM_WARPS)
+    compiled = _reduce_kernel[(1, )](x, out, R=REDUCE_ROWS, C=REDUCE_COLS, HINT=hint, num_warps=NUM_WARPS)
     return compiled, out, x.sum(dim=1)
 
 
@@ -227,9 +209,8 @@ class TestElementwise:
         hinted_ir = _get_ir(_run_eltwise_reduce("shared_memory")[0])
         hinted = _smem_alloc_count(hinted_ir)
         assert baseline == 0, "the unhinted kernel should not use shared memory"
-        assert hinted >= 1, (
-            "the shared_memory hint must stage the value in shared memory:\n"
-            f"{hinted_ir}")
+        assert hinted >= 1, ("the shared_memory hint must stage the value in shared memory:\n"
+                             f"{hinted_ir}")
 
     def test_shared_memory_writes_the_tile_directly(self):
         """The producer must land in the tile, not in a private copy.
@@ -242,9 +223,8 @@ class TestElementwise:
         baseline_ir = _get_ir(_run_eltwise_reduce(None)[0])
         hinted_ir = _get_ir(_run_eltwise_reduce("shared_memory")[0])
         assert _smem_tile_view_count(baseline_ir) == 0
-        assert _smem_tile_view_count(hinted_ir) >= 1, (
-            "the elementwise producer must write the shared tile through a "
-            f"per-warp view:\n{hinted_ir}")
+        assert _smem_tile_view_count(hinted_ir) >= 1, ("the elementwise producer must write the shared tile through a "
+                                                       f"per-warp view:\n{hinted_ir}")
 
     def test_register_numerics(self):
         _, out, expected = _run_eltwise_reduce("register")
@@ -262,9 +242,8 @@ class TestElementwise:
         hinted_ir = _get_ir(_run_eltwise_reduce("register")[0])
         hinted = _alloca_count(hinted_ir)
         assert baseline == 0, "the unhinted kernel should use the tar path"
-        assert hinted >= 1, (
-            "the register hint must use a memref.alloca buffer:\n"
-            f"{hinted_ir}")
+        assert hinted >= 1, ("the register hint must use a memref.alloca buffer:\n"
+                             f"{hinted_ir}")
 
     def test_store_hint_is_dropped(self):
         """A value that never leaves its fusion region has nothing to stage.
@@ -278,9 +257,8 @@ class TestElementwise:
         torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-6)
         baseline = _smem_alloc_count(_get_ir(_run_store(None)[0]))
         hinted = _smem_alloc_count(_get_ir(_run_store("shared_memory")[0]))
-        assert hinted == baseline, (
-            "a hint on a value that does not escape its fusion region must not "
-            f"add a shared allocation (baseline {baseline}, hinted {hinted})")
+        assert hinted == baseline, ("a hint on a value that does not escape its fusion region must not "
+                                    f"add a shared allocation (baseline {baseline}, hinted {hinted})")
 
 
 class TestReduce:
@@ -292,14 +270,12 @@ class TestReduce:
 
     def test_shared_memory_tile_is_allocated(self):
         hinted_ir = _get_ir(_run_reduce(True)[0])
-        assert _smem_alloc_count(hinted_ir) >= 1, (
-            "the shared_memory hint must allocate an address-space-2 memref:\n"
-            f"{hinted_ir}")
+        assert _smem_alloc_count(hinted_ir) >= 1, ("the shared_memory hint must allocate an address-space-2 memref:\n"
+                                                   f"{hinted_ir}")
 
 
 @triton.jit
-def _ptr_to_int_kernel(x_ptr, o_ptr, BLOCK: tl.constexpr, HINT: tl.constexpr,
-                       SPACE: tl.constexpr):
+def _ptr_to_int_kernel(x_ptr, o_ptr, BLOCK: tl.constexpr, HINT: tl.constexpr, SPACE: tl.constexpr):
     """Hint a ``tt.ptr_to_int`` result.
 
     The op is not an elementwise-mappable arith op, so the fusion pass leaves
@@ -322,12 +298,8 @@ def _run_ptr_to_int(space):
     torch.manual_seed(0)
     x = torch.randn(BLOCK, device="cuda", dtype=torch.float32)
     out = torch.empty(BLOCK, device="cuda", dtype=torch.int32)
-    compiled = _ptr_to_int_kernel[(1,)](x,
-                                        out,
-                                        BLOCK=BLOCK,
-                                        HINT=space is not None,
-                                        SPACE=space or "shared_memory",
-                                        num_warps=NUM_WARPS)
+    compiled = _ptr_to_int_kernel[(1, )](x, out, BLOCK=BLOCK, HINT=space is not None, SPACE=space or "shared_memory",
+                                         num_warps=NUM_WARPS)
     # GCU pointers are not torch pointers: compare against the device address of
     # the input buffer, whose low 16 bits identify the byte offset of each
     # element (4 bytes apart) unambiguously for this block size.
@@ -347,17 +319,15 @@ class TestPtrToInt:
         baseline = _smem_alloc_count(_get_ir(_run_ptr_to_int(None)[0]))
         hinted_ir = _get_ir(_run_ptr_to_int("shared_memory")[0])
         assert baseline == 0, "the unhinted kernel should not use shared memory"
-        assert _smem_alloc_count(hinted_ir) >= 1, (
-            "the shared_memory hint must stage the ptr_to_int result in shared "
-            f"memory:\n{hinted_ir}")
+        assert _smem_alloc_count(hinted_ir) >= 1, ("the shared_memory hint must stage the ptr_to_int result in shared "
+                                                   f"memory:\n{hinted_ir}")
 
     def test_shared_memory_writes_the_tile_directly(self):
         baseline_ir = _get_ir(_run_ptr_to_int(None)[0])
         hinted_ir = _get_ir(_run_ptr_to_int("shared_memory")[0])
         assert _smem_tile_view_count(baseline_ir) == 0
-        assert _smem_tile_view_count(hinted_ir) >= 1, (
-            "TTElementwiseOpLowering must write the shared tile through a "
-            f"per-warp view:\n{hinted_ir}")
+        assert _smem_tile_view_count(hinted_ir) >= 1, ("TTElementwiseOpLowering must write the shared tile through a "
+                                                       f"per-warp view:\n{hinted_ir}")
 
     def test_register_numerics(self):
         _, out, expected = _run_ptr_to_int("register")
@@ -367,6 +337,5 @@ class TestPtrToInt:
         baseline = _alloca_count(_get_ir(_run_ptr_to_int(None)[0]))
         hinted_ir = _get_ir(_run_ptr_to_int("register")[0])
         assert baseline == 0, "the unhinted kernel should use the tar path"
-        assert _alloca_count(hinted_ir) >= 1, (
-            "the register hint must use a memref.alloca buffer:\n"
-            f"{hinted_ir}")
+        assert _alloca_count(hinted_ir) >= 1, ("the register hint must use a memref.alloca buffer:\n"
+                                               f"{hinted_ir}")

@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <vector>
 #include <utility>
+#include <vector>
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 
@@ -231,8 +231,6 @@ void TritonGCUPingpongPass::runOnOperation() {
       getOperation().getContext()->getLoadedDialect<arith::ArithDialect>();
   RewritePatternSet patterns(getOperation().getContext());
   arithDialect->getCanonicalizationPatterns(patterns);
-  if (applyPatternsGreedily(getOperation(), std::move(patterns))
-          .failed())
+  if (applyPatternsGreedily(getOperation(), std::move(patterns)).failed())
     return signalPassFailure();
-
 }

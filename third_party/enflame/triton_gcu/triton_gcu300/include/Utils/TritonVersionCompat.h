@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
- #ifndef KURAMA_TRITON_VERSION_COMPAT_H
- #define KURAMA_TRITON_VERSION_COMPAT_H
+#ifndef KURAMA_TRITON_VERSION_COMPAT_H
+#define KURAMA_TRITON_VERSION_COMPAT_H
 
-#include <utility>
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/Support/ErrorHandling.h"
+#include <utility>
 
 namespace triton_gcu {
 namespace compat {
@@ -53,18 +53,18 @@ inline auto getDefaultCGALayout(mlir::MLIRContext *ctx, unsigned rank) {
 template <typename LinearLayoutT>
 inline auto getCGALayoutFromLL(mlir::MLIRContext *ctx, LinearLayoutT &&ll) {
 #if TRITON_VERSION >= 37
-  return mlir::triton::gpu::CGAEncodingAttr::get(ctx,
-                                           std::forward<LinearLayoutT>(ll));
+  return mlir::triton::gpu::CGAEncodingAttr::get(
+      ctx, std::forward<LinearLayoutT>(ll));
 #elif TRITON_VERSION == 35
   // Triton 3.5 has no LinearLayout-based CTA layout constructor; callers select
-  // getCGALayoutFromSplitParams on 3.5, so this overload is never used. Guard it
-  // so the (non-dependent) CTAEncodingAttr name below is not parsed on 3.5.
+  // getCGALayoutFromSplitParams on 3.5, so this overload is never used. Guard
+  // it so the (non-dependent) CTAEncodingAttr name below is not parsed on 3.5.
   (void)ctx;
   (void)ll;
   llvm_unreachable("getCGALayoutFromLL is not supported on Triton 3.5");
 #else
-  return mlir::triton::gpu::CTAEncodingAttr::get(ctx,
-                                           std::forward<LinearLayoutT>(ll));
+  return mlir::triton::gpu::CTAEncodingAttr::get(
+      ctx, std::forward<LinearLayoutT>(ll));
 #endif
 }
 
@@ -78,11 +78,11 @@ inline auto getCGALayoutFromSplitParams(mlir::MLIRContext *ctx,
   return mlir::triton::gpu::CTALayoutAttr::get(ctx, ctasPerCGA, ctaSplitNum,
                                                ctaOrder);
 #elif TRITON_VERSION >= 37
-  return mlir::triton::gpu::CGAEncodingAttr::fromSplitParams(ctx, ctasPerCGA,
-                                                             ctaSplitNum, ctaOrder);
+  return mlir::triton::gpu::CGAEncodingAttr::fromSplitParams(
+      ctx, ctasPerCGA, ctaSplitNum, ctaOrder);
 #else
-  return mlir::triton::gpu::CTAEncodingAttr::fromSplitParams(ctx, ctasPerCGA,
-                                                             ctaSplitNum, ctaOrder);
+  return mlir::triton::gpu::CTAEncodingAttr::fromSplitParams(
+      ctx, ctasPerCGA, ctaSplitNum, ctaOrder);
 #endif
 }
 
@@ -108,8 +108,8 @@ inline void createVectorScatterOp(mlir::OpBuilder &builder, mlir::Location loc,
 // WarpSpecializePartitionsOp, accessed via wsOp.getPartitionOp().
 
 // Get explicit captures from a triton::gpu::WarpSpecializeOp.
-inline mlir::OperandRange getWsExplicitCaptures(
-    mlir::triton::gpu::WarpSpecializeOp wsOp) {
+inline mlir::OperandRange
+getWsExplicitCaptures(mlir::triton::gpu::WarpSpecializeOp wsOp) {
 #if TRITON_VERSION >= 37
   return wsOp.getPartitionOp().getExplicitCaptures();
 #else

@@ -27,13 +27,13 @@
 #include <map>
 
 #include "Analysis/FirstLastUserAnalysis.h"
-#include "PatternTritonGPUOpToGCU.h"
-#include "Utility.h"
-#include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/GCU/IR/Types.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
+#include "PatternTritonGPUOpToGCU.h"
+#include "TritonGCUToGCU/TritionToGCUBase.h"
+#include "Utility.h"
 #ifdef ENABLE_TLE
 #include "tle/dialect/include/IR/Dialect.h"
 #endif
@@ -189,7 +189,8 @@ struct TleDSLRegionOpLowering
     // Only deferred (raw TLE) regions are supported on GCU.
     auto dslFileAttr = op->getAttrOfType<StringAttr>("tle_raw.dsl_file_name");
     if (!dslFileAttr)
-      return op.emitError("non-deferred tle.dsl_region is not supported on GCU");
+      return op.emitError(
+          "non-deferred tle.dsl_region is not supported on GCU");
     auto externAttr = op->getAttrOfType<StringAttr>("tle_raw.extern_func_name");
     if (!externAttr)
       return op.emitError(
@@ -197,7 +198,8 @@ struct TleDSLRegionOpLowering
 
     Region &region = op.getBody();
     if (!region.hasOneBlock())
-      return op.emitError("deferred tle.dsl_region must have exactly one block");
+      return op.emitError(
+          "deferred tle.dsl_region must have exactly one block");
     Block &body = region.front();
     if (body.empty())
       return op.emitError("deferred tle.dsl_region has an empty body");
@@ -269,7 +271,8 @@ struct TleDSLRegionOpLowering
     auto i32Ty = rewriter.getI32Type();
     for (size_t idx = 0; idx < newOperands.size(); ++idx) {
       paramTys.push_back(newOperands[idx].getType());
-      if (auto memrefTy = dyn_cast<MemRefType>(convertedInputs[idx].getType())) {
+      if (auto memrefTy =
+              dyn_cast<MemRefType>(convertedInputs[idx].getType())) {
         unsigned rank = memrefTy.getRank();
         for (unsigned d = 0; d < rank; ++d)
           paramTys.push_back(i32Ty); // dim
@@ -284,7 +287,8 @@ struct TleDSLRegionOpLowering
         gpuModule.lookupSymbol<LLVM::LLVMFuncOp>(externFuncName);
     if (!funcOp) {
       OpBuilder declBuilder(gpuModule.getBody(), gpuModule.getBody()->begin());
-      funcOp = declBuilder.create<LLVM::LLVMFuncOp>(loc, externFuncName, funcTy);
+      funcOp =
+          declBuilder.create<LLVM::LLVMFuncOp>(loc, externFuncName, funcTy);
       funcOp.setLinkage(LLVM::Linkage::External);
       funcOp.setPassthroughAttr(declBuilder.getArrayAttr({
           declBuilder.getStringAttr("tle_raw.source_file"),
@@ -302,7 +306,8 @@ struct TleDSLRegionOpLowering
     callOperands.reserve(paramTys.size());
     for (size_t idx = 0; idx < newOperands.size(); ++idx) {
       callOperands.push_back(newOperands[idx]);
-      if (auto memrefTy = dyn_cast<MemRefType>(convertedInputs[idx].getType())) {
+      if (auto memrefTy =
+              dyn_cast<MemRefType>(convertedInputs[idx].getType())) {
         unsigned rank = memrefTy.getRank();
         for (unsigned d = 0; d < rank; ++d) {
           int64_t dim = memrefTy.getDimSize(d);

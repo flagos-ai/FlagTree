@@ -783,8 +783,8 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
   }
 #if TRITON_VERSION < 38
   // Triton 3.8 删除了 canFoldIntoConversion helper（上游重写了
-  // remove-layout-conversions）。跳过该快速路径，改走下面的通用 propagation 分支，
-  // 只是少了折叠优化，语义不变。
+  // remove-layout-conversions）。跳过该快速路径，改走下面的通用 propagation
+  // 分支， 只是少了折叠优化，语义不变。
   if (canFoldIntoConversion(op, encoding)) {
     Operation *newOp = rewriter.clone(*op);
     auto tensorType = cast<RankedTensorType>(op->getResult(0).getType());
@@ -1779,8 +1779,8 @@ public:
         if (!operandType || operandType.getEncoding() == resultEncoding)
           continue;
         auto convertedType = operandType.cloneWithEncoding(resultEncoding);
-        Value converted = ConvertLayoutOp::create(
-            builder, addPtr.getLoc(), convertedType, operand.get());
+        Value converted = ConvertLayoutOp::create(builder, addPtr.getLoc(),
+                                                  convertedType, operand.get());
         operand.set(converted);
       }
     });

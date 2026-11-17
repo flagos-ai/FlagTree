@@ -31,7 +31,7 @@ extern "C" {
 
 typedef struct {
   const char *data;
-  size_t      len;
+  size_t len;
 } Gcu300String;
 
 // Opaque pipeline handle for building and running pass pipelines.
@@ -39,18 +39,18 @@ typedef struct Gcu300Pipeline_ *Gcu300Pipeline;
 
 // Pipeline lifecycle
 Gcu300Pipeline gcu300_pipeline_create(void);
-void           gcu300_pipeline_destroy(Gcu300Pipeline p);
+void gcu300_pipeline_destroy(Gcu300Pipeline p);
 
 // Add a pass to the pipeline with optional key=value options.
 // options_str format: "key1=value1,key2=value2" or empty string for no options.
 void gcu300_pipeline_add_pass(Gcu300Pipeline p, const char *pass_name,
-                               const char *options_str);
+                              const char *options_str);
 
 // Run the configured pipeline on MLIR text input.
 // Returns the processed MLIR text. On error, data is NULL and
 // gcu300_pipeline_last_error() gives the message.
-Gcu300String gcu300_pipeline_run(Gcu300Pipeline p,
-                                  const char *input, size_t input_len);
+Gcu300String gcu300_pipeline_run(Gcu300Pipeline p, const char *input,
+                                 size_t input_len);
 
 // Get last error message (empty string if none).
 const char *gcu300_pipeline_last_error(Gcu300Pipeline p);
@@ -72,4 +72,4 @@ int gcu300_opt_main(int argc, char **argv);
 }
 #endif
 
-#endif  // TRITON_GCU300_CORE_H
+#endif // TRITON_GCU300_CORE_H

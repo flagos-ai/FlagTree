@@ -21,11 +21,10 @@
 #include "mlir/IR/Types.h"
 
 namespace mlir {
-namespace math_ext {
-}  // namespace math_ext
-}  // namespace mlir
+namespace math_ext {} // namespace math_ext
+} // namespace mlir
 
 #define GET_TYPEDEF_CLASSES
 #include "Dialect/MathExt/IR/MathExtTypes.h.inc"
 
-#endif  // GCU_DIALECT_MATH_EXT_IR_TYPES_H
+#endif // GCU_DIALECT_MATH_EXT_IR_TYPES_H

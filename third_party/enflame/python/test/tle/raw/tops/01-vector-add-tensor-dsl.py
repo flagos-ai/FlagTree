@@ -21,7 +21,8 @@ import triton.experimental.tle.language.raw as tle_raw
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
 
-@dialect(name="tops", file=Path(__file__).parent / "01-vector-add-tensor-dsl.tops", extern_func_name="VectorAdd", deferred=True)
+@dialect(name="tops", file=Path(__file__).parent / "01-vector-add-tensor-dsl.tops", extern_func_name="VectorAdd",
+         deferred=True)
 def edsl_deferred(*args, **kwargs):
     ...
 
@@ -34,13 +35,13 @@ def add_kernel(
     n_elements,
     BLOCK_SIZE: tl.constexpr,
 ):
-   pid = tl.program_id(axis=0)
-   block_start = pid * BLOCK_SIZE
-   offsets = block_start + tl.arange(0, BLOCK_SIZE)
-   mask = offsets < n_elements
-   x = tl.load(x_ptr + offsets, mask=mask)
-   y = tl.load(y_ptr + offsets, mask=mask)
-   output = tle_raw.call(edsl_deferred, [output_ptr + block_start, x, y], output_indices=[0])
+    pid = tl.program_id(axis=0)
+    block_start = pid * BLOCK_SIZE
+    offsets = block_start + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
+    x = tl.load(x_ptr + offsets, mask=mask)
+    y = tl.load(y_ptr + offsets, mask=mask)
+    output = tle_raw.call(edsl_deferred, [output_ptr + block_start, x, y], output_indices=[0])
 
 
 def add(x: torch.Tensor, y: torch.Tensor):
@@ -53,8 +54,8 @@ def add(x: torch.Tensor, y: torch.Tensor):
 
 
 if __name__ == "__main__":
-    x = torch.randn(32768*24, device=DEVICE)
-    y = torch.randn(32768*24, device=DEVICE)
+    x = torch.randn(32768 * 24, device=DEVICE)
+    y = torch.randn(32768 * 24, device=DEVICE)
     z = add(x, y)
     assert torch.allclose(x + y, z), (x + y, z)
     print("TOPS Vector Add: PASSED")

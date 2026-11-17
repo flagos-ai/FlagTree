@@ -2262,8 +2262,8 @@ private:
       }
       return;
     }
-    generator.applyReduce(rewriter, op.getLoc(), outputs, inputs, context,
-                          plan, remap);
+    generator.applyReduce(rewriter, op.getLoc(), outputs, inputs, context, plan,
+                          remap);
   }
 };
 } // namespace

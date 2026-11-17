@@ -22,12 +22,11 @@
 
 namespace mlir {
 namespace triton {
-namespace gcu {
-}  // namespace gcu
-}  // namespace triton
-}  // namespace mlir
+namespace gcu {} // namespace gcu
+} // namespace triton
+} // namespace mlir
 
 #define GET_TYPEDEF_CLASSES
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h.inc"
 
-#endif  // GCU_DIALECT_TRITON_GCU_IR_TYPES_H
+#endif // GCU_DIALECT_TRITON_GCU_IR_TYPES_H

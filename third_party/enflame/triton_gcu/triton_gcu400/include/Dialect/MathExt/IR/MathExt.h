@@ -25,11 +25,7 @@
 #include "Dialect/MathExt/IR/MathExtOps.h.inc"
 
 namespace mlir {
-namespace math_ext {
+namespace math_ext {} // namespace math_ext
+} // namespace mlir
 
-
-
-}  // namespace math_ext
-}  // namespace mlir
-
-#endif  // GCU_DIALECT_MATH_EXT_IR_DIALECT_H
+#endif // GCU_DIALECT_MATH_EXT_IR_DIALECT_H

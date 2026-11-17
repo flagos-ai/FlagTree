@@ -63,7 +63,6 @@ llvm::SmallVector<Value> getValues(OpBuilder &builder, Location loc,
   return values;
 }
 
-
 // Extract a scalar value from v.
 // If v is a scalar, return that directly. Otherwise, parse through operations
 // (currently only support splat, sitofp and select) that produce it and to
@@ -114,8 +113,8 @@ std::optional<Value> getScalarValue(OpBuilder &builder, Location loc, Value v) {
       if (!falseScalar.has_value() || !*falseScalar)
         return nullptr;
 
-      return builder.create<arith::SelectOp>(loc, cond, *trueScalar,
-                                             *falseScalar)
+      return builder
+          .create<arith::SelectOp>(loc, cond, *trueScalar, *falseScalar)
           .getResult();
     } else {
       InFlightDiagnostic diag = emitError(loc)
@@ -187,7 +186,7 @@ OpFoldResult addOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
     lhsValue = lhsOp.getResult();
   } else {
     assert(isa<IndexType>(lhsValue.getType()) ||
-      isa<IntegerType>(lhsValue.getType()));
+           isa<IntegerType>(lhsValue.getType()));
   }
 
   auto rhsValue = dyn_cast<Value>(rhs);
@@ -196,13 +195,14 @@ OpFoldResult addOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
         loc, builder.getIndexAttr(rhsIntAttr.value()));
     rhsValue = rhsOp.getResult();
   } else {
-    assert(isa<IndexType>(lhsValue.getType())  ||
-      isa<IntegerType>(lhsValue.getType()) );
+    assert(isa<IndexType>(lhsValue.getType()) ||
+           isa<IntegerType>(lhsValue.getType()));
   }
 
-  return builder.create<arith::AddIOp>(
-      loc, castOffsetToI64(builder, loc, lhsValue),
-      castOffsetToI64(builder, loc, rhsValue)).getResult();
+  return builder
+      .create<arith::AddIOp>(loc, castOffsetToI64(builder, loc, lhsValue),
+                             castOffsetToI64(builder, loc, rhsValue))
+      .getResult();
 }
 
 OpFoldResult subOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,

@@ -13,12 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Dialect/TritonGCU/IR/TritonGCUTypes.h"
+#include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 
-#include "mlir/IR/Builders.h"               // required by `Types.cpp.inc`
-#include "mlir/IR/DialectImplementation.h"  // required by `Types.cpp.inc`
-#include "llvm/ADT/TypeSwitch.h"            // required by `Types.cpp.inc`
+#include "mlir/IR/Builders.h"              // required by `Types.cpp.inc`
+#include "mlir/IR/DialectImplementation.h" // required by `Types.cpp.inc`
+#include "llvm/ADT/TypeSwitch.h"           // required by `Types.cpp.inc`
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -33,6 +33,6 @@ using namespace mlir::triton::gcu;
 void TritonGCUDialect::registerTypes() {
   addTypes<
 #define GET_TYPEDEF_LIST
-#include "Dialect/TritonGCU/IR/TritonGCUTypes.cpp.inc"  // NOLINT: This file generated situationally via different environment variables
+#include "Dialect/TritonGCU/IR/TritonGCUTypes.cpp.inc" // NOLINT: This file generated situationally via different environment variables
       >();
 }

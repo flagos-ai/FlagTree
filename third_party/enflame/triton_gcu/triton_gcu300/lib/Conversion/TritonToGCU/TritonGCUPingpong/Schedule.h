@@ -18,11 +18,10 @@
 #define TRITON_TRIRONTOGCU_PINGPONG_SCHEDULE_H_
 
 #include "PipelineExpander.h"
-#include <vector>
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
-
+#include <vector>
 
 namespace mlir {
 namespace triton {

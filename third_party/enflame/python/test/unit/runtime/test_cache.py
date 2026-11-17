@@ -17,6 +17,7 @@ if importlib.util.find_spec("triton.backends.enflame") is None:
 
 from triton._internal_testing import is_hip
 
+
 @triton.jit
 def function_0(i):
     return i + 1

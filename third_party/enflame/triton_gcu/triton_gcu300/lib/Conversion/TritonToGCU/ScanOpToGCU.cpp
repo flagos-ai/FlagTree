@@ -154,12 +154,10 @@ void vectorizeCombineOpTerminator(Location loc, OpBuilder &builder,
 
 struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
   bool enableI64;
-  TTScanOpLowering(
-      const TypeConverter &converter, MLIRContext *ctx,
-      triton::gcu::FirstLastUserAnalysis &userAnalysis,
-      std::map<Operation *, Operation *> &replaced2Origin,
-      triton::gcu::PrivateDTETagPool &pTagPool,
-      bool enable_i64)
+  TTScanOpLowering(const TypeConverter &converter, MLIRContext *ctx,
+                   triton::gcu::FirstLastUserAnalysis &userAnalysis,
+                   std::map<Operation *, Operation *> &replaced2Origin,
+                   triton::gcu::PrivateDTETagPool &pTagPool, bool enable_i64)
       : SharedConversionPattern(converter, ctx, userAnalysis, replaced2Origin,
                                 pTagPool),
         enableI64(enable_i64) {}
@@ -267,7 +265,7 @@ struct TTScanOpLowering : SharedConversionPattern<triton::ScanOp> {
     }
     if (is_i64)
       minBpe = 8;
-    //for vector step i32
+    // for vector step i32
     if (maxBpe < 4) {
       maxBpe = 4;
     }
@@ -1168,8 +1166,7 @@ void mlir::triton::populateScanOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateDTETagPool &pTagPool,
-    bool enable_i64) {
+    triton::gcu::PrivateDTETagPool &pTagPool, bool enable_i64) {
   patterns.add<TTScanOpLowering>(converter, patterns.getContext(), userAnalysis,
                                  replaced2Origin, pTagPool, enable_i64);
 }

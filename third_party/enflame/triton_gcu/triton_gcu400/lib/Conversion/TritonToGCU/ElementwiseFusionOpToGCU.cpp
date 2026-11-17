@@ -3016,7 +3016,8 @@ private:
     auto resultTy = VectorType::get(ArrayRef<int64_t>{vectorLength},
                                     getElementTypeOrSelf(op.getResult()));
     if (symbol.starts_with("__ef_")) {
-      std::string efSymbol = mlir::triton::gcu::toVectorizedExternSymbol(symbol);
+      std::string efSymbol =
+          mlir::triton::gcu::toVectorizedExternSymbol(symbol);
       result = builder.create<gcu::ExternElementwiseOp>(loc, resultTy, operands,
                                                         efSymbol);
     } else if (mlir::triton::gcu::isMixedPrecisionSymbol(symbol)) {

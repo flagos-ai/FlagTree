@@ -49,7 +49,6 @@ llvm::SmallVector<Value> getValues(OpBuilder &builder, Location loc,
   return values;
 }
 
-
 // Extract a scalar value from v.
 // If v is a scalar, return that directly. Otherwise, parse through operations
 // (currently only support splat, sitofp and select) that produce it and to
@@ -100,8 +99,8 @@ std::optional<Value> getScalarValue(OpBuilder &builder, Location loc, Value v) {
       if (!falseScalar.has_value() || !*falseScalar)
         return nullptr;
 
-      return builder.create<arith::SelectOp>(loc, cond, *trueScalar,
-                                             *falseScalar)
+      return builder
+          .create<arith::SelectOp>(loc, cond, *trueScalar, *falseScalar)
           .getResult();
     } else {
       InFlightDiagnostic diag = emitError(loc)

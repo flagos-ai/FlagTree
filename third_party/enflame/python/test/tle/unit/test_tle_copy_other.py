@@ -239,8 +239,7 @@ def _depends_on_thread0_eq(cond, defs):
             rhs_is_zero = "value = 0 : index" in defs.get(rhs, "")
             if lhs_is_tid and rhs_is_zero:
                 return True
-        match = re.search(r'"arith\.andi"\((%[\w.]+), (%[\w.]+)\)',
-                          definition)
+        match = re.search(r'"arith\.andi"\((%[\w.]+), (%[\w.]+)\)', definition)
         if match:
             pending.extend(match.groups())
     return False
@@ -258,41 +257,31 @@ def _assert_issued_by_thread0(body, dte_line, defs):
     index = next(i for i, line in enumerate(lines) if line == dte_line)
     conds = _enclosing_if_conds(lines, index)
     assert conds, f"the DTE op is not inside an scf.if: {dte_line}"
-    assert any(_depends_on_thread0_eq(cond, defs) for cond in conds), (
-        f"the DTE op is not guarded by thread_id == 0: {dte_line}")
+    assert any(_depends_on_thread0_eq(cond, defs)
+               for cond in conds), (f"the DTE op is not guarded by thread_id == 0: {dte_line}")
 
 
 def _check_tail(out, capacity, row_len, expected):
-    torch.testing.assert_close(
-        out[:row_len],
-        torch.arange(row_len, device="cuda", dtype=out.dtype).to(torch.float32),
-        atol=0,
-        rtol=0)
+    torch.testing.assert_close(out[:row_len],
+                               torch.arange(row_len, device="cuda", dtype=out.dtype).to(torch.float32), atol=0, rtol=0)
     tail = out[row_len:capacity]
     if isinstance(expected, float) and expected != expected:  # NaN
         assert torch.isnan(tail).all(), "the padded tail must be NaN"
     else:
-        torch.testing.assert_close(
-            tail, torch.full_like(tail, expected), atol=0, rtol=0)
+        torch.testing.assert_close(tail, torch.full_like(tail, expected), atol=0, rtol=0)
 
 
 def _check_head_mask(out, capacity, head, expected):
     """`mask = on >= capacity - head`: the head lanes are the fill value."""
     start = capacity - head
-    torch.testing.assert_close(
-        out[start:capacity],
-        torch.arange(start,
-                     capacity,
-                     device="cuda",
-                     dtype=out.dtype).to(torch.float32),
-        atol=0,
-        rtol=0)
+    torch.testing.assert_close(out[start:capacity],
+                               torch.arange(start, capacity, device="cuda", dtype=out.dtype).to(torch.float32), atol=0,
+                               rtol=0)
     head_part = out[:start]
     if isinstance(expected, float) and expected != expected:  # NaN
         assert torch.isnan(head_part).all(), "the head must be NaN"
     else:
-        torch.testing.assert_close(
-            head_part, torch.full_like(head_part, expected), atol=0, rtol=0)
+        torch.testing.assert_close(head_part, torch.full_like(head_part, expected), atol=0, rtol=0)
 
 
 # ---------------------------------------------------------------------------
@@ -301,15 +290,12 @@ def _check_head_mask(out, capacity, head, expected):
 
 
 @triton.jit
-def _other_kernel(x_ptr, out_ptr, row_len, L: tl.constexpr, OTHER: tl.constexpr,
-                  USE_OTHER: tl.constexpr):
+def _other_kernel(x_ptr, out_ptr, row_len, L: tl.constexpr, OTHER: tl.constexpr, USE_OTHER: tl.constexpr):
     """`row_len` is a runtime value smaller than the buffer capacity `L`."""
-    buf = tle.gpu.alloc((2, L), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((2, L), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     on = tl.arange(0, L)
     if USE_OTHER:
-        tle.gpu.copy(x_ptr + on, buf.slot(1), [L], mask=on < row_len,
-                     other=OTHER)
+        tle.gpu.copy(x_ptr + on, buf.slot(1), [L], mask=on < row_len, other=OTHER)
     else:
         # Backward compatibility: no fill value means zero fill.
         tle.gpu.copy(x_ptr + on, buf.slot(1), [L], mask=on < row_len)
@@ -317,14 +303,11 @@ def _other_kernel(x_ptr, out_ptr, row_len, L: tl.constexpr, OTHER: tl.constexpr,
 
 
 @triton.jit
-def _other_kernel_f16(x_ptr, out_ptr, row_len, L: tl.constexpr,
-                      OTHER: tl.constexpr):
+def _other_kernel_f16(x_ptr, out_ptr, row_len, L: tl.constexpr, OTHER: tl.constexpr):
     """`other` is cast to the destination element type (f16 here)."""
-    buf = tle.gpu.alloc((2, L), dtype=tl.float16, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((2, L), dtype=tl.float16, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     on = tl.arange(0, L)
-    tle.gpu.copy(x_ptr + on, buf.slot(1), [L], mask=on < row_len,
-                 other=OTHER)
+    tle.gpu.copy(x_ptr + on, buf.slot(1), [L], mask=on < row_len, other=OTHER)
     vals = tl.load(tle.gpu.local_ptr(buf.slot(1), (on, )))
     tl.store(out_ptr + on, vals.to(tl.float32))
 
@@ -332,8 +315,7 @@ def _other_kernel_f16(x_ptr, out_ptr, row_len, L: tl.constexpr,
 @triton.jit
 def _bad_other_direction_kernel(x_ptr, out_ptr, L: tl.constexpr):
     """SMEM -> GMEM copy with a fill value: no meaning, must be rejected."""
-    buf = tle.gpu.alloc((L, ), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((L, ), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     on = tl.arange(0, L)
     tl.store(tle.gpu.local_ptr(buf, (on, )), on.to(tl.float32))
     tle.gpu.copy(buf, out_ptr + on, [L], other=-1.0)
@@ -342,28 +324,23 @@ def _bad_other_direction_kernel(x_ptr, out_ptr, L: tl.constexpr):
 @triton.jit
 def _bad_other_no_mask_kernel(x_ptr, out_ptr, L: tl.constexpr):
     """A fill value without a mask: the fill has no lane to apply to."""
-    buf = tle.gpu.alloc((2, L), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((2, L), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     on = tl.arange(0, L)
     tle.gpu.copy(x_ptr + on, buf.slot(1), [L], other=NEG_INF)
     tl.store(out_ptr + on, tl.load(tle.gpu.local_ptr(buf.slot(1), (on, ))))
 
 
 @triton.jit
-def _other_head_mask_kernel(x_ptr, out_ptr, L: tl.constexpr,
-                            HEAD: tl.constexpr, OTHER: tl.constexpr):
+def _other_head_mask_kernel(x_ptr, out_ptr, L: tl.constexpr, HEAD: tl.constexpr, OTHER: tl.constexpr):
     """Only lanes [L-HEAD, L) are read: a mask whose start is non-zero."""
-    buf = tle.gpu.alloc((2, L), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((2, L), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     on = tl.arange(0, L)
     tle.gpu.copy(x_ptr + on, buf.slot(1), [L], mask=on >= L - HEAD, other=OTHER)
     tl.store(out_ptr + on, tl.load(tle.gpu.local_ptr(buf.slot(1), (on, ))))
 
 
 @triton.jit
-def _other_head_mask_dyn_stride_kernel(x_ptr, out_ptr, row_stride,
-                                       L: tl.constexpr, S: tl.constexpr,
-                                       KEEP: tl.constexpr,
+def _other_head_mask_dyn_stride_kernel(x_ptr, out_ptr, row_stride, L: tl.constexpr, S: tl.constexpr, KEEP: tl.constexpr,
                                        OTHER: tl.constexpr):
     """Head mask on a source tile whose row stride is a runtime value.
 
@@ -371,25 +348,21 @@ def _other_head_mask_dyn_stride_kernel(x_ptr, out_ptr, row_stride,
     block at the mask start, so this copy must stay off the DTE: otherwise the
     valid block would land at tile offset 0, i.e. in the masked-out lanes.
     """
-    buf = tle.gpu.alloc((S, L), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((S, L), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     sm = tl.arange(0, S)[:, None]
     on = tl.arange(0, L)[None, :]
-    tle.gpu.copy(x_ptr + sm * row_stride + on, buf, [S, L],
-                 mask=on >= L - KEEP, other=OTHER)
+    tle.gpu.copy(x_ptr + sm * row_stride + on, buf, [S, L], mask=on >= L - KEEP, other=OTHER)
     tl.store(out_ptr + sm * L + on, tl.load(tle.gpu.local_ptr(buf)))
 
 
 @triton.jit
-def _other_lane_kernel(x_ptr, other_ptr, out_ptr, L: tl.constexpr,
-                       KEEP: tl.constexpr, MASK_HEAD: tl.constexpr):
+def _other_lane_kernel(x_ptr, other_ptr, out_ptr, L: tl.constexpr, KEEP: tl.constexpr, MASK_HEAD: tl.constexpr):
     """`other` is a per-lane tensor, so it cannot become a DTE pad register.
 
     `KEEP` is the number of lanes the mask keeps, at the head of the tile when
     `MASK_HEAD` is set and at the tail otherwise.
     """
-    buf = tle.gpu.alloc((2, L), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((2, L), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     on = tl.arange(0, L)
     other = tl.load(other_ptr + on)
     if MASK_HEAD:
@@ -401,16 +374,14 @@ def _other_lane_kernel(x_ptr, other_ptr, out_ptr, L: tl.constexpr,
 
 
 @triton.jit
-def _other_lane_rank3_kernel(x_ptr, other_ptr, out_ptr, D0: tl.constexpr,
-                             D1: tl.constexpr, D2: tl.constexpr):
+def _other_lane_rank3_kernel(x_ptr, other_ptr, out_ptr, D0: tl.constexpr, D1: tl.constexpr, D2: tl.constexpr):
     """A rank-3 copy cannot be fused, so a per-lane `other` cannot be lowered.
 
     The DTE carries one pad register per copy and the elementwise fallback only
     covers rank-1/2 pointer tensors, so there is no path that applies a per-lane
     fill value here. The backend must report a diagnostic for it.
     """
-    buf = tle.gpu.alloc((D0, D1, D2), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((D0, D1, D2), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     a = tl.arange(0, D0)[:, None, None]
     b = tl.arange(0, D1)[None, :, None]
     c = tl.arange(0, D2)[None, None, :]
@@ -422,19 +393,15 @@ def _other_lane_rank3_kernel(x_ptr, other_ptr, out_ptr, D0: tl.constexpr,
 
 
 @triton.jit
-def _other_view_subslice_kernel(x_ptr, fill_ptr, out_ptr, L: tl.constexpr,
-                                M: tl.constexpr, START: tl.constexpr,
-                                S: tl.constexpr, KEEP: tl.constexpr,
-                                MASK_HEAD: tl.constexpr,
-                                OTHER: tl.constexpr):
+def _other_view_subslice_kernel(x_ptr, fill_ptr, out_ptr, L: tl.constexpr, M: tl.constexpr, START: tl.constexpr,
+                                S: tl.constexpr, KEEP: tl.constexpr, MASK_HEAD: tl.constexpr, OTHER: tl.constexpr):
     """Copy into a 2-D `.subslice(START, S, dim=0)` view of a larger buffer.
 
     The view offset is a compile-time `memref.subview` offset, the mask start a
     destination tile offset of the deslice; the copy must apply both and leave
     the rows outside the view at their prefill.
     """
-    buf = tle.gpu.alloc((M, L), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((M, L), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     om = tl.arange(0, M)[:, None]
     on = tl.arange(0, L)[None, :]
     tle.gpu.copy(fill_ptr + om * L + on, buf, [M, L])
@@ -449,27 +416,21 @@ def _other_view_subslice_kernel(x_ptr, fill_ptr, out_ptr, L: tl.constexpr,
 
 
 @triton.jit
-def _other_view_reshape_kernel(x_ptr, out_ptr, L: tl.constexpr,
-                               KEEP: tl.constexpr, OTHER: tl.constexpr):
+def _other_view_reshape_kernel(x_ptr, out_ptr, L: tl.constexpr, KEEP: tl.constexpr, OTHER: tl.constexpr):
     """Copy into `.reshape((2 * L, ))`: the DTE destination is a memref.view."""
-    buf = tle.gpu.alloc((2, L), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((2, L), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     view = buf.reshape((2 * L, ))
     on = tl.arange(0, 2 * L)
-    tle.gpu.copy(x_ptr + on, view, [2 * L], mask=on >= 2 * L - KEEP,
-                 other=OTHER)
+    tle.gpu.copy(x_ptr + on, view, [2 * L], mask=on >= 2 * L - KEEP, other=OTHER)
     tl.store(out_ptr + on, tl.load(tle.gpu.local_ptr(buf.reshape((2 * L, )))))
 
 
 @triton.jit
-def _other_view_slot_kernel(x_ptr, out_ptr, L: tl.constexpr, KEEP: tl.constexpr,
-                            stage, OTHER: tl.constexpr):
+def _other_view_slot_kernel(x_ptr, out_ptr, L: tl.constexpr, KEEP: tl.constexpr, stage, OTHER: tl.constexpr):
     """Copy into `buf.slot(stage)`: the view base is a runtime byte offset."""
-    buf = tle.gpu.alloc((2, L), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((2, L), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     on = tl.arange(0, L)
-    tle.gpu.copy(x_ptr + on, buf.slot(stage), [L], mask=on >= L - KEEP,
-                 other=OTHER)
+    tle.gpu.copy(x_ptr + on, buf.slot(stage), [L], mask=on >= L - KEEP, other=OTHER)
     tl.store(out_ptr + on, tl.load(tle.gpu.local_ptr(buf.slot(stage), (on, ))))
 
 
@@ -481,8 +442,7 @@ def _other_view_slot_kernel(x_ptr, out_ptr, L: tl.constexpr, KEEP: tl.constexpr,
 def _run_other(capacity, row_len, value, use_other=True, num_warps=4):
     x = torch.arange(capacity, device="cuda", dtype=torch.float32)
     out = torch.empty(capacity, device="cuda", dtype=torch.float32)
-    compiled = _other_kernel[(1,)](x, out, row_len, L=capacity, OTHER=value,
-                                   USE_OTHER=use_other, num_warps=num_warps)
+    compiled = _other_kernel[(1, )](x, out, row_len, L=capacity, OTHER=value, USE_OTHER=use_other, num_warps=num_warps)
     return out, compiled
 
 
@@ -499,8 +459,8 @@ def _copy_wait_placement(ir):
     body = ir[enter:leave]
     between = ir[leave:first_use]
     defs = _ssa_defs(ir[ir.rindex("func.func", 0, enter):first_use])
-    return (_lines_with(body, "dma_wait", dialect="memref"),
-            _lines_with(between, "dma_wait", dialect="memref"), between, defs)
+    return (_lines_with(body, "dma_wait", dialect="memref"), _lines_with(between, "dma_wait",
+                                                                         dialect="memref"), between, defs)
 
 
 class TestCopyOther:
@@ -534,13 +494,12 @@ class TestCopyOther:
         capacity, row_len = 4096, 3000
         x = torch.arange(capacity, device="cuda", dtype=torch.float16)
         out = torch.empty(capacity, device="cuda", dtype=torch.float32)
-        _other_kernel_f16[(1,)](x, out, row_len, L=capacity, OTHER=NAN)
+        _other_kernel_f16[(1, )](x, out, row_len, L=capacity, OTHER=NAN)
         tail = out[row_len:capacity]
         assert torch.isnan(tail).all(), "the padded f16 tail must be NaN"
         # f16 cannot represent every integer above 2048, so compare against the
         # values that were actually copied, not against an f32 arange.
-        torch.testing.assert_close(out[:row_len], x[:row_len].to(torch.float32),
-                                   atol=0, rtol=0)
+        torch.testing.assert_close(out[:row_len], x[:row_len].to(torch.float32), atol=0, rtol=0)
 
     def test_other_rejected_for_local_to_global(self):
         """`other` describes a GMEM -> SMEM transfer only."""
@@ -549,9 +508,8 @@ class TestCopyOther:
         out = torch.empty(capacity, device="cuda", dtype=torch.float32)
         # The frontend ValueError is wrapped by the JIT compiler; the message
         # stays intact, which is what users see.
-        with pytest.raises(CompilationError,
-                           match="only supported for standard pointer-tensor"):
-            _bad_other_direction_kernel[(1,)](x, out, L=capacity)
+        with pytest.raises(CompilationError, match="only supported for standard pointer-tensor"):
+            _bad_other_direction_kernel[(1, )](x, out, L=capacity)
 
     def test_other_requires_mask(self):
         """`other` without a mask is a usage error, not a silent no-op."""
@@ -559,7 +517,7 @@ class TestCopyOther:
         x = torch.arange(capacity, device="cuda", dtype=torch.float32)
         out = torch.empty(capacity, device="cuda", dtype=torch.float32)
         with pytest.raises(CompilationError, match="copy other requires a mask"):
-            _bad_other_no_mask_kernel[(1,)](x, out, L=capacity)
+            _bad_other_no_mask_kernel[(1, )](x, out, L=capacity)
 
     def test_other_large_tail_uses_memset(self):
         """A tail beyond the DTE pad register width (2047) is memset."""
@@ -569,16 +527,14 @@ class TestCopyOther:
         ir = _get_ir(compiled)
         enter, leave = _copy_border_body(ir)
         body = ir[enter:leave]
-        neg_inf = re.search(
-            r'(%[\w.]+) = "arith\.constant"\(\) <\{value = 0xFF800000 : f32\}>',
-            ir)
+        neg_inf = re.search(r'(%[\w.]+) = "arith\.constant"\(\) <\{value = 0xFF800000 : f32\}>', ir)
         assert neg_inf, "the -inf fill value was folded away or never created"
         # The 3584-element tail takes memset + deslice; slice_pad_start is the
         # other branch of the same scf.if and is not executed for this shape.
         memset = _lines_with(body, "memset_start")
         assert len(memset) == 1, "a 3584-element tail must take the memset branch"
-        assert _pad_operand_of(memset[0]) == neg_inf.group(1), (
-            "memset_start must fill the tail with the -inf constant")
+        assert _pad_operand_of(
+            memset[0]) == neg_inf.group(1), ("memset_start must fill the tail with the -inf constant")
         assert len(_lines_with(body, "slice_deslice_start")) == 1
         # Both branches of the pad decision are present in the IR, but the
         # memset branch is the one this shape selects.
@@ -595,9 +551,8 @@ class TestCopyDteOnly:
 
         # No per-subthread private DTE: that is the
         # "maskedload + TAR + private chunk + deslice" degradation.
-        assert "memref_ext.deslice_start" not in ir, (
-            "the copy degraded into the elementwise fallback "
-            "(maskedload + TAR + private chunk + deslice)")
+        assert "memref_ext.deslice_start" not in ir, ("the copy degraded into the elementwise fallback "
+                                                      "(maskedload + TAR + private chunk + deslice)")
 
         enter, leave = _copy_border_body(ir)
         body = ir[enter:leave]
@@ -614,16 +569,12 @@ class TestCopyDteOnly:
         for wait_op in wait_ops:
             _assert_issued_by_thread0(body, wait_op, defs)
         # No per-subthread TAR traffic for the copy itself.
-        assert "gcu.tar_store" not in body, (
-            "the SMEM tile is written per subthread instead of by the DTE")
+        assert "gcu.tar_store" not in body, ("the SMEM tile is written per subthread instead of by the DTE")
 
         # The fill value reaches the DTE as the -inf constant, not as a zero.
-        neg_inf = re.search(
-            r'(%[\w.]+) = "arith\.constant"\(\) <\{value = 0xFF800000 : f32\}>',
-            ir)
+        neg_inf = re.search(r'(%[\w.]+) = "arith\.constant"\(\) <\{value = 0xFF800000 : f32\}>', ir)
         assert neg_inf, "the -inf fill value was folded away or never created"
-        assert _pad_operand_of(pad_ops[0]) == neg_inf.group(1), (
-            "the DTE pad operand must be the -inf constant")
+        assert _pad_operand_of(pad_ops[0]) == neg_inf.group(1), ("the DTE pad operand must be the -inf constant")
 
 
 class TestCopyHeadMask:
@@ -641,17 +592,14 @@ class TestCopyHeadMask:
     def test_head_mask_uses_dte_destination_offset(self, capacity, head):
         x = torch.arange(capacity, device="cuda", dtype=torch.float32)
         out = torch.empty(capacity, device="cuda", dtype=torch.float32)
-        compiled = _other_head_mask_kernel[(1,)](x, out, L=capacity, HEAD=head,
-                                                 OTHER=NEG_INF)
+        compiled = _other_head_mask_kernel[(1, )](x, out, L=capacity, HEAD=head, OTHER=NEG_INF)
         _check_head_mask(out, capacity, head, float("-inf"))
 
         ir = _get_ir(compiled)
-        assert '"triton_gcu.copy_global_to_local"' in ir, (
-            "a non-zero mask start must stay on the DTE path")
+        assert '"triton_gcu.copy_global_to_local"' in ir, ("a non-zero mask start must stay on the DTE path")
         # No per-subthread private DTE: that is the elementwise fallback.
-        assert "memref_ext.deslice_start" not in ir, (
-            "the copy degraded into the elementwise fallback "
-            "(maskedload + TAR + private chunk + deslice)")
+        assert "memref_ext.deslice_start" not in ir, ("the copy degraded into the elementwise fallback "
+                                                      "(maskedload + TAR + private chunk + deslice)")
 
         enter, leave = _copy_border_body(ir)
         body = ir[enter:leave]
@@ -663,26 +611,23 @@ class TestCopyHeadMask:
         deslice = _lines_with(body, "slice_deslice_start")
         assert len(memset) == 1, "the whole tile must be filled by one memset"
         assert len(deslice) == 1, "the valid block must take one deslice"
-        assert not _lines_with(body, "slice_pad_start"), (
-            "slice_pad_start writes at tile offset 0 and would put the data "
-            "in the masked-out lanes")
+        assert not _lines_with(body,
+                               "slice_pad_start"), ("slice_pad_start writes at tile offset 0 and would put the data "
+                                                    "in the masked-out lanes")
 
         # The fill value is `other`, not the zero a broken scalar extraction
         # produces.
-        neg_inf = re.search(
-            r'(%[\w.]+) = "arith\.constant"\(\) <\{value = 0xFF800000 : f32\}>',
-            ir)
+        neg_inf = re.search(r'(%[\w.]+) = "arith\.constant"\(\) <\{value = 0xFF800000 : f32\}>', ir)
         assert neg_inf, "the -inf fill value was folded away or never created"
-        assert _pad_operand_of(memset[0]) == neg_inf.group(1), (
-            "the tile memset must use the `other` fill value")
+        assert _pad_operand_of(memset[0]) == neg_inf.group(1), ("the tile memset must use the `other` fill value")
 
         # source offset 0, the width of the valid block, the destination start.
-        assert _deslice_dims(ir, deslice[0]) == (0, head, capacity - head), (
-            "the mask start must be a destination offset, not a source offset")
+        assert _deslice_dims(ir,
+                             deslice[0]) == (0, head, capacity -
+                                             head), ("the mask start must be a destination offset, not a source offset")
 
         for op_line in memset + deslice:
             _assert_issued_by_thread0(body, op_line, defs)
-
 
     def test_dynamic_stride_head_mask_stays_elementwise(self):
         """A runtime source stride keeps the head-mask copy off the DTE.
@@ -696,8 +641,7 @@ class TestCopyHeadMask:
         L, S, keep = 2048, 8, 16
         x = torch.arange(S * L, device="cuda", dtype=torch.float32)
         out = torch.empty(S * L, device="cuda", dtype=torch.float32)
-        compiled = _other_head_mask_dyn_stride_kernel[(1,)](
-            x, out, L, L=L, S=S, KEEP=keep, OTHER=NEG_INF)
+        compiled = _other_head_mask_dyn_stride_kernel[(1, )](x, out, L, L=L, S=S, KEEP=keep, OTHER=NEG_INF)
 
         expect = x.view(S, L).clone()
         expect[:, :L - keep] = float("-inf")
@@ -729,9 +673,8 @@ class TestCopyViewDestination:
         x = torch.arange(s * L, device="cuda", dtype=torch.float32)
         fill = torch.full((M, L), -7.0, device="cuda", dtype=torch.float32)
         out = torch.empty(M, L, device="cuda", dtype=torch.float32)
-        compiled = _other_view_subslice_kernel[(1,)](
-            x, fill, out, L=L, M=M, START=start, S=s, KEEP=keep, MASK_HEAD=True,
-            OTHER=NEG_INF)
+        compiled = _other_view_subslice_kernel[(1, )](x, fill, out, L=L, M=M, START=start, S=s, KEEP=keep,
+                                                      MASK_HEAD=True, OTHER=NEG_INF)
 
         expect = fill.clone()
         block = x.view(s, L).clone()
@@ -748,28 +691,24 @@ class TestCopyViewDestination:
         deslice = _lines_with(body, "slice_deslice_start")
         assert len(memset) == 1, "the whole view must be filled by one memset"
         assert len(deslice) == 1, "the valid block must take one deslice"
-        assert not _lines_with(body, "slice_pad_start"), (
-            "slice_pad_start writes at the view origin and would put the data "
-            "in the masked-out lanes")
-        assert not _lines_with(body, "deslice_start"), (
-            "the copy degraded into the elementwise fallback "
-            "(maskedload + TAR + private chunk + deslice)")
+        assert not _lines_with(body,
+                               "slice_pad_start"), ("slice_pad_start writes at the view origin and would put the data "
+                                                    "in the masked-out lanes")
+        assert not _lines_with(body, "deslice_start"), ("the copy degraded into the elementwise fallback "
+                                                        "(maskedload + TAR + private chunk + deslice)")
 
         # The DTE destination is the view, not the parent buffer.
         dst = _mref_ops(deslice[0])[1][0]
         dst_def = _def_of(ir, dst)
-        assert "memref.subview" in dst_def, (
-            f"the DTE destination must be the subview: {dst_def}")
-        assert f"offset: {start * L}" in dst_def, (
-            f"the subview must carry the view offset {start * L}: {dst_def}")
-        assert _mref_ops(memset[0])[1][0] == dst, (
-            "the memset and the deslice must target the same view")
+        assert "memref.subview" in dst_def, (f"the DTE destination must be the subview: {dst_def}")
+        assert f"offset: {start * L}" in dst_def, (f"the subview must carry the view offset {start * L}: {dst_def}")
+        assert _mref_ops(memset[0])[1][0] == dst, ("the memset and the deslice must target the same view")
 
         # Per dimension: source offsets, then the valid block, then the mask
         # start as a destination offset inside the view.
-        assert _deslice_operand_values(ir, deslice[0]) == (0, 0, s, keep, 0,
-                                                           L - keep), (
-            "the mask start must be a destination offset inside the view")
+        assert _deslice_operand_values(
+            ir,
+            deslice[0]) == (0, 0, s, keep, 0, L - keep), ("the mask start must be a destination offset inside the view")
 
         for op_line in memset + deslice:
             _assert_issued_by_thread0(body, op_line, defs)
@@ -780,9 +719,8 @@ class TestCopyViewDestination:
         x = torch.arange(s * L, device="cuda", dtype=torch.float32)
         fill = torch.full((M, L), -7.0, device="cuda", dtype=torch.float32)
         out = torch.empty(M, L, device="cuda", dtype=torch.float32)
-        compiled = _other_view_subslice_kernel[(1,)](
-            x, fill, out, L=L, M=M, START=start, S=s, KEEP=keep,
-            MASK_HEAD=False, OTHER=NEG_INF)
+        compiled = _other_view_subslice_kernel[(1, )](x, fill, out, L=L, M=M, START=start, S=s, KEEP=keep,
+                                                      MASK_HEAD=False, OTHER=NEG_INF)
 
         expect = fill.clone()
         block = x.view(s, L).clone()
@@ -798,14 +736,10 @@ class TestCopyViewDestination:
         assert not _lines_with(body, "memset_start")
         assert not _lines_with(body, "deslice_start")
         dst = _mref_ops(pad[0])[1][0]
-        assert "memref.subview" in _def_of(ir, dst), (
-            "the padded DTE must write into the view")
-        neg_inf = re.search(
-            r'(%[\w.]+) = "arith\.constant"\(\) <\{value = 0xFF800000 : f32\}>',
-            ir)
+        assert "memref.subview" in _def_of(ir, dst), ("the padded DTE must write into the view")
+        neg_inf = re.search(r'(%[\w.]+) = "arith\.constant"\(\) <\{value = 0xFF800000 : f32\}>', ir)
         assert neg_inf, "the -inf fill value was folded away or never created"
-        assert _pad_operand_of(pad[0]) == neg_inf.group(1), (
-            "the DTE pad operand must be the -inf constant")
+        assert _pad_operand_of(pad[0]) == neg_inf.group(1), ("the DTE pad operand must be the -inf constant")
 
     @pytest.mark.parametrize("stage", [0, 1])
     def test_runtime_slot_head_mask(self, stage):
@@ -813,8 +747,7 @@ class TestCopyViewDestination:
         L, keep = 1024, 8
         x = torch.arange(L, device="cuda", dtype=torch.float32)
         out = torch.empty(L, device="cuda", dtype=torch.float32)
-        compiled = _other_view_slot_kernel[(1,)](x, out, L=L, KEEP=keep,
-                                                 stage=stage, OTHER=NEG_INF)
+        compiled = _other_view_slot_kernel[(1, )](x, out, L=L, KEEP=keep, stage=stage, OTHER=NEG_INF)
         _check_head_mask(out, L, keep, float("-inf"))
 
         ir = _get_ir(compiled)
@@ -826,18 +759,16 @@ class TestCopyViewDestination:
         assert len(deslice) == 1
         assert not _lines_with(body, "deslice_start")
         dst = _mref_ops(deslice[0])[1][0]
-        assert "memref.view" in _def_of(ir, dst), (
-            "the DTE destination must be the runtime slot view")
-        assert _deslice_operand_values(ir, deslice[0]) == (0, keep, L - keep), (
-            "the mask start must be a destination offset inside the view")
+        assert "memref.view" in _def_of(ir, dst), ("the DTE destination must be the runtime slot view")
+        assert _deslice_operand_values(
+            ir, deslice[0]) == (0, keep, L - keep), ("the mask start must be a destination offset inside the view")
 
     def test_reshape_head_mask(self):
         """`.reshape` is a reinterpret_cast destination; the mask start applies."""
         L, keep = 512, 8
         x = torch.arange(2 * L, device="cuda", dtype=torch.float32)
         out = torch.empty(2 * L, device="cuda", dtype=torch.float32)
-        compiled = _other_view_reshape_kernel[(1,)](x, out, L=L, KEEP=keep,
-                                                    OTHER=NEG_INF)
+        compiled = _other_view_reshape_kernel[(1, )](x, out, L=L, KEEP=keep, OTHER=NEG_INF)
 
         expect = x.clone()
         expect[:2 * L - keep] = float("-inf")
@@ -852,10 +783,8 @@ class TestCopyViewDestination:
         assert len(deslice) == 1
         assert not _lines_with(body, "deslice_start")
         dst = _mref_ops(deslice[0])[1][0]
-        assert "memref.reinterpret_cast" in _def_of(ir, dst), (
-            "the DTE destination must be the reshape view")
-        assert _deslice_operand_values(ir, deslice[0]) == (0, keep,
-                                                           2 * L - keep)
+        assert "memref.reinterpret_cast" in _def_of(ir, dst), ("the DTE destination must be the reshape view")
+        assert _deslice_operand_values(ir, deslice[0]) == (0, keep, 2 * L - keep)
 
 
 class TestCopyNonUniformOther:
@@ -872,9 +801,8 @@ class TestCopyNonUniformOther:
         capacity, keep = 4096, 1000
         x = torch.arange(capacity, device="cuda", dtype=torch.float32)
         other = -1 - torch.arange(capacity, device="cuda", dtype=torch.float32)
-        out = torch.full((capacity,), 7.0, device="cuda", dtype=torch.float32)
-        compiled = _other_lane_kernel[(1,)](x, other, out, L=capacity, KEEP=keep,
-                                            MASK_HEAD=mask_head)
+        out = torch.full((capacity, ), 7.0, device="cuda", dtype=torch.float32)
+        compiled = _other_lane_kernel[(1, )](x, other, out, L=capacity, KEEP=keep, MASK_HEAD=mask_head)
         if mask_head:
             expected = torch.cat([other[:capacity - keep], x[capacity - keep:]])
         else:
@@ -882,11 +810,9 @@ class TestCopyNonUniformOther:
         torch.testing.assert_close(out, expected, atol=0, rtol=0)
 
         ir = _get_ir(compiled)
-        assert '"triton_gcu.copy_global_to_local"' not in ir, (
-            "a per-lane `other` cannot become a DTE pad register")
+        assert '"triton_gcu.copy_global_to_local"' not in ir, ("a per-lane `other` cannot become a DTE pad register")
         for op in ("slice_pad_start", "memset_start", "slice_deslice_start"):
-            assert not _lines_with(ir, op), (
-                f"the elementwise fallback must not emit the DTE op {op}")
+            assert not _lines_with(ir, op), (f"the elementwise fallback must not emit the DTE op {op}")
 
     def test_per_lane_other_rank3_reports_error(self, capfd):
         """A per-lane `other` that no path can lower is a compile error.
@@ -902,7 +828,7 @@ class TestCopyNonUniformOther:
         other = torch.zeros(n, device="cuda", dtype=torch.float32)
         out = torch.empty(n, device="cuda", dtype=torch.float32)
         with pytest.raises(RuntimeError, match="Pipeline run failed"):
-            _other_lane_rank3_kernel[(1,)](x, other, out, D0=d0, D1=d1, D2=d2)
+            _other_lane_rank3_kernel[(1, )](x, other, out, D0=d0, D1=d1, D2=d2)
         err = capfd.readouterr().err
         assert "per-lane `other` fill value that cannot be lowered" in err, (
             "the unsupported `other` must be reported by the backend instead "
@@ -922,35 +848,28 @@ class TestCopyAsync:
     @pytest.mark.parametrize("num_warps", [1, 4])
     def test_wait_placement(self, num_warps):
         capacity, row_len = 4096, 3000
-        out, compiled = _run_other(capacity, row_len, NEG_INF,
-                                   num_warps=num_warps)
+        out, compiled = _run_other(capacity, row_len, NEG_INF, num_warps=num_warps)
         _check_tail(out, capacity, row_len, float("-inf"))
 
-        body_waits, use_waits, between, defs = _copy_wait_placement(
-            _get_ir(compiled))
+        body_waits, use_waits, between, defs = _copy_wait_placement(_get_ir(compiled))
         if num_warps == 1:
             # The memset waits for its own fill DTE; the copy is only awaited
             # at the first use of the destination.
-            assert len(body_waits) == 1, (
-                "the asynchronous copy must not wait inside its own region")
-            assert len(use_waits) == 1, (
-                "the copy must be awaited at the destination's first use")
+            assert len(body_waits) == 1, ("the asynchronous copy must not wait inside its own region")
+            assert len(use_waits) == 1, ("the copy must be awaited at the destination's first use")
             _assert_issued_by_thread0(between, use_waits[0], defs)
         else:
-            assert len(body_waits) == 2, (
-                "without a spare shared tag the copy waits synchronously "
-                "inside its own region")
-            assert not use_waits, (
-                "the synchronous fallback must not leave the wait to the "
-                "first use")
+            assert len(body_waits) == 2, ("without a spare shared tag the copy waits synchronously "
+                                          "inside its own region")
+            assert not use_waits, ("the synchronous fallback must not leave the wait to the "
+                                   "first use")
 
     def test_head_mask_async(self):
         """The memset + deslice head-mask path awaits at the first use too."""
         capacity, head = 4096, 8
         x = torch.arange(capacity, device="cuda", dtype=torch.float32)
         out = torch.empty(capacity, device="cuda", dtype=torch.float32)
-        compiled = _other_head_mask_kernel[(1,)](x, out, L=capacity, HEAD=head,
-                                                 OTHER=NEG_INF, num_warps=1)
+        compiled = _other_head_mask_kernel[(1, )](x, out, L=capacity, HEAD=head, OTHER=NEG_INF, num_warps=1)
         _check_head_mask(out, capacity, head, float("-inf"))
 
         body_waits, use_waits, _, _ = _copy_wait_placement(_get_ir(compiled))

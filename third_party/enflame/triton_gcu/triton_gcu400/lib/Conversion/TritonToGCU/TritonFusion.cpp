@@ -1456,8 +1456,8 @@ static Value materializePrefixSize(IRRewriter &rewriter, Location loc,
   // offset` means no lane matches; the select keeps that exact even when
   // `n - offset` would wrap.
   Value diff = rewriter.create<arith::SubIOp>(loc, n, offset);
-  Value before = rewriter.create<arith::CmpIOp>(
-      loc, arith::CmpIPredicate::slt, n, offset);
+  Value before =
+      rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, n, offset);
   Value clamped = rewriter.create<arith::MinSIOp>(loc, diff, limit);
   return rewriter.create<arith::SelectOp>(loc, before, zero, clamped);
 }
@@ -1765,8 +1765,7 @@ static LogicalResult fuseGeneralHistogramDigit(triton::HistogramOp hist,
 // ops are always removed; a dead local/global load is removed only when
 // `allowLoads` is set: its result is unused, so dropping the read cannot change
 // the result, but the greedy rewriter keeps it because loads are not pure.
-static void eraseDeadChain(IRRewriter &rewriter, Value value,
-                           bool allowLoads) {
+static void eraseDeadChain(IRRewriter &rewriter, Value value, bool allowLoads) {
   SmallVector<Operation *> worklist;
   llvm::DenseSet<Operation *> erased;
   if (Operation *def = value.getDefiningOp())

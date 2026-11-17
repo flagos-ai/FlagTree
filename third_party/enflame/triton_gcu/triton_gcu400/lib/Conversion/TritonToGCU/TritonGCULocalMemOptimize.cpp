@@ -32,11 +32,11 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 
+#include "Utils/TritonVersionCompat.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "Utils/TritonVersionCompat.h"
 
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -493,9 +493,8 @@ public:
 
     rewriter.setInsertionPointAfter(localAllocOp);
     auto transCopyOp = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
-        gcuLoad.getLoc(), gcuLoad.getPtr(), newShapes,
-        newStrides, newOffsets, localAllocOp.getResult(),
-        gcuLoad.getDefaultValue(), orderHint);
+        gcuLoad.getLoc(), gcuLoad.getPtr(), newShapes, newStrides, newOffsets,
+        localAllocOp.getResult(), gcuLoad.getDefaultValue(), orderHint);
     inheritCopyAttributes(gcuLoad, transCopyOp, BroadcastMapping::Transposed,
                           transOrder);
 
@@ -1214,8 +1213,8 @@ public:
     if (!isa<triton::gpu::DotOperandEncodingAttr>(targetTy.getEncoding()))
       return failure();
 
-    auto newLoad = rewriter.create<triton::gpu::LocalLoadOp>(
-        localLoad.getLoc(), targetTy, memdesc);
+    auto newLoad = rewriter.create<triton::gpu::LocalLoadOp>(localLoad.getLoc(),
+                                                             targetTy, memdesc);
     rewriter.replaceOp(convertOp, newLoad.getResult());
     rewriter.eraseOp(localLoad);
     return success();
@@ -2189,8 +2188,7 @@ private:
         }
         rewriter.create<triton::gcu::StoreOp>(
             loc, chunkLoaded.getResult(), adjStorePtr, tileShapeVals,
-            gcuStoreOp.getStrides(), zeroOffsets,
-            gcuStoreOp.getOrderHint());
+            gcuStoreOp.getStrides(), zeroOffsets, gcuStoreOp.getOrderHint());
       }
     }
 
@@ -2247,12 +2245,13 @@ private:
                              elemOffsets, dimStrides, ptrElemTy, tileEncoding);
 
       if (tileIdx == linearIdx) {
-        rewriter.create<triton::StoreOp>(
-            loc, storeTilePtrs, tile, /*mask=*/Value(),
+        rewriter.create<triton::StoreOp>(loc, storeTilePtrs, tile,
+                                         /*mask=*/Value(),
 #if TRITON_VERSION >= 38
-            cache, evict);
+                                         cache, evict);
 #else
-            /*boundaryCheck=*/ArrayRef<int32_t>{}, cache, evict);
+                                         /*boundaryCheck=*/ArrayRef<int32_t>{},
+                                         cache, evict);
 #endif
       } else {
         Value loadTilePtrs = buildTilePtrTensor(
@@ -2265,12 +2264,13 @@ private:
             /*boundaryCheck=*/ArrayRef<int32_t>{}, /*padding=*/nullptr,
 #endif
             cache, evict, ttLoad.getIsVolatile());
-        rewriter.create<triton::StoreOp>(
-            loc, storeTilePtrs, chunkLoaded, /*mask=*/Value(),
+        rewriter.create<triton::StoreOp>(loc, storeTilePtrs, chunkLoaded,
+                                         /*mask=*/Value(),
 #if TRITON_VERSION >= 38
-            cache, evict);
+                                         cache, evict);
 #else
-            /*boundaryCheck=*/ArrayRef<int32_t>{}, cache, evict);
+                                         /*boundaryCheck=*/ArrayRef<int32_t>{},
+                                         cache, evict);
 #endif
       }
     }
@@ -2491,24 +2491,19 @@ struct TritonGCULocalMemOptimizePass
 
     RewritePatternSet patterns(ctx);
     patterns
-        .add<FuseLoadLocalAllocPattern,
-             FuseBroadcastLocalAllocPattern,
-             FuseTransLoadLocalAllocPattern,
-             FuseTransLocalLoadCopyPattern,
+        .add<FuseLoadLocalAllocPattern, FuseBroadcastLocalAllocPattern,
+             FuseTransLoadLocalAllocPattern, FuseTransLocalLoadCopyPattern,
              FuseMemDescTransLoadLocalAllocPattern,
              FuseMemDescSubsliceLoadLocalAllocPattern,
              FuseMemDescReshapeLoadLocalAllocPattern,
              FuseMemDescIndexLoadLocalAllocPattern,
-             FuseLocalLoadConvertLayoutPattern,
-             FuseGcuLoadDotOperandPattern,
-             FuseLoadLocalStorePattern,
-             FuseGcuLoadSmemStorePattern,
+             FuseLocalLoadConvertLayoutPattern, FuseGcuLoadDotOperandPattern,
+             FuseLoadLocalStorePattern, FuseGcuLoadSmemStorePattern,
              ReplaceSmemLoadWithLocalLoadPattern,
              ReplaceGcuSmemLoadWithLocalLoadPattern,
              FuseGcuLoadGcuStoreToSmemPattern,
              FuseGcuLoadGcuStoreDynShapeToSmemPattern,
-             FuseTritonLoadLocalAllocToGatherPattern,
-             FuseExtractTileSmemRelay,
+             FuseTritonLoadLocalAllocToGatherPattern, FuseExtractTileSmemRelay,
              FuseInsertTileSmemRelay>(ctx);
     if (failed(applyPatternsGreedily(module, std::move(patterns))))
       signalPassFailure();

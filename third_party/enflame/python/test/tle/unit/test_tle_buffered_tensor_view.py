@@ -87,15 +87,12 @@ def _assert_dte_into_view(compiled, strict=True):
     # ConfigGcuLoad picks one of the slice_* variants depending on rank /
     # broadcast / mask, so accept any of them and only reject the
     # elementwise fallback below.
-    dte_markers = ("memref_ext.slice_start", "memref_ext.slice_pad_start",
-                   "memref_ext.slice_broadcast_start")
-    assert any(marker in ir for marker in dte_markers), (
-        "copy into a buffered_tensor view must go through the DTE "
-        "(no memref_ext.slice_* op found)")
+    dte_markers = ("memref_ext.slice_start", "memref_ext.slice_pad_start", "memref_ext.slice_broadcast_start")
+    assert any(marker in ir for marker in dte_markers), ("copy into a buffered_tensor view must go through the DTE "
+                                                         "(no memref_ext.slice_* op found)")
     if strict:
-        assert "memref_ext.deslice_start" not in ir, (
-            "copy into a buffered_tensor view degraded into the elementwise "
-            "fallback (maskedload + TAR + private chunk + deslice)")
+        assert "memref_ext.deslice_start" not in ir, ("copy into a buffered_tensor view degraded into the elementwise "
+                                                      "fallback (maskedload + TAR + private chunk + deslice)")
     # The DTE lowering tags the fused GMEM -> SMEM copy with a border carrying
     # the name of the op it came from, so the marker proves the fusion happened.
     assert 'enter = "triton_gcu.copy_global_to_local"' in ir, (
@@ -110,10 +107,10 @@ def _sentinel(*shape):
 # slot: alloc((2, N)) + buf.slot(stage) as DTE destination
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
 def _slot_copy_kernel(x_ptr, fill_ptr, out_ptr, stage, N: tl.constexpr):
-    buf = tle.gpu.alloc((2, N), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((2, N), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     offs = tl.arange(0, N)
     # Fill every stage with a sentinel through the DTE (a compute-filled store
     # would add its own TAR/deslice traffic and hide what we assert below).
@@ -127,14 +124,14 @@ def _slot_copy_kernel(x_ptr, fill_ptr, out_ptr, stage, N: tl.constexpr):
     slot = buf.slot(stage)
     tle.gpu.copy(x_ptr + offs, slot, [N])
 
-    tl.store(out_ptr + offs, tl.load(tle.gpu.local_ptr(buf.slot(0), (offs,))))
-    tl.store(out_ptr + N + offs, tl.load(tle.gpu.local_ptr(slot, (offs,))))
+    tl.store(out_ptr + offs, tl.load(tle.gpu.local_ptr(buf.slot(0), (offs, ))))
+    tl.store(out_ptr + N + offs, tl.load(tle.gpu.local_ptr(slot, (offs, ))))
 
 
 def _run_slot_copy(n):
     x = torch.arange(n, device="cuda", dtype=torch.float32)
     out = torch.empty(2 * n, device="cuda", dtype=torch.float32)
-    compiled = _slot_copy_kernel[(1,)](x, _sentinel(2, n), out, 1, N=n)
+    compiled = _slot_copy_kernel[(1, )](x, _sentinel(2, n), out, 1, N=n)
     expected = torch.empty_like(out)
     expected[:n] = SENTINEL.value
     expected[n:] = x
@@ -164,9 +161,7 @@ class TestBufferedTensorView:
     @staticmethod
     def _subslice_1d(x, total, start, length):
         out = torch.empty(total, device="cuda", dtype=torch.float32)
-        compiled = _subslice_1d_kernel[(1,)](x, _sentinel(total), out,
-                                            TOTAL=total, START=start,
-                                            LEN=length)
+        compiled = _subslice_1d_kernel[(1, )](x, _sentinel(total), out, TOTAL=total, START=start, LEN=length)
         expected = _sentinel(total)
         expected[start:start + length] = x
         torch.testing.assert_close(out, expected, atol=0, rtol=0)
@@ -201,11 +196,9 @@ class TestBufferedTensorView:
 
     def test_subslice_2d_dim0_copy(self):
         m, n, start, size = 4, 64, 2, 2
-        x = torch.arange(size * n, device="cuda", dtype=torch.float32).reshape(
-            size, n)
+        x = torch.arange(size * n, device="cuda", dtype=torch.float32).reshape(size, n)
         out = torch.empty(m, n, device="cuda", dtype=torch.float32)
-        compiled = _subslice_dim0_kernel[(1,)](x, _sentinel(m, n), out, M=m,
-                                              N=n, START=start, S=size)
+        compiled = _subslice_dim0_kernel[(1, )](x, _sentinel(m, n), out, M=m, N=n, START=start, S=size)
         expected = _sentinel(m, n)
         expected[start:start + size, :] = x
         torch.testing.assert_close(out, expected, atol=0, rtol=0)
@@ -234,7 +227,7 @@ class TestBufferedTensorView:
         # be allocated as (M, N); the copied tile is its first S columns.
         x = (row * n + col).to(torch.float32)
         out = torch.empty(m, n, device="cuda", dtype=torch.float32)
-        compiled = _subslice_dim1_kernel[(1,)](x, out, M=m, N=n, S=size)
+        compiled = _subslice_dim1_kernel[(1, )](x, out, M=m, N=n, S=size)
         expected = _sentinel(m, n)
         expected[:, :size] = x[:, :size]
         torch.testing.assert_close(out, expected, atol=0, rtol=0)
@@ -249,7 +242,7 @@ class TestBufferedTensorView:
         n = 1024
         x = torch.arange(n, device="cuda", dtype=torch.float32)
         out = torch.empty(n, device="cuda", dtype=torch.float32)
-        _buffer_load_store_kernel[(1,)](x, out, N=n)
+        _buffer_load_store_kernel[(1, )](x, out, N=n)
         torch.testing.assert_close(out, x, atol=0, rtol=0)
 
     # -- buffered_tensor.reshape -------------------------------------------
@@ -257,10 +250,9 @@ class TestBufferedTensorView:
     def test_buffer_reshape_roundtrip(self):
         m, n = 32, 64
         total = m * n
-        x = torch.arange(total, device="cuda",
-                         dtype=torch.float32).reshape(m, n)
+        x = torch.arange(total, device="cuda", dtype=torch.float32).reshape(m, n)
         out = torch.empty(m, n, device="cuda", dtype=torch.float32)
-        compiled = _reshape_kernel[(1,)](x, out, TOTAL=total, M=m, N=n)
+        compiled = _reshape_kernel[(1, )](x, out, TOTAL=total, M=m, N=n)
         torch.testing.assert_close(out, x, atol=0, rtol=0)
         # 2-D store/load on the reshaped view: see the note in
         # test_subslice_2d_dim0_copy for the non-strict assertion.
@@ -268,25 +260,21 @@ class TestBufferedTensorView:
 
 
 @triton.jit
-def _subslice_1d_kernel(x_ptr, fill_ptr, out_ptr, TOTAL: tl.constexpr,
-                        START: tl.constexpr, LEN: tl.constexpr):
-    buf = tle.gpu.alloc((TOTAL,), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+def _subslice_1d_kernel(x_ptr, fill_ptr, out_ptr, TOTAL: tl.constexpr, START: tl.constexpr, LEN: tl.constexpr):
+    buf = tle.gpu.alloc((TOTAL, ), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     all_idx = tl.arange(0, TOTAL)
     tle.gpu.copy(fill_ptr + all_idx, buf, [TOTAL])
 
     sub = buf.subslice(START, LEN)
     tle.gpu.copy(x_ptr + tl.arange(0, LEN), sub, [LEN])
 
-    tl.store(out_ptr + all_idx, tl.load(tle.gpu.local_ptr(buf, (all_idx,))))
+    tl.store(out_ptr + all_idx, tl.load(tle.gpu.local_ptr(buf, (all_idx, ))))
 
 
 @triton.jit
-def _subslice_dim0_kernel(x_ptr, fill_ptr, out_ptr, M: tl.constexpr,
-                          N: tl.constexpr, START: tl.constexpr,
+def _subslice_dim0_kernel(x_ptr, fill_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, START: tl.constexpr,
                           S: tl.constexpr):
-    buf = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     row = tl.arange(0, M)[:, None]
     col = tl.arange(0, N)[None, :]
     tle.gpu.copy(fill_ptr + row * N + col, buf, [M, N])
@@ -298,10 +286,8 @@ def _subslice_dim0_kernel(x_ptr, fill_ptr, out_ptr, M: tl.constexpr,
 
 
 @triton.jit
-def _subslice_dim1_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr,
-                          S: tl.constexpr):
-    buf = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+def _subslice_dim1_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr, S: tl.constexpr):
+    buf = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     row = tl.arange(0, M)[:, None]
     col = tl.arange(0, N)[None, :]
     # A constant fill keeps this kernel's ONLY `tle.gpu.copy` the non-contiguous
@@ -317,17 +303,14 @@ def _subslice_dim1_kernel(x_ptr, out_ptr, M: tl.constexpr, N: tl.constexpr,
 
 @triton.jit
 def _buffer_load_store_kernel(x_ptr, out_ptr, N: tl.constexpr):
-    buf = tle.gpu.alloc((N,), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    buf = tle.gpu.alloc((N, ), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     buf.store(tl.load(x_ptr + tl.arange(0, N)))
     tl.store(out_ptr + tl.arange(0, N), buf.load())
 
 
 @triton.jit
-def _reshape_kernel(x_ptr, out_ptr, TOTAL: tl.constexpr, M: tl.constexpr,
-                    N: tl.constexpr):
-    buf = tle.gpu.alloc((TOTAL,), dtype=tl.float32, layout=None,
-                        scope=tle.gpu.smem, nv_mma_shared_layout=False)
+def _reshape_kernel(x_ptr, out_ptr, TOTAL: tl.constexpr, M: tl.constexpr, N: tl.constexpr):
+    buf = tle.gpu.alloc((TOTAL, ), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     view = buf.reshape((M, N))
     offs = tl.arange(0, M)[:, None] * N + tl.arange(0, N)[None, :]
     view.store(tl.load(x_ptr + offs))

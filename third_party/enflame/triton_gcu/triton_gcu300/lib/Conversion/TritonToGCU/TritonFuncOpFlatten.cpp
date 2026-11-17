@@ -2,26 +2,26 @@
  * Copyright 2023 - 2024 Enflame.All Rights Reserved.
  *
  */
+#include <map>
 #include <string>
 #include <vector>
-#include <map>
 
 #include "Conversion/TritonToGCU/TritonToGCUPass.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Support/LLVM.h"
-#include "mlir/Support/LogicalResult.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Support/LogicalResult.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 namespace mlir {
 #define GEN_PASS_DEF_GCUFLATTENTRITONFUNCPASS
 #include "Conversion/Passes.h.inc"
-}  // namespace mlir
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -35,20 +35,19 @@ struct FlattenTritonFuncPass
 
   void runOnOperation() override;
 
- private:
+private:
   void flattenFuncOp(
-      Operation* funcOp,
-      std::map<llvm::StringRef,
-               std::vector<Operation*>>& funcName2CallOps);
+      Operation *funcOp,
+      std::map<llvm::StringRef, std::vector<Operation *>> &funcName2CallOps);
 
   gpu::GPUModuleOp moduleOp_;
 };
-}  // namespace
+} // namespace
 
 void FlattenTritonFuncPass::runOnOperation() {
   moduleOp_ = getOperation();
 
-  std::vector<Operation*> publicFuncOps;
+  std::vector<Operation *> publicFuncOps;
   for (auto ttFunc : moduleOp_.getOps<triton::FuncOp>()) {
     if (ttFunc.isPublic()) {
       publicFuncOps.push_back(ttFunc.getOperation());
@@ -56,20 +55,19 @@ void FlattenTritonFuncPass::runOnOperation() {
   }
 
   for (auto &publicFuncOp : publicFuncOps) {
-    std::map<llvm::StringRef, std::vector<Operation*>> funcName2CallOps;
+    std::map<llvm::StringRef, std::vector<Operation *>> funcName2CallOps;
     funcName2CallOps.clear();
     flattenFuncOp(publicFuncOp, funcName2CallOps);
   }
 }
 
 void FlattenTritonFuncPass::flattenFuncOp(
-    Operation* funcOp,
-    std::map<llvm::StringRef,
-             std::vector<Operation*>>& funcName2CallOps) {
+    Operation *funcOp,
+    std::map<llvm::StringRef, std::vector<Operation *>> &funcName2CallOps) {
   auto func = llvm::dyn_cast<triton::FuncOp>(funcOp);
   auto curFuncName = func.getName();
 
-  std::vector<Operation*> calleeFuncOps;
+  std::vector<Operation *> calleeFuncOps;
 
   func.walk([&](triton::CallOp call) {
     auto calleeFuncName = call.getCallee();
@@ -85,11 +83,12 @@ void FlattenTritonFuncPass::flattenFuncOp(
           (std::string("unsupported recursive call: \n") + o).c_str());
     }
 
-    if (calleeFunc.isExternal()) return;
+    if (calleeFunc.isExternal())
+      return;
 
     if (funcName2CallOps[calleeFuncName].size() != 0) {
-      std::string newFuncName = std::string(calleeFuncName) + "_clone" +
-                                std::to_string(uniqueId++);
+      std::string newFuncName =
+          std::string(calleeFuncName) + "_clone" + std::to_string(uniqueId++);
 
       auto calleeFuncClone = calleeFunc.clone();
       calleeFuncClone.setName(newFuncName);

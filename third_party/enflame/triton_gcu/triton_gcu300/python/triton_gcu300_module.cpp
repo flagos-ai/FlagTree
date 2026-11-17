@@ -39,16 +39,16 @@ uintptr_t pipelineCreate() {
 
 void pipelineAddPass(uintptr_t h, const std::string &name,
                      const std::string &options) {
-  gcu300_pipeline_add_pass(reinterpret_cast<Gcu300Pipeline>(h),
-                           name.c_str(), options.c_str());
+  gcu300_pipeline_add_pass(reinterpret_cast<Gcu300Pipeline>(h), name.c_str(),
+                           options.c_str());
 }
 
 std::string pipelineRun(uintptr_t h, const std::string &input) {
-  Gcu300String s = gcu300_pipeline_run(
-      reinterpret_cast<Gcu300Pipeline>(h), input.data(), input.size());
+  Gcu300String s = gcu300_pipeline_run(reinterpret_cast<Gcu300Pipeline>(h),
+                                       input.data(), input.size());
   if (!s.data) {
-    std::string err = gcu300_pipeline_last_error(
-        reinterpret_cast<Gcu300Pipeline>(h));
+    std::string err =
+        gcu300_pipeline_last_error(reinterpret_cast<Gcu300Pipeline>(h));
     throw std::runtime_error("Pipeline run failed: " + err);
   }
   std::string result(s.data, s.len);
@@ -68,8 +68,7 @@ std::string runOpt(const std::string &input,
   for (const auto &a : args)
     cargs.push_back(a.c_str());
 
-  Gcu300String s = gcu300_run_opt(input.data(), input.size(),
-                                  cargs.data(),
+  Gcu300String s = gcu300_run_opt(input.data(), input.size(), cargs.data(),
                                   static_cast<int>(cargs.size()));
   if (!s.data)
     throw std::runtime_error("gcu300_run_opt failed (pass pipeline error)");
@@ -78,23 +77,22 @@ std::string runOpt(const std::string &input,
   return result;
 }
 
-}  // anonymous namespace
+} // anonymous namespace
 
 PYBIND11_MODULE(_triton_gcu300, m) {
   m.doc() = "GCU300 in-process MLIR opt pipeline (pybind11 thin binding)";
 
   m.def("pipeline_create", &pipelineCreate,
         "Create a new pipeline, returns opaque handle.");
-  m.def("pipeline_add_pass", &pipelineAddPass,
-        py::arg("handle"), py::arg("name"), py::arg("options") = "",
+  m.def("pipeline_add_pass", &pipelineAddPass, py::arg("handle"),
+        py::arg("name"), py::arg("options") = "",
         "Add a pass to the pipeline.");
-  m.def("pipeline_run", &pipelineRun,
-        py::arg("handle"), py::arg("input"),
+  m.def("pipeline_run", &pipelineRun, py::arg("handle"), py::arg("input"),
         "Execute the configured pipeline on MLIR text input.");
-  m.def("pipeline_destroy", &pipelineDestroy,
-        py::arg("handle"),
+  m.def("pipeline_destroy", &pipelineDestroy, py::arg("handle"),
         "Destroy a pipeline handle.");
 
   m.def("run_opt", &runOpt, py::arg("input"), py::arg("args"),
-        "Run the MLIR opt pipeline on `input` with CLI-style `args` (legacy interface).");
+        "Run the MLIR opt pipeline on `input` with CLI-style `args` (legacy "
+        "interface).");
 }

@@ -25,7 +25,7 @@ namespace triton {
 namespace gcu {
 
 const char *const kLoadEx = "support_stride0";
-bool get_bool_env(const char* name, const bool default_value = false);
+bool get_bool_env(const char *name, const bool default_value = false);
 SmallVector<unsigned> getWarpsPerCTA(Attribute layout);
 SmallVector<unsigned> getElemsPerThread(Type type);
 unsigned getTotalElemsPerThread(Type type);
@@ -36,8 +36,8 @@ inline int64_t ceilDiv(int64_t lhs, int64_t rhs) {
   // C/C++'s integer division rounds towards 0.
   return lhs % rhs > 0 ? lhs / rhs + 1 : lhs / rhs;
 }
-}  // namespace gcu
-}  // namespace triton
-}  // namespace mlir
+} // namespace gcu
+} // namespace triton
+} // namespace mlir
 
-#endif  // KURAMA_TRITON_TO_GCU_UTILS_H_
+#endif // KURAMA_TRITON_TO_GCU_UTILS_H_

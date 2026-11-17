@@ -18,13 +18,13 @@
 
 #include <utility>
 
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SetVector.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Visitors.h"
-#include "mlir/IR/MLIRContext.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SetVector.h"
 
 namespace mlir {
 namespace triton {
@@ -33,11 +33,11 @@ namespace gcu {
 using namespace mlir;
 
 class FirstLastUserAnalysis {
- public:
+public:
   using ValueToUserT = llvm::DenseMap<Value, std::pair<Operation *, int>>;
 
-  explicit FirstLastUserAnalysis(Operation *op) :
-      moduleOp(op), dominators(op), postDominators(op) {
+  explicit FirstLastUserAnalysis(Operation *op)
+      : moduleOp(op), dominators(op), postDominators(op) {
     start();
   }
 
@@ -56,35 +56,34 @@ class FirstLastUserAnalysis {
   // Get first user that locate the same region with value's.
   std::pair<Operation *, int> getFirstUser(Value value) const {
     if (firstUserMap.count(value) == 0) {
-      llvm::errs() << "value: " << value  << " has no first user\n";
+      llvm::errs() << "value: " << value << " has no first user\n";
       llvm::report_fatal_error("No first user found for value");
     }
     return firstUserMap.lookup(value);
   }
 
- private:
+private:
   void start();
 
   std::pair<Operation *, int>
   getLastUserOfValue(mlir::Value value, PostDominanceInfo &postDomInfo);
 
-  void getUsersForLast(mlir::Value value,
-                       mlir::Region *opRegion,
+  void getUsersForLast(mlir::Value value, mlir::Region *opRegion,
                        PostDominanceInfo &postDomInfo,
-                       llvm::SetVector<std::pair<Operation*, int>> &userList,
-                       llvm::SetVector<Block*> &blockList,
-                       llvm::SetVector<std::pair<Operation*, int>> &aliasList);
+                       llvm::SetVector<std::pair<Operation *, int>> &userList,
+                       llvm::SetVector<Block *> &blockList,
+                       llvm::SetVector<std::pair<Operation *, int>> &aliasList);
 
-  std::pair<Operation *, int>
-  getFirstUserOfValue(mlir::Value value, DominanceInfo &domInfo);
+  std::pair<Operation *, int> getFirstUserOfValue(mlir::Value value,
+                                                  DominanceInfo &domInfo);
 
-  void getUsersForFisrt(mlir::Value value,
-                        mlir::Region *opRegion,
-                        llvm::SetVector<std::pair<Operation *, int>> &userList,
-                        llvm::SetVector<mlir::Block *> &blockList,
-                        llvm::SetVector<std::pair<Operation*, int>> &aliasList);
+  void
+  getUsersForFisrt(mlir::Value value, mlir::Region *opRegion,
+                   llvm::SetVector<std::pair<Operation *, int>> &userList,
+                   llvm::SetVector<mlir::Block *> &blockList,
+                   llvm::SetVector<std::pair<Operation *, int>> &aliasList);
 
- private:
+private:
   Operation *moduleOp;
   DominanceInfo dominators;
   PostDominanceInfo postDominators;
@@ -93,8 +92,8 @@ class FirstLastUserAnalysis {
   ValueToUserT firstUserMap;
 };
 
-}  // namespace gcu
-}  // namespace triton
-}  // namespace mlir
+} // namespace gcu
+} // namespace triton
+} // namespace mlir
 
-#endif  // GCU_ANALYSIS_FIRSTLASTUSERANALYSIS_H
+#endif // GCU_ANALYSIS_FIRSTLASTUSERANALYSIS_H

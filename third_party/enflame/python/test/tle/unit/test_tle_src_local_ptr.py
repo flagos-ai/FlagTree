@@ -58,15 +58,15 @@ def _get_ir(compiled):
 # Path A: full-block access -> local_load / local_store
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
 def _full_view_1d_kernel(x_ptr, out_ptr, numel, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     offsets = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < numel
 
-    smem = tle.gpu.alloc((BLOCK,), dtype=tl.float32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
-    ptrs = tle.gpu.local_ptr(smem, (tl.arange(0, BLOCK),))
+    smem = tle.gpu.alloc((BLOCK, ), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    ptrs = tle.gpu.local_ptr(smem, (tl.arange(0, BLOCK), ))
 
     x_vals = tl.load(x_ptr + offsets, mask=mask, other=0.0)
     tl.store(ptrs, x_vals, mask=mask)
@@ -75,11 +75,8 @@ def _full_view_1d_kernel(x_ptr, out_ptr, numel, BLOCK: tl.constexpr):
 
 
 @triton.jit
-def _full_view_2d_kernel(x_ptr, out_ptr, stride_xm, stride_xn,
-                         stride_om, stride_on,
-                         M: tl.constexpr, N: tl.constexpr):
-    smem = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
+def _full_view_2d_kernel(x_ptr, out_ptr, stride_xm, stride_xn, stride_om, stride_on, M: tl.constexpr, N: tl.constexpr):
+    smem = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     offs_m = tl.arange(0, M)[:, None]
     offs_n = tl.arange(0, N)[None, :]
     x_tile = x_ptr + offs_m * stride_xm + offs_n * stride_xn
@@ -96,13 +93,11 @@ def _full_view_2d_kernel(x_ptr, out_ptr, stride_xm, stride_xn,
 # Case A: memdesc_index — scalar dim-0 peel on 2D buffer
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
-def _memdesc_index_kernel(x_ptr, out_ptr, stride_xm, stride_xn,
-                          stride_om, stride_on,
-                          M: tl.constexpr, N: tl.constexpr,
+def _memdesc_index_kernel(x_ptr, out_ptr, stride_xm, stride_xn, stride_om, stride_on, M: tl.constexpr, N: tl.constexpr,
                           ROW: tl.constexpr):
-    smem = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     offs_m = tl.arange(0, M)[:, None]
     offs_n = tl.arange(0, N)[None, :]
     x_tile = x_ptr + offs_m * stride_xm + offs_n * stride_xn
@@ -111,7 +106,7 @@ def _memdesc_index_kernel(x_ptr, out_ptr, stride_xm, stride_xn,
     # 1D indices on 2D buffer: row_idx is a splat (tl.full),
     # col_idx is a range. canonicalizeDim0Index peels dim-0
     # via memdesc_index, reducing to 1D local_load.
-    row_idx = tl.full((N,), ROW, tl.int32)
+    row_idx = tl.full((N, ), ROW, tl.int32)
     col_idx = tl.arange(0, N)
     ptrs = tle.gpu.local_ptr(smem, (row_idx, col_idx))
     vals = tl.load(ptrs)
@@ -124,13 +119,11 @@ def _memdesc_index_kernel(x_ptr, out_ptr, stride_xm, stride_xn,
 # Case B: memdesc_subslice — aligned offset sub-region on 2D smem
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
-def _memdesc_subslice_kernel(x_ptr, out_ptr, stride_xm, stride_xn,
-                             stride_om, stride_on,
-                             M: tl.constexpr, N: tl.constexpr,
-                             OFF: tl.constexpr, S: tl.constexpr):
-    smem = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
+def _memdesc_subslice_kernel(x_ptr, out_ptr, stride_xm, stride_xn, stride_om, stride_on, M: tl.constexpr,
+                             N: tl.constexpr, OFF: tl.constexpr, S: tl.constexpr):
+    smem = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     offs_m = tl.arange(0, M)[:, None]
     offs_n = tl.arange(0, N)[None, :]
     x_tile = x_ptr + offs_m * stride_xm + offs_n * stride_xn
@@ -152,12 +145,10 @@ def _memdesc_subslice_kernel(x_ptr, out_ptr, stride_xm, stride_xn,
 # Case C: memdesc_trans — transposed 2D access + DTE fold (B2)
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
-def _memdesc_trans_kernel(x_ptr, out_ptr, stride_xm, stride_xn,
-                          stride_om, stride_on,
-                          M: tl.constexpr, N: tl.constexpr):
-    smem = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
+def _memdesc_trans_kernel(x_ptr, out_ptr, stride_xm, stride_xn, stride_om, stride_on, M: tl.constexpr, N: tl.constexpr):
+    smem = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     offs_m = tl.arange(0, M)[:, None]
     offs_n = tl.arange(0, N)[None, :]
     x_tile = x_ptr + offs_m * stride_xm + offs_n * stride_xn
@@ -180,12 +171,11 @@ def _memdesc_trans_kernel(x_ptr, out_ptr, stride_xm, stride_xn,
 # Case D: memdesc_reshape — 1D buffer with multi-dim index
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
-def _memdesc_reshape_kernel(x_ptr, out_ptr, stride_om, stride_on,
-                            TOTAL: tl.constexpr,
-                            M: tl.constexpr, N: tl.constexpr):
-    smem = tle.gpu.alloc((TOTAL,), dtype=tl.float32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
+def _memdesc_reshape_kernel(x_ptr, out_ptr, stride_om, stride_on, TOTAL: tl.constexpr, M: tl.constexpr,
+                            N: tl.constexpr):
+    smem = tle.gpu.alloc((TOTAL, ), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     offs = tl.arange(0, TOTAL)
     x_tile = x_ptr + offs
     tle.gpu.copy(x_tile, smem, [TOTAL])
@@ -193,7 +183,7 @@ def _memdesc_reshape_kernel(x_ptr, out_ptr, stride_om, stride_on,
     # 1D buffer accessed with 2D index -> canonicalizeReshape
     # creates memdesc_reshape (1D -> 2D)
     flat_idx = tl.arange(0, M)[:, None] * N + tl.arange(0, N)[None, :]
-    ptrs = tle.gpu.local_ptr(smem, (flat_idx,))
+    ptrs = tle.gpu.local_ptr(smem, (flat_idx, ))
     vals = tl.load(ptrs)
 
     out_offs = tl.arange(0, M)[:, None] * stride_om \
@@ -205,13 +195,11 @@ def _memdesc_reshape_kernel(x_ptr, out_ptr, stride_om, stride_on,
 # Path B: lowerSubViewAccess — unaligned offset fallback
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
-def _unaligned_offset_kernel(x_ptr, out_ptr, stride_xm, stride_xn,
-                             stride_om, stride_on,
-                             M: tl.constexpr, N: tl.constexpr,
-                             OFF: tl.constexpr, S: tl.constexpr):
-    smem = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
+def _unaligned_offset_kernel(x_ptr, out_ptr, stride_xm, stride_xn, stride_om, stride_on, M: tl.constexpr,
+                             N: tl.constexpr, OFF: tl.constexpr, S: tl.constexpr):
+    smem = tle.gpu.alloc((M, N), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     offs_m = tl.arange(0, M)[:, None]
     offs_n = tl.arange(0, N)[None, :]
     x_tile = x_ptr + offs_m * stride_xm + offs_n * stride_xn
@@ -234,15 +222,15 @@ def _unaligned_offset_kernel(x_ptr, out_ptr, stride_xm, stride_xn,
 # Path B: masked access — non-trivial mask -> Path B
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
 def _masked_access_kernel(x_ptr, out_ptr, numel, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     offsets = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < numel
 
-    smem = tle.gpu.alloc((BLOCK,), dtype=tl.float32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
-    ptrs = tle.gpu.local_ptr(smem, (tl.arange(0, BLOCK),))
+    smem = tle.gpu.alloc((BLOCK, ), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    ptrs = tle.gpu.local_ptr(smem, (tl.arange(0, BLOCK), ))
 
     x_vals = tl.load(x_ptr + offsets, mask=mask, other=0.0)
     # Non-trivial mask -> optimizeLocalPointerOps skips -> Path B
@@ -255,19 +243,19 @@ def _masked_access_kernel(x_ptr, out_ptr, numel, BLOCK: tl.constexpr):
 # Path B: scalar dynamic index -> barrier insertion
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
 def _scalar_dynamic_index_kernel(out_ptr, BLOCK: tl.constexpr):
-    smem = tle.gpu.alloc((BLOCK,), dtype=tl.int32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    smem = tle.gpu.alloc((BLOCK, ), dtype=tl.int32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     vec_idx = tl.arange(0, BLOCK)
-    vec_ptr = tle.gpu.local_ptr(smem, (vec_idx,))
+    vec_ptr = tle.gpu.local_ptr(smem, (vec_idx, ))
     tl.store(vec_ptr, vec_idx + 1)
     zero = tl.program_id(0) * 0
 
     # Scalar dynamic index in loop -> Path B + gpu.barrier
     for i in range(BLOCK):
         scalar_idx = zero + i
-        scalar_ptr = tle.gpu.local_ptr(smem, (scalar_idx,))
+        scalar_ptr = tle.gpu.local_ptr(smem, (scalar_idx, ))
         scalar_val = tl.load(scalar_ptr)
         tl.store(out_ptr + i, scalar_val)
 
@@ -276,15 +264,15 @@ def _scalar_dynamic_index_kernel(out_ptr, BLOCK: tl.constexpr):
 # Path A: trivially-true mask -> local_load / local_store (strip mask)
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
 def _trivially_true_mask_kernel(x_ptr, out_ptr, BLOCK: tl.constexpr):
-    smem = tle.gpu.alloc((BLOCK,), dtype=tl.float32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
-    ptrs = tle.gpu.local_ptr(smem, (tl.arange(0, BLOCK),))
+    smem = tle.gpu.alloc((BLOCK, ), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    ptrs = tle.gpu.local_ptr(smem, (tl.arange(0, BLOCK), ))
 
     x_vals = tl.load(x_ptr + tl.arange(0, BLOCK))
     # Trivially-true mask: all-true constant -> Path A strips it.
-    true_mask = tl.full((BLOCK,), True, tl.int1)
+    true_mask = tl.full((BLOCK, ), True, tl.int1)
     tl.store(ptrs, x_vals, mask=true_mask)
     out_vals = tl.load(ptrs, mask=true_mask, other=0.0)
     tl.store(out_ptr + tl.arange(0, BLOCK), out_vals)
@@ -294,12 +282,10 @@ def _trivially_true_mask_kernel(x_ptr, out_ptr, BLOCK: tl.constexpr):
 # Path B: gather reshape (non-iota flat index) -> fallback
 # ---------------------------------------------------------------------------
 
+
 @triton.jit
-def _gather_reshape_kernel(x_ptr, out_ptr, stride_om, stride_on,
-                           TOTAL: tl.constexpr,
-                           M: tl.constexpr, N: tl.constexpr):
-    smem = tle.gpu.alloc((TOTAL,), dtype=tl.float32, layout=None,
-                         scope=tle.gpu.smem, nv_mma_shared_layout=False)
+def _gather_reshape_kernel(x_ptr, out_ptr, stride_om, stride_on, TOTAL: tl.constexpr, M: tl.constexpr, N: tl.constexpr):
+    smem = tle.gpu.alloc((TOTAL, ), dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     offs = tl.arange(0, TOTAL)
     x_tile = x_ptr + offs
     tle.gpu.copy(x_tile, smem, [TOTAL])
@@ -310,7 +296,7 @@ def _gather_reshape_kernel(x_ptr, out_ptr, stride_om, stride_on,
     col = tl.arange(0, N)[None, :]
     forward = row * N + col
     flat_idx = (TOTAL - 1) - forward
-    ptrs = tle.gpu.local_ptr(smem, (flat_idx,))
+    ptrs = tle.gpu.local_ptr(smem, (flat_idx, ))
     vals = tl.load(ptrs)
 
     out_offs = row * stride_om + col * stride_on
@@ -320,6 +306,7 @@ def _gather_reshape_kernel(x_ptr, out_ptr, stride_om, stride_on,
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestTLELocalPointers:
     """Verify all tle.local_pointers code paths on the GCU backend."""
@@ -331,16 +318,15 @@ class TestTLELocalPointers:
         numel = BLOCK * 3
         x = torch.randn(numel, device="cuda", dtype=torch.float32)
         out = torch.empty_like(x)
-        grid = (triton.cdiv(numel, BLOCK),)
+        grid = (triton.cdiv(numel, BLOCK), )
         _full_view_1d_kernel[grid](x, out, numel, BLOCK=BLOCK)
         torch.testing.assert_close(out, x, atol=1e-6, rtol=1e-6)
 
     def test_full_view_1d_ir_no_memdesc_to_ptr(self):
         BLOCK = 64
         out = torch.empty(BLOCK, device="cuda", dtype=torch.float32)
-        compiled = _full_view_1d_kernel.warmup(
-            torch.empty(BLOCK, device="cuda", dtype=torch.float32), out,
-            BLOCK, BLOCK=BLOCK, grid=(1,))
+        compiled = _full_view_1d_kernel.warmup(torch.empty(BLOCK, device="cuda", dtype=torch.float32), out, BLOCK,
+                                               BLOCK=BLOCK, grid=(1, ))
         ir = _get_ir(compiled)
         assert "memdesc_to_ptr" not in ir
         assert "gcu.memref2ptr" in ir or "slice_start" in ir or "deslice" in ir
@@ -349,17 +335,14 @@ class TestTLELocalPointers:
         M, N = 16, 32
         x = torch.randn(M, N, device="cuda", dtype=torch.float32)
         out = torch.empty_like(x)
-        _full_view_2d_kernel[(1,)](
-            x, out, x.stride(0), x.stride(1),
-            out.stride(0), out.stride(1), M=M, N=N)
+        _full_view_2d_kernel[(1, )](x, out, x.stride(0), x.stride(1), out.stride(0), out.stride(1), M=M, N=N)
         torch.testing.assert_close(out, x, atol=1e-6, rtol=1e-6)
 
     def test_full_view_2d_ir_no_memdesc_to_ptr(self):
         M, N = 16, 32
         out = torch.empty(M, N, device="cuda", dtype=torch.float32)
-        compiled = _full_view_2d_kernel.warmup(
-            torch.empty(M, N, device="cuda", dtype=torch.float32), out,
-            N, 1, N, 1, M=M, N=N, grid=(1,))
+        compiled = _full_view_2d_kernel.warmup(torch.empty(M, N, device="cuda", dtype=torch.float32), out, N, 1, N, 1,
+                                               M=M, N=N, grid=(1, ))
         ir = _get_ir(compiled)
         assert "local_load" in ir
         assert "memdesc_to_ptr" not in ir
@@ -371,23 +354,19 @@ class TestTLELocalPointers:
         ROW = 2
         x = torch.randn(M, N, device="cuda", dtype=torch.float32)
         out = torch.empty(N, device="cuda", dtype=torch.float32)
-        _memdesc_index_kernel[(1,)](
-            x, out, x.stride(0), x.stride(1), 1, 1, M=M, N=N, ROW=ROW)
+        _memdesc_index_kernel[(1, )](x, out, x.stride(0), x.stride(1), 1, 1, M=M, N=N, ROW=ROW)
         torch.testing.assert_close(out, x[ROW, :], atol=1e-6, rtol=1e-6)
 
     def test_memdesc_index_ir(self):
         M, N = 4, 16
         out = torch.empty(N, device="cuda", dtype=torch.float32)
-        compiled = _memdesc_index_kernel.warmup(
-            torch.empty(M, N, device="cuda", dtype=torch.float32), out,
-            N, 1, 1, 1, M=M, N=N, ROW=2, grid=(1,))
+        compiled = _memdesc_index_kernel.warmup(torch.empty(M, N, device="cuda", dtype=torch.float32), out, N, 1, 1, 1,
+                                                M=M, N=N, ROW=2, grid=(1, ))
         ir = _get_ir(compiled)
-        assert "memdesc_to_ptr" not in ir, (
-            "Case A should use memdesc_index, not memdesc_to_ptr (Path B)")
+        assert "memdesc_to_ptr" not in ir, ("Case A should use memdesc_index, not memdesc_to_ptr (Path B)")
         # DTE fold: memdesc_index should be folded into copy_global_to_local
         # via runtime pointer adjustment, producing slice_start (DTE copy).
-        assert "slice_start" in ir, (
-            "Case A DTE fold should produce slice_start")
+        assert "slice_start" in ir, ("Case A DTE fold should produce slice_start")
 
     # -- Case B: memdesc_subslice (aligned offset) -------------------------
 
@@ -396,25 +375,20 @@ class TestTLELocalPointers:
         M, N, OFF, S = 8, 16, 8, 8
         x = torch.randn(M, N, device="cuda", dtype=torch.float32)
         out = torch.empty(M, S, device="cuda", dtype=torch.float32)
-        _memdesc_subslice_kernel[(1,)](
-            x, out, x.stride(0), x.stride(1),
-            out.stride(0), out.stride(1), M=M, N=N, OFF=OFF, S=S)
-        torch.testing.assert_close(
-            out, x[:, OFF:OFF + S], atol=1e-6, rtol=1e-6)
+        _memdesc_subslice_kernel[(1, )](x, out, x.stride(0), x.stride(1), out.stride(0), out.stride(1), M=M, N=N,
+                                        OFF=OFF, S=S)
+        torch.testing.assert_close(out, x[:, OFF:OFF + S], atol=1e-6, rtol=1e-6)
 
     def test_memdesc_subslice_ir(self):
         # OFF=8 aligned to S=8 -> canonicalizeSubslice creates memdesc_subslice
         # -> TTMemDescSubsliceOpLowering lowers via memref.subview.
         M, N, OFF, S = 8, 16, 8, 8
         out = torch.empty(M, S, device="cuda", dtype=torch.float32)
-        compiled = _memdesc_subslice_kernel.warmup(
-            torch.empty(M, N, device="cuda", dtype=torch.float32), out,
-            N, 1, S, 1, M=M, N=N, OFF=OFF, S=S, grid=(1,))
+        compiled = _memdesc_subslice_kernel.warmup(torch.empty(M, N, device="cuda", dtype=torch.float32), out, N, 1, S,
+                                                   1, M=M, N=N, OFF=OFF, S=S, grid=(1, ))
         ir = _get_ir(compiled)
-        assert "memdesc_to_ptr" not in ir, (
-            "Case B (aligned) should use memdesc_subslice, not Path B")
-        assert "memdesc_subslice" in ir, (
-            "Case B should produce memdesc_subslice border annotation")
+        assert "memdesc_to_ptr" not in ir, ("Case B (aligned) should use memdesc_subslice, not Path B")
+        assert "memdesc_subslice" in ir, ("Case B should produce memdesc_subslice border annotation")
 
     def test_memdesc_subslice_unaligned_path_b(self):
         # OFF=4 not aligned to S=8 (4 & 7 = 4 != 0) -> canonicalizeSubslice
@@ -422,22 +396,18 @@ class TestTLELocalPointers:
         M, N, OFF, S = 8, 16, 4, 8
         x = torch.randn(M, N, device="cuda", dtype=torch.float32)
         out = torch.empty(M, S, device="cuda", dtype=torch.float32)
-        _memdesc_subslice_kernel[(1,)](
-            x, out, x.stride(0), x.stride(1),
-            out.stride(0), out.stride(1), M=M, N=N, OFF=OFF, S=S)
-        torch.testing.assert_close(
-            out, x[:, OFF:OFF + S], atol=1e-6, rtol=1e-6)
+        _memdesc_subslice_kernel[(1, )](x, out, x.stride(0), x.stride(1), out.stride(0), out.stride(1), M=M, N=N,
+                                        OFF=OFF, S=S)
+        torch.testing.assert_close(out, x[:, OFF:OFF + S], atol=1e-6, rtol=1e-6)
 
     def test_memdesc_subslice_unaligned_ir(self):
         # OFF=4 not aligned -> Path B fallback.
         M, N, OFF, S = 8, 16, 4, 8
         out = torch.empty(M, S, device="cuda", dtype=torch.float32)
-        compiled = _memdesc_subslice_kernel.warmup(
-            torch.empty(M, N, device="cuda", dtype=torch.float32), out,
-            N, 1, S, 1, M=M, N=N, OFF=OFF, S=S, grid=(1,))
+        compiled = _memdesc_subslice_kernel.warmup(torch.empty(M, N, device="cuda", dtype=torch.float32), out, N, 1, S,
+                                                   1, M=M, N=N, OFF=OFF, S=S, grid=(1, ))
         ir = _get_ir(compiled)
-        assert "gcu.memref2ptr" in ir, (
-            "Unaligned offset should use Path B (gcu.memref2ptr)")
+        assert "gcu.memref2ptr" in ir, ("Unaligned offset should use Path B (gcu.memref2ptr)")
 
     # -- Case C: memdesc_trans + B2 (DTE fold) ------------------------------
 
@@ -445,20 +415,16 @@ class TestTLELocalPointers:
         M, N = 8, 16
         x = torch.randn(M, N, device="cuda", dtype=torch.float32)
         out = torch.empty(N, M, device="cuda", dtype=torch.float32)
-        _memdesc_trans_kernel[(1,)](
-            x, out, x.stride(0), x.stride(1),
-            out.stride(0), out.stride(1), M=M, N=N)
+        _memdesc_trans_kernel[(1, )](x, out, x.stride(0), x.stride(1), out.stride(0), out.stride(1), M=M, N=N)
         torch.testing.assert_close(out, x.t(), atol=1e-6, rtol=1e-6)
 
     def test_memdesc_trans_ir(self):
         M, N = 8, 16
         out = torch.empty(N, M, device="cuda", dtype=torch.float32)
-        compiled = _memdesc_trans_kernel.warmup(
-            torch.empty(M, N, device="cuda", dtype=torch.float32), out,
-            N, 1, M, 1, M=M, N=N, grid=(1,))
+        compiled = _memdesc_trans_kernel.warmup(torch.empty(M, N, device="cuda", dtype=torch.float32), out, N, 1, M, 1,
+                                                M=M, N=N, grid=(1, ))
         ir = _get_ir(compiled)
-        assert "memdesc_to_ptr" not in ir, (
-            "Case C should use memdesc_trans, not Path B")
+        assert "memdesc_to_ptr" not in ir, ("Case C should use memdesc_trans, not Path B")
         # B2 DTE fold: memdesc_trans folded into copy_global_to_local,
         # DTE writes transposed layout directly via SliceTransposeStartOp.
         assert "slice_transpose" in ir.lower() or "memdesc_trans" in ir, (
@@ -471,24 +437,19 @@ class TestTLELocalPointers:
         TOTAL = M * N
         x = torch.randn(TOTAL, device="cuda", dtype=torch.float32)
         out = torch.empty(M, N, device="cuda", dtype=torch.float32)
-        _memdesc_reshape_kernel[(1,)](
-            x, out, out.stride(0), out.stride(1),
-            TOTAL=TOTAL, M=M, N=N)
+        _memdesc_reshape_kernel[(1, )](x, out, out.stride(0), out.stride(1), TOTAL=TOTAL, M=M, N=N)
         torch.testing.assert_close(out, x.reshape(M, N), atol=1e-6, rtol=1e-6)
 
     def test_memdesc_reshape_ir(self):
         M, N = 8, 16
         TOTAL = M * N
         out = torch.empty(M, N, device="cuda", dtype=torch.float32)
-        compiled = _memdesc_reshape_kernel.warmup(
-            torch.empty(TOTAL, device="cuda", dtype=torch.float32), out,
-            N, 1, TOTAL=TOTAL, M=M, N=N, grid=(1,))
+        compiled = _memdesc_reshape_kernel.warmup(torch.empty(TOTAL, device="cuda", dtype=torch.float32), out, N, 1,
+                                                  TOTAL=TOTAL, M=M, N=N, grid=(1, ))
         ir = _get_ir(compiled)
-        assert "memdesc_to_ptr" not in ir, (
-            "Case D should use memdesc_reshape, not Path B")
+        assert "memdesc_to_ptr" not in ir, ("Case D should use memdesc_reshape, not Path B")
         # DTE fold: memdesc_reshape folded into copy_global_to_local.
-        assert "slice_start" in ir, (
-            "Case D DTE fold should produce slice_start")
+        assert "slice_start" in ir, ("Case D DTE fold should produce slice_start")
 
     # -- Path B: unaligned offset ------------------------------------------
 
@@ -496,21 +457,17 @@ class TestTLELocalPointers:
         M, N, OFF, S = 8, 16, 1, 8  # OFF=1 not aligned to S=8 -> Path B
         x = torch.randn(M, N, device="cuda", dtype=torch.float32)
         out = torch.empty(M, S, device="cuda", dtype=torch.float32)
-        _unaligned_offset_kernel[(1,)](
-            x, out, x.stride(0), x.stride(1),
-            out.stride(0), out.stride(1), M=M, N=N, OFF=OFF, S=S)
-        torch.testing.assert_close(
-            out, x[:, OFF:OFF + S], atol=1e-6, rtol=1e-6)
+        _unaligned_offset_kernel[(1, )](x, out, x.stride(0), x.stride(1), out.stride(0), out.stride(1), M=M, N=N,
+                                        OFF=OFF, S=S)
+        torch.testing.assert_close(out, x[:, OFF:OFF + S], atol=1e-6, rtol=1e-6)
 
     def test_unaligned_offset_ir_uses_path_b(self):
         M, N, OFF, S = 8, 16, 1, 8
         out = torch.empty(M, S, device="cuda", dtype=torch.float32)
-        compiled = _unaligned_offset_kernel.warmup(
-            torch.empty(M, N, device="cuda", dtype=torch.float32), out,
-            N, 1, S, 1, M=M, N=N, OFF=OFF, S=S, grid=(1,))
+        compiled = _unaligned_offset_kernel.warmup(torch.empty(M, N, device="cuda", dtype=torch.float32), out, N, 1, S,
+                                                   1, M=M, N=N, OFF=OFF, S=S, grid=(1, ))
         ir = _get_ir(compiled)
-        assert "gcu.memref2ptr" in ir, (
-            "Unaligned offset should use Path B (gcu.memref2ptr)")
+        assert "gcu.memref2ptr" in ir, ("Unaligned offset should use Path B (gcu.memref2ptr)")
 
     # -- Path B: masked access ---------------------------------------------
 
@@ -519,7 +476,7 @@ class TestTLELocalPointers:
         numel = BLOCK * 3 - 10
         x = torch.randn(numel + 10, device="cuda", dtype=torch.float32)
         out = torch.zeros_like(x)
-        grid = (triton.cdiv(BLOCK * 3, BLOCK),)
+        grid = (triton.cdiv(BLOCK * 3, BLOCK), )
         _masked_access_kernel[grid](x, out, numel, BLOCK=BLOCK)
         expected = x.clone()
         expected[numel:] = 0.0
@@ -529,29 +486,23 @@ class TestTLELocalPointers:
         BLOCK = 64
         numel = BLOCK * 3 - 10
         out = torch.zeros(numel + 10, device="cuda", dtype=torch.float32)
-        compiled = _masked_access_kernel.warmup(
-            torch.empty(numel + 10, device="cuda", dtype=torch.float32), out,
-            numel, BLOCK=BLOCK, grid=(1,))
+        compiled = _masked_access_kernel.warmup(torch.empty(numel + 10, device="cuda", dtype=torch.float32), out, numel,
+                                                BLOCK=BLOCK, grid=(1, ))
         ir = _get_ir(compiled)
-        assert "gcu.memref2ptr" in ir, (
-            "Non-trivial mask should use Path B (gcu.memref2ptr)")
+        assert "gcu.memref2ptr" in ir, ("Non-trivial mask should use Path B (gcu.memref2ptr)")
 
     # -- Path B: scalar dynamic index -> barrier ----------------------------
 
     def test_scalar_dynamic_index_inserts_barrier(self):
         BLOCK = 64
         out = torch.empty(BLOCK, device="cuda", dtype=torch.int32)
-        compiled = _scalar_dynamic_index_kernel.warmup(
-            out, BLOCK=BLOCK, grid=(1,))
+        compiled = _scalar_dynamic_index_kernel.warmup(out, BLOCK=BLOCK, grid=(1, ))
         ir = _get_ir(compiled)
-        assert "gpu.barrier" in ir, (
-            "Scalar dynamic index after vector store must insert barrier")
+        assert "gpu.barrier" in ir, ("Scalar dynamic index after vector store must insert barrier")
         assert '"tt.reduce"' not in ir
 
-        _scalar_dynamic_index_kernel[(1,)](out, BLOCK=BLOCK)
-        torch.testing.assert_close(
-            out, torch.arange(1, BLOCK + 1, device="cuda", dtype=torch.int32),
-            atol=0, rtol=0)
+        _scalar_dynamic_index_kernel[(1, )](out, BLOCK=BLOCK)
+        torch.testing.assert_close(out, torch.arange(1, BLOCK + 1, device="cuda", dtype=torch.int32), atol=0, rtol=0)
 
     # -- Path A: trivially-true mask -> Path A (strip mask) ----------------
 
@@ -559,21 +510,18 @@ class TestTLELocalPointers:
         BLOCK = 64
         x = torch.randn(BLOCK, device="cuda", dtype=torch.float32)
         out = torch.empty_like(x)
-        _trivially_true_mask_kernel[(1,)](x, out, BLOCK=BLOCK)
+        _trivially_true_mask_kernel[(1, )](x, out, BLOCK=BLOCK)
         torch.testing.assert_close(out, x, atol=1e-6, rtol=1e-6)
 
     def test_trivially_true_mask_ir(self):
         BLOCK = 64
         out = torch.empty(BLOCK, device="cuda", dtype=torch.float32)
-        compiled = _trivially_true_mask_kernel.warmup(
-            torch.empty(BLOCK, device="cuda", dtype=torch.float32), out,
-            BLOCK=BLOCK, grid=(1,))
+        compiled = _trivially_true_mask_kernel.warmup(torch.empty(BLOCK, device="cuda", dtype=torch.float32), out,
+                                                      BLOCK=BLOCK, grid=(1, ))
         ir = _get_ir(compiled)
         # Trivially-true mask should use Path A (no memdesc_to_ptr).
-        assert "memdesc_to_ptr" not in ir, (
-            "Trivially-true mask should use Path A, not Path B")
-        assert "slice_start" in ir or "deslice" in ir, (
-            "Trivially-true mask should produce DTE ops (Path A)")
+        assert "memdesc_to_ptr" not in ir, ("Trivially-true mask should use Path A, not Path B")
+        assert "slice_start" in ir or "deslice" in ir, ("Trivially-true mask should produce DTE ops (Path A)")
 
     # -- Path B: gather reshape (non-iota) -> fallback ----------------------
 
@@ -582,28 +530,23 @@ class TestTLELocalPointers:
         TOTAL = M * N
         x = torch.randn(TOTAL, device="cuda", dtype=torch.float32)
         out = torch.empty(M, N, device="cuda", dtype=torch.float32)
-        _gather_reshape_kernel[(1,)](
-            x, out, out.stride(0), out.stride(1),
-            TOTAL=TOTAL, M=M, N=N)
+        _gather_reshape_kernel[(1, )](x, out, out.stride(0), out.stride(1), TOTAL=TOTAL, M=M, N=N)
         # Gather: out[i,j] = x[TOTAL - 1 - (i*N + j)]
         row = torch.arange(M, device="cuda")[:, None]
         col = torch.arange(N, device="cuda")[None, :]
         forward = row * N + col
         flat_idx = (TOTAL - 1) - forward
-        torch.testing.assert_close(
-            out, x[flat_idx.cpu()], atol=1e-6, rtol=1e-6)
+        torch.testing.assert_close(out, x[flat_idx.cpu()], atol=1e-6, rtol=1e-6)
 
     def test_gather_reshape_ir_uses_path_b(self):
         M, N = 8, 16
         TOTAL = M * N
         out = torch.empty(M, N, device="cuda", dtype=torch.float32)
-        compiled = _gather_reshape_kernel.warmup(
-            torch.empty(TOTAL, device="cuda", dtype=torch.float32), out,
-            N, 1, TOTAL=TOTAL, M=M, N=N, grid=(1,))
+        compiled = _gather_reshape_kernel.warmup(torch.empty(TOTAL, device="cuda", dtype=torch.float32), out, N, 1,
+                                                 TOTAL=TOTAL, M=M, N=N, grid=(1, ))
         ir = _get_ir(compiled)
         # Non-iota gather should fall to Path B (gcu.memref2ptr).
-        assert "gcu.memref2ptr" in ir, (
-            "Gather reshape should use Path B (gcu.memref2ptr)")
+        assert "gcu.memref2ptr" in ir, ("Gather reshape should use Path B (gcu.memref2ptr)")
 
 
 if __name__ == "__main__":
