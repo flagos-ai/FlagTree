@@ -21,6 +21,11 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
+#include "llvm/IRReader/IRReader.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cstdint>
 #include <numeric>
@@ -42,7 +47,8 @@ namespace {
 // A dead result of an empty tied-register identity has no observable write.
 // Retain the volatile input dependency, but do not ask the target allocator to
 // model a register producer that emits no instruction. Used results, nonempty
-// instructions, other constraints and return attributes are left untouched.
+// instructions, other constraints and result-dependent contracts are left
+// untouched. LLVM rejects result-dependent attributes/metadata on void calls.
 unsigned lowerDeadTiedRegisterFences(llvm::Module &module) {
   llvm::SmallVector<llvm::CallInst *> candidates;
   for (auto &fn : module)
@@ -56,7 +62,9 @@ unsigned lowerDeadTiedRegisterFences(llvm::Module &module) {
             call->getArgOperand(0)->getType() != call->getType() ||
             !assembly->hasSideEffects() || !assembly->getAsmString().empty() ||
             assembly->getConstraintString() != "=R,0" ||
-            call->getAttributes().getRetAttrs().hasAttributes())
+            call->getAttributes().getRetAttrs().hasAttributes() ||
+            call->paramHasAttr(0, llvm::Attribute::Returned) ||
+            call->getMetadata(llvm::LLVMContext::MD_fpmath))
           continue;
         candidates.push_back(call);
       }
@@ -321,6 +329,29 @@ void init_triton_musa_passes_ttgpuir(py::module m) {
 
 void init_triton_mthreads(py::module &&m) {
   m.def("lower_dead_tied_register_fences", &lowerDeadTiedRegisterFences);
+  // Exercise LLVM-only call attributes/metadata that have no MLIR fixture
+  // spelling on inline_asm, and verify the rewritten module before codegen.
+  m.def("_test_lower_dead_tied_register_fences_ir", [](const std::string &ir) {
+    llvm::LLVMContext context;
+    llvm::SMDiagnostic diagnostic;
+    auto module = llvm::parseIR(llvm::MemoryBufferRef(ir, "<fence-test>"),
+                                diagnostic, context);
+    if (!module)
+      throw py::value_error(diagnostic.getMessage().str());
+    auto verify = [&] {
+      std::string error;
+      llvm::raw_string_ostream out(error);
+      if (llvm::verifyModule(*module, &out))
+        throw py::value_error(out.str());
+    };
+    verify();
+    unsigned changed = lowerDeadTiedRegisterFences(*module);
+    verify();
+    std::string rewritten;
+    llvm::raw_string_ostream out(rewritten);
+    module->print(out, nullptr);
+    return py::make_tuple(changed, out.str());
+  });
 #ifdef __TLE__
   init_triton_musa_tle_ir(m.def_submodule("ir"));
 #endif // __TLE__

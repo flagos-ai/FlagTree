@@ -102,3 +102,24 @@ def test_exact_llvm_fence_contract(tmp_path, constraints, side_effects, dtype, u
         assert libtriton.mthreads.lower_dead_tied_register_fences(llvm_module) == 0
     else:
         assert after == before
+
+
+@pytest.mark.parametrize("returned", [False, True])
+@pytest.mark.parametrize("fpmath", [False, True])
+def test_fence_result_contract_verified(returned, fpmath):
+    from triton._C import libtriton
+
+    arg = "float returned %x" if returned else "float %x"
+    metadata = ", !fpmath !0" if fpmath else ""
+    ir = f'''define void @probe(float %x) {{
+      %ignored = tail call float asm sideeffect "", "=R,0"({arg}){metadata}
+      ret void
+    }}
+    !0 = !{{float 2.5}}
+    '''
+    changed, after = libtriton.mthreads._test_lower_dead_tied_register_fences_ir(ir)
+    assert changed == int(not returned and not fpmath)
+    if returned or fpmath:
+        assert f'tail call float asm sideeffect "", "=R,0"({arg}){metadata}' in after
+    else:
+        assert 'tail call void asm sideeffect "", "R"(float %x)' in after
