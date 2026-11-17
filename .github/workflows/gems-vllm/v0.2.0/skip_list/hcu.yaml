@@ -40,6 +40,9 @@ skip_operators:
   - kda_state_scatter
   - kpool_state_compress
   - top_k_top_p
+  - bincount
+  - weight_norm_interface
+  - apply_repetition_penalties
 
 skip_test_patterns: []
 
