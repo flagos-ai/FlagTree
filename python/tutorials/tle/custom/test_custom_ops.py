@@ -8,7 +8,8 @@ Minimal standalone correctness checks for every op registered in
 custom_ops.bc, one group per op:
 
   - gather_gm_to_l1      (fp16 / bf16): verified through a following tl.dot
-  - gather_gm_to_ub      (fp16 / bf16): verified by storing the result to GM
+  - gather_gm_to_ub      (fp16 / bf16 / uint8): verified by storing the
+                          result to GM
   - sort_1d_pack         (all three sort paths BASE / S4096_K129_512 /
                           S4096_K1_128_K2048, plus an index_offset case)
   - merge_exhaust_sort4  (4-way / 2-way / 3-way with a hole way)
@@ -356,7 +357,7 @@ D = 16
 L1_INDEX = [3, 4, 9, 10, 2, 7, 0, 1, 12, 13, 5, 8, 11, 6, 15, 14]
 UB_INDEX = [20, 21, 19, 30, 31, 25, 24, 18, 27, 28, 22, 29, 26, 23, 17, 16]
 
-_TL_DTYPE = {torch.float16: tl.float16, torch.bfloat16: tl.bfloat16}
+_TL_DTYPE = {torch.float16: tl.float16, torch.bfloat16: tl.bfloat16, torch.uint8: tl.uint8}
 
 
 def test_gather_gm_to_l1(torch_dtype, tol):
@@ -387,8 +388,14 @@ def test_gather_gm_to_l1(torch_dtype, tol):
 
 def test_gather_gm_to_ub(torch_dtype):
     torch.manual_seed(0)
-    src = torch.randn((NUM_ROWS, D), dtype=torch_dtype, device=DEVICE)
-    output = torch.empty((TILE_SIZE, D), dtype=torch_dtype, device=DEVICE)
+    # A row is copied in whole 32-byte DMA blocks, so D counts 16-bit
+    # elements and a one-byte dtype needs twice as many to reach 32 bytes.
+    width = 2 * D if torch_dtype == torch.uint8 else D
+    if torch_dtype == torch.uint8:
+        src = torch.randint(0, 256, (NUM_ROWS, width), dtype=torch_dtype, device=DEVICE)
+    else:
+        src = torch.randn((NUM_ROWS, width), dtype=torch_dtype, device=DEVICE)
+    output = torch.empty((TILE_SIZE, width), dtype=torch_dtype, device=DEVICE)
     src_index = torch.tensor(UB_INDEX, dtype=torch.int32, device=DEVICE)
 
     gather_gm_to_ub_store_kernel[(1, )](
@@ -397,7 +404,7 @@ def test_gather_gm_to_ub(torch_dtype):
         output,
         NUM_ROWS=NUM_ROWS,
         TILE_SIZE=TILE_SIZE,
-        D=D,
+        D=width,
         DTYPE=_TL_DTYPE[torch_dtype],
         enable_legacy_insert_load_store_for_mix_cv=True,
     )
@@ -681,10 +688,12 @@ def test_duplicate():
 def main():
     from test_cast_ops import main as test_cast_ops
     from test_compare_scalar import main as test_compare_scalar
-
     for torch_dtype, tol in ((torch.float16, 1e-3), (torch.bfloat16, 1e-2)):
         test_gather_gm_to_l1(torch_dtype, tol)
         test_gather_gm_to_ub(torch_dtype)
+    # gather_gm_to_ub only: gather_gm_to_l1's ND2NZ conversion is defined for
+    # 16-bit elements.
+    test_gather_gm_to_ub(torch.uint8)
     test_sort_1d_pack()
     test_merge_exhaust_sort4()
     test_unpack_sort()

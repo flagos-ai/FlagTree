@@ -29,7 +29,12 @@ custom_ops/
 │   ├── gather_gm_to_ub.cpp         # GM → UB 按索引行 gather
 │   └── gather_mask.cpp             # 以内置固定模式对应的二进制或用户自定义输入的 Tensor 数值对应的二进制为 gather mask, 从源操作数中选取元素写入目的操作数中
 ├── cast_ops/
-│   └── cast_int4_to_fp16.cpp       # packed signed INT4 → FP16
+│   ├── cast_int4_to_fp16.cpp       # packed signed INT4 → FP16
+│   └── dequant_e4m3_ue8m0_rows.cpp # 分页 FP8 cache 的行反量化 → GM BF16 tile
+├── mma_ops/
+│   ├── mma_common.h                # 两个 M64 cube 算子共用的 MMA / mailbox
+│   ├── mma_m64_tile.cpp            # 单 tile M64 MMA，操作数 L1 双缓冲
+│   └── mma_m64_resident.cpp        # M64 MMA，输出列常驻 L0C 跨 tile 累加
 ├── mask_ops/
 │   └── compare_scalar.cpp          # FP16/FP32 EQ/GT/GE → uint16 位掩码
 ├── reduction_ops/
@@ -85,7 +90,7 @@ custom op 入口，与旧写法 `tle.dsa.ascend.raw("<op_name>", ...)` 生成的
 | --- | --- | --- | --- | --- |
 | `duplicate_bitwise_mask` | VECTOR / V | 将一个变量或立即数复制多次并填充到向量中 | 需要填充数据的向量，对应 Ascend C `const LocalTensor<T>& dst` | `mem_ops/ duplicate.cpp` |
 | `gather_gm_to_l1` | CUBE / MTE2 | 按索引将 GM 连续张量中的 half/bf16 数据行收集到 L1/CBUF，并完成 ND2NZ 搬运 | L1/CBUF half/bf16 目标张量，对应 C++ `dst` | `mem_ops/gather_gm_to_l1.cpp` |
-| `gather_gm_to_ub` | VECTOR / MTE2 | 按索引将 GM 连续张量中的 half/bf16 数据行收集到 UB | UB half/bf16 目标张量，对应 C++ `dst` | `mem_ops/gather_gm_to_ub.cpp` |
+| `gather_gm_to_ub` | VECTOR / MTE2 | 按索引将 GM 连续张量中的 half/bf16/uint8 数据行收集到 UB | UB half/bf16/uint8 目标张量，对应 C++ `dst` | `mem_ops/gather_gm_to_ub.cpp` |
 | `gather_mask_builtin_pattern` | VECTOR / V | 以内置固定模式对应的二进制对应的二进制为 gather mask, 从源操作数中选取元素写入目的操作数中 | 目的操作数，`out[0]` 对应 Ascend C `const LocalTensor<T>& dst`, `out[1]` 对应 Ascend C `uint64_t& rsvdCnt` | `mem_ops/gather_mask.cpp` |
 | `gather_mask_custom_pattern` | VECTOR / V | 以用户自定义输入的 Tensor 数值对应的二进制为 gather mask, 从源操作数中选取元素写入目的操作数中 | 目的操作数，`out[0]`对应 Ascend C `const LocalTensor<T>& dst`, `out[1]`对应 Ascend C `uint64_t& rsvdCnt` | `mem_ops/gather_mask.cpp` |
 | `pair_reduce_sum_continuous_mask` | VECTOR / V | 以 mask 连续模式进行相邻两个（奇偶）元素的求和 | 规约操作结果，对应 Ascend C `const LocalTensor<T>& dst` | `reduction_ops/pair_reduce_sum.cpp` |
@@ -94,6 +99,9 @@ custom op 入口，与旧写法 `tle.dsa.ascend.raw("<op_name>", ...)` 生成的
 | `merge_exhaust_sort4` | VECTOR / V | 对最多四路有序 proposal 执行一次 exhaustion merge | `[dst_proposals, consumed_out]` | `sort_ops/merge_pack_sort.cpp:56-63` |
 | `mrgsort` | VECTOR / V | 对最多四路有序 proposal 执行归并排序 | 排序结果，对应 Ascend C `const LocalTensor<T>& dst` | `sort_ops/mrgsort.cpp` |
 | `unpack_sort` | VECTOR / V | 将 `[value, encoded_index]` proposal 拆分成 value 和 index | `[dst_value, dst_index]` | `sort_ops/unpack_sort.cpp:20-24` |
+| `dequant_e4m3_ue8m0_rows` | VECTOR / MTE3 | 把分页 FP8 cache 的若干行反量化成 GM 里的 BF16 tile | 末尾位置参数 `tile`（GM BF16，原地写）与 `scratch`（UB 工作区） | `cast_ops/dequant_e4m3_ue8m0_rows.cpp` |
+| `mma_m64_tile` | CUBE / M | 单次调用一个 M64 MMA，两个操作数在 L1 双缓冲 | GM fp32 结果，对应 C++ `out` | `mma_ops/mma_m64_tile.cpp` |
+| `mma_m64_resident` | CUBE / M | M64 MMA，`persistent_cols` 列常驻 L0C 跨 tile 累加 | GM fp32 结果，对应 C++ `out` | `mma_ops/mma_m64_resident.cpp` |
 
 ## 算子使用方法
 
@@ -160,7 +168,14 @@ tile_v = tle_raw.call(
 )
 ```
 
-参数含义与 `gather_gm_to_l1` 相同，区别是结果写入二维 UB half/bf16 张量。输出第一维 stride 不得小于 `D`。
+参数含义与 `gather_gm_to_l1` 相同，区别是结果写入二维 UB half/bf16/uint8 张量。输出第一维
+stride 不得小于 `D`。uint8 变体搬的是原始字节，打包的低精度 cache 需要它（一条几百字节的
+记录一行一个 burst）；`gather_gm_to_l1` 没有 uint8 版本，因为它的 ND2NZ 只对 16 位元素有定义。
+
+> **行宽必须是 32 字节的整数倍**：一行按整块 32 字节搬，不满足时向量核直接异常（507035）
+> 而不是报错，所以 registry 里会先断言拦住。实测 uint8 行 32/64/576 字节逐位正确，
+> 16/24/48/80 字节打挂核；fp16 行同理（`D` 16/32/64/576 正确，4/8/12/24 打挂核）。
+> 因此教程里 uint8 用例的 `D` 是 16 位用例的两倍。
 
 > **重要**：与 `gather_gm_to_l1` 相同，调用本算子的 kernel 必须传 `enable_legacy_insert_load_store_for_mix_cv=True`（PIPE_MTE2 + `__ubuf__` ABI，原因同上）。
 >
@@ -395,6 +410,121 @@ out[1] = UB int32 dst_index
 
 `src_proposals` 的有效 view 应覆盖 `2 * topk` 个 float 槽位。示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_unpack_sort`）。
 
+
+以下三个算子的示例用 `tle.dsa.ascend.raw` 书写：它与 `tle_raw.call("ascend_<op>", ...)`
+生成的 IR 完全一致（见上文「调用约定」），而旧入口在 `call` 还未改成可变参数签名的
+工具链上同样可用。
+
+> **这三个算子只能从 cube/vector 混合 kernel 里调用，`test_custom_ops.py` 里没有它们
+> 的独立单测。** 实测（CANN 9.1.0 / bishengir 1.2.0）：把 `dequant_e4m3_ue8m0_rows`
+> 放进一个纯向量 kernel，两条内存规划路径都编不过——不带
+> `disable_auto_cv_work_space_manage` 时 `bishengir-compile` 报
+> `PlanMemory Traverse IR Failed`，带上它则链接阶段报
+> `ld.lld: error: undefined symbol: malloc`（UB 暂存退化成了堆分配）。给该 kernel 补上
+> `tl.dot` 使其成为混合 kernel 亦未通过。两个 cube 算子还另有一层依赖：mailbox 的
+> `PIPE_FIX → PIPE_M` 事件要靠调用方在 cube 与 vector 之间的 `sync_block_set` /
+> `sync_block_wait` 配合，缺少向量侧参与时向量核直接异常（507035）。
+>
+> 三者的正确性由 FlagGems-vllm 的 `tests/test_sparse_attn_sharedkv_fp8.py` 覆盖：
+> MODEL1 解码的 204 个 trace 配置全部通过，其调用结构见
+> `runtime/backend/_ascend/ops/sparse_attn_sharedkv_fp8.py`。等上述内存规划问题修复后，
+> 应补上独立单测。
+
+调用这三个算子的 kernel 必须传以下 launch 选项——设备函数自己在两个向量 sub-block
+之间切分 tile、自己管 UB、自己写 cube/vector 之间的标志位，所以自动绑定、自动工作区
+规划和自动注入的 block sync 都要让开：
+
+```python
+enable_auto_bind_sub_block=False,
+disable_auto_cv_work_space_manage=True,
+disable_auto_inject_block_sync=True,
+```
+
+### `dequant_e4m3_ue8m0_rows`
+
+```python
+tile = tle.dsa.ascend.raw(
+    "dequant_e4m3_ue8m0_rows",
+    win_pool, cmp_pool, pages, slots,
+    first_row, win_count, count,
+    page_stride, record_bytes, scale_offset, page_slots, window_extent,
+    tile, scratch,
+)
+```
+
+记录格式是固定的：448 个 e4m3 值，然后 64 个已经是最终形式的 BF16 值（原样拷出），
+每行共 512 个输出列。一页放 `page_slots` 个 `record_bytes` 字节的记录，页内
+`scale_offset` 处再放每 token 八个字节：七个 ue8m0 组 scale 加一个 pad 字节，
+每 64 个 e4m3 值一个 scale。只有页几何是参数化的，所以同一个算子可以服务任何
+按这个记录打包的分页 cache。
+
+- `win_pool` / `cmp_pool`：GM 池。前 `win_count` 行索引前者，其余索引后者；两者可以相同；
+- `pages` / `slots`：GM 二维 int32 映射，形状 `(N, 1)`。**`slots` 的高位携带该物理连续
+  run 的长度**（`run = location / page_slots`），一个 run 合并成一次 DMA burst；
+- `first_row`：本 tile 的首个逻辑行；
+- `count`：有效行数，`>= count` 的行被置零；
+- `window_extent`：映射里 window 区域跨的逻辑行数；
+- `tile`：GM 二维 bf16，形状 `(rows, 512)`，**原地写入**。它是指向 GM 的 block
+  pointer 而不是会被返回的 tensor，所以作为末尾的位置参数传入，不走 `out=`；
+- `scratch`：UB 二维 bf16 工作区，形状 `(rows, 832)`，行数须是 8 的倍数。它是算子的
+  工作存储而不是结果，返回后内容未定义；之所以由调用方传进来，是因为 UB 的分配权在
+  调用方。（将来若 `extra_buffers` 的 C++ 侧 ABI 固化，这一个可以改为由框架分配。）
+
+映射由算子自己读，而不是由调用方解析成地址：run 长度折进 slot 高位之后，一个
+十六行、slot 连续的 tile 只发一条 copy 而不是十六条；在算子外面解析映射就拿不到这个。
+
+e4m3 → bf16 是位搬移而不是算术，`vconv_s82f16` 用硬件做位宽扩展、一条指令吃 256
+字节，整个 tile 约二十余条指令、每条带 `repeat = rows`；同样的变换写成 Triton
+elementwise 大约是**每行** 26 条指令（行循环交不给序列器），实测在元素数相同的
+情况下向量管线时间是 6.5 倍。ue8m0 scale 的应用在指数域是精确的：scale 是
+2^(s-127)，位搬移后的 e4m3 字节是 2^(e-127)*(1+m/8)，所以把 s-7 加到指数上就是
+整个乘法，`vbrcb` 配带 stride 的 `vadd` 不需要把 scale 物化成一个 tile。
+
+### `mma_m64_tile`
+
+```python
+out = tle.dsa.ascend.raw(
+    "mma_m64_tile",
+    a, b, n, kind, step, final_step, out,
+)
+```
+
+- `kind` 0：`[64, 512]` 的 A 乘转置后的 `[n, 512]` B；`kind` 1：`[64, n]` 的 A 乘
+  **已经驻留在 L1 的** B。配对使用是重点——`kind` 1 不重新加载 B，所以一个 tile
+  只过一次 GM；
+- `step`：选 L1 bank 对，调用方可以在本 tile 还在 cube 里时发下一个 tile 的加载；
+- `final_step`：非零时在最后一次调用上排空 mailbox；
+- `out`：GM 二维 fp32，原地写入（末尾位置参数，不走 `out=`）。
+
+形状契约：M 固定 64、K 固定 512——两者都编进了 L0 的容量算术
+（`half_l0 / rows / 16 * 16`）和调用方的 L1 偏移，所以不作为参数。`n` 须是 16 的倍数。
+
+### `mma_m64_resident`
+
+```python
+out = tle.dsa.ascend.raw(
+    "mma_m64_resident",
+    a, b, next_b, bn, kind, tile, flags, persistent_cols, out,
+)
+```
+
+`kind` 的两种乘法与 `mma_m64_tile` 相同，区别是 `kind` 1 把前 `persistent_cols`
+列累加进一个**跨调用存活**的 L0C bank，余下 `512 - persistent_cols` 列走每 tile
+的 mailbox 送出去。这样一个请求的运行和不会被写到 GM 再读回来。常驻 bank 在调用方
+标记为「请求最后一个 tile」时刷出。
+
+`flags` 是位集合：
+
+| 位 | 含义 |
+| ---: | --- |
+| 1 | 本程序队列的最后一个 tile——排空 mailbox |
+| 2 | 某个请求的第一个 tile——重新加载 A 并初始化累加器 |
+| 4 | 某个请求的最后一个 tile——把常驻列刷到 GM |
+| 8 | 把 `next_b` 预取进下一个 L1 bank；不置位时 `next_b` 不被读取 |
+
+`tile` 是队列位置，用来选 L1 bank，在 `TLE_MMA_L1_B_BANKS` 个 bank 上轮转。
+形状契约同 `mma_m64_tile`；`bn` 和 `persistent_cols` 须是 16 的倍数，且
+`persistent_cols` 不能超过单个 L0C bank 装得下的宽度。
 
 ## 编译方法
 

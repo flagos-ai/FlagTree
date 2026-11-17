@@ -42,9 +42,13 @@ set(ASCEND_CUSTOM_OPS
   "sort_ops/unpack_sort.cpp::dav-c220-vec"
   "mask_ops/compare_scalar.cpp::dav-c220-vec"
   "cast_ops/cast_int4_to_fp16.cpp::dav-c220-vec"
+  "cast_ops/dequant_e4m3_ue8m0_rows.cpp::dav-c220-vec"
+  "mma_ops/mma_m64_tile.cpp::dav-c220-cube"
+  "mma_ops/mma_m64_resident.cpp::dav-c220-cube"
 )
 
 set(SORT_OPS_DIR "${ASCEND_CUSTOM_OPS_DIR}/sort_ops")
+set(MMA_OPS_DIR "${ASCEND_CUSTOM_OPS_DIR}/mma_ops")
 set(OP_BITCODES "")
 foreach(entry IN LISTS ASCEND_CUSTOM_OPS)
   string(REPLACE "::" ";" entry_parts "${entry}")
@@ -55,6 +59,9 @@ foreach(entry IN LISTS ASCEND_CUSTOM_OPS)
   set(op_include_flags -I "${TEMPLATE_INCLUDE}")
   if(src MATCHES "^sort_ops/")
     list(APPEND op_deps "${SORT_OPS_DIR}/sort_common.h")
+  endif()
+  if(src MATCHES "^mma_ops/")
+    list(APPEND op_deps "${MMA_OPS_DIR}/mma_common.h")
   endif()
   if(src STREQUAL "sort_ops/sort_1d_pack.cpp")
     list(APPEND op_deps
