@@ -241,6 +241,24 @@ def finalize_backend_build_tree(build_lib):
         hook(build_lib)
 
 
+def unlink_language_extra_aliases(build_lib):
+    """Drop the language extra symlinks a previous packaging run left behind.
+
+    A backend may replace triton/language/extra/<name> with a link to another
+    directory in the tree.  build_py copies through such a link, so the vendor
+    files it stages would land inside the link target and be packaged as part of
+    it; removing the links first makes build_py stage the real directories again,
+    and the backend recreates the links afterwards.
+    """
+    extra_dir = Path(build_lib) / "triton" / "language" / "extra"
+    if not extra_dir.is_dir():
+        return
+    for alias in extra_dir.iterdir():
+        if alias.is_symlink():
+            alias.unlink()
+            print(f"[packaging] removed stale symlink {alias}")
+
+
 def enable_flagtree_third_party(name):
     return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
 
