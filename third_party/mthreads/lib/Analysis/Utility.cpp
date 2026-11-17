@@ -1079,15 +1079,18 @@ bool cvtNeedsSharedMemory(RankedTensorType srcTy, RankedTensorType dstTy) {
   // Reserving scratch for an unchanged register mapping wastes shared memory
   // and can reduce the number of resident CTAs even though no accesses remain.
   auto hasLinearEncoding = [](Attribute encoding) {
-    while (auto slice = dyn_cast<mlir::triton::gpu::SliceEncodingAttr>(encoding))
+    while (auto slice =
+               dyn_cast<mlir::triton::gpu::SliceEncodingAttr>(encoding))
       encoding = slice.getParent();
     return isa<mlir::triton::gpu::LinearEncodingAttr>(encoding);
   };
   if ((hasLinearEncoding(srcTy.getEncoding()) ||
        hasLinearEncoding(dstTy.getEncoding())) &&
       srcTy.getElementType() == dstTy.getElementType() &&
-      mlir::triton::gpu::getTotalElemsPerThread(srcTy) == mlir::triton::gpu::getTotalElemsPerThread(dstTy) &&
-      mlir::triton::gpu::toLinearLayout(srcTy) == mlir::triton::gpu::toLinearLayout(dstTy))
+      mlir::triton::gpu::getTotalElemsPerThread(srcTy) ==
+          mlir::triton::gpu::getTotalElemsPerThread(dstTy) &&
+      mlir::triton::gpu::toLinearLayout(srcTy) ==
+          mlir::triton::gpu::toLinearLayout(dstTy))
     return false;
 #endif
   return !cvtReordersRegisters(srcTy, dstTy) &&

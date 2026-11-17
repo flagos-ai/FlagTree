@@ -140,8 +140,8 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
       if (src.getInDimSize(name) != dst.getInDimSize(name))
         return {}; // Never silently cross a partition's execution geometry.
     }
-    auto cast = triton::gpu::ConvertLayoutOp::create(
-        builder, loc, desired, inputs[0]);
+    auto cast =
+        triton::gpu::ConvertLayoutOp::create(builder, loc, desired, inputs[0]);
     cast->setAttr(triton::musa_tle::kMUSATLEPartitionMaterializationAttr,
                   builder.getUnitAttr());
     return cast.getResult();

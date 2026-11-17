@@ -2,6 +2,7 @@ from triton.experimental.tle.language.gpu.types import distributed_encoding
 
 
 class RegisterOrder(distributed_encoding):
+
     def __init__(self, reg, lane, warp, shape):
         self.reg = tuple(map(tuple, reg))
         self.lane = tuple(map(tuple, lane))

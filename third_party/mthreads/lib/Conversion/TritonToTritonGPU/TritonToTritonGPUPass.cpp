@@ -109,8 +109,9 @@ static Attribute musaTleLocalSplitSourceEncoding(RankedTensorType type,
         regs.push_back(bit);
         bit.assign(bit.size(), 0);
       }
-      return LinearEncodingAttr::get(
-          ctx, LinearLayout(std::move(bases), ll.getOutDims(), /*isSurjective=*/true));
+      return LinearEncodingAttr::get(ctx, LinearLayout(std::move(bases),
+                                                       ll.getOutDims(),
+                                                       /*isSurjective=*/true));
     }
   }
   return {};
@@ -256,7 +257,8 @@ static LogicalResult updateMusaTleEncoding(ArrayRef<Value> values,
     // or rematerialize the leaf as needed. Do not weaken computed values,
     // block arguments, memory results, or the set_layout results themselves.
     if (auto *producer = value.getDefiningOp())
-      if (isa<arith::ConstantOp, triton::MakeRangeOp, triton::SplatOp>(producer))
+      if (isa<arith::ConstantOp, triton::MakeRangeOp, triton::SplatOp>(
+              producer))
         incoming.mayVary = true;
     auto [it, inserted] = valueToEncoding.insert({value, incoming});
     if (!inserted) {
@@ -267,7 +269,8 @@ static LogicalResult updateMusaTleEncoding(ArrayRef<Value> values,
       if (!diagOp)
         diagOp = func.getOperation();
       MusaTleEncodingInfo merged;
-      if (failed(mergeMusaTleEncodingInfo(it->second, incoming, diagOp, merged)))
+      if (failed(
+              mergeMusaTleEncodingInfo(it->second, incoming, diagOp, merged)))
         return failure();
       if (merged.encoding == it->second.encoding &&
           merged.mayVary == it->second.mayVary)
@@ -448,9 +451,10 @@ static LogicalResult propagateMusaTleEncodingHints(
       } else if (!isa<mlir::triton::musa_tle::SetLayoutOp>(definingOp)) {
         Attribute srcEncoding = inferSrcEncoding(definingOp, info.encoding);
         if (srcEncoding) {
-          MusaTleEncodingInfo srcInfo{
-              srcEncoding, info.mayVary || musaTleEncodingsMayVary(definingOp) ||
-                  bool(getMemAccessPtr(definingOp))};
+          MusaTleEncodingInfo srcInfo{srcEncoding,
+                                      info.mayVary ||
+                                          musaTleEncodingsMayVary(definingOp) ||
+                                          bool(getMemAccessPtr(definingOp))};
           SmallVector<Value> tensorOperands;
           if (auto gather = dyn_cast<triton::GatherOp>(definingOp)) {
             tensorOperands.push_back(gather.getIndices());
@@ -510,8 +514,8 @@ static LogicalResult propagateMusaTleEncodingHints(
       return;
     OpBuilder builder(gather);
     auto converted = triton::gpu::ConvertLayoutOp::create(
-        builder, gather.getLoc(),
-        srcTy.cloneWithEncoding(dstTy.getEncoding()), gather.getIndices());
+        builder, gather.getLoc(), srcTy.cloneWithEncoding(dstTy.getEncoding()),
+        gather.getIndices());
     setTleExplicitResultEncoding(converted.getOperation(), 0,
                                  dstTy.getEncoding());
     gather->setOperand(1, converted.getResult());
@@ -529,8 +533,8 @@ static LogicalResult propagateMusaTleEncodingHints(
       auto resultTy = cast<RankedTensorType>(split.getResult(0).getType());
       if (!resultTy.getEncoding())
         return;
-      Attribute legalEncoding = musaTleLocalSplitSourceEncoding(
-          srcTy, srcTy.getEncoding());
+      Attribute legalEncoding =
+          musaTleLocalSplitSourceEncoding(srcTy, srcTy.getEncoding());
       if (!legalEncoding)
         return;
       OpBuilder before(split);
@@ -542,8 +546,8 @@ static LogicalResult propagateMusaTleEncodingHints(
       srcTy = cast<RankedTensorType>(converted.getType());
       changed = true;
     }
-    Attribute resultEncoding = inferDstEncoding(split.getOperation(),
-                                                srcTy.getEncoding());
+    Attribute resultEncoding =
+        inferDstEncoding(split.getOperation(), srcTy.getEncoding());
     if (!resultEncoding)
       return;
     OpBuilder builder(split);
@@ -678,7 +682,7 @@ static LogicalResult propagateMusaTleEncodingHints(
         setTleExplicitResultEncoding(converted.getOperation(), 0,
                                      oldType.getEncoding());
         argument.replaceAllUsesExcept(converted.getResult(),
-                                       converted.getOperation());
+                                      converted.getOperation());
         changed = true;
       }
       yield->setOperand(i, bridge(yield.getOperand(i), yield));

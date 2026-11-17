@@ -11,6 +11,7 @@ require_mthreads_libtriton()
 
 
 class _RegisterOrder(distributed_encoding):
+
     @property
     def rank(self):
         return 2
@@ -45,8 +46,7 @@ def _hard_result(x, out, L: tl.constexpr):
 @pytest.mark.parametrize("linear", [False, True])
 def test_reduce_result_contract_is_materialized(dtype, linear):
     layout = _RegisterOrder() if linear else tle.gpu.mthreads.MusaSqmmaEncoding([3, 1], [8, 1], [32, 128, 128])
-    result = compile_musa(
-        _hard_result, {"x": dtype, "out": "*fp32", "L": "constexpr"}, {"L": layout}, options={"num_warps": 8}
-    )
+    result = compile_musa(_hard_result, {"x": dtype, "out": "*fp32", "L": "constexpr"}, {"L": layout},
+                          options={"num_warps": 8})
     assert result.module is None and result.function is None
     assert "unrealized_conversion_cast" not in result.asm["ttgir"]

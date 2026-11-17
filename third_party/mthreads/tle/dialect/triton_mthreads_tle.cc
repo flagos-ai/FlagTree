@@ -557,8 +557,7 @@ void init_triton_musa_tle_ir(py::module m) {
                                                order, cgaBases);
            })
       .def("get_tle_linear_encoding",
-           [](TritonOpBuilder &self,
-              std::vector<std::vector<int32_t>> regBases,
+           [](TritonOpBuilder &self, std::vector<std::vector<int32_t>> regBases,
               std::vector<std::vector<int32_t>> laneBases,
               std::vector<std::vector<int32_t>> warpBases,
               std::vector<std::vector<int32_t>> blockBases,
@@ -569,10 +568,12 @@ void init_triton_musa_tle_ir(py::module m) {
              auto kWarp = mlir::StringAttr::get(ctx, "warp");
              auto kBlock = mlir::StringAttr::get(ctx, "block");
              auto outDims = mlir::triton::standardOutDimPairs(ctx, shape);
-             auto ll = mlir::triton::LinearLayout(
-                 {{kReg, regBases}, {kLane, laneBases},
-                  {kWarp, warpBases}, {kBlock, blockBases}},
-                 outDims, /*requireSurjective=*/true);
+             auto ll = mlir::triton::LinearLayout({{kReg, regBases},
+                                                   {kLane, laneBases},
+                                                   {kWarp, warpBases},
+                                                   {kBlock, blockBases}},
+                                                  outDims,
+                                                  /*requireSurjective=*/true);
              return ttg::LinearEncodingAttr::get(ctx, std::move(ll));
            })
       .def("get_sliced_encoding",

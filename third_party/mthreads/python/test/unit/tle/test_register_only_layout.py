@@ -12,6 +12,7 @@ require_mthreads_libtriton()
 
 
 class RegisterOrder(distributed_encoding):
+
     @property
     def rank(self):
         return 2

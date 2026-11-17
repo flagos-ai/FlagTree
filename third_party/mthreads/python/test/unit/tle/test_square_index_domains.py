@@ -29,8 +29,10 @@ def test_shared_cse_leaves_do_not_override_square_row_or_column(tmp_path, same_b
     layout = tle.gpu.mthreads.MusaSqmmaEncoding([3, 1], [16, 1], [32, 128, 128])
     k = compile_musa(
         _square,
-        {"X": "*fp32", "Y": "*fp32", "O": "*fp32", "L": "constexpr", "B": "constexpr",
-         "SAME_BASE": "constexpr", "TAG_ROW": "constexpr"},
+        {
+            "X": "*fp32", "Y": "*fp32", "O": "*fp32", "L": "constexpr", "B": "constexpr", "SAME_BASE": "constexpr",
+            "TAG_ROW": "constexpr"
+        },
         {"L": layout, "B": 128, "SAME_BASE": same_base, "TAG_ROW": False},
         options={"num_warps": 16},
     )

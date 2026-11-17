@@ -284,7 +284,8 @@ struct ConvertLayoutOpConversion
     // pack only register bits which do not participate
     // in lane exchanges. This keeps mixed transpositions as whole-word
     // selects/shuffles and avoids composing overlapping byte selectors.
-    unmixedBytePacking = bitwidth == 8 &&
+    unmixedBytePacking =
+        bitwidth == 8 &&
         isa<MUSASqmmaEncodingAttr, LinearEncodingAttr, BlockedEncodingAttr>(
             srcTy.getEncoding()) &&
         isa<LinearEncodingAttr, BlockedEncodingAttr>(dstTy.getEncoding());

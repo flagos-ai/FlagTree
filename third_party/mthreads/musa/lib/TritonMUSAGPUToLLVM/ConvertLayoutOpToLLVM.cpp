@@ -148,15 +148,13 @@ public:
     // exactly the same registers. Do not route that representational cast
     // through the conservative shared-memory carrier path below.
     auto hasLinearEncoding = [](Attribute encoding) {
-      while (auto slice =
-                 dyn_cast<triton::gpu::SliceEncodingAttr>(encoding))
+      while (auto slice = dyn_cast<triton::gpu::SliceEncodingAttr>(encoding))
         encoding = slice.getParent();
       return isa<triton::gpu::LinearEncodingAttr>(encoding);
     };
     if ((hasLinearEncoding(srcLayout) || hasLinearEncoding(dstLayout)) &&
         toLinearLayout(srcTy) == toLinearLayout(dstTy) &&
-        adaptor.getSrc().getType() ==
-            getTypeConverter()->convertType(dstTy)) {
+        adaptor.getSrc().getType() == getTypeConverter()->convertType(dstTy)) {
       rewriter.replaceOp(op, adaptor.getSrc());
       return success();
     }
