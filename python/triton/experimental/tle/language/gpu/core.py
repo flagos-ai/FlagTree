@@ -39,7 +39,6 @@ from triton.compiler.code_generator import flatten_values_to_ir, unflatten_ir_va
 from triton.language.core import (
     constexpr,
     tensor,
-    range,
     range as _tl_range,
 )
 
@@ -70,21 +69,6 @@ def _is_wgmma_user_promise_marked(_generator):
         return False
     mode = _generator.module.get_operation().get_str_attr(_WGMMA_PIPELINE_MODE_ATTR)
     return mode == _WGMMA_PIPELINE_MODE_USER_PROMISE
-
-
-class pipeline(range):
-    """
-    Iterator that counts upward forever, with parallel execution semantics.
-
-    This is a special iterator used to implement similar semantics to Python's :code:`range` in the context of
-    :code:`triton.jit` functions. In addition, it allows user to pass extra attributes to the compiler.
-    :param bind_sub_block: Tells the compiler if multiple vector cores participate in the loop.
-        This is used in the mixed cube-vector kernel on 910B. The number of vector cores is determined by the number of
-        iteration in this loop. Currently on 910B, max 2 vector cores could be used.
-    """
-
-    def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None):
-        super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor)
 
 
 @tl.builtin

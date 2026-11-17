@@ -45,25 +45,31 @@ FlagTree 致力于打造多元 AI 芯片编译器及相关工具平台，发展�
 |主干分支|厂商  |后端   |Triton 版本      |用户指引    |
 |:-------|:-----|:------|:----------------|:-----------|
 |[main](https://github.com/flagos-ai/flagtree/tree/main)|NVIDIA<br>NVIDIA TileIR<br>AMD<br>Enflame（燧原）<br>ILUVATAR（天数智芯）<br>HYGON（海光信息）<br>Moore Threads（摩尔线程）<br>DAMO ACADEMY（阿里达摩院）<br>Huixi（辉羲智能）<br>MetaX（沐曦股份）<br>Sunrise（曦望芯科）<br>KLX<br>T-Head（平头哥）<br>SpacemiT（进迭时空）<br>Tsingmicro（清微智能）|[nvidia](/third_party/nvidia/)<br>[tileir](/third_party/tileir/)<br>[amd](/third_party/amd/)<br>[enflame](/third_party/enflame/)<br>[iluvatar](/third_party/iluvatar/)<br>[hcu](/third_party/hcu/)<br>[mthreads](/third_party/mthreads/)<br>[damoacademy](/third_party/thrive/)<br>[rpu](/third_party/rpu/)<br>[metax](/third_party/metax/)<br>[sunrise](/third_party/sunrise/)<br>[xpu](/third_party/xpu/)<br>[ppu](/third_party/ppu/)<br>[spacemit](/third_party/spacemit/)<br>[tsingmicro](/third_party/tsingmicro/)|3.6|[nvidia guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-nvidia)<br>[tileir guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-tileir)<br>[amd guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-amd)<br>[enflame guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-enflame)<br>[iluvatar guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-iluvatar)<br>[hcu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-hcu)<br>[mthreads guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-mthreads)<br>-<br>[rpu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-rpu)<br>[metax guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-metax)<br>[sunrise guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-sunrise)<br>[xpu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-xpu)<br>[ppu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-ppu)<br>[spacemit guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-spacemit)<br>[tsingmicro guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-tsingmicro)|
+|[triton_v3.8.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.8.x)|Intellifusion（云天励飞）|[intellifusion](https://github.com/flagos-ai/FlagTree/blob/triton_v3.8.x/third_party/intellifusion/)|3.8|-|
 |[triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)|Huawei Ascend（华为昇腾）|[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/third_party/ascend/)|3.5|[ascend guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-ascend)|
 |[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|ARM China（安谋科技）<br>ARM64 cpu<br>x86_64 cpu|[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)<br>[cpu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/cpu/)<br>[triton-shared](https://github.com/microsoft/triton-shared)|3.3|[aipu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-aipu)<br>[cpu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-cpu)<br>-|
 |[triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x)|Cambricon（寒武纪）|[cambricon](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/cambricon/)|3.2|-|
 
 FlagTree 的扩展组件当前在部分后端可用：
 
-|主干分支|后端   |Triton 版本   |扩展组件            |
-|:-------|:------|:-------------|:-------------------|
-|[main](https://github.com/flagos-ai/flagtree/tree/main)|[nvidia](/third_party/nvidia/)<br>[enflame](/third_party/enflame/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct GPU](https://github.com/flagos-ai/FlagTree/wiki/TLE#331-gpu)<br>[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
-|[main](https://github.com/flagos-ai/flagtree/tree/main)|[amd](/third_party/amd/)<br>[mthreads](/third_party/mthreads/)<br>[sunrise](/third_party/sunrise/)<br>[hcu](/third_party/hcu/)<br>[iluvatar](/third_party/iluvatar/)<br>[ppu](/third_party/ppu/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct GPU](https://github.com/flagos-ai/FlagTree/wiki/TLE#331-gpu)|
-|[main](https://github.com/flagos-ai/flagtree/tree/main)|[metax](/third_party/metax/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)|
-|[main](https://github.com/flagos-ai/flagtree/tree/main)|[tsingmicro](https://github.com/flagos-ai/FlagTree/blob/main/third_party/tsingmicro/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct DSA](https://github.com/flagos-ai/FlagTree/wiki/TLE#332-dsa)<br>[FLIR](https://github.com/flagos-ai/flir)|
-|[triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)|[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/third_party/ascend/)|3.5|[TLE-Struct DSA](https://github.com/flagos-ai/FlagTree/wiki/TLE#332-dsa)<br>[FLIR](https://github.com/flagos-ai/flir)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
-|[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|[aipu](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/third_party/aipu/)|3.3|[FLIR](https://github.com/flagos-ai/flir)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
+|后端|Triton<br>版本|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)|[TLE-Struct](https://github.com/flagos-ai/FlagTree/wiki/TLE#33-tle-struct)|[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw)|CommonIR|
+|:------|:------|:------|:------|:------|:------|
+|[nvidia](/third_party/nvidia/)|3.6|✅|✅|✅|✅|
+|[amd](/third_party/amd/)|3.6|✅|✅|||
+|[enflame](/third_party/enflame/)|3.6|✅|✅|✅||
+|[iluvatar](/third_party/iluvatar/)|3.6|✅|✅|✅||
+|[hcu](/third_party/hcu/)|3.6|✅|✅|✅||
+|[mthreads](/third_party/mthreads/)|3.6|✅|✅||
+|[thrive](/third_party/thrive/)|3.6|✅|✅|||
+|[metax](/third_party/metax/)|3.6|✅|✅|||
+|[sunrise](/third_party/sunrise/)|3.6|✅|✅|||
+|[xpu](/third_party/xpu/)|3.6||✅|✅||
+|[ppu](/third_party/ppu/)|3.6|✅|✅|✅||
+|[spacemit](/third_party/spacemit/)|3.6|✅||||
+|[tsingmicro](/third_party/tsingmicro/)|3.6|✅|✅|||
+|[ascend](/third_party/ascend/)|3.5||✅|✅|✅|
 
 ## TLE（Triton Language Extensions）简介
-
-如果要在 nvidia 后端使用 TLE 语言扩展，请使用 main 分支。
-其他后端的 TLE 支持分支详见上面的表格。
 
 Triton 在算子开发效率方面表现突出，但在多元 AI 芯片适配和更深层性能调优场景下，往往需要对分布式执行、内存访问模式和硬件相关原语提供更显式的控制。
 TLE 以分层方式扩展 Triton，在保持现有 Triton 工作流兼容性的同时补齐这部分能力。
@@ -92,6 +98,7 @@ TLE 的主要优势包括：
 
 ## 新特性
 
+* 2026/11/12 新增接入 [intellifusion](https://github.com/flagos-ai/FlagTree/tree/triton_v3.8.x/third_party/intellifusion/) 后端（对应 Triton 3.8），加入 CI/CD。
 * 2026/09/10 [tsingmicro](/third_party/tsingmicro/) 后端升级到 Triton 3.6，加入 CI/CD。
 * 2026/08/21 [amd](/third_party/amd/) 后端支持 TLE，加入 CI/CD。
 * 2026/08/18 新增接入 [spacemit](/third_party/spacemit/) 后端（对应 Triton 3.6），加入 CI/CD。
@@ -157,20 +164,15 @@ python3 -m pip install -r python/requirements.txt
 
 ```shell
 # Set FLAGTREE_BACKEND using the backend name from the table above
-export FLAGTREE_BACKEND=${backend_name}  # Do not set it on nvidia/amd/triton-shared
-
-# For Triton 3.1/3.2/3.3 (branch: triton_v3.1.x, triton_v3.2.x, triton_v3.3.x)
-cd python; python3 -m pip install . --no-build-isolation -v  # Install flagtree and uninstall triton
-
-# For Triton 3.4/3.5/3.6 (branch: triton_v3.4.x, triton_v3.5.x, main)
-python3 -m pip install . --no-build-isolation -v             # Install flagtree and uninstall triton
+export FLAGTREE_BACKEND=${backend_name}  # Do not set it on nvidia
+python3 -m pip install . --no-build-isolation -v  # Install flagtree and uninstall triton
 ```
 
 安装 `flagtree` 后，可通过下列命令查看：
 
 ```shell
 python3 -m pip show flagtree
-cd ${ANY_DIR_OTHER_THAN_FLAGTREE_PYTHON}; python3 -c 'import triton; print(triton.__path__)'
+python3 -c 'import triton; print(triton.__path__)'
 ```
 
 ## 免源码安装

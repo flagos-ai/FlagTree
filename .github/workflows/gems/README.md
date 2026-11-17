@@ -8,6 +8,10 @@ gems/<flaggems-tag>/skip_list/
 ├── default.yaml      used unless the backend has its own
 └── <backend>.yaml    overrides default.yaml when present
 ```
+FlagGems-vllm uses the same layout in a sibling directory,
+`gems-vllm/<flaggems-vllm-tag>/skip_list/`, selected by `repo-kind:
+flaggems-vllm`. The two never share a directory, so their tag namespaces
+cannot collide.
 
 ## Why only the skip lists live here
 
@@ -15,7 +19,8 @@ Everything else the FlagGems CI needs moved into the actions that run it:
 
 | file | shipped with |
 |---|---|
-| `ci_run_tests.py`, `<tag>/conftest.py` | `.github/actions/run-flaggems-test/assets/` |
+| `ci/ci_run_tests.py` | `.github/actions/run-flaggems-test/assets/` |
+| `gems/<tag>/conftest.py`, `gems-vllm/<tag>/conftest.py` | `.github/actions/run-flaggems-test/assets/` |
 | `compare_test_result.py` | `.github/actions/compare-flaggems-test/scripts/` |
 | `collect_gems_record.py`, `flaggems_runs.schema.json` | `.github/actions/collect-gems-record/scripts/` |
 
@@ -33,13 +38,18 @@ per backend. A backend only needs a file when it differs from `default.yaml`.
 
 The directory name is the `flaggems-tag` input of
 `template-gems-{test,baseline}.yml` verbatim, so no mapping is maintained. A
-new release needs two things: `assets/<tag>/conftest.py` in
+new release needs two things: `assets/gems/<tag>/conftest.py` in
 `run-flaggems-test`, and `<tag>/skip_list/default.yaml` here. Old and new can
 coexist, so backends move over one at a time.
 
-A run whose tag has neither fails rather than falling back. Running with
-FlagGems' own `conftest.py` would collect no operator markers, leaving a
-`summary.json` that looks plausible but is incomplete.
+A FlagGems tag without a skip list fails. A FlagGems tag without a
+`conftest.py` asset falls back to the clone's own `conftest.py`, which works
+only when that release already implements `--first-parameter-only`.
+
+A FlagGems-vllm release needs `assets/gems-vllm/<tag>/conftest.py` and
+`gems-vllm/<tag>/skip_list/default.yaml`. Both are mandatory: FlagGems-vllm's
+own `conftest.py` does not implement `--first-parameter-only`, so there is no
+fallback.
 
 ## Why the skip lists matter beyond skipping
 

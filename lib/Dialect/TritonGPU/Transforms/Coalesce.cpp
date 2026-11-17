@@ -36,6 +36,9 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/StrUtil.h"
 #include "llvm/Support/Debug.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Analysis/CoalescingSlice.h"
+#endif
 
 #define DEBUG_TYPE "tritongpu-coalesce"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -102,6 +105,21 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
   void runOnOperation() override {
     // Run axis info analysis
     ModuleOp moduleOp = getOperation();
+#ifdef __TLE__
+    llvm::DenseSet<Block *> nonExecutableBlocks;
+    bool failedReachability = false;
+    moduleOp.walk([&](FunctionOpInterface function) {
+      if (failed(tle::collectNonExecutableCoalescingBlocks(
+              function, nonExecutableBlocks)))
+        failedReachability = true;
+    });
+    if (failedReachability) {
+      moduleOp.emitError(
+          "failed to prove executable blocks for TLE coalescing");
+      signalPassFailure();
+      return;
+    }
+#endif
     ModuleAxisInfoAnalysis axisInfoAnalysis(moduleOp);
 
     // For each i/o operation, we determine what layout
@@ -114,6 +132,10 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
     moduleOp.walk([&](Operation *curr) {
 #ifdef __TLE__
       if (failedExplicitEncoding)
+        return;
+#endif
+#ifdef __TLE__
+      if (nonExecutableBlocks.contains(curr->getBlock()))
         return;
 #endif
       Value ptr = getMemAccessPtr(curr);
@@ -141,9 +163,15 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
       auto tensorType = cast<RankedTensorType>(ptr.getType());
       CTAEncodingAttr ctaLayout = getCTALayout(tensorType.getEncoding());
       SmallVector<int64_t> shapePerCTA = getShapePerCTA(tensorType);
+#ifdef __TLE__
+      auto layout = buildCoalescedEncoding(
+          &getContext(), axisInfoAnalysis, curr, numWarps, threadsPerWarp,
+          ctaLayout, shapePerCTA, nonExecutableBlocks);
+#else
       auto layout = buildCoalescedEncoding(&getContext(), axisInfoAnalysis,
                                            curr, numWarps, threadsPerWarp,
                                            ctaLayout, shapePerCTA);
+#endif
       layoutMap[curr] = layout;
     });
 #ifdef __TLE__

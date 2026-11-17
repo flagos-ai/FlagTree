@@ -23,7 +23,6 @@ from triton.language import load as tl_load
         (tle.language.gpu.buffered_tensor.store, "gpu.buffered_tensor.store"),
         (tle.language.gpu.buffered_tensor.slot, "gpu.buffered_tensor.slot"),
         (tle.language.gpu.buffered_tensor.subslice, "gpu.buffered_tensor.subslice"),
-        (tle.language.gpu.pipeline, "gpu.pipeline"),
     ],
 )
 def test_primitive_name(primitive, expected):

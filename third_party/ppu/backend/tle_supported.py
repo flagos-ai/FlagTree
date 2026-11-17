@@ -15,6 +15,11 @@
 # compiler.reject_unsupported_tle rejects it with a clear error, which
 # test_tle_smoke.py asserts.
 TLE_SUPPORTED_PRIMITIVES = [
+    ## TLE-Raw
+    "raw.call",
+    "raw.call_smem",
+
+    ## TLE-Lite
     "load",
     "extract_tile",
     "insert_tile",
@@ -28,6 +33,10 @@ TLE_SUPPORTED_PRIMITIVES = [
     "pipe.writer.acquire",
     "pipe.writer.commit",
     "pipe.writer.close",
+
+    ## TLE-Struct GPU
+    "gpu.buffered_tensor.slot",
+    "gpu.buffered_tensor.subslice",
     "gpu.alloc",
     "gpu.copy",
     "gpu.local_ptr",
@@ -36,7 +45,4 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.alloc_barriers",
     "gpu.barrier_wait",
     "gpu.barrier_arrive",
-    "gpu.buffered_tensor.slot",
-    "gpu.buffered_tensor.subslice",
-    "gpu.pipeline",
 ]
