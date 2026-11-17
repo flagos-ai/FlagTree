@@ -303,11 +303,13 @@ public:
   normalizeReductionTo3D(ArrayRef<unsigned> elemsPerThread, unsigned axis);
 
   DispatchPlan buildDispatchPlan(OpBuilder &builder, ArrayRef<Value> inputs,
-                                 const Reduction3DContext &context) const;
+                                 const Reduction3DContext &context,
+                                 mlir::triton::gcu::ValueRemapFn remap) const;
 
   void applyReduce(OpBuilder &builder, Location loc, ArrayRef<Value> outputs,
                    ArrayRef<Value> inputs, const Reduction3DContext &context,
-                   const DispatchPlan &dispatchPlan) const;
+                   const DispatchPlan &dispatchPlan,
+                   mlir::triton::gcu::ValueRemapFn remap) const;
 
 private:
   std::optional<VectorizationPolicy>
@@ -406,7 +408,8 @@ private:
 
   void applyFusionImpl(OpBuilder &builder, Location loc,
                        ArrayRef<Value> outputs, ArrayRef<Value> inputs,
-                       const Reduction3DContext &context) const;
+                       const Reduction3DContext &context,
+                       mlir::triton::gcu::ValueRemapFn remap) const;
 
   void applyScalarImpl(OpBuilder &builder, Location loc,
                        ArrayRef<Value> outputs, ArrayRef<Value> inputs,
@@ -1657,19 +1660,17 @@ void ReduceGenerator::applyScalarImpl(OpBuilder &builder, Location loc,
       });
 }
 
-void ReduceGenerator::applyFusionImpl(OpBuilder &builder, Location loc,
-                                      ArrayRef<Value> outputs,
-                                      ArrayRef<Value> inputs,
-                                      const Reduction3DContext &context) const {
+void ReduceGenerator::applyFusionImpl(
+    OpBuilder &builder, Location loc, ArrayRef<Value> outputs,
+    ArrayRef<Value> inputs, const Reduction3DContext &context,
+    mlir::triton::gcu::ValueRemapFn remap) const {
   assert(inputs.size() == 1 &&
          "Only reductions with a single parameter are supported");
   if (context.reductionAxis == 2) {
-    auto defOp = inputs[0].getDefiningOp();
-    while (isa<memref::ReinterpretCastOp>(defOp)) {
-      defOp = defOp->getOperand(0).getDefiningOp();
-    }
-    assert(isa<memref::AllocaOp>(defOp));
-    Value inputBuffer = defOp->getResult(0);
+    Value inputBuffer = inputs[0];
+    while (auto castOp = inputBuffer.getDefiningOp<memref::ReinterpretCastOp>())
+      inputBuffer = castOp.getSource();
+    assert(triton::gcu::isAllocaInputValue(inputBuffer, remap));
     auto memrefTy = cast<MemRefType>(inputBuffer.getType());
     auto elementTy = memrefTy.getElementType();
     unsigned vectorLength = kOaccSizeInBytes / triton::gcu::getBpe(elementTy);
@@ -1869,16 +1870,17 @@ std::optional<VectorizationPolicy> ReduceGenerator::tryBuildReduceAxis1Policy(
   return policy;
 }
 
-DispatchPlan
-ReduceGenerator::buildDispatchPlan(OpBuilder &builder, ArrayRef<Value> inputs,
-                                   const Reduction3DContext &context) const {
+DispatchPlan ReduceGenerator::buildDispatchPlan(
+    OpBuilder &builder, ArrayRef<Value> inputs,
+    const Reduction3DContext &context,
+    mlir::triton::gcu::ValueRemapFn remap) const {
   if (!vectorLength) {
     return DispatchPlan{ReduceExecutionMode::kScalar, std::nullopt};
   }
   std::optional<VectorizationPolicy> policy;
   if (context.reductionAxis == 2) {
-    if (llvm::any_of(inputs, [](auto input) {
-          return mlir::triton::gcu::isAllocaInputValue(input);
+    if (llvm::any_of(inputs, [&](Value input) {
+          return mlir::triton::gcu::isAllocaInputValue(input, remap);
         })) {
       assert(inputs.size() == 1 &&
              "Only reductions with a single parameter are supported");
@@ -1902,13 +1904,14 @@ void ReduceGenerator::applyReduce(OpBuilder &builder, Location loc,
                                   ArrayRef<Value> outputs,
                                   ArrayRef<Value> inputs,
                                   const Reduction3DContext &context,
-                                  const DispatchPlan &dispatchPlan) const {
+                                  const DispatchPlan &dispatchPlan,
+                                  mlir::triton::gcu::ValueRemapFn remap) const {
   if (dispatchPlan.executionMode == ReduceExecutionMode::kScalar) {
     applyScalarImpl(builder, loc, outputs, inputs, context);
     return;
   }
   if (dispatchPlan.executionMode == ReduceExecutionMode::kFusionMode) {
-    applyFusionImpl(builder, loc, outputs, inputs, context);
+    applyFusionImpl(builder, loc, outputs, inputs, context, remap);
     return;
   }
   assert(dispatchPlan.executionMode == ReduceExecutionMode::kVectorized &&
@@ -1972,7 +1975,20 @@ void ReduceGenerator::applyReduce(OpBuilder &builder, Location loc,
 }
 
 struct TTReduceOpLowering : SharedConversionPattern<triton::ReduceOp> {
-  using SharedConversionPattern::SharedConversionPattern;
+  // Published OACC accumulator buffers, keyed by original loop result; see
+  // gcu::AccPublishContext. Used on Triton 3.5 so accumulator reads target the
+  // local buffer TTDotOpLowering published, which the conversion mapping
+  // cannot deliver to consumers legalized later.
+  mlir::triton::gcu::AccPublishContext &accPublishContext;
+
+  TTReduceOpLowering(const TypeConverter &converter, MLIRContext *ctx,
+                     triton::gcu::FirstLastUserAnalysis &userAnalysis,
+                     std::map<Operation *, Operation *> &replaced2Origin,
+                     triton::gcu::DTETagPool &pTagPool,
+                     mlir::triton::gcu::AccPublishContext &accPublishContext)
+      : SharedConversionPattern(converter, ctx, userAnalysis, replaced2Origin,
+                                pTagPool),
+        accPublishContext(accPublishContext) {}
 
   LogicalResult
   matchAndRewrite(triton::ReduceOp op, OpAdaptor adaptor,
@@ -2001,8 +2017,22 @@ struct TTReduceOpLowering : SharedConversionPattern<triton::ReduceOp> {
 
     Reduction3DContext context =
         ReduceGenerator::normalizeReductionTo3D(elemsPerThread, axis);
-    SmallVector<Value> reduceInputs = reshapeToContiguous3D(
-        rewriter, loc, adaptor.getSrcs(), context.inputDims);
+    // The OACC loop-result replacement is published through the dialect
+    // conversion mapping as an unrealized_conversion_cast; look through it so
+    // the reduce observes the real buffer. On Triton 3.5 the mapping cannot
+    // deliver the publish to this later consumer, so resolve it through the
+    // AccPublishContext handoff instead.
+    SmallVector<Value> srcs;
+    for (auto [i, a] : llvm::enumerate(adaptor.getSrcs())) {
+      Value v = stripUnrealizedConversionCastOp(a);
+      if (failed(mlir::triton::gcu::resolveAccumulatorOperand(
+              op.getSrcs()[i], v, accPublishContext)))
+        return rewriter.notifyMatchFailure(
+            op, "expected OACC publish buffer is not yet available");
+      srcs.push_back(v);
+    }
+    SmallVector<Value> reduceInputs =
+        reshapeToContiguous3D(rewriter, loc, srcs, context.inputDims);
     SmallVector<Value> reduceOutputs =
         reshapeToContiguous3D(rewriter, loc, outputs, context.outputDims);
 
@@ -2180,7 +2210,7 @@ struct TTReduceOpLowering : SharedConversionPattern<triton::ReduceOp> {
   }
 
 private:
-  void applyReduce(triton::ReduceOp op, OpBuilder &rewriter,
+  void applyReduce(triton::ReduceOp op, ConversionPatternRewriter &rewriter,
                    ArrayRef<Value> outputs, ArrayRef<Value> inputs,
                    const std::array<int64_t, 3> &reduceDims,
                    int64_t reduceAxis) const {
@@ -2191,7 +2221,8 @@ private:
     context.outputDims[reduceAxis] = 1;
     context.reductionAxis = reduceAxis;
 
-    auto plan = generator.buildDispatchPlan(rewriter, inputs, context);
+    auto remap = [&](Value value) { return rewriter.getRemappedValue(value); };
+    auto plan = generator.buildDispatchPlan(rewriter, inputs, context, remap);
     if (plan.vectorizationPolicy && plan.vectorizationPolicy->transposeInfo &&
         plan.vectorizationPolicy->transposeInfo->doTranspose) {
       auto loc = op.getLoc();
@@ -2217,9 +2248,9 @@ private:
       auto transposedOutputs = prepareTransposedOutputs(
           rewriter, loc, outputs, transposedContext.outputDims, layout);
       auto transposedPlan = generator.buildDispatchPlan(
-          rewriter, transposedInputs, transposedContext);
+          rewriter, transposedInputs, transposedContext, remap);
       generator.applyReduce(rewriter, loc, transposedOutputs, transposedInputs,
-                            transposedContext, transposedPlan);
+                            transposedContext, transposedPlan, remap);
       if (layout[2] == 0) {
         doTranspose(rewriter, loc, outputs, transposedOutputs, layout, tag);
         for (auto buf : transposedOutputs) {
@@ -2231,8 +2262,8 @@ private:
       }
       return;
     }
-    generator.applyReduce(rewriter, op.getLoc(), outputs, inputs, context,
-                          plan);
+    generator.applyReduce(rewriter, op.getLoc(), outputs, inputs, context, plan,
+                          remap);
   }
 };
 } // namespace
@@ -2241,7 +2272,9 @@ void mlir::triton::populateReduceOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool) {
+    triton::gcu::DTETagPool &pTagPool,
+    gcu::AccPublishContext &accPublishContext) {
   patterns.add<TTReduceOpLowering>(converter, patterns.getContext(),
-                                   userAnalysis, replaced2Origin, pTagPool);
+                                   userAnalysis, replaced2Origin, pTagPool,
+                                   accPublishContext);
 }
