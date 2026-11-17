@@ -685,8 +685,7 @@ def _sdk_sqmma_descriptor_compat(ir_text: str, volatile: bool = False) -> str:
             first = scalar
         else:
             pointer = first[len("ptr addrspace(3)"):].strip()
-            if not (pointer.startswith("%") or pointer.startswith("@") or
-                    pointer.startswith("getelementptr ")):
+            if not (pointer.startswith("%") or pointer.startswith("@") or pointer.startswith("getelementptr ")):
                 raise ValueError(f"Unsupported SQMMA descriptor pointer: {pointer!r}")
             while True:
                 name = f"%musa.sdk.desc.{counter}"
@@ -1036,8 +1035,8 @@ class MUSABackend(BaseBackend):
         arch = knobs.runtime.override_arch or opts.get("arch", None) or self.target.arch
         args = {"arch": _normalize_arch(arch)}
         capability = _capability_from_arch(args["arch"])
-        if opts.get("sqmma_descriptor_abi", "pointer") not in (
-                "pointer", "sdk_scalar", "sdk_scalar_volatile", "native_mp31_sg16", "native_mp31_shared"):
+        if opts.get("sqmma_descriptor_abi", "pointer") not in ("pointer", "sdk_scalar", "sdk_scalar_volatile",
+                                                               "native_mp31_sg16", "native_mp31_shared"):
             raise ValueError("sqmma_descriptor_abi must be pointer, sdk_scalar, sdk_scalar_volatile, "
                              "native_mp31_sg16, or native_mp31_shared")
         if opts.get("sqmma_descriptor_abi") in ("native_mp31_sg16", "native_mp31_shared") and capability != 31:
@@ -1261,10 +1260,10 @@ class MUSABackend(BaseBackend):
     def make_llir(src, metadata, options, arch):
         from triton._C.libtriton import llvm
 
-        src.set_attr("musa.sqmma_native_sg16", ir.builder(src.context).get_int32_attr(
-            int(options.sqmma_descriptor_abi == "native_mp31_sg16")))
-        src.set_attr("musa.sqmma_native_shared", ir.builder(src.context).get_int32_attr(
-            int(options.sqmma_descriptor_abi == "native_mp31_shared")))
+        src.set_attr("musa.sqmma_native_sg16",
+                     ir.builder(src.context).get_int32_attr(int(options.sqmma_descriptor_abi == "native_mp31_sg16")))
+        src.set_attr("musa.sqmma_native_shared",
+                     ir.builder(src.context).get_int32_attr(int(options.sqmma_descriptor_abi == "native_mp31_shared")))
         mod = src
         total_num_warps = src.get_int_attr("ttg.total-num-warps")
         launch_num_warps = total_num_warps if total_num_warps is not None else options.num_warps

@@ -26,9 +26,8 @@ def _dot(
 ):
     dtype: tl.constexpr = tl.float8e4nv if FP8 else tl.int8
     outtype: tl.constexpr = tl.float32 if FP8 else tl.int32
-    shared: tl.constexpr = tle.gpu.swizzled_shared_layout(
-        GRAN, PHASE, 256 // GRAN, [1, 0], [1, 1], [1, 1], [1, 1], [1, 0]
-    )
+    shared: tl.constexpr = tle.gpu.swizzled_shared_layout(GRAN, PHASE, 256 // GRAN, [1, 0], [1, 1], [1, 1], [1, 1],
+                                                          [1, 0])
     if AUTO_LAYOUT:
         a = tle.gpu.alloc((32, 128), dtype, layout=None, nv_mma_shared_layout=True)
         b = tle.gpu.alloc((128, 128), dtype, layout=None, nv_mma_shared_layout=True)
@@ -57,9 +56,8 @@ def _dot(
         tl.store(out + i[:, None] * 128 + j[None, :], result)
 
 
-def compile_descriptor(
-    gran, phase=2, fp8=True, abi="native_mp31_shared", explicit_store=True, auto_layout=False, slice_view=False
-):
+def compile_descriptor(gran, phase=2, fp8=True, abi="native_mp31_shared", explicit_store=True, auto_layout=False,
+                       slice_view=False):
     dtype = "fp8e4nv" if fp8 else "i8"
     return compile_musa(
         _dot,
@@ -245,9 +243,7 @@ _SG16 = (16, 2, 16)
 
 
 def _pointer_copy_layout(vec_per_phase_max_phase):
-    return tle.gpu.swizzled_shared_layout(
-        *vec_per_phase_max_phase, [1, 0], [1, 1], [1, 1], [1, 1], [1, 0]
-    )
+    return tle.gpu.swizzled_shared_layout(*vec_per_phase_max_phase, [1, 0], [1, 1], [1, 1], [1, 1], [1, 0])
 
 
 def _pointer_copy_constexprs(a, b):
@@ -279,7 +275,8 @@ def _pointer_copy_llir(abi, a, b):
     context = ir.context()
     ir.load_dialects(context)
     backend.load_dialects(context)
-    module = backend.make_ir(src, options, backend.get_codegen_implementation(options), backend.get_module_map(), context)
+    module = backend.make_ir(src, options, backend.get_codegen_implementation(options), backend.get_module_map(),
+                             context)
     stages = {}
     backend.add_stages(stages, options, src.language)
     for ext, compile_ir in stages.items():
@@ -334,7 +331,7 @@ def test_pointer_copies_sg16_match_independent_device_reference(abi):
     b = torch.randint(-4, 5, (128, 128), generator=generator).to(torch.float8_e4m3fn)
     expected = (a.double() @ b.double().T).float()
     output = torch.empty(expected.shape, dtype=torch.float32, device="musa")
-    kernel = _pointer_copy_dot[(1,)](
+    kernel = _pointer_copy_dot[(1, )](
         a.to("musa"),
         b.to("musa"),
         output,

@@ -279,9 +279,8 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
     auto order = musa::getSharedOrder(operandTy.getEncoding(), physicalShape);
     auto swizzle = musa::resolveTMESwizzleConfigFromMatrixView(
         operandTy, physicalShape, order);
-    if (failed(swizzle) ||
-        failed(musa::getPH1TMELeadingDimGrouping(physicalShape, order,
-                                               elemBytes)))
+    if (failed(swizzle) || failed(musa::getPH1TMELeadingDimGrouping(
+                               physicalShape, order, elemBytes)))
       return op.emitOpError(
           "explicit SQMMA operand requires a representable PH1 matrix "
           "shared-memory layout");
@@ -289,7 +288,8 @@ static LogicalResult updateOperandLayout(musa_tle::SqmmaOp op,
     // Preserve the caller's byte image and align the allocation for its
     // swizzle, rather than replacing it with this consumer's preferred layout.
     int64_t line = musa::getSwizzleLineBytes(swizzle->swizzleLine);
-    int64_t gran = musa::getSwizzleGranularityBytes(swizzle->swizzleGranularity);
+    int64_t gran =
+        musa::getSwizzleGranularityBytes(swizzle->swizzleGranularity);
     int64_t stride = musa::getSwizzleStrideBytes(swizzle->swizzleStride);
     int64_t alignment = gran > 0 ? line * (stride / gran) : line;
     OpBuilder builder(op);

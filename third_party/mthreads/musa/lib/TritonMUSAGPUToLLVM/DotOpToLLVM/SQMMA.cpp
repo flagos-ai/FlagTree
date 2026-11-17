@@ -119,7 +119,8 @@ static FailureOr<SqmmaDescriptorIntrinsicSpec>
 buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
                                   ArrayRef<int64_t> physicalShape,
                                   ArrayRef<unsigned> order,
-                                  triton::musa::SQMMAEltType eltType, char operandName,
+                                  triton::musa::SQMMAEltType eltType,
+                                  char operandName,
                                   const LLVMTypeConverter *typeConverter,
                                   ConversionPatternRewriter &rewriter) {
   if (physicalShape.size() != 2 || order.size() < 2)
@@ -233,8 +234,8 @@ buildSqmmaDescriptorIntrinsicSpec(Location loc, MemDescType memDescTy,
     auto shared =
         module->getAttrOfType<IntegerAttr>("musa.sqmma_native_shared");
     if ((native && native.getInt()) || (shared && shared.getInt())) {
-      if (!loadType.isInteger(8) ||
-          (groupedLeadingWidthBytes != 128 && groupedLeadingWidthBytes != 256)) {
+      if (!loadType.isInteger(8) || (groupedLeadingWidthBytes != 128 &&
+                                     groupedLeadingWidthBytes != 256)) {
         emitError(loc) << "native MP31 SQMMA operand " << operandName
                        << " requires byte elements with 128/256-byte leading "
                           "stride";
@@ -307,7 +308,8 @@ public:
       descriptorInput = LLVM::LoadOp::create(
           rewriter, loc, descriptorSpec.scalarInputType, elemPtr);
     if (descriptorSpec.nativeBits >= 0)
-      return b.or_(b.ptrtoint(i32_ty, elemPtr), b.i32_val(descriptorSpec.nativeBits));
+      return b.or_(b.ptrtoint(i32_ty, elemPtr),
+                   b.i32_val(descriptorSpec.nativeBits));
     auto desc = LLVM::createLLVMIntrinsicCallOp(
         rewriter, loc, descriptorSpec.intrinsicName, TypeRange{i32_ty},
         ValueRange{descriptorInput, descriptorSpec.leadingStrideBytes,
@@ -841,14 +843,14 @@ LogicalResult convertSQMMADotImpl(DotLikeOp op, DotLikeAdaptor adaptor,
         "MUSA SQMMA failed to derive matrix view for operand B");
 
   auto aDescSpec = buildSqmmaDescriptorIntrinsicSpec(
-      loc, aMemTy, aMatrixView->physicalShape, aMatrixView->order, eltTypeA, 'A',
-      typeConverter, rewriter);
+      loc, aMemTy, aMatrixView->physicalShape, aMatrixView->order, eltTypeA,
+      'A', typeConverter, rewriter);
   if (failed(aDescSpec))
     return op.emitError("MUSA SQMMA failed to derive descriptor contract for "
                         "operand A");
   auto bDescSpec = buildSqmmaDescriptorIntrinsicSpec(
-      loc, bMemTy, bMatrixView->physicalShape, bMatrixView->order, eltTypeB, 'B',
-      typeConverter, rewriter);
+      loc, bMemTy, bMatrixView->physicalShape, bMatrixView->order, eltTypeB,
+      'B', typeConverter, rewriter);
   if (failed(bDescSpec))
     return op.emitError("MUSA SQMMA failed to derive descriptor contract for "
                         "operand B");
