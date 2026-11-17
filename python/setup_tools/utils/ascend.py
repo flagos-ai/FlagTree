@@ -55,7 +55,9 @@ def handle_editable_install_mode(is_editable=True):
 # AscendNPU-IR must stay in sync with the bishengir tools shipped inside the
 # CANN package, so the pin is selected by the CANN version on the build machine.
 ASCEND_NPU_IR_PINS = {
-    "9.1.0": ("tle-3.5.x-cann9.1.0-dev", "3545d1cba9b1bdd3cb300724d4626282ad1679ee"),
+    # Includes the element-wise histogram mask fix (FlagTree-AscendNPU-IR#8).
+    # Land that dependency before merging the corresponding FlagTree change.
+    "9.1.0": ("tle-3.5.x-cann9.1.0-dev", "931d7b7893b533d092bf8f9bb5eb62f0698deb47"),
 }
 ASCEND_NPU_IR_DEFAULT_PIN = ("tle-3.5.x-cann9.0.0-dev", "a205c957")
 

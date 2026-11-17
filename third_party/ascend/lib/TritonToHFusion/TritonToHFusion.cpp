@@ -9,6 +9,9 @@
 #include "bishengir/Dialect/HFusion/IR/HFusion.h"
 #include "bishengir/Dialect/HFusion/IR/HFusionImpl.h"
 #include "bishengir/Dialect/Tensor/IR/TensorImpl.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/Pass/Pass.h"
@@ -70,8 +73,8 @@ struct TritonHistogramToHFusionConversion
 
     auto numBinsAttr = rewriter.getI64IntegerAttr(numBins);
 
-    auto newOp = rewriter.create<hfusion::HistogramOp>(loc, resultType, input,
-                                                       numBinsAttr, Value());
+    auto newOp = rewriter.create<hfusion::HistogramOp>(
+        loc, resultType, input, numBinsAttr, op.getMask());
 
     rewriter.replaceOp(op, newOp.getResult());
     return success();
@@ -229,7 +232,25 @@ void TritonToHFusionPass::runOnOperation() {
   // This allows patterns to return failure() without causing pass failure
   if (failed(applyPatternsGreedily(module, std::move(patterns)))) {
     signalPassFailure();
+    return;
   }
+
+  // Use the linked HFusion implementation before handing masked histograms to
+  // external CANN compilers that may still contain the older decomposition.
+  IRRewriter rewriter(&getContext());
+  auto result = module.walk([&](hfusion::HistogramOp op) {
+    if (!op.getMask())
+      return WalkResult::advance();
+    auto decomposed = op.decomposeOperation(rewriter);
+    if (failed(decomposed)) {
+      op.emitError("failed to decompose masked histogram");
+      return WalkResult::interrupt();
+    }
+    rewriter.replaceOp(op, *decomposed);
+    return WalkResult::advance();
+  });
+  if (result.wasInterrupted())
+    signalPassFailure();
 }
 
 std::unique_ptr<OperationPass<ModuleOp>>
