@@ -81,3 +81,75 @@ def test_invalid_descriptor_rank_extent_and_pointer_shape(case, diagnostic):
         compile_musa(
             _invalid_descriptor, {"address": "*i8", "CASE": "constexpr"}, {"CASE": case}, options={"num_warps": 4}
         )
+
+
+@triton.jit
+def _copy_device_tile(desc_ptr, out, row, col_block):
+    desc = tle.gpu.mthreads.device_tensor_descriptor(desc_ptr, [256, 384], [384, 1], [128, 128], tl.int8)
+    buffer = tle.gpu.alloc((1, 128, 128), tl.int8)
+    pipe = tle.pipe(capacity=1, tile=buffer)
+    writer, reader = pipe.writer(), pipe.reader()
+    slot = writer.acquire(0)
+    tle.gpu.copy(desc, slot.tile, (128, 128), (row, col_block * 32))
+    writer.commit(0)
+    ready = reader.wait(0)
+    result = ready.slot.tile.load()
+    reader.release(0)
+    i, j = tl.arange(0, 128), tl.arange(0, 128)
+    tl.store(out + i[:, None] * 128 + j[None, :], result)
+
+
+def test_device_descriptor_tme_switches_payloads():
+    import ctypes
+
+    import torch
+    from triton.backends.mthreads.driver import _musa_tme_dtype_enum
+
+    torch_musa = pytest.importorskip("torch_musa")
+    if not torch_musa.is_available():
+        pytest.skip("MUSA device is not available")
+
+    generator = torch.Generator().manual_seed(1607)
+    shape, block_shape = (256, 384), (128, 128)
+    host_payloads = [torch.randint(-128, 128, shape, dtype=torch.int8, generator=generator) for _ in range(2)]
+    payloads = [p.to("musa") for p in host_payloads]
+    encode = triton.runtime.driver.active.utils.fill_tme_descriptor
+    encoded = [
+        encode(p.data_ptr(), shape, block_shape, p.element_size(), _musa_tme_dtype_enum("i8"), 0)
+        for p in payloads
+    ]
+    descriptor_bytes = 64
+    # Snapshot the vendor-encoded descriptor while the host object is alive.
+    host_descriptors = [
+        torch.frombuffer(bytearray(ctypes.string_at(d.tme_desc_cpu_ptr(), descriptor_bytes)), dtype=torch.uint8)
+        for d in encoded
+    ]
+    arena = torch.empty(2 * descriptor_bytes, dtype=torch.uint8, device="musa")
+    slots = arena[:descriptor_bytes], arena[descriptor_bytes:]
+    assert all(p.data_ptr() % descriptor_bytes == 0 for p in slots)
+
+    # Distinct descriptor address/payload, then update slot 0 only after its
+    # prior consumer on this stream. No descriptor update is concurrent with
+    # a consuming launch; payloads, descriptors and staging bytes stay alive.
+    cases = [(0, 0, 32, 64), (1, 1, 96, 192), (0, 1, 32, 64), (1, 1, 0, 0)]
+    expected = [host_payloads[src][row:row + 128, col:col + 128] for _, src, row, col in cases]
+    assert not torch.equal(expected[0], expected[2])
+    assert not torch.equal(expected[1], expected[3])
+    outputs = [torch.empty(block_shape, dtype=torch.int8, device="musa") for _ in cases]
+    stream = torch.musa.Stream()
+    stream.wait_stream(torch.musa.current_stream())
+    kernels = []
+    try:
+        with torch.musa.stream(stream):
+            slots[0].copy_(host_descriptors[0], non_blocking=True)
+            slots[1].copy_(host_descriptors[1], non_blocking=True)
+            for step, ((slot_index, src, row, col), out) in enumerate(zip(cases, outputs)):
+                if step == 2:
+                    slots[slot_index].copy_(host_descriptors[src], non_blocking=True)
+                kernels.append(_copy_device_tile[(1, )](slots[slot_index], out, row, col // 32, num_warps=4))
+    finally:
+        stream.synchronize()
+
+    assert all("@llvm.musa.tme.ld.tile.2d" in kernel.asm["llir"] for kernel in kernels)
+    for out, reference in zip(outputs, expected):
+        torch.testing.assert_close(out.cpu(), reference, atol=0, rtol=0)
