@@ -1143,6 +1143,7 @@ def copy(
     other=None,
     is_async: bool = False,
     eviction_policy: str = "",
+    input_stride=None,
     _semantic: TLESemantic | None = None,
 ) -> None:
     """
@@ -1209,6 +1210,9 @@ def copy(
             existing synchronous behavior is unchanged.
         eviction_policy: L2 eviction policy for global-memory reads. Supported
             values are ``""``, ``"evict_first"``, and ``"evict_last"``.
+        input_stride: Iluvatar SME source row stride in elements. Only pointer
+            tensors copied to shared memory support this parameter. Descriptor
+            and CommonIR copies reject it. Defaults to ``None``.
         _semantic: Internal semantic analyzer for validation and compilation (user-provided)
 
     Raises:
@@ -1287,6 +1291,11 @@ def copy(
         # rejects `other` without a mask before reaching here.
         if direction == CopyDirection.GM_TO_LOCAL and mask is not None:
             other = _semantic.to_tensor(0.0 if other is None else other)
+        # The outer dispatcher validated SME ownership before selecting a path.
+        sme_stride = None
+        if input_stride is not None:
+            sme_stride = input_stride if isinstance(input_stride, tl.tensor) else _semantic.to_tensor(input_stride)
+
         boundary_check = ()
         padding_option = ""
         cache_modifier = ""
@@ -1301,20 +1310,39 @@ def copy(
                     mask_handle = ir.value() if mask is None else mask.handle
                     other_handle = (ir.value() if mask is None else _semantic.broadcast_impl_shape(
                         other.to(dst.dtype, _semantic=_semantic), list(src.type.shape)).handle)
-                    _semantic.builder.create_async_copy_global_to_local(
-                        dst.handle,
-                        src.handle,
-                        mask_handle,
-                        other_handle,
-                        _semantic._str_to_load_cache_modifier(cache_modifier),
-                        _semantic._str_to_eviction_policy(eviction_policy),
-                        volatile,
-                    )
+                    if sme_stride is not None:
+                        if not hasattr(_semantic.builder, "create_async_copy_global_to_local_with_stride"):
+                            raise RuntimeError("copy(input_stride=..., is_async=True) requires a "
+                                               "Triton build with strided TLE async-copy support")
+                        _semantic.builder.create_async_copy_global_to_local_with_stride(
+                            dst.handle,
+                            src.handle,
+                            mask_handle,
+                            other_handle,
+                            sme_stride.handle,
+                            _semantic._str_to_load_cache_modifier(cache_modifier),
+                            _semantic._str_to_eviction_policy(eviction_policy),
+                            volatile,
+                        )
+                    else:
+                        _semantic.builder.create_async_copy_global_to_local(
+                            dst.handle,
+                            src.handle,
+                            mask_handle,
+                            other_handle,
+                            _semantic._str_to_load_cache_modifier(cache_modifier),
+                            _semantic._str_to_eviction_policy(eviction_policy),
+                            volatile,
+                        )
                 elif iluvatar_enabled:
-                    # Iluvatar's semantic.load carries an extra stride slot
-                    # after other; ordinary TLE copies leave it unset.
-                    tt_load = _semantic.load(src, mask, other, None, boundary_check, padding_option, cache_modifier,
-                                             eviction_policy, volatile)
+                    # Iluvatar's semantic.load carries an extra `stride` (SME)
+                    # slot right after `other`. A caller that passes
+                    # `input_stride` is asking for exactly that path: the
+                    # source rows are `input_stride` elements apart, which is
+                    # what `create_sme_load` needs and what a plain load
+                    # cannot express.
+                    tt_load = _semantic.load(src, mask, other, sme_stride, boundary_check, padding_option,
+                                             cache_modifier, eviction_policy, volatile)
                 else:
                     # None fills the FlagTree hints slot; TLE copy has no hints to pass.
                     load_extra_args = () if mthreads_enabled else (None, )
@@ -1454,7 +1482,23 @@ def copy(
 
     if cache_policy is not None and (is_normcopy or direction != CopyDirection.GM_TO_LOCAL):
         raise ValueError("copy cache_policy is only supported for descriptor-to-shared copies")
+    input_stride = tl._unwrap_if_constexpr(input_stride)
+    if input_stride is not None:
+        if not iluvatar_enabled:
+            raise RuntimeError("copy(input_stride=...) selects the Iluvatar SME load path, "
+                               "which this backend does not provide")
+        if tle_semantic.COMMON_IR_ENABLED:
+            raise ValueError("GPU CommonIR copy does not support input_stride")
+        if not is_normcopy or direction != CopyDirection.GM_TO_LOCAL:
+            raise ValueError("copy(input_stride=...) supports only global pointer tensors copied to shared memory")
+        if dst.type.storage is not tle.smem:
+            raise ValueError("copy(input_stride=...) destination must use shared memory")
     if is_async:
+        # Iluvatar implements this: its builder exposes
+        # `create_async_copy_global_to_local{,_with_stride}`, and the SME G2S
+        # engine is precisely an asynchronous global-to-shared copy. The
+        # strided form is what an `input_stride` caller needs, because the SME
+        # source rows are a fixed element stride apart.
         if mthreads_enabled:
             raise ValueError("copy(is_async=True) is currently supported only by the NVIDIA "
                              "and Iluvatar TLE backends")

@@ -52,10 +52,12 @@ def test_tle_language_import_exports_load_signature():
         "other",
         "is_async",
         "eviction_policy",
+        "input_stride",
         "_semantic",
     ]
     assert copy_parameters["is_async"].default is False
     assert copy_parameters["eviction_policy"].default == ""
+    assert copy_parameters["input_stride"].default is None
     assert hasattr(tle.gpu, "copy")
 
 
