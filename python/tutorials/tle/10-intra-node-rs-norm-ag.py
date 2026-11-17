@@ -336,8 +336,21 @@ class _CudaIpcHandle(ctypes.Structure):
     _fields_ = [("internal", ctypes.c_byte * 64)]
 
 
+class _HipAsCuda:
+    """ROCm / DTK has no libcudart: forward cudaXxx to hipXxx of libamdhip64 (same arguments,
+    the IPC handle is 64 bytes as well)."""
+
+    def __init__(self, lib):
+        self._lib = lib
+
+    def __getattr__(self, name):
+        if name.startswith("cuda"):
+            return getattr(self._lib, "hip" + name[4:])
+        return getattr(self._lib, name)
+
+
 class _CudaRT:
-    """The libcudart torch already loaded, for raw allocations and IPC handles."""
+    """The libcudart (or libamdhip64) torch already loaded, for raw allocations and IPC handles."""
 
     def __init__(self):
         path = None
@@ -346,10 +359,13 @@ class _CudaRT:
                 if "/" in line:
                     p = line[line.index("/"):].strip()
                     name = os.path.basename(p)
-                    if name.startswith("libcudart") and "stub" not in name:
+                    if (name.startswith("libcudart") or name.startswith("libamdhip64")) and "stub" not in name:
                         path = p
                         break
-        self.lib = ctypes.CDLL(path or "libcudart.so")
+        if path is None:
+            path = "libamdhip64.so" if torch.version.hip else "libcudart.so"
+        lib = ctypes.CDLL(path)
+        self.lib = _HipAsCuda(lib) if "amdhip" in os.path.basename(path) else lib
         self.lib.cudaGetErrorString.restype = ctypes.c_char_p
 
     def check(self, err):
@@ -358,7 +374,15 @@ class _CudaRT:
 
     def malloc(self, nbytes):
         ptr = ctypes.c_void_p()
-        self.check(self.lib.cudaMalloc(ctypes.byref(ptr), ctypes.c_size_t(nbytes)))
+        if isinstance(self.lib, _HipAsCuda):
+            # hipMalloc memory is coarse-grained: a peer's atomic_xchg on the flags is not seen
+            # by the owner's acquire reads, the waits time out. Allocate uncached memory, as
+            # vLLM's ROCm custom all-reduce does for its signals.
+            hip_device_malloc_uncached = 3
+            self.check(self.lib._lib.hipExtMallocWithFlags(ctypes.byref(ptr), ctypes.c_size_t(nbytes),
+                                                           ctypes.c_uint(hip_device_malloc_uncached)))
+        else:
+            self.check(self.lib.cudaMalloc(ctypes.byref(ptr), ctypes.c_size_t(nbytes)))
         self.check(self.lib.cudaMemset(ptr, 0, ctypes.c_size_t(nbytes)))
         return ptr.value
 
