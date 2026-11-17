@@ -223,7 +223,7 @@ static bool musaTleConstantMaxAxis(triton::ReduceOp op) {
     if (def->getNumResults() == 1) {
       AxisInfo::DimVectorT constancy(type.getRank(), 1);
       AxisInfo::initDimVectorFromHint(def->getDiscardableAttr("tt.constancy"),
-                                     &constancy);
+                                      &constancy);
       if (constancy[op.getAxis()] >= type.getShape()[op.getAxis()])
         return true;
     }

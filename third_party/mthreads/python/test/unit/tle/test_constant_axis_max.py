@@ -58,8 +58,7 @@ def test_branch_constancy_is_not_written_back_to_shared_producer(width):
 
 
 @pytest.mark.skipif(
-    os.environ.get('TRITON_MUSA_RUN_NUMERICAL_DEVICE_TESTS') != '1',
-    reason='requires explicit MUSA device-test opt-in')
+    os.environ.get('TRITON_MUSA_RUN_NUMERICAL_DEVICE_TESTS') != '1', reason='requires explicit MUSA device-test opt-in')
 @pytest.mark.parametrize('width', [1, 4])
 def test_branch_constancy_device(width):
     import torch
@@ -68,13 +67,12 @@ def test_branch_constancy_device(width):
     rows = torch.arange(64, dtype=torch.float32).reshape(-1, 1)
     # Different maxima locations by row, not a single fortunate lane.
     cols = torch.arange(8, dtype=torch.float32)
-    for take_hint, data in ((True, rows.expand(-1, 8).contiguous()),
-                            (False, rows + (cols - rows).remainder(8))):
+    for take_hint, data in ((True, rows.expand(-1, 8).contiguous()), (False, rows + (cols - rows).remainder(8))):
         x = data.to('musa')
         y = torch.empty(64, device='musa', dtype=torch.float32)
         z = torch.empty_like(y)
         mode = torch.tensor([int(take_hint)], device='musa', dtype=torch.int32)
-        _scoped_max[(1,)](x, y, z, mode, layout, num_warps=8, local_max_vector_width=width)
+        _scoped_max[(1, )](x, y, z, mode, layout, num_warps=8, local_max_vector_width=width)
         ref = data.max(dim=1).values
         torch.testing.assert_close(y.cpu(), ref, rtol=0, atol=0)
         torch.testing.assert_close(z.cpu(), ref, rtol=0, atol=0)
