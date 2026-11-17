@@ -21,7 +21,6 @@
 # flagtree tle
 from . import mthreads
 from .core import (
-    pipeline,
     range,
     alloc,
     alloc_barrier,
@@ -45,7 +44,6 @@ storage_kind = memory_space
 
 __all__ = [
     "mthreads",
-    "pipeline",
     "range",
     "alloc",
     "alloc_barrier",

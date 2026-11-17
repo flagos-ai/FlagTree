@@ -6,7 +6,6 @@ Tests core functionality of TLE module, including:
 - Memory allocation (alloc)
 - Async copy (copy)
 - Local pointer materialization (local_ptr)
-- Pipeline iterator (pipeline)
 - Type system
 """
 
@@ -390,37 +389,6 @@ class TestCopyFrontend:
 
         with pytest.raises(ValueError, match="GPU CommonIR copy does not yet support other"):
             tle.gpu.copy(src, buffer, [16], mask=True, other=float("-inf"), _semantic=semantic)
-
-
-class TestPipeline:
-    """Test pipeline iterator"""
-
-    def test_pipeline_single_arg(self):
-        """Test single argument pipeline creation"""
-        pipe = tle.gpu.pipeline(10)
-        assert pipe.start == 0
-        assert pipe.end == 10
-        assert pipe.step == 1
-
-    def test_pipeline_range_args(self):
-        """Test range argument pipeline creation"""
-        pipe = tle.gpu.pipeline(2, 8)
-        assert pipe.start == 2
-        assert pipe.end == 8
-        assert pipe.step == 1
-
-    def test_pipeline_with_step(self):
-        """Test pipeline creation with step"""
-        pipe = tle.gpu.pipeline(0, 10, 2)
-        assert pipe.start == 0
-        assert pipe.end == 10
-        assert pipe.step == 2
-
-    def test_pipeline_with_options(self):
-        """Test pipeline creation with options"""
-        pipe = tle.gpu.pipeline(0, 10, 1, num_stages=2, loop_unroll_factor=4)
-        assert pipe.num_stages == 2
-        assert pipe.loop_unroll_factor == 4
 
 
 class TestWarpSpecializeFrontend:
@@ -1139,7 +1107,6 @@ class TestIntegration:
         assert not hasattr(tle.gpu, 'pipe')
         assert hasattr(tle.gpu, 'copy')
         assert hasattr(tle.gpu, 'local_ptr')
-        assert hasattr(tle.gpu, 'pipeline')
         assert hasattr(tle.gpu, 'storage_kind')
         assert hasattr(tle.gpu, 'buffered_tensor')
         assert hasattr(tle.gpu, 'alloc_barriers')
@@ -1158,7 +1125,6 @@ class TestIntegration:
         assert tle.gpu.alloc.__doc__ is not None
         assert tle.gpu.copy.__doc__ is not None
         assert tle.gpu.local_ptr.__doc__ is not None
-        assert tle.gpu.pipeline.__doc__ is not None
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
     def test_tle_with_cuda(self):
