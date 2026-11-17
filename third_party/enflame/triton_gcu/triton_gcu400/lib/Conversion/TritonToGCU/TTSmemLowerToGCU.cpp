@@ -54,9 +54,8 @@ struct TTSmemLocalAllocOpLowering
   LogicalResult
   matchAndRewrite(triton::gpu::LocalAllocOp alloc, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Only handle local_alloc without input (pure shared memory allocation)
     if (alloc.getSrc())
-      return failure();
+      return lowerWithSrc(alloc, adaptor, rewriter);
 
     enterTritionOp(rewriter, alloc.getOperation());
     if (pTagPool.isExistInMap(alloc.getOperation())) {
@@ -96,6 +95,95 @@ struct TTSmemLocalAllocOpLowering
 
     leaveTritionOp(rewriter, alloc.getOperation());
     rewriter.replaceOp(alloc, output);
+    return success();
+  }
+
+private:
+  // Lower `ttg.local_alloc(%src)` (local_alloc *with* a source tensor), i.e.
+  // "put this per-thread tensor into a shared-memory buffer".
+  //
+  // Two IR shapes reach this function; both come from GCUTleAssignMemorySpace
+  // (Transforms/GCUTleAssignMemorySpace.cpp), which wraps a value hinted with
+  // tle.gpu.memory_space(v, "shared_memory") in this pair:
+  //
+  //   %v   = <producer>                  : tensor<128x128xf32, #blocked>
+  //   %buf = ttg.local_alloc %v          : !ttg.memdesc<128x128xf32, #shared,
+  //                                                          #smem, mutable>
+  //   %out = ttg.local_load %buf         : tensor<128x128xf32, #blocked>
+  //   ... %out feeds the original consumer ...
+  //
+  // What `%v` is after conversion decides the path:
+  //
+  // (a) ordinary producer - %v lowered to a private per-thread buffer (the
+  //     default-address-space memref in `memref<32x128xf32>` below, i.e. one
+  //     warp's chunk). The tensor must be *copied* into the tile:
+  //
+  //       %src   = memref.alloc()          : memref<32x128xf32>     // private
+  //       %tile  = memref.alloc()          : memref<128x128xf32, 2> // smem
+  //       memref_ext.deslice_start %tile, %src[%warp_off] %tag      // copy
+  //       memref.dma_wait %tag, %c4096
+  //       gpu.barrier
+  //       ... local_alloc replaced by %tile ...
+  //
+  //     The tile type is exactly what the type converter assigns to the
+  //     !ttg.memdesc (logical shape, identity layout, address space 2), so the
+  //     ttg.local_load that consumes it is lowered by TTLocalLoadOpLowering as
+  //     usual. The copy is the same per-warp storeToSharedMem() DesliceStart
+  //     copy that TTGConvertLayoutOpLowering uses for a blocked -> shared
+  //     staging, which keeps the two paths consistent.
+  //
+  // (b) direct-to-tile producer - the elementwise / elementwise-fusion /
+  //     TTElementwiseOpLowering received tle_use_smem_tile and already
+  //     allocated the tile itself, writing it through a per-warp
+  //     memref.view. It exposes the tile as its result, so `%v` converts to a
+  //     memref of *the tile type* instead of a private chunk:
+  //
+  //       %tile  = memref.alloc()          : memref<128x128xf32, 2>
+  //       %view  = memref.view ...         : memref<32x128xf32> // store target
+  //       vector.store ... into %view
+  //       ... %tile is the producer's result ...
+  //       gpu.barrier                                          // see below
+  //       ... local_alloc replaced by %tile, no copy ...
+  //
+  //     Telling (a) from (b) needs no extra attribute: only (b) has the tile
+  //     type, (a) is a default-address-space memref of the local shape. Path
+  //     (b) still emits a barrier so that a reader which maps the tile
+  //     differently than the writers (e.g. a dot-operand read, or the reduce
+  //     case where only one warp produces a row) observes the completed
+  //     stores.
+  LogicalResult lowerWithSrc(triton::gpu::LocalAllocOp alloc, OpAdaptor adaptor,
+                             ConversionPatternRewriter &rewriter) const {
+    auto loc = alloc.getLoc();
+    auto srcTensor = alloc.getSrc();
+    auto tensorType = dyn_cast<RankedTensorType>(srcTensor.getType());
+    if (!tensorType)
+      return failure();
+
+    if (pTagPool.isExistInMap(alloc.getOperation()))
+      pTagPool.releaseMap(alloc.getOperation());
+
+    Value src = stripUnrealizedConversionCastOp(adaptor.getSrc());
+    auto memrefType = getSharedTileType(tensorType);
+    // Case (b): the producer already wrote this very tile.
+    if (src.getType() == memrefType) {
+      enterTritionOp(rewriter, alloc.getOperation());
+      rewriter.create<gpu::BarrierOp>(loc);
+      leaveTritionOp(rewriter, alloc.getOperation());
+      rewriter.replaceOp(alloc, src);
+      return success();
+    }
+
+    // Case (a): copy the private per-thread buffer into a fresh tile.
+    enterTritionOp(rewriter, alloc.getOperation());
+    auto lastUser =
+        userAnalysis.getLastUser(alloc.getOperation()->getResults()[0]);
+    auto tile = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                            replaced2Origin, memrefType);
+    auto tag = pTagPool.getPrivateSyncTagInfo(alloc.getOperation());
+    storeToSharedMem(rewriter, tag, tensorType, tile, src,
+                     /*onlyThread0=*/false);
+    leaveTritionOp(rewriter, alloc.getOperation());
+    rewriter.replaceOp(alloc, tile);
     return success();
   }
 };
@@ -1133,8 +1221,32 @@ struct TTLocalLoadOpLowering
       pTagPool.setMap(firstUser.first, tag);
     }
     // share to Distributed
+    // The destination layout decides how the per-thread chunk is derived, so
+    // this branch handles both a plain #blocked destination and a
+    // #slice<{dim, parent=#blocked}> one. The slice case only arises from the
+    // tile inserted for a TLE `shared_memory` hint on a *computed* value: the
+    // producer lowering allocates the smem tile itself and hands it back, and
+    // the value's layout is inherited from the producer - a reduce result stays
+    // a slice of the parent's blocked layout:
+    //
+    //   %3 = "tt.reduce"(%2) ... {tle_use_smem_tile}
+    //        : (tensor<64x64xf32, #blocked>)
+    //          -> tensor<64xf32, #slice<{1, #blocked}>>
+    //   %4 = ttg.local_alloc %3 {tle_use_smem_tile}
+    //        : (tensor<64xf32, #slice<{1, #blocked}>>)
+    //          -> !ttg.memdesc<64xf32, #shared, #smem>
+    //   %5 = ttg.local_load %4
+    //        : !ttg.memdesc<64xf32, #shared, #smem>
+    //          -> tensor<64xf32, #slice<{1, #blocked}>>
+    //
+    // Here loadFromSharedMem derives the per-thread chunk from that result
+    // layout (getElemsPerThread) exactly as it does for a blocked result, so
+    // the layout kind only matters for the dot-operand path below. Without
+    // this branch the op would fall into the `else` below and abort the
+    // compile.
     if (isa<triton::gpu::SharedEncodingTrait>(srcLayout) &&
-        isa<triton::gpu::BlockedEncodingAttr>(dstLayout)) {
+        (isa<triton::gpu::BlockedEncodingAttr>(dstLayout) ||
+         isa<triton::gpu::SliceEncodingAttr>(dstLayout))) {
       auto loc = op.getLoc();
       Value srcVal = stripUnrealizedConversionCastOp(adaptor.getSrc());
       auto srcMemRef = dyn_cast<MemRefType>(srcVal.getType());

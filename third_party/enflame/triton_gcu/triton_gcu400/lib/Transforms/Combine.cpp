@@ -18,8 +18,10 @@
 #include <type_traits>
 #include <utility>
 
+#include "Conversion/TritonToGCU/Constants.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
 #include "Transforms/Passes.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
@@ -39,6 +41,16 @@ namespace {
 
 const char *const symbol0 = R"(_{0}mix_{1})";
 const char *const symbol1 = R"(_{0})";
+
+// `tle.gpu.memory_space(...)` attaches `tt.memory_space` to the op that defines
+// the hinted value. The combine patterns below replace such an op with a single
+// extern_elementwise, so the hint must travel with the replacement: it is
+// consumed later by gcu-tle-assign-memory-space, which runs after
+// gcu-triton-fusion and would otherwise never see it (the original op is gone).
+void copyMemorySpaceHint(Operation *from, Operation *to) {
+  if (Attribute hint = from->getAttr(kTleHint))
+    to->setAttr(kTleHint, hint);
+}
 
 template <typename Op>
 mlir::LogicalResult matchMixedPrecisionPattern0(Value v0, Value v1,
@@ -251,6 +263,8 @@ public:
               /*libpath*/ rewriter.getStringAttr(""),
               /*symbol*/ rewriter.getStringAttr(symbol),
               /*pure*/ rewriter.getBoolAttr(true));
+      copyMemorySpaceHint(op.getOperation(),
+                          externElementwiseOp.getOperation());
       rewriter.replaceOp(op, externElementwiseOp);
       return success();
     }
@@ -286,6 +300,7 @@ public:
             /*libpath*/ rewriter.getStringAttr(""),
             /*symbol*/ rewriter.getStringAttr(symbol),
             /*pure*/ rewriter.getBoolAttr(true));
+    copyMemorySpaceHint(op.getOperation(), externElementwiseOp.getOperation());
     rewriter.replaceOp(op, externElementwiseOp);
     return success();
   }
@@ -357,6 +372,7 @@ public:
             /*libpath*/ rewriter.getStringAttr(""),
             /*symbol*/ rewriter.getStringAttr(symbol),
             /*pure*/ rewriter.getBoolAttr(true));
+    copyMemorySpaceHint(op.getOperation(), externElementwiseOp.getOperation());
     rewriter.replaceOp(op, externElementwiseOp);
     return success();
   }
@@ -399,6 +415,8 @@ public:
               /*libpath*/ rewriter.getStringAttr(""),
               /*symbol*/ rewriter.getStringAttr("__gcu_wmulus_si32mix_ui8"),
               /*pure*/ rewriter.getBoolAttr(true));
+      copyMemorySpaceHint(op.getOperation(),
+                          externElementwiseOp.getOperation());
       rewriter.replaceOp(op, externElementwiseOp);
       return success();
     }
@@ -536,6 +554,7 @@ public:
         /*libpath*/ rewriter.getStringAttr(""),
         /*symbol*/ rewriter.getStringAttr("__gcu_softplus"),
         /*pure*/ rewriter.getBoolAttr(true));
+    copyMemorySpaceHint(op.getOperation(), softPlusOp.getOperation());
     rewriter.replaceOp(op, softPlusOp);
     return success();
   }
@@ -665,6 +684,209 @@ public:
   }
 };
 
+//===----------------------------------------------------------------------===//
+// Integer division / remainder canonicalization.
+//
+// Triton lowers `//` to arith.divsi / arith.divui (C semantics: truncation
+// toward zero).  The GCU400 lowering turns both into libcalls
+// (tops_floordivsi / tops_floordivui), i.e. a real function call per element
+// block.  Inductor emits them for bounds checks such as `(x // 2048) >= 18000`
+// once per masked load/store; folding the constant compare here -- before
+// fusion and before the libcall lowering -- removes both the call and the mask
+// materialization around it.
+//
+// The only rewrite kept is an exact integer identity:
+//
+//   sdiv(x, C) cmp K   ->  x cmp K*C or x cmp (K+1)*C             (C > 0)
+//   udiv(x, C) cmp K   ->  same, unsigned                         (C > 0)
+//
+// with one widening cast allowed between the division and the compare:
+//
+//   extsi(sdiv(x, C)) cmp K  ->  x cmp K*C, in the narrow type    (C > 0)
+//   extui(udiv(x, C)) cmp K  ->  same, unsigned                   (C > 0)
+//
+// Inductor emits exactly that shape for `(x // 2048) >= 18000` (i32 division,
+// extsi to i64 because the threshold constant is i64), and without peeling the
+// cast the pattern never matched, which left the floordiv libcall alive.  Only
+// one cast layer is peeled and it must agree in signedness with the compare;
+// the rescaled bound additionally has to be representable in the narrow type,
+// otherwise the fold is refused.
+//
+// It needs no non-negativity proof: for a positive divisor C,
+// trunc(x/C) >= K <=> x >= K*C holds for every integer x and K (this is LLVM
+// InstCombine's foldICmpDiv).  Overflow of a folded constant is rejected, and
+// mul is treated as non-wrapping here, which matches the index arithmetic
+// Triton emits (a wrap would already leave the address out of range).
+//
+// Every other constant-div/rem shape is deliberately NOT folded.
+// Each extra index rewrite risks disturbing the affine/contiguity structure
+// the address analysis relies on, so (x // a) // b, (x % c) % c and the
+// power-of-two shifts/ands are all left alone.
+// On the power-of-two forms the shift also hides a normalized index
+// (observed as a swiglu (N, 2H) read-as-(N, H) regression), and they would
+// additionally need a non-negativity proof.
+//===----------------------------------------------------------------------===//
+
+/// Returns the constant integer value of |v| when it is a scalar integer
+/// constant or a splat integer tensor constant.
+static std::optional<APInt> getIntegerConstant(Value v) {
+  auto constantOp = v.getDefiningOp<arith::ConstantOp>();
+  if (!constantOp)
+    return std::nullopt;
+  if (auto intTy = dyn_cast<IntegerType>(v.getType())) {
+    auto attr = dyn_cast<IntegerAttr>(constantOp.getValue());
+    if (!attr || attr.getType() != intTy)
+      return std::nullopt;
+    return attr.getValue();
+  }
+  auto shapedTy = dyn_cast<ShapedType>(v.getType());
+  if (!shapedTy || !shapedTy.getElementType().isInteger())
+    return std::nullopt;
+  auto denseAttr = dyn_cast<DenseElementsAttr>(constantOp.getValue());
+  if (!denseAttr || !denseAttr.isSplat())
+    return std::nullopt;
+  return denseAttr.getSplatValue<APInt>();
+}
+
+/// Creates an integer constant of type |ty| holding the splat value |value|.
+static Value createIntegerConstant(PatternRewriter &rewriter, Location loc,
+                                   Type ty, const APInt &value) {
+  if (auto intTy = dyn_cast<IntegerType>(ty))
+    return rewriter.create<arith::ConstantOp>(loc,
+                                              IntegerAttr::get(intTy, value));
+  auto shapedTy = cast<ShapedType>(ty);
+  auto elemTy = cast<IntegerType>(shapedTy.getElementType());
+  auto attr = DenseElementsAttr::get(shapedTy, IntegerAttr::get(elemTy, value));
+  return rewriter.create<arith::ConstantOp>(loc, attr);
+}
+
+/// `cmp(div(x, C), K)` -> `cmp(x, K')`, with C a positive constant and K a
+/// constant.  Removes the division (a libcall on GCU400) and often the i64
+/// promotion around the comparison.
+///
+/// The compare operand may also be one widening cast above the division
+/// (`divsi(i32) -> extsi -> cmpi sge(i64)`, which is what Inductor emits for
+/// `(x // 2048) >= 18000`).  The cast is peeled when its signedness matches the
+/// compare, and the bound is then rescaled in the narrow type.  That is exact
+/// only when the rescaled bound is representable in the narrow type, since the
+/// compare can only ever see narrow values widened; anything else bails out and
+/// leaves the division in place.
+template <typename DivOp, bool IsSigned>
+class FoldCmpDivByConst : public OpRewritePattern<arith::CmpIOp> {
+public:
+  using OpRewritePattern<arith::CmpIOp>::OpRewritePattern;
+
+  /// Element bit width of an integer scalar or tensor type.
+  static unsigned elemBitWidth(Type ty) {
+    if (auto intTy = dyn_cast<IntegerType>(ty))
+      return intTy.getWidth();
+    return cast<ShapedType>(ty).getElementType().getIntOrFloatBitWidth();
+  }
+
+  LogicalResult matchAndRewrite(arith::CmpIOp op,
+                                PatternRewriter &rewriter) const override {
+    Value divResult = op.getLhs();
+    bool peeledCast = false;
+    if (auto ext = divResult.getDefiningOp<arith::ExtSIOp>()) {
+      if (!IsSigned)
+        return failure();
+      divResult = ext.getIn();
+      peeledCast = true;
+    } else if (auto ext = divResult.getDefiningOp<arith::ExtUIOp>()) {
+      if (IsSigned)
+        return failure();
+      divResult = ext.getIn();
+      peeledCast = true;
+    }
+    auto divOp = divResult.getDefiningOp<DivOp>();
+    if (!divOp)
+      return failure();
+    auto divisor = getIntegerConstant(divOp.getRhs());
+    auto bound = getIntegerConstant(op.getRhs());
+    if (!divisor || !bound || divisor->isZero())
+      return failure();
+    if (IsSigned && divisor->isNegative())
+      return failure();
+
+    arith::CmpIPredicate pred = op.getPredicate();
+    bool predIsSigned = pred == arith::CmpIPredicate::slt ||
+                        pred == arith::CmpIPredicate::sle ||
+                        pred == arith::CmpIPredicate::sgt ||
+                        pred == arith::CmpIPredicate::sge;
+    if (predIsSigned != IsSigned)
+      return failure();
+
+    // trunc(x/C) <  K  <=>  x <  K*C
+    // trunc(x/C) <= K  <=>  x <  (K+1)*C
+    // trunc(x/C) >  K  <=>  x >= (K+1)*C
+    // trunc(x/C) >= K  <=>  x >= K*C
+    bool addOne = false;
+    arith::CmpIPredicate newPred = pred;
+    switch (pred) {
+    case arith::CmpIPredicate::slt:
+    case arith::CmpIPredicate::ult:
+    case arith::CmpIPredicate::sge:
+    case arith::CmpIPredicate::uge:
+      break;
+    case arith::CmpIPredicate::sle:
+      newPred = arith::CmpIPredicate::slt;
+      addOne = true;
+      break;
+    case arith::CmpIPredicate::ule:
+      newPred = arith::CmpIPredicate::ult;
+      addOne = true;
+      break;
+    case arith::CmpIPredicate::sgt:
+      newPred = arith::CmpIPredicate::sge;
+      addOne = true;
+      break;
+    case arith::CmpIPredicate::ugt:
+      newPred = arith::CmpIPredicate::uge;
+      addOne = true;
+      break;
+    default:
+      return failure();
+    }
+
+    bool overflow = false;
+    APInt threshold = *bound;
+    // A peeled cast leaves the divisor in the narrow (division) type while the
+    // bound and the compare live in the wide one; rescale at the wide width.
+    // The divisor is known positive when signed, so either extension agrees.
+    APInt scaled = IsSigned ? divisor->sextOrTrunc(threshold.getBitWidth())
+                            : divisor->zextOrTrunc(threshold.getBitWidth());
+    if (addOne) {
+      APInt one(threshold.getBitWidth(), 1);
+      threshold = IsSigned ? threshold.sadd_ov(one, overflow)
+                           : threshold.uadd_ov(one, overflow);
+      if (overflow)
+        return failure();
+    }
+    APInt newBound = IsSigned ? threshold.smul_ov(scaled, overflow)
+                              : threshold.umul_ov(scaled, overflow);
+    if (overflow)
+      return failure();
+
+    // Rescale in the narrow (division) type when a widening cast was peeled.
+    // A compare on widened values cannot see anything outside the narrow type's
+    // range, so the fold is exact iff that range holds the new bound.
+    Type cmpTy = op.getRhs().getType();
+    if (peeledCast) {
+      unsigned narrowBits = elemBitWidth(divResult.getType());
+      if (IsSigned ? !newBound.isSignedIntN(narrowBits)
+                   : !newBound.isIntN(narrowBits))
+        return failure();
+      cmpTy = divResult.getType();
+      newBound = newBound.trunc(narrowBits);
+    }
+
+    Value newCst = createIntegerConstant(rewriter, op.getLoc(), cmpTy, newBound);
+    rewriter.replaceOpWithNewOp<arith::CmpIOp>(op, newPred, divOp.getLhs(),
+                                               newCst);
+    return success();
+  }
+};
+
 struct GCUCombineOps : public impl::GCUCombineOpsBase<GCUCombineOps> {
   using Base::Base;
   void runOnOperation() override {
@@ -696,6 +918,12 @@ struct GCUCombineOps : public impl::GCUCombineOpsBase<GCUCombineOps> {
                    CombineMixedPrecisionPattern<arith::MulIOp>>(context);
     }
     patterns.add<FoldCmpMakeRange>(context);
+
+    // Mostly used for Inductor 2D split cases, where inputs are split and
+    // treated as 1D. These patterns fold index comparisons for such scenarios.
+    patterns.add<FoldCmpDivByConst<arith::DivSIOp, true>,
+                 FoldCmpDivByConst<arith::DivUIOp, false>>(context);
+
     if (applyPatternsGreedily(gpuModuleOp, std::move(patterns)).failed())
       signalPassFailure();
   }

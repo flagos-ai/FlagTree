@@ -77,6 +77,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
+#include "FusionOpUtils.h"
 #include "Utility.h"
 
 namespace mlir {
@@ -916,6 +917,48 @@ struct TTSplatOpLowering : SharedConversionPattern<triton::SplatOp> {
   }
 };
 
+struct TTTruncFOpLowering : SharedConversionPattern<arith::TruncFOp> {
+  using SharedConversionPattern::SharedConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(arith::TruncFOp truncFOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = truncFOp.getLoc();
+    auto resultType = truncFOp.getType();
+    auto sourceValue = adaptor.getIn();
+    auto sourceType = sourceValue.getType();
+    if (!isa<Float8E5M2Type, Float8E4M3FNType>(resultType) ||
+        !(sourceType.isF16() || sourceType.isBF16() || sourceType.isF32()))
+      return failure();
+
+    enterTritionOp(rewriter, truncFOp);
+    if (pTagPool.isExistInMap(truncFOp.getOperation())) {
+      pTagPool.releaseMap(truncFOp.getOperation());
+    }
+
+    auto sourceBpe = triton::gcu::getBpe(sourceType);
+    auto resultBpe = triton::gcu::getBpe(resultType);
+    auto vectorLength = kOaccSizeInBytes / std::min(sourceBpe, resultBpe);
+
+    Value broadcastSource =
+        rewriter
+            .create<vector::BroadcastOp>(
+                loc, VectorType::get(vectorLength, sourceType), sourceValue)
+            .getResult();
+    Value vectorResult =
+        rewriter
+            .create<arith::TruncFOp>(
+                loc, VectorType::get(vectorLength, resultType), broadcastSource)
+            .getResult();
+    Value scalarResult =
+        rewriter.create<vector::ExtractOp>(loc, vectorResult, 0).getResult();
+
+    leaveTritionOp(rewriter, truncFOp);
+    rewriter.replaceOp(truncFOp, scalarResult);
+    return success();
+  }
+};
+
 struct TTConstantOpLowering : SharedConversionPattern<arith::ConstantOp> {
   using SharedConversionPattern::SharedConversionPattern;
 
@@ -1115,14 +1158,47 @@ struct TTElementwiseOpLowering : public SharedConversionPattern<FT> {
       leaveTritionOp(rewriter, op.getOperation());
       return success();
     }
-    auto lastUser =
-        this->userAnalysis.getLastUser(op.getOperation()->getResults()[0]);
     auto numElems = triton::gcu::getElemsPerThread(type);
     auto resultType =
         dyn_cast<MemRefType>(this->getTypeConverter()->convertType(type));
-    auto output = syncAllocOp(rewriter, loc, lastUser,
-                              this->userAnalysis, this->replaced2Origin,
-                              resultType);
+    // TLE memory-space hints (see GCUTleAssignMemorySpace):
+    //   tle_use_smem_tile -> compute directly into the shared tile through a
+    //                          per-warp view. The view is the store target,
+    //                          while the tile itself is exposed as the op
+    //                          result, so TTSmemLocalAllocOpLowering
+    //                          recognizes it by type and swaps the staging
+    //                          ttg.local_alloc for the tile instead of
+    //                          deslicing a private copy.
+    //   tle_use_alloca  -> per-thread memref.alloca instead of
+    //                          memref.alloc.
+    //                          The result stays readable by the generic
+    //                          memref.load/store path and by the DMA store
+    //                          lowering (which reads it through memref casts).
+    Value output;
+    Value smemTile;
+    if (op->hasAttr(kTleResultInSmemTile)) {
+      auto tensorType = cast<RankedTensorType>(type);
+      auto tileType = triton::gcu::getSharedTileType(tensorType);
+      // GCUTleAssignMemorySpace only marks a value whose tile a warp can view.
+      assert(triton::gcu::canUseSubView(tileType, tensorType) &&
+             "tle_use_smem_tile set for a tile without a per-warp view");
+      smemTile =
+          syncAllocOp(rewriter, loc,
+                      triton::gcu::getSharedTileLastUser(op->getResult(0),
+                                                         this->userAnalysis),
+                      this->userAnalysis, this->replaced2Origin, tileType);
+      output = triton::gcu::getSharedTileWarpView(rewriter, type, smemTile);
+      assert(output && "canUseSubView() guarantees a per-warp view");
+    } else if (op->hasAttr(kTleResultInAlloca)) {
+      auto allocaOp = rewriter.create<memref::AllocaOp>(loc, resultType);
+      allocaOp.setAlignment(kOaccSizeInBytes);
+      output = allocaOp.getResult();
+    } else {
+      auto lastUser =
+          this->userAnalysis.getLastUser(op.getOperation()->getResults()[0]);
+      output = syncAllocOp(rewriter, loc, lastUser, this->userAnalysis,
+                           this->replaced2Origin, resultType);
+    }
     bool isPtrIntCast = std::is_same<TT, gcu::IntToPtrOp>::value ||
                         std::is_same<TT, gcu::PtrToIntOp>::value;
     affine::buildAffineLoopNest(
@@ -1147,7 +1223,7 @@ struct TTElementwiseOpLowering : public SharedConversionPattern<FT> {
         builder.create<memref::StoreOp>(loc, v, output, iters);
     });
     leaveTritionOp(rewriter, op.getOperation());
-    rewriter.replaceOp(op, output);
+    rewriter.replaceOp(op, smemTile ? smemTile : output);
     return success();
   }
 };
@@ -1328,7 +1404,7 @@ struct TTExternElemwiseOpLowering
     } else if (name == "__ef_rsqrtf") {
       rewriter.replaceOpWithNewOp<math::RsqrtOp>(op, adaptor.getOperands());
       return success();
-    } else if (name == "__ef_tanhf") {
+    } else if (name == "__ef_tanhf" || name == "__ef_fast_tanhf") {
       rewriter.replaceOpWithNewOp<math::TanhOp>(op, adaptor.getOperands());
       return success();
     } else if (name == "__ef_expf") {
@@ -1367,9 +1443,49 @@ struct TTExternElemwiseOpLowering
       return success();
     }
 
+    auto symbol = op.getSymbol();
+    auto loc = op.getLoc();
+    auto resultType = op.getType();
+    if (symbol.starts_with("__ef_") && resultType.isIntOrFloat()) {
+      std::string efSymbol =
+          mlir::triton::gcu::toVectorizedExternSymbol(symbol);
+      auto bpe = triton::gcu::getBpe(resultType);
+      for (auto operandType : op->getOperandTypes()) {
+        bpe = std::min(triton::gcu::getBpe(operandType), bpe);
+      }
+      auto vectorLength = kOaccSizeInBytes / bpe;
+      auto operands = llvm::to_vector(
+          llvm::map_range(adaptor.getOperands(), [&](auto operand) {
+            return Value(rewriter.create<vector::BroadcastOp>(
+                loc, VectorType::get(vectorLength, operand.getType()),
+                operand));
+          }));
+      Value result = rewriter
+                         .create<gcu::ExternElementwiseOp>(
+                             loc, VectorType::get(vectorLength, resultType),
+                             operands, efSymbol)
+                         .getResult();
+      rewriter.replaceOp(op,
+                         rewriter.create<vector::ExtractOp>(loc, result, 0));
+      return success();
+    }
+
     return failure();
   }
 };
+
+// Give `op` the identity digit region `^bb(%e): yield %e`, i.e. count the raw
+// key values.  Used by the non-fused histogram paths.
+static void addIdentityHistogramRegion(OpBuilder &builder,
+                                       math_ext::HistogramOp op, Type elemTy) {
+  auto loc = op.getLoc();
+  Block *block = new Block();
+  op.getBody().push_back(block);
+  block->addArgument(elemTy, loc);
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToEnd(block);
+  builder.create<math_ext::YieldOp>(loc, block->getArgument(0));
+}
 
 struct TTHistogramOpLowering : SharedConversionPattern<triton::HistogramOp> {
   using SharedConversionPattern::SharedConversionPattern;
@@ -1398,73 +1514,25 @@ struct TTHistogramOpLowering : SharedConversionPattern<triton::HistogramOp> {
     auto encoding = resultType.getEncoding();
     auto warpsPerCTA = triton::gcu::getWarpsPerCTA(encoding);
 
-    // Check if we can use mradix hardware (<= 32 bins, as mradix has 32 bins.)
-    auto inputTensorType =
-        dyn_cast<RankedTensorType>(histogramOp.getOperand(0).getType());
     int64_t numBins = resultType.getShape()[0];
-    bool useMradix =
-        (numBins <= 32) && inputTensorType.getElementType().isInteger(32);
-
-    if (useMradix) {
-      // Gather all warp inputs to shared memory, then single-warp
-      // mradix histogram. This avoids multi-warp merge and uses hardware
-      // acceleration.
-
-      // Step 1: All warps store their input shards to shared memory
-      auto inputType =
-          dyn_cast<RankedTensorType>(histogramOp.getOperand(0).getType());
-      auto sharedInputTensorType = RankedTensorType::get(
-          inputType.getShape(), inputType.getElementType(), encoding);
-      auto sharedInputMem = storeToSharedMem(
-          rewriter, tag, sharedInputTensorType, adaptor.getSrc(), false,
-          std::make_pair(histogramOp.getOperation(), -1), userAnalysis,
-          replaced2Origin);
-
-      // Step 2: Allocate output in SMEM (skip SMEM->private copy for input)
-      auto smemResultType = MemRefType::get(
-          resultType.getShape(), wrapResultType.getElementType(), AffineMap{},
-          rewriter.getI64IntegerAttr(2));
-      auto smemResMem = syncAllocOp(
-          rewriter, loc, std::make_pair(histogramOp.getOperation(), -1),
-          userAnalysis, replaced2Origin, smemResultType);
-
-      // Step 3: Master warp runs mradix histogram directly on SMEM
-      auto masterWarpId = getMasterThreadId(histogramOp.getOperation());
-      auto isMasterThread = rewriter.create<arith::CmpIOp>(
-          loc, arith::CmpIPredicate::eq,
-          rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
-          rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
-      auto useMradixAttr = rewriter.getUnitAttr();
-      rewriter.create<scf::IfOp>(
-          loc, isMasterThread, [&](OpBuilder &builder, Location loc) {
-            doMemset(builder, tag, histogramOp, smemResMem, zero,
-                     totalNumElems);
-            builder.create<math_ext::HistogramOp>(
-                loc, smemResMem, sharedInputMem, useMradixAttr);
-            builder.create<scf::YieldOp>(loc);
-          });
-      rewriter.create<gpu::BarrierOp>(loc);
-
-      // Step 4: Broadcast SMEM output to per-warp private
-      auto finalOutput = loadFromSharedMem(
-          rewriter, tag, resultType, smemResMem, false, lastUser,
-          std::make_pair(nullptr, -1), userAnalysis, replaced2Origin);
-
-      rewriter.create<gpu::BarrierOp>(loc);
-      leaveTritionOp(rewriter, histogramOp.getOperation());
-      rewriter.replaceOp(histogramOp, finalOutput);
-      return success();
-    }
-
-    // Fallback: Per-warp histogram + merge path
     auto resCurWarp = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
                                   replaced2Origin, resultMemRefType);
     doMemset(rewriter, tag, histogramOp, resCurWarp, zero, totalNumElems);
     auto sharedMemTensorType = RankedTensorType::get(
         ArrayRef<int64_t>{resultType.getShape()[0] * warpsPerCTA[0]},
         wrapResultType.getElementType(), encoding);
-    rewriter.create<math_ext::HistogramOp>(loc, resCurWarp, adaptor.getSrc(),
-                                           UnitAttr());
+    auto binsCst = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getI32IntegerAttr(numBins));
+    auto sizeInCst = rewriter.create<arith::ConstantOp>(
+        loc,
+        rewriter.getI32IntegerAttr(
+            cast<MemRefType>(adaptor.getSrc().getType()).getNumElements()));
+    auto hist = rewriter.create<math_ext::HistogramOp>(
+        loc, resCurWarp, adaptor.getSrc(), binsCst, sizeInCst,
+        adaptor.getMask(), /*use_mradix=*/UnitAttr());
+    addIdentityHistogramRegion(
+        rewriter, hist,
+        cast<MemRefType>(adaptor.getSrc().getType()).getElementType());
     /// store res of every warp to shared memory
     auto sharedResMem = storeToSharedMem(
         rewriter, tag, sharedMemTensorType, resCurWarp, false,
@@ -1528,6 +1596,255 @@ struct TTHistogramOpLowering : SharedConversionPattern<triton::HistogramOp> {
   }
 };
 
+// Peel the layout/view casts that a producer lowering puts on a buffer it
+// allocated, so the caller can see the real defining op.
+static Value stripMemRefViews(Value value) {
+  while (Operation *def = value.getDefiningOp()) {
+    if (isa<memref::ReinterpretCastOp, memref::CastOp, memref::ViewOp,
+            memref::MemorySpaceCastOp, memref::SubViewOp>(def)) {
+      value = def->getOperand(0);
+      continue;
+    }
+    break;
+  }
+  return value;
+}
+
+// Lower the fused digit histogram.  When the source is already an L1 memdesc
+// (the radix key buffer) the master subthread counts it in place; otherwise
+// the key tensor is staged in shared memory first.  The builtin computes
+// `(key >> shift) & (bins - 1)` inside the count loop, so no digit tile is
+// materialized.
+struct TTGCUHistogramOpLowering
+    : SharedConversionPattern<triton::gcu::HistogramOp> {
+  using SharedConversionPattern::SharedConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::gcu::HistogramOp histogramOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    enterTritionOp(rewriter, histogramOp.getOperation());
+    if (pTagPool.isExistInMap(histogramOp.getOperation()))
+      pTagPool.releaseMap(histogramOp.getOperation());
+    auto loc = histogramOp.getLoc();
+    auto lastUser = userAnalysis.getLastUser(histogramOp.getResult());
+    auto tag = pTagPool.getPrivateSyncTagInfo(histogramOp);
+    auto resultType = histogramOp.getType();
+    auto wrapResultType =
+        dyn_cast<MemRefType>(getTypeConverter()->convertType(resultType));
+    auto encoding = resultType.getEncoding();
+
+    // `num_bins` is the single source of truth for the logical bin count.  It
+    // stays independent of a future padded physical result buffer.  The digit
+    // shift is part of the region and is recovered by gcu_compiler, so no
+    // shift operand is threaded through this lowering.
+    Value bins = adaptor.getNumBins();
+
+    bool srcIsMemDesc =
+        isa<triton::gpu::MemDescType>(histogramOp.getSrc().getType());
+    Value keyMem;
+    if (srcIsMemDesc) {
+      // The key buffer already lives in L1; count it in place.
+      keyMem = adaptor.getSrc();
+    } else {
+      auto inputType =
+          dyn_cast<RankedTensorType>(histogramOp.getSrc().getType());
+      if (!inputType) {
+        histogramOp.emitError() << "fused histogram source must be a tensor "
+                                   "or memdesc";
+        return failure();
+      }
+      auto sharedInputTensorType = RankedTensorType::get(
+          inputType.getShape(), inputType.getElementType(), encoding);
+      keyMem = storeToSharedMem(rewriter, tag, sharedInputTensorType,
+                                adaptor.getSrc(), false,
+                                std::make_pair(histogramOp.getOperation(), -1),
+                                userAnalysis, replaced2Origin);
+    }
+
+    // Pack a non-prefix mask into a linear byte-per-lane buffer: the counting
+    // builtin runs on a single subthread and reads the mask linearly.  A prefix
+    // mask was already folded into `size_in` by the fusion pass, so `mask` is
+    // empty here for the sort.
+    //
+    // When one subthread owns every lane (a single-warp CTA, which is the
+    // level-1 sort and the top-k shape) the packed tile fits a private stack
+    // buffer: `memref.alloca` takes no shared-memory slot and needs no dealloc,
+    // so the mask never goes through the L1 staging copy.  With several
+    // subthreads each private copy only holds its own chunk while the count
+    // loop reads the whole line, so the mask is still packed through L1.
+    Value maskMem;
+    if (Value mask = histogramOp.getMask()) {
+      auto maskTensorType = dyn_cast<RankedTensorType>(mask.getType());
+      auto maskMemrefType = dyn_cast<MemRefType>(adaptor.getMask().getType());
+      if (!maskTensorType || !maskMemrefType) {
+        histogramOp.emitError() << "fused histogram mask must be a tensor";
+        return failure();
+      }
+      Value maskI8 = adaptor.getMask();
+      if (maskMemrefType.getElementType().isInteger(1)) {
+        // i1 memrefs are byte-per-lane at this stage; only the element type
+        // has to change so the staging uses plain byte copies.
+        auto i8Type = MemRefType::get(
+            maskMemrefType.getShape(), rewriter.getI8Type(),
+            maskMemrefType.getLayout(), maskMemrefType.getMemorySpace());
+        auto ptr = rewriter.create<gcu::MemRefToPtrOp>(
+            loc, gcu::PtrType::get(rewriter.getContext(), rewriter.getI1Type()),
+            adaptor.getMask());
+        maskI8 = rewriter.create<gcu::PtrToMemRefOp>(loc, i8Type, ptr);
+      }
+      auto maskStageType =
+          RankedTensorType::get(maskTensorType.getShape(), rewriter.getI8Type(),
+                                maskTensorType.getEncoding());
+      // A private copy is only complete when a single subthread owns every
+      // lane, and it is only worth a stack slot while it fits the private
+      // buffer budget.  A larger mask keeps the L1 packing path: the count loop
+      // still reads every lane, but from shared memory.
+      //
+      // This is the same predicate the fusion alloca analysis uses to decide
+      // where the mask producer writes, so the two passes cannot disagree and
+      // leave the lowering copying an alloca the fusion just created.
+      bool maskPrivate = triton::gcu::fitsPrivateHistogramMask(maskTensorType);
+      // The elementwise fusion lowering may already have written the mask into
+      // a private stack buffer of its own (`memref.alloca`, linear, one byte
+      // per lane).  Reuse it: staging again would add an L1 buffer on top of
+      // the private one.
+      Value maskAlloca =
+          stripMemRefViews(stripUnrealizedConversionCastOp(maskI8));
+      bool maskAlreadyPrivate =
+          maskPrivate &&
+          isa_and_nonnull<memref::AllocaOp>(maskAlloca.getDefiningOp());
+      if (maskAlreadyPrivate) {
+        maskMem = maskI8;
+      } else if (maskPrivate) {
+        // Same private-space buffer kind the `register` hint uses for the
+        // counts: stack allocated, no shared-memory slot, no dealloc.
+        auto allocaOp = rewriter.create<memref::AllocaOp>(
+            loc, MemRefType::get({maskTensorType.getNumElements()},
+                                 rewriter.getI8Type()));
+        allocaOp.setAlignment(kOaccSizeInBytes);
+        storeToSharedMemVector(rewriter, loc, maskI8, maskStageType,
+                               allocaOp.getResult());
+        maskMem = allocaOp.getResult();
+      } else {
+        maskMem =
+            storeToSharedMem(rewriter, tag, maskStageType, maskI8, false,
+                             std::make_pair(histogramOp.getOperation(), -1),
+                             userAnalysis, replaced2Origin);
+      }
+    }
+
+    // The digit chain always travels as the op's region.  gcu_compiler picks
+    // the tuned MRADIX digit-shift builtin by extracting the shift from the
+    // region, and otherwise lifts the region onto a full MRADIX vector, so the
+    // digit tile is never materialised either way.
+    //
+    // The physical key buffer may be f32 while the region starts from the
+    // corresponding i32 bits (top-k's `fpval_to_key` chain).  In that case the
+    // region argument takes the buffer element type and a scalar bitcast at
+    // the region entry feeds the existing i32 chain.
+    Type keyElemTy = cast<MemRefType>(keyMem.getType()).getElementType();
+    auto emitHistogram = [&](OpBuilder &builder, Value resultMem) {
+      auto regionOp = builder.create<math_ext::HistogramOp>(
+          loc, resultMem, keyMem, bins, adaptor.getSizeIn(), maskMem,
+          /*use_mradix=*/builder.getUnitAttr());
+      Region &srcRegion = histogramOp.getRegion();
+      Block *dstBlock = new Block();
+      regionOp.getBody().push_back(dstBlock);
+      Value keyArg = dstBlock->addArgument(keyElemTy, loc);
+      Type srcArgTy = srcRegion.front().getArgument(0).getType();
+      OpBuilder::InsertionGuard guard(builder);
+      builder.setInsertionPointToEnd(dstBlock);
+      if (srcArgTy != keyElemTy) {
+        // Both sides are 32-bit by the op verifier; this is the f32 key ->
+        // i32 digit bridge.
+        keyArg = builder.create<arith::BitcastOp>(loc, srcArgTy, keyArg);
+      }
+      IRMapping mapping;
+      mapping.map(srcRegion.front().getArgument(0), keyArg);
+      for (Operation &nested : srcRegion.front().without_terminator())
+        builder.clone(nested, mapping);
+      auto srcYield =
+          cast<triton::gcu::YieldOp>(srcRegion.front().getTerminator());
+      builder.create<math_ext::YieldOp>(
+          loc, ValueRange{mapping.lookupOrDefault(srcYield.getOperand(0))});
+    };
+
+    // A single-owner (replicated) result means every subthread holds the whole
+    // bin vector, so it can count straight into its private buffer instead of
+    // staging the counts in shared memory and broadcasting them back.  This
+    // drops the DMA round trip and the CTA barriers on every radix pass.
+    bool singleOwner = triton::gcu::getTotalElemsPerThread(resultType) ==
+                       static_cast<unsigned>(resultType.getNumElements());
+    if (singleOwner) {
+      // A `tt.memory_space("register")` hint on the histogram asks for a
+      // private stack buffer instead of a slice of the private pool.  The
+      // buffer is one full OACC line wide, so the counting builtin leaves the
+      // radix unit with a single 512B vector store while the cumsum still reads
+      // back plain i32 elements; SROA vector-promotes the pair, which removes
+      // the whole 32-bin count round trip from every radix pass.  The counting
+      // op is given the full-width backing buffer (so its `size_out` covers the
+      // whole line and the builtin can drain it with one vector store); the
+      // value that replaces the Triton op is a 32-wide view of the head.
+      Value priv;
+      Value backing;
+      bool useRegisterAlloca = histogramOp->hasAttr(kTleResultInAlloca);
+      if (useRegisterAlloca)
+        backing = allocOaccLine(rewriter, loc, wrapResultType.getElementType(),
+                                wrapResultType.getNumElements());
+      if (backing) {
+        priv = oaccLineView(rewriter, loc, backing, wrapResultType);
+        if (!priv)
+          backing = Value();
+      }
+      if (!backing) {
+        // Anchor the dealloc on the real consumer (the scan that reads the
+        // counts to build the prefixes), not on the histogram op: the counts
+        // are still read after this op, so a dealloc placed here let the
+        // allocator hand the slot straight to the prefix buffer and the
+        // kernel only stayed correct because the 32 reads happened before the
+        // first prefix write.
+        priv = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                           replaced2Origin, wrapResultType);
+        backing = priv;
+      }
+      emitHistogram(rewriter, backing);
+      leaveTritionOp(rewriter, histogramOp.getOperation());
+      rewriter.replaceOp(histogramOp, priv);
+      return success();
+    }
+
+    auto smemResultType =
+        MemRefType::get(resultType.getShape(), wrapResultType.getElementType(),
+                        AffineMap{}, rewriter.getI64IntegerAttr(2));
+    auto smemResMem = syncAllocOp(
+        rewriter, loc, std::make_pair(histogramOp.getOperation(), -1),
+        userAnalysis, replaced2Origin, smemResultType);
+
+    // The in-place path relies on the TLE barrier already inserted before the
+    // original local-pointers load (and on the scatter's after-fence), so no
+    // extra CTA barrier is needed here.
+
+    auto masterWarpId = getMasterThreadId(histogramOp.getOperation());
+    auto isMasterThread = rewriter.create<arith::CmpIOp>(
+        loc, arith::CmpIPredicate::eq,
+        rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
+        rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
+    rewriter.create<scf::IfOp>(loc, isMasterThread,
+                               [&](OpBuilder &builder, Location loc) {
+                                 emitHistogram(builder, smemResMem);
+                                 builder.create<scf::YieldOp>(loc);
+                               });
+    rewriter.create<gpu::BarrierOp>(loc);
+
+    auto finalOutput = loadFromSharedMem(
+        rewriter, tag, resultType, smemResMem, false, lastUser,
+        std::make_pair(nullptr, -1), userAnalysis, replaced2Origin);
+    rewriter.create<gpu::BarrierOp>(loc);
+    leaveTritionOp(rewriter, histogramOp.getOperation());
+    rewriter.replaceOp(histogramOp, finalOutput);
+    return success();
+  }
+};
 struct GCULoadOpLowering : SharedConversionPattern<triton::gcu::LoadOp> {
   using SharedConversionPattern::SharedConversionPattern;
 
@@ -2346,7 +2663,7 @@ struct TTReshapeOpLowering : SharedConversionPattern<triton::ReshapeOp> {
     auto resultType =
         dyn_cast<MemRefType>(getTypeConverter()->convertType(op.getType()));
 
-    if (!triton::gcu::isExpensiveView(op.getSrc().getType(), op.getType())) {
+    if (!triton::gcu::isExpensiveView(op)) {
       auto [strides, offset] = resultType.getStridesAndOffset();
       auto output = rewriter.create<memref::ReinterpretCastOp>(
           loc, resultType, adaptor.getSrc(), offset, resultType.getShape(),
@@ -4240,10 +4557,13 @@ struct TTAtomicRMWOpLowering : SharedConversionPattern<triton::AtomicRMWOp> {
               builder.create<scf::YieldOp>(loc);
             });
       }
-
-      rewriter.create<gpu::BarrierOp>(loc);
-      rewriter.replaceOpWithNewOp<memref::LoadOp>(op, elemType, localMem,
-                                                  ValueRange{zero});
+      if (op->use_empty()) {
+        rewriter.eraseOp(op);
+      } else {
+        rewriter.create<gpu::BarrierOp>(loc);
+        rewriter.replaceOpWithNewOp<memref::LoadOp>(op, elemType, localMem,
+                                                    ValueRange{zero});
+      }
       return success();
     } else if (mlir::isa<mlir::TensorType>(op.getVal().getType())) {
       mlir::Value ptrs = adaptor.getPtr();
@@ -5219,15 +5539,17 @@ void ConvertTritonToGCUPass::runOnOperation() {
       TTIntrinsicOpLowering<triton::GetNumProgramsOp, gpu::GridDimOp>,
       TTIntrinsicOpLowering<triton::GetProgramIdOp, gpu::BlockIdOp>,
       TTPrintOpLowering, TTAssertOpLowering, TTSplatOpLowering,
-      TTAddPtrOpLowering, TTConstantOpLowering, TTReduceReturnOpLowering,
-      TTScanReturnOpLowering, TTExternElemwiseOpLowering,
+      TTAddPtrOpLowering, TTConstantOpLowering, TTTruncFOpLowering,
+      TTReduceReturnOpLowering, TTScanReturnOpLowering,
+      TTExternElemwiseOpLowering,
       TTElementwiseOpLowering<triton::PtrToIntOp, gcu::PtrToIntOp>,
       TTElementwiseOpLowering<triton::IntToPtrOp, gcu::IntToPtrOp>,
       TTElementwiseOpLowering<triton::gcu::PtrToIntOp, gcu::PtrToIntOp>,
       TTElementwiseOpLowering<triton::gcu::IntToPtrOp, gcu::IntToPtrOp>,
       TTElementwiseOpLowering<triton::MulhiUIOp, math_ext::UmulhiOp>,
       TTArithSelectOpLowering, TTBitcastOpLowering, TTBroadcastOpLowering,
-      TTCatOpLowering, TTHistogramOpLowering, TTExpandDimsOpLowering,
+      TTCatOpLowering, TTHistogramOpLowering, TTGCUHistogramOpLowering,
+      TTExpandDimsOpLowering,
       TTReshapeOpLowering, TTSplitOpLowering, TTJoinOpLowering,
       GCUMatmulLowering, TTUnsplatOpLowering, TTGAssertOpLowering,
       TTTransOpLowering, TTGConvertLayoutOpLowering, GCULoadOpLowering,
@@ -5285,11 +5607,11 @@ void ConvertTritonToGCUPass::runOnOperation() {
   target.addIllegalOp<
       mlir::triton::gcu::ElementwiseFusionRegionOp, mlir::triton::gcu::YieldOp,
       mlir::triton::gcu::LoadOp, mlir::triton::gcu::StoreOp,
+      mlir::triton::gcu::HistogramOp,
       mlir::triton::gcu::CopyGlobalToLocalOp,
       mlir::triton::gcu::GatherGlobalToLocalOp,
       mlir::triton::gcu::InitBarrierOp, mlir::triton::gcu::WaitBarrierOp,
-      mlir::triton::gcu::ArriveBarrierOp,
-      mlir::triton::gcu::SliceFromLocalOp,
+      mlir::triton::gcu::ArriveBarrierOp, mlir::triton::gcu::SliceFromLocalOp,
       mlir::triton::gcu::DesliceToLocalOp>();
   target.addDynamicallyLegalOp(OperationName("tle.extract_tile", &getContext()),
                                [](Operation *) { return false; });
@@ -5301,6 +5623,10 @@ void ConvertTritonToGCUPass::runOnOperation() {
   target.addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                                     scf::SCFDialect,
                                     tensor::TensorDialect>([](Operation *op) {
+    if (auto truncFOp = dyn_cast<arith::TruncFOp>(op)) {
+      if (isa<Float8E5M2Type, Float8E4M3FNType>(truncFOp.getType()))
+        return false;
+    }
     return llvm::none_of(
                op->getOperandTypes(),
                [](auto t) {

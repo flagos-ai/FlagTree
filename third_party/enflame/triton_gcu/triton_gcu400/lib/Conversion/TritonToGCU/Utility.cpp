@@ -609,8 +609,7 @@ bool isMustAliasOp(OpOperand &use) {
     // Triton allows tt.reshape with allow_reorder to permute per-thread
     // elements. GCU does not implement that semantics yet, so must-alias here
     // only checks layout via isExpensiveView and ignores allow_reorder.
-    return !triton::gcu::isExpensiveView(reshapeOp.getSrc().getType(),
-                                         reshapeOp.getType());
+    return !triton::gcu::isExpensiveView(reshapeOp);
   } else if (isa<triton::BroadcastOp>(op)) {
     auto broastOp = cast<triton::BroadcastOp>(op);
     // Broadcasting a pointer tensor only replicates addresses, so the result
@@ -1400,6 +1399,134 @@ void storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
   builder.create<gpu::BarrierOp>(loc);
 }
 
+// ---------------------------------------------------------------------------
+// TLE memory-space hint helpers (tle.gpu.memory_space).
+// ---------------------------------------------------------------------------
+
+MemRefType getSharedTileType(RankedTensorType tensorType) {
+  return MemRefType::get(
+      tensorType.getShape(), tensorType.getElementType(), AffineMap{},
+      IntegerAttr::get(IntegerType::get(tensorType.getContext(), 64),
+                       /*addressSpace=*/2));
+}
+
+Value getSharedTileWarpView(OpBuilder &builder, Type type, Value sharedTile) {
+  auto loc = sharedTile.getLoc();
+  auto srcType = dyn_cast<MemRefType>(sharedTile.getType());
+  if (!srcType || !canUseSubView(srcType, type))
+    return nullptr;
+
+  auto elemType = srcType.getElementType();
+  auto numElems = triton::gcu::getElemsPerThread(type);
+  // Same type as the private per-thread buffer produced by the type converter
+  // for the tensor, so the existing store path can be reused unchanged.
+  auto outputType = MemRefType::get(
+      SmallVector<int64_t>(numElems.begin(), numElems.end()), elemType);
+
+  auto warpIds = getWarpIds(builder, loc, type);
+  auto srcStrides = srcType.getStridesAndOffset().first;
+  Value offsetElems = builder.create<arith::ConstantIndexOp>(loc, 0);
+  for (unsigned i = 0; i < srcType.getRank(); ++i) {
+    Value dimOffset = builder.create<arith::MulIOp>(
+        loc,
+        builder.create<arith::MulIOp>(
+            loc, builder.create<arith::ConstantIndexOp>(loc, numElems[i]),
+            warpIds[i]),
+        builder.create<arith::ConstantIndexOp>(loc, srcStrides[i]));
+    offsetElems = builder.create<arith::AddIOp>(loc, offsetElems, dimOffset);
+  }
+  auto bpe = triton::gcu::getBpe(elemType);
+  Value offsetBytes = builder.create<arith::MulIOp>(
+      loc, offsetElems, builder.create<arith::ConstantIndexOp>(loc, bpe));
+
+  // Fold the warp offset into the base address: memref.view only accepts an
+  // identity-layout result, so a strided tile has to go through
+  // getMemRefBasePtr, whose strided branch accounts for the view offset.
+  auto ptrType = gcu::PtrType::get(sharedTile.getContext(), elemType);
+  Value basePtr = getMemRefBasePtr(builder, sharedTile);
+  Value baseAddr =
+      builder.create<gcu::PtrToIntOp>(loc, builder.getI64Type(), basePtr);
+  Value offsetBytesI64 = builder.create<arith::IndexCastOp>(
+      loc, builder.getI64Type(), offsetBytes);
+  Value adjustedAddr =
+      builder.create<arith::AddIOp>(loc, baseAddr, offsetBytesI64);
+  Value adjustedPtr =
+      builder.create<gcu::IntToPtrOp>(loc, ptrType, adjustedAddr);
+
+  MemRefType memType1D =
+      MemRefType::get({ShapedType::kDynamic}, builder.getI8Type());
+  auto buffer1D =
+      builder.create<gcu::PtrToMemRefOp>(loc, memType1D, adjustedPtr);
+  auto bufferWithSpace = builder.create<memref::MemorySpaceCastOp>(
+      loc,
+      MemRefType::get({ShapedType::kDynamic}, builder.getI8Type(), AffineMap{},
+                      outputType.getMemorySpace()),
+      buffer1D);
+  return builder.create<memref::ViewOp>(
+      loc, outputType, bufferWithSpace,
+      builder.create<arith::ConstantIndexOp>(loc, 0), ValueRange{});
+}
+
+std::pair<Operation *, int>
+getSharedTileLastUser(Value producer,
+                      triton::gcu::FirstLastUserAnalysis &userAnalysis) {
+  for (Operation *user : producer.getUsers()) {
+    auto alloc = dyn_cast<triton::gpu::LocalAllocOp>(user);
+    if (!alloc || !alloc->hasAttr(kTleResultInSmemTile))
+      continue;
+    for (Operation *allocUser : alloc->getUsers()) {
+      auto localLoad = dyn_cast<triton::gpu::LocalLoadOp>(allocUser);
+      if (!localLoad || localLoad.getSrc() != alloc.getResult())
+        continue;
+      if (localLoad->getResult(0).use_empty())
+        return {nullptr, 0};
+      return userAnalysis.getLastUser(localLoad->getResult(0));
+    }
+  }
+  return {nullptr, 0};
+}
+
+SmallVector<unsigned> getHintedResultIndices(Operation *op,
+                                             StringRef attrName) {
+  SmallVector<unsigned> indices;
+  auto attr = op->getAttrOfType<DenseI64ArrayAttr>(attrName);
+  if (!attr)
+    return indices;
+  for (int64_t index : attr.asArrayRef())
+    indices.push_back(static_cast<unsigned>(index));
+  return indices;
+}
+
+Value allocOaccLine(OpBuilder &builder, Location loc, Type elemType,
+                    int64_t minElems) {
+  if (!elemType.isIntOrFloat())
+    return Value();
+  // Sub-byte element types (i1) have no whole-element lane: rounding a line up
+  // to them is meaningless and the size computation below would divide by
+  // zero, so they always take the generic pool path.
+  if (elemType.getIntOrFloatBitWidth() < 8)
+    return Value();
+  int64_t lanes = kOaccSizeInBytes / static_cast<int64_t>(
+                                       elemType.getIntOrFloatBitWidth() / 8);
+  if (lanes <= 0 || minElems > lanes)
+    return Value();
+  auto backingTy = MemRefType::get({lanes}, elemType);
+  auto allocaOp = builder.create<memref::AllocaOp>(loc, backingTy);
+  allocaOp.setAlignment(kOaccSizeInBytes);
+  return allocaOp.getResult();
+}
+
+Value oaccLineView(OpBuilder &builder, Location loc, Value backing,
+                   MemRefType type) {
+  if (backing.getType() == type)
+    return backing;
+  auto [strides, offset] = type.getStridesAndOffset();
+  if (ShapedType::isDynamic(offset))
+    return Value();
+  return builder.create<memref::ReinterpretCastOp>(
+      loc, type, backing, offset, type.getShape(), strides);
+}
+
 Value storeToSharedMem(OpBuilder &builder, triton::gcu::TagInfo tag,
                        TensorType type, Value buffer, bool onlyThread0,
                        std::pair<Operation *, int> lastTTUser,
@@ -1550,6 +1677,23 @@ std::tuple<Value, SmallVector<unsigned>,
   return {base, numElems, SmallVector<int64_t>(shape.begin(), shape.end())};
 }
 
+Value convertI1MemrefToI8Memref(OpBuilder &builder, Location loc,
+                                Value memref) {
+  auto memrefType = dyn_cast<MemRefType>(memref.getType());
+  if (!memrefType) {
+    llvm_unreachable("unsupported value type");
+    return nullptr;
+  }
+  auto ptr = builder.create<mlir::gcu::MemRefToPtrOp>(
+      loc, mlir::gcu::PtrType::get(builder.getContext(), builder.getI1Type()),
+      memref);
+  return builder.create<mlir::gcu::PtrToMemRefOp>(
+      loc,
+      MemRefType::get(ArrayRef<int64_t>{ShapedType::kDynamic},
+                      builder.getI8Type()),
+      ptr);
+}
+
 // Vector-store a private per-thread chunk (block dims `elemsPerThread` of the
 // full tensor `tensorShape`) into the shared staging buffer, then barrier.
 // Handles arbitrary rank: the last dim is the vector width, the leading dims
@@ -1566,6 +1710,11 @@ void storeToSharedMemVector(OpBuilder &builder, Location loc, Value srcBuf,
   auto [sharedBaseOffset, elemsPerThread, srcShape] =
       getChunkInfo(builder, loc, srcType);
   auto elemType = srcType.getElementType();
+  if (elemType.isInteger(1)) {
+    srcBuf = convertI1MemrefToI8Memref(builder, loc, srcBuf);
+    sharedBuf = convertI1MemrefToI8Memref(builder, loc, sharedBuf);
+    elemType = builder.getIntegerType(8);
+  }
 
   unsigned total = getProduct(ArrayRef<unsigned>(elemsPerThread));
   auto flatSrcType = MemRefType::get({total}, elemType);
@@ -1577,10 +1726,10 @@ void storeToSharedMemVector(OpBuilder &builder, Location loc, Value srcBuf,
   Value sharedBuf1D = sharedBuf;
   if (dstType.getRank() != 1) {
     auto dstTotal = dstType.getNumElements();
-    auto sharedType = MemRefType::get({dstTotal}, dstType.getElementType(),
-                                      AffineMap{}, dstType.getMemorySpace());
+    auto sharedType = MemRefType::get({dstTotal}, elemType, AffineMap{},
+                                      dstType.getMemorySpace());
     sharedBuf1D = builder.create<memref::ReinterpretCastOp>(
-        loc, sharedType, sharedBuf, /*offset*/ 0, dstTotal, /*stride*/ 1);
+        loc, sharedType, sharedBuf1D, /*offset*/ 0, dstTotal, /*stride*/ 1);
   }
 
   unsigned rank = elemsPerThread.size();
@@ -1629,15 +1778,19 @@ Value loadFromSharedMemVector(
     std::map<Operation *, Operation *> &replaced2Origin, bool useSubView) {
   auto loc = sharedBuf.getLoc();
   Type elemType = dstType.getElementType();
+  if (elemType.isInteger(1)) {
+    sharedBuf = convertI1MemrefToI8Memref(builder, loc, sharedBuf);
+    elemType = builder.getIntegerType(8);
+  }
 
   auto srcType = dyn_cast<MemRefType>(sharedBuf.getType());
   Value sharedBuf1D = sharedBuf;
   if (srcType && srcType.getRank() != 1) {
     auto srcTotal = srcType.getNumElements();
-    auto sharedType = MemRefType::get({srcTotal}, srcType.getElementType(),
-                                      AffineMap{}, srcType.getMemorySpace());
+    auto sharedType = MemRefType::get({srcTotal}, elemType, AffineMap{},
+                                      srcType.getMemorySpace());
     sharedBuf1D = builder.create<memref::ReinterpretCastOp>(
-        loc, sharedType, sharedBuf, /*offset*/ 0, srcTotal, /*stride*/ 1);
+        loc, sharedType, sharedBuf1D, /*offset*/ 0, srcTotal, /*stride*/ 1);
   }
 
   auto [sharedBaseOffset, elemsPerThread, dstShape] =
@@ -1674,11 +1827,14 @@ Value loadFromSharedMemVector(
   auto dstBuf = syncAllocOp(builder, loc, lastUser, userAnalysis,
                             replaced2Origin, dstResTy);
   auto dstBuf1D = dstBuf;
+  if (dstType.getElementType().isInteger(1)) {
+    dstBuf1D = convertI1MemrefToI8Memref(builder, loc, dstBuf1D);
+  }
   if (dstType.getRank() != 1) {
     auto dstTotal = dstType.getNumElements();
-    auto flatDstType = MemRefType::get({dstTotal}, dstType.getElementType());
+    auto flatDstType = MemRefType::get({dstTotal}, elemType);
     dstBuf1D = builder.create<memref::ReinterpretCastOp>(
-        loc, flatDstType, dstBuf, /*offset*/ 0, dstTotal, /*stride*/ 1);
+        loc, flatDstType, dstBuf1D, /*offset*/ 0, dstTotal, /*stride*/ 1);
   }
 
   unsigned rank = elemsPerThread.size();
@@ -3933,7 +4089,9 @@ bool isExpensiveView(triton::ExpandDimsOp op) {
   return srcNumElems != dstNumElems;
 }
 
-bool isExpensiveView(Type srcType, Type dstType) {
+bool isExpensiveView(triton::ReshapeOp op) {
+  auto srcType = op.getSrc().getType();
+  auto dstType = op.getType();
   auto mergeContig = [](RankedTensorType type) {
     auto elemsPerThread = getElemsPerThread(type);
     auto warpsPerCTA = getWarpsPerCTA(type.getEncoding());
@@ -3957,6 +4115,54 @@ bool isExpensiveView(Type srcType, Type dstType) {
   }
   return mergeContig(cast<RankedTensorType>(srcType)) !=
          mergeContig(cast<RankedTensorType>(dstType));
+}
+
+bool isZeroCopy(triton::gpu::ConvertLayoutOp op) {
+  auto srcTy = op.getSrc().getType();
+  auto dstTy = op.getType();
+  if (triton::gcu::getElemsPerThread(srcTy) !=
+      triton::gcu::getElemsPerThread(dstTy)) {
+    return false;
+  }
+  auto srcEnc = srcTy.getEncoding();
+  auto dstEnc = dstTy.getEncoding();
+  if (isa<triton::gpu::BlockedEncodingAttr>(srcEnc) &&
+      isa<triton::gpu::BlockedEncodingAttr>(dstEnc)) {
+    return true;
+  }
+
+  if ((isa<triton::gpu::BlockedEncodingAttr>(srcEnc) &&
+       isa<triton::gpu::SliceEncodingAttr>(dstEnc)) ||
+      (isa<triton::gpu::SliceEncodingAttr>(srcEnc) &&
+       isa<triton::gpu::BlockedEncodingAttr>(dstEnc))) {
+    return triton::gcu::getWarpsPerCTA(srcEnc) ==
+           triton::gcu::getWarpsPerCTA(dstEnc);
+  }
+
+  auto dstSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(dstEnc);
+  auto srcSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(srcEnc);
+  if (dstSliceEnc && srcSliceEnc) {
+    return dstSliceEnc.getDim() == srcSliceEnc.getDim() &&
+           triton::gcu::getWarpsPerCTA(srcEnc) ==
+               triton::gcu::getWarpsPerCTA(dstEnc);
+  }
+  return false;
+}
+
+bool isZeroCopyOp(Operation *op) {
+  if (!op) {
+    return false;
+  }
+  if (auto expandDimsOp = dyn_cast<triton::ExpandDimsOp>(op)) {
+    return !triton::gcu::isExpensiveView(expandDimsOp);
+  } else if (auto reshapeOp = dyn_cast<triton::ReshapeOp>(op)) {
+    return !triton::gcu::isExpensiveView(reshapeOp);
+  } else if (auto convertLayoutOp =
+                 dyn_cast<triton::gpu::ConvertLayoutOp>(op)) {
+    return isZeroCopy(convertLayoutOp);
+  } else {
+    return false;
+  }
 }
 
 SmallVector<unsigned> getElemsPerThread(Type type) {
@@ -4560,6 +4766,13 @@ bool isMixedPrecisionSymbol(StringRef symbol) {
                       });
 }
 
+std::string toVectorizedExternSymbol(StringRef symbol) {
+  StringRef fastPrefix = "__ef_fast_";
+  if (symbol.starts_with(fastPrefix))
+    return ("__ef_fast_v" + symbol.drop_front(fastPrefix.size())).str();
+  return ("__ef_v" + symbol.drop_front(StringRef("__ef_").size())).str();
+}
+
 static bool isAllocaInputValueImpl(Value v, ValueRemapFn remap) {
   if (!v) {
     return false;
@@ -4752,8 +4965,7 @@ void ReduceGenerator::processPrologue(OpBuilder &builder, Location loc,
           getElementTypeOrSelf(externElementwiseOp.getResult()));
       Value result;
       if (symbol.starts_with("__ef_")) {
-        std::string efSymbol = "__ef_v";
-        efSymbol += symbol.drop_front(strlen("__ef_"));
+        std::string efSymbol = toVectorizedExternSymbol(symbol);
         result = builder.create<mlir::gcu::ExternElementwiseOp>(
             loc, resultTy, operands, efSymbol);
       } else if (isMixedPrecisionSymbol(symbol)) {

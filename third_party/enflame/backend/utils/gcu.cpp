@@ -22,6 +22,23 @@ typedef topsDeviceProp_t topsDeviceProp;
 #define KURAMA_TOPS_OK topsSuccess
 #include <stdio.h>
 
+// CAPS 4.1.5+ (since the SIMT limit profile landed) keeps the GCU500 shared
+// memory limit only in the SIMT (Draco) profile and reports
+// sharedMemPerBlock = 0 from topsGetDeviceProperties() for that device,
+// while gcu400/gcu450 still report 6291456. Neither the simulator nor the
+// real-card attribute query fills that field for gcu500 (the assignment is
+// commented out in gcu500_devstate.cpp), so a zero here means "not
+// reported", not "no shared memory".
+//   gcu500_devstate.cpp: limitsSimt.maxSharedMemPerBlock = 316 * 1024
+// Triton turns that zero into a hard limit and rejects every kernel that
+// needs shared memory:
+//   OutOfResources: out of resource: shared memory, Required: 8192,
+//   Hardware limit: 0
+// Temporary kurama-side workaround so a CAPS with the new limit profile can
+// still be integrated; drop it once CAPS reports the SIMT value from
+// iefdrvGetDeviceProperties().
+static const int KURAMA_GCU500_SIMT_MAX_SHARED_MEM = 316 * 1024;
+
 static inline void gcuAssert(topsError_t code, const char *file, int line) {
   {
     if (code != KURAMA_TOPS_OK) {
@@ -55,9 +72,26 @@ static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
   topsDeviceProp props;
   TOPS_CHECK(topsGetDeviceProperties(&props, device_id));
 
+  // gcu500 does not report max shared memory (see
+  // KURAMA_GCU500_SIMT_MAX_SHARED_MEM). Use the SIMT limit it keeps
+  // internally instead of handing triton a zero hardware limit.
+  int max_shared_mem = static_cast<int>(props.sharedMemPerBlock);
+  if (max_shared_mem <= 0) {
+    static bool warned = false;
+    if (!warned) {
+      warned = true;
+      fprintf(stderr,
+              "kurama: topsGetDeviceProperties() reported 0 bytes of shared "
+              "memory for device %d; falling back to the %d byte gcu500 SIMT "
+              "limit\n",
+              device_id, KURAMA_GCU500_SIMT_MAX_SHARED_MEM);
+    }
+    max_shared_mem = KURAMA_GCU500_SIMT_MAX_SHARED_MEM;
+  }
+
   // create a struct to hold device properties
   return Py_BuildValue("{s:i, s:i, s:i, s:i, s:i, s:i, s:s}",
-                       "max_shared_mem", props.sharedMemPerBlock,
+                       "max_shared_mem", max_shared_mem,
                        "multiprocessor_count", props.multiProcessorCount,
                        "max_threads_per_block", props.maxThreadsPerBlock,
                        "sm_clock_rate", props.clockRate,

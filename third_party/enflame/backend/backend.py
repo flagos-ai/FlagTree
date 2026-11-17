@@ -151,10 +151,15 @@ class GCUUtils(object):
         if not gcu_cpp.is_file():
             raise FileNotFoundError(f"{gcu_cpp} not found.")
         src = gcu_cpp.read_text()
-        key = hashlib.md5(src.encode("utf-8")).hexdigest()
-        cache = get_cache_manager(key)
-        fname = "gcu_utils.so"
-        cache_path = cache.get_file(fname)
+        # Keyed the same way as compile_kernel(): the cache directory carries
+        # the triton_gcu / CAPS version (_version_key() = VERSION file +
+        # `topscc --version`) and the entry name carries the source. Hashing
+        # the source alone kept a .so built against the previous CAPS headers
+        # and runtime alive across upgrades.
+        utils_key = f'gcu_utils-{hashlib.sha256(src.encode("utf-8")).hexdigest()}.so'
+        cache_key = f"gcu_utils-{_version_key()}"
+        cache_manager = get_cache_manager(cache_key)
+        cache_path = cache_manager.get_file(utils_key)
         if cache_path is None:
             with tempfile.TemporaryDirectory() as tmpdir:
                 src_path = os.path.join(tmpdir, "main.cpp")
@@ -162,7 +167,8 @@ class GCUUtils(object):
                     f.write(src)
                 so = build_gcu_ext("gcu_utils", src_path, tmpdir)
                 with open(so, "rb") as f:
-                    cache_path = cache.put(f.read(), fname, binary=True)
+                    cache_path = cache_manager.put(f.read(), utils_key,
+                                                   binary=True)
         import importlib.util
         spec = importlib.util.spec_from_file_location("gcu_utils", cache_path)
         mod = importlib.util.module_from_spec(spec)

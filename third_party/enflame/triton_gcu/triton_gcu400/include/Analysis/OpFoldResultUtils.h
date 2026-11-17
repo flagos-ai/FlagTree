@@ -38,6 +38,13 @@ std::optional<int64_t> getIntAttr(const OpFoldResult ofr);
 
 Value getValue(OpBuilder &builder, Location loc, const OpFoldResult ofr);
 
+// Sign-extend an element offset to i64. An i64 value is returned unchanged so
+// a wide offset is not rounded through the 32-bit index type.
+Value castOffsetToI64(OpBuilder &builder, Location loc, Value value);
+
+// Promote a PtrState scalar to the i64 width its contract guarantees.
+Value castScalarToI64(OpBuilder &builder, Location loc, Value value);
+
 llvm::SmallVector<Value> getValues(OpBuilder &builder, Location loc,
                                    const llvm::SmallVector<OpFoldResult> &ofr);
 

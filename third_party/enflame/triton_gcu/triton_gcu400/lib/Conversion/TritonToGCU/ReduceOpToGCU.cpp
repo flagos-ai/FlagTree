@@ -308,7 +308,8 @@ public:
 
   void applyReduce(OpBuilder &builder, Location loc, ArrayRef<Value> outputs,
                    ArrayRef<Value> inputs, const Reduction3DContext &context,
-                   const DispatchPlan &dispatchPlan) const;
+                   const DispatchPlan &dispatchPlan,
+                   mlir::triton::gcu::ValueRemapFn remap) const;
 
 private:
   std::optional<VectorizationPolicy>
@@ -407,7 +408,8 @@ private:
 
   void applyFusionImpl(OpBuilder &builder, Location loc,
                        ArrayRef<Value> outputs, ArrayRef<Value> inputs,
-                       const Reduction3DContext &context) const;
+                       const Reduction3DContext &context,
+                       mlir::triton::gcu::ValueRemapFn remap) const;
 
   void applyScalarImpl(OpBuilder &builder, Location loc,
                        ArrayRef<Value> outputs, ArrayRef<Value> inputs,
@@ -1658,19 +1660,17 @@ void ReduceGenerator::applyScalarImpl(OpBuilder &builder, Location loc,
       });
 }
 
-void ReduceGenerator::applyFusionImpl(OpBuilder &builder, Location loc,
-                                      ArrayRef<Value> outputs,
-                                      ArrayRef<Value> inputs,
-                                      const Reduction3DContext &context) const {
+void ReduceGenerator::applyFusionImpl(
+    OpBuilder &builder, Location loc, ArrayRef<Value> outputs,
+    ArrayRef<Value> inputs, const Reduction3DContext &context,
+    mlir::triton::gcu::ValueRemapFn remap) const {
   assert(inputs.size() == 1 &&
          "Only reductions with a single parameter are supported");
   if (context.reductionAxis == 2) {
-    auto defOp = inputs[0].getDefiningOp();
-    while (isa<memref::ReinterpretCastOp>(defOp)) {
-      defOp = defOp->getOperand(0).getDefiningOp();
-    }
-    assert(isa<memref::AllocaOp>(defOp));
-    Value inputBuffer = defOp->getResult(0);
+    Value inputBuffer = inputs[0];
+    while (auto castOp = inputBuffer.getDefiningOp<memref::ReinterpretCastOp>())
+      inputBuffer = castOp.getSource();
+    assert(triton::gcu::isAllocaInputValue(inputBuffer, remap));
     auto memrefTy = cast<MemRefType>(inputBuffer.getType());
     auto elementTy = memrefTy.getElementType();
     unsigned vectorLength = kOaccSizeInBytes / triton::gcu::getBpe(elementTy);
@@ -1904,13 +1904,14 @@ void ReduceGenerator::applyReduce(OpBuilder &builder, Location loc,
                                   ArrayRef<Value> outputs,
                                   ArrayRef<Value> inputs,
                                   const Reduction3DContext &context,
-                                  const DispatchPlan &dispatchPlan) const {
+                                  const DispatchPlan &dispatchPlan,
+                                  mlir::triton::gcu::ValueRemapFn remap) const {
   if (dispatchPlan.executionMode == ReduceExecutionMode::kScalar) {
     applyScalarImpl(builder, loc, outputs, inputs, context);
     return;
   }
   if (dispatchPlan.executionMode == ReduceExecutionMode::kFusionMode) {
-    applyFusionImpl(builder, loc, outputs, inputs, context);
+    applyFusionImpl(builder, loc, outputs, inputs, context, remap);
     return;
   }
   assert(dispatchPlan.executionMode == ReduceExecutionMode::kVectorized &&
@@ -2249,7 +2250,7 @@ private:
       auto transposedPlan = generator.buildDispatchPlan(
           rewriter, transposedInputs, transposedContext, remap);
       generator.applyReduce(rewriter, loc, transposedOutputs, transposedInputs,
-                            transposedContext, transposedPlan);
+                            transposedContext, transposedPlan, remap);
       if (layout[2] == 0) {
         doTranspose(rewriter, loc, outputs, transposedOutputs, layout, tag);
         for (auto buf : transposedOutputs) {
@@ -2262,7 +2263,7 @@ private:
       return;
     }
     generator.applyReduce(rewriter, op.getLoc(), outputs, inputs, context,
-                          plan);
+                          plan, remap);
   }
 };
 } // namespace

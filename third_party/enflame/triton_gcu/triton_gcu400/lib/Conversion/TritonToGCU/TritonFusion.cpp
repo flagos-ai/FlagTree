@@ -284,7 +284,7 @@ EliminateForOpInductionVars::createCanonicalizedForOp(
         SmallVector<Value> results;
         for (unsigned i = 0; i < yieldOp->getNumOperands(); i++) {
           if (!eliminableInductionVarInfos.contains(i)) {
-            results.push_back(mapper.lookup(yieldOp->getOperand(i)));
+            results.push_back(mapper.lookupOrDefault(yieldOp->getOperand(i)));
           }
         }
         builder.create<scf::YieldOp>(loc, results);
@@ -317,86 +317,85 @@ struct PtrDecomposeResult {
   Value offset;
 };
 
+static Value accumulateOffset(OpBuilder &builder, Location loc,
+                              Value baseOffset, Value offsetToAdd) {
+  auto rankedTensorType = cast<RankedTensorType>(baseOffset.getType());
+  auto elementType = getElementTypeOrSelf(offsetToAdd.getType());
+  if (!isa<RankedTensorType>(offsetToAdd.getType())) {
+    offsetToAdd = builder.create<triton::SplatOp>(
+        loc, rankedTensorType.clone(elementType), offsetToAdd);
+  } else if (cast<RankedTensorType>(offsetToAdd.getType()).getShape() !=
+             rankedTensorType.getShape()) {
+    offsetToAdd = builder.create<triton::BroadcastOp>(
+        loc, rankedTensorType.clone(elementType), offsetToAdd);
+  }
+  auto promotedType =
+      mlir::triton::gcu::getBpe(rankedTensorType.getElementType()) >
+              mlir::triton::gcu::getBpe(elementType)
+          ? baseOffset.getType()
+          : offsetToAdd.getType();
+  if (promotedType != baseOffset.getType()) {
+    baseOffset = builder.create<arith::ExtSIOp>(loc, promotedType, baseOffset);
+  }
+  if (promotedType != offsetToAdd.getType()) {
+    offsetToAdd =
+        builder.create<arith::ExtSIOp>(loc, promotedType, offsetToAdd);
+  }
+  return builder.create<arith::AddIOp>(loc, baseOffset, offsetToAdd);
+}
+
 static FailureOr<PtrDecomposeResult>
 tryDecomposeLoadStorePtr(OpBuilder &builder, Location loc, Value ptr) {
   auto bitcastOp = ptr.getDefiningOp<triton::BitcastOp>();
-  if (bitcastOp) {
+  if (bitcastOp)
     ptr = bitcastOp.getSrc();
-  }
   auto addPtrOp = ptr.getDefiningOp<triton::AddPtrOp>();
-  if (!addPtrOp) {
+  if (!addPtrOp)
     return failure();
-  }
-  auto rankedTensorTy = dyn_cast<RankedTensorType>(ptr.getType());
-  if (!rankedTensorTy ||
-      (rankedTensorTy.getRank() != 1 && rankedTensorTy.getRank() != 2)) {
+  auto rankedTensorType = dyn_cast<RankedTensorType>(ptr.getType());
+  if (!rankedTensorType ||
+      (rankedTensorType.getRank() != 1 && rankedTensorType.getRank() != 2))
     return failure();
-  }
   auto offset = addPtrOp.getOffset();
   auto basePtr = addPtrOp.getPtr();
-  // Triton AddPtr offsets here are expected to be signless integer
-  // tensors/scalars.
-  auto accumulateOffset = [&](Value baseOffset, Value offsetToAdd) -> Value {
-    auto rankedTensorTy = cast<RankedTensorType>(baseOffset.getType());
-    auto elementTy = getElementTypeOrSelf(offsetToAdd.getType());
-    if (!isa<RankedTensorType>(offsetToAdd.getType())) {
-      offsetToAdd = builder.create<triton::SplatOp>(
-          loc, rankedTensorTy.clone(elementTy), offsetToAdd);
-    } else if (cast<RankedTensorType>(offsetToAdd.getType()).getShape() !=
-               rankedTensorTy.getShape()) {
-      offsetToAdd = builder.create<triton::BroadcastOp>(
-          loc, rankedTensorTy.clone(elementTy), offsetToAdd);
-    }
-    auto promotedType =
-        mlir::triton::gcu::getBpe(rankedTensorTy.getElementType()) >
-                mlir::triton::gcu::getBpe(elementTy)
-            ? baseOffset.getType()
-            : offsetToAdd.getType();
-    if (promotedType != baseOffset.getType()) {
-      baseOffset =
-          builder.create<arith::ExtSIOp>(loc, promotedType, baseOffset);
-    }
-    if (promotedType != offsetToAdd.getType()) {
-      offsetToAdd =
-          builder.create<arith::ExtSIOp>(loc, promotedType, offsetToAdd);
-    }
-    return builder.create<arith::AddIOp>(loc, baseOffset, offsetToAdd);
-  };
-  if (rankedTensorTy.getRank() == 2) {
-    if (auto broadcastOp = basePtr.getDefiningOp<triton::BroadcastOp>()) {
-      if (auto expandDimsOp =
-              broadcastOp.getSrc().getDefiningOp<triton::ExpandDimsOp>()) {
-        auto result =
-            tryDecomposeLoadStorePtr(builder, loc, expandDimsOp.getSrc());
-        if (failed(result)) {
-          return failure();
-        }
-        basePtr = result->basePtr;
-        offset = accumulateOffset(
-            offset, builder.create<triton::ExpandDimsOp>(
-                        loc, result->offset, expandDimsOp.getAxis()));
-        return PtrDecomposeResult{basePtr, offset};
-      } else {
-        auto result =
-            tryDecomposeLoadStorePtr(builder, loc, broadcastOp.getSrc());
-        if (failed(result)) {
-          return failure();
-        }
-        basePtr = result->basePtr;
-        offset = accumulateOffset(offset, result->offset);
-        return PtrDecomposeResult{basePtr, offset};
-      }
-    }
-  }
   while (auto addPtrOp = basePtr.getDefiningOp<triton::AddPtrOp>()) {
     basePtr = addPtrOp.getPtr();
-    offset = accumulateOffset(offset, addPtrOp.getOffset());
+    offset = accumulateOffset(builder, loc, offset, addPtrOp.getOffset());
+  }
+  if (rankedTensorType.getRank() == 2) {
+    if (auto broadcastOp = basePtr.getDefiningOp<triton::BroadcastOp>()) {
+      auto srcPtr = broadcastOp.getSrc();
+      auto expandDimsOp = srcPtr.getDefiningOp<triton::ExpandDimsOp>();
+      if (expandDimsOp)
+        srcPtr = expandDimsOp.getSrc();
+      auto result = tryDecomposeLoadStorePtr(builder, loc, srcPtr);
+      if (failed(result)) {
+        return failure();
+      }
+      basePtr = result->basePtr;
+      auto offsetToAdd = result->offset;
+      if (expandDimsOp)
+        offsetToAdd = builder.create<triton::ExpandDimsOp>(
+            loc, offsetToAdd, expandDimsOp.getAxis());
+      offset = accumulateOffset(builder, loc, offset, offsetToAdd);
+      if (bitcastOp) {
+        auto pointeeType =
+            cast<triton::PointerType>(
+                cast<RankedTensorType>(bitcastOp.getType()).getElementType())
+                .getPointeeType();
+        auto origPtrType = cast<triton::PointerType>(basePtr.getType());
+        auto newPtrType = triton::PointerType::get(
+            pointeeType, origPtrType.getAddressSpace());
+        basePtr = builder.create<triton::BitcastOp>(loc, newPtrType, basePtr);
+      }
+      return PtrDecomposeResult{basePtr, offset};
+    }
   }
   if (auto splatOp = basePtr.getDefiningOp<triton::SplatOp>()) {
     basePtr = splatOp.getSrc();
     while (auto addPtrOp = basePtr.getDefiningOp<triton::AddPtrOp>()) {
       basePtr = addPtrOp.getPtr();
-      offset = accumulateOffset(offset, addPtrOp.getOffset());
+      offset = accumulateOffset(builder, loc, offset, addPtrOp.getOffset());
     }
     if (bitcastOp) {
       auto pointeeType =
@@ -625,59 +624,6 @@ static bool isSupportedElementType(Type elementType) {
          elementType.isInteger(64);
 }
 
-static bool canFuseReshapeOp(triton::ReshapeOp op) {
-  return !triton::gcu::isExpensiveView(op.getSrc().getType(), op.getType());
-}
-
-static bool canFuseConvertLayout(triton::gpu::ConvertLayoutOp op) {
-  auto srcTy = op.getSrc().getType();
-  auto dstTy = op.getType();
-  if (triton::gcu::getElemsPerThread(srcTy) !=
-      triton::gcu::getElemsPerThread(dstTy)) {
-    return false;
-  }
-  auto srcEnc = srcTy.getEncoding();
-  auto dstEnc = dstTy.getEncoding();
-  if (isa<triton::gpu::BlockedEncodingAttr>(srcEnc) &&
-      isa<triton::gpu::BlockedEncodingAttr>(dstEnc)) {
-    return true;
-  }
-
-  if ((isa<triton::gpu::BlockedEncodingAttr>(srcEnc) &&
-       isa<triton::gpu::SliceEncodingAttr>(dstEnc)) ||
-      (isa<triton::gpu::SliceEncodingAttr>(srcEnc) &&
-       isa<triton::gpu::BlockedEncodingAttr>(dstEnc))) {
-    return triton::gcu::getWarpsPerCTA(srcEnc) ==
-           triton::gcu::getWarpsPerCTA(dstEnc);
-  }
-
-  auto dstSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(dstEnc);
-  auto srcSliceEnc = dyn_cast<triton::gpu::SliceEncodingAttr>(srcEnc);
-  if (dstSliceEnc && srcSliceEnc) {
-    return dstSliceEnc.getDim() == srcSliceEnc.getDim() &&
-           triton::gcu::getWarpsPerCTA(srcEnc) ==
-               triton::gcu::getWarpsPerCTA(dstEnc);
-  }
-  return false;
-}
-
-static bool isZeroCopyView(Operation *op) {
-  if (!op) {
-    return false;
-  }
-  if (auto expandDimsOp = dyn_cast<triton::ExpandDimsOp>(op)) {
-    return !triton::gcu::isExpensiveView(expandDimsOp);
-  } else if (auto reshapeOp = dyn_cast<triton::ReshapeOp>(op)) {
-    return !triton::gcu::isExpensiveView(reshapeOp.getSrc().getType(),
-                                         reshapeOp.getType());
-  } else if (auto convertLayoutOp =
-                 dyn_cast<triton::gpu::ConvertLayoutOp>(op)) {
-    return canFuseConvertLayout(convertLayoutOp);
-  } else {
-    return false;
-  }
-}
-
 static std::optional<unsigned> getUniqueBroadcastAxis(triton::BroadcastOp op) {
   auto srcType = op.getSrc().getType();
   auto resultType = op.getType();
@@ -696,6 +642,14 @@ static std::optional<unsigned> getUniqueBroadcastAxis(triton::BroadcastOp op) {
 
 static inline bool isValidOaccCount(unsigned numOacc) {
   return numOacc >= 1 && numOacc <= 4 * kLoopUnrollTimes;
+}
+
+static bool canFuseReshapeOp(triton::ReshapeOp op) {
+  return !triton::gcu::isExpensiveView(op);
+}
+
+static bool canFuseConvertLayout(triton::gpu::ConvertLayoutOp op) {
+  return triton::gcu::isZeroCopy(op);
 }
 
 static bool canFuseBroadcast(triton::BroadcastOp op) {
@@ -923,10 +877,6 @@ static void sinkFusibleProducersToUses(triton::FuncOp func,
     }
   });
 }
-
-} // namespace
-
-namespace {
 
 struct FusionTensorDesc {
   SmallVector<int64_t> shape;
@@ -1188,6 +1138,820 @@ SmallVector<Operation *> FusionGroup::scheduleFusionRegion() {
   return ordered;
 }
 
+static bool isConstantFusion(Operation *op) {
+  auto fusion = dyn_cast<triton::gcu::ElementwiseFusionRegionOp>(op);
+  if (!fusion)
+    return false;
+  auto body = fusion.getBody()->without_terminator();
+  return llvm::hasSingleElement(body) && isa<arith::ConstantOp>(body.begin());
+}
+
+bool canUseAllocaForValue(Value val) {
+  if (!val)
+    return false;
+  SetVector<Value> worklist;
+  worklist.insert(val);
+  for (unsigned idx = 0; idx < worklist.size(); ++idx) {
+    Value cur = worklist[idx];
+    for (auto *user : cur.getUsers()) {
+      if (isa<triton::gcu::ElementwiseFusionRegionOp>(user))
+        continue;
+      if (auto reduceOp = dyn_cast<triton::ReduceOp>(user)) {
+        if (reduceOp->getNumOperands() != 1) {
+          return false;
+        }
+        auto axis = reduceOp.getAxis();
+        auto tensorType = reduceOp.getInputTypes()[0];
+        if (tensorType.getRank() - 1 != axis ||
+            triton::gcu::getElemsPerThread(tensorType)[axis] *
+                    triton::gcu::getBpe(tensorType.getElementType()) <
+                kOaccSizeInBytes) {
+          return false;
+        }
+        continue;
+      }
+      if (triton::gcu::isZeroCopyOp(user)) {
+        worklist.insert(user->getResult(0));
+        continue;
+      }
+      if (auto forOp = dyn_cast<scf::ForOp>(user)) {
+        for (auto [initArgIdx, initArg] :
+             llvm::enumerate(forOp.getInitArgs())) {
+          if (initArg == cur) {
+            worklist.insert(forOp.getRegionIterArg(initArgIdx));
+            worklist.insert(forOp.getResult(initArgIdx));
+          }
+        }
+        continue;
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+// Match a splat i32 constant and return its value.
+static bool matchSplatConstantI32(Value value, int64_t &out) {
+  auto cst = value.getDefiningOp<arith::ConstantOp>();
+  if (!cst)
+    return false;
+  auto splat = dyn_cast<SplatElementsAttr>(cst.getValue());
+  if (!splat || !splat.getElementType().isInteger(32))
+    return false;
+  out = splat.getSplatValue<APInt>().getSExtValue();
+  return true;
+}
+
+// An i32 scalar operand captured while matching a prefix mask.  A splat
+// constant has no scalar SSA value yet, so the constant is kept here and only
+// materialised when the count operands are actually built.  Keeping it as an
+// attribute also lets two masks that use the same literal compare equal.
+struct ScalarI32 {
+  Value value;
+  std::optional<int64_t> constant;
+
+  explicit operator bool() const { return value || constant; }
+};
+
+struct PrefixMaskMatch {
+  ScalarI32 bound;
+  ScalarI32 offset;
+  bool unsignedPredicate = false;
+};
+static std::optional<PrefixMaskMatch> matchPrefixMask(Value mask);
+
+// Extract the scalar shift from the `tt.splat` (or splat constant) that feeds
+// the digit `shrui`.
+static Value matchShiftScalar(Value value, IRRewriter &rewriter) {
+  if (auto splat = value.getDefiningOp<triton::SplatOp>()) {
+    if (splat.getSrc().getType().isInteger(32))
+      return splat.getSrc();
+    return Value();
+  }
+  if (auto cst = value.getDefiningOp<arith::ConstantOp>()) {
+    if (auto splat = dyn_cast<SplatElementsAttr>(cst.getValue()))
+      if (splat.getElementType().isInteger(32))
+        return arith::ConstantOp::create(
+            rewriter, cst.getLoc(),
+            rewriter.getI32IntegerAttr(
+                splat.getSplatValue<APInt>().getSExtValue()));
+  }
+  return Value();
+}
+
+// The histogram count loop reads one 32-bit key per lane.  Reject any other
+// buffer element type here so an unsupported memdesc never reaches the
+// lowering (an f32 buffer is fine: the region bitcasts it to i32 first).
+static bool isHistogramKeyElement(Type type) {
+  return type.isIntOrFloat() && type.getIntOrFloatBitWidth() == 32;
+}
+
+// Trace the histogram key back to the L1 buffer that already holds it:
+//   key = tt.load(tle.local_pointers(%memdesc, make_range(0, N)))
+// The load must be a linear read of the whole buffer view whose mask (if any)
+// is a prefix range, so the backend can count directly from `%memdesc` and
+// skip both the load and the digit tile.  Look through a bitcast between the
+// load and the shift.
+static Value traceHistogramKeyBuffer(Value keyValue, RankedTensorType srcType,
+                                     Value *loadMask = nullptr) {
+  if (!srcType || !isHistogramKeyElement(srcType.getElementType()))
+    return Value();
+  // Peel bitcasts and layout-only ops inserted by earlier passes.
+  Value base = keyValue;
+  while (Operation *def = base.getDefiningOp()) {
+    if (auto bitcast = dyn_cast<arith::BitcastOp>(def)) {
+      base = bitcast.getIn();
+      continue;
+    }
+    if (auto bitcast = dyn_cast<triton::BitcastOp>(def)) {
+      base = bitcast.getSrc();
+      continue;
+    }
+    if (isa<triton::BroadcastOp, triton::gpu::ConvertLayoutOp>(def)) {
+      base = def->getOperand(0);
+      continue;
+    }
+    break;
+  }
+
+  // After tle-to-triton-gcu the L1 key load becomes `ttg.local_load` of the
+  // memdesc, so the buffer view is the direct operand.
+  if (auto localLoad = base.getDefiningOp<triton::gpu::LocalLoadOp>()) {
+    Value memdesc = localLoad.getSrc();
+    auto memdescType = dyn_cast<triton::gpu::MemDescType>(memdesc.getType());
+    if (!memdescType || memdescType.getRank() != 1 ||
+        !memdescType.hasStaticShape() ||
+        !isHistogramKeyElement(memdescType.getElementType()))
+      return Value();
+    if (memdescType.getShape()[0] != srcType.getShape()[0])
+      return Value();
+    return memdesc;
+  }
+
+  auto load = base.getDefiningOp<triton::LoadOp>();
+  if (!load)
+    return Value();
+  // A masked local load can still be counted in place when its mask is a
+  // prefix range: the same prefix is folded into `size_in`, so the count loop
+  // skips the load's tail lanes without materialising the loaded tensor.
+  if (loadMask)
+    *loadMask = load.getMask();
+  if (load.getMask() && !matchPrefixMask(load.getMask()))
+    return Value();
+
+  // Walk through layout-only ops to the local-pointers producer.
+  Operation *localPointers = load.getPtr().getDefiningOp();
+  while (localPointers &&
+         isa<triton::BroadcastOp, triton::gpu::ConvertLayoutOp>(localPointers))
+    localPointers = localPointers->getOperand(0).getDefiningOp();
+  if (!localPointers ||
+      localPointers->getName().getStringRef() != "tle.local_pointers")
+    return Value();
+  if (localPointers->getNumOperands() != 2)
+    return Value();
+
+  Value memdesc = localPointers->getOperand(0);
+  auto memdescType = dyn_cast<triton::gpu::MemDescType>(memdesc.getType());
+  if (!memdescType || memdescType.getRank() != 1 ||
+      !memdescType.hasStaticShape() ||
+      !isHistogramKeyElement(memdescType.getElementType()))
+    return Value();
+  if (memdescType.getShape()[0] != srcType.getShape()[0])
+    return Value();
+
+  auto range =
+      localPointers->getOperand(1).getDefiningOp<triton::MakeRangeOp>();
+  if (!range || range.getStart() != 0 ||
+      range.getEnd() != memdescType.getShape()[0])
+    return Value();
+  return memdesc;
+}
+
+// Match an i32 scalar, a splat of it, or a splat constant.  The constant form
+// is common for compile-time tile bounds (`dense<127> : tensor<128xi32>`) and
+// folding it is what keeps those masks on the `size_in` path.
+static ScalarI32 matchScalarI32(Value value) {
+  if (!value)
+    return {};
+  if (value.getType().isInteger(32))
+    return {value, std::nullopt};
+  if (auto splat = value.getDefiningOp<triton::SplatOp>())
+    if (splat.getSrc().getType().isInteger(32))
+      return {splat.getSrc(), std::nullopt};
+  if (auto cst = value.getDefiningOp<arith::ConstantOp>())
+    if (auto splat = dyn_cast<SplatElementsAttr>(cst.getValue()))
+      if (splat.getElementType().isInteger(32))
+        return {Value(), splat.getSplatValue<APInt>().getSExtValue()};
+  return {};
+}
+
+// The compile-time value of a matched scalar, when it is one.
+static std::optional<int64_t> constantScalarI32(const ScalarI32 &scalar) {
+  if (scalar.constant)
+    return scalar.constant;
+  if (auto cst = scalar.value.getDefiningOp<arith::ConstantOp>())
+    if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue()))
+      return intAttr.getInt();
+  return std::nullopt;
+}
+
+static bool sameScalarI32(const ScalarI32 &lhs, const ScalarI32 &rhs) {
+  if (lhs.value && lhs.value == rhs.value)
+    return true;
+  std::optional<int64_t> lhsConstant = constantScalarI32(lhs);
+  std::optional<int64_t> rhsConstant = constantScalarI32(rhs);
+  if (lhsConstant && rhsConstant)
+    return *lhsConstant == *rhsConstant;
+  return !lhs && !rhs;
+}
+
+// Match the prefix mask `(make_range(0, BLOCK) + offset) < n` (the sort's
+// `valid`) and return the runtime bound and tile offset.  Such a mask only
+// excludes tail lanes, so the backend can count a prefix and skip the mask
+// buffer entirely.
+//
+// `ult` is only folded without an offset.  `lane <u n` is still a prefix, but
+// `(lane + offset) <u n` stops being one as soon as the add wraps (the true
+// lanes are no longer a prefix of [0, BLOCK)); such masks keep the i8 buffer.
+static std::optional<PrefixMaskMatch> matchPrefixMask(Value mask) {
+  auto cmp = mask.getDefiningOp<arith::CmpIOp>();
+  if (!cmp)
+    return std::nullopt;
+  auto pred = cmp.getPredicate();
+  bool unsignedPredicate = pred == arith::CmpIPredicate::ult;
+  if (pred != arith::CmpIPredicate::slt && !unsignedPredicate)
+    return std::nullopt;
+
+  Value lhs = cmp.getLhs();
+  ScalarI32 offset;
+  if (auto add = lhs.getDefiningOp<arith::AddIOp>()) {
+    Value a = add.getLhs();
+    Value b = add.getRhs();
+    Value offsetValue;
+    auto range = a.getDefiningOp<triton::MakeRangeOp>();
+    if (range && range.getStart() == 0) {
+      offsetValue = b;
+    } else if ((range = b.getDefiningOp<triton::MakeRangeOp>()) &&
+               range.getStart() == 0) {
+      offsetValue = a;
+    }
+    if (!range || range.getStart() != 0)
+      return std::nullopt;
+    offset = matchScalarI32(offsetValue);
+    if (!offset)
+      return std::nullopt;
+    // A literal zero offset is the same prefix as no offset.
+    if (auto offsetConstant = constantScalarI32(offset))
+      if (*offsetConstant == 0)
+        offset = ScalarI32();
+    if (unsignedPredicate && offset)
+      return std::nullopt;
+  } else if (auto range = lhs.getDefiningOp<triton::MakeRangeOp>()) {
+    if (range.getStart() != 0)
+      return std::nullopt;
+  } else {
+    return std::nullopt;
+  }
+
+  ScalarI32 n = matchScalarI32(cmp.getRhs());
+  if (!n)
+    return std::nullopt;
+  return PrefixMaskMatch{n, offset, unsignedPredicate};
+}
+
+// Materialise the number of leading lanes covered by `match` inside a tile of
+// `bufferLen` elements, i.e. `|{i in [0, bufferLen) : i + offset < n}|`.
+// `n` is a tile-relative length and `offset` a tile base, so both are assumed
+// not to wrap the add.
+static Value materializePrefixSize(IRRewriter &rewriter, Location loc,
+                                   const PrefixMaskMatch &match,
+                                   int64_t bufferLen) {
+  auto materialize = [&](const ScalarI32 &scalar) -> Value {
+    if (scalar.value)
+      return scalar.value;
+    if (!scalar.constant)
+      return Value();
+    return rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getI32IntegerAttr(*scalar.constant));
+  };
+  Value n = materialize(match.bound);
+  Value limit = rewriter.create<arith::ConstantOp>(
+      loc, rewriter.getI32IntegerAttr(bufferLen));
+
+  if (match.unsignedPredicate) {
+    // `lane <u n`: count `min(n, len)`.  `n` may exceed INT32_MAX (a uint mask
+    // bound), so both the compare and the min must stay unsigned.
+    return rewriter.create<arith::MinUIOp>(loc, n, limit);
+  }
+
+  Value offset = materialize(match.offset);
+  Value zero =
+      rewriter.create<arith::ConstantOp>(loc, rewriter.getI32IntegerAttr(0));
+  if (!offset) {
+    // `lane <s n`: a non-positive bound counts nothing.
+    n = rewriter.create<arith::MaxSIOp>(loc, n, zero);
+    return rewriter.create<arith::MinSIOp>(loc, n, limit);
+  }
+  // `(lane + offset) <s n`: `n - offset` lanes clamped to the tile.  `n <
+  // offset` means no lane matches; the select keeps that exact even when
+  // `n - offset` would wrap.
+  Value diff = rewriter.create<arith::SubIOp>(loc, n, offset);
+  Value before = rewriter.create<arith::CmpIOp>(
+      loc, arith::CmpIPredicate::slt, n, offset);
+  Value clamped = rewriter.create<arith::MinSIOp>(loc, diff, limit);
+  return rewriter.create<arith::SelectOp>(loc, before, zero, clamped);
+}
+
+// --- general fused digit regions -------------------------------------------
+//
+// `(key >> shift) & (bins - 1)` is the tuned form and keeps its dedicated
+// lowering.  Any other per-element integer chain can still be counted in
+// place: the whole chain is lifted into the histogram's scalar region and
+// gcu_compiler vectorises it onto a full MRADIX vector inside the count loop,
+// so no digit tile is materialised either.  That is what keeps the fusion
+// general instead of a fixed list of digit shapes.
+
+static void eraseDeadChain(IRRewriter &rewriter, Value value,
+                           bool allowLoads = false);
+
+// Ops the scalar digit region can absorb.  `tt.splat` / `tt.broadcast` /
+// `tt.expand_dims` are pure shape plumbing and are dropped, so only real
+// per-element arithmetic reaches the region.
+//
+// The list is exactly what the backend region vectoriser can lift onto a
+// 128-lane MRADIX vector.  In particular there is no narrowing/widening:
+// `trunci` / `extui` / `extsi` are deliberately absent, so a chain that first
+// narrows the key (top-k's `.to(uint16)`) is rejected as a whole instead of
+// reaching the vectoriser half-supported.
+static bool isScalarizableDigitOp(Operation *op) {
+  return isa<arith::AndIOp, arith::OrIOp, arith::XOrIOp, arith::AddIOp,
+             arith::SubIOp, arith::MulIOp, arith::ShRUIOp, arith::ShRSIOp,
+             arith::ShLIOp, arith::CmpIOp, arith::SelectOp, arith::BitcastOp,
+             triton::BitcastOp, arith::MaxSIOp, arith::MinSIOp, arith::MaxUIOp,
+             arith::MinUIOp, triton::SplatOp, triton::BroadcastOp,
+             triton::ExpandDimsOp>(op);
+}
+
+// Emit one tensor-level digit op as its scalar counterpart in the region.
+static void scalarizeDigitOp(OpBuilder &builder, Location loc, Operation *op,
+                             IRMapping &mapping) {
+  if (isa<triton::SplatOp, triton::BroadcastOp, triton::ExpandDimsOp>(op)) {
+    mapping.map(op->getResult(0), mapping.lookupOrDefault(op->getOperand(0)));
+    return;
+  }
+  if (auto cst = dyn_cast<arith::ConstantOp>(op)) {
+    auto splat = cast<SplatElementsAttr>(cst.getValue());
+    mapping.map(op->getResult(0),
+                arith::ConstantOp::create(builder, loc,
+                                          splat.getSplatValue<TypedAttr>()));
+    return;
+  }
+  // A tensor bitcast has no scalar counterpart in its own dialect at this
+  // stage.  Emit `arith.bitcast` on the scalar element so the backend can
+  // vectorise it (and so an f32 key can be counted through its i32 bits).
+  if (isa<arith::BitcastOp, triton::BitcastOp>(op)) {
+    Type elemTy = cast<ShapedType>(op->getResult(0).getType()).getElementType();
+    Value src = mapping.lookupOrDefault(op->getOperand(0));
+    mapping.map(op->getResult(0),
+                arith::BitcastOp::create(builder, loc, elemTy, src));
+    return;
+  }
+  Operation *clone = builder.clone(*op, mapping);
+  for (OpResult result : clone->getResults())
+    if (auto shaped = dyn_cast<ShapedType>(result.getType()))
+      result.setType(shaped.getElementType());
+}
+
+// Collect the elementwise chain feeding `value` (post-order) and the buffer
+// load it is rooted at.  Only chains that read one key buffer are accepted: a
+// second root, a block argument or an unsupported op rejects the chain so the
+// generic histogram lowering still handles it.
+static bool collectDigitChain(Value value, SmallVectorImpl<Operation *> &chain,
+                              Value &root, llvm::DenseSet<Operation *> &seen) {
+  auto tensorType = dyn_cast<RankedTensorType>(value.getType());
+  if (!tensorType)
+    return false;
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return false;
+  // Leaf of the chain: the key load.  It is either an unmasked (or prefix-
+  // masked) read of an L1 buffer (counted in place) or a plain tensor load
+  // (staged by the histogram lowering); both keep the digit chain in the
+  // region.  A bitcast is *not* a leaf: keeping it in the chain lets a 32-bit
+  // buffer feed an f32 key without inventing a second element type.
+  if (!isa<arith::BitcastOp, triton::BitcastOp>(def) &&
+      (traceHistogramKeyBuffer(value, tensorType) ||
+       isa<triton::LoadOp, triton::gpu::LocalLoadOp>(def))) {
+    if (root && root != value)
+      return false;
+    root = value;
+    return true;
+  }
+  if (!seen.insert(def).second)
+    return true;
+  if (auto cst = dyn_cast<arith::ConstantOp>(def)) {
+    auto splat = dyn_cast<SplatElementsAttr>(cst.getValue());
+    if (!splat || !splat.getElementType().isIntOrFloat())
+      return false;
+    chain.push_back(def);
+    return true;
+  }
+  if (!isScalarizableDigitOp(def))
+    return false;
+  for (Value operand : def->getOperands())
+    if (isa<RankedTensorType>(operand.getType()) &&
+        !collectDigitChain(operand, chain, root, seen))
+      return false;
+  chain.push_back(def);
+  return true;
+}
+
+// Split a mask expression into prefix-range leaves (which become `size_in`)
+// and the remaining per-lane predicate (which becomes the mask buffer).  This
+// is what turns top-k's `mask_n & matches` into `size_in = n_cols` plus a
+// `matches` byte mask, instead of counting the whole tile.
+static void collectMaskLeaves(Value mask,
+                              SmallVectorImpl<PrefixMaskMatch> &prefixes,
+                              SmallVectorImpl<Value> &residual) {
+  if (auto andOp = mask.getDefiningOp<arith::AndIOp>()) {
+    collectMaskLeaves(andOp.getLhs(), prefixes, residual);
+    collectMaskLeaves(andOp.getRhs(), prefixes, residual);
+    return;
+  }
+  if (auto prefix = matchPrefixMask(mask)) {
+    prefixes.push_back(*prefix);
+    return;
+  }
+  residual.push_back(mask);
+}
+
+// Native `tl.histogram` mask semantics: prefix ranges (`lane < N`) collapse
+// into `size_in`; any other mask is widened to i8 and forwarded as a buffer.
+static bool buildHistogramCountOperands(triton::HistogramOp hist,
+                                        IRRewriter &rewriter,
+                                        RankedTensorType srcType, Value &sizeIn,
+                                        Value &mask) {
+  Value histMask = hist.getMask();
+  if (!histMask) {
+    sizeIn = arith::ConstantOp::create(
+        rewriter, hist.getLoc(),
+        rewriter.getI32IntegerAttr(srcType.getShape()[0]));
+    return true;
+  }
+  auto maskType = dyn_cast<RankedTensorType>(histMask.getType());
+  if (!maskType || maskType.getRank() != 1)
+    return false;
+
+  SmallVector<PrefixMaskMatch, 2> prefixes;
+  SmallVector<Value, 2> residual;
+  collectMaskLeaves(histMask, prefixes, residual);
+  if (!prefixes.empty()) {
+    Value prefixSize = materializePrefixSize(
+        rewriter, hist.getLoc(), prefixes.front(), srcType.getShape()[0]);
+    for (const PrefixMaskMatch &prefix : llvm::drop_begin(prefixes))
+      prefixSize = rewriter.create<arith::MinSIOp>(
+          hist.getLoc(), prefixSize,
+          materializePrefixSize(rewriter, hist.getLoc(), prefix,
+                                srcType.getShape()[0]));
+    sizeIn = prefixSize;
+  } else {
+    sizeIn = arith::ConstantOp::create(
+        rewriter, hist.getLoc(),
+        rewriter.getI32IntegerAttr(srcType.getShape()[0]));
+  }
+
+  if (residual.empty())
+    return true;
+  Value residualMask = residual.front();
+  for (Value leaf : llvm::drop_begin(residual))
+    residualMask =
+        rewriter.create<arith::AndIOp>(hist.getLoc(), residualMask, leaf);
+  auto maskI8Type = RankedTensorType::get(
+      maskType.getShape(), rewriter.getI8Type(), maskType.getEncoding());
+  mask =
+      rewriter.create<arith::ExtUIOp>(hist.getLoc(), maskI8Type, residualMask);
+  return true;
+}
+
+// Whether the histogram mask contains the exact prefix that masks the key
+// load.  A masked key load can only be counted in place when the same prefix
+// removes its tail lanes from the count; a different (even wider) histogram
+// prefix would let the load's `other` tail values reach the bins.
+static bool histogramMaskCoversLoadPrefix(triton::HistogramOp hist,
+                                          Value loadMask) {
+  if (!loadMask)
+    return true;
+  std::optional<PrefixMaskMatch> loadPrefix = matchPrefixMask(loadMask);
+  if (!loadPrefix)
+    return false;
+  Value mask = hist.getMask();
+  if (!mask)
+    return false;
+  SmallVector<PrefixMaskMatch, 2> prefixes;
+  SmallVector<Value, 2> residual;
+  collectMaskLeaves(mask, prefixes, residual);
+  return llvm::any_of(prefixes, [&](const PrefixMaskMatch &prefix) {
+    // The predicate matters: the same `n` yields a different prefix for
+    // `slt` and `ult` once it crosses INT32_MAX.  A wider histogram prefix than
+    // the load prefix would let the load's `other` tail values reach the bins,
+    // and a narrower one would silently drop lanes.
+    return prefix.unsignedPredicate == loadPrefix->unsignedPredicate &&
+           sameScalarI32(prefix.bound, loadPrefix->bound) &&
+           sameScalarI32(prefix.offset, loadPrefix->offset);
+  });
+}
+
+// Fuse a general elementwise digit chain into `triton_gcu.histogram`, keeping
+// the chain as a scalar region.
+static LogicalResult fuseGeneralHistogramDigit(triton::HistogramOp hist,
+                                               IRRewriter &rewriter) {
+  auto srcType = dyn_cast<RankedTensorType>(hist.getSrc().getType());
+  if (!srcType || srcType.getRank() != 1 ||
+      !srcType.getElementType().isInteger(32))
+    return failure();
+  // The general region path currently vectorises whole 128-lane chunks; a
+  // partial tail stays on the generic digits-in histogram fallback.
+  if (srcType.getShape()[0] % 128 != 0)
+    return failure();
+  auto resType = dyn_cast<RankedTensorType>(hist.getType());
+  if (!resType || resType.getRank() != 1 || resType.getShape()[0] <= 0 ||
+      resType.getShape()[0] > 32 || !resType.getElementType().isInteger(32))
+    return failure();
+
+  SmallVector<Operation *> chain;
+  Value root;
+  llvm::DenseSet<Operation *> seen;
+  if (!collectDigitChain(hist.getSrc(), chain, root, seen) || !root)
+    return failure();
+  // Narrowing/widening is rejected by `collectDigitChain` itself (see
+  // `isScalarizableDigitOp`); the chain reaching here is vectorisable as is.
+  auto rootType = dyn_cast<RankedTensorType>(root.getType());
+  if (!rootType || rootType.getElementType().getIntOrFloatBitWidth() != 32)
+    return failure();
+  Value loadMask;
+  Value keySource = traceHistogramKeyBuffer(root, rootType, &loadMask);
+  if (!histogramMaskCoversLoadPrefix(hist, loadMask))
+    keySource = Value();
+  if (keySource) {
+    auto memdescType = dyn_cast<triton::gpu::MemDescType>(keySource.getType());
+    if (!memdescType)
+      return failure();
+    // The key buffer may be f32 while the digit chain starts from its i32
+    // bits; the histogram lowering inserts the scalar bitcast when the two
+    // element types differ.
+  } else {
+    // No provable L1 view (or the load mask is not fully represented by the
+    // histogram prefix): the histogram lowering stages the loaded tensor,
+    // which still avoids the tensor-level digit tile.
+    keySource = root;
+  }
+
+  rewriter.setInsertionPoint(hist);
+  Value sizeIn;
+  Value mask;
+  if (!buildHistogramCountOperands(hist, rewriter, srcType, sizeIn, mask))
+    return failure();
+  Value numBins = arith::ConstantOp::create(
+      rewriter, hist.getLoc(),
+      rewriter.getI32IntegerAttr(resType.getShape()[0]));
+
+  auto fused = rewriter.create<triton::gcu::HistogramOp>(
+      hist.getLoc(), hist.getType(), keySource, numBins, sizeIn, mask);
+
+  // Rebuild the chain as a scalar region; the elementwise ops are pure, so the
+  // tensor-level originals die with the chain below.
+  //
+  // Contract: the yielded digit must already be in `[0, num_bins)`.  The
+  // backend vectorises this region onto the MRADIX count and the hardware only
+  // looks at the low 5 radix bits, so an out-of-range digit would be counted
+  // into a wrapped bin instead of being dropped.  `mask` / `size_in` are the
+  // only lane filters; no per-lane range check is added here because it would
+  // cost a compare and a select on every lane of the hot count loop.
+  Block *body = new Block();
+  fused.getRegion().push_back(body);
+  body->addArgument(rootType.getElementType(), hist.getLoc());
+  OpBuilder regionBuilder = OpBuilder::atBlockEnd(body);
+  IRMapping mapping;
+  mapping.map(root, body->getArgument(0));
+  for (Operation *op : chain)
+    scalarizeDigitOp(regionBuilder, hist.getLoc(), op, mapping);
+  regionBuilder.create<triton::gcu::YieldOp>(
+      hist.getLoc(), mapping.lookupOrDefault(hist.getSrc()));
+
+  // Keep the TLE memory-space hint: it decides whether the count vector lives
+  // in a private stack buffer (and can be SROA-promoted) or in the pool.
+  if (auto memSpace = hist->getAttrOfType<StringAttr>(kTleHint))
+    fused->setAttr(kTleHint, memSpace);
+
+  Value histMask = hist.getMask();
+  hist.getResult().replaceAllUsesWith(fused.getResult());
+  rewriter.eraseOp(hist);
+  for (Operation *op : llvm::reverse(chain))
+    if (op->use_empty() && isMemoryEffectFree(op))
+      rewriter.eraseOp(op);
+  if (histMask)
+    eraseDeadChain(rewriter, histMask);
+  // When the key is now counted in place, the staged load that used to feed
+  // the digit chain is dead too.  Drop it (and its pointer chain) explicitly:
+  // a `tt.load` carries a read effect, so the greedy rewriter keeps it even
+  // though the fusion made the L1 buffer the only key source.
+  if (keySource != root)
+    eraseDeadChain(rewriter, root, /*allowLoads=*/true);
+  return success();
+}
+
+// Erase a dead producer chain (a folded mask, or the load the digit chain was
+// rooted at) so no real tile or read survives the fusion.  Side-effect-free
+// ops are always removed; a dead local/global load is removed only when
+// `allowLoads` is set: its result is unused, so dropping the read cannot change
+// the result, but the greedy rewriter keeps it because loads are not pure.
+static void eraseDeadChain(IRRewriter &rewriter, Value value,
+                           bool allowLoads) {
+  SmallVector<Operation *> worklist;
+  llvm::DenseSet<Operation *> erased;
+  if (Operation *def = value.getDefiningOp())
+    worklist.push_back(def);
+  while (!worklist.empty()) {
+    Operation *def = worklist.pop_back_val();
+    // Checked before any dereference: `erased` holds ops already deleted here,
+    // and the same producer can be pushed by two of its users.
+    if (erased.contains(def))
+      continue;
+    if (!def->use_empty())
+      continue;
+    bool deadLoad = isa<triton::LoadOp, triton::gpu::LocalLoadOp>(def);
+    if (!isMemoryEffectFree(def) && !(allowLoads && deadLoad))
+      continue;
+    SmallVector<Operation *> operands;
+    for (Value operand : def->getOperands())
+      if (Operation *producer = operand.getDefiningOp())
+        operands.push_back(producer);
+    erased.insert(def);
+    rewriter.eraseOp(def);
+    worklist.append(operands.begin(), operands.end());
+  }
+}
+
+// Fold `tl.histogram(((key >> shift) & (bins - 1)), bins, mask)` into a single
+// digit-shift histogram op.  When the key already lives in an L1 memdesc the op
+// carries that buffer directly, so the elementwise digit tile and its store
+// loop never exist.  The digit chain is rebuilt as a scalar region and the
+// mask is forwarded as an op operand.
+static LogicalResult fuseHistogramInputs(::mlir::gpu::GPUModuleOp module,
+                                         MLIRContext *ctx) {
+  SmallVector<triton::HistogramOp> histograms;
+  module.walk([&](triton::HistogramOp op) { histograms.push_back(op); });
+  if (histograms.empty())
+    return success();
+
+  IRRewriter rewriter(ctx);
+  for (auto hist : histograms) {
+    auto srcType = dyn_cast<RankedTensorType>(hist.getSrc().getType());
+    auto resType = dyn_cast<RankedTensorType>(hist.getType());
+    if (!srcType || !resType || srcType.getRank() != 1 ||
+        resType.getRank() != 1)
+      continue;
+    // Both the digit chain and the counts are i32.  Anything else keeps the
+    // generic histogram lowering instead of relying on an implicit 32-bit
+    // assumption elsewhere in the match.
+    if (!srcType.getElementType().isInteger(32) ||
+        !resType.getElementType().isInteger(32))
+      continue;
+
+    auto andOp = hist.getSrc().getDefiningOp<arith::AndIOp>();
+    int64_t binMask = 0;
+    Value shrValue;
+    bool tuned = false;
+    if (andOp) {
+      if (matchSplatConstantI32(andOp.getRhs(), binMask)) {
+        shrValue = andOp.getLhs();
+        tuned = true;
+      } else if (matchSplatConstantI32(andOp.getLhs(), binMask)) {
+        shrValue = andOp.getRhs();
+        tuned = true;
+      }
+      if (tuned && (resType.getShape()[0] != binMask + 1 || binMask + 1 > 32))
+        tuned = false;
+    }
+    if (!tuned) {
+      // Not the tuned `(key >> shift) & (bins - 1)` shape: keep the whole
+      // elementwise chain as a region so the backend still counts it in place.
+      (void)fuseGeneralHistogramDigit(hist, rewriter);
+      continue;
+    }
+
+    // `(key >> 0)` folds to `key`, so digit 0 arrives here as a bare
+    // `key & (bins - 1)` with no shift op.  Treat the missing shift as the
+    // constant 0 instead of falling back to the generic histogram, which
+    // would materialise a digit tile and lose the in-place MRADIX count.
+    auto shrOp = shrValue.getDefiningOp<arith::ShRUIOp>();
+    Value keyValue = shrOp ? shrOp.getLhs() : shrValue;
+
+    rewriter.setInsertionPoint(hist);
+    Value shiftScalar;
+    if (shrOp) {
+      shiftScalar = matchShiftScalar(shrOp.getRhs(), rewriter);
+      if (!shiftScalar) {
+        (void)fuseGeneralHistogramDigit(hist, rewriter);
+        continue;
+      }
+    } else {
+      shiftScalar = arith::ConstantOp::create(rewriter, hist.getLoc(),
+                                              rewriter.getI32IntegerAttr(0));
+    }
+
+    // Prefer the L1 buffer view so the backend can count in place.  When the
+    // buffer view cannot be proven to be a full linear read (for example the
+    // load was rewritten by an earlier pass), keep the chain as a region and
+    // let the backend vectorise it instead of staging a digit tile.
+    Value loadMask;
+    Value keySource = traceHistogramKeyBuffer(keyValue, srcType, &loadMask);
+    if (!keySource || !histogramMaskCoversLoadPrefix(hist, loadMask)) {
+      (void)fuseGeneralHistogramDigit(hist, rewriter);
+      continue;
+    }
+
+    // Native `tl.histogram` mask semantics: prefix ranges (`lane < N`) are
+    // folded into `size_in`; the remaining per-lane predicate (for top-k,
+    // `matches`) is widened to i8 and forwarded as a mask buffer.  Splitting
+    // the two is what keeps the tail lanes out of bin 0 without materialising
+    // a `safe_digit`.
+    Value histMask = hist.getMask();
+    if (histMask) {
+      auto maskType = dyn_cast<RankedTensorType>(histMask.getType());
+      if (!maskType || maskType.getRank() != 1)
+        continue;
+    }
+    Value sizeIn;
+    Value mask;
+    if (!buildHistogramCountOperands(hist, rewriter, srcType, sizeIn, mask))
+      continue;
+    Value numBins = arith::ConstantOp::create(
+        rewriter, hist.getLoc(),
+        rewriter.getI32IntegerAttr(resType.getShape()[0]));
+
+    auto fused = rewriter.create<triton::gcu::HistogramOp>(
+        hist.getLoc(), hist.getType(), keySource, numBins, sizeIn, mask);
+
+    // Rebuild the elementwise chain as a scalar region: one block argument is
+    // the source element, the body is the digit slice, and the yield is the
+    // value to count.  The loop-carried `shift` is captured from the enclosing
+    // scope (the op is not isolated from above).
+    {
+      Block *body = new Block();
+      fused.getRegion().push_back(body);
+      Type keyElemTy = srcType.getElementType();
+      if (auto memdescTy =
+              dyn_cast<triton::gpu::MemDescType>(keySource.getType()))
+        keyElemTy = memdescTy.getElementType();
+      Value elem = body->addArgument(keyElemTy, hist.getLoc());
+      OpBuilder regionBuilder = OpBuilder::atBlockEnd(body);
+      Value counted = elem;
+      if (keyElemTy != srcType.getElementType())
+        counted = regionBuilder.create<arith::BitcastOp>(
+            hist.getLoc(), srcType.getElementType(), counted);
+      if (shrOp)
+        counted = regionBuilder.create<arith::ShRUIOp>(hist.getLoc(), counted,
+                                                       shiftScalar);
+      Value binMaskCst = regionBuilder.create<arith::ConstantOp>(
+          hist.getLoc(), regionBuilder.getI32IntegerAttr(binMask));
+      counted = regionBuilder.create<arith::AndIOp>(hist.getLoc(), counted,
+                                                    binMaskCst);
+      regionBuilder.create<triton::gcu::YieldOp>(hist.getLoc(), counted);
+    }
+
+    // The TLE memory-space hint must survive the fusion: the backend uses it to
+    // place the count vector in a private stack buffer (and hence let SROA
+    // promote it) instead of a slice of the private pool.
+    if (auto memSpace = hist->getAttrOfType<StringAttr>(kTleHint))
+      fused->setAttr(kTleHint, memSpace);
+    hist.getResult().replaceAllUsesWith(fused.getResult());
+    rewriter.eraseOp(hist);
+
+    // The digit chain (and the buffer load) is now dead unless the key is
+    // still used elsewhere, for example by the scatter.
+    if (andOp->use_empty())
+      rewriter.eraseOp(andOp);
+    if (shrOp && shrOp->use_empty())
+      rewriter.eraseOp(shrOp);
+    if (auto shiftSplat = shiftScalar.getDefiningOp<triton::SplatOp>())
+      if (shiftSplat->use_empty())
+        rewriter.eraseOp(shiftSplat);
+
+    // A folded prefix mask is now dead unless it masks a load or store too.
+    if (histMask)
+      eraseDeadChain(rewriter, histMask);
+
+    // The key buffer is counted in place, so the load that fed the digit chain
+    // is dead unless the key is still used elsewhere (the sort's scatter).
+    // Drop it explicitly: a `tt.load` has a read effect, so the greedy
+    // rewriter would otherwise keep the whole pointer chain alive.
+    if (keySource != keyValue)
+      eraseDeadChain(rewriter, keyValue, /*allowLoads=*/true);
+  }
+  return success();
+}
+
 struct GCUTritonFusionPass
     : public mlir::impl::GCUTritonFusionPassBase<GCUTritonFusionPass> {
   using Base::Base;
@@ -1195,6 +1959,14 @@ struct GCUTritonFusionPass
   void runOnOperation() override {
     auto module = getOperation();
     auto *ctx = &getContext();
+
+    // Fold the digit arithmetic into the histogram so the key buffer is read
+    // directly and no digit tile is materialized.
+    if (failed(fuseHistogramInputs(module, ctx))) {
+      signalPassFailure();
+      return;
+    }
+
     RewritePatternSet patterns(ctx);
     ModuleAxisInfoExAnalysis axisInfoExAnalysis(
         module->getParentOfType<ModuleOp>());
@@ -1218,6 +1990,7 @@ struct GCUTritonFusionPass
       auto fusibleI1Broadcast = collectFusibleI1Broadcast(func);
       func.walk([&](Block *block) { runFuse(block, fusibleI1Broadcast); });
       func.walk([&](Block *block) { fuseReduceOps(block); });
+      privatizeSharedConstantInits(func);
     }
   }
 
@@ -1233,8 +2006,8 @@ private:
   void splitFusion(SmallVector<std::unique_ptr<FusionGroup>> &fusionGroups);
   llvm::DenseSet<Operation *> collectFusibleI1Broadcast(FuncOp op);
   void fuseReduceOps(Block *block);
+  void privatizeSharedConstantInits(triton::FuncOp func);
 };
-} // namespace
 
 llvm::DenseSet<Operation *>
 GCUTritonFusionPass::collectFusibleI1Broadcast(FuncOp funcOp) {
@@ -1266,7 +2039,7 @@ GCUTritonFusionPass::collectFusibleI1Broadcast(FuncOp funcOp) {
     return isa<arith::AndIOp, arith::XOrIOp, arith::OrIOp>(op) ||
            (isa<triton::BroadcastOp>(op) &&
             hasFusibleBroadcastAxis(cast<triton::BroadcastOp>(op))) ||
-           isZeroCopyView(op);
+           triton::gcu::isZeroCopyOp(op);
   };
   funcOp->walk([&](triton::BroadcastOp op) {
     auto srcType = op.getSrc().getType();
@@ -1285,7 +2058,7 @@ GCUTritonFusionPass::collectFusibleI1Broadcast(FuncOp funcOp) {
     while (!worklist.empty()) {
       auto cur = worklist.pop_back_val();
       if (isa<arith::AndIOp, arith::XOrIOp, arith::OrIOp>(cur) ||
-          broadcastOnDim0.contains(cur) || isZeroCopyView(cur)) {
+          broadcastOnDim0.contains(cur) || triton::gcu::isZeroCopyOp(cur)) {
         for (auto operand : cur->getOperands()) {
           auto defOp = operand.getDefiningOp();
           if (isChainOp(defOp)) {
@@ -1394,6 +2167,49 @@ void GCUTritonFusionPass::fuseReduceOps(Block *block) {
     reduceOp->setOperand(0, terminator->getOperand(0));
     reduceOp->moveBefore(terminator);
     terminator->setOperand(0, reduceOp->getResult(0));
+  }
+}
+
+void GCUTritonFusionPass::privatizeSharedConstantInits(triton::FuncOp func) {
+  auto markPrivateInit = [](Operation *fusionOp) {
+    fusionOp->setAttr("ttgcu.private_init", DistinctAttr::create(UnitAttr::get(
+                                                fusionOp->getContext())));
+  };
+
+  using InitPosition = std::pair<scf::ForOp, unsigned>;
+  llvm::DenseMap<Value, SmallVector<InitPosition>> sharedInits;
+
+  func.walk([&](scf::ForOp forOp) {
+    for (auto [initIndex, initArg] : llvm::enumerate(forOp.getInitArgs())) {
+      auto *definingOp = initArg.getDefiningOp();
+      if (!definingOp || !isConstantFusion(definingOp))
+        continue;
+      if (!canUseAllocaForValue(initArg))
+        continue;
+      auto type = initArg.getType();
+      auto totalNumElems = triton::gcu::getTotalElemsPerThread(type);
+      auto totalElemsInBytes =
+          totalNumElems * getBpe(cast<RankedTensorType>(type).getElementType());
+      if (totalElemsInBytes > kOaccSizeInBytes * kLoopUnrollTimes ||
+          totalElemsInBytes < kOaccSizeInBytes)
+        continue;
+      sharedInits[initArg].push_back({forOp, initIndex});
+    }
+  });
+
+  for (auto &[initArg, initPositions] : sharedInits) {
+    auto *originalOp = initArg.getDefiningOp();
+    auto resultIndex = cast<OpResult>(initArg).getResultNumber();
+    markPrivateInit(originalOp);
+    for (auto &[forOp, initIndex] : initPositions) {
+      Operation *cloneOp = originalOp->clone();
+      markPrivateInit(cloneOp);
+      Block *forBlock = forOp->getBlock();
+      forBlock->getOperations().insert(Block::iterator(forOp.getOperation()),
+                                       cloneOp);
+      forOp.getInitArgsMutable()[initIndex].set(
+          cloneOp->getResult(resultIndex));
+    }
   }
 }
 
@@ -1542,8 +2358,7 @@ void GCUTritonFusionPass::runFuse(Block *block,
   }
   for (auto op : operations) {
     if (canFuse(op) || fusibleOp.erase(op)) {
-      if (isa<triton::gpu::ConvertLayoutOp>(op) &&
-          !currentGroup()->isUsedBy(op)) {
+      if (triton::gcu::isZeroCopyOp(op) && !currentGroup()->isUsedBy(op)) {
         if (!currentGroup()->empty()) {
           op->moveBefore(currentGroup()->front());
         }
@@ -1627,3 +2442,4 @@ void GCUTritonFusionPass::fuseOps(std::unique_ptr<FusionGroup> fusionGroup) {
     op->erase();
   }
 }
+} // namespace

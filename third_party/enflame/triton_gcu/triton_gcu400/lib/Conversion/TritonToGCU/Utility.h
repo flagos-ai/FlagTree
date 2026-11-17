@@ -170,9 +170,12 @@ class DTETagPool {
 };
 
 bool isExpensiveView(triton::ExpandDimsOp op);
-/// Returns true if tt.reshape needs extra overhead instead of a zero-copy
-/// memref.reinterpret_cast
-bool isExpensiveView(Type srcTy, Type dstTy);
+
+bool isExpensiveView(triton::ReshapeOp op);
+
+bool isZeroCopy(triton::gpu::ConvertLayoutOp op);
+
+bool isZeroCopyOp(Operation *op);
 
 }  // namespace gcu
 }  // namespace triton
@@ -263,6 +266,60 @@ Value loadFromSharedMemVector(
     bool useSubView = false);
 
 MemRefType getMemRefTypeFromSharedMem(RankedTensorType tType, Type elemType);
+
+// ---------------------------------------------------------------------------
+// TLE memory-space hint helpers (tle.gpu.memory_space).
+// See Constants.h for the marker attributes.
+// ---------------------------------------------------------------------------
+
+// Create a per-warp view into an existing shared-memory tile.
+//
+// The returned memref has exactly the type of the private per-thread buffer of
+// a tensor of type `type` (identity layout, default address space), but points
+// at the warp's own chunk of the shared tile. It lets a producer write its
+// result straight into shared memory with the regular store path instead of
+// writing a private buffer and then deslicing it into the tile. This mirrors
+// the alias branch of loadFromSharedMem (memref.view over the smem base
+// address with the warp offset folded in), which is used for the read side.
+//
+// Returns a null Value when the per-warp chunk is not contiguous in the tile
+// (canUseSubView() is false), in which case the caller must fall back to a
+// private buffer.
+Value getSharedTileWarpView(OpBuilder &builder, Type type, Value sharedTile);
+
+// Build the memref type of the shared tile that holds `tensorType`: logical
+// shape, identity layout, address space 2. This is the type the type converter
+// gives a !ttg.memdesc, so local_alloc/local_load lower consistently.
+MemRefType getSharedTileType(RankedTensorType tensorType);
+
+// Last user of the local_load that consumes the ttg.local_alloc created for a
+// shared_memory hint on `producer`:
+//   producer -> ttg.local_alloc -> ttg.local_load -> users
+// The smem tile must stay alive until the last reader, so the tile dealloc is
+// placed after this user. Returns {nullptr, 0} when the pair is not found or
+// the local_load has no user (then no dealloc is emitted).
+std::pair<Operation *, int>
+getSharedTileLastUser(Value producer,
+                      triton::gcu::FirstLastUserAnalysis &userAnalysis);
+
+// Result indices recorded in the DenseI64ArrayAttr `attrName` on `op`, sorted
+// and duplicate-free. Empty when the attribute is absent.
+SmallVector<unsigned> getHintedResultIndices(Operation *op, StringRef attrName);
+
+/// Allocate a full OACC-line (512B) private stack buffer that holds at least
+/// `minElems` elements of `elemType`.  The buffer is a plain `memref.alloca`
+/// with no ``memref.dealloc``, so the buffer is invisible to MemAllocAnalysis
+/// and its lifetime is the enclosing block.  Sizing the backing buffer to a
+/// whole line keeps both sides off the pool and lets a line-wide consumer (the
+/// histogram's count drain) pair with the scalar reads on the other side, which
+/// SROA's vector promotion turns into plain SSA.
+Value allocOaccLine(OpBuilder &builder, Location loc, Type elemType,
+                    int64_t minElems);
+
+/// View the head of an OACC-line buffer as `type`.  Folded away by the memref
+/// lowering, so the view shares the backing buffer's address.
+Value oaccLineView(OpBuilder &builder, Location loc, Value backing,
+                   MemRefType type);
 
 void AnalysisYieldOperendUseStage(
     Operation *module, triton::gcu::FirstLastUserAnalysis &userAnalysis,
@@ -513,6 +570,8 @@ private:
 };
 
 bool isMixedPrecisionSymbol(StringRef symbol);
+
+std::string toVectorizedExternSymbol(StringRef symbol);
 
 enum class LoadKind {
   Load,

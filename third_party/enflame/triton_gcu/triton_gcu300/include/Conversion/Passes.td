@@ -107,6 +107,19 @@ def TritonGCUDotLayoutOptimizePass: Pass<"triton-gcu-dot-layout-optimize", "gpu:
 }
 
 //===----------------------------------------------------------------------===//
+// TritonGCURemoveLayoutConversions
+//===----------------------------------------------------------------------===//
+def TritonGCURemoveLayoutConversionsPass
+    : Pass<"triton-gcu-remove-layout-conversions", "mlir::ModuleOp"> {
+  let summary = "remove superfluous layout conversions (GCU)";
+  let dependentDialects = [
+    "mlir::triton::gpu::TritonGPUDialect",
+    "mlir::triton::TritonDialect",
+    "mlir::arith::ArithDialect"
+  ];
+}
+
+//===----------------------------------------------------------------------===//
 // FlattenTritonFunc
 //===----------------------------------------------------------------------===//
 def GCUFlattenTritonFuncPass: Pass<"flatten-triton-func", "gpu::GPUModuleOp"> {

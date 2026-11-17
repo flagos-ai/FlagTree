@@ -360,6 +360,7 @@ public:
   // strides and offsets, build PtrState for this operand, and record PtrState
   // in knownPtrs.
   static void rewriteYieldOp(PatternRewriter &rewriter, scf::YieldOp op,
+                             ArrayRef<int> ptrSlotIndices,
                              llvm::SmallDenseMap<Value, PtrState> &knownPtrs,
                              llvm::SmallDenseMap<Value, MaskState> &knownMasks);
 
@@ -383,6 +384,7 @@ public:
   // Rewrite the scf.condition terminator in WhileOp's before region.
   static void rewriteConditionOp(
       PatternRewriter &rewriter, scf::ConditionOp op,
+      ArrayRef<int> ptrSlotIndices,
       llvm::SmallDenseMap<Value, PtrState> &knownPtrs,
       llvm::SmallDenseMap<Value, MaskState> &knownMasks);
 

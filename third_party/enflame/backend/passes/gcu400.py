@@ -10,6 +10,7 @@ __all__ = [
     'add_gcu_convert_triton_to_tritongpu',
     'add_tle_to_triton_gcu',
     'add_triton_gpu_to_triton_gcu',
+    'add_gcu_tle_assign_memory_space',
     'add_convert_tensor_pointer',
     'add_convert_triton_load_store_to_gcu_dma',
     'add_tritongcu_accelerate_matmul',
@@ -87,6 +88,16 @@ def add_convert_triton_load_store_to_gcu_dma(pipeline, support_stride0: bool = F
 def add_gcu_tle_lower_async_load(pipeline):
     """Lower GCU TLE async load operations."""
     pipeline.add_pass('gcu-tle-lower-async-load')
+
+
+def add_gcu_tle_assign_memory_space(pipeline):
+    """Materialize tle.gpu.memory_space hints into GCU IR.
+
+    Must be added once, after 'gcu-triton-fusion' and before
+    'triton-gcu-local-mem-optimize'.
+    """
+    pipeline.add_pass('gcu-tle-assign-memory-space')
+
 
 def add_tle_lower_pipe_to_gcuws(pipeline):
     """Lower TLE pipe ops to GCUWS ops."""

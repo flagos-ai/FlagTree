@@ -15,6 +15,7 @@
 #
 import functools
 import os
+import re
 from pathlib import Path
 import subprocess
 from typing import Any
@@ -267,6 +268,45 @@ def toolkit_supports_enable_i64():
         return True
     return _UNKNOWN_ENABLE_I64_MARKER not in (result.stderr or "")
 
+
+def _patch_float_literal_suffix_for_tops_llvm18(llir_str: str) -> str:
+    """Normalize float immediates for TOPS LLVM 18 llc.
+
+    Newer LLVM may emit:
+      - decimal float literals that TOPS rejects as "invalid for type"
+      - `f0xXXXXXXXX` immediates that TOPS cannot parse
+    Rewrite both to classic LLVM hex floats (`0x` + IEEE754 double bits of the
+    float value), which TOPS llc accepts.
+    """
+    import re
+    import struct
+
+    def bits32_to_llvm_hex(bits32: int) -> str:
+        fval = struct.unpack("<f", struct.pack("<I", bits32))[0]
+        dbits = struct.unpack("<Q", struct.pack("<d", fval))[0]
+        return f"0x{dbits:016X}"
+
+    def repl_f0x(m: re.Match) -> str:
+        return bits32_to_llvm_hex(int(m.group(1), 16))
+
+    def repl_dec(m: re.Match) -> str:
+        bits32 = struct.unpack("<I", struct.pack("<f", float(m.group(1))))[0]
+        return bits32_to_llvm_hex(bits32)
+
+    lit = re.compile(
+        r"(?<![A-Za-z0-9_.])"
+        r"(-?(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?)"
+        r"(?![fFdDxX0-9.])"
+    )
+    f0x = re.compile(r"\bf0x([0-9A-Fa-f]{8})\b")
+
+    out_lines = []
+    for line in llir_str.splitlines(keepends=True):
+        if "float" in line and not line.lstrip().startswith("!"):
+            line = f0x.sub(repl_f0x, line)
+            line = lit.sub(repl_dec, line)
+        out_lines.append(line)
+    return "".join(out_lines)
 def compile_llir_to_fatbin_gcu500(llir_str: str, kernel_name: str = "kernel") -> dict[str, bytes | str | None]:
     """Compile LLVM IR to fatbin using EFGCU toolchain (llc + lld + bundler).
 
@@ -301,6 +341,7 @@ def compile_llir_to_fatbin_gcu500(llir_str: str, kernel_name: str = "kernel") ->
         so_path = os.path.join(tmpdir, "kernel.so")
         bin_path = os.path.join(tmpdir, "kernel.fatbin")
 
+        llir_str = _patch_float_literal_suffix_for_tops_llvm18(llir_str)
         with open(ll_path, "w", encoding="utf-8") as f:
             f.write(llir_str)
 

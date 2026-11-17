@@ -417,6 +417,13 @@ def tanh(arg0, _semantic=None):
         }, is_pure=True, _semantic=_semantic)
 
 @core.extern
+def fast_tanhf(arg0, _semantic=None):
+    return core.extern_elementwise(
+        "", "", [arg0], {
+            (core.dtype("fp32"), ): ("__ef_fast_tanhf", core.dtype("fp32")),
+        }, is_pure=True, _semantic=_semantic)
+
+@core.extern
 def tgamma(arg0, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0], {
@@ -1024,7 +1031,7 @@ func_mapping = {
     "log2":log2, "logb":logb, "log":log, "nearbyint":nearbyint, "normcdf":normcdf,
     "normcdfinv":normcdfinv, "rcbrt":rcbrt, "rint":rint, "round":round, "rsqrt":rsqrt,
     "saturatef":saturatef, "sin":sin, "sinh":sinh, "sinpi":sinpi, "sqrt": sqrt,
-    "tan":tan, "tanh":tanh, "tgamma":tgamma, "trunc": trunc, "y0":y0, "y1":y1,
+    "tan":tan, "tanh":tanh, "fast_tanhf":fast_tanhf, "tgamma":tgamma, "trunc": trunc, "y0":y0, "y1":y1,
     # unary int32 float
     "finitef": finitef, "ilogb":ilogb, "isinf": isinf, "isnan": isnan, "signbit":signbit,
     # unary int64 float

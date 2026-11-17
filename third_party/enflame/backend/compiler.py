@@ -177,8 +177,11 @@ def make_ttir(mod, metadata, options):
     pm.enable_debug()
 
     passes.common.add_inliner(pm)
+    # Triton 3.8 removed this pass; use it only when available.
     if options.arch == "gcu500":
-        passes.ttir.add_rewrite_tensor_pointer(pm)
+        rewrite_pass = getattr(passes.ttir, "add_rewrite_tensor_pointer", None)
+        if rewrite_pass is not None:
+            rewrite_pass(pm)
     passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
     passes.common.add_canonicalizer(pm)
     passes.ttir.add_combine(pm)
@@ -248,14 +251,20 @@ def make_gcuir(mod, metadata, options):
         support_stride0 = toolkit.get_bool_env("TRITON_GCU_ENABLE_STRIDE_BROADCAST")
         gcu_passes.gcu300.add_gcu_convert_triton_to_tritongpu(
             pm, options.num_warps, options.warp_size, options.num_ctas, f'gcu:{options.arch}')
-        gcu_passes.gcu300.add_tritongpu_remove_layout_conversions(pm)
+        if _triton_version() == (3, 8):
+            gcu_passes.gcu300.add_triton_gcu_remove_layout_conversions(pm)
+        else:
+            gcu_passes.gcu300.add_tritongpu_remove_layout_conversions(pm)
         if metadata['tle_raw']:
             gcu_passes.gcu300.add_tle_remove_redundant_copy(pm)
         gcu_passes.gcu300.add_tle_to_triton_gcu(pm, getattr(options, 'cluster_dims', (1, 1, 1)))
         gcu_passes.gcu300.add_triton_gpu_to_triton_gcu(pm)
         gcu_passes.gcu300.add_convert_tensor_pointer(pm)
         gcu_passes.gcu300.add_triton_gcu_dot_layout_optimize(pm)
-        gcu_passes.gcu300.add_tritongpu_remove_layout_conversions(pm)
+        if _triton_version() == (3, 8):
+            gcu_passes.gcu300.add_triton_gcu_remove_layout_conversions(pm)
+        else:
+            gcu_passes.gcu300.add_tritongpu_remove_layout_conversions(pm)
         gcu_passes.gcu300.add_convert_triton_load_store_to_gcu_dma(pm, support_stride0, options.enable_i64)
         gcu_passes.mlir.add_canonicalize(pm)
         gcu_passes.mlir.add_loop_invariant_code_motion(pm)
@@ -308,6 +317,7 @@ def make_gcuir(mod, metadata, options):
         gcu_passes.mlir.add_cse(pm)
         gcu_passes.mlir.add_canonicalize(pm)
         gcu_passes.gcu400.add_flatten_triton_func(pm)
+        gcu_passes.gcu400.add_gcu_tle_assign_memory_space(pm)
         gcu_passes.gcu400.add_triton_gcu_local_mem_optimize(pm)
         gcu_passes.gcu400.add_gcu_tle_lower_async_load(pm)
         gcu_passes.gcu400.add_triton_gcu_insert_producer_fences(pm)
@@ -662,11 +672,22 @@ class GCUOptions:
             libdevice_path = os.getenv("TRITON_LIBDEVICE_PATH", "")
             if self.arch == "gcu500":
                 if not libdevice_path or not os.path.isfile(libdevice_path):
+                    # Prefer the libdevice bundled with this wheel.  The one
+                    # shipped by TOPS implements __ef_rintf / __ef_nearbyintf
+                    # as llvm.round (round-half-away-from-zero), but rint must
+                    # round half TO EVEN - the bundled copy fixes those two
+                    # functions to llvm.rint and leaves every other entry (e.g.
+                    # __ef_roundf, which must stay llvm.round) untouched.
                     candidates = [
-                        f'{default_libdir}/gculibdevice.efgcu_tops.bc'
+                        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     'libdevice', 'gculibdevice.efgcu_tops.bc'),
+                        f'{default_libdir}/gculibdevice.efgcu_tops.bc',
                     ]
-                    libdevice_path = next((p for p in candidates if os.path.isfile(p)), candidates[0])
-                    extern_libs['libdevice'] = libdevice_path
+                    libdevice_path = next((p for p in candidates if os.path.isfile(p)), candidates[-1])
+                # Outside the branch on purpose: TRITON_LIBDEVICE_PATH used to
+                # set the path without registering it, so the override silently
+                # produced an unlinked __ef_* call and lld failed.
+                extern_libs['libdevice'] = libdevice_path
 
         if not extern_libs.get('libnvshmem_device', None):
             nvshmem_libdevice_path = os.getenv("NVSHMEM_LIBDEVICE_PATH", None)

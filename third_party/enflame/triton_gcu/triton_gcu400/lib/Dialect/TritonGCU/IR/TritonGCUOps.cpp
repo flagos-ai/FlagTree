@@ -64,6 +64,98 @@ LogicalResult StoreOp::verify() {
   return success();
 }
 
+LogicalResult HistogramOp::verify() {
+  auto resultType = dyn_cast<RankedTensorType>(getResult().getType());
+  if (!resultType || resultType.getRank() != 1 ||
+      !resultType.hasStaticShape() || resultType.getShape()[0] <= 0 ||
+      resultType.getShape()[0] > 32)
+    return emitOpError()
+           << "histogram requires a static 1D result with 1..32 bins";
+  if (!resultType.getElementType().isInteger(32))
+    return emitOpError() << "histogram requires i32 result elements";
+
+  if (!getNumBins().getType().isInteger(32))
+    return emitOpError() << "histogram num_bins must be i32";
+  auto numBinsCst = getNumBins().getDefiningOp<arith::ConstantOp>();
+  if (!numBinsCst)
+    return emitOpError() << "histogram num_bins must be constant";
+  auto numBinsAttr = dyn_cast<IntegerAttr>(numBinsCst.getValue());
+  if (!numBinsAttr || numBinsAttr.getInt() <= 0 || numBinsAttr.getInt() > 32)
+    return emitOpError() << "histogram num_bins must be in (0, 32]";
+  if (numBinsAttr.getInt() != resultType.getShape()[0])
+    return emitOpError()
+           << "histogram num_bins must match the current logical result width";
+
+  int64_t numElems = 0;
+  Type elemType;
+  if (auto memdesc = dyn_cast<triton::gpu::MemDescType>(getSrc().getType())) {
+    if (memdesc.getRank() != 1)
+      return emitOpError() << "histogram source must be rank-1";
+    numElems = memdesc.getShape()[0];
+    elemType = memdesc.getElementType();
+  } else if (auto tensor = dyn_cast<RankedTensorType>(getSrc().getType())) {
+    if (tensor.getRank() != 1)
+      return emitOpError() << "histogram source must be rank-1";
+    numElems = tensor.getShape()[0];
+    elemType = tensor.getElementType();
+  } else {
+    return emitOpError() << "histogram source must be a memdesc or tensor";
+  }
+  if (!(elemType.getIntOrFloatBitWidth() == 32))
+    return emitOpError() << "histogram source must have 32-bit elements";
+  if (numElems <= 0)
+    return emitOpError() << "histogram source must not be empty";
+
+  if (!getSizeIn().getType().isInteger(32))
+    return emitOpError() << "histogram size_in must be i32";
+
+  if (Value mask = getMask()) {
+    Type maskElemType;
+    int64_t maskElems = 0;
+    if (auto memdesc = dyn_cast<triton::gpu::MemDescType>(mask.getType())) {
+      if (memdesc.getRank() != 1)
+        return emitOpError() << "histogram mask must be rank-1";
+      maskElems = memdesc.getShape()[0];
+      maskElemType = memdesc.getElementType();
+    } else if (auto tensor = dyn_cast<RankedTensorType>(mask.getType())) {
+      if (tensor.getRank() != 1)
+        return emitOpError() << "histogram mask must be rank-1";
+      maskElems = tensor.getShape()[0];
+      maskElemType = tensor.getElementType();
+    } else {
+      return emitOpError() << "histogram mask must be a memdesc or tensor";
+    }
+    if (maskElems != numElems)
+      return emitOpError()
+             << "histogram mask length must match the source length";
+    if (!maskElemType.isInteger(1) && !maskElemType.isInteger(8))
+      return emitOpError() << "histogram mask must have i1 or i8 elements";
+  }
+
+  // The region maps one source element to the value that is counted, so it
+  // takes the scalar element type and yields exactly one i32.
+  Region &region = getRegion();
+  if (!llvm::hasSingleElement(region))
+    return emitOpError() << "histogram requires a single-block region";
+  Block &block = region.front();
+  if (block.getNumArguments() != 1)
+    return emitOpError() << "histogram region must take one scalar source "
+                            "element";
+  Type regionArgTy = block.getArgument(0).getType();
+  // A 32-bit region argument may differ from the source element type when the
+  // fused chain starts from a bitcast (f32 key -> i32 bits).  The lowering
+  // inserts that bitcast at the region entry.
+  if (regionArgTy != elemType && (regionArgTy.getIntOrFloatBitWidth() != 32 ||
+                                  elemType.getIntOrFloatBitWidth() != 32))
+    return emitOpError() << "histogram region argument must match the source "
+                            "element type or be a 32-bit bitcast";
+  auto yield = dyn_cast<YieldOp>(block.getTerminator());
+  if (!yield || yield.getNumOperands() != 1 ||
+      !yield.getOperand(0).getType().isInteger(32))
+    return emitOpError() << "histogram region must yield one i32 value";
+  return success();
+}
+
 // -- WarpGroupDotOp --
 mlir::LogicalResult WarpGroupDotOp::inferReturnTypes(
   MLIRContext *context, std::optional<Location> location, ValueRange operands,

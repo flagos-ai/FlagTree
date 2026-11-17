@@ -29,6 +29,7 @@ constexpr static int64_t INVALID_ALIGNMENT = -1;
 constexpr static char kAlignment[] = "alignment";
 
 constexpr static unsigned kOaccSizeInBytes = 512;
+constexpr static unsigned kMinVecSizeInBytes = 128;
 constexpr static unsigned kLoopUnrollTimes = 16;
 const char *const kIsContinual = "IsContinual";
 const char *const kConstancy = "Constancy";
@@ -56,6 +57,44 @@ constexpr static char kAccStoreCvtGlobal[] = "cvt_global";
 constexpr static char kAccStoreLocal[] = "local";
 constexpr static char kAccStoreCvtLocal[] = "cvt_local";
 constexpr static char kLoadAsync[] = "tt.load.async";
+// ---------------------------------------------------------------------------
+// TLE memory-space hint: tle.gpu.memory_space(value, space).
+//
+// Two groups, one per side of GCUTleAssignMemorySpace (Transforms/
+// GCUTleAssignMemorySpace.cpp):
+//
+//   1. kTleHint*      - the frontend side. The hint reaches the backend as a
+//                       `tt.memory_space` StringAttr on the op that defines the
+//                       value; the pass reads it and removes it. No other pass
+//                       may look at these.
+//   2. kTle*          - the markers the pass leaves behind, consumed by the
+//                       TritonToGCU lowerings. The same marker name is carried
+//                       either as a UnitAttr on the hinted op, or as a
+//                       DenseI64ArrayAttr of result indices on the
+//                       triton_gcu.elementwise_fusion_region that contains it
+//                       (there the value consumers see is the region result).
+// ---------------------------------------------------------------------------
+// Frontend: the hint attribute and the two space names it accepts.
+constexpr static char kTleHint[] = "tt.memory_space";
+constexpr static char kTleHintShared[] = "shared_memory";
+constexpr static char kTleHintRegister[] = "register";
+// "This result must be computed directly in the shared-memory tile": the
+// producer writes the tile through a per-warp view instead of a private buffer
+// that is desliced into it afterwards. The same marker is also put on the
+// ttg.local_alloc(src) created for the hint, so the producer lowering can find
+// the staging pair that consumes its value.
+constexpr static char kTleResultInSmemTile[] = "tle_use_smem_tile";
+// "This result must live in a memref.alloca": vector.load/vector.store path
+// instead of the memref.alloc tar_load/tar_store path.
+constexpr static char kTleResultInAlloca[] = "tle_use_alloca";
+
+// Set (DenseI32ArrayAttr) on the shared-tag memref alloc: the tag indices whose
+// DTE notifies its pipeline on completion, so the backend binds those DTE slots
+// to the pipe instead of waiting on them.
+constexpr static char kNotifyPipelineTags[] = "ttgcu.notify_pipeline_tags";
+
+// Set (UnitAttr) on a triton_gcu.store whose value should be written by the
+// backend's gcu.matrix_store rather than copied element-wise.
 constexpr static char kMaxtrixStore[] = "matrix_store";
 
 // Set on a triton_gcu.elementwise_fusion_region op by AnnotateDotFusion when

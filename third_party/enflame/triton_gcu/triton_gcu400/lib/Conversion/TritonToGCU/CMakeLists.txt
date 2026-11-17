@@ -34,6 +34,7 @@ add_mlir_conversion_library(MLIRTritonToGCU_${arch}
   AnnotateDotAllocaReuse.cpp
   ReduceScanCommon.cpp
   Vectorize.cpp
+  FusionOpUtils.cpp
   Constants.h
 
   DEPENDS

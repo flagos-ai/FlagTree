@@ -5,6 +5,7 @@ add_mlir_conversion_library(MLIRTritonGCUTransforms_${arch}
   GCUSupportVerifier.cpp
   GCUWarpSpecialization.cpp
   GCUTleLowerAsyncLoad.cpp
+  GCUTleAssignMemorySpace.cpp
   WarpSpecialization/CodePartitionUtility.cpp
   WarpSpecialization/TaskIdPropagation.cpp
   WarpSpecialization/Utility.cpp

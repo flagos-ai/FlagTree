@@ -135,7 +135,7 @@ std::string getBuiltinOpSymbol(Operation *op) {
       return "atan";
     } else if (name == "__ef_tanf") {
       return "tan";
-    } else if (name == "__ef_tanhf") {
+    } else if (name == "__ef_tanhf" || name == "__ef_fast_tanhf") {
       return "tanh";
     } else if (name == "__ef_erff") {
       return "erf";
@@ -717,7 +717,7 @@ private:
     } else if (symbol == "__ef_tanf") {
       newOp = builder.create<math::TanOp>(loc, operands.front().getType(),
                                            operands);
-    } else if (symbol == "__ef_tanhf") {
+    } else if (symbol == "__ef_tanhf" || symbol == "__ef_fast_tanhf") {
       newOp = builder.create<math::TanhOp>(loc, operands.front().getType(),
                                            operands);
     } else if (symbol == "__ef_fdiv_rn") {

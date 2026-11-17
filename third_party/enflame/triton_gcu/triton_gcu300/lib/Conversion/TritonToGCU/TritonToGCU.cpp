@@ -1597,6 +1597,19 @@ struct TTExternElemwiseOpLowering
   }
 };
 
+// Give `op` the identity digit region `^bb(%e): yield %e`, i.e. count the raw
+// key values.
+static void addIdentityHistogramRegion(OpBuilder &builder,
+                                       math_ext::HistogramOp op, Type elemTy) {
+  auto loc = op.getLoc();
+  Block *block = new Block();
+  op.getBody().push_back(block);
+  block->addArgument(elemTy, loc);
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToEnd(block);
+  builder.create<math_ext::YieldOp>(loc, block->getArgument(0));
+}
+
 struct TTHistogramOpLowering : SharedConversionPattern<triton::HistogramOp> {
   using SharedConversionPattern::SharedConversionPattern;
 
@@ -1630,8 +1643,18 @@ struct TTHistogramOpLowering : SharedConversionPattern<triton::HistogramOp> {
     auto sharedMemTensorType = RankedTensorType::get(
         ArrayRef<int64_t>{resultType.getShape()[0] * warpsPerCTA[0]},
         wrapResultType.getElementType(), encoding);
-    rewriter.create<math_ext::HistogramOp>(loc, resCurWarp, adaptor.getSrc(),
-                                           UnitAttr());
+    auto binsCst = rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getI32IntegerAttr(resultType.getShape()[0]));
+    auto sizeInCst = rewriter.create<arith::ConstantOp>(
+        loc,
+        rewriter.getI32IntegerAttr(
+            cast<MemRefType>(adaptor.getSrc().getType()).getNumElements()));
+    auto hist = rewriter.create<math_ext::HistogramOp>(
+        loc, resCurWarp, adaptor.getSrc(), binsCst, sizeInCst,
+        adaptor.getMask(), /*use_mradix=*/UnitAttr());
+    addIdentityHistogramRegion(
+        rewriter, hist,
+        cast<MemRefType>(adaptor.getSrc().getType()).getElementType());
     /// store res of every warp to shared memry
     auto sharedResMem = storeToSharedMem(
         rewriter, tag, sharedMemTensorType, resCurWarp, false,

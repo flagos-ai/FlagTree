@@ -9,6 +9,7 @@ __all__ = [
     'add_gcu64_type_verifier',
     'add_gcu_convert_triton_to_tritongpu',
     'add_tritongpu_remove_layout_conversions',
+    'add_triton_gcu_remove_layout_conversions',
     'add_tle_to_triton_gcu',
     'add_tle_convert_arg_to_memdesc',
     'add_tle_remove_redundant_copy',
@@ -48,6 +49,10 @@ def add_gcu_convert_triton_to_tritongpu(pipeline, num_warps: int, threads_per_wa
 def add_tritongpu_remove_layout_conversions(pipeline):
     """Remove unnecessary layout conversions in TritonGPU."""
     pipeline.add_pass('tritongpu-remove-layout-conversions')
+
+
+def add_triton_gcu_remove_layout_conversions(pipeline):
+    pipeline.add_pass('triton-gcu-remove-layout-conversions')
 
 
 def add_tle_to_triton_gcu(pipeline, cluster_dims=(1, 1, 1)):

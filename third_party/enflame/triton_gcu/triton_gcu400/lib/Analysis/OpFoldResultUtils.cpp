@@ -40,6 +40,20 @@ Value getValue(OpBuilder &builder, Location loc, const OpFoldResult ofr) {
   }
 }
 
+Value castOffsetToI64(OpBuilder &builder, Location loc, Value value) {
+  if (value.getType().isInteger(64))
+    return value;
+  return builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), value);
+}
+
+Value castScalarToI64(OpBuilder &builder, Location loc, Value value) {
+  if (value.getType().isInteger(64))
+    return value;
+  if (isa<IndexType>(value.getType()))
+    return builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), value);
+  return builder.create<arith::ExtSIOp>(loc, builder.getI64Type(), value);
+}
+
 llvm::SmallVector<Value> getValues(OpBuilder &builder, Location loc,
                                    const llvm::SmallVector<OpFoldResult> &ofr) {
   llvm::SmallVector<Value> values;
@@ -186,10 +200,9 @@ OpFoldResult addOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
       isa<IntegerType>(lhsValue.getType()) );
   }
 
-  return builder.create<arith::AddIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(),
-      rhsValue)).getResult();
+  return builder.create<arith::AddIOp>(
+      loc, castOffsetToI64(builder, loc, lhsValue),
+      castOffsetToI64(builder, loc, rhsValue)).getResult();
 }
 
 OpFoldResult subOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
@@ -220,9 +233,9 @@ OpFoldResult subOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
     rhsValue = rhsOp.getResult();
   }
 
-  auto sumOp = builder.create<arith::SubIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+  auto sumOp = builder.create<arith::SubIOp>(
+      loc, castOffsetToI64(builder, loc, lhsValue),
+      castOffsetToI64(builder, loc, rhsValue));
   return sumOp.getResult();
 }
 
@@ -262,19 +275,17 @@ OpFoldResult mulOFRValue(OpBuilder &builder, Location loc,
   if (lhsIntAttr && !rhsIsConst) {
     auto lhsConstOp = builder.create<arith::ConstantOp>(
         loc, builder.getIndexAttr(lhsIntAttr.value()));
-    auto mulOp = builder.create<arith::MulIOp>(loc,
-      builder.create<arith::IndexCastOp>(loc, builder.getI64Type(),
-        lhsConstOp.getResult()), builder.create<arith::IndexCastOp>(loc,
-        builder.getI64Type(), rhs));
+    auto mulOp = builder.create<arith::MulIOp>(
+        loc, castOffsetToI64(builder, loc, lhsConstOp.getResult()),
+        castOffsetToI64(builder, loc, rhs));
     return mulOp.getResult();
   }
 
   // 2. if lhs is not constant
   assert(!lhsIntAttr);
-  auto mulOp = builder.create<arith::MulIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(),
-      cast<Value>(lhs)), builder.create<arith::IndexCastOp>(loc,
-      builder.getI64Type(), rhs));
+  auto mulOp = builder.create<arith::MulIOp>(
+      loc, castOffsetToI64(builder, loc, cast<Value>(lhs)),
+      castOffsetToI64(builder, loc, rhs));
   return mulOp.getResult();
 }
 
@@ -303,9 +314,9 @@ OpFoldResult minOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
     rhsValue = rhsOp.getResult();
   }
 
-  auto minOp = builder.create<arith::MinSIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+  auto minOp = builder.create<arith::MinSIOp>(
+      loc, castOffsetToI64(builder, loc, lhsValue),
+      castOffsetToI64(builder, loc, rhsValue));
   return minOp.getResult();
 }
 
@@ -334,9 +345,9 @@ OpFoldResult maxOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
     rhsValue = rhsOp.getResult();
   }
 
-  auto maxOp = builder.create<arith::MaxSIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+  auto maxOp = builder.create<arith::MaxSIOp>(
+      loc, castOffsetToI64(builder, loc, lhsValue),
+      castOffsetToI64(builder, loc, rhsValue));
   return maxOp.getResult();
 }
 
@@ -364,9 +375,9 @@ OpFoldResult remOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
     rhsValue = rhsOp.getResult();
   }
 
-  auto remOp = builder.create<arith::RemSIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+  auto remOp = builder.create<arith::RemSIOp>(
+      loc, castOffsetToI64(builder, loc, lhsValue),
+      castOffsetToI64(builder, loc, rhsValue));
   return remOp.getResult();
 }
 
@@ -394,9 +405,9 @@ OpFoldResult divOFRs(OpBuilder &builder, Location loc, const OpFoldResult lhs,
     rhsValue = rhsOp.getResult();
   }
 
-  auto divOp = builder.create<arith::DivSIOp>(loc,
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), lhsValue),
-    builder.create<arith::IndexCastOp>(loc, builder.getI64Type(), rhsValue));
+  auto divOp = builder.create<arith::DivSIOp>(
+      loc, castOffsetToI64(builder, loc, lhsValue),
+      castOffsetToI64(builder, loc, rhsValue));
   return divOp.getResult();
 }
 

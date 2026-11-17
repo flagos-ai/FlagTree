@@ -26,6 +26,7 @@
 #include "Dialect/GCU/IR/Dialect.h"
 #include "Dialect/MemrefExt/IR/MemrefExt.h"
 #include "Dialect/TritonGCU/IR/TritonGCUDialect.h"
+#include "FusionOpUtils.h"
 #include "PatternTritonGPUOpToGCU.h"
 #include "TritonGCUToGCU/TritionToGCUBase.h"
 #include "Utility.h"
@@ -146,6 +147,12 @@ struct InputDesc {
 
 struct OutputDesc {
   bool useAlloca = false;
+  // tle.gpu.memory_space("shared_memory"): the producer writes directly into
+  // the shared-memory tile through a per-warp view instead of a private buffer
+  // that is later desliced into shared memory. The tile is written with the
+  // same vector.load/vector.store form as the alloca buffers, so this flag is
+  // always set together with useAlloca (see analyzeOutputs).
+  bool useSmemTile = false;
   std::optional<unsigned> reuseInputIndex = std::nullopt;
   bool useLocalStore = false;
 };
@@ -162,6 +169,9 @@ struct ElementwiseFusionDesc {
 
   unsigned loopDepth;
   unsigned loopUnrollCount;
+  // OACC slots the unrolled live set leaves free; the broadcast chunks the
+  // lowering keeps resident across the loop have to fit in here.
+  unsigned oaccSlotsLeft = 0;
   bool unrollFull = false;
 };
 
@@ -174,7 +184,6 @@ public:
 
 private:
   __attribute__((unused)) bool isResultOnlyUsedBy2DStore();
-  Value getAllocaInputValue(Value val);
   LogicalResult populateBroadcastDescs(ElementwiseFusionDesc &desc);
   DenseSet<Type> analyzeInputs(ElementwiseFusionDesc &desc,
                                ArrayRef<Value> remappedOperands);
@@ -183,6 +192,7 @@ private:
   void analyzeOutputs(ElementwiseFusionDesc &desc,
                       const DenseSet<Type> &elementTypeSet);
   bool needsFullUnroll(const ElementwiseFusionDesc &desc) const;
+  Value remapValue(Value v) { return rewriter.getRemappedValue(v); }
 
 private:
   triton::gcu::ElementwiseFusionRegionOp op;
@@ -267,108 +277,6 @@ unsigned computeVectorLength(const DenseSet<Type> &elementTypeSet,
   return vectorLength;
 }
 
-bool canUseAllocaForValue(Value val) {
-  SetVector<Value> worklist;
-  worklist.insert(val);
-  for (unsigned idx = 0; idx < worklist.size(); ++idx) {
-    Value cur = worklist[idx];
-    for (auto *user : cur.getUsers()) {
-      if (isa<triton::gcu::ElementwiseFusionRegionOp>(user))
-        continue;
-      if (auto reduceOp = dyn_cast<triton::ReduceOp>(user)) {
-        if (reduceOp->getNumOperands() != 1) {
-          return false;
-        }
-        auto axis = reduceOp.getAxis();
-        auto tensorType = reduceOp.getInputTypes()[0];
-        if (tensorType.getRank() - 1 != axis ||
-            triton::gcu::getElemsPerThread(tensorType)[axis] *
-                    triton::gcu::getBpe(tensorType.getElementType()) <
-                kOaccSizeInBytes) {
-          return false;
-        }
-        continue;
-      }
-      if (auto gatherOp = dyn_cast<triton::GatherOp>(user)) {
-        if (gatherOp.getSrc() != cur)
-          continue;
-        return false;
-      }
-      if (auto expandDimsOp = dyn_cast<triton::ExpandDimsOp>(user)) {
-        if (triton::gcu::isExpensiveView(expandDimsOp))
-          return false;
-        worklist.insert(expandDimsOp.getResult());
-        continue;
-      }
-      if (auto forOp = dyn_cast<scf::ForOp>(user)) {
-        for (auto [initArgIdx, initArg] :
-             llvm::enumerate(forOp.getInitArgs())) {
-          if (initArg == cur) {
-            worklist.insert(forOp.getRegionIterArg(initArgIdx));
-            worklist.insert(forOp.getResult(initArgIdx));
-          }
-        }
-        continue;
-      }
-      return false;
-    }
-  }
-  return true;
-}
-
-bool hasVboolIncompatibleOperand(triton::gcu::ElementwiseFusionRegionOp op) {
-  return llvm::any_of(op.getOperands(), [&](Value operand) {
-    auto type = dyn_cast<TensorType>(operand.getType());
-    if (!type || !type.getElementType().isInteger(1))
-      return false;
-    Operation *producer = operand.getDefiningOp();
-    while (isa<triton::ExpandDimsOp>(producer) &&
-           !triton::gcu::isExpensiveView(cast<triton::ExpandDimsOp>(producer)))
-      producer = producer->getOperand(0).getDefiningOp();
-    return !isa<triton::gcu::ElementwiseFusionRegionOp>(producer);
-  });
-}
-
-bool hasVboolIncompatibleOp(triton::gcu::ElementwiseFusionRegionOp op) {
-  return llvm::any_of(*op.getBody(), [&](Operation &innerOp) {
-    auto resultTypes = innerOp.getResultTypes();
-    if (!llvm::any_of(resultTypes, [&](Type resultType) {
-          return cast<TensorType>(resultType).getElementType().isInteger(1);
-        }))
-      return false;
-    return !isa<arith::AndIOp>(&innerOp) && !isa<arith::OrIOp>(&innerOp) &&
-           !isa<arith::XOrIOp>(&innerOp) && !isa<arith::CmpIOp>(&innerOp) &&
-           !isa<arith::CmpFOp>(&innerOp) && !isa<arith::ConstantOp>(&innerOp) &&
-           !isa<arith::SelectOp>(&innerOp) && !isa<triton::SplatOp>(&innerOp) &&
-           !isa<triton::BroadcastOp>(&innerOp);
-  });
-}
-
-bool canUseAllocaForVboolValue(Value val) {
-  SetVector<Value> worklist;
-  worklist.insert(val);
-  for (unsigned idx = 0; idx < worklist.size(); ++idx) {
-    Value cur = worklist[idx];
-    for (auto *user : cur.getUsers()) {
-      if (auto fusionOp =
-              dyn_cast<triton::gcu::ElementwiseFusionRegionOp>(user)) {
-        if (hasVboolIncompatibleOperand(fusionOp) ||
-            hasVboolIncompatibleOp(fusionOp))
-          return false;
-        continue;
-      }
-      if (auto expandDimsOp = dyn_cast<triton::ExpandDimsOp>(user)) {
-        if (triton::gcu::isExpensiveView(expandDimsOp))
-          return false;
-        worklist.insert(expandDimsOp.getResult());
-        continue;
-      }
-      return false;
-    }
-  }
-  return true;
-}
-
 bool ElementwiseFusionAnalysis::isResultOnlyUsedBy2DStore() {
   if (op.getNumResults() != 1)
     return false;
@@ -379,29 +287,6 @@ bool ElementwiseFusionAnalysis::isResultOnlyUsedBy2DStore() {
     return false;
   auto tensorType = storeOp.getValue().getType();
   return tensorType && tensorType.getRank() == 2;
-}
-
-Value ElementwiseFusionAnalysis::getAllocaInputValue(Value val) {
-  if (auto blockArg = dyn_cast<BlockArgument>(val)) {
-    auto forOp = dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp());
-    if (!forOp)
-      return nullptr;
-    return getAllocaInputValue(
-        forOp.getInitArgs()[blockArg.getArgNumber() -
-                            forOp.getNumInductionVars()]);
-  }
-  auto defOp = val.getDefiningOp();
-  if (isa<memref::AllocaOp>(defOp)) {
-    return val;
-  } else if (isa<memref::ReinterpretCastOp>(defOp)) {
-    return getAllocaInputValue(defOp->getOperand(0));
-  } else if (auto forOp = dyn_cast<scf::ForOp>(defOp)) {
-    unsigned resultIdx = cast<OpResult>(val).getResultNumber();
-    auto initArg = forOp.getInitArgs()[resultIdx];
-    auto remappedValue = rewriter.getRemappedValue(initArg);
-    return getAllocaInputValue(remappedValue ? remappedValue : initArg);
-  }
-  return nullptr;
 }
 
 LogicalResult
@@ -455,7 +340,8 @@ ElementwiseFusionAnalysis::analyzeInputs(ElementwiseFusionDesc &desc,
     auto type = remappedValue.getType();
     if (auto memrefType = dyn_cast<MemRefType>(type)) {
       desc.inputDescs[i].kind = InputKind::MemRef;
-      auto allocaValue = getAllocaInputValue(remappedValue);
+      auto allocaValue = triton::gcu::getAllocaInputValue(
+          remappedValue, [&](Value v) { return remapValue(v); });
       if (allocaValue) {
         desc.inputDescs[i].isAllocaInput = true;
         desc.inputDescs[i].preferredVectorLength =
@@ -503,7 +389,8 @@ void ElementwiseFusionAnalysis::collectResultElementTypes(
     auto elementType =
         cast<RankedTensorType>(result.getType()).getElementType();
     if (elementType.isInteger(1)) {
-      if (!useAllocaForVboolResult || canUseAllocaForVboolValue(result))
+      if (!useAllocaForVboolResult ||
+          triton::gcu::canUseAllocaForVboolValue(result))
         continue;
       useAllocaForVboolResult = false;
     }
@@ -540,10 +427,65 @@ void ElementwiseFusionAnalysis::analyzeOutputs(
     for (auto [i, result] : llvm::enumerate(op->getResults())) {
       auto elementType =
           cast<RankedTensorType>(result.getType()).getElementType();
-      desc.outputDescs[i].useAlloca = elementType.isInteger(1)
-                                          ? useAllocaForVboolResult
-                                          : canUseAllocaForValue(result);
+      desc.outputDescs[i].useAlloca =
+          elementType.isInteger(1)
+              ? useAllocaForVboolResult
+              : triton::gcu::canUseAllocaForValue(
+                    result, [&](Value v) { return remapValue(v); });
     }
+  }
+  // TLE memory-space hints (materialized by GCUTleAssignMemorySpace):
+  //   tle_use_alloca     -> memref.alloca + vector.load/vector.store
+  //   tle_use_smem_tile  -> the same vector.store form, through a per-warp
+  //                         view of the shared tile (see useSmemTile below)
+  //
+  // Unlike the default decision above they also apply on the long-loop path
+  // (tripCount > kLoopUnrollTimes): forcing the alloca form is precisely what
+  // `register` asks for, and the store loop already accounts for both forms
+  // (computeAllocaOffset). The restrictions the default decision relies on
+  // still apply:
+  //  * only the non-small path stores a full vectorLength vector per trip; the
+  //    small-size path narrows it instead (narrowToStoreVector), so an
+  //    alloca/tile holding fewer elements would be overflowed;
+  //  * a register result must stay a plain elementwise value
+  //    (canUseAllocaForValue: expand_dims/reshape/zero-copy convert_layout, a
+  //    last-axis reduce, ...), and i1 results only work when the i8 conversion
+  //    is not needed.
+  auto hintAllocaAllowed = [&](Value result) {
+    if (totalNumElems < desc.vectorLength)
+      return false;
+    auto tensorType = cast<RankedTensorType>(result.getType());
+    if (tensorType.getElementType().isInteger(1))
+      return useAllocaForVboolResult;
+    return triton::gcu::canUseAllocaForValue(
+        result, [&](Value v) { return remapValue(v); });
+  };
+  for (unsigned idx : triton::gcu::getHintedResultIndices(op.getOperation(),
+                                                          kTleResultInAlloca)) {
+    if (idx < desc.outputDescs.size() && hintAllocaAllowed(op->getResult(idx)))
+      desc.outputDescs[idx].useAlloca = true;
+  }
+  for (unsigned idx : triton::gcu::getHintedResultIndices(
+           op.getOperation(), kTleResultInSmemTile)) {
+    if (idx >= desc.outputDescs.size())
+      continue;
+    auto tensorType = cast<RankedTensorType>(op->getResult(idx).getType());
+    // The value is staged through a ttg.local_alloc/local_load pair created by
+    // the same pass, so the result's consumer here is that staging op rather
+    // than the original user; the consumer-based canUseAllocaForValue check
+    // above cannot apply. What matters instead is that the producer can store
+    // into the tile with full vectors (non-small path) and that each warp's
+    // chunk is a contiguous subview of the tile (warps only split dim 0, see
+    // canUseSubView). i1 results take the dedicated i8 conversion path.
+    if (tensorType.getElementType().isInteger(1) ||
+        totalNumElems < desc.vectorLength ||
+        !triton::gcu::canUseSubView(triton::gcu::getSharedTileType(tensorType),
+                                    tensorType))
+      continue;
+    desc.outputDescs[idx].useSmemTile = true;
+    // The tile is written with vector.store, i.e. the same store form as an
+    // alloca output (useAlloca); only the buffer differs.
+    desc.outputDescs[idx].useAlloca = true;
   }
   auto getInplaceIndex = [](IntegerAttr attr) -> std::optional<unsigned> {
     if (!attr || attr.getInt() < 0)
@@ -564,17 +506,46 @@ void ElementwiseFusionAnalysis::analyzeOutputs(
     auto &outputDesc = desc.outputDescs[*reuseOutputIndex];
     outputDesc.useAlloca = true;
     outputDesc.reuseInputIndex = *reuseInputIndex;
-    if (useLocalStore() &&
-        !canUseAllocaForValue(op->getResult(*reuseOutputIndex))) {
+    if (useLocalStore() && !triton::gcu::canUseAllocaForValue(
+                               op->getResult(*reuseOutputIndex),
+                               [&](Value v) { return remapValue(v); })) {
       outputDesc.useLocalStore = true;
+    }
+  }
+  for (auto [idx, outputDesc] : llvm::enumerate(desc.outputDescs)) {
+    if (!outputDesc.useAlloca || outputDesc.reuseInputIndex)
+      continue;
+    auto result = op->getResult(idx);
+    if (!result.hasOneUse())
+      continue;
+    auto use = result.use_begin();
+    auto yieldOp = dyn_cast<scf::YieldOp>(use->getOwner());
+    if (!yieldOp)
+      continue;
+    auto forOp = dyn_cast<scf::ForOp>(yieldOp->getParentOp());
+    assert(forOp && "yieldOp must be in a for loop");
+    auto iterArg = forOp.getRegionIterArg(use->getOperandNumber());
+    auto operands = op.getOperands();
+    auto operandIter = llvm::find_if(
+        operands, [&](auto operand) { return remapValue(operand) == iterArg; });
+    if (operandIter != operands.end()) {
+      outputDesc.reuseInputIndex = operandIter - operands.begin();
+      desc.inputDescs[*outputDesc.reuseInputIndex].preferredVectorLength =
+          desc.vectorLength;
     }
   }
   // The per-region unroll is decided by the shared OACC-pressure plan so the
   // annotator's admission check (AnnotateDotFusion::exceedOaccLimit) uses the
   // same numbers.
-  desc.loopUnrollCount = triton::gcu::computeFusionUnrollPlan(
-                             op, desc.vectorLength, maxBpe, tripCount)
-                             .loopCnt;
+  auto unrollPlan = triton::gcu::computeFusionUnrollPlan(op, desc.vectorLength,
+                                                         maxBpe, tripCount);
+  desc.loopUnrollCount = unrollPlan.loopCnt;
+  const unsigned unrolledOacc = unrollPlan.loopCnt *
+                                std::max(1u, unrollPlan.livePerStep) *
+                                unrollPlan.oaccPerValue;
+  desc.oaccSlotsLeft = unrollPlan.freeOacc > unrolledOacc
+                           ? unrollPlan.freeOacc - unrolledOacc
+                           : 0;
 }
 
 bool ElementwiseFusionAnalysis::needsFullUnroll(
@@ -730,22 +701,45 @@ struct GCUElementwiseFusionOpLowering
           getTypeConverter()->convertType(result.getType()));
       auto elementTy = resultType.getElementType();
       auto outputElemTy = elementTy;
-      if (desc.useAlloca) {
+      // TLE shared_memory fast path: allocate the shared tile itself and write
+      // through a per-warp view of it, so each subthread writes its own
+      // subview. The view is the store target; the tile is exposed as the op
+      // result below so that TTSmemLocalAllocOpLowering::lowerWithSrc can
+      // replace the staging ttg.local_alloc with this tile instead of
+      // deslicing a private copy.
+      Value smemTile;
+      Value buffer;
+      if (desc.useSmemTile) {
+        auto tensorType = cast<RankedTensorType>(result.getType());
+        auto tileType = triton::gcu::getSharedTileType(tensorType);
+        // analyzeOutputs only sets useSmemTile on a viewable tile.
+        assert(triton::gcu::canUseSubView(tileType, tensorType) &&
+               "useSmemTile set for a tile without a per-warp view");
+        auto tileLastUser =
+            triton::gcu::getSharedTileLastUser(result, userAnalysis);
+        smemTile = syncAllocOp(rewriter, loc, tileLastUser, userAnalysis,
+                               replaced2Origin, tileType);
+        buffer = triton::gcu::getSharedTileWarpView(rewriter, result.getType(),
+                                                    smemTile);
+        assert(buffer && "canUseSubView() guarantees a per-warp view");
+      } else if (desc.useAlloca) {
         if (desc.reuseInputIndex) {
-          results.push_back(remappedOperands[*desc.reuseInputIndex]);
+          buffer = remappedOperands[*desc.reuseInputIndex];
         } else {
           auto allocaOp = rewriter.create<memref::AllocaOp>(loc, resultType);
           allocaOp.setAlignment(kOaccSizeInBytes);
-          results.push_back(allocaOp.getResult());
+          buffer = allocaOp.getResult();
         }
       } else {
         auto lastUser = userAnalysis.getLastUser(result);
-        results.push_back(syncAllocOp(rewriter, loc, lastUser, userAnalysis,
-                                      replaced2Origin, resultType));
+        buffer = syncAllocOp(rewriter, loc, lastUser, userAnalysis,
+                             replaced2Origin, resultType);
       }
-      Value output = results.back();
+      // `output` is what the loop body stores into (possibly an i1->i8 view or
+      // a 1-D reinterpret cast); the region result keeps the original buffer.
+      Value output = buffer;
       if (elementTy.isInteger(1) && !desc.useAlloca) {
-        output = convertI1MemrefToI8Memref(output);
+        output = convertI1MemrefToI8Memref(buffer);
         outputElemTy = rewriter.getI8Type();
         if (fusionDesc->loopDepth != 1) {
           auto [strides, offset] = resultType.getStridesAndOffset();
@@ -761,6 +755,9 @@ struct GCUElementwiseFusionOpLowering
             output, 0, ArrayRef<int64_t>{totalNumElems}, ArrayRef<int64_t>{1});
       }
       outputs.push_back(output);
+      // The stores above target the per-warp view; consumers of the fused
+      // region's result must see the tile itself.
+      results.push_back(smemTile ? smemTile : buffer);
     }
 
     SmallVector<Value> inputs;
@@ -990,6 +987,116 @@ struct GCUElementwiseFusionOpLowering
       }
     }
     Value step;
+
+    // Broadcast pack budget, evaluated once per region: packing substitutes
+    // the per-lane address materialization of one unrolled body for cnt
+    // OACC->GPR lane extracts per broadcast arg, re-paid on every outer trip.
+    // Keep the total extracts of a region invocation bounded - beyond a few
+    // hundred the OACC reads cost more than the addresses they replace.
+    unsigned bcastExtractCost = 0;
+    for (const auto &desc : inputDescs) {
+      if (!desc.broadcastDesc ||
+          desc.broadcastDesc->kind != BroadcastKind::BroadcastOnLastDim)
+        continue;
+      unsigned elementNum = desc.broadcastDesc->elementNumPerThread;
+      if (elementNum < vectorLength)
+        bcastExtractCost += loopUnrollCount * vectorLength / elementNum;
+    }
+    const unsigned bcastOuterIters =
+        ceil<unsigned>(totalNumElems, vectorLength * loopUnrollCount);
+    bcastExtractCost *= bcastOuterIters;
+    constexpr unsigned kBroadcastExtractBudget = 256;
+    const bool packBcast = bcastExtractCost <= kBroadcastExtractBudget;
+
+    // Broadcast chunking: read the run in whole chunks of at most one OACC
+    // slice -- a shorter run is read whole, up to its own size -- and carry
+    // each chunk across the loop iterations it covers. Every chunk load
+    // starts at the buffer base or at a slice boundary, so the OACC slice
+    // contract holds, and no chunk is read twice.
+    struct BcastChunk {
+      unsigned argIdx;
+      unsigned cnt;
+      unsigned chunkLanes;
+      VectorType chunkTy;
+      Value init;
+      // Longer runs cross chunk boundaries: the chunk is then loop-carried
+      // and reloaded when a trip enters the next chunk.
+      unsigned iterArgIdx = 0;
+      bool carried = false;
+    };
+    SmallVector<BcastChunk> bcastChunks;
+    if (packBcast && useLoadStoreInstrOps.empty()) {
+      unsigned chunkSlotsLeft = fusionDesc->oaccSlotsLeft;
+      for (unsigned j = 0; j < inputs.size(); ++j) {
+        const auto &desc = inputDescs[j];
+        if (!desc.broadcastDesc ||
+            desc.broadcastDesc->kind != BroadcastKind::BroadcastOnLastDim)
+          continue;
+        unsigned elementNum = desc.broadcastDesc->elementNumPerThread;
+        // The trip count has to tile the run exactly, so every trip's lanes
+        // stay inside the loaded chunk.
+        if (elementNum == 0 || elementNum >= vectorLength ||
+            totalNumElems % elementNum != 0 ||
+            totalNumElems % (vectorLength * loopUnrollCount) != 0)
+          continue;
+        auto memrefType = dyn_cast<MemRefType>(inputs[j].getType());
+        // The chunk loads assume a contiguous run starting at element 0.
+        if (!memrefType || memrefType.getRank() != 1 ||
+            memrefType.getDimSize(0) < 0 || !memrefType.isLastDimUnitStride())
+          continue;
+        auto elementTy = memrefType.getElementType();
+        // i1 mask broadcasts keep the per-lane path: packing them loads an
+        // <N x i1> vector whose lanes do not survive the predicate lowering
+        // (consumers see zeros, e.g. dv_local).
+        if (elementTy.isInteger(1))
+          continue;
+        const unsigned bpe = mlir::triton::gcu::getBpe(elementTy);
+        const unsigned sliceLanes = kOaccSizeInBytes / bpe;
+        const unsigned minLanes = kMinVecSizeInBytes / bpe;
+        const unsigned cnt = loopUnrollCount * vectorLength / elementNum;
+        const unsigned rowLanes = totalNumElems / elementNum;
+        if (cnt == 0 || rowLanes == 0)
+          continue;
+        unsigned chunkLanes;
+        if (rowLanes <= sliceLanes) {
+          // A run that fits one slice is read whole. A run shorter than the
+          // smallest OACC transfer (or not a power of two) is widened to it;
+          // the lanes past the run are never extracted.
+          chunkLanes = minLanes;
+          while (chunkLanes < rowLanes)
+            chunkLanes *= 2;
+        } else {
+          // A longer run is read in whole slices, one per chunk.
+          if (sliceLanes % cnt != 0)
+            continue;
+          chunkLanes = sliceLanes;
+        }
+        if (chunkLanes % cnt != 0 ||
+            (chunkLanes < rowLanes && rowLanes % chunkLanes != 0))
+          continue;
+        // A carried chunk stays resident across the whole loop, so it has to
+        // fit the OACC budget the unroll plan left free.
+        const unsigned chunkSlots =
+            (chunkLanes * bpe + kOaccSizeInBytes - 1) / kOaccSizeInBytes;
+        if (chunkSlots > chunkSlotsLeft)
+          continue;
+        chunkSlotsLeft -= chunkSlots;
+        auto chunkTy =
+            VectorType::get(ArrayRef<int64_t>{chunkLanes}, elementTy);
+        Value init = rewriter.create<vector::LoadOp>(
+            loc, chunkTy, inputs[j],
+            ValueRange{rewriter.create<arith::ConstantIndexOp>(loc, 0)});
+        BcastChunk chunk{j,    cnt, chunkLanes,           chunkTy,
+                         init, 0,   rowLanes > chunkLanes};
+        bcastChunks.push_back(chunk);
+      }
+      for (auto &chunk : bcastChunks)
+        if (chunk.carried) {
+          chunk.iterArgIdx = initValues.size();
+          initValues.push_back(chunk.init);
+        }
+    }
+
     auto loopBody = [&](OpBuilder &builder, Location loc, Value loopIter,
                         ValueRange iterArgs) {
       SmallVector<Value> iterArgValues(iterArgs);
@@ -1022,6 +1129,54 @@ struct GCUElementwiseFusionOpLowering
         return offset;
       };
 
+      // Broadcast access: a run that fits one chunk was loaded once outside
+      // the loop; a longer run is carried and reloaded only when a trip
+      // enters the next chunk. Lanes are selected by the trip phase inside
+      // the current chunk.
+      DenseMap<unsigned, Value> packedBcast;
+      DenseMap<unsigned, Value> packedPhase;
+      for (const auto &chunk : bcastChunks) {
+        Value trip = builder.createOrFold<arith::MulIOp>(
+            loc, loopIter,
+            builder.create<arith::ConstantIndexOp>(loc, chunk.cnt));
+        Value chunkVal = chunk.init;
+        Value phase = trip;
+        if (chunk.carried) {
+          Value chunkLanesVal =
+              builder.create<arith::ConstantIndexOp>(loc, chunk.chunkLanes);
+          phase =
+              builder.createOrFold<arith::RemUIOp>(loc, trip, chunkLanesVal);
+          Value baseIdx = builder.createOrFold<arith::SubIOp>(loc, trip, phase);
+          // The first iteration already receives chunk zero through the loop
+          // init value; every later boundary loads the next chunk.
+          Value needReload = builder.create<arith::AndIOp>(
+              loc,
+              builder.create<arith::CmpIOp>(
+                  loc, arith::CmpIPredicate::eq, phase,
+                  builder.create<arith::ConstantIndexOp>(loc, 0)),
+              builder.create<arith::CmpIOp>(
+                  loc, arith::CmpIPredicate::ne, loopIter,
+                  builder.create<arith::ConstantIndexOp>(loc, 0)));
+          Value carried = iterArgValues[chunk.iterArgIdx];
+          auto ifOp = builder.create<scf::IfOp>(
+              loc, mlir::TypeRange{chunk.chunkTy}, needReload,
+              /*withElseRegion=*/true);
+          {
+            OpBuilder::InsertionGuard guard(builder);
+            builder.setInsertionPointToStart(&ifOp.getThenRegion().front());
+            Value next = builder.create<vector::LoadOp>(
+                loc, chunk.chunkTy, inputs[chunk.argIdx], ValueRange{baseIdx});
+            builder.create<scf::YieldOp>(loc, next);
+            builder.setInsertionPointToStart(&ifOp.getElseRegion().front());
+            builder.create<scf::YieldOp>(loc, carried);
+          }
+          chunkVal = ifOp.getResult(0);
+          iterArgValues[chunk.iterArgIdx] = chunkVal;
+        }
+        packedBcast[chunk.argIdx] = chunkVal;
+        packedPhase[chunk.argIdx] = phase;
+      }
+
       for (unsigned i = 0; i < loopUnrollCount; ++i) {
         for (unsigned j = 0, k = 0; j < inputs.size(); ++j) {
           const auto &desc = inputDescs[j];
@@ -1043,13 +1198,26 @@ struct GCUElementwiseFusionOpLowering
             };
             auto broadcastLoad = [&](unsigned innerOffset,
                                      unsigned broadcastLength) {
+              Value laneVal;
+              auto packed = packedBcast.find(j);
+              if (packed != packedBcast.end()) {
+                // The base was rounded down to a slice boundary, so the
+                // requested lane sits at innerOffset + phase inside it.
+                Value dynIdx = builder.create<arith::AddIOp>(
+                    loc,
+                    builder.create<arith::ConstantIndexOp>(loc, innerOffset),
+                    packedPhase[j]);
+                laneVal = builder.create<vector::ExtractOp>(loc, packed->second,
+                                                            dynIdx);
+              } else {
+                laneVal = builder.create<memref::LoadOp>(
+                    loc, inputs[j], ValueRange{computeLoadOffset(innerOffset)});
+              }
               return builder.create<vector::BroadcastOp>(
                   loc,
                   VectorType::get(ArrayRef<int64_t>{broadcastLength},
                                   elementTy),
-                  builder.create<memref::LoadOp>(
-                      loc, inputs[j],
-                      ValueRange{computeLoadOffset(innerOffset)}));
+                  laneVal);
             };
             if (elementNumPerThread < vectorLength) {
               auto rowsPerVector = vectorLength / elementNumPerThread;
@@ -1815,9 +1983,9 @@ private:
     Value scalarOffset = computeScalarOffsetForVector(offset, builder, argMap,
                                                       unrollIdx, vectorLength);
     if (!scalarOffset) {
-      maskedStoreOp.emitWarning()
-          << "simplifyStoreToMaskedStore: offset scalarization returned null, "
-             "falling back to vector.extract";
+      maskedStoreOp.emitWarning() << "simplifyStoreToMaskedStore: offset "
+                                     "scalarization returned null, "
+                                     "falling back to vector.extract";
       auto vecOffset = argMap.lookup(offset);
       scalarOffset = builder.create<vector::ExtractOp>(loc, vecOffset,
                                                        ArrayRef<int64_t>{0});
@@ -2848,8 +3016,7 @@ private:
     auto resultTy = VectorType::get(ArrayRef<int64_t>{vectorLength},
                                     getElementTypeOrSelf(op.getResult()));
     if (symbol.starts_with("__ef_")) {
-      std::string efSymbol = "__ef_v";
-      efSymbol += symbol.drop_front(strlen("__ef_"));
+      std::string efSymbol = mlir::triton::gcu::toVectorizedExternSymbol(symbol);
       result = builder.create<gcu::ExternElementwiseOp>(loc, resultTy, operands,
                                                         efSymbol);
     } else if (mlir::triton::gcu::isMixedPrecisionSymbol(symbol)) {
