@@ -1,4 +1,5 @@
 import pytest
+import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
@@ -29,3 +30,19 @@ def test_gather_preserves_independent_index_layout(dtype, mask):
         options={"num_warps": 8},
     )
     assert k.module is None and k.function is None
+
+
+@pytest.mark.skipif(not hasattr(torch, "musa") or not torch.musa.is_available(), reason="MUSA device required")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.int32])
+@pytest.mark.parametrize("mask", [1, 7])
+def test_gather_preserves_independent_index_layout_runtime(dtype, mask):
+    a = tle.gpu.mthreads.MusaSqmmaEncoding([3, 1], [8, 1], [32, 128, 128])
+    b = RegisterOrder([[16, 0]], [[0, 1], [0, 2], [0, 4], [1, 0], [2, 0]], [[4, 0], [8, 0], [32, 0]], [64, 8])
+    source = torch.arange(512, dtype=torch.int32).reshape(64, 8).to(dtype)
+    expected = source[:, torch.arange(8) ^ mask]
+    device_source = source.to("musa")
+    output = torch.empty_like(device_source)
+    for _ in range(3):
+        output.fill_(-1)
+        _gather[(1, )](device_source, output, a, b, mask, num_warps=8)
+        torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
