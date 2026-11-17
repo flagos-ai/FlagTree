@@ -32,7 +32,7 @@ vLLM Benchmark Core Script
 使用方法:
     # 通常作为 perf.sh 的子模块被调用。
     # 若需单独调试或发起单次请求，可手动执行：
-    
+
     python3 all_perf.py --input-len 4096 --output-len 1024 --concurrency 16
 
     # 仅打印生成的 vllm bench 命令，不实际执行
@@ -88,6 +88,7 @@ METRIC_PATTERNS = {
 # Section: Abstract Methods (Functions)
 # =============================================================================
 
+
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="vLLM Benchmark Script")
@@ -97,30 +98,46 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Print command only, do not execute")
     return parser.parse_args()
 
+
 def build_command(input_len: int, output_len: int, concurrency: int) -> List[str]:
     """Build the vllm bench serve command."""
     cmd = [
-        "vllm", "bench", "serve",
-        "--host", SERVER_HOST,
-        "--port", str(SERVER_PORT),
-        "--model", MODEL_NAME,
-        "--tokenizer", TOKENIZER_PATH,
-        "--dataset-name", "random",
-        "--random-input-len", str(input_len),
-        "--random-output-len", str(output_len),
-        "--endpoint", "/v1/completions",
+        "vllm",
+        "bench",
+        "serve",
+        "--host",
+        SERVER_HOST,
+        "--port",
+        str(SERVER_PORT),
+        "--model",
+        MODEL_NAME,
+        "--tokenizer",
+        TOKENIZER_PATH,
+        "--dataset-name",
+        "random",
+        "--random-input-len",
+        str(input_len),
+        "--random-output-len",
+        str(output_len),
+        "--endpoint",
+        "/v1/completions",
         "--ignore-eos",
         "--trust-remote-code",
-        "--num-prompts", str(BENCH_NUM_PROMPTS),
-        "--max-concurrency", str(concurrency),
-        "--num-warmups", str(BENCH_WARMUPS),
-        "--seed", "0",
+        "--num-prompts",
+        str(BENCH_NUM_PROMPTS),
+        "--max-concurrency",
+        str(concurrency),
+        "--num-warmups",
+        str(BENCH_WARMUPS),
+        "--seed",
+        "0",
     ]
 
     if ENABLE_PROFILER:
         cmd.append("--profile")
 
     return cmd
+
 
 def parse_output(output: str) -> Dict[str, Optional[float]]:
     """Parse vllm bench serve output text and extract metrics."""
@@ -133,6 +150,7 @@ def parse_output(output: str) -> Dict[str, Optional[float]]:
         else:
             metrics[key] = None
     return metrics
+
 
 def run_benchmark(input_len: int, output_len: int, concurrency: int) -> Optional[Dict[str, float]]:
     """Execute the benchmark and parse the results."""
@@ -154,6 +172,7 @@ def run_benchmark(input_len: int, output_len: int, concurrency: int) -> Optional
         print(f"  [ERROR] Unexpected error: {e}", file=sys.stderr)
         return None
 
+
 def save_results(metrics: Dict[str, float], args: argparse.Namespace) -> None:
     """Save the parsed metrics to a timestamped text file."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -169,6 +188,7 @@ def save_results(metrics: Dict[str, float], args: argparse.Namespace) -> None:
                 f.write(f"{key}: {val}\n")
 
     print(f"\n[INFO] Results saved to: {filepath}")
+
 
 # =============================================================================
 # Section: Main Flow Control
@@ -192,6 +212,7 @@ def main() -> None:
 
     # Save results
     save_results(metrics, args)
+
 
 if __name__ == "__main__":
     main()

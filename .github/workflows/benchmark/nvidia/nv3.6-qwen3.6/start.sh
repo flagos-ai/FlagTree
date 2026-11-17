@@ -71,7 +71,7 @@ init_validate_env() {
         echo "[FATAL] config.env not found!" >&2
         exit 1
     fi
-    
+
     if [[ -z "${MODEL_PATH:-}" ]]; then
         echo "[FATAL] MODEL_PATH is missing. Please specify MODEL_PATH in config.env." >&2
         exit 1
@@ -80,10 +80,10 @@ init_validate_env() {
     if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
         echo "[WARNING] CUDA_VISIBLE_DEVICES is not set. Defaulting to all available GPUs." >&2
     fi
-    
+
     LOG_FILE=${VLLM_LOG_FILE:-"vllm.log"}
     PID_FILE=${PID_FILE:-"pid.txt"}
-    
+
     export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
     export VLLM_QWEN3_PORT=${VLLM_QWEN3_PORT:-7000}
     export VLLM_PLUGINS=${VLLM_PLUGINS:-"fl"}
@@ -123,7 +123,7 @@ build_profiler_config() {
     if [[ -n "${PROFILER_WARMUP_ITERS:-}" ]]; then
         warmup_sec=$(printf ',\n    "warmup_iterations": %s' "${PROFILER_WARMUP_ITERS}")
     fi
-    
+
     if [[ -n "${PROFILER_ACTIVE_ITERS:-}" ]]; then
         active_sec=$(printf ',\n    "active_iterations": %s' "${PROFILER_ACTIVE_ITERS}")
     fi
@@ -177,10 +177,10 @@ start_service() {
     echo "[INFO] Starting vllm serve..."
     echo "[INFO] Command: numactl --cpunodebind=${NUMA_CPUNODEBIND:-1} --membind=${NUMA_MEMBIND:-1} \\"
     echo "[INFO] nohup vllm serve ${VLLM_ARGS[*]} > ${LOG_FILE} 2>&1 &"
-    
+
     numactl --cpunodebind=${NUMA_CPUNODEBIND:-1} --membind=${NUMA_MEMBIND:-1} \
     nohup vllm serve "${VLLM_ARGS[@]}" > "${LOG_FILE}" 2>&1 &
-    
+
     echo "$!" > "${PID_FILE}"
 }
 

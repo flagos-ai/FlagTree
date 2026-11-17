@@ -110,13 +110,13 @@ run_benchmark() {
 
     # numactl --cpunodebind="${cpu_bind}" --membind="${mem_bind}" \
     # python3 "${SCRIPT_DIR}/all_perf.py" --input-len "${BENCH_INPUT_LEN:-4096}" --output-len "${BENCH_OUTPUT_LEN:-1024}" --concurrency "${BENCH_CONCURRENCY:-16}"
-    
+
     # numactl --cpunodebind="${cpu_bind}" --membind="${mem_bind}" \
     # python3 "${SCRIPT_DIR}/all_perf.py" --input-len 32768 --output-len 1024 --concurrency 16
-    
+
     numactl --cpunodebind="${cpu_bind}" --membind="${mem_bind}" \
     python3 "${SCRIPT_DIR}/all_perf.py" --input-len 16384 --output-len 1024 --concurrency 16
-    
+
     numactl --cpunodebind="${cpu_bind}" --membind="${mem_bind}" \
     python3 "${SCRIPT_DIR}/all_perf.py" --input-len 4096 --output-len 1024 --concurrency 16
 }

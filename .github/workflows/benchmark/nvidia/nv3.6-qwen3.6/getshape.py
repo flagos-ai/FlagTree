@@ -4,7 +4,7 @@
 PyTorch / vLLM Trace 算子耗时分析脚本
 
 功能:
-    读取 `.pt.trace.json.gz` 文件，按 (算子名, Input Dims, Input Type) 
+    读取 `.pt.trace.json.gz` 文件，按 (算子名, Input Dims, Input Type)
     聚合统计 CPU 和 GPU 的耗时，并生成对齐美观的文本报告。
 
 前置条件 (Prerequisites):
@@ -41,11 +41,11 @@ try:
 except ImportError:
     HAVE_IJSON = False
 
-
 DEFAULT_TRACE = "./rank0.1794462962407205869.pt.trace.json.gz"
 DEFAULT_OUTPUT = "shape_time_grouped_report.txt"
 
 _TOP_LEVEL_CACHE = {}
+
 
 def detect_top_level(path):
     if path in _TOP_LEVEL_CACHE:
@@ -163,7 +163,7 @@ def collect_cpu_op_stats(path, cuda_durations):
         name = e.get('name') or ''
         in_dims = _norm_json(args.get('Input Dims'))
         in_type = _norm_json(args.get('Input type') or args.get('Input dtype'))
-        
+
         key = (name, in_dims, in_type)
 
         rec = stats[key]
@@ -179,6 +179,7 @@ def collect_cpu_op_stats(path, cuda_durations):
 
 
 def make_sort_key(primary):
+
     def key(item):
         name = item[0][0]
         s = item[1]
@@ -187,14 +188,14 @@ def make_sort_key(primary):
         else:
             d = s['cuda_time_us'] if s['cuda_time_us'] > 0 else s['cpu_time_us']
         return (name, -d)
+
     return key
 
 
-def write_report(stats, path, sort_primary, trace_path,
-                 total_kernel_time, kernel_events, kernel_without_ext,
+def write_report(stats, path, sort_primary, trace_path, total_kernel_time, kernel_events, kernel_without_ext,
                  matched_kernel_time):
     sorted_items = sorted(stats.items(), key=make_sort_key(sort_primary))
-    
+
     widths = {
         "Op": 40,
         "InputDims": 90,
@@ -223,22 +224,18 @@ def write_report(stats, path, sort_primary, trace_path,
     lines.append("#")
 
     def build_row(op_t, dims_t, type_t, calls_t, cpu_t, avg_cpu_t, cuda_t, avg_cuda_t):
-        return (
-            f"{op_t.ljust(widths['Op'])} | "
-            f"{dims_t.ljust(widths['InputDims'])} | "
-            f"{type_t.ljust(widths['InputType'])} | "
-            f"{calls_t.rjust(widths['Calls'])} | "
-            f"{cpu_t.rjust(widths['TotalCPU'])} | "
-            f"{avg_cpu_t.rjust(widths['AvgCPU'])} | "
-            f"{cuda_t.rjust(widths['TotalCUDA'])} | "
-            f"{avg_cuda_t.rjust(widths['AvgCUDA'])}"
-        )
+        return (f"{op_t.ljust(widths['Op'])} | "
+                f"{dims_t.ljust(widths['InputDims'])} | "
+                f"{type_t.ljust(widths['InputType'])} | "
+                f"{calls_t.rjust(widths['Calls'])} | "
+                f"{cpu_t.rjust(widths['TotalCPU'])} | "
+                f"{avg_cpu_t.rjust(widths['AvgCPU'])} | "
+                f"{cuda_t.rjust(widths['TotalCUDA'])} | "
+                f"{avg_cuda_t.rjust(widths['AvgCUDA'])}")
 
     # 生成表头
-    header_line = build_row(
-        "Op", "InputDims", "InputType", 
-        "Calls", "TotalCPU_us", "AvgCPU_us", "TotalCUDA_us", "AvgCUDA_us"
-    )
+    header_line = build_row("Op", "InputDims", "InputType", "Calls", "TotalCPU_us", "AvgCPU_us", "TotalCUDA_us",
+                            "AvgCUDA_us")
     lines.append(header_line)
     # 表头下方用 '='
     lines.append("=" * len(header_line))
@@ -246,7 +243,7 @@ def write_report(stats, path, sort_primary, trace_path,
     def split_text(text, width):
         if not text:
             return [""]
-        return [text[i:i+width] for i in range(0, len(text), width)]
+        return [text[i:i + width] for i in range(0, len(text), width)]
 
     prev_op_name = None
 
@@ -257,33 +254,33 @@ def write_report(stats, path, sort_primary, trace_path,
             if name != prev_op_name:
                 # 不同的算子之间，用 '=' 分隔，并且加一个空行作为大段落的分割
                 lines.append("=" * len(header_line))
-                lines.append("") 
+                lines.append("")
             else:
                 # 同一个算子的不同 Shape 之间，用 '-' 分隔
                 lines.append("-" * len(header_line))
         prev_op_name = name
-        
+
         calls = s['calls']
         avg_cpu = s['cpu_time_us'] / calls if calls else 0.0
         avg_cuda = s['cuda_time_us'] / calls if calls else 0.0
-        
+
         op_parts = split_text(name, widths['Op'])
         dims_parts = split_text(in_dims, widths['InputDims'])
         type_parts = split_text(in_type, widths['InputType'])
-        
+
         max_lines = max(len(op_parts), len(dims_parts), len(type_parts))
-        
+
         for i in range(max_lines):
             op_t = op_parts[i] if i < len(op_parts) else ""
             dims_t = dims_parts[i] if i < len(dims_parts) else ""
             type_t = type_parts[i] if i < len(type_parts) else ""
-            
+
             calls_t = str(calls) if i == 0 else ""
             cpu_t = f"{s['cpu_time_us']:.3f}" if i == 0 else ""
             avg_cpu_t = f"{avg_cpu:.3f}" if i == 0 else ""
             cuda_t = f"{s['cuda_time_us']:.3f}" if i == 0 else ""
             avg_cuda_t = f"{avg_cuda:.3f}" if i == 0 else ""
-            
+
             lines.append(build_row(op_t, dims_t, type_t, calls_t, cpu_t, avg_cpu_t, cuda_t, avg_cuda_t))
 
     # 结尾再加一条线收尾
@@ -303,15 +300,18 @@ def main():
 
     print(f"Pass 1/2: collecting kernel durations from {args.trace} ...")
     cuda_durations, total_kernel_time, kernel_events, kernel_without_ext = collect_kernel_durations(args.trace)
-    print(f"  kernel events={kernel_events}, unique ext ids={len(cuda_durations)}, total kernel time={total_kernel_time:.3f} us")
+    print(
+        f"  kernel events={kernel_events}, unique ext ids={len(cuda_durations)}, total kernel time={total_kernel_time:.3f} us"
+    )
 
     print("Pass 2/2: aggregating cpu_op by (name, InputDims, InputType) ...")
     stats, matched_ext_ids = collect_cpu_op_stats(args.trace, cuda_durations)
     matched_kernel_time = sum(cuda_durations[e] for e in matched_ext_ids)
-    print(f"  groups={len(stats)}, matched ext ids={len(matched_ext_ids)}, matched kernel time={matched_kernel_time:.3f} us")
+    print(
+        f"  groups={len(stats)}, matched ext ids={len(matched_ext_ids)}, matched kernel time={matched_kernel_time:.3f} us"
+    )
 
-    write_report(stats, args.output, args.sort, args.trace,
-                 total_kernel_time, kernel_events, kernel_without_ext,
+    write_report(stats, args.output, args.sort, args.trace, total_kernel_time, kernel_events, kernel_without_ext,
                  matched_kernel_time)
 
 
