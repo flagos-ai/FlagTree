@@ -92,5 +92,4 @@ def test_explicit_issue_domain(tmp_path, issuer, enabled, operation):
     pm.run(module, "test_explicit_tme_issue_domain")
     text = module.str_nodebug()
     # Inspect pre-optimization LLVM dialect so the mask has not become an ult.
-    assert ("llvm.and" in text and "-32" in text) == (
-        enabled and operation != "init" and issuer % 32 == 0), text
+    assert ("llvm.and" in text and "-32" in text) == (enabled and operation != "init" and issuer % 32 == 0), text

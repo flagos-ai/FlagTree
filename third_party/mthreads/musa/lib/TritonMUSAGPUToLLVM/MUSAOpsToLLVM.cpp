@@ -223,7 +223,8 @@ Value buildTMEIssuePredicate(Value userPred, Location loc,
   if (issueOp && !isa<triton::musa::InitArrivalOp>(issueOp) &&
       issueThread % 32 == 0) {
     if (auto module = issueOp->getParentOfType<ModuleOp>()) {
-      auto collective = module->getAttrOfType<IntegerAttr>("musa.tme_issue_warp");
+      auto collective =
+          module->getAttrOfType<IntegerAttr>("musa.tme_issue_warp");
       if (collective && collective.getInt())
         threadId = b.and_(threadId, b.i32_val(-32));
     }
