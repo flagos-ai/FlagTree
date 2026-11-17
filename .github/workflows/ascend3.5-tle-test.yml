@@ -93,6 +93,7 @@ jobs:
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
           source ~/env.sh
           ## flagtree tle test
+          python3 -m pytest python/test/tle/unit/test_ascend_optional_shmem.py
           pushd python/test/tle
           python3 test_vec_add.py
           python3 test_vec_add_2d.py
