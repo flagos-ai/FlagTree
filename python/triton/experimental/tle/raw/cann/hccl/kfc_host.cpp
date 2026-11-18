@@ -50,9 +50,8 @@ constexpr uint16_t kAicpuTimeoutSec = 30;
 constexpr size_t kHcomIdOffset = 16U + 4U + 4U + 8U + 32U * 8U + 32U * 8U;
 constexpr size_t kHcomIdBytes = 128U;
 
-using HcomMc2AiCpuStreamAllocAndGetFn = HcclResult (*)(const char *group,
-                                                       uint32_t streamMode,
-                                                       aclrtStream *aiCpuStream);
+using HcomMc2AiCpuStreamAllocAndGetFn = HcclResult (*)(
+    const char *group, uint32_t streamMode, aclrtStream *aiCpuStream);
 
 // Exact CANN 9.1.0 HcclKFCTilingData layout (aicpu_operator_pub.h).
 struct KfcTilingData {
@@ -102,8 +101,8 @@ static_assert(sizeof(KfcTilingData) == 128);
 
 // Exact hcomm AicpuUnfoldKernelLaunch::ApiParamDef (tiling is NOT inline).
 struct ApiParamDef {
-  uint64_t x1 = 0;        // sendbuffer
-  uint64_t y = 0;         // unused when useBufferType drives gatherOut=y on aicpu
+  uint64_t x1 = 0; // sendbuffer
+  uint64_t y = 0;  // unused when useBufferType drives gatherOut=y on aicpu
   uint64_t gatherOut = 0; // recvbuffer
   uint64_t context = 0;
   uint64_t workspace = 0;
@@ -231,8 +230,7 @@ int EnsureCclBinHandle() {
 
 // Exact AicpuAclKernelLaunch TaskComm path (launch_aicpu.cc).
 aclError AicpuAclKernelLaunchAligned(aclrtStream stm, void *apiParam,
-                                     uint32_t apiParamSize,
-                                     void *tilingDataPtr,
+                                     uint32_t apiParamSize, void *tilingDataPtr,
                                      uint32_t tilingDataSize) {
   if (g_cclBinHandle == nullptr || apiParam == nullptr || apiParamSize == 0 ||
       tilingDataPtr == nullptr || tilingDataSize == 0) {
@@ -240,8 +238,8 @@ aclError AicpuAclKernelLaunchAligned(aclrtStream stm, void *apiParam,
   }
 
   aclrtFuncHandle funcHandle = nullptr;
-  aclError aclRet = aclrtBinaryGetFunction(g_cclBinHandle, "RunAicpuRpcSrvLaunch",
-                                           &funcHandle);
+  aclError aclRet = aclrtBinaryGetFunction(g_cclBinHandle,
+                                           "RunAicpuRpcSrvLaunch", &funcHandle);
   if (aclRet != ACL_SUCCESS) {
     return aclRet;
   }
@@ -253,7 +251,8 @@ aclError AicpuAclKernelLaunchAligned(aclrtStream stm, void *apiParam,
   }
 
   aclrtParamHandle paraHandle = nullptr;
-  aclRet = aclrtKernelArgsAppend(argsHandle, apiParam, apiParamSize, &paraHandle);
+  aclRet =
+      aclrtKernelArgsAppend(argsHandle, apiParam, apiParamSize, &paraHandle);
   if (aclRet != ACL_SUCCESS) {
     return aclRet;
   }

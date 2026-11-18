@@ -77,7 +77,7 @@ def prepare(rank: int, max_count: int) -> None:
     if _SESSION is None:
         _SESSION = HcclKfcSession.open(get_hccl_comm(rank), count=max(max_count, 1))
         _CTX = torch.tensor([_SESSION.context], dtype=torch.uint64, device=DEVICE)
-        _STATUS = torch.zeros((1,), dtype=torch.int32, device=DEVICE)
+        _STATUS = torch.zeros((1, ), dtype=torch.int32, device=DEVICE)
     else:
         _SESSION.activate()
 
@@ -100,7 +100,7 @@ def allreduce_inplace(buf: torch.Tensor, *, tile_cnt: int = 1, do_copy: int = 1)
     )
     _SESSION.start()
     try:
-        reduce_ar_kernel[(1,)](
+        reduce_ar_kernel[(1, )](
             buf,
             _CTX,
             _STATUS,

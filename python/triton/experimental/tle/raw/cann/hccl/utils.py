@@ -92,9 +92,8 @@ def _ascend_root() -> Path:
     ):
         if candidate.is_dir():
             return candidate.resolve()
-    raise RuntimeError(
-        "cannot resolve Ascend toolkit root for HCCL includes; "
-        "source CANN setenv.bash first, or set ASCEND_TOOLKIT_HOME / ASCEND_HOME_PATH")
+    raise RuntimeError("cannot resolve Ascend toolkit root for HCCL includes; "
+                       "source CANN setenv.bash first, or set ASCEND_TOOLKIT_HOME / ASCEND_HOME_PATH")
 
 
 def get_hccl_include_dirs() -> List[str]:
@@ -292,9 +291,8 @@ def start_kfc_server(
     turn_num = max(int(turn_num), 1)
     use_buffer_type = int(use_buffer_type)
     if send_cnt <= 0 or send_ptr == 0 or recv_ptr == 0:
-        raise ValueError(
-            f"KFC needs real buffers and send_cnt>0, got send_ptr={send_ptr:#x} "
-            f"recv_ptr={recv_ptr:#x} send_cnt={send_cnt}")
+        raise ValueError(f"KFC needs real buffers and send_cnt>0, got send_ptr={send_ptr:#x} "
+                         f"recv_ptr={recv_ptr:#x} send_cnt={send_cnt}")
     handle = ctypes.c_uint64(0)
     launch_rc = ctypes.c_int(-1)
     fn = host.hccl_kfc_probe_start
@@ -351,9 +349,8 @@ def hccl_kfc_pre_launch() -> None:
     """Legacy launch-enter hook (only when ``session.auto_kfc`` is True)."""
     session = get_active_hccl_kfc_session()
     if session is None:
-        raise RuntimeError(
-            "library='hccl' kernel launched without an active HcclKfcSession; "
-            "call HcclKfcSession.open() or from_context() first")
+        raise RuntimeError("library='hccl' kernel launched without an active HcclKfcSession; "
+                           "call HcclKfcSession.open() or from_context() first")
     # Default path: host already called start(); launch only runs AICore.
     if not getattr(session, "auto_kfc", False):
         return
@@ -388,8 +385,7 @@ class HcclKfcSession:
     (not recommended; conflicts with multi-turn Commit inside one KFC server).
     """
 
-    def __init__(self, host: HostLibrary, context: int, count: int = 1,
-                 auto_kfc: bool = False):
+    def __init__(self, host: HostLibrary, context: int, count: int = 1, auto_kfc: bool = False):
         self.host = host
         self.context = int(context)
         # OpRes sizing hint from HcclCreateOpResCtx (not KFC tiling count).
@@ -458,17 +454,14 @@ class HcclKfcSession:
         """Wrap an existing OpRes context (framework / caller owned)."""
         if not context:
             raise ValueError("context must be a non-zero HcclCreateOpResCtx pointer")
-        return cls(load_kfc_host(force=force_rebuild), int(context), count=count,
-                   auto_kfc=auto_kfc)
+        return cls(load_kfc_host(force=force_rebuild), int(context), count=count, auto_kfc=auto_kfc)
 
     @classmethod
-    def open(cls, comm, count: int = 1, force_rebuild: bool = False,
-             auto_kfc: bool = False) -> "HcclKfcSession":
+    def open(cls, comm, count: int = 1, force_rebuild: bool = False, auto_kfc: bool = False) -> "HcclKfcSession":
         """CreateOpResCtx from a torch HcclComm, then wrap it."""
         host = load_kfc_host(force=force_rebuild)
         count = max(int(count), 1)
-        return cls(host, create_op_res_ctx(host, comm, count=count), count=count,
-                   auto_kfc=auto_kfc)
+        return cls(host, create_op_res_ctx(host, comm, count=count), count=count, auto_kfc=auto_kfc)
 
     def activate(self) -> "HcclKfcSession":
         """Make this session the active one for this thread."""
@@ -498,10 +491,9 @@ class HcclKfcSession:
                 use_buffer_type=MC2_BUFFER_TYPE_OUTPUT,
             )
         if not self._configured:
-            raise RuntimeError(
-                "HcclKfcSession: call configure(send, recv, total_cnt=..., "
-                "turn_num=...) before start() "
-                "(DoAllReduceTiling needs real buffers / tile sizes)")
+            raise RuntimeError("HcclKfcSession: call configure(send, recv, total_cnt=..., "
+                               "turn_num=...) before start() "
+                               "(DoAllReduceTiling needs real buffers / tile sizes)")
         handle, _launch_rc = start_kfc_server(
             self.host,
             self.context,
@@ -535,5 +527,4 @@ class HcclKfcSession:
         self._handle = None
         rc = finish_kfc_server(self.host, handle, timeout_ms)
         if rc != 0:
-            raise RuntimeError(
-                f"KFC attach stream did not finish within {timeout_ms} ms, acl_rc={rc}")
+            raise RuntimeError(f"KFC attach stream did not finish within {timeout_ms} ms, acl_rc={rc}")

@@ -51,11 +51,13 @@ __aicore__ inline void GmCopyHalf(GM_ADDR dst, GM_ADDR src, uint64_t nElems) {
     gsrc.SetGlobalBuffer((__gm__ half *)(src) + off, aligned);
     gdst.SetGlobalBuffer((__gm__ half *)(dst) + off, aligned);
     DataCopy(lt, gsrc, static_cast<uint32_t>(aligned));
-    event_t ev = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_MTE3));
+    event_t ev =
+        static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE2_MTE3));
     SetFlag<HardEvent::MTE2_MTE3>(ev);
     WaitFlag<HardEvent::MTE2_MTE3>(ev);
     DataCopy(gdst, lt, static_cast<uint32_t>(aligned));
-    event_t ev2 = static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_MTE2));
+    event_t ev2 =
+        static_cast<event_t>(GetTPipePtr()->FetchEventID(HardEvent::MTE3_MTE2));
     SetFlag<HardEvent::MTE3_MTE2>(ev2);
     WaitFlag<HardEvent::MTE3_MTE2>(ev2);
   }
@@ -64,12 +66,13 @@ __aicore__ inline void GmCopyHalf(GM_ADDR dst, GM_ADDR src, uint64_t nElems) {
 extern "C" {
 
 // args: buf, n_elems, tile_cnt, use_buffer_type, do_copy, ctx, status | dummy
-__aiv__ void _mlir_ciface_hccl_reduce_ar(
-    memref_t<__gm__ half, 1> *buf, int64_t n_elems, int64_t tile_cnt,
-    int64_t use_buffer_type, int64_t do_copy,
-    memref_t<__gm__ uint64_t, 1> *ctx_u64,
-    memref_t<__gm__ int32_t, 1> *status,
-    memref_t<__ubuf__ half, 1> *dummy) {
+__aiv__ void _mlir_ciface_hccl_reduce_ar(memref_t<__gm__ half, 1> *buf,
+                                         int64_t n_elems, int64_t tile_cnt,
+                                         int64_t use_buffer_type,
+                                         int64_t do_copy,
+                                         memref_t<__gm__ uint64_t, 1> *ctx_u64,
+                                         memref_t<__gm__ int32_t, 1> *status,
+                                         memref_t<__ubuf__ half, 1> *dummy) {
   (void)dummy;
   if (GetBlockIdx() != 0) {
     return;
@@ -107,9 +110,9 @@ __aiv__ void _mlir_ciface_hccl_reduce_ar(
     }
   }
 
-  HcclHandle handle = hccl.AllReduce(
-      cGM, outputGM, per, AscendC::HCCL_DATA_TYPE_FP16, AscendC::HCCL_REDUCE_SUM,
-      static_cast<uint8_t>(tile_cnt));
+  HcclHandle handle =
+      hccl.AllReduce(cGM, outputGM, per, AscendC::HCCL_DATA_TYPE_FP16,
+                     AscendC::HCCL_REDUCE_SUM, static_cast<uint8_t>(tile_cnt));
   if (handle < 0) {
     *st = -4;
     hccl.Finalize();
@@ -124,7 +127,8 @@ __aiv__ void _mlir_ciface_hccl_reduce_ar(
   for (int64_t t = 0; t < tile_cnt; ++t) {
     PipeBarrier<PIPE_ALL>();
     hccl.Commit(handle);
-    cTurn = reinterpret_cast<GM_ADDR>(reinterpret_cast<uint64_t>(cTurn) + cOffset);
+    cTurn =
+        reinterpret_cast<GM_ADDR>(reinterpret_cast<uint64_t>(cTurn) + cOffset);
     (void)cTurn;
   }
 
