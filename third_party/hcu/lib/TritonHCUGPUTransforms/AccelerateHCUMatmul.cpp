@@ -254,13 +254,19 @@ warpsPerTile(Operation *dotOp, ArrayRef<int64_t> shape, int numWarps,
     return ret;
   }
 
-  // Case 3: Regular cases
+  // Case 3: Regular cases. The older factor-two M penalty is for legacy
+  // HCU layouts. On gfx938 it can put all waves in N for a 32x64 tile,
+  // increasing local M repetition and obstructing N-register vectorization.
+  // Keep the chain-dot/reduction and batched special cases above unchanged.
+  auto arch = dotOp->getParentOfType<ModuleOp>()
+                  ->getAttrOfType<StringAttr>("hcu.codegen_arch");
+  int mPenalty = arch && arch.getValue() == "gfx938" ? 1 : 2;
   SmallVector<int64_t, 2> tensorShape = {shape[0], shape[1]};
   SmallVector<unsigned, 3> ret = {1, 1};
   do {
     if (ret[0] * ret[1] >= numWarps)
       break;
-    if (tensorShape[0] / (shapePerWarp.first * 2) / ret[0] >=
+    if (tensorShape[0] / (shapePerWarp.first * mPenalty) / ret[0] >=
         tensorShape[1] / shapePerWarp.second / ret[1]) {
       if (ret[0] < tensorShape[0] / shapePerWarp.first) {
         ret[0] *= 2;

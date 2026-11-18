@@ -110,6 +110,13 @@ class HIPOptions:
     #    - see get_options_args() to get more options.
     sched_latency: str = 'none'
 
+    # Explicit code-generation policy; included in the compilation cache key.
+    hcu_sched_model: str = 'default'
+    hcu_descriptor_mls_load: bool = False
+    hcu_packed_f32: str = 'auto'
+    hcu_compact_rsrc: str = 'auto'
+    mmac_issue_group_size: int = 1
+
     # wasp options
     wasp_enabled: bool = False
     wdra_enabled: bool = False
@@ -120,6 +127,24 @@ class HIPOptions:
     wdra_num_mma_regs_tail: int = None
 
     def __post_init__(self):
+        if self.hcu_compact_rsrc not in ('auto','none','bfm'):
+            raise ValueError('hcu_compact_rsrc must be auto, none or bfm')
+        if self.hcu_compact_rsrc == 'bfm' and self.arch != 'gfx938':
+            raise ValueError('compact scalar resource materialization requires gfx938')
+        if self.mmac_issue_group_size not in (1,2):
+            raise ValueError('mmac_issue_group_size must be 1 or 2')
+        if self.mmac_issue_group_size != 1 and self.arch != 'gfx938':
+            raise ValueError('MMAC grouping currently requires gfx938')
+        if self.hcu_packed_f32 not in ('auto','none','add','fma','all','vector','cvt'):
+            raise ValueError('hcu_packed_f32 must be auto, none, add, fma, all, vector or cvt')
+        if self.hcu_packed_f32 not in ('none','auto') and self.arch != 'gfx938':
+            raise ValueError('packed FP32 lowering currently requires gfx938')
+        if self.hcu_descriptor_mls_load and (self.arch != 'gfx938' or self.num_warps != 4 or self.num_stages != 1 or self.num_ctas != 1 or self.wasp_enabled or self.wdra_enabled):
+            raise ValueError('descriptor MLS load requires gfx938, four waves, one stage/CTA, no WS/WDRA')
+        if self.hcu_sched_model not in ("default", "gfx938-v2"):
+            raise ValueError("hcu_sched_model must be default or gfx938-v2")
+        if self.hcu_sched_model == "gfx938-v2" and self.arch != "gfx938":
+            raise ValueError("gfx938-v2 scheduling requires gfx938")
         gfx_major = int(self.arch[3:-2])  # Drop "gfx" prefix and minor/patch number
         warp_size = 32 if gfx_major >= 10 else 64
         object.__setattr__(self, 'warp_size', warp_size)
@@ -365,6 +390,13 @@ class HIPBackend(BaseBackend):
                         "Set 'TRITON_HIP_CLANG_PATH' to its path.")
 
     @staticmethod
+    @functools.lru_cache(maxsize=None)
+    def _auto_pairing_aicc18(compiler_path):
+        version = subprocess.check_output([compiler_path, "--version"]).decode()
+        match = re.search(r"version\s*(\d+)\.", version)
+        return bool(match and match.group(1) == "18")
+
+    @staticmethod
     def _get_clang_args(metadata, options):
         arch_args = {
             "gfx928": [
@@ -400,6 +432,17 @@ class HIPBackend(BaseBackend):
         clang_minor = match.group("minor")
         if clang_major in version_args:
             options_args.extend(version_args[clang_major])
+        # Propagate the existing fusion contract into DTK's final codegen.
+        if options.arch == 'gfx938' and clang_major == '18' and options.enable_fp_fusion:
+            options_args.append('-mllvm=-fp-fuse=fast')
+        if options.hcu_packed_f32 not in ('none','auto') and clang_major != '18':
+            raise RuntimeError('packed FP32 intrinsics require the validated AICC18 ABI')
+        if options.hcu_compact_rsrc == 'bfm' and clang_major != '18':
+            raise RuntimeError('compact resource lowering requires validated AICC18')
+        if options.hcu_sched_model == "gfx938-v2":
+            if clang_major != "18":
+                raise RuntimeError("gfx938-v2 scheduling requires the validated AICC18 backend")
+            options_args.append("-mllvm=-hcu-use-gfx938-sched-model-v2=true")
 
         if options.sched_latency != 'none':
             sched_latency_args = {
@@ -440,6 +483,18 @@ class HIPBackend(BaseBackend):
         passes.ttir.add_rewrite_tensor_pointer(pm)
         # Only the measured gfx938/four-wave MLS contract is enabled.
         builder = ir.builder(mod.context)
+        mod.set_attr("hcu.codegen_arch", builder.get_string_attr(options.arch))
+        compact = 0
+        if options.arch == 'gfx938' and options.hcu_compact_rsrc != 'none' and HIPBackend._auto_pairing_aicc18(str(HIPBackend.path_to_rocm_clang())):
+            compact = 2 if options.hcu_compact_rsrc == 'auto' else 1
+        mod.set_attr("hcu.compact_rsrc", builder.get_int32_attr(compact))
+        # 32 is an auto-policy request, resolved structurally before LLVM lowering.
+        # Explicit none remains a complete opt-out; other architectures/DTK stay unchanged.
+        packed = {'none':0, 'add':1, 'fma':2, 'all':3, 'vector':4, 'cvt':8}.get(options.hcu_packed_f32, 0)
+        if options.hcu_packed_f32 == 'auto' and options.arch == 'gfx938' and HIPBackend._auto_pairing_aicc18(str(HIPBackend.path_to_rocm_clang())):
+            packed = 32
+        mod.set_attr("hcu.packed_f32", builder.get_int32_attr(packed))
+        mod.set_attr("hcu.descriptor_mls_load", builder.get_int32_attr(int(options.hcu_descriptor_mls_load)))
         direct_copy_enabled = (options.num_stages == 1 and options.warp_size == 64
                                and options.num_ctas == 1 and not options.wasp_enabled)
         mod.set_attr("tle.hcu.descriptor_mls_arch",
@@ -608,6 +663,13 @@ class HIPBackend(BaseBackend):
     @staticmethod
     def make_llir(src, metadata, options):
         mod = src
+        builder = ir.builder(mod.context)
+        mod.set_attr("hcu.codegen_arch", builder.get_string_attr(options.arch))
+        compact = 0
+        if options.arch == 'gfx938' and options.hcu_compact_rsrc != 'none' and HIPBackend._auto_pairing_aicc18(str(HIPBackend.path_to_rocm_clang())):
+            compact = 2 if options.hcu_compact_rsrc == 'auto' else 1
+        mod.set_attr("hcu.compact_rsrc", builder.get_int32_attr(compact))
+        mod.set_attr("hcu.mmac_issue_group", builder.get_int32_attr(options.mmac_issue_group_size))
         # TritonGPU -> LLVM-IR (MLIR)
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
@@ -629,6 +691,15 @@ class HIPBackend(BaseBackend):
         deferred_raw_materialize(mod, pm)
         # Before inline: remember tle.raw so make_amdgcn can opt into dcc.
         metadata["hcu_tle_raw"] = "tle.dsl_region" in str(mod)
+        if metadata["hcu_tle_raw"] and options.hcu_packed_f32 in ("vector", "cvt"):
+            raise ValueError("explicit paired vector/cvt policy is qualified only for ordinary TLE/Triton, not raw DSL")
+        if metadata["hcu_tle_raw"] and options.hcu_packed_f32 == "auto":
+            # Raw DSL may use DCC17; its intrinsic ABI is a separate contract.
+            mod.set_attr("hcu.packed_f32", builder.get_int32_attr(0))
+        if metadata["hcu_tle_raw"]:
+            if options.hcu_compact_rsrc == 'bfm':
+                raise ValueError('explicit compact resource policy is not qualified for raw DSL')
+            mod.set_attr("hcu.compact_rsrc", builder.get_int32_attr(0))
         tle.raw_passes.add_tle_dsl_region_inline(pm)
         kernel_name = mod.get_entry_func_name()
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)

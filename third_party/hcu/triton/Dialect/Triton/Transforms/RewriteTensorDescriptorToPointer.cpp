@@ -288,7 +288,67 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     auto descTy = op.getDesc().getType();
     auto desc = unpackDescriptor(descTy, adaptor.getDesc());
     auto offsets = castToI64(rewriter, op.getIndices());
-
+#ifdef __TLE__
+    auto mod = op->getParentOfType<ModuleOp>();
+    auto enable = mod->getAttrOfType<IntegerAttr>("hcu.descriptor_mls_load");
+    auto arch = mod->getAttrOfType<StringAttr>("tle.hcu.descriptor_mls_arch");
+    triton::TransOp transpose;
+    if (op->hasOneUse()) transpose = dyn_cast<triton::TransOp>(*op->getUsers().begin());
+    auto elem = descTy.getBlockType().getElementType();
+    // A narrow, inspectable connection to the existing matrix-load pipeline.
+    // Descriptor and transpose are both replaced: dimensions/strides/indices
+    // are reversed together, never merely retagged as a dot operand.
+    if (enable && enable.getInt() == 1 && arch && arch.getValue() == "gfx938" &&
+        transpose && transpose.getOrder() == ArrayRef<int32_t>({1, 0}) &&
+        blockShape == ArrayRef<int64_t>({128, 128}) &&
+        (elem.isInteger(8) || isa<Float8E4M3FNType>(elem))) {
+      auto c64 = [&](int64_t x)->Value { return arith::ConstantIntOp::create(rewriter,loc,x,64); };
+      auto cmp = [&](arith::CmpIPredicate pred,Value a,Value b)->Value { return arith::CmpIOp::create(rewriter,loc,pred,a,b); };
+      Value zero=c64(0),one=c64(1);
+      Value eligible=cmp(arith::CmpIPredicate::eq,desc.strides[1],one);
+      auto require=[&](Value c){eligible=arith::AndIOp::create(rewriter,loc,eligible,c);};
+      require(cmp(arith::CmpIPredicate::sgt,desc.strides[0],zero));
+      require(cmp(arith::CmpIPredicate::sle,desc.strides[0],c64(2147483647LL/128)));
+      require(cmp(arith::CmpIPredicate::eq,arith::AndIOp::create(rewriter,loc,desc.strides[0],c64(15)),zero));
+      auto address=triton::PtrToIntOp::create(rewriter,loc,rewriter.getI64Type(),desc.base);
+      require(cmp(arith::CmpIPredicate::eq,arith::AndIOp::create(rewriter,loc,address,c64(15)),zero));
+      Value origin=arith::AddIOp::create(rewriter,loc,address,
+          arith::AddIOp::create(rewriter,loc,
+              arith::MulIOp::create(rewriter,loc,offsets[0],desc.strides[0]),offsets[1]));
+      require(cmp(arith::CmpIPredicate::eq,arith::ShRUIOp::create(rewriter,loc,origin,c64(48)),zero));
+      require(cmp(arith::CmpIPredicate::eq,arith::AndIOp::create(rewriter,loc,offsets[1],c64(15)),zero));
+      SmallVector<Value> shapeI32;
+      for (unsigned d=0;d<2;++d) {
+        require(cmp(arith::CmpIPredicate::sge,offsets[d],zero));
+        require(cmp(arith::CmpIPredicate::sle,desc.shape[d],c64(2147483647LL)));
+        require(cmp(arith::CmpIPredicate::sge,desc.shape[d],c64(128)));
+        auto last=arith::SubIOp::create(rewriter,loc,desc.shape[d],c64(128));
+        require(cmp(arith::CmpIPredicate::sle,offsets[d],last));
+        shapeI32.push_back(arith::TruncIOp::create(rewriter,loc,rewriter.getI32Type(),desc.shape[d]));
+      }
+      auto branch=rewriter.create<scf::IfOp>(loc,transpose.getType(),eligible,true);
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(&branch.getThenRegion().front());
+        Value value=rewriter.create<triton::MatrixLoadOp>(loc,transpose.getType(),desc.base,
+            ValueRange{shapeI32[1],shapeI32[0]},ValueRange{one,desc.strides[0]},
+            ArrayRef<int32_t>{128,128},ValueRange{op.getIndices()[1],op.getIndices()[0]},
+            ArrayRef<int32_t>{},triton::CacheModifier::NONE,triton::EvictionPolicy::NORMAL,false);
+        rewriter.create<scf::YieldOp>(loc,value);
+        rewriter.setInsertionPointToStart(&branch.getElseRegion().front());
+        Value loaded=triton::LoadOp::create(rewriter,loc,
+            generatePtr(rewriter,loc,blockShape,desc,offsets),
+            generateMask(rewriter,loc,blockShape,desc,offsets),
+            generateOther(rewriter,loc,descTy,desc.paddingOption),
+            triton::CacheModifier::NONE,triton::EvictionPolicy::NORMAL,false);
+        auto trans=rewriter.create<triton::TransOp>(loc,loaded,ArrayRef<int32_t>{1,0});
+        rewriter.create<scf::YieldOp>(loc,trans.getResult());
+      }
+      rewriter.replaceOp(transpose,branch.getResult(0));
+      rewriter.eraseOp(op);
+      return success();
+    }
+#endif
 
     auto other = generateOther(rewriter, loc, descTy, desc.paddingOption);
     auto newLoad = rewriter.replaceOpWithNewOp<triton::LoadOp>(

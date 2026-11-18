@@ -171,6 +171,43 @@ struct ConvertTritonHCUGPUToLLVM
       return signalPassFailure();
     }
 
+    // Resolve the default policy while typed dot/specialization operations still
+    // exist. Do not infer kernel classes from Python names or benchmark shapes.
+    if (auto policy = mod->getAttrOfType<IntegerAttr>("hcu.packed_f32");
+        policy && policy.getInt() == 32) {
+      bool hasDot = false, hasSpecialization = false;
+      mod.walk([&](Operation *op) {
+        StringRef name = op->getName().getStringRef();
+        hasDot |= name == "tt.dot" || name == "tt.dot_scaled";
+        hasSpecialization |= name == "tle.dsl_region" || name == "ttg.warp_specialize";
+      });
+      bool eligible = targetInfo.getGPUKind() == llvm::AMDGPU::GPUKind::GK_GFX938 &&
+                      !hasDot && !hasSpecialization;
+      OpBuilder policyBuilder(context);
+      mod->setAttr("hcu.packed_f32", policyBuilder.getI32IntegerAttr(eligible ? (8 | 16) : 0));
+      mod->setAttr("hcu.auto_pairing_applied", policyBuilder.getBoolAttr(eligible));
+    }
+
+    // Compact range materialization is default only for the measured class
+    // of long, matrix-free, straight-line FMA kernels. Full opt-in remains
+    // available for same-source ablations; no kernel names or shapes are used.
+    if (auto request = mod->getAttrOfType<IntegerAttr>("hcu.compact_rsrc");
+        request && request.getInt() == 2) {
+      unsigned fmas = 0;
+      bool excluded = false;
+      mod.walk([&](Operation *op) {
+        StringRef name = op->getName().getStringRef();
+        fmas += name == "math.fma";
+        excluded |= name == "tt.dot" || name == "tt.dot_scaled" ||
+                    name == "tle.dsl_region" || name == "ttg.warp_specialize";
+      });
+      bool enabled = targetInfo.getGPUKind() == llvm::AMDGPU::GPUKind::GK_GFX938 &&
+                     !excluded && fmas >= 32;
+      OpBuilder policyBuilder(context);
+      mod->setAttr("hcu.compact_rsrc", policyBuilder.getI32IntegerAttr(enabled));
+      mod->setAttr("hcu.auto_compact_rsrc_applied", policyBuilder.getBoolAttr(enabled));
+    }
+
     mlir::LowerToLLVMOptions option(context);
     option.overrideIndexBitwidth(32);
 

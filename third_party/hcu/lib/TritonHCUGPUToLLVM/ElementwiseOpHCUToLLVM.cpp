@@ -2033,6 +2033,16 @@ struct FpToFpOpConversion
       numElements = 4;
     }
 
+    // Native HCU converters write either half of a packed i32. Convert
+    // four contiguous elements as a low/high pair so later dot-operand
+    // packing can use the register directly without byte shifts/ORs.
+    bool nativeF32ToFp8x4 =
+        capFP8F32 && srcElementType.isF32() &&
+        llvm::isa<Float8E4M3FNType, Float8E5M2Type>(dstElementType) &&
+        roundingMode == RoundingMode::RTNE;
+    if (nativeF32ToFp8x4)
+      numElements = 4;
+
     // f32->fp8/bf8, if not nanoo fp8/bf8 on CDNA3 or ocp fp8/bf8 on CDNA4, is
     // done in two steps: f32->fp16 with rtne and fp16->fp8/bf8 with rtne
     bool useFP16IntermediateSrc =
@@ -2122,6 +2132,28 @@ struct FpToFpOpConversion
     TritonLLVMOpBuilder b(loc, rewriter);
     inVals.resize(numElements, b.undef(typeConverter->convertType(srcType)));
     SmallVector<Value> outVals;
+    if (nativeF32ToFp8x4) {
+      // Preserve the existing SetFP8ClampingAttr above, the rounding mode,
+      // and the logical element order. Padding lanes remain unobservable.
+      auto convertPair = [&](Value a, Value c, Value old, bool high) -> Value {
+        if (llvm::isa<Float8E4M3FNType>(dstType))
+          return rewriter.create<ROCDL::HCUCvtPkFp8F32Op>(
+              loc, i32_ty, a, c, old, high ? b.true_val() : b.false_val());
+        return rewriter.create<ROCDL::HCUCvtPkBf8F32Op>(
+            loc, i32_ty, a, c, old, high ? b.true_val() : b.false_val());
+      };
+      Value lo = convertPair(inVals[0], inVals[1], b.undef(i32_ty), false);
+      // Only materialize a high half when it contains a live output value.
+      // One/two-value tails observe only the low bytes of lo; padding them to
+      // four inputs must not introduce a dependent, unobservable conversion.
+      Value packed = lo;
+      if (operands.size() > 2)
+        packed = convertPair(inVals[2], inVals[3], lo, true);
+      Value bytes = b.bitcast(packed, vec_ty(i8_ty, 4));
+      for (unsigned i = 0; i < std::min(numElements, operands.size()); ++i)
+        outVals.push_back(b.extract_element(i8_ty, bytes, b.i32_val(i)));
+      return outVals;
+    }
     if (srcType != dstType) {
       auto getCvtFunc = getConversionFunc(srcType, dstType, roundingMode);
       if (failed(getCvtFunc)) {
@@ -2372,6 +2404,148 @@ struct TruncFOpConversion
     } else {
       return {rewriter.create<LLVM::FPTruncOp>(loc, elemTy, operands[0][0])};
     }
+  }
+};
+
+// Opt-in physical-register pairing on the measured gfx938/AICC18 path.
+// Pairing never changes the arithmetic tree: each vector lane performs the
+// original scalar operation. Scalar/odd tails retain the generic conversion.
+template <typename SourceOp, unsigned PolicyBit>
+struct PackedF32OpConversion
+    : ElementwiseOpConversionWithTargetInfoBase<
+          SourceOp, PackedF32OpConversion<SourceOp, PolicyBit>> {
+  using Base = ElementwiseOpConversionWithTargetInfoBase<
+      SourceOp, PackedF32OpConversion<SourceOp, PolicyBit>>;
+  using Base::Base;
+  using OpAdaptor = typename Base::OpAdaptor;
+
+  SmallVector<Value> createDestOps(SourceOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    if (!elemTy.isF32() ||
+        this->gpuKind != llvm::AMDGPU::GPUKind::GK_GFX938)
+      return {};
+    auto policy = op->template getParentOfType<ModuleOp>()
+                      ->template getAttrOfType<IntegerAttr>("hcu.packed_f32");
+    if (!policy || !(policy.getInt() & PolicyBit))
+      return {};
+    // Do not partially rewrite an odd tensor and then fail at its last value.
+    // Use the same scalar semantics for its final physical register.
+    if (operands.size() == 1) {
+      if constexpr (std::is_same_v<SourceOp, math::FmaOp>)
+        return {rewriter.create<LLVM::FMAOp>(loc, elemTy, operands[0])};
+      else if constexpr (std::is_same_v<SourceOp, arith::SubFOp>)
+        return {rewriter.create<LLVM::FSubOp>(loc, elemTy, operands[0][0], operands[0][1])};
+      else
+        return {rewriter.create<LLVM::FAddOp>(loc, elemTy, operands[0][0], operands[0][1])};
+    }
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    auto v2ty = vec_ty(elemTy, 2);
+    SmallVector<Value> args;
+    for (unsigned i = 0; i < operands[0].size(); ++i) {
+      Value v = b.undef(v2ty);
+      v = b.insert_element(v2ty, v, operands[0][i], b.i32_val(0));
+      v = b.insert_element(v2ty, v, operands[1][i], b.i32_val(1));
+      if constexpr (std::is_same_v<SourceOp, arith::SubFOp>)
+        if (i == 1)
+          v = rewriter.create<LLVM::FNegOp>(loc, v2ty, v);
+      args.push_back(v);
+    }
+    StringRef name = std::is_same_v<SourceOp, math::FmaOp>
+                         ? "llvm.hcu.pk.fma.f32" : "llvm.hcu.pk.add.f32";
+    SmallVector<Type> argTypes(args.size(), v2ty);
+    // The installed HCU intrinsic declaration is variadic, with 2/3 fixed
+    // vector operands. Keep that ABI rather than borrowing another SDK's IR.
+    auto fnTy = LLVM::LLVMFunctionType::get(v2ty, argTypes, true);
+    auto fn = appendOrGetExternFuncOp(rewriter, op, name, fnTy);
+    Value value = LLVM::createLLVMCallOp(rewriter, loc, fn, args).getResult();
+    return {b.extract_element(elemTy, value, b.i32_val(0)),
+            b.extract_element(elemTy, value, b.i32_val(1))};
+  }
+};
+
+
+// Optional gfx938/AICC18 lane-wise pairing, modeled on the public vendor
+// backend's LLVM vector representation (triton-das 5b24821). No algebraic
+// reassociation or change to a reduction tree is permitted here.
+template <typename SourceOp, typename LLVMOp>
+struct VectorF32OpConversion
+    : ElementwiseOpConversionWithTargetInfoBase<
+          SourceOp, VectorF32OpConversion<SourceOp, LLVMOp>> {
+  using Base = ElementwiseOpConversionWithTargetInfoBase<
+      SourceOp, VectorF32OpConversion<SourceOp, LLVMOp>>;
+  using Base::Base;
+  using OpAdaptor = typename Base::OpAdaptor;
+  SmallVector<Value> createDestOps(SourceOp op, OpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter, Type elemTy,
+      MultipleOperandsRange operands, Location loc) const {
+    auto policy = op->template getParentOfType<ModuleOp>()
+                      ->template getAttrOfType<IntegerAttr>("hcu.packed_f32");
+    constexpr unsigned mask = std::is_same_v<SourceOp, math::FmaOp> ? 4 : (4 | 16);
+    if (!elemTy.isF32() || this->gpuKind != llvm::AMDGPU::GPUKind::GK_GFX938 ||
+        !policy || !(policy.getInt() & mask))
+      return {};
+    if (operands.size() == 1)
+      return {rewriter.template create<LLVMOp>(loc, elemTy, operands[0])};
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    Type ty = vec_ty(elemTy, 2);
+    SmallVector<Value> args;
+    for (unsigned i = 0; i < operands[0].size(); ++i) {
+      Value v = b.undef(ty);
+      v = b.insert_element(ty, v, operands[0][i], b.i32_val(0));
+      v = b.insert_element(ty, v, operands[1][i], b.i32_val(1));
+      args.push_back(v);
+    }
+    Value result = rewriter.template create<LLVMOp>(loc, ty, args);
+    return {b.extract_element(elemTy, result, b.i32_val(0)),
+            b.extract_element(elemTy, result, b.i32_val(1))};
+  }
+};
+
+template <typename SourceOp>
+struct PairedDowncastOpConversion
+    : ElementwiseOpConversionWithTargetInfoBase<SourceOp,
+                                                PairedDowncastOpConversion<SourceOp>> {
+  using Base = ElementwiseOpConversionWithTargetInfoBase<SourceOp,
+                                                         PairedDowncastOpConversion<SourceOp>>;
+  using Base::Base;
+  using OpAdaptor = typename Base::OpAdaptor;
+  SmallVector<Value> createDestOps(SourceOp op, OpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter, Type elemTy,
+      MultipleOperandsRange operands, Location loc) const {
+    auto policy = op->template getParentOfType<ModuleOp>()
+                      ->template getAttrOfType<IntegerAttr>("hcu.packed_f32");
+    if constexpr (std::is_same_v<SourceOp, triton::FpToFpOp>) {
+      if (op.getRounding() != RoundingMode::RTNE)
+        return {};
+    }
+    auto inputTy = getElementType(op->getOperand(0));
+    auto outputTy = getElementType(op->getResult(0));
+    if (!inputTy.isF32() || !(outputTy.isBF16() || outputTy.isF16()) ||
+        this->gpuKind != llvm::AMDGPU::GPUKind::GK_GFX938 ||
+        !policy || !(policy.getInt() & (4 | 8)))
+      return {};
+    if (operands.size() == 1) {
+      if (outputTy.isBF16())
+        return {convertFp32ToBf16(loc, rewriter, operands[0][0],
+                                 RoundingMode::RTNE, this->capBF16F32)};
+      return {rewriter.create<LLVM::FPTruncOp>(loc, elemTy, operands[0][0])};
+    }
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    Type ty = vec_ty(elemTy, 2);
+    SmallVector<Value> args = {b.i32_val(0), operands[0][0], b.i32_val(0),
+                               operands[1][0], LLVM::createConstantI1(loc, rewriter, false)};
+    StringRef name = "llvm.hcu.cvt.pk.bf16.f32";
+    if (outputTy.isF16()) {
+      name = "llvm.hcu.cvt.pk.f16.f32";
+      args.push_back(b.i32_val(0));
+    }
+    auto packed = LLVM::createLLVMIntrinsicCallOp(rewriter, loc, name,
+                                                 TypeRange{ty}, args);
+    Value result = packed->getResult(0);
+    return {b.extract_element(elemTy, result, b.i32_val(0)),
+            b.extract_element(elemTy, result, b.i32_val(1))};
   }
 };
 
@@ -2674,6 +2848,22 @@ void populateElementwiseOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns, bool ftz,
     ModuleAxisInfoAnalysis &axisInfoAnalysis, ModuleAllocation &allocation,
     const TargetInfo &targetInfo, PatternBenefit benefit) {
+
+  auto packedBenefit = PatternBenefit(benefit.getBenefit() + 1);
+  patterns.add<PackedF32OpConversion<math::FmaOp, 2>,
+               PackedF32OpConversion<arith::AddFOp, 1>,
+               PackedF32OpConversion<arith::SubFOp, 1>>(
+      typeConverter, axisInfoAnalysis, targetInfo.getISAFamily(),
+      targetInfo.getGPUKind(), packedBenefit);
+
+  patterns.add<VectorF32OpConversion<arith::AddFOp, LLVM::FAddOp>,
+               VectorF32OpConversion<arith::SubFOp, LLVM::FSubOp>,
+               VectorF32OpConversion<arith::MulFOp, LLVM::FMulOp>,
+               VectorF32OpConversion<math::FmaOp, LLVM::FMAOp>,
+               PairedDowncastOpConversion<arith::TruncFOp>,
+               PairedDowncastOpConversion<triton::FpToFpOp>>(
+      typeConverter, axisInfoAnalysis, targetInfo.getISAFamily(),
+      targetInfo.getGPUKind(), packedBenefit);
 
   // fmin (return NaN if either op is NaN)
   patterns.add<mlir::triton::gpu::ElementwiseOpConversion<arith::MinimumFOp,

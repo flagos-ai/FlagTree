@@ -3,6 +3,7 @@
 #include "Utility.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "BufferOpsEmitter.h"
@@ -89,6 +90,19 @@ Value BufferEmitter::createResourceDescriptor(Value basePtr,
 
   // HCU : modify to compatible with HCU llvm.
   Value numRecordsByte = b.int_val(64, std::numeric_limits<int>::max() - 1);
+  // Materialize the exact same range compactly; do not widen the descriptor.
+  // The scalar mask writes SCC, so make the dependency explicit to codegen.
+  auto module = rewriter.getInsertionBlock()->getParentOp()->getParentOfType<ModuleOp>();
+  auto compact = module ? module->getAttrOfType<IntegerAttr>("hcu.compact_rsrc") : IntegerAttr();
+  if (compact && compact.getInt() == 1 &&
+      targetInfo.getGPUKind() == llvm::AMDGPU::GPUKind::GK_GFX938) {
+    Value mask = LLVM::InlineAsmOp::create(
+        rewriter, loc, i32_ty, ValueRange{}, "s_bfm_b32 $0, 30, 1",
+        "=s,~{scc}", false, false, LLVM::TailCallKind::None,
+        LLVM::AsmDialectAttr::get(rewriter.getContext(), LLVM::AsmDialect::AD_ATT),
+        ArrayAttr::get(rewriter.getContext(), {})).getRes();
+    numRecordsByte = rewriter.create<LLVM::ZExtOp>(loc, i64_ty, mask);
+  }
 
   Value resource = rewriter.createOrFold<ROCDL::MakeBufferRsrcOp>(
       loc, rsrcType, basePtr, stride, numRecordsByte, flagsConst);
