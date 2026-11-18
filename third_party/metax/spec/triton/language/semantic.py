@@ -829,10 +829,23 @@ class TritonSemantic(Generic[TensorTy]):
                 zero = self.scalar_constant(0, dst_sca_ty)
                 return self.splat(zero, src_ty.get_block_shapes()) if src_ty.is_block() else zero
 
-        if (src_sca_ty.is_fp8e4b15() or dst_sca_ty.is_fp8e4b15()):
-            assert self.builder.codegen_fns.get(
-                "convert_custom_types") is not None, "target doesn't provide conversion for this type."
-            return self.builder.codegen_fns["convert_custom_types"](input, dst_ty, fp_downcast_rounding, _semantic=self)
+        # Keep FP8 cast routing in sync with the common semantic layer.
+        if src_sca_ty.is_fp8() or dst_sca_ty.is_fp8():
+            options = self.builder.options
+            cast_whitelist = getattr(options, "supported_fp8_cast_dtypes", None)
+            if cast_whitelist is not None and src_sca_ty.is_floating() and dst_sca_ty.is_floating():
+                for ty in (src_sca_ty, dst_sca_ty):
+                    if ty.is_fp8() and ty.name not in cast_whitelist:
+                        raise ValueError(f"cast involving type {ty} is not supported in this architecture. "
+                                         f"The supported fp8 cast dtypes are {cast_whitelist}")
+                if src_sca_ty.is_fp8() and dst_sca_ty.is_fp8():
+                    raise ValueError(f"MetaX does not support direct FP8 casts from {src_sca_ty} to {dst_sca_ty}; "
+                                     "cast through tl.float32")
+            custom_cast_dtypes = getattr(options, "custom_cast_fp8_dtypes", ("fp8e4b15", ))
+            if src_sca_ty.name in custom_cast_dtypes or dst_sca_ty.name in custom_cast_dtypes:
+                custom_cast = self.builder.codegen_fns.get("convert_custom_types")
+                assert custom_cast is not None, "target doesn't provide conversion for this type."
+                return custom_cast(input, dst_ty, fp_downcast_rounding, _semantic=self)
         # Casting with customized floating types involved: fp8 <=> bf16, fp16, fp32, fp64
         # and non-default rounding modes for downcasting
         if (src_sca_ty.is_fp8() and dst_sca_ty.is_floating()) or \
@@ -1505,9 +1518,11 @@ class TritonSemantic(Generic[TensorTy]):
     def dot(self, lhs: TensorTy, rhs: TensorTy, acc: TensorTy, input_precision: Optional[str],
             max_num_imprecise_acc: int, out_dtype: tl.dtype) -> TensorTy:
         assert lhs.type.is_block() and rhs.type.is_block()
+        resolve_dot = self.builder.codegen_fns.get("resolve_dot")
 
-        if lhs.dtype in (tl.float8e4nv, tl.float8e5) and rhs.dtype in (tl.float8e4nv, tl.float8e5):
-            if out_dtype != tl.float32:
+        is_fp8_dot = lhs.dtype in (tl.float8e4nv, tl.float8e5) and rhs.dtype in (tl.float8e4nv, tl.float8e5)
+        if is_fp8_dot:
+            if resolve_dot is None and out_dtype != tl.float32:
                 raise ValueError(f"MetaX FP8 dot requires out_dtype=float32, got {out_dtype}")
             if acc is not None and acc.dtype != tl.float32:
                 raise ValueError(f"MetaX FP8 dot requires a float32 accumulator, got {acc.dtype}")
@@ -1515,7 +1530,7 @@ class TritonSemantic(Generic[TensorTy]):
         if lhs.dtype.is_fp8() and rhs.dtype.is_fp8():
             # All combinations of supported fp8 x fp8 are permitted
             pass
-        else:
+        elif resolve_dot is None:
             assert lhs.dtype in (tl.int8, tl.uint8, tl.float16, tl.bfloat16, tl.float32,
                                  tl.float64), f"Unsupported lhs dtype {lhs.dtype}"
             assert rhs.dtype in (tl.int8, tl.uint8, tl.float16, tl.bfloat16, tl.float32,
@@ -1555,37 +1570,37 @@ class TritonSemantic(Generic[TensorTy]):
             -2].value, f"First input shape ({lhs.shape}) and second input shape {rhs.shape} are not compatible for matmul (second index of first shape ({lhs.shape[-1].value}) must be equal to first index of second shape ({rhs.shape[-2].value})"
         assert self.builder.codegen_fns.get(
             "min_dot_size") is not None, "target doesn't provide lower shape bounds for dot."
-        min_dot_size = self.builder.codegen_fns["min_dot_size"](lhs.type, rhs.type)
-        if (lhs.shape[-2].value < min_dot_size[0] or lhs.shape[-1].value < min_dot_size[2]
-                or rhs.shape[-1].value < min_dot_size[1]):
-            raise ValueError(
-                f"Input shapes should have M >= {min_dot_size[0]}, N >= {min_dot_size[1]} and K >= {min_dot_size[2]}; "
-                f"got M={lhs.shape[-2].value}, N={rhs.shape[-1].value}, K={lhs.shape[-1].value}")
         if lhs.type.scalar.is_int():
-            assert lhs.type.scalar == tl.int8, "only int8 supported!"
-            _0 = self.builder.get_int32(0)
             ret_scalar_ty = tl.int32
-        elif out_dtype.is_bf16():
+        elif out_dtype.is_bf16() and not is_fp8_dot:
             raise ValueError(
                 "out_dtype=bfloat16 is unsupported. Please use out_dtype=float32/float16 and cast with `.to(tl.bfloat16)`"
             )
-        elif lhs.type.scalar.is_fp32() or lhs.type.scalar.is_bf16():
-            _0 = self.builder.get_fp32(0)
+        elif lhs.dtype in (tl.float32, tl.bfloat16):
             ret_scalar_ty = tl.float32
-        elif lhs.type.scalar.is_fp64():
-            _0 = self.builder.get_fp64(0)
+        elif lhs.dtype == tl.float64:
             ret_scalar_ty = tl.float64
         else:
-            _0 = self.builder.get_fp16(0) if out_dtype.is_fp16() else self.builder.get_fp32(0)
             ret_scalar_ty = out_dtype
 
-        M = lhs.type.shape[-2]
-        N = rhs.type.shape[-1]
-        K = lhs.type.shape[-1]
+        M, N, K = lhs.shape[-2].value, rhs.shape[-1].value, lhs.shape[-1].value
+        dot_cap = None
+        if resolve_dot is not None:
+            dot_cap = resolve_dot(lhs.dtype.name, rhs.dtype.name, ret_scalar_ty.name, M, N, K)
+            if not dot_cap.supported:
+                raise ValueError(dot_cap.diag or f"tl.dot: {lhs.dtype} x {rhs.dtype} is not supported on this product")
+        min_m, min_n, min_k = self.builder.codegen_fns["min_dot_size"](lhs.type, rhs.type)
+        if M < min_m or N < min_n or K < min_k:
+            raise ValueError(f"Input shapes should have M >= {min_m}, N >= {min_n} and K >= {min_k}; "
+                             f"got M={M}, N={N}, K={K}")
+        if lhs.type.scalar.is_int():
+            assert lhs.type.scalar == tl.int8, "only int8 supported!"
+
         B = lhs.type.shape[0] if lhs_rank == 3 else None
         ret_ty = tl.block_type(ret_scalar_ty, [B, M, N] if B else [M, N])
         if acc is None:
-            acc_handle = self.builder.create_splat(ret_ty.to_ir(self.builder), _0)
+            zero = self.scalar_constant(0, ret_scalar_ty)
+            acc_handle = self.builder.create_splat(ret_ty.to_ir(self.builder), zero.handle)
         else:
             acc_handle = acc.handle
             if acc.type.shape != ret_ty.shape:
@@ -1635,12 +1650,9 @@ class TritonSemantic(Generic[TensorTy]):
                                         max_num_imprecise_acc), tl.block_type(ret_scalar_ty, padded_shape))
             return resize(result, [M, N])
 
-        if lhs.dtype in (tl.float8e4nv, tl.float8e5) and rhs.dtype in (tl.float8e4nv, tl.float8e5):
-            arch = int(self.builder.options.arch.removeprefix("sm"))
-            if not (86 <= arch < 90 and lhs.dtype == rhs.dtype):
-                warnings.warn(
-                    f"MetaX FP8 dot on target {arch} uses non-native GPU software decoding to FP16, "
-                    "followed by native FP16 MMA with FP32 accumulation.", UserWarning)
+        if dot_cap is not None and not dot_cap.native:
+            warnings.warn(dot_cap.diag or f"tl.dot: {lhs.dtype} x {rhs.dtype} is not native on this "
+                          "product: non-native path (native=false)")
         return self.tensor(
             self.builder.create_dot(lhs.handle, rhs.handle, acc_handle, input_precision, max_num_imprecise_acc), ret_ty)
 
@@ -1697,6 +1709,13 @@ class TritonSemantic(Generic[TensorTy]):
         allowed_formats = {"e2m1", "e4m3", "e5m2", "bf16", "fp16"}
         assert lhs_format in allowed_formats, f"NYI: lhs_format {lhs_format}"
         assert rhs_format in allowed_formats, f"NYI: rhs_format {rhs_format}"
+        resolve_dot_scaled = self.builder.codegen_fns.get("resolve_dot_scaled")
+        scaled_cap = None
+        if resolve_dot_scaled is not None:
+            scaled_cap = resolve_dot_scaled(lhs_format, rhs_format)
+            if not scaled_cap.supported:
+                raise ValueError(scaled_cap.diag
+                                 or f"tl.dot_scaled: {lhs_format} x {rhs_format} is not supported on this product")
         rhs_scale_is_none = rhs_scale is None or (isinstance(rhs_scale, tl.constexpr) and rhs_scale.value is None)
         lhs_scale_is_none = lhs_scale is None or (isinstance(lhs_scale, tl.constexpr) and lhs_scale.value is None)
         if "e2m1" in (lhs_format, rhs_format):
@@ -1747,10 +1766,9 @@ class TritonSemantic(Generic[TensorTy]):
         lhs_scale_handle = None if lhs_scale_is_none else lhs_scale.handle
         self.verify_scaled_shape(M, N, K, None if lhs_scale_is_none else lhs_scale,
                                  None if rhs_scale_is_none else rhs_scale)
-        if "e2m1" in (lhs_format, rhs_format):
-            warnings.warn(
-                "MetaX FP4 dot_scaled uses non-native GPU software decoding/scaling, "
-                "followed by native BF16/FP16 MMA with FP32 accumulation.", UserWarning)
+        if scaled_cap is not None and not scaled_cap.native:
+            warnings.warn(scaled_cap.diag or f"tl.dot_scaled: {lhs_format} x {rhs_format} is not native "
+                          "on this product: decomposed to a non-native path (native=false)")
         return self.tensor(
             self.builder.create_dot_scaled(lhs.handle, lhs_scale_handle, lhs_format_enum, rhs.handle, rhs_scale_handle,
                                            rhs_format_enum, fast_math, lhs_k_pack, rhs_k_pack, acc_handle), ret_ty)
@@ -1797,23 +1815,26 @@ class TritonSemantic(Generic[TensorTy]):
         low, high = self.split(self.permute(paired, order))
         return self.or_(low, self.shl(high, self.scalar_constant(4, tl.uint8)))
 
-    def fp4_to_fp_scaled(self, src: TensorTy, scale: TensorTy, elem_type: tl.dtype, axis: int) -> TensorTy:
+    def fp4_to_fp_scaled(self, src: TensorTy, scale: Optional[TensorTy], elem_type: tl.dtype, axis: int) -> TensorTy:
         assert src.type.is_block(), "src must be a tensor"
-        assert scale.type.is_block(), "scale must be a tensor"
         assert src.dtype.is_int8() or src.dtype.is_uint8(), f"src must have int8 or uint8 dtype, got {src.dtype}"
-        assert scale.dtype.is_int8() or scale.dtype.is_uint8(
-        ), f"scale must have int8 or uint8 dtype, got {scale.dtype}"
         assert elem_type in (tl.float16, tl.bfloat16), f"elem_type must be tl.float16 or tl.bfloat16, got {elem_type}"
 
         rank = len(src.type.shape)
         assert rank > 0, "src must have rank > 0"
-        assert len(scale.type.shape) == rank, (f"scale rank must match src rank; got {len(scale.type.shape)} vs {rank}")
         assert -rank <= axis < rank, f"axis {axis} must be in [-{rank}, {rank})"
         if axis < 0:
             axis += rank
 
         shape = list(src.type.shape)
+        if scale is None:
+            # E8M0 code 127 encodes a unit scale.
+            scale = self.full(shape, 127, tl.uint8)
+        assert isinstance(scale, tl.tensor) and scale.type.is_block(), "scale must be a tensor or None"
+        assert scale.dtype.is_int8() or scale.dtype.is_uint8(
+        ), f"scale must have int8 or uint8 dtype, got {scale.dtype}"
         scale_shape = scale.type.shape
+        assert len(scale_shape) == rank, f"scale rank must match src rank; got {len(scale_shape)} vs {rank}"
         for d in range(rank):
             if d != axis:
                 assert scale_shape[d] == shape[

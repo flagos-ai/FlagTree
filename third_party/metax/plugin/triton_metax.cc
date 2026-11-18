@@ -68,6 +68,11 @@ PLUGIN_EXPORT void init_triton_metax_passes_ttgpuir(py::module &&m) {
 PLUGIN_EXPORT void init_triton_metax(py::module &&m) {
   auto passes = m.def_submodule("passes");
   init_triton_metax_passes_ttgpuir(passes.def_submodule("ttgpuir"));
+  m.def("resolve_fp8_dot", [](int capability, bool sameFormat) {
+    auto support = mlir::resolveTritonMETAXFP8Dot(capability, sameFormat);
+    return py::make_tuple(support != mlir::METAXFP8DotSupport::Unsupported,
+                          support == mlir::METAXFP8DotSupport::Native);
+  });
 
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {

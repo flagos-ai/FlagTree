@@ -21,7 +21,7 @@ from triton._internal_testing import is_hip
 def test_metax_provider_source_invalidates_cache(source, tmp_path):
     package = pathlib.Path(triton.__file__).parent
     runtime = tmp_path / "runtime" / "triton"
-    shutil.copytree(package, runtime, ignore=shutil.ignore_patterns("_C", "__pycache__"), symlinks=True)
+    shutil.copytree(package, runtime, ignore=shutil.ignore_patterns("_C", "__pycache__"), symlinks=False)
     (runtime / "_C").symlink_to(package / "_C", target_is_directory=True)
     provider = runtime / "spec" / "metax" / "triton" / ("runtime"
                                                         if source == "driver" else "language") / f"{source}.py"

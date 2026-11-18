@@ -167,8 +167,8 @@ struct ConvertTritonGPUToLLVM
                                                    patterns, benefit);
     mlir::triton::METAX::populateFp4ToFpToLLVMPatterns(typeConverter, patterns,
                                                        benefit);
-    mlir::triton::METAX::populateFp4ToFpScaledToLLVMPatterns(typeConverter,
-                                                             patterns, benefit);
+    mlir::triton::METAX::populateFp4ToFpScaledToLLVMPatterns(
+        typeConverter, patterns, computeCapability, benefit);
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
       return signalPassFailure();
   }

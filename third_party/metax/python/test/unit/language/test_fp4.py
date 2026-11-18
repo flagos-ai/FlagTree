@@ -279,7 +279,7 @@ def _scaled_documented(X, S, Y, DTYPE: tl.constexpr, RAW: tl.constexpr, WIDTH: t
                        AXIS: tl.constexpr = 1):
     r, c = tl.arange(0, 32), tl.arange(0, 16)
     x = tl.load(X + r[:, None] * 16 + c[None, :])
-    s = tl.load(S + r[:, None] * WIDTH + tl.arange(0, WIDTH)[None, :])
+    s = None if S is None else tl.load(S + r[:, None] * WIDTH + tl.arange(0, WIDTH)[None, :])
     if RAW:
         y = tl.core.fp4_to_fp_scaled(x, s, DTYPE, AXIS)
     else:
@@ -290,16 +290,24 @@ def _scaled_documented(X, S, Y, DTYPE: tl.constexpr, RAW: tl.constexpr, WIDTH: t
 
 @pytest.mark.parametrize("dtype", [tl.float16, tl.bfloat16])
 @pytest.mark.parametrize("raw_api", [False, True])
-def test_metax_fp4_scaled_documented(dtype, raw_api, metax_device):
+@pytest.mark.parametrize("scale_mode", ["none", "grouped", "minimum"])
+def test_metax_fp4_scaled_documented(dtype, raw_api, scale_mode, metax_device):
     x = torch.arange(512, dtype=torch.int64).remainder(256).to(torch.uint8).reshape(32, 16)
     s = torch.arange(96, 128, dtype=torch.uint8)
+    if scale_mode == "minimum":
+        s.zero_()
     codes = torch.stack((x & 15, x >> 4), 2).flatten(1, 2).long()
     table = torch.tensor([0., .5, 1., 1.5, 2., 3., 4., 6., -0., -.5, -1., -1.5, -2., -3., -4., -6.],
                          dtype=torch.float64)
-    values = table[codes] * torch.from_numpy(np.ldexp(np.ones((32, 1)), s.numpy().astype(np.int16)[:, None] - 127))
+    values = table[codes]
+    if scale_mode != "none":
+        values *= torch.from_numpy(np.ldexp(np.ones((32, 1)), s.numpy().astype(np.int16)[:, None] - 127))
     out_dtype = torch.float16 if dtype == tl.float16 else torch.bfloat16
     output = torch.full((1088, ), 11., dtype=out_dtype, device=metax_device)
-    kernel = _scaled_documented[(1, )](x.to(metax_device), s.to(metax_device), output[32:1056], dtype, raw_api)
+    # Exercise the fallback lowering even if the test runs on a C550.
+    options = {"arch": "sm86"} if scale_mode == "minimum" else {}
+    kernel = _scaled_documented[(1, )](x.to(metax_device), s.to(metax_device) if scale_mode != "none" else None,
+                                       output[32:1056], dtype, raw_api, **options)
     expected = torch.full((1088, ), 11., dtype=out_dtype)
     expected[32:1056] = values.to(out_dtype).flatten()
     assert torch.equal(output.cpu().view(torch.uint8), expected.view(torch.uint8))
@@ -660,12 +668,16 @@ def _dot_scaled_source(**kwargs):
                      PACK_B=True, ACC_TYPE=tl.float32, OUT_TYPE=tl.float32, BATCH=False, SCALE_WIDTH=0)
     scale_type = kwargs.pop("scale_type", "u8")
     constants.update(kwargs)
+    rhs_type = "*bf16" if constants["FB"] == "bf16" else "*u8"
     return ASTSource(_dot_scaled,
-                     {"A": "*u8", "B": "*u8", "SA": "*" + scale_type, "SB": "*u8", "C": "*fp32", "Y": "*fp32"},
+                     {"A": "*u8", "B": rhs_type, "SA": "*" + scale_type, "SB": "*u8", "C": "*fp32", "Y": "*fp32"},
                      constants)
 
 
 @pytest.mark.parametrize("options,error", [
+    *[({"FA": lhs, "FB": rhs
+        }, rf"tl\.dot_scaled: {lhs} x {rhs} is not supported on MetaX; at least one operand must be e2m1")
+      for lhs, rhs in (("e4m3", "e4m3"), ("e4m3", "e5m2"), ("e5m2", "e4m3"), ("e4m3", "bf16"))],
     ({"PACK_A": False}, "requires packing along K"),
     ({"PACK_B": False}, "requires packing along K"),
     ({"BATCH": True}, "requires 2D inputs"),
@@ -694,10 +706,15 @@ def test_metax_fp4_dot_scaled_diagnostic(arch, diagnostics, fresh_triton_cache, 
         monkeypatch.setenv("MLIR_ENABLE_DIAGNOSTICS", diagnostics)
     else:
         monkeypatch.delenv("MLIR_ENABLE_DIAGNOSTICS", raising=False)
-    with pytest.warns(UserWarning, match="MetaX FP4 dot_scaled uses non-native GPU software decoding/scaling"):
+    with pytest.warns(UserWarning, match=r"tl\.dot_scaled: e2m1 x e2m1.*native=false"):
         kernel = triton.compile(_dot_scaled_source(), target=GPUTarget("maca", arch, 64))
     stderr = capfd.readouterr().err
     assert ("non-native FP4 dot_scaled on MetaX" in stderr) == bool(diagnostics)
     assert "tt.dot_scaled" not in kernel.asm["ttgir"]
-    assert "llvm.mxc.mma.f32." in kernel.asm["llir"]
-    assert "llvm.mxc.scmma" not in kernel.asm["llir"]
+    llir = kernel.asm["llir"]
+    assert "llvm.mxc.mma.f32." in llir
+    assert "llvm.mxc.scmma" not in llir
+    # Only C550 uses the fused decode's FP32 multiplier 2**126.
+    assert ("0x47D0000000000000" in llir) == (arch == 80)
+    # Only C550 materializes the minimum E8M0 scale as an FP32 subnormal.
+    assert any("select i1" in line and "i32 4194304" in line for line in llir.splitlines()) == (arch == 80)

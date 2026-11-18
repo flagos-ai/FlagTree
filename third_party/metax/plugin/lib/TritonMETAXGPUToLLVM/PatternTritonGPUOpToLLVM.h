@@ -81,6 +81,7 @@ void populateFp4ToFpToLLVMPatterns(LLVMTypeConverter &typeConverter,
 
 void populateFp4ToFpScaledToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                          RewritePatternSet &patterns,
+                                         int computeCapability,
                                          PatternBenefit benefit);
 
 } // namespace METAX

@@ -277,6 +277,10 @@ bool supportMMA(triton::DotOp op, int version);
 bool supportMMA(Value value, int version);
 
 #ifdef USE_MACA
+inline bool supportsMACAFP8MMA(int major, int minor) {
+  return major == 2 && minor >= 6;
+}
+
 bool supportMMA(triton::DotOp op, int major, int minor);
 
 bool supportMMA(Value value, int major, int minor);

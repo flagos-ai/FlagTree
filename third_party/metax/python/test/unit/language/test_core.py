@@ -5723,6 +5723,17 @@ def _metax_int8_dot(A, B, C, Y, M: tl.constexpr, N: tl.constexpr, K: tl.constexp
     tl.store(Y + m[:, None] * N + n[None, :], acc)
 
 
+def test_metax_int8_dot_native_compile(recwarn):
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+
+    source = ASTSource(_metax_int8_dot, {"A": "*i8", "B": "*i8", "C": "*i32", "Y": "*i32"},
+                       dict(M=8, N=8, K=32, A0=32, A1=1, B0=8, B1=1, USE_ACC=False, EXPLICIT_OUT=False, STAGES=1))
+    kernel = triton.compile(source, target=GPUTarget("maca", 80, 64))
+    assert "llvm.mxc.mma.i32." in kernel.asm["llir"]
+    assert not any("native=false" in str(w.message) for w in recwarn)
+
+
 @pytest.mark.parametrize("m,n,k,stages,scenario", [
     (1, 1, 32, 1, ""),
     (2, 4, 32, 1, ""),
@@ -5870,21 +5881,21 @@ def test_metax_fp8_dot(lhs_dtype, rhs_dtype, pattern, block, scenario, metax_dev
     (tl.float32, tl.bfloat16, "requires out_dtype=float32"),
     (tl.float16, tl.float32, "requires a float32 accumulator"),
 ])
-def test_metax_fp8_dot_invalid_accumulator(acc_dtype, out_dtype, error, metax_device):
-    a = triton.reinterpret(torch.empty((32, 32), dtype=torch.int8, device=metax_device), tl.float8e4nv)
-    out = torch.empty((32, 32), dtype=torch.float32, device=metax_device)
+def test_metax_fp8_dot_invalid_accumulator(acc_dtype, out_dtype, error):
+    from triton.backends.compiler import GPUTarget
+
+    source = _metax_fp8_dot_source(tl.float8e4nv, tl.float8e4nv, acc_dtype=acc_dtype, out_dtype=out_dtype)
     with pytest.raises(triton.CompilationError, match=error):
-        matmul_kernel[(1, )](a, a, out, 32, 32, 32, 32, 1, 32, 1, 32, 1, 32, 32, 32, 0, num_warps=4, num_stages=2,
-                             acc_dtype=acc_dtype, out_dtype=out_dtype)
+        triton.compile(source, target=GPUTarget("maca", 80, 64))
 
 
-def _metax_fp8_dot_source(lhs_dtype, rhs_dtype, block_m=32, block_n=32):
+def _metax_fp8_dot_source(lhs_dtype, rhs_dtype, block_m=32, block_n=32, acc_dtype=tl.float32, out_dtype=tl.float32):
     from triton.compiler import ASTSource
 
     signature = {name: "i32" for name in matmul_kernel.arg_names[:12]}
     signature.update(a_ptr=f"*{lhs_dtype}", b_ptr=f"*{rhs_dtype}", c_ptr="*fp32")
     constants = dict(BLOCK_SIZE_M=block_m, BLOCK_SIZE_N=block_n, BLOCK_SIZE_K=32, low_precision_acc=0, num_stages=2,
-                     initial_acc=1.25, acc_dtype=tl.float32, out_dtype=tl.float32, mask_k=False)
+                     initial_acc=1.25, acc_dtype=acc_dtype, out_dtype=out_dtype, mask_k=False)
     return ASTSource(matmul_kernel, signature, constexprs=constants)
 
 
@@ -5898,26 +5909,74 @@ def test_metax_fp8_dot_invalid_shape(lhs_dtype, rhs_dtype, m, n, arch):
         triton.compile(_metax_fp8_dot_source(lhs_dtype, rhs_dtype, m, n), target=GPUTarget("maca", arch, 64))
 
 
+@triton.jit
+def _metax_batched_fp8_dot():
+    a = tl.full((2, 16, 32), 0, tl.float8e4nv)
+    b = tl.full((2, 32, 16), 0, tl.float8e5)
+    tl.dot(a, b)
+
+
+def test_metax_fp8_dot_rejects_batch():
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+
+    with pytest.raises(triton.CompilationError, match="MetaX FP8 dot requires 2D inputs"):
+        triton.compile(ASTSource(_metax_batched_fp8_dot, {}), target=GPUTarget("maca", 80, 64))
+
+
+@pytest.mark.parametrize("arch", [75, 90])
+def test_metax_fp8_dot_rejects_arch_without_mma(arch):
+    from triton.backends.compiler import GPUTarget
+
+    source = _metax_fp8_dot_source(tl.float8e4nv, tl.float8e4nv)
+    with pytest.raises(triton.CompilationError, match=f"FP8 dot on target {arch} has no supported MMA path"):
+        triton.compile(source, target=GPUTarget("maca", arch, 64))
+
+
+@pytest.mark.parametrize("lhs,rhs,out_dtype,error", [
+    ("u8", "u8", tl.float32, "uint8 x uint8 -> int32"),
+    ("i8", "u8", tl.float32, "int8 x uint8 -> int32"),
+    ("fp8e4nv", "fp16", tl.float32, "fp8e4nv x fp16 -> fp32"),
+    ("fp16", "fp16", tl.float16, "fp16 x fp16 -> fp16"),
+])
+def test_metax_dot_unsupported_dtypes(lhs, rhs, out_dtype, error):
+    from triton.backends.compiler import GPUTarget
+
+    with pytest.raises(triton.CompilationError, match=rf"tl\.dot: {error} is not supported on MetaX"):
+        triton.compile(_metax_fp8_dot_source(lhs, rhs, out_dtype=out_dtype), target=GPUTarget("maca", 80, 64))
+
+
 @pytest.mark.parametrize("lhs_dtype,rhs_dtype", _metax_fp8_pairs)
 @pytest.mark.parametrize("diagnostics", ["", "warnings"])
-def test_metax_fp8_dot_diagnostic(lhs_dtype, rhs_dtype, diagnostics, metax_device, fresh_triton_cache, monkeypatch,
-                                  capfd, recwarn):
+def test_metax_fp8_dot_diagnostic(lhs_dtype, rhs_dtype, diagnostics, fresh_triton_cache, monkeypatch, capfd):
+    from triton.backends.compiler import GPUTarget
+
     if diagnostics:
         monkeypatch.setenv("MLIR_ENABLE_DIAGNOSTICS", diagnostics)
     else:
         monkeypatch.delenv("MLIR_ENABLE_DIAGNOSTICS", raising=False)
-    target = triton.runtime.driver.active.get_current_target()
-    triton.compile(_metax_fp8_dot_source(lhs_dtype, rhs_dtype), target=target,
-                   options={"num_warps": 4, "num_stages": 2})
-    non_native = not (86 <= target.arch < 90 and lhs_dtype == rhs_dtype)
-    assert any("MetaX FP8 dot on target" in str(w.message) for w in recwarn) == non_native
-    assert ("using non-native FP8 dot on MetaX target" in capfd.readouterr().err) == (non_native and bool(diagnostics))
+    with pytest.warns(UserWarning, match=r"tl\.dot: .*MetaX target 80.*native=false"):
+        triton.compile(_metax_fp8_dot_source(lhs_dtype, rhs_dtype), target=GPUTarget("maca", 80, 64),
+                       options={"num_warps": 4, "num_stages": 2})
+    assert ("using non-native FP8 dot on MetaX target" in capfd.readouterr().err) == bool(diagnostics)
+
+
+def test_metax_fp8_dot_resolver_uses_plugin_query(monkeypatch):
+    from triton._C.libtriton import metax
+    from triton.backends.compiler import GPUTarget
+    from triton.backends.metax.compiler import MACABackend
+
+    monkeypatch.setattr(metax, "resolve_fp8_dot", lambda arch, same_format: (arch == 80, arch == 80 and same_format),
+                        raising=False)
+    backend = MACABackend(GPUTarget("maca", 80, 64))
+    resolve_dot = backend.get_codegen_implementation(backend.parse_options({}))["resolve_dot"]
+    assert resolve_dot("fp8e4nv", "fp8e4nv", "fp32", 16, 16, 32).native
+    assert not resolve_dot("fp8e4nv", "fp8e5", "fp32", 16, 16, 32).native
 
 
 @pytest.mark.parametrize("lhs_dtype,rhs_dtype", _metax_fp8_pairs)
 @pytest.mark.parametrize("scenario", ["", "fullstage"])
-def test_metax_fp8_dot_xcore1600(lhs_dtype, rhs_dtype, scenario, metax_device, fresh_triton_cache, tmp_path,
-                                 monkeypatch, recwarn):
+def test_metax_fp8_dot_xcore1600(lhs_dtype, rhs_dtype, scenario, fresh_triton_cache, tmp_path, monkeypatch, recwarn):
     import os
     from pathlib import Path
     import shlex
@@ -5934,7 +5993,7 @@ def test_metax_fp8_dot_xcore1600(lhs_dtype, rhs_dtype, scenario, metax_device, f
     monkeypatch.delenv("MLIR_ENABLE_DIAGNOSTICS", raising=False)
     kernel = triton.compile(_metax_fp8_dot_source(lhs_dtype, rhs_dtype), target=GPUTarget("maca", 86, 64),
                             options={"num_warps": 4, "num_stages": 2, "scenario": scenario})
-    assert any("MetaX FP8 dot on target" in str(w.message) for w in recwarn) == (lhs_dtype != rhs_dtype)
+    assert any("native=false" in str(w.message) for w in recwarn) == (lhs_dtype != rhs_dtype)
     assert b"maca-mxc-metax-macahca--xcore1600" in kernel.asm["mcfatbin"]
     machine = machine_log.read_text()
     if lhs_dtype == rhs_dtype:

@@ -1212,7 +1212,7 @@ struct FpToFpOpConversion
     Value denormal_mode = b.i32_val(3); // ``_MACA_DENORMAL_FLUSH_NONE``
     Value src_modifiers = b.i32_val(0); // ``_MACA_SRC_NO_MODIFIER``
     Value clamp = b.i1_val(0);
-    Value ovfl = b.i1_val(0);
+    Value ovfl = b.i1_val(1);
     int pk_vec = 4;
     Type srcInstrTy = vec_ty(f32_ty, pk_vec);
     return PK_Fp_to_Fp_Builtin(loc, rewriter, v, op, f32_ty, i8_ty, srcInstrTy,
@@ -1432,9 +1432,9 @@ struct FpToFpOpConversion
                : std::make_pair(Bf16_to_Fp8E4M3FN_RTNE_SW, 2);
   }
 
-  std::pair<ConverterT, size_t>
-  getConversionFunc(Type srcTy, Type dstTy,
-                    std::optional<RoundingMode> roundingMode) const {
+  std::optional<std::pair<ConverterT, size_t>>
+  findConversionFunc(Type srcTy, Type dstTy,
+                     std::optional<RoundingMode> roundingMode) const {
     auto F8E4M3B15TyID = TypeID::get<mlir::Float8E4M3B11FNUZType>();
     auto F8E4M3FNUZTyID = TypeID::get<mlir::Float8E4M3FNUZType>();
     auto F8E5M2FNUZTyID = TypeID::get<mlir::Float8E5M2FNUZType>();
@@ -1512,17 +1512,10 @@ struct FpToFpOpConversion
     std::tuple<TypeID, TypeID, RoundingMode> key = {
         srcTy.getTypeID(), dstTy.getTypeID(),
         roundingMode.value_or(undefRounding)};
-    if (srcMap.count(key) == 0) {
-      llvm::errs() << "Unsupported conversion from " << srcTy << " to "
-                   << dstTy;
-      if (roundingMode.has_value())
-        llvm::errs() << " with rounding mode "
-                     << stringifyRoundingMode(roundingMode.value());
-      llvm::errs() << "\n";
-      llvm::report_fatal_error("Unsupported rounding mode for conversion.");
-    }
-    auto cvtPair = srcMap.lookup(key);
-    return cvtPair;
+    auto it = srcMap.find(key);
+    if (it == srcMap.end())
+      return std::nullopt;
+    return it->second;
   }
 
   SmallVector<Value> createDestOps(triton::FpToFpOp op, OpAdaptor adaptor,
@@ -1558,25 +1551,33 @@ struct FpToFpOpConversion
       return outVals;
     }
 
-    auto enableFastF8Cvt =
-        (computeCapability >= 89 && std::getenv("TRITON_ENABLE_FAST_FP8_CVT"));
     bool useFP16IntermediateSrc =
         srcElementType.isF32() && !(dstElementType.isFloat(8));
-    bool useFP32IntermediateSrcF16 = srcElementType.isF16() &&
-                                     (dstElementType.isFloat(8)) &&
-                                     !(enableFastF8Cvt);
-    bool useFP32IntermediateSrcBF16 = srcElementType.isBF16() &&
-                                      (dstElementType.isFloat(8)) &&
-                                      !(enableFastF8Cvt);
+    bool canWidenForFP8 = dstElementType.isFloat(8) &&
+                          (srcElementType.isF16() || srcElementType.isBF16());
+    std::optional<std::pair<ConverterT, size_t>> conversion;
+    if (canWidenForFP8 && computeCapability >= 89 &&
+        std::getenv("TRITON_ENABLE_FAST_FP8_CVT"))
+      conversion =
+          findConversionFunc(srcElementType, dstElementType, roundingMode);
+    bool useFP32IntermediateSrc = canWidenForFP8 && !conversion;
     bool isDstFP32 = dstElementType.isF32();
     bool isDstFP64 = dstElementType.isF64() &&
                      isa<Float8E4M3FNType, Float8E5M2Type>(srcElementType);
     Type srcType = useFP16IntermediateSrc ? f16_ty : srcElementType;
-    srcType = useFP32IntermediateSrcF16 ? f32_ty : srcType;
-    srcType = useFP32IntermediateSrcBF16 ? f32_ty : srcType;
+    if (useFP32IntermediateSrc)
+      srcType = f32_ty;
     Type dstType = (isDstFP32 || isDstFP64) ? f16_ty : dstElementType;
-    auto [cvtFunc, numElements] =
-        getConversionFunc(srcType, dstType, roundingMode);
+    if (!conversion)
+      conversion = findConversionFunc(srcType, dstType, roundingMode);
+    if (!conversion) {
+      auto diag = op.emitError("unsupported conversion from ");
+      diag << srcElementType << " to " << dstElementType;
+      if (roundingMode.has_value())
+        diag << " with rounding mode " << stringifyRoundingMode(*roundingMode);
+      return {};
+    }
+    auto [cvtFunc, numElements] = *conversion;
     SmallVector<Value> inVals;
     for (unsigned i = 0; i < std::min(numElements, operands.size()); i++) {
       inVals.push_back(operands[i][0]);
@@ -1584,10 +1585,10 @@ struct FpToFpOpConversion
     if (useFP16IntermediateSrc)
       for (Value &v : inVals)
         v = convertFp32ToFp16(loc, rewriter, v, RoundingMode::RTZ);
-    if (useFP32IntermediateSrcF16)
+    if (useFP32IntermediateSrc && srcElementType.isF16())
       for (Value &v : inVals)
         v = convertFp16ToFp32(loc, rewriter, v);
-    if (useFP32IntermediateSrcBF16)
+    if (useFP32IntermediateSrc && srcElementType.isBF16())
       for (Value &v : inVals)
         v = mlir::LLVM::METAX::convertBf16ToFp32(loc, rewriter, v);
     inVals.resize(numElements, b.undef(typeConverter->convertType(srcType)));

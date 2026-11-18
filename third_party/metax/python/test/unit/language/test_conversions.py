@@ -41,6 +41,46 @@ def launch_type_convert_triton(src, src_dtype, dst_dtype, device, rounding=None,
     return dst
 
 
+def test_metax_fp8_cast_whitelist():
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+
+    source = ASTSource(type_convert_triton, {"src": "*fp32", "dst": "*fp8e4nv"},
+                       constexprs={"rounding": None, "BLOCK_SIZE": 256})
+    target = GPUTarget("maca", 80, 64)
+    kernel = triton.compile(source, target=target)
+    assert "fp8e4nv" in kernel.metadata.supported_fp8_cast_dtypes
+    with pytest.raises(triton.CompilationError, match="cast involving type fp8e4nv is not supported"):
+        triton.compile(source, target=target, options={"supported_fp8_cast_dtypes": ("fp8e5", )})
+
+
+@pytest.mark.parametrize("src,dst", [("fp8e4nv", "fp8e5"), ("fp8e5", "fp8e4nv")])
+def test_metax_fp8_cross_cast_rejected(src, dst):
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+
+    source = ASTSource(type_convert_triton, {"src": f"*{src}", "dst": f"*{dst}"},
+                       constexprs={"rounding": None, "BLOCK_SIZE": 256})
+    with pytest.raises(triton.CompilationError, match=f"does not support direct FP8 casts from {src} to {dst}"):
+        triton.compile(source, target=GPUTarget("maca", 80, 64))
+
+
+@pytest.mark.parametrize("src,dst,rounding", [
+    ("fp16", "fp8e4nv", "rtz"), ("bf16", "fp8e4nv", "rtz"), ("fp16", "fp8e5", "rtz"),
+    ("bf16", "fp8e5", "rtz"), ("bf16", "fp8e5", "rtne"),
+])
+def test_metax_fp8_fast_cast_fallback(src, dst, rounding, fresh_triton_cache, monkeypatch):
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+
+    monkeypatch.setenv("TRITON_ENABLE_FAST_FP8_CVT", "1")
+    monkeypatch.setenv("TRITON_DISABLE_FAST_F32_F8_CVT", "1")
+    source = ASTSource(type_convert_triton, {"src": f"*{src}", "dst": f"*{dst}"},
+                       constexprs={"rounding": rounding, "BLOCK_SIZE": 256})
+    kernel = triton.compile(source, target=GPUTarget("maca", 89, 64))
+    assert "llvm.mxc.cvt.pk4" not in kernel.asm["llir"]
+
+
 @triton.jit
 def _metax_fp8_zero_memory(X, Y, KIND: tl.constexpr, ZERO: tl.constexpr = 0):
     i = tl.arange(0, 512)

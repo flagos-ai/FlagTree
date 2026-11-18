@@ -2432,9 +2432,10 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
     lhs and rhs use microscaling formats described here:
     https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
 
-    MetaX decomposes 2D operations containing E2M1 into GPU software decoding
-    and FP32 scaling, followed by BF16 MMA (FP16 MMA if either input format is
-    FP16), with FP32 accumulation/output. Inputs must be packed along K.
+    MetaX requires at least one operand to use E2M1. It decomposes supported
+    2D operations into GPU software decoding and FP32 scaling, followed by
+    BF16 MMA (FP16 MMA if either input uses FP16) with FP32 accumulation
+    and output. Inputs must be packed along K.
     M, N and logical K must each be >= 16; K must also be divisible by 32
     when scales are used.
     Scales are E8M0 int8/uint8 codes, one per 32 logical K values, or None
@@ -2489,14 +2490,15 @@ def fp4_to_fp_scaled(src, scale, elem_type, axis, _semantic=None):
     stored as int8 or uint8.
 
     Each element of :code:`src` contains two fp4 values, with the first value in
-    the low 4 bits.  One :code:`scale` element applies to N packed input
+    the low 4 bits.  One :code:`scale` element applies to 16 packed input
     elements along :code:`axis`, producing 32 output elements.  For example,
     :code:`src` shape ``[32, 16]`` with :code:`axis=1` uses :code:`scale` shape
     ``[32, 1]`` and returns shape ``[32, 32]``.
 
     :param src: int8 or uint8 tensor containing packed fp4 values.
     :param scale: int8 or uint8 tensor containing fp8 e8m0 bit patterns, one
-                  scale per N packed input elements.
+                  scale per 16 packed input elements, or `None` to decode
+                  without scaling.
     Expanded scales with the same shape as :code:`src` are also accepted.
     Scale code 0 represents 2**-127, and 255 produces NaN. MetaX uses a
     non-native software path; the final FP16/BF16 conversion uses RTNE with
@@ -2505,6 +2507,7 @@ def fp4_to_fp_scaled(src, scale, elem_type, axis, _semantic=None):
     :param elem_type: output dtype, `tl.float16` or `tl.bfloat16`.
     :param axis: axis along which fp4 values are packed.
     """
+    scale = _unwrap_if_constexpr(scale)
     elem_type = _unwrap_if_constexpr(elem_type)
     axis = _unwrap_if_constexpr(axis)
     return _semantic.fp4_to_fp_scaled(src, scale, elem_type, axis)

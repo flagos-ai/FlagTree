@@ -70,7 +70,23 @@ demo_fp4_decode()
 # `tl.dot_scaled`, where the "e2m1" format tag gives the container its
 # semantics. Scales use the e8m0 format (127 encodes 1.0). Products without a
 # native scaled-MMA path decompose to a promoted dot and warn at compile time,
-# declared native=false, so silent degradation cannot happen.
+# with ``native=false``.
+#
+# The placement of scaling can change the result for extreme E8M0 scales:
+#
+# * MetaX scales the decoded operands in FP32, then rounds them to the MMA
+#   input type (BF16, or FP16 if either input format is FP16). The scaled
+#   operands can underflow or overflow before the dot. On C550, BF16 MMA
+#   treats subnormal BF16 inputs as zero.
+# * The HCU software path computes an unscaled FP32 partial sum for each
+#   group of 32 products. It adds the two scale exponents and uses ``ldexp``
+#   to apply the combined power-of-two scale before accumulation. Scaling
+#   does not create subnormal MMA inputs.
+#
+# For example, take one group of 32 products with both E2M1 inputs equal to
+# 0.5 and E8M0 scale codes 0 and 254 (2**-127 and 2**127). On HCU the scale
+# exponents cancel and the group contributes 8.0. On C550 the scaled left
+# operand is 2**-128, a BF16 subnormal that the MMA treats as zero.
 
 
 @triton.jit

@@ -5,6 +5,10 @@
 
 namespace mlir {
 
+enum class METAXFP8DotSupport { Unsupported, NonNative, Native };
+METAXFP8DotSupport resolveTritonMETAXFP8Dot(int computeCapability,
+                                            bool sameFormat);
+
 std::unique_ptr<Pass> createTritonMETAXGPUAccelerateMatmulPass(
     int numStages = 2, bool disablePrefetch = false, bool storeCoalesce = false,
     int computeCapability = 80);

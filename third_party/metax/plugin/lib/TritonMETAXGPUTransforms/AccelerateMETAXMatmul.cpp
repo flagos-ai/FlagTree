@@ -200,8 +200,7 @@ int computeCapabilityToMMAVersion(int computeCapability) {
   } else if (computeCapability < 100) {
     return 3;
   } else {
-    assert(false && "computeCapability > 100 not supported");
-    return 3;
+    return 0;
   }
 }
 
@@ -310,13 +309,21 @@ public:
 
     // for FMA, should retain the blocked layout.
     int versionMajor = computeCapabilityToMMAVersion(computeCapability);
+    assert(versionMajor && "Unsupported compute capability");
     auto aType = dotOp.getA().getType();
     auto bType = dotOp.getB().getType();
     bool isFp8 =
         isa<Float8E4M3FNType, Float8E5M2Type>(aType.getElementType()) &&
         isa<Float8E4M3FNType, Float8E5M2Type>(bType.getElementType());
-    if (isFp8 && (!supportMMA(dotOp, versionMajor, computeCapability % 10) ||
-                  aType.getElementType() != bType.getElementType())) {
+    auto fp8Support = isFp8 ? resolveTritonMETAXFP8Dot(
+                                  computeCapability, aType.getElementType() ==
+                                                         bType.getElementType())
+                            : METAXFP8DotSupport::Native;
+    if (fp8Support == METAXFP8DotSupport::Unsupported)
+      return dotOp.emitError(
+                 "FP8 dot has no supported MMA path on MetaX target ")
+             << computeCapability;
+    if (fp8Support == METAXFP8DotSupport::NonNative) {
       // All finite E4M3FN/E5M2 values are exactly representable in FP16.
       // Use the existing FP16 MMA path on older targets and for mixed FP8.
       dotOp.emitWarning("using non-native FP8 dot on MetaX target ")
@@ -513,6 +520,16 @@ public:
   }
 };
 } // namespace
+
+METAXFP8DotSupport mlir::resolveTritonMETAXFP8Dot(int computeCapability,
+                                                  bool sameFormat) {
+  int version = computeCapabilityToMMAVersion(computeCapability);
+  if (version != 2)
+    return METAXFP8DotSupport::Unsupported;
+  return sameFormat && supportsMACAFP8MMA(version, computeCapability % 10)
+             ? METAXFP8DotSupport::Native
+             : METAXFP8DotSupport::NonNative;
+}
 
 #define GEN_PASS_CLASSES
 #include "TritonMETAXGPUTransforms/Passes.h.inc"
