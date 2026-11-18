@@ -113,6 +113,16 @@ class HIPOptions:
     # Explicit code-generation policy; included in the compilation cache key.
     hcu_sched_model: str = 'default'
     hcu_descriptor_mls_load: bool = False
+    hcu_panel_pipeline: bool = False
+    hcu_panel_war_after_mma: int = 0
+    hcu_mmac_priority: str = 'none'
+    hcu_panel_native_war: bool = False
+    hcu_fold_equivalent_loop_state: bool = False
+    hcu_panel_stream_v: bool = False
+    hcu_identity_rescale: bool = False
+    hcu_panel_cross_iteration: bool = False
+    hcu_panel_compact_k: bool = False
+    hcu_panel_unroll2: bool = False
     hcu_packed_f32: str = 'auto'
     hcu_compact_rsrc: str = 'auto'
     mmac_issue_group_size: int = 1
@@ -127,6 +137,16 @@ class HIPOptions:
     wdra_num_mma_regs_tail: int = None
 
     def __post_init__(self):
+        if self.hcu_panel_war_after_mma not in (0,8,16,24):
+            raise ValueError('deferred WAR supports0/8/16/24MMAC;16/24require proved32MMA-eight-DS panel')
+        if self.hcu_panel_war_after_mma and (not self.hcu_panel_pipeline or not self.hcu_panel_native_war or self.hcu_panel_stream_v):
+            raise ValueError('deferred WAR requires panel/native WAR/no V streaming')
+
+        if self.hcu_mmac_priority not in ('none','control','high','yield'):
+            raise ValueError('hcu_mmac_priority must be none/control/high/yield')
+        if self.hcu_mmac_priority != 'none' and (self.arch!='gfx938' or self.num_warps!=4 or self.wasp_enabled or self.wdra_enabled):
+            raise ValueError('MMAC priority requires gfx938/four waves/no WS or WDRA')
+
         if self.hcu_compact_rsrc not in ('auto','none','bfm'):
             raise ValueError('hcu_compact_rsrc must be auto, none or bfm')
         if self.hcu_compact_rsrc == 'bfm' and self.arch != 'gfx938':
@@ -141,6 +161,10 @@ class HIPOptions:
             raise ValueError('packed FP32 lowering currently requires gfx938')
         if self.hcu_descriptor_mls_load and (self.arch != 'gfx938' or self.num_warps != 4 or self.num_stages != 1 or self.num_ctas != 1 or self.wasp_enabled or self.wdra_enabled):
             raise ValueError('descriptor MLS load requires gfx938, four waves, one stage/CTA, no WS/WDRA')
+        if (self.hcu_panel_native_war or self.hcu_panel_stream_v or self.hcu_identity_rescale or self.hcu_panel_cross_iteration or self.hcu_panel_compact_k or self.hcu_panel_unroll2) and not self.hcu_panel_pipeline:
+            raise ValueError("panel streaming/rescale requires panel pipeline")
+        if self.hcu_panel_pipeline and (self.arch != 'gfx938' or self.num_warps != 4 or self.num_stages != 1 or self.num_ctas != 1 or self.wasp_enabled or self.wdra_enabled):
+            raise ValueError('panel pipeline requires gfx938, four waves, one stage/CTA, no WS/WDRA')
         if self.hcu_sched_model not in ("default", "gfx938-v2"):
             raise ValueError("hcu_sched_model must be default or gfx938-v2")
         if self.hcu_sched_model == "gfx938-v2" and self.arch != "gfx938":
@@ -885,6 +909,31 @@ class HIPBackend(BaseBackend):
         metadata["profile_scratch_size"] = src.get_int_attr("ttg.profile_scratch_memory_size") or 0
         metadata["profile_scratch_align"] = src.get_int_attr("ttg.profile_scratch_memory_alignment") or 1
 
+        if options.hcu_fold_equivalent_loop_state:
+            metadata["hcu_equivalent_loop_states_folded"] = hcu.fold_equivalent_loop_state(llvm_mod)
+
+        if options.hcu_panel_pipeline:
+            if not HIPBackend._auto_pairing_aicc18(str(HIPBackend.path_to_rocm_clang())):
+                raise ValueError('panel pipeline currently requires the verified AICC18 MLS ABI')
+            if options.hcu_panel_war_after_mma:
+                panel_report=hcu.optimize_panel_pipeline_deferred(llvm_mod, options.arch, options.num_warps, metadata["shared"], options.hcu_panel_stream_v, options.hcu_identity_rescale, options.hcu_panel_cross_iteration, options.hcu_panel_compact_k, options.hcu_panel_unroll2, options.hcu_panel_native_war, options.hcu_panel_war_after_mma)
+                if not panel_report['deferred_WAR_panels']:
+                    raise ValueError('deferred WAR proof failed: '+panel_report['reason'])
+            else:
+                panel_report = hcu.optimize_panel_pipeline(llvm_mod, options.arch, options.num_warps, metadata["shared"], options.hcu_panel_stream_v, options.hcu_identity_rescale, options.hcu_panel_cross_iteration, options.hcu_panel_compact_k, options.hcu_panel_unroll2, options.hcu_panel_native_war)
+
+            metadata["shared"] = panel_report["shared"]
+            metadata["hcu_panel_pipeline_report"] = panel_report
+
+        if options.hcu_mmac_priority != 'none':
+            if not HIPBackend._auto_pairing_aicc18(str(HIPBackend.path_to_rocm_clang())):
+                raise ValueError('MMAC priority requires verified AICC18')
+            modes={'control':1,'high':2,'yield':3}
+            priority_report=hcu.scope_mmac_priority(llvm_mod,options.arch,options.num_warps,modes[options.hcu_mmac_priority])
+            if not priority_report['groups']:
+                raise ValueError('MMAC priority proof failed: '+priority_report['reason'])
+            metadata['hcu_mmac_priority_report']=priority_report
+
         hcu.cleanup_bitcode_metadata(llvm_mod)
         # Disable inlining of print related functions,
         # because inlining of these function could slow down compilation significantly
@@ -907,7 +956,7 @@ class HIPBackend(BaseBackend):
         # can also lead to regression in some cases. But from current observation,
         # the regression is not significant. It would be better to have some heuristics.
         if options.schedule_hint == 'attention':
-            flags.append('sink-insts-to-avoid-spills')
+            flags.append('-mllvm=-sink-insts-to-avoid-spills=true')
         # features = '-real-true16' if 'gfx11' in options.arch else ''
         # amdgcn = llvm.translate_to_asm(src, hcu.TARGET_TRIPLE, options.arch, features, flags, options.enable_fp_fusion,
         #                                False)

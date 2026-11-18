@@ -295,44 +295,69 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     triton::TransOp transpose;
     if (op->hasOneUse()) transpose = dyn_cast<triton::TransOp>(*op->getUsers().begin());
     auto elem = descTy.getBlockType().getElementType();
-    // A narrow, inspectable connection to the existing matrix-load pipeline.
-    // Descriptor and transpose are both replaced: dimensions/strides/indices
-    // are reversed together, never merely retagged as a dot operand.
+    bool isTranspose = transpose &&
+        transpose.getOrder() == ArrayRef<int32_t>({1, 0});
+    bool directDotB = false;
+    if (!transpose && op->hasOneUse()) {
+      auto *user = *op->getUsers().begin();
+      directDotB = isa<triton::DotOp>(user) && user->getOperand(1) == op.getResult();
+    }
+    bool b16Tile = (elem.isF16() || elem.isBF16()) && blockShape.size() == 2 &&
+        llvm::is_contained(ArrayRef<int64_t>({32,64,128}), blockShape[0]) &&
+        llvm::is_contained(ArrayRef<int64_t>({32,64,128}), blockShape[1]);
+    bool b8Transpose = isTranspose && blockShape == ArrayRef<int64_t>({128,128}) &&
+        (elem.isInteger(8) || isa<Float8E4M3FNType>(elem));
+    // Direct BF16/F16 B operands keep their descriptor dimensions/strides.
+    // The MatrixLoad pipeline chooses both producer and consumer encodings.
+    // Runtime eligibility and ordinary masked fallback remain mandatory.
     if (enable && enable.getInt() == 1 && arch && arch.getValue() == "gfx938" &&
-        transpose && transpose.getOrder() == ArrayRef<int32_t>({1, 0}) &&
-        blockShape == ArrayRef<int64_t>({128, 128}) &&
-        (elem.isInteger(8) || isa<Float8E4M3FNType>(elem))) {
+        (b8Transpose || (b16Tile && (isTranspose || directDotB)))) {
       auto c64 = [&](int64_t x)->Value { return arith::ConstantIntOp::create(rewriter,loc,x,64); };
       auto cmp = [&](arith::CmpIPredicate pred,Value a,Value b)->Value { return arith::CmpIOp::create(rewriter,loc,pred,a,b); };
       Value zero=c64(0),one=c64(1);
       Value eligible=cmp(arith::CmpIPredicate::eq,desc.strides[1],one);
       auto require=[&](Value c){eligible=arith::AndIOp::create(rewriter,loc,eligible,c);};
       require(cmp(arith::CmpIPredicate::sgt,desc.strides[0],zero));
-      require(cmp(arith::CmpIPredicate::sle,desc.strides[0],c64(2147483647LL/128)));
+      require(cmp(arith::CmpIPredicate::sle,desc.strides[0],c64(2147483647LL/(std::max(blockShape[0],blockShape[1])*(elem.getIntOrFloatBitWidth()/8)))));
       require(cmp(arith::CmpIPredicate::eq,arith::AndIOp::create(rewriter,loc,desc.strides[0],c64(15)),zero));
       auto address=triton::PtrToIntOp::create(rewriter,loc,rewriter.getI64Type(),desc.base);
       require(cmp(arith::CmpIPredicate::eq,arith::AndIOp::create(rewriter,loc,address,c64(15)),zero));
+      Value elementOffset=arith::AddIOp::create(rewriter,loc,
+          arith::MulIOp::create(rewriter,loc,offsets[0],desc.strides[0]),offsets[1]);
       Value origin=arith::AddIOp::create(rewriter,loc,address,
-          arith::AddIOp::create(rewriter,loc,
-              arith::MulIOp::create(rewriter,loc,offsets[0],desc.strides[0]),offsets[1]));
+          arith::MulIOp::create(rewriter,loc,elementOffset,c64(elem.getIntOrFloatBitWidth()/8)));
       require(cmp(arith::CmpIPredicate::eq,arith::ShRUIOp::create(rewriter,loc,origin,c64(48)),zero));
+      require(cmp(arith::CmpIPredicate::eq,arith::ShRUIOp::create(rewriter,loc,address,c64(48)),zero));
+      Value tileLast=arith::AddIOp::create(rewriter,loc,origin,
+          arith::AddIOp::create(rewriter,loc,arith::MulIOp::create(rewriter,loc,desc.strides[0],c64((blockShape[0]-1)*(elem.getIntOrFloatBitWidth()/8))),c64(blockShape[1]*(elem.getIntOrFloatBitWidth()/8)-1)));
+      require(cmp(arith::CmpIPredicate::eq,arith::ShRUIOp::create(rewriter,loc,tileLast,c64(48)),zero));
       require(cmp(arith::CmpIPredicate::eq,arith::AndIOp::create(rewriter,loc,offsets[1],c64(15)),zero));
       SmallVector<Value> shapeI32;
       for (unsigned d=0;d<2;++d) {
         require(cmp(arith::CmpIPredicate::sge,offsets[d],zero));
         require(cmp(arith::CmpIPredicate::sle,desc.shape[d],c64(2147483647LL)));
-        require(cmp(arith::CmpIPredicate::sge,desc.shape[d],c64(128)));
-        auto last=arith::SubIOp::create(rewriter,loc,desc.shape[d],c64(128));
+        require(cmp(arith::CmpIPredicate::sge,desc.shape[d],c64(blockShape[d])));
+        auto last=arith::SubIOp::create(rewriter,loc,desc.shape[d],c64(blockShape[d]));
         require(cmp(arith::CmpIPredicate::sle,offsets[d],last));
         shapeI32.push_back(arith::TruncIOp::create(rewriter,loc,rewriter.getI32Type(),desc.shape[d]));
       }
-      auto branch=rewriter.create<scf::IfOp>(loc,transpose.getType(),eligible,true);
+      auto resultTy = isTranspose ? transpose.getType() : op.getResult().getType();
+      auto branch=rewriter.create<scf::IfOp>(loc,resultTy,eligible,true);
       {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(&branch.getThenRegion().front());
-        Value value=rewriter.create<triton::MatrixLoadOp>(loc,transpose.getType(),desc.base,
-            ValueRange{shapeI32[1],shapeI32[0]},ValueRange{one,desc.strides[0]},
-            ArrayRef<int32_t>{128,128},ValueRange{op.getIndices()[1],op.getIndices()[0]},
+        SmallVector<Value> mlsShape(shapeI32.begin(), shapeI32.end());
+        SmallVector<Value> mlsStrides(desc.strides.begin(), desc.strides.end());
+        SmallVector<Value> mlsIndices(op.getIndices().begin(), op.getIndices().end());
+        SmallVector<int32_t> mlsTile(blockShape.begin(), blockShape.end());
+        if (isTranspose) {
+          std::swap(mlsShape[0], mlsShape[1]);
+          std::swap(mlsStrides[0], mlsStrides[1]);
+          std::swap(mlsIndices[0], mlsIndices[1]);
+          std::swap(mlsTile[0], mlsTile[1]);
+        }
+        Value value=rewriter.create<triton::MatrixLoadOp>(loc,resultTy,desc.base,
+            mlsShape,mlsStrides,mlsTile,mlsIndices,
             ArrayRef<int32_t>{},triton::CacheModifier::NONE,triton::EvictionPolicy::NORMAL,false);
         rewriter.create<scf::YieldOp>(loc,value);
         rewriter.setInsertionPointToStart(&branch.getElseRegion().front());
@@ -341,11 +366,17 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
             generateMask(rewriter,loc,blockShape,desc,offsets),
             generateOther(rewriter,loc,descTy,desc.paddingOption),
             triton::CacheModifier::NONE,triton::EvictionPolicy::NORMAL,false);
-        auto trans=rewriter.create<triton::TransOp>(loc,loaded,ArrayRef<int32_t>{1,0});
-        rewriter.create<scf::YieldOp>(loc,trans.getResult());
+        Value result = loaded;
+        if (isTranspose)
+          result = rewriter.create<triton::TransOp>(loc,loaded,ArrayRef<int32_t>{1,0}).getResult();
+        rewriter.create<scf::YieldOp>(loc,result);
       }
-      rewriter.replaceOp(transpose,branch.getResult(0));
-      rewriter.eraseOp(op);
+      if (isTranspose) {
+        rewriter.replaceOp(transpose,branch.getResult(0));
+        rewriter.eraseOp(op);
+      } else {
+        rewriter.replaceOp(op,branch.getResult(0));
+      }
       return success();
     }
 #endif

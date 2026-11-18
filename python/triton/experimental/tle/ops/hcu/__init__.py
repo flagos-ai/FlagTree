@@ -1,3 +1,4 @@
-"""gfx938 operator plans with owned workspaces and graph-safe launches."""
+"""gfx938 owned operator plans with source compilation and Graph replay."""
 from .plans import SmallMBF16GemmPlan, BlockFP8QuantPlan
-__all__ = ['SmallMBF16GemmPlan', 'BlockFP8QuantPlan']
+from .attention import DenseFlashAttentionPlan, SageAttentionPlan
+__all__ = ["SmallMBF16GemmPlan", "BlockFP8QuantPlan", "DenseFlashAttentionPlan", "SageAttentionPlan"]

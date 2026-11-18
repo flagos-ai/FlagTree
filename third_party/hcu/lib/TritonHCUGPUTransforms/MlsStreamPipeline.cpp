@@ -1,3 +1,6 @@
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/Dominance.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "TritonHCUGPUTransforms/Passes.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/AsyncUtility.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/TargetInfo.h"
@@ -1157,13 +1160,56 @@ bool skipLoopWithOutMatrixLoadOp(scf::ForOp forOp) {
 
 } // namespace
 
+// Fold only descriptor guards whose scalar leaves are already guaranteed by
+// dominating llvm.assume operations. Keep unknown guards and fallbacks intact.
+static void foldAssumedDescriptorGuards(ModuleOp module) {
+  auto arch=module->getAttrOfType<StringAttr>("hcu.codegen_arch");
+  if (!arch || arch.getValue()!="gfx938") return;
+  DominanceInfo dominance(module);
+  unsigned count=0;
+  module.walk([&](scf::IfOp op) {
+    bool hasMatrixLoad=false;
+    op.getThenRegion().walk([&](tt::MatrixLoadOp){hasMatrixLoad=true;});
+    if (!hasMatrixLoad) return;
+    std::function<bool(Value,unsigned)> proven=[&](Value value,unsigned depth) {
+      if (depth>64 || !value.getType().isInteger(1)) return false;
+      if (auto constant=value.getDefiningOp<arith::ConstantOp>()) {
+        if (auto integer=dyn_cast<IntegerAttr>(constant.getValue()))
+          if (integer.getInt()!=0) return true;
+      }
+      for (Operation *user:value.getUsers())
+        if (isa<LLVM::AssumeOp>(user) && user->getOperand(0)==value &&
+            dominance.dominates(user,op.getOperation())) return true;
+      if (auto conjunction=value.getDefiningOp<arith::AndIOp>())
+        return proven(conjunction.getLhs(),depth+1) &&
+               proven(conjunction.getRhs(),depth+1);
+      return false;
+    };
+    if (proven(op.getCondition(),0)) {
+      OpBuilder builder(op);
+      Value one=arith::ConstantIntOp::create(builder,op.getLoc(),1,1);
+      op.getConditionMutable().assign(one);
+      ++count;
+    }
+  });
+  module->setAttr("hcu.assumed_descriptor_guards_folded",
+                  IntegerAttr::get(IntegerType::get(module.getContext(),32),count));
+  if (count) {
+    RewritePatternSet patterns(module.getContext());
+    scf::IfOp::getCanonicalizationPatterns(patterns,module.getContext());
+    (void)applyPatternsGreedily(module,std::move(patterns));
+  }
+}
+
 struct MlsPipelinePass
     : impl::TritonHCUGPUMlsStreamPipelineBase<MlsPipelinePass> {
   using Base::Base;
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
-    // check numStages
+    // Facts proven by dominating assumptions are useful for every stage
+    // count. Keep unknown descriptor guards and their fallback paths intact.
+    foldAssumedDescriptorGuards(moduleOp);
     if (numStages == 1)
       return;
 
