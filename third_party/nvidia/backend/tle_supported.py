@@ -36,6 +36,8 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.local_ptr",
     "gpu.memory_space",
     "gpu.set_layout",
+    "gpu.tensor_map_fenceproxy_acquire",
+    "gpu.reinterpret_tensor_map",
     "gpu.warp_specialize",
     "gpu.alloc_barrier",
     "gpu.alloc_barriers",
