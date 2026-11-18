@@ -455,25 +455,15 @@ static LogicalResult recordEndpoint(std::optional<Endpoint> &endpoint,
   return success();
 }
 
-// The warp_specialize an endpoint runs in, in its default region or in one of
-// its partitions; null outside any such op. Those two kinds of region are the
-// ones that run at the same time, which is what a hand-over between warp
-// groups needs; getPartition() alone cannot tell the default region of an op
-// from the code around it, since neither is a partition.
-static Operation *getEnclosingWarpSpecialize(const Endpoint &endpoint) {
-  if (!endpoint.op)
-    return nullptr;
-  return endpoint.op->getParentOfType<ttg::WarpSpecializeOp>();
+// The warp_specialize an op runs in, in its default region or in one of its
+// partitions; null outside any such op. Those two kinds of region are the ones
+// that run at the same time, which is what a hand-over between warp groups
+// needs; getPartition() alone cannot tell the default region of an op from the
+// code around it, since neither is a partition.
+static Operation *getEnclosingWarpSpecialize(Operation *op) {
+  return op->getParentOfType<ttg::WarpSpecializeOp>();
 }
 
-// The readers of a pipe arrive once on every empty barrier before their first
-// wait, and the counters of the software path are zero filled once, at the
-// create. The hardware keeps that state across executions, so a pipe that
-// hands over between warp groups is created, and its warp_specialize runs,
-// once per kernel: neither sits inside a loop. A one_shot pipe skips the
-// initial arrivals, but its counters are zero filled once all the same, and
-// nothing orders a second execution of its writer after the readers of the
-// first: it is held to the same rule.
 // The endpoints of a cross-group pipe hand over through barriers that count
 // the threads of both groups, so the groups have to run at the same time.
 static InFlightDiagnostic reportDisjointGroups(Pipe &pipe, StringRef name,
@@ -491,6 +481,39 @@ static InFlightDiagnostic reportDisjointGroups(Pipe &pipe, StringRef name,
   return diag;
 }
 
+// An endpoint is a set of ops, and only the first one of each is recorded in
+// the Endpoint, so the partition comparison in analyzePipes and the checks of
+// checkRunsOnce see one writer op and one op of each reader. The default
+// region of a warp_specialize and the code around it are
+// both outside any partition, so an op can sit on the wrong side of the
+// warp_specialize and still pass the comparison of the partitions: a commit
+// after the op, whose acquire is in its default region, would be waited for by
+// a reader that only finishes once the op does. Every op of the pipe has to
+// run in the warp_specialize that holds the first ones.
+static LogicalResult checkEveryOpInWarpSpecialize(Pipe &pipe, Operation *ws) {
+  for (Operation *op : pipe.ops) {
+    if (getEnclosingWarpSpecialize(op) == ws)
+      continue;
+    InFlightDiagnostic diag = op->emitOpError(
+        "runs outside the warp_specialize that holds the other endpoints of "
+        "its pipe;");
+    diag << " the hand-over barriers count the threads of both groups, so"
+         << " this op would wait for threads that are not running, or be"
+         << " waited for by threads that cannot get past the warp_specialize";
+    diag.attachNote(ws->getLoc()) << "the other endpoints run here";
+    return diag;
+  }
+  return success();
+}
+
+// The readers of a pipe arrive once on every empty barrier before their first
+// wait, and the counters of the software path are zero filled once, at the
+// create. The hardware keeps that state across executions, so a pipe that
+// hands over between warp groups is created, and its warp_specialize runs,
+// once per kernel: neither sits inside a loop. A one_shot pipe skips the
+// initial arrivals, but its counters are zero filled once all the same, and
+// nothing orders a second execution of its writer after the readers of the
+// first: it is held to the same rule.
 static LogicalResult checkRunsOnce(Pipe &pipe) {
   auto inLoop = [](Operation *op) {
     return op->getParentOfType<LoopLikeOpInterface>() != nullptr;
@@ -501,15 +524,17 @@ static LogicalResult checkRunsOnce(Pipe &pipe) {
   // outside the op runs before or after those regions, so in either case the
   // barrier would wait for threads that never arrive. The loop the rule below
   // looks at is the one around that single op.
-  Operation *ws = getEnclosingWarpSpecialize(*pipe.writer);
+  Operation *ws = getEnclosingWarpSpecialize(pipe.writer->op);
   for (auto &[name, reader] : pipe.readers) {
     if (reader.inWriterGroup)
       continue;
-    Operation *readerWs = getEnclosingWarpSpecialize(reader);
+    Operation *readerWs = getEnclosingWarpSpecialize(reader.op);
     if (ws && readerWs == ws)
       continue;
     return reportDisjointGroups(pipe, name, ws, readerWs, reader);
   }
+  if (failed(checkEveryOpInWarpSpecialize(pipe, ws)))
+    return failure();
   if (!inLoop(pipe.create) && !(ws && inLoop(ws)))
     return success();
   return pipe.create.emitOpError(

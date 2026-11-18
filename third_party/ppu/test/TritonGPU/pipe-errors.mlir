@@ -351,3 +351,109 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+// The writer acquires in the default region of the warp_specialize that holds
+// its reader and commits after the op. Both ops are outside every partition,
+// so the comparison of the partitions passes, but the reader waits on the full
+// barrier for a commit that only runs once the warp_specialize has returned,
+// which needs the reader to be done.
+
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.target = "ppu:80", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @commit_after_warp_specialize(%ring: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) {
+    %stage = arith.constant 0 : i32
+    %parity = arith.constant false
+    tle.pipe.create %ring {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+    // expected-note @below {{the other endpoints run here}}
+    ttg.warp_specialize(%ring)
+    default {
+      tle.pipe.writer_acquire %ring[%stage, %parity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      ttg.warp_yield
+    }
+    partition0(%reader: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) num_warps(4) {
+      %rstage = arith.constant 0 : i32
+      %rparity = arith.constant false
+      %closed = tle.pipe.reader_wait %reader[%rstage, %rparity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      tle.pipe.reader_release %reader[%rstage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      ttg.warp_return
+    } : (!ttg.memdesc<2x128xf32, #shared, #smem, mutable>) -> ()
+    // expected-error @below {{runs outside the warp_specialize that holds the other endpoints of its pipe}}
+    tle.pipe.writer_commit %ring[%stage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+    tt.return
+  }
+}
+
+// -----
+
+// The same split on the reader: it waits in the default region and releases
+// after the warp_specialize, so the writer in the partition never gets the
+// empty barrier back before it returns.
+
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.target = "ppu:80", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @release_after_warp_specialize(%ring: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) {
+    %stage = arith.constant 0 : i32
+    %parity = arith.constant false
+    tle.pipe.create %ring {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+    // expected-note @below {{the other endpoints run here}}
+    ttg.warp_specialize(%ring)
+    default {
+      %closed = tle.pipe.reader_wait %ring[%stage, %parity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      ttg.warp_yield
+    }
+    partition0(%writer: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) num_warps(4) {
+      %wstage = arith.constant 0 : i32
+      %wparity = arith.constant false
+      tle.pipe.writer_acquire %writer[%wstage, %wparity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      tle.pipe.writer_commit %writer[%wstage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      ttg.warp_return
+    } : (!ttg.memdesc<2x128xf32, #shared, #smem, mutable>) -> ()
+    // expected-error @below {{runs outside the warp_specialize that holds the other endpoints of its pipe}}
+    tle.pipe.reader_release %ring[%stage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+    tt.return
+  }
+}
+
+// -----
+
+// The writer acquires in the default region of one warp_specialize and commits
+// in the default region of a second one. Neither op is in a partition, so the
+// partitions compare equal, and the commit is in a different warp_specialize
+// from the acquire and from the reader.
+
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.target = "ppu:80", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @commit_in_another_warp_specialize(%ring: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) {
+    %stage = arith.constant 0 : i32
+    %parity = arith.constant false
+    tle.pipe.create %ring {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+    // expected-note @below {{the other endpoints run here}}
+    ttg.warp_specialize(%ring)
+    default {
+      tle.pipe.writer_acquire %ring[%stage, %parity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      ttg.warp_yield
+    }
+    partition0(%reader: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) num_warps(4) {
+      %rstage = arith.constant 0 : i32
+      %rparity = arith.constant false
+      %closed = tle.pipe.reader_wait %reader[%rstage, %rparity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      tle.pipe.reader_release %reader[%rstage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      ttg.warp_return
+    } : (!ttg.memdesc<2x128xf32, #shared, #smem, mutable>) -> ()
+    ttg.warp_specialize()
+    default {
+      // expected-error @below {{runs outside the warp_specialize that holds the other endpoints of its pipe}}
+      tle.pipe.writer_commit %ring[%stage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      ttg.warp_yield
+    } : () -> ()
+    tt.return
+  }
+}

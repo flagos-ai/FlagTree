@@ -14,7 +14,9 @@ before it publishes the stage. Covered here:
   without warp specialization);
 * more pipe barriers than the hardware has: the later pipes fall back to
   software barriers in shared memory;
-* the remarks that name the schedule a pipe fell back to.
+* the remarks that name the schedule a pipe fell back to;
+* a pipe whose endpoints are not all inside the warp_specialize that holds the
+  others, which the lowering rejects instead of lowering to a hang.
 """
 
 import os
@@ -511,3 +513,42 @@ def test_pipe_software_barrier_fallback(n_tiles):
     # so the other three spin on shared-memory counters.
     assert "ttng.wait_barrier_named" in ttgir
     assert "scf.while" in ttgir
+
+
+# ---------------------------------------------------------------- endpoints outside the warp_specialize
+
+
+@triton.jit
+def _acquire_in_default(writer, x, BLOCK: tl.constexpr):
+    slot = writer.acquire(0)
+    tle.gpu.copy(x + tl.arange(0, BLOCK), slot.data, [BLOCK])
+
+
+@triton.jit
+def _single_tile_reader(reader, y, BLOCK: tl.constexpr):
+    wait = reader.wait(0)
+    v = tl.load(tle.gpu.local_ptr(wait.slot.data))
+    reader.release(0)
+    tl.store(y + tl.arange(0, BLOCK), v)
+
+
+@triton.jit
+def _commit_after_warp_specialize_kernel(x, y, BLOCK: tl.constexpr):
+    ring = tle.gpu.alloc([2, BLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem)
+    pipe = tle.pipe(capacity=2, data=ring)
+    writer = pipe.writer()
+    tle.gpu.warp_specialize([(_acquire_in_default, (writer, x, BLOCK)),
+                             (_single_tile_reader, (pipe.reader(), y, BLOCK))], [4], [128])
+    writer.commit(0)
+
+
+def test_pipe_endpoint_outside_warp_specialize_is_rejected(capfd):
+    """The writer acquires in the default region of the warp_specialize that holds its reader and commits after the
+    op. Both ops are outside every partition, so the partitions compare equal, but the reader waits on a full
+    barrier that only the commit arrives on, and the commit runs once the warp_specialize has returned, which needs
+    the reader to be done: the compile fails instead of the kernel hanging."""
+    x = torch.randn(64, device="cuda")
+    y = torch.zeros_like(x)
+    with pytest.raises(RuntimeError, match="PassManager::run failed"):
+        _commit_after_warp_specialize_kernel[(1, )](x, y, BLOCK=64, num_warps=4)
+    assert "warp_specialize that holds the other endpoints" in capfd.readouterr().err

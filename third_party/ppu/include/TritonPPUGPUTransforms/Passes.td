@@ -95,6 +95,15 @@ def TritonPPUTleLowerPipe : Pass<"tritonppu-tle-lower-pipe", "mlir::ModuleOp"> {
       the shared-memory counters keep their state across executions, so
       neither may sit inside a loop (a persistent kernel loops inside the
       partitions).
+    - Every lifecycle op of a pipe that hands over between warp groups runs
+      in the default region or in a partition of the one warp_specialize that
+      holds the other endpoints. An op outside it, in another one, or split
+      off after it (a commit after the warp_specialize whose acquire is in its
+      default region) would wait for threads that are not running, or be
+      waited for by threads that cannot get past the warp_specialize.
+    - A close does not sit in a loop that the pipe's create is outside of: the
+      close tags are written once, at the create, and nothing clears them, so
+      a second execution would start closed.
     - Capacity 1 and above; close, or one_shot without close, as on NVIDIA.
       A writer that runs its pipe twice without an intervening reader drains
       is a hang, not diagnosed. The phase of the lifecycle ops continues
