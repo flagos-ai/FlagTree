@@ -1676,8 +1676,9 @@ static void storeCloseTag(OpBuilder &builder, Location loc,
                           Operation *source, int32_t taskId) {
   Value closeTags = getWarpSpecializeCaptureForUse(source, state.closeTags);
   Value slot = createCloseTagSlot(builder, loc, state, closeTags, stage);
-  Value tag =
-      createCloseTagTensor(builder, loc, state.closeTagTensorType, value);
+  auto tagType =
+      getCloseTagTensorType(source, builder, state.closeTagSlotType.getShape());
+  Value tag = createCloseTagTensor(builder, loc, tagType, value);
   auto store = ttg::LocalStoreOp::create(builder, loc, tag, slot);
   setRoleTaskId(source, slot.getDefiningOp(), taskId);
   setRoleTaskId(source, tag.getDefiningOp(), taskId);
@@ -1689,8 +1690,9 @@ static Value loadCloseTag(OpBuilder &builder, Location loc,
                           Operation *source, int32_t taskId) {
   Value closeTags = getWarpSpecializeCaptureForUse(source, state.closeTags);
   Value slot = createCloseTagSlot(builder, loc, state, closeTags, stage);
-  Value tagTensor =
-      ttg::LocalLoadOp::create(builder, loc, state.closeTagTensorType, slot);
+  auto tagType =
+      getCloseTagTensorType(source, builder, state.closeTagSlotType.getShape());
+  Value tagTensor = ttg::LocalLoadOp::create(builder, loc, tagType, slot);
   Value tagI32 =
       tt::UnsplatOp::create(builder, loc, builder.getI32Type(), tagTensor);
   Value zero = arith::ConstantIntOp::create(builder, loc, 0, 32);
@@ -1907,10 +1909,6 @@ public:
         auto threadCount = getTaskThreadCount(op);
         if (failed(threadCount) ||
             failed(recordWriterTask(state, op, *taskId, *threadCount))) {
-          signalPassFailure();
-          return;
-        }
-        if (failed(setWriterFullCount(state, op, *threadCount))) {
           signalPassFailure();
           return;
         }
