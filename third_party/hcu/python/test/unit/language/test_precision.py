@@ -552,7 +552,15 @@ def test_hcu_dot_accumulator_dtype(dtype, accumulator, fresh_triton_cache):
 @pytest.mark.parametrize("arch", ["gfx936", "gfx938", "gfx92a", "gfx946"])
 @pytest.mark.parametrize("a,b", [("fp8e4nv", "fp8e4nv"), ("fp8e4nv", "fp8e5"), ("fp8e5", "fp8e4nv"),
                                  ("fp8e5", "fp8e5")])
-def test_hcu_fp8_dot_target_paths(arch, a, b, fresh_triton_cache):
+def test_hcu_fp8_dot_target_paths(arch, a, b, fresh_triton_cache, monkeypatch):
+    if arch in ("gfx92a", "gfx946"):
+        # This kernel uses only loads, MMAC and stores. Cross-assemble it even
+        # when the installed DTK does not ship device libraries for this chip.
+        from triton.backends.hcu.compiler_hcu import HIPBackend
+        args = HIPBackend._get_clang_args
+        monkeypatch.setattr(HIPBackend, "_get_clang_args",
+                            staticmethod(lambda md, opts: [*args(md, opts), "-nogpulib"]))
+
     signature = {"A": "*" + a, "B": "*" + b, "C": "*fp32"}
     constants = {"ACC": None, "M": 16, "N": 16, "K": 32, "B_COLUMN": False}
     with warnings.catch_warnings(record=True) as caught:

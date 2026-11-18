@@ -139,6 +139,10 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
 
 std::optional<TargetInfo::LDSTransLoadParams>
 TargetInfo::queryLDSTransLoadParams(int bitWidth) const {
+  // DTK does not lower llvm.amdgcn.ds.read.tr8.b64 on gfx946. Use the
+  // ordinary LDS load while keeping native FP8 MMAC.
+  if (bitWidth == 8 && getGPUKind() == llvm::AMDGPU::GK_GFX946)
+    return std::nullopt;
   auto isaFamily = getISAFamily();
   bool isGFX1250 = isaFamily == HCU::ISAFamily::GFX1250;
   bool isCDNA4 = isaFamily == HCU::ISAFamily::CDNA4;
