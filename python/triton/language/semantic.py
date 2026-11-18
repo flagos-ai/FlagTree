@@ -841,6 +841,13 @@ class TritonSemantic(Generic[TensorTy]):
                                  "Source scalar type is " + str(src_sca_ty) + " and destination type is " +
                                  str(dst_sca_ty))
 
+        # Integer-to-fp8 is not a standard LLVM int-to-fp conversion. Route it
+        # through fp32 so backend fp8 capability checks, custom conversions,
+        # and default RTNE downcasting apply just as for floating inputs.
+        # This also handles integer `other` values in masked fp8 loads.
+        if src_sca_ty.is_int() and dst_sca_ty.is_fp8():
+            return self.cast(self.cast(input, tl.float32), dst_sca_ty)
+
         # flagtree fp8 cast declaration routing
         if src_sca_ty.is_fp8() or dst_sca_ty.is_fp8():
             options = self.builder.options

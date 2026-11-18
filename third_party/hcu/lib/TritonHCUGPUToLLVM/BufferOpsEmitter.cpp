@@ -12,16 +12,17 @@ using namespace triton::HCU;
 
 namespace {
 
-// Utility function to determine if a scalar/tensor value is zero
+// A hardware-masked buffer load returns all-zero bits, not floating -0.0.
 bool isZero(Value v) {
   if (auto constantOp = v.getDefiningOp<LLVM::ConstantOp>()) {
     if (auto attr = dyn_cast<IntegerAttr>(constantOp.getValue()))
       return attr.getValue().isZero();
     if (auto attr = dyn_cast<FloatAttr>(constantOp.getValue()))
-      return attr.getValue().isZero();
+      return attr.getValue().bitcastToAPInt().isZero();
     if (auto denseAttr =
             dyn_cast<DenseFPElementsAttr>(constantOp.getValueAttr()))
-      return denseAttr.isSplat() && denseAttr.getSplatValue<APFloat>().isZero();
+      return denseAttr.isSplat() &&
+             denseAttr.getSplatValue<APFloat>().bitcastToAPInt().isZero();
     if (auto denseAttr =
             dyn_cast<DenseIntElementsAttr>(constantOp.getValueAttr()))
       return denseAttr.isSplat() && denseAttr.getSplatValue<APInt>().isZero();

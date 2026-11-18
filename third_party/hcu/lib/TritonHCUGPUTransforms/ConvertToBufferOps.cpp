@@ -39,6 +39,25 @@ namespace mlir {
 
 namespace {
 
+// Buffer instructions fill masked lanes with all-zero bits. Floating -0.0 is
+// numerically zero, but its sign bit requires retaining the explicit `other`.
+bool hasZeroBitPattern(Value value) {
+  auto constant = value.getDefiningOp<arith::ConstantOp>();
+  if (!constant)
+    return false;
+  Attribute attr = constant.getValue();
+  if (auto fp = dyn_cast<FloatAttr>(attr))
+    return fp.getValue().bitcastToAPInt().isZero();
+  if (auto integer = dyn_cast<IntegerAttr>(attr))
+    return integer.getValue().isZero();
+  if (auto dense = dyn_cast<DenseFPElementsAttr>(attr))
+    return dense.isSplat() &&
+           dense.getSplatValue<APFloat>().bitcastToAPInt().isZero();
+  if (auto dense = dyn_cast<DenseIntElementsAttr>(attr))
+    return dense.isSplat() && dense.getSplatValue<APInt>().isZero();
+  return false;
+}
+
 // ========================== HCU Utility Functions ==========================
 void collectAssumptionsForFuncArgPtr(
     ModuleOp mod, DenseMap<Value, SetVector<Operation *>> &assumptions) {
@@ -590,7 +609,7 @@ struct ConvertTritonLoadToBufferLoad : public mlir::OpRewritePattern<SourceOp> {
       auto splatOp = tensorPtr.getDefiningOp<triton::SplatOp>();
       Value basePtr = splatOp.getSrc();
       Value maybeOther{};
-      if (op.getOther() && !isZeroConst(op.getOther()))
+      if (op.getOther() && !hasZeroBitPattern(op.getOther()))
         maybeOther = op.getOther();
       Value maybeMask{};
       if (op.getMask() && !isSplatOneConstTensor(op.getMask()))
