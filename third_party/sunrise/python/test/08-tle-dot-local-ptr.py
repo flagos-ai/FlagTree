@@ -52,7 +52,6 @@ def gemm_local_ptr_kernel(a_ptr, b_ptr, c_ptr, M: tl.constexpr, N: tl.constexpr,
 
 @pytest.mark.parametrize("M,N,K", [(16, 16, 16), (32, 32, 32), (8, 8, 16)])
 def test_gemm_local_ptr(M, N, K):
-    torch.manual_seed(0)
     a = torch.randn(M, K, device=DEVICE, dtype=torch.float32)
     b = torch.randn(K, N, device=DEVICE, dtype=torch.float32)
     c = torch.empty(M, N, device=DEVICE, dtype=torch.float32)
@@ -77,7 +76,6 @@ def gemm_plain_kernel(a_ptr, b_ptr, c_ptr, M: tl.constexpr, N: tl.constexpr, K: 
 @pytest.mark.parametrize("M,N,K", [(16, 16, 16), (32, 64, 32)])
 def test_gemm_plain(M, N, K):
     """Plain tl.dot (no local_ptr) baseline; confirms dot path itself works."""
-    torch.manual_seed(1)
     a = torch.randn(M, K, device=DEVICE, dtype=torch.float32)
     b = torch.randn(K, N, device=DEVICE, dtype=torch.float32)
     c = torch.empty(M, N, device=DEVICE, dtype=torch.float32)

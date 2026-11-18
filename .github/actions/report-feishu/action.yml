@@ -114,6 +114,13 @@ runs:
           fail_or_skip "report-feishu: one of 'record' or 'jsonl' is required"
         fi
 
+        # Named separately from the API error an empty name would cause: when
+        # the table name is computed upstream, an empty one means that step
+        # did not run, not that the table is missing.
+        if [[ -z "${TABLE_NAME}" ]]; then
+          fail_or_skip "report-feishu: 'table-name' is empty. When it comes from another step, check that step ran."
+        fi
+
         # There is a record to report but no credentials to report it with.
         # Warn rather than skip quietly: reporting that is wired up and then
         # silently does nothing is exactly the failure this message exists to

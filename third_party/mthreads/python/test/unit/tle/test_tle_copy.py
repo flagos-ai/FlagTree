@@ -280,14 +280,15 @@ def test_tle_tma_copy_without_completion_barrier_keeps_implicit_sync():
     assert "ttg.shared = 32768 : i32" in allocated, allocated
 
 
-def test_tle_tma_copy_without_completion_barrier_keeps_legacy_barrier0():
+def test_tle_tma_copy_without_completion_barrier_uses_smem_barrier():
     compiled = compile_musa(
         _tma_implicit_completion_copy_kernel,
         signature={"desc": "tensordesc<fp16[256, 64]>"},
     )
     llir = compiled.asm["llir"]
 
-    assert "call void @llvm.musa.barrier0()" in llir, llir
+    assert "call void @llvm.musa.syncthreads.lm()" in llir, llir
+    assert "call void @llvm.musa.barrier0()" not in llir, llir
     assert "call void @llvm.musa.tme.ld.tile.2d" in llir, llir
 
 

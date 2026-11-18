@@ -9,8 +9,10 @@ that only exists in the environment (backend, runner, commit, PR number), and
 writes:
 
     <out-dir>/record.json          one flat object, ready to push to a table
+    <out-dir>/table_name           the month's table to report into
     <ledger>                       the same object appended as JSONL
     <op-ledger>/<record_id>.jsonl  one line per operator (optional)
+    <out-dir>/notification.json    only when the run is worth a chat message
 
 The ledger is the durable store: it is written unconditionally so that history
 can be re-ingested later if the reporting schema changes.
@@ -31,13 +33,18 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
 # Context is taken from CTX_* environment variables rather than flags, so that
 # secrets and multi-line CI values never land in a process listing.
 CTX_PREFIX = "CTX_"
+
+# Everything this writes is stamped in Beijing time, and the month in the
+# table name is derived the same way, so a record's own timestamp and the
+# table it lands in can never disagree about which month it was.
+TZ = timezone(timedelta(hours=8))
 
 # Operator-level status values that mean "this operator produced no result".
 _NO_RESULT_STATUSES = {"NotFound", "Not Found", "NOT_FOUND"}
@@ -219,6 +226,19 @@ def write_json(path: Path, payload: Dict) -> bool:
         return False
 
 
+def write_text(path: Path, text: str) -> bool:
+    """Write a one-line text file atomically. Never raises."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(text + "\n", encoding="utf-8")
+        tmp.replace(path)
+        return True
+    except Exception as e:
+        print(f"[WARN] Failed to write {path}: {e}")
+        return False
+
+
 # ============================================================================
 # Record building
 # ============================================================================
@@ -281,6 +301,22 @@ def job_status(compare: Optional[Dict]) -> str:
     return "success"
 
 
+def month_table(base: str) -> str:
+    """Table name for the current month, e.g. flaggems_runs_202612.
+
+    A Bitable table has a row limit, and this one gains a few hundred rows a
+    day, so a single table would eventually start rejecting writes -- quietly,
+    since reporting is not allowed to fail a PR. Partitioning by month keeps
+    every table far below the limit without ever deleting anything: the ledger
+    on the runner stays the single continuous history, and a table can be
+    re-filled from it if a cross-month view is needed.
+
+    Beijing time, matching collected_at, so the month a record says it belongs
+    to is the month whose table it is in.
+    """
+    return f"{base}_{datetime.now(TZ):%Y%m}"
+
+
 def build_record(summary: Dict, compare: Optional[Dict], baseline_ref: str = "") -> Dict:
     """Flatten summary + compare report + CI context into one row."""
     totals = summary.get("totals", {}) or {}
@@ -300,6 +336,10 @@ def build_record(summary: Dict, compare: Optional[Dict], baseline_ref: str = "")
         # part of record_id, so those results do not overwrite each other.
         "variant": ctx("VARIANT"),
         "runner": ctx("RUNNER"),
+        # The host, as opposed to the label above. Several runners can
+        # share a label, so a result can only be traced to a machine
+        # through this.
+        "runner_name": ctx("RUNNER_NAME"),
         "flaggems_tag": ctx("FLAGGEMS_TAG"),
         "flagtree_sha": ctx("FLAGTREE_SHA"),
         "flagtree_branch": ctx("FLAGTREE_BRANCH"),
@@ -312,7 +352,7 @@ def build_record(summary: Dict, compare: Optional[Dict], baseline_ref: str = "")
         "job_status": job_status(compare),
         # Baseline runs only: whether this run became the new best baseline
         "best_updated": ctx_bool("BEST_UPDATED"),
-        "collected_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "collected_at": datetime.now(TZ).isoformat(timespec="seconds"),
         # --- this run, absolute ---
         "tested_at": summary.get("timestamp", ""),
         "duration_s": round(summary.get("duration_seconds", 0) or 0, 2),
@@ -425,6 +465,7 @@ def build_operator_rows(record: Dict, summary: Dict, compare: Optional[Dict]) ->
             "backend": record["backend"],
             "variant": record["variant"],
             "runner": record["runner"],
+            "runner_name": record["runner_name"],
             "kind": record["kind"],
             "flagtree_sha": record["flagtree_sha"],
             "flaggems_tag": record["flaggems_tag"],
@@ -446,6 +487,154 @@ def build_operator_rows(record: Dict, summary: Dict, compare: Optional[Dict]) ->
 
 
 # ============================================================================
+# Notification
+# ============================================================================
+
+# Operator names listed in the card before it is cut short. A chat message is
+# a pointer to the run, not a replacement for reading it.
+NOTIFY_OP_LIMIT = 12
+
+
+def build_notification(record: Dict) -> Optional[Dict]:
+    """Decide whether this run deserves a chat message, and what it says.
+
+    Silence is the default. A run is only worth interrupting a chat for when
+    something *changed* relative to the baseline, or when the run produced no
+    verdict at all:
+
+      - operators moved pass->fail or fail->pass
+      - the build or the test did not finish
+      - no baseline was available, so nothing was checked
+
+    Deliberately NOT notified: a run whose failures are exactly the baseline's
+    failures. `compare_test_result.py` classifies those as FAILED_TO_FAILED and
+    counts them as neither regression nor improvement, which is what makes this
+    judgement a field lookup rather than a second analysis. Warnings
+    (fail<->error churn) are also left out: the status moved, but it is usually
+    one defect showing two faces.
+
+    That also covers the quiet baseline refresh. A baseline run becomes the new
+    best whenever it does not regress, so every push that leaves results
+    unchanged -- most of them, since a change to one backend does not move the
+    others -- updates the baseline with identical numbers. Announcing those
+    would drown the runs that did change something. The record still carries
+    best_updated, so the refresh remains visible in the table.
+
+    Returns None when there is nothing to say.
+    """
+    status = record.get("job_status") or ""
+    regressions = record.get("regressions_cnt") or 0
+    improvements = record.get("improvements_cnt") or 0
+    compared = record.get("compared")
+    is_baseline = record.get("kind") == "baseline"
+
+    where = record.get("backend") or "?"
+    if record.get("variant"):
+        where = f"{where} ({record['variant']})"
+
+    # The host rather than the label: the label is usually implied by the
+    # backend, while which machine ran this is what a reader cannot infer.
+    # Falls back to the label for records written before runner_name existed.
+    runner = record.get("runner_name") or record.get("runner") or "?"
+    lines: List[List[str]] = [["Backend", where], ["Runner", runner]]
+    if record.get("pr_number"):
+        lines.append(["PR", f"#{record['pr_number']}"])
+    else:
+        lines.append(["Branch", record.get("flagtree_branch") or "?"])
+
+    # Ordered by severity: the first case that matches wins, so a build that
+    # never produced results is never described as a regression.
+    if status in ("build_failed", "test_failed"):
+        stage = "Build" if status == "build_failed" else "Test"
+        title = f"{stage} failed: {where}"
+        color = "orange"
+        note = (f"{stage.lower()} did not finish, so no operator results were "
+                "produced and nothing could be compared.")
+
+    elif not compared:
+        # Two quite different situations share this state, and the useful
+        # message differs: on a PR the shared best baseline is missing, which
+        # silently disables regression detection for every PR on that backend.
+        # On a push it is simply the first baseline for a new backend.
+        if is_baseline:
+            title = f"First baseline for {where}"
+            color = "blue"
+            note = ("No previous best baseline existed, so this run becomes the "
+                    "reference for future comparisons.")
+        else:
+            title = f"No baseline to compare against: {where}"
+            color = "yellow"
+            note = ("This backend has no best baseline, so regressions cannot be "
+                    "detected for any PR until one is recorded.")
+        lines.append(["Pass rate", _pct(record.get("pass_rate_run"))])
+
+    elif regressions or improvements:
+        if regressions and improvements:
+            title = f"{regressions} regressed, {improvements} improved: {where}"
+            color = "red"
+        elif regressions:
+            title = f"{regressions} test case(s) regressed: {where}"
+            color = "red"
+        else:
+            title = f"{improvements} test case(s) improved: {where}"
+            color = "green"
+
+        lines.append(["Pass rate", _pct(record.get("pass_rate_run"))])
+        if record.get("delta_passed") is not None:
+            lines.append(["Passed delta", _signed(record["delta_passed"])])
+        if record.get("regressed_ops"):
+            lines.append(["Regressed operators", _clip(record["regressed_ops"])])
+        if record.get("improved_ops"):
+            lines.append(["Improved operators", _clip(record["improved_ops"])])
+        note = f"Compared against {record.get('baseline_ref') or 'the best baseline'}."
+        # A baseline run that improved but did not become the new best is worth
+        # seeing: the update is gated on the comparison, so the two disagreeing
+        # means something went wrong between them.
+        if is_baseline:
+            lines.append(["Best updated", "yes" if record.get("best_updated") else "no"])
+
+    else:
+        # Compared cleanly and nothing moved. The common case, and the reason
+        # this chat stays usable.
+        return None
+
+    # Which flow produced this is the first thing to know and the chat list
+    # shows only the title, so it goes in the title rather than a card row.
+    return {
+        "title": f"[{'Baseline' if is_baseline else 'PR'}] {title}",
+        "color": color,
+        "lines": lines,
+        "note": note,
+        "link": {"text": "Open run", "url": record.get("run_url") or ""},
+    }
+
+
+def _pct(value) -> str:
+    """Format a 0..1 rate as a percentage, or '-' when it is unknown."""
+    if value is None:
+        return "-"
+    return f"{value * 100:.2f}%"
+
+
+def _signed(value) -> str:
+    """Render a delta with an explicit sign, so -3 and +3 cannot be confused."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"+{number}" if number > 0 else str(number)
+
+
+def _clip(names: str) -> str:
+    """Shorten an already-joined operator list for a chat card."""
+    parts = [p for p in str(names).split(",") if p]
+    if len(parts) <= NOTIFY_OP_LIMIT:
+        return ", ".join(parts)
+    kept = ", ".join(parts[:NOTIFY_OP_LIMIT])
+    return f"{kept} … (+{len(parts) - NOTIFY_OP_LIMIT} more)"
+
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -462,7 +651,8 @@ Context is read from CTX_* environment variables, all optional:
   CTX_VARIANT         configuration label, for a backend that tests
                       several at once; part of record_id so they do
                       not overwrite each other
-  CTX_RUNNER          amd3.6, ...
+  CTX_RUNNER          runner label, e.g. amd3.6
+  CTX_RUNNER_NAME     the host behind that label, set by GitHub in the job
   CTX_FLAGGEMS_TAG    v5.3.5
   CTX_FLAGTREE_SHA    commit under test
   CTX_FLAGTREE_BRANCH main
@@ -537,6 +727,22 @@ Examples:
         help="Skip writing record.json (ledgers only)",
     )
     parser.add_argument(
+        "--notify-out",
+        type=Path,
+        default=None,
+        help=("Write notification.json here when the run is worth a chat "
+              "message. No file is written when nothing changed, which is how "
+              "the notify step stays quiet."),
+    )
+    parser.add_argument(
+        "--table-base",
+        default="",
+        help=("Base name of the reporting table. Set it to also write a "
+              "`table_name` file next to record.json holding the name of this "
+              "month's table, so the reporting step writes where this record "
+              "says it belongs."),
+    )
+    parser.add_argument(
         "--print",
         dest="do_print",
         action="store_true",
@@ -566,6 +772,20 @@ def main() -> int:
     if not args.no_record_file:
         out_dir = args.out_dir or args.summary.parent
         write_json(out_dir / "record.json", record)
+
+    if args.table_base:
+        out_dir = args.out_dir or args.summary.parent
+        table_name = month_table(args.table_base)
+        write_text(out_dir / "table_name", table_name)
+        print(f"[INFO] Reporting table: {table_name}")
+
+    if args.notify_out:
+        notification = build_notification(record)
+        if notification is None:
+            print("[INFO] Nothing changed against the baseline, no notification.")
+        else:
+            write_json(args.notify_out, notification)
+            print(f"[INFO] Notification: {notification['title']}")
 
     append_jsonl(args.ledger, [record])
     # Operator rows go to their own file per run: ~420 lines is far too much to

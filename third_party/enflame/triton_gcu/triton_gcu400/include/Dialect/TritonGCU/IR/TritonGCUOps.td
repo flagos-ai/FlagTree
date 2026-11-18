@@ -63,13 +63,22 @@ def TTGCU_LoadOp : TTGCU_Op<"load",
                               [MemoryEffects<[MemRead]>, AttrSizedOperandSegments]> {
   let summary = "Load";
   let description = [{
+    `offsets` are offsets into the *source* region. When `offsets_are_dst` is
+    set, PtrAnalysis has folded a `>=`-style mask start into `ptr` and put that
+    start into `offsets` instead, so the operand is the within-tile column at
+    which the valid block has to be written. The two meanings cannot be told
+    apart from the values alone, hence the explicit marker. It changes what the
+    very same operands compute, so it is an inherent attribute: a marked and an
+    unmarked load must not be considered equivalent.
   }];
   let arguments = (ins TTGCU_PtrType:$ptr,
                        Variadic<Index>:$shape,
                        Variadic<Index>:$strides,
                        Variadic<Index>:$offsets,
                        Optional<AnyType>:$default_value,
-                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$order_hint);
+                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$order_hint,
+                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$broadcast_dims,
+                       UnitAttr:$offsets_are_dst);
   let results = (outs AnyStaticShapeTensor:$result);
   let assemblyFormat = [{$ptr `,` `[` $shape `]` `,`
                         `[` $strides `]` `,` `[` $offsets `]`
@@ -108,7 +117,7 @@ def TTGCU_StoreOp : TTGCU_Op<"store",
 // Yield Op
 //
 def TTGCU_YieldOp : TTGCU_Op<"yield", [
-     HasParent<"ElementwiseFusionRegionOp">,
+     ParentOneOf<["ElementwiseFusionRegionOp", "HistogramOp"]>,
      Pure,
      ReturnLike,
      Terminator]>
@@ -239,6 +248,8 @@ def TritonGCU_CopyGlobalToLocalOp : TTGCU_Op<"copy_global_to_local", [MemoryEffe
 
     Unlike async_load_from_global, this op blocks until the transfer completes
     and does not return a sync token.
+
+    `offset_` and `offsets_are_dst` follow the same convention as `triton_gcu.load`.
   }];
   let arguments = (ins TTGCU_PtrType:$ptr,
                        Variadic<Index>:$shape,
@@ -246,7 +257,9 @@ def TritonGCU_CopyGlobalToLocalOp : TTGCU_Op<"copy_global_to_local", [MemoryEffe
                        Variadic<Index>:$offsets,
                        TTG_MemDescType:$dstMem,
                        Optional<AnyType>:$default_value,
-                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$order_hint);
+                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$order_hint,
+                       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$broadcast_dims,
+                       UnitAttr:$offsets_are_dst);
   let results = (outs);
   let assemblyFormat = [{$ptr `,` `shape_` `[` $shape `]` `,`
                       `stride_` `[` $strides `]` `,` `offset_` `[` $offsets `]` `,`$dstMem
@@ -434,10 +447,17 @@ def TritonGCU_MaskedLoadOp : TTGCU_Op<"maskedload", [
     }];
 
     let extraClassDeclaration = [{
+      // Triton 3.8 配套的 MLIR 把 OpaqueProperties 改名为 PropertyRef（见
+      // mlir/IR/OperationSupport.h）。这里用别名隔离，保持 3.5~3.7 构建不变。
+      #if TRITON_VERSION >= 38
+      using KuramaOpaqueProperties = ::mlir::PropertyRef;
+      #else
+      using KuramaOpaqueProperties = ::mlir::OpaqueProperties;
+      #endif
       static ::llvm::LogicalResult inferReturnTypes(
           ::mlir::MLIRContext * context, ::std::optional<::mlir::Location> location,
           ::mlir::ValueRange operands, ::mlir::DictionaryAttr attributes,
-          mlir::OpaqueProperties properties, ::mlir::RegionRange regions,
+          KuramaOpaqueProperties properties, ::mlir::RegionRange regions,
           ::llvm::SmallVectorImpl<::mlir::Type> & inferredReturnTypes) {
         inferredReturnTypes.resize(1);
         auto elementTy = cast<::mlir::triton::PointerType>(operands[0].getType())
@@ -563,6 +583,52 @@ def TTGCU_ArriveBarrierOp : TTGCU_Op<"arrive_barrier"> {
   }];
   let arguments = (ins TTGCU_BarrierType:$barrier);
   let assemblyFormat = "$barrier attr-dict `:` type($barrier)";
+}
+
+
+//
+// Digit histogram with a fused elementwise input region
+//
+// Native `tl.histogram(region(src), bins, mask)` semantics: the region maps
+// one source element (a scalar block argument) to the i32 value that is
+// counted, and the optional `mask` excludes the elements whose entry is false.
+// Keeping the elementwise chain in a region instead of materialising it as a
+// digit tensor lets the backend rebuild the digit slice inside the MRADIX
+// count loop.  A prefix-range mask (`lane < N`) is folded into the count
+// length; any other mask is staged as a byte buffer and fed to the masked
+// MRADIX count.  `num_bins` is the logical bin count (1..32).  The result
+// currently has exactly that width; keeping it as an explicit operand lets a
+// later padded-result lowering keep the logical bins independent of the
+// physical buffer width.
+//
+// The region is scalar on purpose: it captures loop-carried scalars (the
+// per-pass `shift`) and contains only arith ops, so the TritonGPU to GCU
+// conversion never has to legalise `tt.*` ops nested inside it.
+def TTGCU_HistogramOp : TTGCU_Op<"histogram", [
+    MemoryEffects<[MemRead, MemWrite]>,
+    SingleBlockImplicitTerminator<"YieldOp">]> {
+  let summary = "Histogram with a fused elementwise input region";
+  let description = [{
+    Counts the values produced by `region` for every element of `src` whose
+    `mask` entry is true.  `src` is either a memdesc that already holds the
+    key stream or a tensor that the lowering stages in shared memory.
+    `num_bins` is the number of logical bins and the result width today; it
+    is explicit so a padded physical result can be introduced later without
+    changing the op signature.  `size_in` is the number of leading `src`
+    elements that are counted: a prefix-range mask (`lane < N`) is folded into
+    it by the fusion pass, so the mask never reaches the backend.  The optional
+    `mask` is a per-lane i8 tensor (or memdesc) of the same length as `src`;
+    it is staged in L1 and masks individual lanes in the MRADIX count loop.
+  }];
+  let arguments = (ins
+    AnyType:$src,
+    I32:$num_bins,
+    I32:$size_in,
+    Optional<AnyType>:$mask
+  );
+  let results = (outs TT_Tensor:$result);
+  let regions = (region SizedRegion<1>:$region);
+  let hasVerifier = 1;
 }
 
 #endif // TRITONGCU_OPS

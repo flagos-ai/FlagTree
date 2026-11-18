@@ -700,6 +700,7 @@ Attribute inferSrcEncoding(Operation *op, Attribute encoding) {
     return inferSrcEncoding(gather, encoding);
   if (auto fp4ToFp = dyn_cast<triton::gpu::Fp4ToFpOp>(op))
     return inferSrcEncoding(fp4ToFp, encoding);
+
 #ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
   if (auto concat = dyn_cast<ttg::ConcatDotOperandOp>(op))
     return inferSrcEncoding(concat, encoding);
@@ -738,6 +739,7 @@ Attribute inferDstEncoding(Operation *op, Attribute encoding) {
     return inferDstEncoding(gather, encoding);
   if (auto fp4ToFp = dyn_cast<triton::gpu::Fp4ToFpOp>(op))
     return inferDstEncoding(fp4ToFp, encoding);
+
 #ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
   if (auto concat = dyn_cast<ttg::ConcatDotOperandOp>(op))
     return inferDstEncoding(concat, encoding);

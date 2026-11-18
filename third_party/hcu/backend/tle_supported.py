@@ -1,10 +1,17 @@
 TLE_SUPPORTED_PRIMITIVES = [
+    ## TLE-Raw
+    "raw.call",
+    "raw.call_smem",
+
+    ## TLE-Lite
+    "extract_tile",
     "cumsum",
+
+    ## TLE-Struct GPU
     "gpu.alloc",
     "gpu.copy",
     "gpu.to_tensor",
     "gpu.store_tensor",
     "gpu.local_ptr",
     "gpu.set_layout",
-    "extract_tile",
 ]

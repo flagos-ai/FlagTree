@@ -47,6 +47,7 @@ if [[ -f "$PID_FILE" ]]; then
     fi
 fi
 bash "${SCRIPT_DIR}/clear_fuser_process.sh"
+rm -f /dev/shm/* 2>/dev/null || true
 
 start=$(date +%s)
 
@@ -57,9 +58,9 @@ nohup vllm serve ./Qwen3.6-27B/  \
     --tensor-parallel-size 2 \
     --port "${VLLM_QWEN3_PORT}" \
     --served-model-name qwen36 \
-    --gpu-memory-utilization 0.8 \
+    --gpu-memory-utilization 0.7 \
     --trust-remote-code \
-    --dtype bfloat16 2>&1 >vllm.log &
+    --dtype bfloat16 >vllm.log 2>&1 &
 echo "$!" >pid.txt
 
 PID_FILE="pid.txt"
