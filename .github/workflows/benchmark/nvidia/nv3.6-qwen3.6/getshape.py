@@ -4,7 +4,7 @@
 PyTorch / vLLM Trace 算子耗时分析脚本
 
 功能:
-    读取 `.pt.trace.json.gz` 文件，按 (算子名, Input Dims, Input Type) 
+    读取 `.pt.trace.json.gz` 文件，按 (算子名, Input Dims, Input Type)
     聚合统计 CPU 和 GPU 的耗时，并生成对齐美观的文本报告。
 
 前置条件 (Prerequisites):
@@ -171,7 +171,7 @@ def collect_cpu_op_stats(path, cuda_durations):
         name = e.get('name') or ''
         in_dims = _norm_json(args.get('Input Dims'))
         in_type = _norm_json(args.get('Input type') or args.get('Input dtype'))
-        
+
         key = (name, in_dims, in_type)
 
         rec = stats[key]
@@ -202,7 +202,7 @@ def write_report(stats, path, sort_primary, trace_path,
                  total_kernel_time, kernel_events, kernel_without_ext,
                  matched_kernel_time):
     sorted_items = sorted(stats.items(), key=make_sort_key(sort_primary))
-    
+
     widths = {
         "Op": 40,
         "InputDims": 90,
@@ -244,7 +244,7 @@ def write_report(stats, path, sort_primary, trace_path,
 
     # 生成表头
     header_line = build_row(
-        "Op", "InputDims", "InputType", 
+        "Op", "InputDims", "InputType",
         "Calls", "TotalCPU_us", "AvgCPU_us", "TotalCUDA_us", "AvgCUDA_us"
     )
     lines.append(header_line)
@@ -265,33 +265,33 @@ def write_report(stats, path, sort_primary, trace_path,
             if name != prev_op_name:
                 # 不同的算子之间，用 '=' 分隔，并且加一个空行作为大段落的分割
                 lines.append("=" * len(header_line))
-                lines.append("") 
+                lines.append("")
             else:
                 # 同一个算子的不同 Shape 之间，用 '-' 分隔
                 lines.append("-" * len(header_line))
         prev_op_name = name
-        
+
         calls = s['calls']
         avg_cpu = s['cpu_time_us'] / calls if calls else 0.0
         avg_cuda = s['cuda_time_us'] / calls if calls else 0.0
-        
+
         op_parts = split_text(name, widths['Op'])
         dims_parts = split_text(in_dims, widths['InputDims'])
         type_parts = split_text(in_type, widths['InputType'])
-        
+
         max_lines = max(len(op_parts), len(dims_parts), len(type_parts))
-        
+
         for i in range(max_lines):
             op_t = op_parts[i] if i < len(op_parts) else ""
             dims_t = dims_parts[i] if i < len(dims_parts) else ""
             type_t = type_parts[i] if i < len(type_parts) else ""
-            
+
             calls_t = str(calls) if i == 0 else ""
             cpu_t = f"{s['cpu_time_us']:.3f}" if i == 0 else ""
             avg_cpu_t = f"{avg_cpu:.3f}" if i == 0 else ""
             cuda_t = f"{s['cuda_time_us']:.3f}" if i == 0 else ""
             avg_cuda_t = f"{avg_cuda:.3f}" if i == 0 else ""
-            
+
             lines.append(build_row(op_t, dims_t, type_t, calls_t, cpu_t, avg_cpu_t, cuda_t, avg_cuda_t))
 
     # 结尾再加一条线收尾
@@ -309,15 +309,15 @@ def write_report(stats, path, sort_primary, trace_path,
             calls = s['calls']
             avg_cpu = s['cpu_time_us'] / calls if calls else 0.0
             avg_cuda = s['cuda_time_us'] / calls if calls else 0.0
-        
+
             writer.writerow([
-                name, 
-                in_dims, 
-                in_type, 
-                calls, 
-                f"{s['cpu_time_us']:.3f}", 
-                f"{avg_cpu:.3f}", 
-                f"{s['cuda_time_us']:.3f}", 
+                name,
+                in_dims,
+                in_type,
+                calls,
+                f"{s['cpu_time_us']:.3f}",
+                f"{avg_cpu:.3f}",
+                f"{s['cuda_time_us']:.3f}",
                 f"{avg_cuda:.3f}"
             ])
     print(f"CSV 报告已写入: {csv_path}")
