@@ -827,6 +827,21 @@ def test_hcu_tle_local_load_compile(async_request, fresh_triton_cache):
     assert any("synchronous load" in str(item.message) for item in caught) == async_request
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_hcu_buffer_extent_handoff(legacy, monkeypatch):
+    from triton.backends.hcu import compiler_hcu
+    from triton.runtime.errors import HSACOError
+
+    monkeypatch.setattr(compiler_hcu, "_clang_uses_i32_buffer_extent", lambda *_: legacy)
+    intrinsic = "@llvm.amdgcn.make.buffer.rsrc.p8.p1"
+    ir = f"call ptr addrspace(8) {intrinsic}(ptr addrspace(1) %p, i16 0, i64 2147483646, i32 0)"
+    result = compiler_hcu._buffer_extent_for_clang(ir, "clang", "gfx936")
+    assert result == (ir.replace("i64 2147483646", "i32 2147483646") if legacy else ir)
+    if legacy:
+        with pytest.raises(HSACOError, match="32-bit constant buffer extent"):
+            compiler_hcu._buffer_extent_for_clang(ir.replace("2147483646", "4294967296"), "clang", "gfx936")
+
+
 @pytest.mark.parametrize("arch,wide", [("gfx936", False), ("gfx946", True)])
 def test_hcu_declared_dtypes(arch, wide):
     from triton.backends.hcu.compiler_hcu import HIPBackend

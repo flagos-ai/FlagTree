@@ -84,6 +84,35 @@ def is_in_thread_transpose_enabled(arch):
 _AMDGCN_TARGET_RE = re.compile(r'\.amdgcn_target\s+"amdgcn-amd-amdhsa-[^-"]*-(gfx[0-9a-z]+(?::[a-z0-9]+[+-])*)"')
 
 
+@functools.lru_cache(None)
+def _clang_uses_i32_buffer_extent(compiler, arch):
+    # Vendor clang versions with the same major version ship different intrinsics.
+    probe = ("__amdgpu_buffer_rsrc_t probe(char __attribute__((address_space(1))) *p, unsigned long long n) {"
+             " return __builtin_amdgcn_make_buffer_rsrc(p, 0, n, 0); }")
+    result = subprocess.run([
+        compiler, "-target", hcu.TARGET_TRIPLE, f"-mcpu={arch}", "-nogpulib", "-x", "c", "-S", "-emit-llvm", "-O1", "-",
+        "-o", "-"
+    ], input=probe, capture_output=True, text=True)
+    return result.returncode == 0 and re.search(
+        r"declare [^\n]*@llvm\.amdgcn\.make\.buffer\.rsrc[^\n]*, i16, i32, i32\)", result.stdout) is not None
+
+
+def _buffer_extent_for_clang(kernel_ir, compiler, arch):
+    if "@llvm.amdgcn.make.buffer.rsrc." not in kernel_ir or not _clang_uses_i32_buffer_extent(compiler, arch):
+        return kernel_ir
+
+    # LLVM 22 requires i64. Only adapt the external clang input, and only
+    # narrow literal extents that the consumer can represent without truncation.
+    def narrow(match):
+        operand = match.group(2)
+        if operand and (not operand.strip().isdigit() or int(operand) > 0xffffffff):
+            raise HSACOError(f"{compiler} requires a 32-bit constant buffer extent, got i64{operand}")
+        return match.group(1) + "i32" + operand
+
+    return re.sub(r"(@llvm\.amdgcn\.make\.buffer\.rsrc[.\w]+\([^,\n]*, [^,\n]*, )i64([^,\n]*)(?=, i32)", narrow,
+                  kernel_ir)
+
+
 def _retarget_clang_args(clang_args, asm_text):
     m = _AMDGCN_TARGET_RE.search(asm_text)
     args = [a for a in clang_args if a != ""]
@@ -864,6 +893,9 @@ class HIPBackend(BaseBackend):
         use_dcc = (bool(metadata.get("hcu_tle_raw")) and dcc.is_file()
                    and "llvm.amdgcn.make.buffer.rsrc" not in kernel_ir)
         metadata["hcu_raw_dcc"] = use_dcc
+        asm_compiler = str(dcc) if use_dcc else HIPBackend.path_to_rocm_clang()
+        if not use_dcc:
+            kernel_ir = _buffer_extent_for_clang(kernel_ir, asm_compiler, options.arch)
         try:
             with tempfile.NamedTemporaryFile(mode='w', suffix=".ll", delete=False) as f:
                 llir_file = f.name
@@ -871,7 +903,6 @@ class HIPBackend(BaseBackend):
 
             asm_file = tempfile.mktemp(suffix=".amdgcn")
             # dcc or aillvm clang: both drive llir -> .s
-            asm_compiler = str(dcc) if use_dcc else HIPBackend.path_to_rocm_clang()
             asm_args = (["-target", hcu.TARGET_TRIPLE, f"-mcpu={options.arch}", "-O3"]
                         if use_dcc else HIPBackend._get_clang_args(metadata, options) + flags)
 
