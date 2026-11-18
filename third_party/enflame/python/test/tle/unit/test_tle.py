@@ -9,12 +9,14 @@ Tests core functionality of TLE module, including:
 - Type system
 """
 
-# Enflame backend copy of the upstream TLE unit test suite.
+# Enflame copy of flagtree/python/test/tle/unit/test_tle.py.
 #
-# Keep the backend-neutral TLE cases in sync with
-# python/test/tle/unit/test_tle.py.  MUSA-specific cases (MThreads cache
-# policy) are guarded by an availability check so the suite can run in builds
-# where the MThreads TLE extension is not present.
+# The triton_gcu wheel is built from a vendor-trimmed tree, so tle.gpu.mthreads
+# (the MUSA backend) is not part of it and the upstream cases that build a
+# TMECachePolicy cannot run here.  Those cases are skipped below, precisely:
+# the backend-neutral cases keep running.  The upstream file is left untouched
+# and still runs in full against an untrimmed flagtree build, so keep this file
+# in sync with it when the upstream test changes.
 
 import pytest
 import torch
@@ -35,7 +37,7 @@ import triton._C.libtriton as libtriton
 
 
 def _mthreads_available():
-    """Return whether the MThreads TLE extension is available in this build."""
+    """MThreads TLE extension present in this build (absent from trimmed wheels)."""
     try:
         return importlib.util.find_spec("triton.experimental.tle.language.gpu.mthreads") is not None
     except ImportError:
@@ -45,7 +47,7 @@ def _mthreads_available():
 _MTHREADS_AVAILABLE = _mthreads_available()
 _NEEDS_MTHREADS = pytest.mark.skipif(
     not _MTHREADS_AVAILABLE,
-    reason="MThreads TLE extension is not available in this build",
+    reason="MThreads TLE extension is not shipped in this vendor-trimmed build",
 )
 
 
@@ -239,10 +241,13 @@ class TestCopyFrontend:
     def test_copy_signature(self):
         parameters = inspect.signature(tle.gpu.copy).parameters
         assert list(parameters) == [
-            "src", "dst", "shape", "offsets", "barrier", "mask", "cache_policy", "other", "_semantic"
+            "src", "dst", "shape", "offsets", "barrier", "mask", "cache_policy", "other", "is_async", "eviction_policy",
+            "_semantic"
         ]
         assert parameters["cache_policy"].default is None
         assert parameters["other"].default is None
+        assert parameters["is_async"].default is False
+        assert parameters["eviction_policy"].default == ""
 
     @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
     @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy")
