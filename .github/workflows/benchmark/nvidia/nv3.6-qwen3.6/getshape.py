@@ -49,11 +49,11 @@ try:
 except ImportError:
     HAVE_IJSON = False
 
-
 DEFAULT_TRACE = "./rank0.1794462962407205869.pt.trace.json.gz"
 DEFAULT_OUTPUT = "shape_time_grouped_report.txt"
 
 _TOP_LEVEL_CACHE = {}
+
 
 def detect_top_level(path):
     if path in _TOP_LEVEL_CACHE:
@@ -187,6 +187,7 @@ def collect_cpu_op_stats(path, cuda_durations):
 
 
 def make_sort_key(primary):
+
     def key(item):
         name = item[0][0]
         s = item[1]
@@ -195,11 +196,11 @@ def make_sort_key(primary):
         else:
             d = s['cuda_time_us'] if s['cuda_time_us'] > 0 else s['cpu_time_us']
         return (name, -d)
+
     return key
 
 
-def write_report(stats, path, sort_primary, trace_path,
-                 total_kernel_time, kernel_events, kernel_without_ext,
+def write_report(stats, path, sort_primary, trace_path, total_kernel_time, kernel_events, kernel_without_ext,
                  matched_kernel_time):
     sorted_items = sorted(stats.items(), key=make_sort_key(sort_primary))
 
@@ -231,22 +232,18 @@ def write_report(stats, path, sort_primary, trace_path,
     lines.append("#")
 
     def build_row(op_t, dims_t, type_t, calls_t, cpu_t, avg_cpu_t, cuda_t, avg_cuda_t):
-        return (
-            f"{op_t.ljust(widths['Op'])} | "
-            f"{dims_t.ljust(widths['InputDims'])} | "
-            f"{type_t.ljust(widths['InputType'])} | "
-            f"{calls_t.rjust(widths['Calls'])} | "
-            f"{cpu_t.rjust(widths['TotalCPU'])} | "
-            f"{avg_cpu_t.rjust(widths['AvgCPU'])} | "
-            f"{cuda_t.rjust(widths['TotalCUDA'])} | "
-            f"{avg_cuda_t.rjust(widths['AvgCUDA'])}"
-        )
+        return (f"{op_t.ljust(widths['Op'])} | "
+                f"{dims_t.ljust(widths['InputDims'])} | "
+                f"{type_t.ljust(widths['InputType'])} | "
+                f"{calls_t.rjust(widths['Calls'])} | "
+                f"{cpu_t.rjust(widths['TotalCPU'])} | "
+                f"{avg_cpu_t.rjust(widths['AvgCPU'])} | "
+                f"{cuda_t.rjust(widths['TotalCUDA'])} | "
+                f"{avg_cuda_t.rjust(widths['AvgCUDA'])}")
 
     # 生成表头
-    header_line = build_row(
-        "Op", "InputDims", "InputType",
-        "Calls", "TotalCPU_us", "AvgCPU_us", "TotalCUDA_us", "AvgCUDA_us"
-    )
+    header_line = build_row("Op", "InputDims", "InputType", "Calls", "TotalCPU_us", "AvgCPU_us", "TotalCUDA_us",
+                            "AvgCUDA_us")
     lines.append(header_line)
     # 表头下方用 '='
     lines.append("=" * len(header_line))
@@ -254,7 +251,7 @@ def write_report(stats, path, sort_primary, trace_path,
     def split_text(text, width):
         if not text:
             return [""]
-        return [text[i:i+width] for i in range(0, len(text), width)]
+        return [text[i:i + width] for i in range(0, len(text), width)]
 
     prev_op_name = None
 
@@ -304,20 +301,15 @@ def write_report(stats, path, sort_primary, trace_path,
     csv_path = path.replace('.txt', '.csv')
     with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
-        writer.writerow(["Op", "InputDims", "InputType", "Calls", "TotalCPU_us", "AvgCPU_us", "TotalCUDA_us", "AvgCUDA_us"])
+        writer.writerow(
+            ["Op", "InputDims", "InputType", "Calls", "TotalCPU_us", "AvgCPU_us", "TotalCUDA_us", "AvgCUDA_us"])
         for (name, in_dims, in_type), s in sorted_items:
             calls = s['calls']
             avg_cpu = s['cpu_time_us'] / calls if calls else 0.0
             avg_cuda = s['cuda_time_us'] / calls if calls else 0.0
 
             writer.writerow([
-                name,
-                in_dims,
-                in_type,
-                calls,
-                f"{s['cpu_time_us']:.3f}",
-                f"{avg_cpu:.3f}",
-                f"{s['cuda_time_us']:.3f}",
+                name, in_dims, in_type, calls, f"{s['cpu_time_us']:.3f}", f"{avg_cpu:.3f}", f"{s['cuda_time_us']:.3f}",
                 f"{avg_cuda:.3f}"
             ])
     print(f"CSV 报告已写入: {csv_path}")
@@ -332,15 +324,18 @@ def main():
 
     print(f"Pass 1/2: collecting kernel durations from {args.trace} ...")
     cuda_durations, total_kernel_time, kernel_events, kernel_without_ext = collect_kernel_durations(args.trace)
-    print(f"  kernel events={kernel_events}, unique ext ids={len(cuda_durations)}, total kernel time={total_kernel_time:.3f} us")
+    print(
+        f"  kernel events={kernel_events}, unique ext ids={len(cuda_durations)}, total kernel time={total_kernel_time:.3f} us"
+    )
 
     print("Pass 2/2: aggregating cpu_op by (name, InputDims, InputType) ...")
     stats, matched_ext_ids = collect_cpu_op_stats(args.trace, cuda_durations)
     matched_kernel_time = sum(cuda_durations[e] for e in matched_ext_ids)
-    print(f"  groups={len(stats)}, matched ext ids={len(matched_ext_ids)}, matched kernel time={matched_kernel_time:.3f} us")
+    print(
+        f"  groups={len(stats)}, matched ext ids={len(matched_ext_ids)}, matched kernel time={matched_kernel_time:.3f} us"
+    )
 
-    write_report(stats, args.output, args.sort, args.trace,
-                 total_kernel_time, kernel_events, kernel_without_ext,
+    write_report(stats, args.output, args.sort, args.trace, total_kernel_time, kernel_events, kernel_without_ext,
                  matched_kernel_time)
 
 
