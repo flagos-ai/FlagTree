@@ -22,6 +22,7 @@
 
 from __future__ import annotations  # remove after python 3.11
 import warnings
+import math
 
 from typing import List, Optional, Sequence, Tuple, TypeVar, Generic, Type
 import numbers
@@ -613,7 +614,11 @@ class TritonSemantic(Generic[TensorTy]):
         # scalar
         if dtype is None:
             raise ValueError("dtype must be specified when value is not a tensor")
-        if value == 0:
+        # The null-value fast path erases the sign of floating-point -0.0.
+        # Standard floating types have literal builders that preserve that sign.
+        negative_zero = (value == 0 and dtype.is_standard_floating()
+                         and math.copysign(1.0, value) < 0)
+        if value == 0 and not negative_zero:
             value = self.builder.get_null_value(dtype.to_ir(self.builder))
         else:
             get_value_fn = getattr(self.builder, f"get_{dtype.name}")

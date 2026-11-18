@@ -67,6 +67,33 @@ struct AllocateWarpGroups
   void runOnOperation() override {
     ModuleOp mod = getOperation();
 
+    if (mod->hasAttr("tle.hcu.software_ws_2x2")) {
+      if (lookupNumWarps(mod) != 2 ||
+          TritonGPUDialect::getThreadsPerWarp(mod) != 64) {
+        mod.emitError("software WS requires default2 + worker2 wave64");
+        return signalPassFailure();
+      }
+      bool bad = false;
+      unsigned count = 0;
+      mod.walk([&](WarpSpecializeOp op) {
+        ++count;
+        if (op.getPartitionNumWarps().size() != 1 ||
+            op.getPartitionNumWarps()[0] != 2 || op.getNumResults() ||
+            (op.getRequestedRegisters() &&
+             llvm::any_of(*op.getRequestedRegisters(), [](int32_t n) {return n != 0;}))) {
+          op.emitError("software WS requires one 2-wave worker, void results, no register redistribution");
+          bad = true;
+        }
+        op.setWarpGroupStartIds(ArrayRef<int32_t>{2});
+      });
+      if (bad || count != 1) {
+        if (count != 1) mod.emitError("software WS requires exactly one region");
+        return signalPassFailure();
+      }
+      mod->setAttr("ttg.total-num-warps", Builder(&getContext()).getI32IntegerAttr(4));
+      return;
+    }
+
     // First determine the maximum number of extra warps.
     int maxExtraWarps = 0;
     mod.walk([&](WarpSpecializeOp op) {

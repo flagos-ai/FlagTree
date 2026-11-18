@@ -1,6 +1,9 @@
 #include "TritonHCUGPUToLLVM/Passes.h"
 
 #include "AsyncUtility.h"
+#include "Analysis/HCUGPUAllocation.h"
+#include "triton/Conversion/TritonGPUToLLVM/AllocateSharedMemoryUtility.h"
+#include "TritonHCUGPUToLLVM/StaticPipe.h"
 #include "PatternTritonGPUOpToLLVM.h"
 #include "TargetInfo.h"
 #include "TritonHCUGPUToLLVM/MembarUtility.h"
@@ -55,6 +58,11 @@ public:
     addLegalDialect<mlir::scf::SCFDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
 
+#ifdef __TLE__
+    addLegalOp<triton::tle::PipeCreateOp,triton::tle::PipeWriterAcquireOp,
+               triton::tle::PipeWriterCommitOp,triton::tle::PipeReaderWaitOp,
+               triton::tle::PipeReaderReleaseOp>();
+#endif
     // Warp specialization is lowered later.
     addLegalOp<triton::gpu::WarpSpecializeOp>();
     addLegalOp<triton::gpu::WarpYieldOp>();
@@ -80,6 +88,11 @@ public:
     addLegalOp<mlir::UnrealizedConversionCastOp>();
     addLegalOp<triton::hcugpu::InstructionSchedHint>();
 
+#ifdef __TLE__
+    addLegalOp<triton::tle::PipeCreateOp,triton::tle::PipeWriterAcquireOp,
+               triton::tle::PipeWriterCommitOp,triton::tle::PipeReaderWaitOp,
+               triton::tle::PipeReaderReleaseOp>();
+#endif
     // Warp specialization is lowered later.
     addLegalOp<triton::gpu::WarpSpecializeOp>();
     addLegalOp<triton::gpu::WarpYieldOp>();
@@ -97,6 +110,9 @@ public:
     addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect, ROCDL::ROCDLDialect,
                     mlir::scf::SCFDialect>();
     addIllegalDialect<triton::tle::TleDialect>();
+    addLegalOp<triton::tle::PipeCreateOp,triton::tle::PipeWriterAcquireOp,
+               triton::tle::PipeWriterCommitOp,triton::tle::PipeReaderWaitOp,
+               triton::tle::PipeReaderReleaseOp>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
     markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }
@@ -165,12 +181,76 @@ struct ConvertTritonHCUGPUToLLVM
     int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
 
     // Allocate shared memory and set barrier
-    ModuleAllocation allocation(mod);
+    if (failed(triton::HCU::static_pipe::foldPipeDotStaging(mod))) return signalPassFailure();
+    if (failed(triton::HCU::static_pipe::verifyGPU(mod))) return signalPassFailure();
+    if (mod->hasAttr(triton::HCU::static_pipe::countedAttr)) {
+      // Prove the structured bounded lifecycle before destroying its SCF loop.
+      // Lower it before LLVM type conversion so register carries use ordinary
+      // CF block-argument conversion, including tensor -> LLVM struct carries.
+      RewritePatternSet loopPatterns(context);
+      populateSCFToControlFlowConversionPatterns(loopPatterns);
+      ConversionTarget loopTarget(*context);
+      loopTarget.addIllegalDialect<scf::SCFDialect>();
+      loopTarget.markUnknownOpDynamicallyLegal([](Operation*) {return true;});
+      if (failed(applyPartialConversion(mod,loopTarget,std::move(loopPatterns)))) return signalPassFailure();
+    }
+    bool verifiedPipe=mod->hasAttr(triton::HCU::static_pipe::verifiedAttr);
+    ModuleAllocation allocation(mod,verifiedPipe ? triton::HCU::HCUAllocationAnalysisScratchSizeFn :
+        triton::defaultAllocationAnalysisScratchSizeFn);
+    if (verifiedPipe) {
+      // Rewrites above can add scratch. The earlier allocator's attributes are
+      // stale; analysis and codegen must use exactly the same fresh offsets.
+      mod.walk([](Operation *op){op->removeAttr("allocation.offset");});
+      triton::gpu::attachAllocationSizeAndOffsetAttr(mod,allocation);
+      bool bad=allocation.getSharedMemorySize()>65536;
+      SmallVector<Attribute> audit,explicitAudit;OpBuilder proofBuilder(context);
+      mod.walk([&](triton::FuncOp func) {
+        auto *data=allocation.getFuncData(func);
+        SmallVector<std::pair<Allocation::BufferId,Operation*>> scratch,all;
+        func.walk([&](Operation *op) {
+          auto id=data->getBufferId(op);
+          if(id!=Allocation::InvalidBufferId) {
+            all.push_back({id,op});
+            if(op->hasAttr("tle.hcu.wave_local_scratch"))scratch.push_back({id,op});
+          }
+          if(auto alloc=dyn_cast<triton::gpu::LocalAllocOp>(op)) {
+            id=data->getBufferId(alloc.getResult());
+            if(id!=Allocation::InvalidBufferId) {
+              all.push_back({id,op});
+              explicitAudit.push_back(proofBuilder.getDictionaryAttr({
+                  proofBuilder.getNamedAttr("offset",proofBuilder.getI64IntegerAttr(data->getOffset(id))),
+                  proofBuilder.getNamedAttr("size",proofBuilder.getI64IntegerAttr(data->getAllocatedSize(id))),
+                  proofBuilder.getNamedAttr("type",TypeAttr::get(alloc.getType())),
+                  proofBuilder.getNamedAttr("payload",proofBuilder.getBoolAttr(op->hasAttr(triton::HCU::static_pipe::payloadAttr)))}));
+            }
+          }
+        });
+        for(auto [id,op]:scratch) {
+          auto lo=data->getOffset(id),size=data->getAllocatedSize(id);
+          auto actual=op->getAttrOfType<IntegerAttr>("allocation.offset");
+          if(!actual || actual.getInt()!=lo || lo+size>allocation.getSharedMemorySize())bad=true;
+          for(auto [other,otherOp]:all) if(other!=id) {
+            auto o=data->getOffset(other),n=data->getAllocatedSize(other);
+            if(lo<o+n && o<lo+size)bad=true;
+          }
+          audit.push_back(proofBuilder.getDictionaryAttr({
+              proofBuilder.getNamedAttr("offset",proofBuilder.getI64IntegerAttr(lo)),
+              proofBuilder.getNamedAttr("size",proofBuilder.getI64IntegerAttr(size)),
+              proofBuilder.getNamedAttr("source",TypeAttr::get(op->getOperand(0).getType())),
+              proofBuilder.getNamedAttr("target",TypeAttr::get(op->getResult(0).getType()))}));
+        }
+      });
+      if(bad) {mod.emitError("wave-local scratch allocation overlaps, exceeds LDS, or has stale codegen offsets");return signalPassFailure();}
+      mod->setAttr("tle.hcu.scratch_allocation_audit",proofBuilder.getArrayAttr(audit));
+      mod->setAttr("tle.hcu.pipe_explicit_allocations",proofBuilder.getArrayAttr(explicitAudit));
+    }
 
     if (targetInfo.requiresAliasInfoForAsyncOps())
       HCU::annotateLocalLoadsSyncedViaAsyncWait(mod);
 
     HCU::addLocalBarrierAfterAmdGpuAsyncWait(mod);
+    if (mod->hasAttr("tle.hcu.invalid_issuer_copy"))
+      return signalPassFailure();
     ModuleMembarAnalysis membarPass(&allocation,
                                     mlir::triton::HCU::membarFilter);
     membarPass.run();

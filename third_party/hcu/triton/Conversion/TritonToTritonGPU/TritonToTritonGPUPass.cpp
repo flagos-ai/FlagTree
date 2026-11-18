@@ -109,13 +109,42 @@ updateTleEncoding(ArrayRef<Value> values, TleEncodingInfo info, FuncOp func,
 }
 
 static LogicalResult propagateTleEncodingHints(FuncOp func) {
+  SmallVector<tle::SetLayoutOp> layoutOps;
+  func.walk([&](tle::SetLayoutOp op) { layoutOps.push_back(op); });
+  if (layoutOps.empty())
+    return success();
+
+  // Layout-independent literal/index generators must not tie independent
+  // consumers after CSE. Give each use its own SSA generator before applying
+  // encoding constraints. Encoded CSE can merge equivalent copies later.
+  SmallVector<Operation *> sharedGenerators;
+  func.walk([&](Operation *op) {
+    if (!isa<arith::ConstantOp, triton::MakeRangeOp, triton::SplatOp>(op) ||
+        op->getNumResults() != 1 ||
+        !isa<RankedTensorType>(op->getResult(0).getType()) ||
+        op->getResult(0).use_empty() || op->getResult(0).hasOneUse())
+      return;
+    if (auto constant = dyn_cast<arith::ConstantOp>(op))
+      if (!isa<DenseElementsAttr>(constant.getValue())) return;
+    sharedGenerators.push_back(op);
+  });
+  for (Operation *op : sharedGenerators) {
+    SmallVector<OpOperand *> uses;
+    for (OpOperand &use : op->getResult(0).getUses()) uses.push_back(&use);
+    OpBuilder builder(op);
+    for (OpOperand *use : llvm::drop_begin(uses)) {
+      Operation *copy = builder.clone(*op);
+      use->set(copy->getResult(0));
+    }
+  }
+
   llvm::SmallVector<std::pair<Value, TleEncodingInfo>> seedEncodings;
-  func.walk([&](tle::SetLayoutOp op) {
+  for (tle::SetLayoutOp op : layoutOps) {
     seedEncodings.push_back(
         {op.getSrc(), TleEncodingInfo{op.getTargetEncoding(), true}});
     seedEncodings.push_back(
         {op.getResult(), TleEncodingInfo{op.getTargetEncoding(), false}});
-  });
+  }
   if (seedEncodings.empty())
     return success();
 
@@ -525,10 +554,25 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     }
     c = triton::gpu::ConvertLayoutOp::create(rewriter, c.getLoc(), retType, c);
 
-    addNamedAttrs(rewriter.replaceOpWithNewOp<triton::DotOp>(
-                      op, retType, a, b, c, adaptor.getInputPrecision(),
-                      adaptor.getMaxNumImpreciseAcc()),
-                  adaptor.getAttributes());
+    auto dot = triton::DotOp::create(rewriter, op.getLoc(), retType, a, b, c,
+                                   adaptor.getInputPrecision(),
+                                   adaptor.getMaxNumImpreciseAcc());
+    addNamedAttrs(dot, adaptor.getAttributes());
+    Value result = dot.getResult();
+#ifdef __TLE__
+    // Preserve the requested D layout with an actual conversion boundary.
+    // Forcing the default dot itself to that layout can make later MMA
+    // acceleration fight the explicit result hint during layout removal.
+    if (Attribute requested = getTleExplicitResultEncoding(op, 0);
+        requested && requested != dEncoding) {
+      dot->removeAttr(getTleExplicitEncodingAttrName(0));
+      auto converted = triton::gpu::ConvertLayoutOp::create(
+          rewriter, op.getLoc(), origType.cloneWithEncoding(requested), result);
+      setTleExplicitResultEncoding(converted, 0, requested);
+      result = converted.getResult();
+    }
+#endif
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -1183,8 +1227,11 @@ void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
                             RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
   patterns.add<
+      GenericOpPattern<triton::MatrixLoadOp>,
       TleDSLRegionOpPattern, TleExtractTileOpPattern, TleInsertTileOpPattern,
-      TleSetLayoutOpPattern, GenericOpPattern<tle::LocalPointersOp>,
+      TleSetLayoutOpPattern, GenericOpPattern<tle::PipeCreateOp>, GenericOpPattern<tle::PipeWriterAcquireOp>,
+      GenericOpPattern<tle::PipeWriterCommitOp>, GenericOpPattern<tle::PipeReaderWaitOp>,
+      GenericOpPattern<tle::PipeReaderReleaseOp>, GenericOpPattern<tle::LocalPointersOp>,
       GenericOpPattern<tle::RemotePointersOp>,
       GenericOpPattern<tle::ExclusiveCumsumOp>,
       GenericOpPattern<tle::DistributedBarrierOp>,

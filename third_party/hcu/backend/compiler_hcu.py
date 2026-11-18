@@ -43,6 +43,9 @@ def _retarget_clang_args(clang_args, asm_text):
 
 @dataclass(frozen=True)
 class HIPOptions:
+    static_pipe_status_arg: int = -1
+    static_pipe_test_drop_ready: bool = False
+    static_pipe_counted_loop: bool = False
     num_warps: int = 4
     waves_per_eu: int = 1
     num_stages: int = 2
@@ -143,6 +146,36 @@ class HIPOptions:
     def hash(self):
         key = '_'.join([f'{name}-{val}' for name, val in self.__dict__.items()])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+
+def prepare_legacy_dtk_ir(kernel_ir):
+    """Conservative LLVM22 text compatibility for the pinned DTK17/18 readers."""
+    errno_none = 0
+    def attribute_group(group):
+        nonlocal errno_none
+        def effects(match):
+            nonlocal errno_none
+            if match.group(1) is None:return match.group(0)
+            parts = [part.strip() for part in match.group(1).split(',')]
+            errno = [part for part in parts if part.startswith('errnomem:')]
+            if any(part != 'errnomem: none' for part in errno):
+                raise RuntimeError('unverified non-none errnomem effect for legacy DTK')
+            if not errno:return match.group(0)
+            errno_none += 1
+            kept = [part for part in parts if part != 'errnomem: none']
+            return 'memory(' + ', '.join(kept) + ')' if kept else ''
+        return re.sub(r'"(?:\\.|[^"\\])*"|\bmemory\(([^)]*)\)', effects, group.group(0))
+    # Only canonical LLVM function-attribute groups, never string constants.
+    kernel_ir = re.sub(r'^attributes #[0-9]+ = \{[^\n]*\}$', attribute_group,
+                       kernel_ir, flags=re.MULTILINE)
+    lifetime_prefix = r'^[ \t]*(?:(?:(?:tail|musttail|notail) )?call\b|declare\b)'
+    lifetime_name = r'[^\n]*@llvm\.lifetime\.(?:start|end)\.p[0-9]+'
+    kernel_ir, lifetimes = re.subn(lifetime_prefix + lifetime_name + r'\([^\n]*\n',
+                                  '', kernel_ir, flags=re.MULTILINE)
+    if re.search(lifetime_prefix + lifetime_name, kernel_ir, flags=re.MULTILINE):
+        raise RuntimeError('unhandled LLVM22 lifetime intrinsic syntax')
+    return kernel_ir, errno_none, lifetimes
 
 
 class HIPBackend(BaseBackend):
@@ -405,6 +438,26 @@ class HIPBackend(BaseBackend):
         pm.enable_debug()
         passes.common.add_inliner(pm)
         passes.ttir.add_rewrite_tensor_pointer(pm)
+        # Only the measured gfx938/four-wave MLS contract is enabled.
+        builder = ir.builder(mod.context)
+        direct_copy_enabled = (options.num_stages == 1 and options.warp_size == 64
+                               and options.num_ctas == 1 and not options.wasp_enabled)
+        mod.set_attr("tle.hcu.descriptor_mls_arch",
+                     builder.get_string_attr(options.arch if direct_copy_enabled else "disabled"))
+        mod.set_attr("tle.hcu.descriptor_mls_warps", builder.get_int32_attr(options.num_warps))
+        if os.environ.get("FLAGTREE_HCU_EXPERIMENTAL_SOFTWARE_WS") == "1" and "ttg.warp_specialize" in str(mod):
+            if (options.arch != "gfx938" or options.num_warps != 2 or options.warp_size != 64
+                    or options.num_ctas != 1 or options.num_stages != 1 or options.wasp_enabled or options.wdra_enabled):
+                raise RuntimeError("software WS requires gfx938 default2 + worker2 wave64, one CTA, no WDRA/WASP")
+            mod.set_attr("tle.hcu.software_ws_2x2", builder.get_int32_attr(1))
+        if "tle.pipe." in str(mod):
+            if os.environ.get("FLAGTREE_HCU_EXPERIMENTAL_STATIC_PIPE") != "1" or options.static_pipe_status_arg < 0:
+                raise RuntimeError("static HCU pipe requires opt-in and explicit static_pipe_status_arg")
+            mod.set_attr("tle.hcu.static_pipe_enabled",builder.get_int32_attr(1))
+            mod.set_attr("tle.hcu.static_pipe_status_arg",builder.get_int32_attr(options.static_pipe_status_arg))
+            mod.set_attr("tle.hcu.static_pipe_test_drop_ready",builder.get_int32_attr(int(options.static_pipe_test_drop_ready)))
+            mod.set_attr("tle.hcu.allow_counted_pipe",builder.get_int32_attr(int(options.static_pipe_counted_loop)))
+            passes.common.add_symbol_dce(pm)
         passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_combine(pm)
@@ -422,6 +475,8 @@ class HIPBackend(BaseBackend):
         pm.enable_debug()
         passes.ttir.add_convert_to_ttgpuir(pm, f"hip:{options.arch}", options.num_warps, options.warp_size,
                                            options.num_ctas)
+        if mod.get_int_attr("tle.hcu.software_ws_2x2"):
+            passes.ttgpuir.add_allocate_warp_groups(pm)
         tle.raw_passes.add_tle_convert_arg_to_memdesc(pm)
         tle.raw_passes.add_tle_remove_redundant_copy(pm)
         # flagtree tle: lower tle.extract_tile
@@ -564,7 +619,8 @@ class HIPBackend(BaseBackend):
         # LDS size is determined by provided arch name.
         custom_lds_size = 0
         hcu.passes.ttgpuir.add_optimize_lds_usage(pm, options.arch, custom_lds_size)
-        passes.convert.add_scf_to_cf(pm)
+        if not options.static_pipe_counted_loop:
+            passes.convert.add_scf_to_cf(pm)
         passes.gluon.add_inliner(pm)
         passes.convert.add_index_to_llvmir(pm)
 
@@ -587,6 +643,8 @@ class HIPBackend(BaseBackend):
         ##    For now it is used as a controller for developers only.
         __HIP_FTZ = True
         hcu.passes.ttgpuir.add_to_llvmir(pm, options.arch, __HIP_FTZ)
+        if options.static_pipe_counted_loop:
+            passes.convert.add_scf_to_cf(pm)
         hcu.passes.ttgpuir.set_func_inline_attrs(pm, options.arch)
         # TritonDistributed Extension: distributed -> llvm
         distributed.passes.ttgpuir.hcu.add_distributed_to_llvm(pm, options.arch, __HIP_FTZ)
@@ -599,9 +657,10 @@ class HIPBackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
 
-        if options.wasp_enabled:
-            hcu.passes.ttgpuir.add_warp_specialize_to_llvm(pm, options.arch, options.wasp_num_load_warps,
-                                                           options.wasp_num_mma_warps, options.wdra_enabled,
+        if options.wasp_enabled or mod.get_int_attr("tle.hcu.software_ws_2x2"):
+            hcu.passes.ttgpuir.add_warp_specialize_to_llvm(pm, options.arch,
+                                                           2 if mod.get_int_attr("tle.hcu.software_ws_2x2") else options.wasp_num_load_warps,
+                                                           2 if mod.get_int_attr("tle.hcu.software_ws_2x2") else options.wasp_num_mma_warps, options.wdra_enabled,
                                                            options.wdra_num_load_regs or 0,
                                                            options.wdra_num_mma_regs_main or 0,
                                                            options.wdra_num_mma_regs_tail or 0)
@@ -668,6 +727,9 @@ class HIPBackend(BaseBackend):
         total_num_warps = src.get_int_attr("ttg.total-num-warps")
         total_num_warps = total_num_warps if total_num_warps is not None else options.num_warps
 
+        if src.get_int_attr("tle.hcu.software_ws_2x2"):
+            metadata["num_warps"] = total_num_warps
+
         # Set kernel attributes first given this may affect later optimizations.
         fns = [fn for fn in llvm_mod.get_functions() if not fn.is_declaration() and fn.name == kernel_name]
 
@@ -676,7 +738,8 @@ class HIPBackend(BaseBackend):
             fns[0].add_fn_attr("hcu-wdra-waves-per-tg", str(total_num_warps))
         # The public kernel should be kernel 0.
         fns[0].set_calling_conv(hcu.CALLING_CONV_AMDGPU_KERNEL)
-        fns[0].add_fn_attr("amdgpu-flat-work-group-size", f"1,{options.num_warps*options.warp_size}")
+        launch_num_warps = total_num_warps if src.get_int_attr("tle.hcu.software_ws_2x2") else options.num_warps
+        fns[0].add_fn_attr("amdgpu-flat-work-group-size", f"1,{launch_num_warps*options.warp_size}")
         if "memory-bound-attention" in options.schedule_hint.split(','):
             fns[0].add_fn_attr("amdgpu-sched-strategy", "iterative-ilp")
         fns[0].add_fn_attr("uniform-work-group-size", "true")
@@ -778,6 +841,10 @@ class HIPBackend(BaseBackend):
         # amdgcn = llvm.translate_to_asm(src, hcu.TARGET_TRIPLE, options.arch, features, flags, options.enable_fp_fusion,
         #                                False)
         kernel_ir = str(src)
+        kernel_ir, errno_none, lifetimes = prepare_legacy_dtk_ir(kernel_ir)
+        metadata["hcu_codegen_errno_none_compat"] = errno_none
+        metadata["hcu_codegen_lifetime_hints_elided"] = lifetimes
+        metadata["hcu_prepared_codegen_ir_sha256"] = hashlib.sha256(kernel_ir.encode()).hexdigest()
         # Prefer dcc for tle.raw when IR has no buffer.rsrc (dcc rejects that intrinsic).
         # Path follows FlagTree/DTK layout: {ROCM_PATH|/opt/dtk}/dcc/bin/dcc
         dcc = Path(HIPBackend.path_to_rocm()) / "dcc" / "bin" / "dcc"

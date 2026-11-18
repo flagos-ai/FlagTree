@@ -558,8 +558,32 @@ SmallVector<Value> lowerLdSt(
       LinearLayout({{kLane, reps.getBases().lookup(kLane)},
                     {kWarp, reps.getBases().lookup(kWarp)}},
                    reps.getOutDims(), false);
-  auto [nAdditive, permStrides] =
-      actionAdditiveStrides(reps, addrLayout, maskSpanAffineOffset);
+  // A register offset may be added only when its bits are disjoint from
+  // both the lane/warp address and every outer (XOR) register offset.
+  // Shared-linear layouts can have independent bases with overlapping bits,
+  // e.g. register bases 16 and 48 with a warp base containing bit 32.
+  // Checking only the lane/warp mask incorrectly permits (base ^ 48) + 16.
+  uint32_t xorBits = maskSpanAffineOffset;
+  for (const auto &bases : llvm::make_second_range(addrLayout.getBases()))
+    for (const auto &basis : bases)
+      xorBits |= basis[0];
+  const auto &regBases = reps.getBases().lookup(kReg);
+  bool changed;
+  do {
+    changed = false;
+    for (const auto &basis : regBases) {
+      if ((basis[0] & xorBits) != 0 && (basis[0] | xorBits) != xorBits) {
+        xorBits |= basis[0];
+        changed = true;
+      }
+    }
+  } while (changed);
+  SmallVector<size_t> additiveRegs, xorRegs;
+  for (auto [idx, basis] : llvm::enumerate(regBases))
+    ((basis[0] & xorBits) == 0 ? additiveRegs : xorRegs).push_back(idx);
+  auto permOrder = to_vector(llvm::concat<size_t>(additiveRegs, xorRegs));
+  int64_t nAdditive = int64_t(1) << additiveRegs.size();
+  ColumnAction permStrides(permOrder, kReg, reps.getInDimSizeLog2(kReg));
   reps = permStrides.apply(reps);
   if (isStore) {
     vals = permStrides.apply(vals);

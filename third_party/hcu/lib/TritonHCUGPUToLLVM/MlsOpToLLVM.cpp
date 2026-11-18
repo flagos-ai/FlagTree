@@ -90,6 +90,58 @@ struct MLSMatrixLoadToLocalOpConversion
 
     auto dstTy = cast<MemDescType>(op.getDest().getType());
     auto sharedLayout = dyn_cast<HCUMlsSharedEncodingAttr>(dstTy.getEncoding());
+#ifdef __TLE__
+    if (op->hasAttr("tle.hcu.direct_copy") || op->hasAttr("tle.hcu.issuer_only_copy")) {
+      bool issuerOnly = op->hasAttr("tle.hcu.issuer_only_copy");
+      if (issuerOnly && !op->hasAttr("tle.hcu.issuer_own_rows_verified"))
+        return op.emitOpError("unproved issuer-only MLS ownership/lifecycle");
+      auto layout = dyn_cast<SwizzledSharedEncodingAttr>(dstTy.getEncoding());
+      unsigned bits = dstTy.getElementType().getIntOrFloatBitWidth();
+      bool rowOrder = layout && layout.getOrder() == ArrayRef<unsigned>{1, 0};
+      bool linear16 = bits == 16 &&
+                      dstTy.getShape() == ArrayRef<int64_t>{64, 32} &&
+                      rowOrder && layout.getVec() == 1 &&
+                      layout.getPerPhase() == 1 && layout.getMaxPhase() == 1;
+      bool swizzled8 = bits == 8 &&
+                       dstTy.getShape() == ArrayRef<int64_t>{64, 64} &&
+                       rowOrder && layout.getVec() == 32 &&
+                       layout.getPerPhase() == 2 && layout.getMaxPhase() == 2;
+      if (!mABIsNeed || (!linear16 && !swizzled8) ||
+          dstTy.getAllocShape() != dstTy.getShape() ||
+          !op.getBoundaryCheck().empty() ||
+          triton::gpu::lookupNumWarps(op) != (issuerOnly ? 2 : 4) ||
+          (issuerOnly && !swizzled8))
+        return op.emitOpError("unsupported direct MLS copy contract");
+      auto llvmElemTy = typeConverter->convertType(dstTy.getElementType());
+      auto smemObj = LLVM::getSharedMemoryObjectFromStruct(
+          loc, adaptor.getDest(), llvmElemTy, rewriter);
+      auto warp = rewriter.create<ROCDL::ReadfirstlaneOp>(
+          loc, i32_ty, b.udiv(getThreadId(rewriter, loc), b.i32_val(64)));
+      Value row = b.add(b.zext(i64_ty, adaptor.getIndices()[0]),
+                        b.mul(b.zext(i64_ty, warp), b.i64_val(issuerOnly ? 32 : 16)));
+      Value offset = b.add(b.mul(row, adaptor.getStrides()[0]),
+                           b.zext(i64_ty, adaptor.getIndices()[1]));
+      Value src = b.gep(ptr_ty(ctx, 1), bits == 16 ? i16_ty : i8_ty,
+                        adaptor.getBase(), offset);
+      Value stride = b.trunc(i32_ty, adaptor.getStrides()[0]);
+      Value resource = createRsrcDesc(loc, rewriter, src, stride, 0,
+                                      b.i32_val(0), b.i32_val(0));
+      // Match the measured mfmt=0/cache_swizzle=1 non-transpose modes.
+      resource = b.insert_element(vec_ty(i32_ty, 4), resource,
+                                   b.i32_val(1 << 16), b.i32_val(3));
+      Value dstOffset = b.mul(warp, b.i32_val((issuerOnly ? 32 : 16) * dstTy.getShape()[1]));
+      Value dst = b.gep(ptr_ty(ctx, 3), bits == 16 ? i16_ty : i8_ty,
+                        smemObj.getBase(), dstOffset);
+      StringRef instruction = bits == 16
+          ? ROCDL::hcu_matrix_load_32X16_b16::getOperationName()
+          : (issuerOnly ? ROCDL::hcu_matrix_load_64X32_b8::getOperationName()
+                        : ROCDL::hcu_matrix_load_64X16_b8::getOperationName());
+      generateMatrixLoadLDSOp(loc, rewriter, instruction, resource, dst,
+                              /*t=*/false, /*offset=*/0, /*r=*/false);
+      rewriter.eraseOp(op);
+      return success();
+    }
+#endif
     auto blockLayout =
         op->getAttrOfType<MlsEncodingAttr>(MlsEncodingAttr::getMnemonic());
     auto llvmElemTy = typeConverter->convertType(dstTy.getElementType());
