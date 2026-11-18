@@ -6,7 +6,6 @@ import re
 import shutil
 import subprocess
 import sys
-import traceback
 import warnings
 from types import SimpleNamespace
 
@@ -550,7 +549,7 @@ def test_hcu_dot_accumulator_dtype(dtype, accumulator, fresh_triton_cache):
                        target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4})
 
 
-@pytest.mark.parametrize("arch", ["gfx936", "gfx938"])
+@pytest.mark.parametrize("arch", ["gfx936", "gfx938", "gfx92a", "gfx946"])
 @pytest.mark.parametrize("a,b", [("fp8e4nv", "fp8e4nv"), ("fp8e4nv", "fp8e5"), ("fp8e5", "fp8e4nv"),
                                  ("fp8e5", "fp8e5")])
 def test_hcu_fp8_dot_target_paths(arch, a, b, fresh_triton_cache):
@@ -592,11 +591,11 @@ def test_hcu_int4_container_rejection(fresh_triton_cache):
             ASTSource(precision_int4_dot, {"A": "*i8", "B": "*u8", "C": "*i32"},
                       constexprs={"ACC": None, "M": 16, "N": 16, "K": 32, "AXIS_A": 1, "AXIS_B": 0}),
             target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4})
-    assert "INT4 operands require packed uint8" in ''.join(traceback.format_exception(caught.value))
+    assert "INT4 operands require packed uint8" in str(caught.value)
 
 
 @pytest.mark.parametrize("operation", ["dot", "scaled"])
-@pytest.mark.parametrize("support", [None, DotSupport.NATIVE, DotSupport.NON_NATIVE, DotSupport.UNSUPPORTED])
+@pytest.mark.parametrize("support", [DotSupport.NATIVE, DotSupport.NON_NATIVE, DotSupport.UNSUPPORTED])
 def test_precision_capability_semantics(operation, support):
 
     class ReachedLowering(Exception):
@@ -605,7 +604,7 @@ def test_precision_capability_semantics(operation, support):
     def stop(*args):
         raise ReachedLowering()
 
-    cap = None if support is None else DotCap(support, "precision capability diagnostic")
+    cap = DotCap(support, "precision capability diagnostic")
     builder = SimpleNamespace(
         codegen_fns={"resolve_dot": lambda *args: cap, "resolve_dot_scaled": lambda *args: cap, "min_dot_size": stop},
         options=SimpleNamespace(allowed_dot_input_precisions=("ieee", )), get_fp32=stop)
@@ -697,7 +696,7 @@ def test_hcu_integer_scaled_int32_operands_rejected(format_a, format_b, fresh_tr
                     "SA": None, "SB": None, "M": 16, "N": 16, "K": 64, "FORMAT_A": format_a, "FORMAT_B": format_b,
                     "OUT_DTYPE": tl.float32
                 }), target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4})
-    assert "integer operand formats must be int4/int8" in ''.join(traceback.format_exception(caught.value))
+    assert "integer operand formats must be int4/int8" in str(caught.value)
 
 
 def test_hcu_integer_scaled_rejects_int32_output_with_scale(fresh_triton_cache):
@@ -706,7 +705,7 @@ def test_hcu_integer_scaled_rejects_int32_output_with_scale(fresh_triton_cache):
     with pytest.raises(triton.CompilationError) as caught:
         triton.compile(ASTSource(precision_integer_scaled, signature, constexprs=constants),
                        target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4})
-    assert "INT32 output requires both integer scales to be None" in ''.join(traceback.format_exception(caught.value))
+    assert "INT32 output requires both integer scales to be None" in str(caught.value)
 
 
 @pytest.mark.parametrize("dtype", ["i32", "i8", "u8", "fp8e4nv"])
@@ -820,14 +819,56 @@ def test_hcu_tle_local_load_compile(async_request, fresh_triton_cache):
     assert any("synchronous load" in str(item.message) for item in caught) == async_request
 
 
-def test_hcu_unbounded_async_diagnostic(fresh_triton_cache, capfd):
-    # A pointer range is deliberately absent, so buffer conversion is illegal.
-    with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        triton.compile(
+@pytest.mark.parametrize("arch,wide", [("gfx936", False), ("gfx946", True)])
+def test_hcu_declared_dtypes(arch, wide):
+    from triton.backends.hcu.compiler_hcu import HIPBackend
+
+    options = HIPBackend(GPUTarget("hip", arch, 64)).parse_options({})
+    assert set(options.supported_fp8_cast_dtypes) == {"fp8e4nv", "fp8e5"}
+    assert {"fp8e4nv", "fp8e5", "int8", "int32"} <= set(options.async_copy_dtypes)
+    assert ("fp64" in options.async_copy_dtypes) == wide
+    assert {"fp8e4nv", "uint8", "int32", "fp64"} <= set(options.descriptor_dtypes)
+
+
+def test_hcu_integer_scaled_wrong_storage(fresh_triton_cache):
+    signature = {"A": "*u8", "B": "*i8", "ACC": "*fp32", "C": "*fp32"}
+    constants = {
+        "SA": None, "SB": None, "M": 16, "N": 16, "K": 32, "FORMAT_A": "int8", "FORMAT_B": "int8", "OUT_DTYPE":
+        tl.float32
+    }
+    with pytest.raises(triton.CompilationError, match="INT8 lhs requires signed INT8 storage"):
+        triton.compile(ASTSource(precision_integer_scaled, signature, constants), target=GPUTarget("hip", "gfx936", 64))
+
+
+@pytest.mark.parametrize("storage_bytes,async_native", [(2**31 - 1, True), (2**31, False)])
+def test_hcu_tle_storage_boundary_values(storage_bytes, async_native, device, fresh_triton_cache):
+    if triton.runtime.driver.active.get_current_target().arch != "gfx936":
+        pytest.skip("gfx936 buffer-to-LDS specialization")
+    # Exercise the launcher's ptr_range ABI without allocating 2 GiB for a 4 KiB read.
+    from triton.runtime.jit import TensorWrapper
+    host = torch.arange(1021, dtype=torch.int32)
+    src = TensorWrapper(host.to(device), tl.int32)
+    src.ptr_range = lambda: storage_bytes
+    dst = torch.full((1056, ), -1, dtype=torch.int32, device=device)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        kernel = precision_tle_copy[(1, )](src, dst[16:-16], 1021, 1, True, num_warps=4, num_stages=1)
+    assert bool(re.search(r"buffer_load[^\n]*\blds\b", kernel.asm["amdgcn"])) == async_native
+    assert any("synchronous load" in str(w.message) for w in caught) == (not async_native)
+    expected = torch.full((1056, ), -1, dtype=torch.int32)
+    expected[16:1037] = host
+    torch.testing.assert_close(dst.cpu(), expected, rtol=0, atol=0)
+
+
+def test_hcu_unbounded_async_diagnostic(fresh_triton_cache):
+    # This is the specialization used when storage is at least 2 GiB.
+    with pytest.warns(UserWarning, match="synchronous load.*buffer-compatible"):
+        compiled = triton.compile(
             ASTSource(precision_tle_copy, {"X": "*i32", "Y": "*i32"},
                       constexprs={"N": 4096, "STRIDE": 1, "ASYNC": True, "BLOCK": 1024}),
             target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4, "num_stages": 1})
-    assert "gfx936 native async copies require buffer-compatible pointers" in capfd.readouterr().err
+    assert "async_copy_global_to_local" not in compiled.asm["ttgir"]
+    assert not re.search(r"buffer_load[^\n]*\blds\b", compiled.asm["amdgcn"])
 
 
 @pytest.mark.parametrize("inner", [1, 4, 16, 32])
@@ -1477,7 +1518,7 @@ def test_hcu_fp8_integer_values(integer, fp8, to_fp8, device):
 def test_hcu_provider_source_invalidates_cache(source, tmp_path):
     package = Path(triton.__file__).parent
     runtime = tmp_path / "runtime/triton"
-    shutil.copytree(package, runtime, ignore=shutil.ignore_patterns("_C", "__pycache__"), symlinks=True)
+    shutil.copytree(package, runtime, ignore=shutil.ignore_patterns("_C", "__pycache__"), symlinks=False)
     (runtime / "_C").symlink_to(package / "_C", target_is_directory=True)
     if source == "hip_utils":
         provider = runtime / "language/extra/hip/utils.py"

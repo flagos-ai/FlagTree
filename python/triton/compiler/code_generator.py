@@ -1467,7 +1467,8 @@ class CodeGenerator(ast.NodeVisitor):
                 # Wrap the error in the callee with the location of the call.
                 if knobs.compilation.front_end_debugging:
                     raise
-                raise CompilationError(self.jit_fn.src, self.cur_node, None) from e
+                reason = e.error_message if isinstance(e, CompilationError) else str(e)
+                raise CompilationError(self.jit_fn.src, self.cur_node, reason) from e
 
             callee_ret_type = generator.ret_type
             self.function_ret_types[fn_name] = callee_ret_type

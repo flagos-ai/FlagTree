@@ -192,6 +192,11 @@ def fp4_to_fp_scaled(src: core.tensor, scale: "Optional[core.tensor]", elem_type
     return decoded.to(elem_type, fp_downcast_rounding="rtne")
 
 
+@core.builtin
+def _check_integer_scaled_support(lhs_format, rhs_format, _semantic=None):
+    _semantic.check_dot_scaled_support(core._unwrap_if_constexpr(lhs_format), core._unwrap_if_constexpr(rhs_format))
+
+
 @triton.jit
 def _dot_scaled_integer(lhs: core.tensor, lhs_scale: "Optional[core.tensor]", lhs_format: core.constexpr,
                         rhs: core.tensor, rhs_scale: "Optional[core.tensor]", rhs_format: core.constexpr,
@@ -222,12 +227,12 @@ def _dot_scaled_integer(lhs: core.tensor, lhs_scale: "Optional[core.tensor]", lh
         tl.static_assert(lhs_scale is None and rhs_scale is None,
                          "INT32 output requires both integer scales to be None")
         if lhs_format == "int4" or rhs_format == "int4":
-            _software_warning("HCU INT4 dot uses GPU software unpacking and INT8 dot (native=false)")
+            _check_integer_scaled_support(lhs_format, rhs_format)
         return tl.dot(lhs, rhs, acc=acc, out_dtype=tl.int32)
     else:
         tl.static_assert(out_dtype == tl.float32, "integer scaled dot requires FP32 output")
         tl.static_assert(lhs_k_pack and rhs_k_pack, "integer scaled dot requires K-packed operands")
-        _software_warning("HCU integer scaled dot uses GPU groupwise integer dot and FP32 scaling (native=false)")
+        _check_integer_scaled_support(lhs_format, rhs_format)
         group_size: core.constexpr = 32
         M: core.constexpr = lhs.shape[0]
         K: core.constexpr = lhs.shape[1]

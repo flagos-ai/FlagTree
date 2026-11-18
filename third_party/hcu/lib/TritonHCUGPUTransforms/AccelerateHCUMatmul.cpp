@@ -950,20 +950,6 @@ public:
     else
       mfmaAccType = rewriter.getF32Type();
 
-    if (oldAType.getElementType() != mfmaInstr->aElementType ||
-        oldBType.getElementType() != mfmaInstr->bElementType) {
-      std::string detail;
-      llvm::raw_string_ostream(detail)
-          << "tl.dot ("
-          << HCU::describeDotInputs(oldAType.getElementType(),
-                                    oldBType.getElementType())
-          << ") uses GPU input conversion to " << mfmaInstr->aElementType
-          << " x " << mfmaInstr->bElementType
-          << " followed by matrix multiplication with " << mfmaAccType
-          << " accumulation";
-      HCU::recordSoftwareDot(dotOp, detail);
-    }
-
     // Use transposed mfma layout to enable larger vectorization for global
     // store instructions. We can not support transposed mfma 4x64 as it
     // requires to broadcast the operand A.
@@ -1734,8 +1720,6 @@ public:
     auto newDot = rewriter.create<DotOp>(dotOp.getLoc(), newC.getType(), newA,
                                          newB, newC, dotOp.getInputPrecision(),
                                          dotOp.getMaxNumImpreciseAcc());
-    if (auto inputs = dotOp->getAttr(HCU::OriginalDotInputs))
-      newDot->setAttr(HCU::OriginalDotInputs, inputs);
     auto newD = castToElTy(rewriter, newDot.getResult(), dotTypes.d);
 
     rewriter.replaceOp(dotOp, newD);
@@ -1798,13 +1782,6 @@ struct TritonHCUGPUAccelerateMatmulPass
       return;
     }
 
-    m.walk([&](DotOp dot) {
-      auto inputs =
-          HCU::describeDotInputs(dot.getA().getType().getElementType(),
-                                 dot.getB().getType().getElementType());
-      dot->setAttr(HCU::OriginalDotInputs, StringAttr::get(context, inputs));
-    });
-
     RewritePatternSet mfmaPatterns(context);
     auto features = triton::HCU::deduceHCUISAFeature(archGenerationName);
     auto mmacLayout = mmacLayoutForce != -1
@@ -1821,10 +1798,12 @@ struct TritonHCUGPUAccelerateMatmulPass
     case ISAFamily::CDNA3:
       ttg::populateDecomposeScaledBlockedPatterns(mfmaPatterns,
                                                   /*benefit=*/3);
-      mfmaPatterns.add<::BlockedToMFMA>(context, getMfmaVersion(isaFamily),
-                                        matrixInstructionSize, kPack, features,
-                                        mmacLayout,
-                                        /*benefit=*/2);
+      // Unscaled HCU MMAC entries use the v3 encoding, including on gfx946.
+      mfmaPatterns.add<::BlockedToMFMA>(
+          context,
+          archGenerationName == "gfx946" ? 3 : getMfmaVersion(isaFamily),
+          matrixInstructionSize, kPack, features, mmacLayout,
+          /*benefit=*/2);
       break;
     case ISAFamily::RDNA3:
       ttg::populateDecomposeScaledBlockedPatterns(mfmaPatterns,
@@ -1843,32 +1822,6 @@ struct TritonHCUGPUAccelerateMatmulPass
     patterns.add<AccelerateBlocked>(context, archGenerationName, /*benefit=*/1);
     if (applyPatternsGreedily(m, std::move(patterns)).failed())
       signalPassFailure();
-    m.walk([&](DotOp dot) {
-      if (!isa<BlockedEncodingAttr>(dot.getType().getEncoding()))
-        return;
-      auto inputs = dot->getAttrOfType<StringAttr>(HCU::OriginalDotInputs);
-      auto aType = dot.getA().getType().getElementType();
-      auto bType = dot.getB().getType().getElementType();
-      auto accumulator = dot.getType().getElementType();
-      auto k = dot.getA().getType().getShape().back();
-      StringRef path = "scalar multiply-add";
-      if (HCU::supportsVDot(archGenerationName) && aType.isInteger(8) &&
-          k % 4 == 0)
-        path = "vector dot4";
-      else if (HCU::supportsVDot(archGenerationName) &&
-               (aType.isF16() || aType.isBF16()) && accumulator.isF32())
-        path = "vector dot2";
-      std::string detail;
-      llvm::raw_string_ostream(detail)
-          << "tl.dot ("
-          << (inputs ? inputs.getValue().str()
-                     : HCU::describeDotInputs(aType, bType))
-          << ") uses non-matrix GPU " << path << " with "
-          << (aType.isInteger() ? accumulator : aType) << " multiplication and "
-          << accumulator << " accumulation";
-      HCU::recordSoftwareDot(dot, detail);
-      dot->removeAttr(HCU::OriginalDotInputs);
-    });
     decomposeMixedModeDotOp(m);
   }
 };

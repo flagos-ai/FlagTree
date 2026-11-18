@@ -174,16 +174,6 @@ DecomposeScaledBlocked::matchAndRewrite(DotScaledOp scaledDotOp,
                                      scaledDotOp.getType(), result);
   }
 
-  std::string detail;
-  llvm::raw_string_ostream(detail)
-      << "tl.dot_scaled ("
-      << stringifyScaleDotElemType(scaledDotOp.getAElemType()) << " x "
-      << stringifyScaleDotElemType(scaledDotOp.getBElemType())
-      << ") uses GPU software decoding"
-      << (grouped ? " and groupwise FP32 exponent scaling, " : ", ")
-      << computeType << " dot operands and f32 accumulation";
-  HCU::recordSoftwareDot(scaledDotOp, detail);
-
   if (scaledDotOp.getAElemType() == ScaleDotElemType::E2M1 ||
       scaledDotOp.getBElemType() == ScaleDotElemType::E2M1) {
     if (auto loop = scaledDotOp->getParentOfType<scf::ForOp>())

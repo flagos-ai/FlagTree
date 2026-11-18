@@ -267,8 +267,11 @@ public:
         if (auto mask = load.getMask())
           contiguity = std::min<unsigned>(contiguity,
                                           axisAnalysis.getMaskAlignment(mask));
-        eligible = contiguity * type.getElementTypeBitWidth() >= 32 &&
-                   triton::canBeAsyncLoad(load);
+        unsigned bits = type.getElementTypeBitWidth();
+        eligible =
+            bits >= 8 &&
+            fitToValidDirectToLdsVecSize(contiguity, bits, targetInfo) != 0 &&
+            triton::canBeAsyncLoad(load);
       }
       if (!eligible) {
         load->removeAttr("tt.load.async");

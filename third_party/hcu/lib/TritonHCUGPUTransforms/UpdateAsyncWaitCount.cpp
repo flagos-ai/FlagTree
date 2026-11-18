@@ -335,6 +335,26 @@ struct TritonHCUGPUUpdateAsyncWaitCountPass
 
     ModuleOp m = getOperation();
 
+    // Buffer conversion has finished. Any remaining gfx936 async copy would
+    // require a global-to-LDS instruction that this DTK cannot lower.
+    if (archGenerationName == "gfx936") {
+      m.walk([&](ttg::AsyncCopyGlobalToLocalOp copy) {
+        OpBuilder builder(copy);
+        auto loc = copy.getLoc();
+        auto load = tt::LoadOp::create(
+            builder, loc, copy.getSrc(), copy.getMask(), copy.getOther(),
+            copy.getCache(), copy.getEvict(), copy.getIsVolatile());
+        ttg::LocalStoreOp::create(builder, loc, load, copy.getResult());
+        auto done = ttg::AsyncWaitOp::create(builder, loc, ValueRange{}, 0);
+        copy.getToken().replaceAllUsesWith(done.getResult());
+        copy.erase();
+        m->setAttr("hcug.async_load_diagnostics",
+                   builder.getStringAttr(
+                       "gfx936 uses a synchronous load because the pointer has "
+                       "no buffer-compatible offset range (native=false)"));
+      });
+    }
+
     // ttg.async_wait should only count async **non** tdm load:
     SmallVector<ttg::AsyncWaitOp> waitOps;
     getOperation()->walk(
