@@ -1263,8 +1263,7 @@ emitMergedMaskedLoads(Location loc, ValueRange ptrs, ValueRange masks,
   rewriter.setInsertionPointToStart(full);
   SmallVector<Value> fullValues;
   for (unsigned i = 0; i < ptrs.size(); ++i)
-    fullValues.push_back(
-        LLVM::LoadOp::create(rewriter, loc, mergeTy, ptrs[i]));
+    fullValues.push_back(LLVM::LoadOp::create(rewriter, loc, mergeTy, ptrs[i]));
   LLVM::BrOp::create(rewriter, loc, fullValues, after);
   rewriter.setInsertionPointToStart(checkAny);
   LLVM::CondBrOp::create(rewriter, loc, any, active, ValueRange{}, after,
@@ -1276,14 +1275,12 @@ emitMergedMaskedLoads(Location loc, ValueRange ptrs, ValueRange masks,
     Value safePtr =
         LLVM::SelectOp::create(rewriter, loc, masks[i % masks.size()], ptrs[i],
                                ptrs[i / masks.size() * masks.size()]);
-    Value value =
-        LLVM::LoadOp::create(rewriter, loc, mergeTy, safePtr);
+    Value value = LLVM::LoadOp::create(rewriter, loc, mergeTy, safePtr);
     // Inactive results are undefined without an explicit other.
-    loaded.push_back(
-        preserveOther
-            ? LLVM::SelectOp::create(rewriter, loc, masks[i % masks.size()], value,
-                                     mergeOthers[i])
-            : value);
+    loaded.push_back(preserveOther ? LLVM::SelectOp::create(
+                                         rewriter, loc, masks[i % masks.size()],
+                                         value, mergeOthers[i])
+                                   : value);
   }
   LLVM::BrOp::create(rewriter, loc, loaded, after);
   rewriter.setInsertionPointToStart(after);
@@ -1442,8 +1439,9 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
                                      useVectorCarrier, rewriter);
       if (peer) {
         Value packed = ::mlir::packLLElements(
-            loc, typeConverter, llvm::ArrayRef<Value>(loaded).drop_front(numElems),
-            rewriter, peer.getType());
+            loc, typeConverter,
+            llvm::ArrayRef<Value>(loaded).drop_front(numElems), rewriter,
+            peer.getType());
         rewriter.replaceOp(peer, packed);
         loaded.resize(numElems);
       }

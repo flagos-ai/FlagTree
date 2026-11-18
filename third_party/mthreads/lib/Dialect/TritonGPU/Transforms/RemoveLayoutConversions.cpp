@@ -48,11 +48,11 @@
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
-#include <cstdlib>
-#include <deque>
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include <cstdlib>
+#include <deque>
 #include <optional>
 
 namespace mlir::triton::gpu {
@@ -505,7 +505,8 @@ static Attribute getWidenedLoopComputeLayout(arith::ExtFOp ext) {
     auto mul = dyn_cast<arith::MulFOp>(user);
     if (!mul)
       continue;
-    Value vector = mul.getLhs() == ext.getResult() ? mul.getRhs() : mul.getLhs();
+    Value vector =
+        mul.getLhs() == ext.getResult() ? mul.getRhs() : mul.getLhs();
     auto broadcast = vector.getDefiningOp<BroadcastOp>();
     if (!broadcast)
       continue;
@@ -528,7 +529,8 @@ static Attribute getWidenedLoopComputeLayout(arith::ExtFOp ext) {
         continue;
       for (BlockArgument carry : loop.getRegionIterArgs())
         if ((add.getLhs() == carry || add.getRhs() == carry) &&
-            loop.getYieldedValues()[carry.getArgNumber() - 1] == add.getResult())
+            loop.getYieldedValues()[carry.getArgNumber() - 1] ==
+                add.getResult())
           return vectorType.getEncoding();
     }
   }
@@ -976,9 +978,8 @@ bool LayoutPropagation::collectProducerClosure(Proposal &proposal, Value target,
       auto resultType = dyn_cast<RankedTensorType>(loadOp.getType());
       bool inLoop = defOp->getParentOfType<scf::ForOp>() != nullptr ||
                     defOp->getParentOfType<scf::WhileOp>() != nullptr;
-      if (!preservesWritebackMemoryAccess(
-              ptrType, resultType, encoding,
-              /*allowNarrowerContiguity=*/false) &&
+      if (!preservesWritebackMemoryAccess(ptrType, resultType, encoding,
+                                          /*allowNarrowerContiguity=*/false) &&
           (inLoop ||
            !isOrderIndifferentAccess(axisInfoAnalysis, loadOp.getPtr())))
         return false;
@@ -1125,9 +1126,9 @@ static int64_t getOpLoopFrequencyWeight(Operation *op) {
 
 // Cost of one convert of `value`: its smem round-trip byte estimate (>= 1).
 static int64_t getConvertUnitCost(Value value) {
-  int64_t cost = kConvertCostPerByte *
-                 getByteCount(value, kConvertMinimumElements,
-                              kConvertMinimumElementBits);
+  int64_t cost =
+      kConvertCostPerByte *
+      getByteCount(value, kConvertMinimumElements, kConvertMinimumElementBits);
   return cost == 0 ? 1 : cost;
 }
 
@@ -1866,7 +1867,7 @@ static bool producerConeReachesReduce(Value value, int depth) {
 // local chain. This covers cheap cast/index tails without changing reductions,
 // scans, anchors, or control-flow-carried values.
 static bool producerConeWidensScalarLog(Value value, Attribute encoding,
-                                       unsigned depth = 6) {
+                                        unsigned depth = 6) {
   if (widensScalarLog(value, encoding))
     return true;
   Operation *op = value.getDefiningOp();
@@ -1907,7 +1908,8 @@ static bool isBackwardPropagationSeedCandidate(ConvertLayoutOp cvtOp) {
         return false;
       break;
     }
-    if (!isBackwardPropagationTailUser(user, tail) || user->getNumResults() != 1)
+    if (!isBackwardPropagationTailUser(user, tail) ||
+        user->getNumResults() != 1)
       break;
     tail = user->getResult(0);
   }
@@ -2472,9 +2474,8 @@ bool LayoutPropagation::solveSmallComponents() {
                        atomicOp);
       return false;
     }
-    if (!preservesWritebackMemoryAccess(
-            ptrType, valType, encoding,
-            /*allowNarrowerContiguity=*/false) ||
+    if (!preservesWritebackMemoryAccess(ptrType, valType, encoding,
+                                        /*allowNarrowerContiguity=*/false) ||
         widensPastVectorAccess(axisInfoAnalysis, atomicOp.getPtr(),
                                atomicOp.getMask(), valType.getElementType(),
                                encoding))
@@ -3791,8 +3792,7 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
     }
   }
   if (op->hasTrait<OpTrait::SameOperandsAndResultEncoding>() ||
-      op->hasTrait<OpTrait::Elementwise>() ||
-      isPassthroughWaitLike(op) ||
+      op->hasTrait<OpTrait::Elementwise>() || isPassthroughWaitLike(op) ||
       isa<ReduceOp, ExpandDimsOp, ReshapeOp, TransOp, JoinOp, SplitOp, GatherOp,
           ConvertLayoutOp>(op) ||
       (enableEnhance && isEncodingUniformPureOp(op))) {
@@ -3842,7 +3842,6 @@ bool isExpensiveLoadWithAxisInfo(LoadOp loadOp,
   }
   return false;
 }
-
 
 bool canBeRemat(Operation *op, ModuleAxisInfoAnalysis *axisInfo) {
   if (isExplicitLayoutConversion(op))
@@ -4441,7 +4440,7 @@ void LayoutRematerialization::backwardRematerialization(
       // operations which use the special function unit and/or involve
       // multiple instructions.
       int64_t multiplier = isExpensiveMathOp(op) ? kExpensiveMathCostPerByte
-                                              : kCheapMathCostPerByte;
+                                                 : kCheapMathCostPerByte;
       for (Value result : op->getResults()) {
         rematerialisationCost += multiplier * getByteCount(result);
       }
@@ -4602,8 +4601,8 @@ bool LayoutRematerialization::rematerializeWritebackLayout(
     if (!isa<RankedTensorType>(operand.get().getType()))
       return true; // Scalar operand: nothing to rematerialize.
     if (failed(getRematerializableSlice(operand, targetEncoding, slice, layout,
-                                       /*stopPropagation=*/nullptr,
-                                       kMaxRematSliceSize)))
+                                        /*stopPropagation=*/nullptr,
+                                        kMaxRematSliceSize)))
       return false;
     for (Value v : slice) {
       if (isa<BlockArgument>(v))
@@ -4693,7 +4692,6 @@ void LayoutRematerialization::hoistConvertDotOperand(
     return;
   auto targetType = convertOp.getType();
   // The pass is targeted to MMA dot operands
-
 
   auto canBePipelined = [&](ConvertLayoutOp convertOp) {
     // FIXME: Check that the parent is a for loop
@@ -5016,8 +5014,7 @@ bool backwardRematerialization(ModuleOp module, bool duplicableLoadRemat) {
   // conservatively.
   std::optional<ModuleAxisInfoAnalysis> axisInfoAnalysis;
   auto target = module->getAttrOfType<StringAttr>("ttg.target");
-  if (duplicableLoadRemat ||
-      (target && target.getValue().starts_with("musa:")))
+  if (duplicableLoadRemat || (target && target.getValue().starts_with("musa:")))
     axisInfoAnalysis.emplace(module);
   ModuleAxisInfoAnalysis *axisInfo =
       axisInfoAnalysis ? &*axisInfoAnalysis : nullptr;
@@ -5093,7 +5090,6 @@ bool retargetTleSqmmaStores(ModuleOp module) {
 }
 #endif
 
-
 void hoistConvert(ModuleOp module) {
   SmallVector<ConvertLayoutOp> convertOps;
   module.walk([](FuncOp funcOp) {
@@ -5128,8 +5124,7 @@ static bool preservesReductionColumnMapping(RankedTensorType type,
     if (it == after.getBases().end())
       return false;
     bool registerDim = dim.getValue() == "register";
-    auto columns = [&](const auto &vectors,
-                       SmallVectorImpl<int32_t> &result) {
+    auto columns = [&](const auto &vectors, SmallVectorImpl<int32_t> &result) {
       for (const auto &v : vectors) {
         if (v.size() != 2 || (v[0] && v[1]))
           return false;
@@ -5149,13 +5144,15 @@ static bool preservesReductionColumnMapping(RankedTensorType type,
 }
 
 // Follow only pointer-preserving operations. Unknown provenance must not be
-// mistaken for a new allocation; different arguments are still allowed to alias.
+// mistaken for a new allocation; different arguments are still allowed to
+// alias.
 static Value getWritebackPointerRoot(Value ptr) {
   for (unsigned depth = 0; depth < 64; ++depth) {
     if (isa<BlockArgument>(ptr))
       return ptr;
     Operation *op = ptr.getDefiningOp();
-    if (!op || !isa<AddPtrOp, SplatOp, BroadcastOp, ExpandDimsOp, BitcastOp>(op))
+    if (!op ||
+        !isa<AddPtrOp, SplatOp, BroadcastOp, ExpandDimsOp, BitcastOp>(op))
       return {};
     ptr = op->getOperand(0);
   }
@@ -5260,10 +5257,9 @@ static bool packReductionWritebackRows(FuncOp funcOp) {
   auto lanes = parent.getThreadsPerWarp();
   auto warps = parent.getWarpsPerCTA();
   bool fp32CrossWarp =
-      elementType.isF32() && tile.size() == 2 &&
-      perThread.size() == 2 && lanes.size() == 2 && warps.size() == 2 &&
-      perThread[0] == 1 && lanes[0] == 1 && lanes[1] == 32 &&
-      warps[1] > 1 && warps[0] >= warps[1] &&
+      elementType.isF32() && tile.size() == 2 && perThread.size() == 2 &&
+      lanes.size() == 2 && warps.size() == 2 && perThread[0] == 1 &&
+      lanes[0] == 1 && lanes[1] == 32 && warps[1] > 1 && warps[0] >= warps[1] &&
       // Require an integral number of complete packed row ownership groups.
       // This bound is not an occupancy or memory-transaction cost model.
       tile[0] >= 4 * int64_t(warps[0]) * warps[1] &&
@@ -5271,14 +5267,13 @@ static bool packReductionWritebackRows(FuncOp funcOp) {
       tile[1] >= int64_t(lanes[1]) * warps[1] * perThread[1];
   // For narrow inputs, retain the warp decomposition while grouping rows.
   // Require complete groups and the widening/truncation chain checked below.
-  bool fp16CrossWarp =
-      elementType.isF16() && tile.size() == 2 &&
-      perThread.size() == 2 && lanes.size() == 2 && warps.size() == 2 &&
-      perThread[0] == 1 && lanes[0] == 1 && lanes[1] == 32 &&
-      warps[1] > 1 &&
-      tile[0] >= 2 * int64_t(warps[0]) * warps[1] &&
-      tile[0] % (2 * int64_t(warps[0]) * warps[1]) == 0 &&
-      tile[1] >= int64_t(lanes[1]) * warps[1] * perThread[1];
+  bool fp16CrossWarp = elementType.isF16() && tile.size() == 2 &&
+                       perThread.size() == 2 && lanes.size() == 2 &&
+                       warps.size() == 2 && perThread[0] == 1 &&
+                       lanes[0] == 1 && lanes[1] == 32 && warps[1] > 1 &&
+                       tile[0] >= 2 * int64_t(warps[0]) * warps[1] &&
+                       tile[0] % (2 * int64_t(warps[0]) * warps[1]) == 0 &&
+                       tile[1] >= int64_t(lanes[1]) * warps[1] * perThread[1];
   if (!fp32 && !fp16 && !bf16 && !fp32CrossWarp && !fp16CrossWarp)
     return false;
   auto valueType = dyn_cast<RankedTensorType>(reduce.getSrcs()[0].getType());
@@ -5304,8 +5299,8 @@ static bool packReductionWritebackRows(FuncOp funcOp) {
       return false;
     auto slice = dyn_cast<SliceEncodingAttr>(type.getEncoding());
     if (store->getParentOfType<scf::ForOp>() ||
-        type.getShape() != ArrayRef<int64_t>({loadType.getShape()[0]}) || !slice ||
-        slice.getDim() != 1 || slice.getParent() != parent)
+        type.getShape() != ArrayRef<int64_t>({loadType.getShape()[0]}) ||
+        !slice || slice.getDim() != 1 || slice.getParent() != parent)
       return false;
     if (fp32 || fp32CrossWarp) {
       if (store.getValue().getDefiningOp() != loop.getOperation())
@@ -5337,9 +5332,10 @@ static bool packReductionWritebackRows(FuncOp funcOp) {
   // below rejects unaligned pack8 candidates without changing their layout.
   bool packEightRows = fp32CrossWarp;
   const unsigned rowsPerThread =
-      packEightRows ? 8 : fp16CrossWarp ? 2 :
-      (fp32CrossWarp || fp16 ||
-       (fp32 && parent.getWarpsPerCTA() == ArrayRef<unsigned>({8, 1})))
+      packEightRows   ? 8
+      : fp16CrossWarp ? 2
+      : (fp32CrossWarp || fp16 ||
+         (fp32 && parent.getWarpsPerCTA() == ArrayRef<unsigned>({8, 1})))
           ? 4
           : 2;
   const unsigned columnsPerThread = parent.getSizePerThread()[1];
@@ -5554,8 +5550,8 @@ static void specializeBoundedDualWriteback(FuncOp funcOp) {
     if (!possibleWidth || !isa<BlockArgument>(possibleWidth) ||
         !possibleWidth.getType().isInteger(32))
       continue;
-    auto candidateDivisor = provedDivisor(cast<BlockArgument>(possibleWidth),
-                                         *size);
+    auto candidateDivisor =
+        provedDivisor(cast<BlockArgument>(possibleWidth), *size);
     if (!candidateDivisor)
       continue;
     if (!add.getResult().hasOneUse() ||
