@@ -51,7 +51,6 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/SmallPtrSet.h"
-#include <cstdlib>
 #include <deque>
 #include <optional>
 
@@ -64,28 +63,8 @@ namespace mlir::triton::gpu {
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
-static void traceRlcDecision(StringRef phase, StringRef outcome,
-                             StringRef reason, Operation *op = nullptr) {
-  const char *value = std::getenv("FLAGTREE_RLC_TRACE_REJECTS");
-  if (!value)
-    return;
-  StringRef setting(value);
-  if (setting != "1" && !setting.equals_insensitive("true") &&
-      !setting.equals_insensitive("on"))
-    return;
-  llvm::raw_ostream &os = llvm::errs();
-  os << "FLAGTREE_RLC_TRACE phase=" << phase << " outcome=" << outcome
-     << " reason=" << reason;
-  if (op) {
-    os << " op=" << op->getName() << " loc=";
-    op->getLoc().print(os);
-  }
-  os << '\n';
-}
-
 namespace {
 
-// MThreads-local port of the common phased RLC algorithm (base 0d4c7b4a3).
 // Keep backend wait, slice, SQMMA and numeric-lowering contracts local.
 
 // MThreads exposes its wait operations through a backend-local trait.
@@ -95,8 +74,6 @@ static bool isPassthroughWaitLike(Operation *op) {
 
 // Large rematerialization slices can lead to steep compile-time blowups.
 // Bail out once the backward slice exceeds this cap and keep the conversion.
-// This limit was already enforced by the MThreads fork before it started
-// sharing the phased implementation.
 constexpr unsigned kMaxRematSliceSize = 256;
 
 // Fixed relative cost weights inherited from shared RLC, not measured MUSA
@@ -402,7 +379,7 @@ private:
   bool enableDuplicableLoadRemat;
   // Phase 3: this instance runs writeback-store rematerialization, whose
   // rewrites can leave a still-used op in opToDelete. Enables the cleanup()
-  // live-use guard; false on the baseline (and duplicable-load-only) paths.
+  // live-use guard; false on the other paths.
   bool enableStoreLayoutRemat;
   // Address-pattern analysis for the duplicable-load gate (null when the
   // phase is disabled).
@@ -423,7 +400,7 @@ void LayoutRematerialization::cleanup() {
   // Phase 3 writeback rematerialization can queue an op that still has live
   // uses (e.g. a convert shared with another writeback), which must not be
   // erased. Without Phase 3 the queue only holds fully-replaced ops, so we keep
-  // the original unconditional erase to stay byte-for-byte identical.
+  // the original unconditional erase.
   bool guardLiveUses = enableDuplicableLoadRemat || enableStoreLayoutRemat;
   for (Operation *op : llvm::reverse(opToDelete)) {
     if (guardLiveUses && !allResultsHaveNoUses(op))
@@ -893,15 +870,9 @@ bool LayoutPropagation::collectProducerClosure(Proposal &proposal, Value target,
   // Integer domains that fit exactly in the destination significand (for
   // example i1 -> f32) are layout-independent and need neither path.
   Operation *targetDefOp = target.getDefiningOp();
-  if (targetDefOp && requiresIntToFpContiguityBoundary(target, encoding)) {
-    if (getPreservedIntToFpVectorWidth(target, encoding) != 0) {
-      traceRlcDecision("2", "preserve", "int-to-fp-vector-width", targetDefOp);
-    } else {
-      traceRlcDecision("2", "preserve", "int-to-fp-contiguity-boundary",
-                       targetDefOp);
-      return true;
-    }
-  }
+  if (targetDefOp && requiresIntToFpContiguityBoundary(target, encoding) &&
+      getPreservedIntToFpVectorWidth(target, encoding) == 0)
+    return true;
   if (!addProposalValue(proposal, target, encoding))
     return false;
 
@@ -1545,7 +1516,7 @@ bool LayoutPropagation::proposalHasOnlyPairedForBlockArgs(
 
 // Conservatively skip a rank-1 loop-carried accumulator chain that writes a
 // 16-bit-float scalar side output. Its retag payoff hinges on backend
-// scheduling that the cost model cannot see, so it is left on the baseline
+// scheduling that the cost model cannot see, so it is left on its current
 // layout; full-tensor and f32 side outputs are not affected.
 bool LayoutPropagation::proposalHasRiskyScalarSideOutput(
     const Proposal &proposal) const {
@@ -2469,11 +2440,8 @@ bool LayoutPropagation::solveSmallComponents() {
     int64_t currentElements = getTotalElemsPerThread(valType);
     int64_t candidateElements =
         getTotalElemsPerThread(valType.cloneWithEncoding(encoding));
-    if (candidateElements > currentElements) {
-      traceRlcDecision("2", "reject", "atomic-elements-per-thread-expansion",
-                       atomicOp);
+    if (candidateElements > currentElements)
       return false;
-    }
     if (!preservesWritebackMemoryAccess(ptrType, valType, encoding,
                                         /*allowNarrowerContiguity=*/false) ||
         widensPastVectorAccess(axisInfoAnalysis, atomicOp.getPtr(),
@@ -3306,7 +3274,7 @@ void LayoutPropagation::resolveConflicts() {
 
     // On a cost tie there is no concrete benefit in changing the layout, so
     // prefer the value's current encoding to keep the rewritten IR identical
-    // to the baseline. Only fall back to the legacy preference when the
+    // to the original. Only fall back to the legacy preference when the
     // current encoding is not among the tied candidates.
     Attribute bestEncoding = tied[0];
     if (tied.size() > 1) {
@@ -3396,7 +3364,7 @@ void LayoutPropagation::rewriteRegion(Region &region) {
         // Phase 2 may have retagged a store's value. A store needs ptr/value/
         // mask on one encoding, so move the whole store onto that layout only
         // when every tensor operand already resolves to it; otherwise keep the
-        // baseline per-operand remap (which converts the value back).
+        // per-operand remap (which converts the value back).
         Attribute storeEncoding;
         if (enableEnhance) {
           if (auto storeOp = dyn_cast<StoreOp>(&op)) {
@@ -3494,8 +3462,7 @@ Operation *LayoutPropagation::cloneElementwise(OpBuilder &rewriter,
   if (op->getNumOperands() > 0) {
     // Encoding-uniform pure ops transfer the layout as an identity function;
     // they have no transfer function for inferSrcEncoding to consult. Only the
-    // phase extensions retag such ops, so the check is gated to keep the
-    // all-disabled path byte-identical to the original pass.
+    // phase extensions retag such ops, so the check is gated on enhance.
     if (enableEnhance && isEncodingUniformPureOp(op))
       operandEnc = encoding;
     for (auto operand : op->getOperands()) {
@@ -3750,8 +3717,7 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
     auto tensorType = cast<RankedTensorType>(op->getResult(0).getType());
     // When a phase retagged the source onto the result encoding this becomes
     // an identity convert; keep emitting it here (at the original position)
-    // and let the canonicalizer fold it, so the surrounding IR stays
-    // byte-identical to the baseline whenever no convert is actually removed.
+    // and let the canonicalizer fold it.
     auto newType = tensorType.cloneWithEncoding(encoding);
     auto cvt = ConvertLayoutOp::create(rewriter, op->getLoc(), newType, src);
 #ifdef __TLE__
@@ -4195,9 +4161,8 @@ LogicalResult LayoutRematerialization::getRematerializableSlice(
     std::function<bool(Operation *)> stopPropagation, unsigned maxSliceSize,
     bool allowDuplicableLoads) {
   // A failed attempt must not leak a partial slice/layout into a later branch
-  // or hoist decision. This transaction-like behavior was already present in
-  // the MThreads fork and is required when both sides of a conditional share
-  // the same candidate state.
+  // or hoist decision. This is required when both sides of a conditional
+  // share the same candidate state.
   auto slice = sliceArg;
   auto layout = layoutArg;
   LogicalResult result = getConvertBackwardSlice(
@@ -5397,8 +5362,6 @@ static bool packReductionWritebackRows(FuncOp funcOp) {
           cast<DenseElementsAttr>(constant.getValue()).reshape(type));
     value.setType(type);
   }
-  traceRlcDecision("2", "accept", "consecutive-reduction-writeback-rows",
-                   reduce);
   return true;
 }
 
@@ -5602,7 +5565,6 @@ static void specializeBoundedDualWriteback(FuncOp funcOp) {
   div.erase();
   blocks.erase();
   numerator.erase();
-  traceRlcDecision("2", "accept", "single-block-cache-class", funcOp);
 }
 } // namespace
 
@@ -5637,8 +5599,7 @@ public:
     const bool enhance = enableRlcEnhance;
     // The phase extensions consult the real address pattern of loads (see
     // isOrderIndifferentAccess); the analysis is only built when they
-    // are enabled so the all-disabled path stays identical to the original
-    // pass.
+    // are enabled.
     std::optional<ModuleAxisInfoAnalysis> axisInfoAnalysis;
     if (enhance)
       axisInfoAnalysis.emplace(m);
