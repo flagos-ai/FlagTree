@@ -234,6 +234,58 @@ def test_async_load_in_worker_partition():
     torch.testing.assert_close(y, 2 * x)
 
 
+@triton.jit
+def _aiu_tile_partition(x, y, rows, cols, row_stride, tile, BT: tl.constexpr, BV: tl.constexpr):
+    src = tl.make_block_ptr(x, (rows, cols), (row_stride, 1), (tile * BT, 0), (BT, BV), (1, 0))
+    t = tle.load(src, boundary_check=(0, 1), is_async=True)
+    offs_t = tile * BT + tl.arange(0, BT)
+    tl.store(y + offs_t[:, None] * BV + tl.arange(0, BV)[None, :], t, mask=offs_t[:, None] < rows)
+
+
+@triton.jit
+def _aiu_even_tiles(x, y, rows, cols, row_stride, BT: tl.constexpr, BV: tl.constexpr):
+    _aiu_tile_partition(x, y, rows, cols, row_stride, 2 * tl.program_id(0), BT, BV)
+
+
+@triton.jit
+def _aiu_odd_tiles(x, y, rows, cols, row_stride, BT: tl.constexpr, BV: tl.constexpr):
+    _aiu_tile_partition(x, y, rows, cols, row_stride, 2 * tl.program_id(0) + 1, BT, BV)
+
+
+@triton.jit
+def _aiu_partitions_kernel(x, y, rows, cols, row_stride, BT: tl.constexpr, BV: tl.constexpr,
+                           WORKER_WARPS: tl.constexpr):
+    tle.gpu.warp_specialize([(_aiu_even_tiles, (x, y, rows, cols, row_stride, BT, BV)),
+                             (_aiu_odd_tiles, (x, y, rows, cols, row_stride, BT, BV))], [WORKER_WARPS], [128])
+
+
+@pytest.mark.parametrize("worker_warps", [4, 8])
+@pytest.mark.parametrize("rows,cols,row_stride", [
+    (256, 128, 128),
+    (256, 128, 256),
+    # a column check with a stride that is not a multiple of the row length is
+    # copied by the threads of the warp group, not by the AIU
+    (200, 100, 128),
+])
+def test_aiu_load_in_default_and_worker_partitions(rows, cols, row_stride, worker_warps):
+    """The default warps and a worker group each promote their own block-pointer
+    loads to AIU copies, including a row stride the descriptor needs a form for
+    (and the thread copy of one it cannot express), and each fills its tile
+    through the warp's index inside its own warp group."""
+    bt, bv = 64, 128
+    x = torch.randn(rows, row_stride, device="cuda", dtype=torch.bfloat16)
+    y = torch.full((rows, bv), float("nan"), device="cuda", dtype=torch.bfloat16)
+    tiles = triton.cdiv(rows, bt)
+    ck = _aiu_partitions_kernel[(triton.cdiv(tiles, 2), )](x, y, rows, cols, row_stride, bt, bv, worker_warps,
+                                                           num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+    expected = torch.zeros(rows, bv, device="cuda", dtype=torch.bfloat16)
+    expected[:, :cols] = x[:, :cols]
+    torch.testing.assert_close(y, expected, rtol=0, atol=0)
+    assert "aiu_load" in ck.asm["ttir"]
+    assert "ppu.cp.async.aiu" in ck.asm["llir"]
+
+
 @triton.constexpr_function
 def _ring_layout(vec, max_phase):
     return tle.gpu.swizzled_shared_layout(vec, 1, max_phase, [2, 1, 0], [1] * 3, [1] * 3, [1] * 3, [2, 1, 0])

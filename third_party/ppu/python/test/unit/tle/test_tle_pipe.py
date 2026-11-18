@@ -87,6 +87,53 @@ def test_pipe_ring_copy(capacity, n_tiles):
     _check_lowered(ck, copies=True)
 
 
+# A producer whose payload is an AIU copy: the block-pointer load is promoted
+# inside the worker partition, and the pipe publishes the stage it filled.
+@triton.jit
+def _aiu_producer(writer, x, n_tiles, cols, row_stride, BT: tl.constexpr, BV: tl.constexpr):
+    for t in range(n_tiles):
+        src = tl.make_block_ptr(x, (n_tiles * BT, cols), (row_stride, 1), (t * BT, 0), (BT, BV), (1, 0))
+        tile = tle.load(src, boundary_check=(0, 1), is_async=True)
+        slot = writer.acquire(t)
+        tl.store(tle.gpu.local_ptr(slot.data), tile)
+        writer.commit(t)
+
+
+@triton.jit
+def _aiu_consumer(reader, y, n_tiles, BT: tl.constexpr, BV: tl.constexpr):
+    offs = tl.arange(0, BT)[:, None] * BV + tl.arange(0, BV)[None, :]
+    for t in range(n_tiles):
+        wait = reader.wait(t)
+        v = tl.load(tle.gpu.local_ptr(wait.slot.data))
+        reader.release(t)
+        tl.store(y + t * BT * BV + offs, v * 2)
+
+
+@triton.jit
+def _aiu_ring_kernel(x, y, n_tiles, cols, row_stride, CAPACITY: tl.constexpr, BT: tl.constexpr, BV: tl.constexpr):
+    ring = tle.gpu.alloc([CAPACITY, BT, BV], dtype=tl.bfloat16, layout=None, scope=tle.gpu.smem)
+    pipe = tle.pipe(capacity=CAPACITY, data=ring)
+    tle.gpu.warp_specialize([(_aiu_consumer, (pipe.reader(), y, n_tiles, BT, BV)),
+                             (_aiu_producer, (pipe.writer(), x, n_tiles, cols, row_stride, BT, BV))], [4], [128])
+
+
+@pytest.mark.parametrize("capacity", [1, 2, 3])
+@pytest.mark.parametrize("n_tiles", [1, 5, 7])
+@pytest.mark.parametrize("cols,row_stride", [(128, 128), (128, 256), (100, 128)])
+def test_pipe_ring_aiu_payload(capacity, n_tiles, cols, row_stride):
+    bt, bv = 64, 128
+    x = torch.randn(n_tiles * bt, row_stride, device="cuda", dtype=torch.bfloat16)
+    y = torch.full((n_tiles * bt, bv), float("nan"), device="cuda", dtype=torch.bfloat16)
+    ck = _aiu_ring_kernel[(4, )](x, y, n_tiles, cols, row_stride, CAPACITY=capacity, BT=bt, BV=bv, num_warps=4,
+                                 num_stages=1)
+    torch.cuda.synchronize()
+    expected = torch.zeros_like(y)
+    expected[:, :cols] = x[:, :cols]
+    torch.testing.assert_close(y, 2 * expected, rtol=0, atol=0)
+    assert "aiu_load" in ck.asm["ttir"]
+    assert "tle.pipe." not in ck.asm["ttgir"]
+
+
 # A producer that also consumes the pipe can finish one slot while younger
 # copies stay in flight. The remote reader still needs a completed-copy handoff.
 @triton.jit
