@@ -36,6 +36,8 @@ from .core import (
     wgmma,
     wgmma_wait,
     set_layout,
+    tensor_map_fenceproxy_acquire,
+    reinterpret_tensor_map,
 )
 from .types import (layout, distributed_encoding, BlockEncoding, MmaEncoding, DotOperandEncoding, SlicedEncoding,
                     shared_layout, swizzled_shared_layout, tensor_memory_layout, nv_mma_shared_layout, scope,
@@ -60,6 +62,8 @@ __all__ = [
     "wgmma",
     "wgmma_wait",
     "set_layout",
+    "tensor_map_fenceproxy_acquire",
+    "reinterpret_tensor_map",
     "storage_kind",
     "layout",
     "distributed_encoding",
