@@ -21,13 +21,14 @@
 # flagtree tle
 from . import mthreads
 from .core import (
-    pipeline,
     range,
     alloc,
     alloc_barrier,
     alloc_barriers,
     barrier_arrive,
     barrier_wait,
+    async_commit_group,
+    async_wait_group,
     copy,
     memory_space,
     local_ptr,
@@ -45,13 +46,14 @@ storage_kind = memory_space
 
 __all__ = [
     "mthreads",
-    "pipeline",
     "range",
     "alloc",
     "alloc_barrier",
     "alloc_barriers",
     "barrier_arrive",
     "barrier_wait",
+    "async_commit_group",
+    "async_wait_group",
     "copy",
     "local_ptr",
     "warp_specialize",

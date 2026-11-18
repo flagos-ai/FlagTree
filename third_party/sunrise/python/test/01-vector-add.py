@@ -37,7 +37,6 @@ def add(x, y, BLOCK_SIZE=1024):
 
 @pytest.mark.parametrize("size", [1024, 98432, 100000])
 def test_vector_add(size):
-    torch.manual_seed(0)
     x = torch.rand(size, device=DEVICE)
     y = torch.rand(size, device=DEVICE)
 

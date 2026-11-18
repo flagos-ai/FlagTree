@@ -45,25 +45,31 @@ Some backends support multiple Triton versions; only the latest version is shown
 |Branch  |Vendor|Backend|Triton<br>version|User Guide  |
 |:-------|:-----|:------|:----------------|:-----------|
 |[main](https://github.com/flagos-ai/flagtree/tree/main)|NVIDIA<br>NVIDIA TileIR<br>AMD<br>Enflame（燧原）<br>ILUVATAR（天数智芯）<br>HYGON（海光信息）<br>Moore Threads（摩尔线程）<br>DAMO ACADEMY（阿里达摩院）<br>Huixi（辉羲智能）<br>MetaX（沐曦股份）<br>Sunrise（曦望芯科）<br>KLX<br>T-Head（平头哥）<br>SpacemiT（进迭时空）<br>Tsingmicro（清微智能）|[nvidia](/third_party/nvidia/)<br>[tileir](/third_party/tileir/)<br>[amd](/third_party/amd/)<br>[enflame](/third_party/enflame/)<br>[iluvatar](/third_party/iluvatar/)<br>[hcu](/third_party/hcu/)<br>[mthreads](/third_party/mthreads/)<br>[damoacademy](/third_party/thrive/)<br>[rpu](/third_party/rpu/)<br>[metax](/third_party/metax/)<br>[sunrise](/third_party/sunrise/)<br>[xpu](/third_party/xpu/)<br>[ppu](/third_party/ppu/)<br>[spacemit](/third_party/spacemit/)<br>[tsingmicro](/third_party/tsingmicro/)|3.6|[nvidia guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-nvidia)<br>[tileir guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-tileir)<br>[amd guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-amd)<br>[enflame guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-enflame)<br>[iluvatar guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-iluvatar)<br>[hcu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-hcu)<br>[mthreads guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-mthreads)<br>-<br>[rpu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-rpu)<br>[metax guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-metax)<br>[sunrise guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-sunrise)<br>[xpu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-xpu)<br>[ppu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-ppu)<br>[spacemit guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-spacemit)<br>[tsingmicro guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-tsingmicro)|
+|[triton_v3.8.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.8.x)|Intellifusion（云天励飞）|[intellifusion](https://github.com/flagos-ai/FlagTree/blob/triton_v3.8.x/third_party/intellifusion/)|3.8|-|
 |[triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)|Huawei Ascend（华为昇腾）|[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/third_party/ascend/)|3.5|[ascend guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-ascend)|
 |[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|ARM China（安谋科技）<br>ARM64 cpu<br>x86_64 cpu|[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)<br>[cpu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/cpu/)<br>[triton-shared](https://github.com/microsoft/triton-shared)|3.3|[aipu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-aipu)<br>[cpu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-cpu)<br>-|
 |[triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x)|Cambricon（寒武纪）|[cambricon](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/cambricon/)|3.2|-|
 
 FlagTree extension components are currently available on some backends:
 
-|Branch  |Backend|Triton version|Extension components|
-|:-------|:------|:-------------|:-------------------|
-|[main](https://github.com/flagos-ai/flagtree/tree/main)|[nvidia](/third_party/nvidia/)<br>[enflame](/third_party/enflame/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct GPU](https://github.com/flagos-ai/FlagTree/wiki/TLE#331-gpu)<br>[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
-|[main](https://github.com/flagos-ai/flagtree/tree/main)|[amd](/third_party/amd/)<br>[mthreads](/third_party/mthreads/)<br>[sunrise](/third_party/sunrise/)<br>[hcu](/third_party/hcu/)<br>[iluvatar](/third_party/iluvatar/)<br>[ppu](/third_party/ppu/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct GPU](https://github.com/flagos-ai/FlagTree/wiki/TLE#331-gpu)|
-|[main](https://github.com/flagos-ai/flagtree/tree/main)|[metax](/third_party/metax/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)|
-|[main](https://github.com/flagos-ai/flagtree/tree/main)|[tsingmicro](https://github.com/flagos-ai/FlagTree/blob/main/third_party/tsingmicro/)|3.6|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)<br>[TLE-Struct DSA](https://github.com/flagos-ai/FlagTree/wiki/TLE#332-dsa)<br>[FLIR](https://github.com/flagos-ai/flir)|
-|[triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)|[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/third_party/ascend/)|3.5|[TLE-Struct DSA](https://github.com/flagos-ai/FlagTree/wiki/TLE#332-dsa)<br>[FLIR](https://github.com/flagos-ai/flir)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
-|[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|[aipu](https://github.com/flagos-ai/FlagTree/blob/triton_v3.3.x/third_party/aipu/)|3.3|[FLIR](https://github.com/flagos-ai/flir)<br>[HINTS](https://github.com/flagos-ai/FlagTree/wiki/HINTS)|
+|Backend|Triton<br>version|[TLE-Lite](https://github.com/flagos-ai/FlagTree/wiki/TLE#32-tle-lite)|[TLE-Struct](https://github.com/flagos-ai/FlagTree/wiki/TLE#33-tle-struct)|[TLE-Raw](https://github.com/flagos-ai/FlagTree/wiki/TLE-Raw)|CommonIR|
+|:------|:------|:------|:------|:------|:------|
+|[nvidia](/third_party/nvidia/)|3.6|✅|✅|✅|✅|
+|[amd](/third_party/amd/)|3.6|✅|✅|||
+|[enflame](/third_party/enflame/)|3.6|✅|✅|✅||
+|[iluvatar](/third_party/iluvatar/)|3.6|✅|✅|✅||
+|[hcu](/third_party/hcu/)|3.6|✅|✅|✅||
+|[mthreads](/third_party/mthreads/)|3.6|✅|✅||
+|[thrive](/third_party/thrive/)|3.6|✅|✅|||
+|[metax](/third_party/metax/)|3.6|✅|✅|||
+|[sunrise](/third_party/sunrise/)|3.6|✅|✅|||
+|[xpu](/third_party/xpu/)|3.6||✅|✅||
+|[ppu](/third_party/ppu/)|3.6|✅|✅|✅||
+|[spacemit](/third_party/spacemit/)|3.6|✅||||
+|[tsingmicro](/third_party/tsingmicro/)|3.6|✅|✅|||
+|[ascend](/third_party/ascend/)|3.5||✅|✅|✅|
 
 ## TLE (Triton Language Extensions)
-
-If you want to use TLE on the NVIDIA backend, please use the main branch.
-For other backends, please refer to the table above.
 
 Triton provides strong productivity for kernel development, but heterogeneous AI chips and deeper performance tuning scenarios need more explicit control over distributed execution, memory access patterns, and hardware-specific primitives.
 TLE extends Triton in a layered way to bridge this gap while keeping compatibility with existing Triton workflows.
@@ -92,6 +98,7 @@ The following uses the mm operator under some shapes called in the Qwen model as
 
 ## Latest News
 
+* 2026/11/12 Added the [intellifusion](https://github.com/flagos-ai/FlagTree/tree/triton_v3.8.x/third_party/intellifusion/) backend integration (based on Triton 3.8) and added CI/CD.
 * 2026/09/10 Upgraded the [tsingmicro](/third_party/tsingmicro/) backend to Triton 3.6 and added CI/CD.
 * 2026/08/21 [amd](/third_party/amd/) backend support for TLE and added CI/CD.
 * 2026/08/18 Added the [spacemit](/third_party/spacemit/) backend integration (based on Triton 3.6) and added CI/CD.
@@ -157,20 +164,15 @@ General building and installation procedure (Recommended for environments with g
 
 ```shell
 # Set FLAGTREE_BACKEND using the backend name from the table above
-export FLAGTREE_BACKEND=${backend_name}  # Do not set it on nvidia/amd/triton-shared
-
-# For Triton 3.1/3.2/3.3 (branch: triton_v3.1.x, triton_v3.2.x, triton_v3.3.x)
-cd python; python3 -m pip install . --no-build-isolation -v  # Install flagtree and uninstall triton
-
-# For Triton 3.4/3.5/3.6 (branch: triton_v3.4.x, triton_v3.5.x, main)
-python3 -m pip install . --no-build-isolation -v             # Install flagtree and uninstall triton
+export FLAGTREE_BACKEND=${backend_name}  # Do not set it on nvidia
+python3 -m pip install . --no-build-isolation -v  # Install flagtree and uninstall triton
 ```
 
 After installing `flagtree`, you can check it with:
 
 ```shell
 python3 -m pip show flagtree
-cd ${ANY_DIR_OTHER_THAN_FLAGTREE_PYTHON}; python3 -c 'import triton; print(triton.__path__)'
+python3 -c 'import triton; print(triton.__path__)'
 ```
 
 ## Source-free Installation

@@ -450,6 +450,8 @@ static void applyRootRewrite(LogicalRootRewriteAction &action) {
         if (copy.getBarrier())
           expectBytes = copyBuilder.getI32IntegerAttr(0);
 #endif
+        if (Attribute eviction = copy->getAttr("evict"))
+          tiledCopy->setAttr("evict", eviction);
         int64_t elementBytes =
             oldType.getElementType().getIntOrFloatBitWidth() / 8;
         tiledCopy->setAttr(

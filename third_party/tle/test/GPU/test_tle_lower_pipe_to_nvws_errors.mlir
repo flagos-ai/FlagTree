@@ -21,6 +21,23 @@
 
 // RUN: triton-opt %s -triton-tle-lower-pipe-to-nvws -split-input-file -verify-diagnostics
 
+// A correct zero-fill proof must not relax the per-pipe transport contract.
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @reject_local_store_and_cp_async_commits(%a: !ttg.memdesc<2x16xf16, #shared, #smem, mutable>) {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    tle.pipe.create %a {capacity = 2 : i32, pipe_name = "mixed", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    tle.pipe.writer_commit %a[%c0] {capacity = 2 : i32, pipe_name = "mixed", field_names = ["a"], scope = "cta"} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    // expected-error @+1 {{mixes local-store and cp.async payload commits on the same pipe}}
+    tle.pipe.writer_commit %a[%c1] {capacity = 2 : i32, pipe_name = "mixed", field_names = ["a"], scope = "cta", tle.pipe_commit_cp_async} : !ttg.memdesc<2x16xf16, #shared, #smem, mutable>
+    tt.return
+  }
+}
+
+// -----
+
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
 

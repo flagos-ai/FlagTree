@@ -145,6 +145,7 @@ struct TritonXPUCoreTilingPass
   // Get ReduceOps' Shape To Check If Can Be Optimized
   bool canBeOptimized(ModuleOp &mod) {
     bool canBeOpt = false;
+    bool allReducesOptimizable = true;
     int colSize = 0;
 
     auto checkGroupInfo = [&](RankedTensorType &tensorType) {
@@ -196,18 +197,24 @@ struct TritonXPUCoreTilingPass
           auto tensorType =
               cast<RankedTensorType>(reduceOp.getOperandTypes()[0]);
           checkGroupInfo(tensorType);
+        } else {
+          // 2D reductions along axis 0 do not fit the optimized tiling.
+          allReducesOptimizable = false;
         }
       } else if (isAxisNone(reduceOp)) {
         canBeOpt = true;
-      } else if (canBeOpt) {
-        llvm_unreachable("Not All Reduce Op can be Optimized");
+      } else {
+        // A reduce outside the optimized patterns (e.g. rank-1) is mixed
+        // with optimized ones: disable the tiling optimization for the
+        // module instead of aborting the compiler.
+        allReducesOptimizable = false;
       }
     });
 
     if (!getTensorColSize(mod) || colSize < rawColSize)
       rowsPerCore = 1;
 
-    return canBeOpt;
+    return canBeOpt && allReducesOptimizable;
   }
 
   mlir::Operation *findRootOp(mlir::Operation *op) {
@@ -284,30 +291,31 @@ struct TritonXPUCoreTilingPass
     }
   }
 
-  // 将 module 中的 op 按所属逻辑轴划分到两条 def-use 链：
-  //   - innerChain：归属内轴（axis 0）的 op
-  //   - outerChain：归属外轴（axis 1）的 op
+  // Split the ops in the module into two def-use chains by logical axis:
+  //   - innerChain: ops assigned to the inner axis (axis 0)
+  //   - outerChain: ops assigned to the outer axis (axis 1)
   //
-  // 划分以若干"锚点 op"（轴向明确）为起点，通过 getOpDefChainBwd
-  // 反向追溯它们的 producer 链：
+  // The split starts from "anchor ops" (whose axis is known) and walks their
+  // producer chains backwards via getOpDefChainBwd:
   //
-  //   Walk 1（锚点分类）：
-  //     * tt.expand_dims          -> 直接由 getAxis() 决定
-  //                                  （axis 0 -> inner，axis 1 -> outer），
-  //                                  expand_dims 自身不计入链，只收其
-  //                                  producer。
-  //     * triton_xpu.broadcast    -> 通过比较 src / result shape 推断：
-  //                                  dim 0 被 broadcast
-  //                                  即视为内轴链，否则外轴链。
-  //     * triton_xpu.lm2gm[_mask] -> 若被存值由 tt.reduce 产生，
-  //                                  则按 reduce 的 axis 决定 inner / outer。
+  //   Walk 1 (anchor classification):
+  //     * tt.expand_dims          -> axis decided directly by getAxis()
+  //                                  (axis 0 -> inner, axis 1 -> outer);
+  //                                  expand_dims itself is not part of the
+  //                                  chain, only its producer is.
+  //     * triton_xpu.broadcast    -> inferred by comparing src / result shape:
+  //                                  broadcasting dim 0 means inner-axis chain,
+  //                                  otherwise outer-axis chain.
+  //     * triton_xpu.lm2gm[_mask] -> if the stored value comes from tt.reduce,
+  //                                  the reduce's axis decides inner / outer.
   //
-  //   Walk 2（store 的回退分类）：
-  //     对 Walk 1 未能分类的 lm2gm[_mask]，向上查找 tt.make_range producer，
-  //     并继承其所在的链。用于处理不由 reduce 喂入的 store。
+  //   Walk 2 (fallback classification for stores):
+  //     For lm2gm[_mask] ops Walk 1 could not classify, walk up to the
+  //     tt.make_range producer and inherit its chain.  Handles stores not fed
+  //     by a reduce.
   //
-  // 得到的 innerChain / outerChain 会被后续 pass（如 recoverMakeRange）
-  // 用来为内 / 外轴分别分配不同的 encoding。
+  // The resulting innerChain / outerChain are used by later passes (e.g.
+  // recoverMakeRange) to assign different encodings per inner / outer axis.
   void getChain(ModuleOp &mod, SetVector<Operation *> &innerChain,
                 SetVector<Operation *> &outerChain) {
     // Walk 1: classify ops via unambiguous anchors.
