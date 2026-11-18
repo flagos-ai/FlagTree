@@ -19,6 +19,7 @@
 // TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 // SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+// REQUIRES: flagtree-keep-smem-read-order
 // RUN: triton-opt %s -split-input-file -tritongpu-reorder-instructions=keep-smem-read-order=true | FileCheck %s --check-prefixes=COMMON,ON
 // RUN: triton-opt %s -split-input-file -tritongpu-reorder-instructions | FileCheck %s --check-prefixes=COMMON,OFF
 
