@@ -33,6 +33,84 @@ def is_in_thread_transpose_enabled(arch):
 _AMDGCN_TARGET_RE = re.compile(r'\.amdgcn_target\s+"amdgcn-amd-amdhsa-[^-"]*-(gfx[0-9a-z]+(?::[a-z0-9]+[+-])*)"')
 
 
+_GEMM_DOT_INPUT = re.compile(r"^tensor<[0-9]+x[0-9]+x(f16|bf16|f8E4M3FN), ")
+_GEMM_DOT_ACC = re.compile(r"^tensor<[0-9]+x[0-9]+xf32, ")
+_SYNC_GEMM_OPS = frozenset("""
+    builtin.module tt.func tt.return tt.get_program_id tt.get_num_programs
+    tt.make_range tt.broadcast tt.expand_dims tt.splat tt.trans
+    tt.dot ttg.convert_layout ttg.local_alloc ttg.local_dealloc ttg.local_load
+    ttg.local_store ttg.memdesc_index hcug.buffer_load hcug.buffer_store
+    scf.for scf.if scf.yield
+    arith.constant arith.addi arith.subi arith.muli arith.divsi arith.remsi
+    arith.divui arith.remui arith.cmpi arith.select arith.andi arith.ori
+    arith.xori arith.shli arith.shrsi arith.shrui arith.index_cast
+    arith.extsi arith.extui arith.trunci arith.addf arith.subf arith.mulf
+    arith.truncf arith.extf
+""".split())
+
+
+def _is_sync_buffer_gemm(mod):
+    """Recognize ordinary register-staged dense GEMM, including masked tiles."""
+    operations = {}
+
+    def collect(op):
+        operations.setdefault(op.get_name(), []).append(op)
+
+    mod.walk(collect)
+    if operations.keys() - _SYNC_GEMM_OPS:
+        return False
+    if not all(operations.get(name) for name in (
+            "scf.for", "tt.dot", "ttg.local_alloc", "ttg.local_load", "hcug.buffer_load")):
+        return False
+    funcs = operations.get("tt.func", [])
+    stores = operations.get("hcug.buffer_store", [])
+    if len(funcs) != 1 or len(stores) != 1:
+        return False
+    entry = funcs[0].get_region(0)
+    if stores[0].get_block().get_parent().id() != entry.id():
+        return False
+
+    for dot in operations["tt.dot"]:
+        lhs, rhs, acc = (str(dot.get_operand(i).get_type()) for i in range(3))
+        a, b = _GEMM_DOT_INPUT.match(lhs), _GEMM_DOT_INPUT.match(rhs)
+        if not (a and b and a[1] == b[1] and _GEMM_DOT_ACC.match(acc)):
+            return False
+    return True
+
+
+_MATRIX_LDS_TILE = re.compile(r"^tensor<([0-9]+)x([0-9]+)x(f16|bf16|f8E4M3FN|f32), ")
+
+
+def _is_gemm_matrix_lds_candidate(mod):
+    names = []
+    dots = []
+
+    def collect(op):
+        name = op.get_name()
+        names.append(name)
+        if name == "tt.dot":
+            dots.append(op)
+
+    mod.walk(collect)
+    if (names.count("tt.func") != 1 or len(dots) != 1
+            or names.count("tt.store") != 1 or "scf.for" not in names
+            or any(name not in _SYNC_GEMM_OPS and name not in
+                   {"tt.load", "tt.store", "tt.addptr", "tt.bitcast"}
+                   for name in names)):
+        return False
+
+    rhs = _MATRIX_LDS_TILE.match(str(dots[0].get_operand(1).get_type()))
+    acc = _MATRIX_LDS_TILE.match(str(dots[0].get_operand(2).get_type()))
+    if not rhs or not acc:
+        return False
+    if rhs[3] == "f8E4M3FN":
+        # Short FP8 panels can be slower when the two-stage pipeline reuses LDS.
+        return int(rhs[1]) >= 128
+    # The accelerator checks the output-tile budget against its chosen
+    # N-wave split before changing the physical B staging layout.
+    return True
+
+
 def _retarget_clang_args(clang_args, asm_text):
     m = _AMDGCN_TARGET_RE.search(asm_text)
     args = [a for a in clang_args if a != ""]
@@ -43,6 +121,8 @@ def _retarget_clang_args(clang_args, asm_text):
 
 @dataclass(frozen=True)
 class HIPOptions:
+    hcu_gemm_barrier_policy: str = "auto"
+    hcu_gemm_matrix_lds: bool = True
     static_pipe_status_arg: int = -1
     static_pipe_test_drop_ready: bool = False
     static_pipe_counted_loop: bool = False
@@ -137,6 +217,8 @@ class HIPOptions:
     wdra_num_mma_regs_tail: int = None
 
     def __post_init__(self):
+        if self.hcu_gemm_barrier_policy not in ("auto", "legacy"):
+            raise ValueError("hcu_gemm_barrier_policy must be auto or legacy")
         if self.hcu_panel_war_after_mma not in (0,8,16,24):
             raise ValueError('deferred WAR supports0/8/16/24MMAC;16/24require proved32MMA-eight-DS panel')
         if self.hcu_panel_war_after_mma and (not self.hcu_panel_pipeline or not self.hcu_panel_native_war or self.hcu_panel_stream_v):
@@ -421,6 +503,16 @@ class HIPBackend(BaseBackend):
         return bool(match and match.group(1) == "18")
 
     @staticmethod
+    @functools.lru_cache(maxsize=4)
+    def _supports_gemm_backoff(compiler_path):
+        # The wait insertion policy is part of the SDK codegen contract.
+        digest = hashlib.sha256()
+        with open(compiler_path, "rb") as clang:
+            for block in iter(lambda: clang.read(1 << 20), b""):
+                digest.update(block)
+        return digest.hexdigest() == "4f53d83289bee750fd398d8238f47642653e878c03f2845b4548d828bf6303c5"
+
+    @staticmethod
     def _get_clang_args(metadata, options):
         arch_args = {
             "gfx928": [
@@ -456,6 +548,8 @@ class HIPBackend(BaseBackend):
         clang_minor = match.group("minor")
         if clang_major in version_args:
             options_args.extend(version_args[clang_major])
+        if metadata.get("hcu_gemm_backoff_barrier", False):
+            options_args.append("-mllvm=-amdgpu-disable-backoff-barrier=false")
         # Propagate the existing fusion contract into DTK's final codegen.
         if options.arch == 'gfx938' and clang_major == '18' and options.enable_fp_fusion:
             options_args.append('-mllvm=-fp-fuse=fast')
@@ -566,6 +660,17 @@ class HIPBackend(BaseBackend):
         # distributed.passes.ttir.add_convert_to_ttgpuir_ext(pm, f"hip:{options.arch}", options.num_warps,
         #                                                    options.warp_size, options.num_ctas)
         pm.run(mod, 'make_ttgir_early')
+        if (options.hcu_gemm_matrix_lds and options.arch == "gfx938"
+                and options.num_ctas == 1 and options.num_warps == 4
+                and options.num_stages in (1, 2) and options.kpack == 1
+                and not (options.wasp_enabled or options.wdra_enabled
+                         or options.hcu_panel_pipeline or options.hcu_descriptor_mls_load
+                         or knobs.hcu.use_async_copy or is_in_thread_transpose_enabled(options.arch)
+                         or knobs.compilation.enable_asan or os.getenv("PMD_PATH"))
+                and _is_gemm_matrix_lds_candidate(mod)
+                and HIPBackend._supports_gemm_backoff(str(HIPBackend.path_to_rocm_clang().resolve()))):
+            builder = ir.builder(mod.context)
+            mod.set_attr("hcu.gemm_matrix_lds", builder.get_int32_attr(1))
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         emuTF32 = False
@@ -665,6 +770,7 @@ class HIPBackend(BaseBackend):
             hcu.passes.ttgpuir.add_update_async_wait_count(pm, options.arch)
         pm.run(mod, 'make_ttgir')
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
+        metadata["hcu_triton_ttgir"] = True
         return mod
 
     @staticmethod
@@ -687,6 +793,18 @@ class HIPBackend(BaseBackend):
     @staticmethod
     def make_llir(src, metadata, options):
         mod = src
+        metadata["hcu_gemm_backoff_barrier"] = (
+            options.hcu_gemm_barrier_policy == "auto"
+            and options.arch == "gfx938" and options.num_ctas == 1
+            and options.num_warps == 4 and options.num_stages in (1, 2)
+            and not (options.wasp_enabled or options.wdra_enabled or options.hcu_panel_pipeline
+                     or options.hcu_descriptor_mls_load or knobs.compilation.enable_asan
+                     or os.getenv("PMD_PATH"))
+            and metadata.get("hcu_triton_ttgir", False)
+            and not metadata.get("tensordesc_meta")
+            and _is_sync_buffer_gemm(mod)
+            and HIPBackend._supports_gemm_backoff(str(HIPBackend.path_to_rocm_clang().resolve()))
+        )
         builder = ir.builder(mod.context)
         mod.set_attr("hcu.codegen_arch", builder.get_string_attr(options.arch))
         compact = 0
@@ -1078,5 +1196,8 @@ class HIPBackend(BaseBackend):
 
     @functools.lru_cache()
     def hash(self):
-        version = subprocess.check_output([HIPBackend.path_to_rocm_clang(), "--version"], encoding='utf-8')
+        clang = HIPBackend.path_to_rocm_clang()
+        version = subprocess.check_output([clang, "--version"], encoding='utf-8')
+        if self.target.arch == "gfx938":
+            version += f'-gemm-backoff={HIPBackend._supports_gemm_backoff(str(clang.resolve()))}'
         return f'{version}-{self.target}'

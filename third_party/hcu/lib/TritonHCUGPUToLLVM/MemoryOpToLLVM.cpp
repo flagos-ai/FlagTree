@@ -2,6 +2,7 @@
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "PatternTritonGPUOpToLLVM.h"
 #include "TritonHCUGPUToLLVM/TargetUtils.h"
+#include "TritonHCUGPUTransforms/MatrixLdsRead.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
@@ -13,6 +14,117 @@
 using ::mlir::triton::gpu::MemDescType;
 
 namespace {
+// N32 panel address and fragment order follow Hygon triton-das/DsReadM.cpp (MIT).
+class MatrixLdsLoadConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp> {
+public:
+  MatrixLdsLoadConversion(const LLVMTypeConverter &converter,
+                          const HCU::TargetInfo &targetInfo,
+                          PatternBenefit benefit)
+      : ConvertOpToLLVMPattern(converter, benefit), targetInfo(targetInfo) {}
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::LocalLoadOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    using namespace mlir::triton;
+    using namespace mlir::triton::gpu;
+    if (targetInfo.getArch() != "gfx938" ||
+        !op->getParentOfType<ModuleOp>()->hasAttr("hcu.gemm_matrix_lds"))
+      return failure();
+    MemDescType src = op.getSrc().getType();
+    RankedTensorType dst = op.getType();
+    auto dot = dyn_cast<DotOperandEncodingAttr>(dst.getEncoding());
+    auto mma = dot ? dyn_cast<AMDMfmaEncodingAttr>(dot.getParent()) : nullptr;
+    unsigned tileK = HCU::getMatrixLdsTileK(dst.getElementType());
+    ArrayRef<int64_t> shape = dst.getShape();
+    if (!mma || dot.getOpIdx() != 1 || !HCU::isMatrixLdsPanelShape(shape, tileK) ||
+        src.getShape() != shape || src.getAllocShape().take_back(2) != shape ||
+        src.getElementType() != dst.getElementType() || dot.getKWidth() != tileK / 4 ||
+        mma.getMmacLayout() != MmacLayout::INTERLEAVE || mma.getIsTransposed() ||
+        mma.getInstrShape() != ArrayRef<unsigned>({16, 16, tileK}) ||
+        mma.getTilesPerWarp() != ArrayRef<unsigned>({1, 2}) ||
+        src.getEncoding() != HCU::getMatrixLdsPanelEncoding(op.getContext(), shape, tileK) ||
+        LLVM::SharedMemoryObject::isAffineSharedMemoryAccess(src))
+      return failure();
+
+    ArrayRef<unsigned> warps = mma.getWarpsPerCTA();
+    if (warps.size() != 2 || shape[1] % (32 * warps[1]) != 0)
+      return failure();
+
+    Location loc = op.getLoc();
+    auto *converter = getTypeConverter();
+    Type elemTy = converter->convertType(dst.getElementType());
+    Value base = LLVM::getSharedMemoryObjectFromStruct(
+                     loc, adaptor.getSrc(), elemTy, rewriter).getBase();
+    TritonLLVMOpBuilder b(loc, rewriter);
+    auto [lane, warp] = getLaneAndWarpId(rewriter, loc);
+    Value warpN = delinearize(rewriter, loc, warp, warps,
+                             getMatrixOrder(/*rank=*/2, /*rowMajor=*/true))[1];
+    const bool isB8 = tileK == 32;
+    const unsigned vec = isB8 ? 16 : 8;
+    const unsigned groupBits = isB8 ? 1 : 2;
+    Value k = b.lshr(lane, b.i32_val(groupBits));
+    Value phase = isB8 ? k : b.lshr(k, b.i32_val(1));
+    Value group = b.xor_(b.and_(lane, b.i32_val((1 << groupBits) - 1)),
+                         b.and_(phase, b.i32_val(1)));
+    Value groupOffset = b.mul(group, b.i32_val(vec));
+    const unsigned panelElems = shape[0] * 32;
+    Value warpOffset = b.mul(warpN, b.i32_val(panelElems));
+    const unsigned panels = shape[1] / (32 * warps[1]);
+    const unsigned kTiles = shape[0] / tileK;
+    const unsigned fragWidth = tileK / 4;
+    auto resultTy = isB8 ? vec_ty(rewriter.getI32Type(), 4) : vec_ty(elemTy, 8);
+    auto ptrTy = ptr_ty(rewriter.getContext(), 3);
+    SmallVector<Value> elements;
+    elements.reserve(panels * kTiles * 2 * fragWidth);
+
+    for (unsigned panel = 0; panel < panels; ++panel) {
+      Value physicalK = k;
+      if (isB8) {
+        Value panelId = b.add(warpN, b.i32_val(panel * warps[1]));
+        physicalK = b.xor_(k, b.and_(panelId, b.i32_val(3)));
+      }
+      Value offset = b.add(warpOffset,
+                           b.add(b.mul(physicalK, b.i32_val(32)), groupOffset));
+      Value address = b.gep(ptrTy, elemTy, base, offset,
+                            LLVM::GEPNoWrapFlags::inbounds);
+      SmallVector<Value> fragments;
+      for (unsigned kb = 0; kb < kTiles; ++kb) {
+        unsigned offsetBytes = (panel * warps[1] * panelElems + kb * tileK * 32) *
+                               (isB8 ? 1 : 2);
+        auto read = LLVM::createLLVMIntrinsicCallOp(
+            rewriter, loc,
+            isB8 ? "llvm.hcu.ds.read.m32x32.b8" : "llvm.hcu.ds.read.m32x16.b16",
+            {resultTy}, {address, b.i32_val(offsetBytes)}).getResult(0);
+        if (isB8) {
+          for (unsigned reg = 0; reg < 4; ++reg) {
+            Value regBytes = b.bitcast(
+                b.extract_element(rewriter.getI32Type(), read, b.i32_val(reg)),
+                vec_ty(elemTy, 4));
+            for (unsigned i = 0; i < 4; ++i)
+              fragments.push_back(b.extract_element(elemTy, regBytes, b.i32_val(i)));
+          }
+        } else {
+          for (unsigned i = 0; i < 8; ++i)
+            fragments.push_back(b.extract_element(elemTy, read, b.i32_val(i)));
+        }
+      }
+      // Dot operands store N repetition first, then the K tile register groups.
+      for (unsigned n = 0; n < 2; ++n)
+        for (unsigned kb = 0; kb < kTiles; ++kb) {
+          auto frag = ArrayRef<Value>(fragments).slice((2 * kb + n) * fragWidth,
+                                                       fragWidth);
+          elements.append(frag.begin(), frag.end());
+        }
+    }
+    rewriter.replaceOp(op, packLLElements(loc, converter, elements, rewriter, dst));
+    return success();
+  }
+
+private:
+  const HCU::TargetInfo &targetInfo;
+};
+
 class TransLocalLoadOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp> {
 public:
@@ -618,6 +730,8 @@ void mlir::triton::HCU::populateMemoryOpToLLVMPatterns(
   PatternBenefit transBenefit = PatternBenefit(benefit.getBenefit() + 1);
   PatternBenefit barrierBenefit = PatternBenefit(benefit.getBenefit() + 1);
 
+  patterns.add<MatrixLdsLoadConversion>(typeConverter, targetInfo,
+                                        PatternBenefit(benefit.getBenefit() + 2));
   patterns.add<TransLocalLoadOpConversion>(typeConverter, targetInfo,
                                            transBenefit);
   patterns.add<LocalLoadPackedTransposedOpConversion>(typeConverter, targetInfo,
