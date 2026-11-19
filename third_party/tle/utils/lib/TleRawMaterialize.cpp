@@ -39,7 +39,7 @@ SmallVector<Value> flatten(TritonOpBuilder &builder,
   const size_t rank = llvmStructTy.getBody().size();
   return llvm::map_to_vector(
       llvm::seq(rank), [&builder, &val](int64_t idx) -> Value {
-        return LLVM::ExtractValueOp::create(builder, val, SmallVector{idx});
+        return builder.create<LLVM::ExtractValueOp>(val, SmallVector{idx});
       });
 }
 } // namespace
@@ -131,7 +131,7 @@ LogicalResult buildDSLRegionBodyFromLLVMFunc(TritonOpBuilder &builder,
   }
 
   builder.setInsertionPointToEnd(*entryBlock);
-  LLVM::CallOp callOp = LLVM::CallOp::create(builder, funcOp, callOperands);
+  LLVM::CallOp callOp = builder.create<LLVM::CallOp>(funcOp, callOperands);
   callOp.setAlwaysInline(true);
 
   Type retTy = funcOp.getFunctionType().getReturnType();
@@ -162,7 +162,7 @@ LogicalResult buildDSLRegionBodyFromLLVMFunc(TritonOpBuilder &builder,
   }
 
   builder.setLastLoc(loc);
-  tle::YieldOp::create(builder, yields);
+  builder.create<tle::YieldOp>(yields);
   return success();
 }
 

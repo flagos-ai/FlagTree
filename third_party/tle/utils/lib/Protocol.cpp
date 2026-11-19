@@ -58,19 +58,19 @@ SmallVector<Value> RankedTensorPattern::apply(TritonOpBuilder &builder,
   Type tgt = tgts[0];
   COND_CHECK(isa<LLVM::LLVMPointerType>(tgt));
   LLVM::LLVMPointerType ty = cast<LLVM::LLVMPointerType>(tgt);
-  rets.push_back(ExtractAllocatedPtrOp::create(builder, ty, src));
+  rets.push_back(builder.create<ExtractAllocatedPtrOp>(ty, src));
   tgt = tgts[1];
   ty = cast<LLVM::LLVMPointerType>(tgt);
-  rets.push_back(ExtractAlignedPtrOp::create(builder, ty, src));
+  rets.push_back(builder.create<ExtractAlignedPtrOp>(ty, src));
   tgt = tgts[2];
   COND_CHECK(tgt.isInteger(64));
-  rets.push_back(ExtractOffsetOp::create(builder, src));
+  rets.push_back(builder.create<ExtractOffsetOp>(src));
   for (size_t i = 3; i < 3 + 2 * rank; ++i) {
     tgt = tgts[i];
     COND_CHECK(tgt.isInteger(64));
   }
-  ExtractSizesOp sizesOp = ExtractSizesOp::create(builder, rank, src);
-  ExtractStridesOp stridesOp = ExtractStridesOp::create(builder, rank, src);
+  ExtractSizesOp sizesOp = builder.create<ExtractSizesOp>(rank, src);
+  ExtractStridesOp stridesOp = builder.create<ExtractStridesOp>(rank, src);
   for (const auto &result :
        llvm::concat<OpResult>(sizesOp.getResults(), stridesOp.getResults())) {
     rets.push_back(result);
@@ -85,19 +85,19 @@ SmallVector<Value> MemDescPattern::apply(TritonOpBuilder &builder,
   SmallVector<Value> rets;
   Type tgt = tgts[0];
   LLVM::LLVMPointerType ty = cast<LLVM::LLVMPointerType>(tgt);
-  rets.push_back(ExtractAllocatedPtrOp::create(builder, ty, src));
+  rets.push_back(builder.create<ExtractAllocatedPtrOp>(ty, src));
   tgt = tgts[1];
   ty = cast<LLVM::LLVMPointerType>(tgt);
-  rets.push_back(ExtractAlignedPtrOp::create(builder, ty, src));
+  rets.push_back(builder.create<ExtractAlignedPtrOp>(ty, src));
   tgt = tgts[2];
   COND_CHECK(tgt.isInteger(64));
-  rets.push_back(ExtractOffsetOp::create(builder, src));
+  rets.push_back(builder.create<ExtractOffsetOp>(src));
   for (size_t i = 3; i < 3 + 2 * rank; ++i) {
     tgt = tgts[i];
     COND_CHECK(tgt.isInteger(64));
   }
-  ExtractSizesOp sizesOp = ExtractSizesOp::create(builder, rank, src);
-  ExtractStridesOp stridesOp = ExtractStridesOp::create(builder, rank, src);
+  ExtractSizesOp sizesOp = builder.create<ExtractSizesOp>(rank, src);
+  ExtractStridesOp stridesOp = builder.create<ExtractStridesOp>(rank, src);
   for (const auto &result :
        llvm::concat<OpResult>(sizesOp.getResults(), stridesOp.getResults())) {
     rets.push_back(result);
@@ -111,7 +111,7 @@ SmallVector<Value> PointerPattern::apply(TritonOpBuilder &builder,
   Type tgt = tgts.front();
   LLVM::LLVMPointerType llvmPtrTy = cast<LLVM::LLVMPointerType>(tgt);
   tgts = tgts.drop_front();
-  return {tle::ExtractPtrOp::create(builder, llvmPtrTy, src)};
+  return {builder.create<tle::ExtractPtrOp>(llvmPtrTy, src)};
 }
 
 } // namespace signature
@@ -149,7 +149,7 @@ SmallVector<Value> LLVMStructurePattern::apply(TritonOpBuilder &builder,
                       arrayTy.getNumElements() == rank;
              }));
   tgts = tgts.drop_front();
-  return {tle::PackOp::create(builder, tgt, src)};
+  return {builder.create<tle::PackOp>(tgt, src)};
 }
 
 } // namespace ret
