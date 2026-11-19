@@ -28,14 +28,14 @@ def _matmul_gpu_kernel(a_ptr, b_ptr, c_ptr, M, N, K, stride_am, stride_ak, strid
         b_tile = b_ptr + (k0 + offs_k)[:, None] * stride_bk + offs_n[None, :] * stride_bn
         tle.gpu.copy(a_tile, a_buf, [BLOCK_M, BLOCK_K])
         tle.gpu.copy(b_tile, b_buf, [BLOCK_K, BLOCK_N])
-        a_vals = tle.gpu.to_tensor(a_buf, writable=False)
-        b_vals = tle.gpu.to_tensor(b_buf, writable=False)
+        a_vals = a_buf.load(writable=False)
+        b_vals = b_buf.load(writable=False)
         acc += tl.dot(a_vals, b_vals, input_precision="ieee")
 
     c_buf = tle.gpu.alloc([BLOCK_M, BLOCK_N], dtype=tl.float32, layout=None, scope=tle.gpu.smem,
                           nv_mma_shared_layout=False)
-    tle.gpu.store_tensor(acc, c_buf)
-    c_vals = tle.gpu.to_tensor(c_buf, writable=False)
+    c_buf.store(acc)
+    c_vals = c_buf.load(writable=False)
     c_tile = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn
     tl.store(c_tile, c_vals, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
 

@@ -14,8 +14,8 @@ def _roundtrip(src, dst, BLOCK: tl.constexpr):
     idx = tl.arange(0, BLOCK)
     buf = tle.gpu.alloc([BLOCK], tl.float32, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     tle.gpu.copy(src + idx, buf, [BLOCK])
-    value = tle.gpu.to_tensor(buf, writable=False)
-    tle.gpu.store_tensor(value + 1, buf)
+    value = buf.load(writable=False)
+    buf.store(value + 1)
     tle.gpu.copy(buf, dst + idx, [BLOCK])
 
 
@@ -40,11 +40,11 @@ def _invalid(src, CASE: tl.constexpr):
     elif CASE == 2:
         tle.gpu.copy(src + idx, buf, [16], offsets=[1])
     elif CASE == 3:
-        tle.gpu.to_tensor(buf, target_shape=[8])
+        buf.load(target_shape=[8])
     elif CASE == 4:
-        tle.gpu.store_tensor(tl.full([8], 0, tl.float32), buf)
+        buf.store(tl.full([8], 0, tl.float32))
     elif CASE == 5:
-        tle.gpu.store_tensor(tl.full([16], 0, tl.int32), buf)
+        buf.store(tl.full([16], 0, tl.int32))
     elif CASE == 6:
         tle.gpu.copy((src + idx).to(tl.pointer_type(tl.int32)), buf, [16])
     elif CASE == 7:

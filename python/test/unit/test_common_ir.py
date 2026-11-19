@@ -1,16 +1,16 @@
 """CommonIR capability discovery must also work with vendor-only bindings."""
 import importlib.util
 from pathlib import Path
-import sys
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
 
 def _load_capability(monkeypatch, binding):
-    extension = ModuleType("triton._C")
-    extension.libtriton = binding
-    monkeypatch.setitem(sys.modules, "triton._C", extension)
+    from triton import _C
+
+    # Keep the native package importable for knobs and mock only capability discovery.
+    monkeypatch.setattr(_C, "libtriton", binding)
     path = Path(__file__).resolve().parents[2] / "triton" / "_common_ir.py"
     spec = importlib.util.spec_from_file_location("_test_common_ir_capability", path)
     module = importlib.util.module_from_spec(spec)

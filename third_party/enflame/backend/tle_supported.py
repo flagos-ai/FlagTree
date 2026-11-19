@@ -25,9 +25,6 @@ TLE_SUPPORTED_PRIMITIVES = [
     ## TLE-Struct GPU
     "gpu.alloc",
     "gpu.copy",
-    # Registered in language/primitives.py and enabled here for Enflame.
-    "gpu.to_tensor",
-    "gpu.store_tensor",
     "gpu.local_ptr",
     "gpu.memory_space",
     "gpu.warp_specialize",

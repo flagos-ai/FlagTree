@@ -1615,29 +1615,6 @@ def copy(
 
 
 @tl.builtin
-def to_tensor(
-    memref: tle.buffered_tensor,
-    writable: bool = True,
-    target_shape=None,
-    _semantic=None,
-) -> tl.tensor:
-    if not isinstance(memref, tle.buffered_tensor):
-        raise ValueError(f"memref must be tle.gpu.buffered_tensor, got {type(memref).__name__}")
-
-    target_shape = tl._unwrap_if_constexpr(target_shape)
-    shape = list(memref.shape if target_shape is None else target_shape)
-    writable = tl._unwrap_if_constexpr(writable)
-    return tle_semantic.to_tensor(memref, bool(writable), tl.block_type(memref.dtype, shape), _semantic)
-
-
-@tl.builtin
-def store_tensor(tensor_value: tl.tensor, dst: tle.buffered_tensor, _semantic=None) -> None:
-    if not isinstance(dst, tle.buffered_tensor):
-        raise ValueError(f"dst must be tle.gpu.buffered_tensor, got {type(dst).__name__}")
-    tle_semantic.store_tensor(tensor_value, dst, _semantic)
-
-
-@tl.builtin
 def async_commit_group(_semantic=None) -> None:
     """Commit all transport-level asynchronous copies issued since the previous commit."""
     if not hasattr(_semantic.builder, "create_async_commit_group"):

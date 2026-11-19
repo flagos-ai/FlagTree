@@ -10,8 +10,8 @@ TLE_SUPPORTED_PRIMITIVES = [
     ## TLE-Struct GPU
     "gpu.alloc",
     "gpu.copy",
-    "gpu.to_tensor",
-    "gpu.store_tensor",
+    "gpu.buffered_tensor.load",
+    "gpu.buffered_tensor.store",
     "gpu.local_ptr",
     "gpu.set_layout",
 ]
