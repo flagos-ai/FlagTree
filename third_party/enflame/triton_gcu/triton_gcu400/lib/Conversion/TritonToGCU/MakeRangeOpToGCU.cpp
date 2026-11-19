@@ -98,7 +98,7 @@ void mlir::triton::populateMakeRangeOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool) {
+    triton::gcu::DTETagPool &pTagPool) {
   patterns.add<TritonMakeRangeOpLowering>(converter, patterns.getContext(),
                                           userAnalysis, replaced2Origin,
                                           pTagPool);

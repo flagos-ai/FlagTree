@@ -475,6 +475,7 @@ class CMakeBuildPy(build_py):
         helper.write_backend_site_pth(self.build_lib)  # flagtree
         # FlagPrism: finalize external component packaging after build_py.
         FLAGPRISM_SETUP.finalize_build_tree(self.build_lib)
+        helper.finalize_backend_build_tree(self.build_lib)
         return ret
 
 

@@ -1,1 +1,2 @@
 add_subdirectory(ChipletToThvTile)
+add_subdirectory(TleToThvTile)

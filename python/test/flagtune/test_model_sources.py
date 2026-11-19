@@ -21,6 +21,7 @@ ENTRY_2 = {
 
 @pytest.fixture(autouse=True)
 def clean_manifest_environment(monkeypatch):
+    monkeypatch.setattr(model_sources, "_MANIFEST_FAILURES", {})
     for name in (
             "FLAGTUNE_LOCAL_MANIFEST",
             "FLAGTUNE_MODEL_CACHE",
@@ -142,6 +143,71 @@ def test_remote_manifest_fetch_failure_is_reported(tmp_path, monkeypatch):
         model_sources.resolve_package_info(PLATFORM_KEY)
 
     assert not (cache_root / "manifest.json").exists()
+
+
+@pytest.mark.parametrize("error_type", [model_sources.ManifestFetchError, model_sources.ManifestContractError])
+def test_remote_failure_cooldown_retries_and_recovers(tmp_path, monkeypatch, error_type):
+    monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("FLAGTUNE_MANIFEST_URL", "https://example.invalid/manifest.tar.gz")
+    now = [0.0]
+    monkeypatch.setattr(model_sources.time, "monotonic", lambda: now[0])
+    calls = []
+    manifest = manifest_with({"versions": {"1.0.0": ENTRY_1}})
+
+    def fetch():
+        calls.append(1)
+        if len(calls) == 1:
+            raise error_type("404, timeout or invalid remote manifest")
+        return manifest, json.dumps(manifest).encode(), "https://example.invalid/manifest.tar.gz"
+
+    monkeypatch.setattr(model_sources, "_fetch_remote_manifest", fetch)
+    for _ in range(3):
+        with pytest.raises(error_type, match="404, timeout"):
+            model_sources.resolve_package_info(PLATFORM_KEY)
+    assert len(calls) == 1
+    now[0] = model_sources._MANIFEST_FAILURE_RETRY_SECONDS
+    assert model_sources.resolve_package_info(PLATFORM_KEY).version == "1.0.0"
+    assert len(calls) == 2
+    assert not model_sources._MANIFEST_FAILURES
+
+
+@pytest.mark.parametrize("change", ["url", "local", "refresh"])
+def test_manifest_source_change_or_explicit_refresh_bypasses_cooldown(tmp_path, monkeypatch, change):
+    monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("FLAGTUNE_MANIFEST_URL", "https://example.invalid/first.tar.gz")
+    calls = []
+    manifest = manifest_with({"versions": {"1.0.0": ENTRY_1}})
+
+    def fetch():
+        calls.append(1)
+        if len(calls) == 1:
+            raise model_sources.ManifestFetchError("offline")
+        return manifest, json.dumps(manifest).encode(), model_sources._manifest_url()
+
+    monkeypatch.setattr(model_sources, "_fetch_remote_manifest", fetch)
+    with pytest.raises(model_sources.ManifestFetchError):
+        model_sources.resolve_package_info(PLATFORM_KEY)
+    if change == "url":
+        monkeypatch.setenv("FLAGTUNE_MANIFEST_URL", "https://example.invalid/fixed.tar.gz")
+    elif change == "refresh":
+        monkeypatch.setenv("FLAGTUNE_MANIFEST_REFRESH", "1")
+    else:
+        install_local_manifest(tmp_path, monkeypatch, {"versions": {"1.0.0": ENTRY_1}})
+    assert model_sources.resolve_package_info(PLATFORM_KEY).version == "1.0.0"
+    assert len(calls) == (1 if change == "local" else 2)
+
+
+def test_unexpected_remote_error_is_not_cached(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLAGTUNE_MODEL_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("FLAGTUNE_MANIFEST_URL", "https://example.invalid/manifest.tar.gz")
+
+    def broken_fetch():
+        raise RuntimeError("implementation bug")
+
+    monkeypatch.setattr(model_sources, "_fetch_remote_manifest", broken_fetch)
+    with pytest.raises(RuntimeError, match="implementation bug"):
+        model_sources.resolve_package_info(PLATFORM_KEY)
+    assert not model_sources._MANIFEST_FAILURES
 
 
 def test_remote_manifest_bundle_contains_only_schema_validated_manifest():

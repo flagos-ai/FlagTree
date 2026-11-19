@@ -85,6 +85,12 @@ private:
 };
 
 void scheduleTleWgmmaAsyncLaunch(scf::ForOp forOp);
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+// flagtree pipeline enhance: with `wgmmaCarry` the accumulator groups of a
+// plain Triton loop may stay in flight across the back-edge. Returns true when
+// that was done.
+bool scheduleTleWgmmaAsyncLaunch(scf::ForOp forOp, bool wgmmaCarry);
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 void scheduleTleWgmmaUserPromisePipeline(scf::ForOp forOp);
 
 } // namespace mlir::triton::gpu::detail

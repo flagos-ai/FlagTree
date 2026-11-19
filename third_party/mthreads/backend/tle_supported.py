@@ -1,4 +1,5 @@
 TLE_SUPPORTED_PRIMITIVES = [
+    ## TLE-Lite
     "load",
     "extract_tile",
     "insert_tile",
@@ -11,6 +12,9 @@ TLE_SUPPORTED_PRIMITIVES = [
     "pipe.writer.acquire",
     "pipe.writer.commit",
     "pipe.writer.close",
+
+    ## TLE-Struct GPU
+    "gpu.buffered_tensor.subslice",
     "gpu.alloc",
     "gpu.copy",
     "gpu.local_ptr",
@@ -19,8 +23,8 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.warp_specialize",
     "gpu.alloc_barrier",
     "gpu.alloc_barriers",
-    "gpu.barrier_arrive",
     "gpu.barrier_wait",
+    "gpu.barrier_arrive",
     "gpu.wgmma",
     "gpu.wgmma_wait",
 ]

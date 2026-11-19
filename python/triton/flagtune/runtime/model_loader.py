@@ -156,24 +156,7 @@ class LoadedFlagTuneModel:
     package_path: Path
     model_member: str
     model_version: str
-
-
-def _parse_compat_version(ver: str) -> tuple:
-    """Compare permissive ``major.minor.patch`` compatibility fields numerically.
-
-    Unlike artifact revisions, compatibility bounds are not strict SemVer:
-    non-numeric components become zero.  This is intentionally narrow legacy
-    handling and must not be used to select archive revisions.
-    """
-    parts = []
-    for part in str(ver).split("."):
-        try:
-            parts.append(int(part))
-        except ValueError:
-            parts.append(0)
-    while len(parts) < 3:
-        parts.append(0)
-    return tuple(parts)
+    package_version: Optional[str] = None
 
 
 def _environment_model_version(explicit: Optional[str]) -> Optional[str]:
@@ -330,7 +313,11 @@ class FlagTuneModelManager:
         dtype_key: str,
         model_version: Optional[str] = None,
     ) -> LoadedFlagTuneModel:
-        """Load one child model from the selected outer platform package."""
+        """Load a child; ``model_version`` selects the outer package revision.
+
+        The result reports the child's own ``model_version`` separately from
+        ``package_version``. In-memory caches remain keyed by package revision.
+        """
         identity = ModelIdentity(platform_key, op_id, variant, dtype_key)
         implicit = model_version is None
         if implicit and identity in self._implicit_loaded:
@@ -381,10 +368,11 @@ class FlagTuneModelManager:
             raise IncompatibleModelError(f"invalid FlagTune child model at {package_path}:{member}: {exc}") from exc
         loaded = self._load_bundle_members(
             identity,
-            resolved_version,
+            entry.get("model_version", resolved_version),
             members,
             package_path,
             member,
+            package_version=resolved_version,
         )
         self._loaded[(identity, resolved_version)] = loaded
         if implicit:
@@ -450,20 +438,6 @@ class FlagTuneModelManager:
         raise error_type(f"FlagTune Manifest has no package for platform {identity.platform_key!r}{suffix}; "
                          f"checked flat user packages and package cache {cache_root} first")
 
-    def _validate_flagtune_version(self, config: Dict[str, Any], source: str) -> None:
-        min_ver = config.get("flagtune_version_min")
-        if min_ver and _parse_compat_version(min_ver) > _parse_compat_version(_FLAGTUNE_VERSION):
-            raise IncompatibleModelError(
-                f"Model at {source} requires FlagTune >= {min_ver}, current version is {_FLAGTUNE_VERSION}")
-        max_ver = config.get("flagtune_version_max")
-        if max_ver and _parse_compat_version(max_ver) < _parse_compat_version(_FLAGTUNE_VERSION):
-            logger.warning(
-                "Model at %s was built for FlagTune <= %s, current version is %s",
-                source,
-                max_ver,
-                _FLAGTUNE_VERSION,
-            )
-
     def _load_bundle_members(
         self,
         identity: ModelIdentity,
@@ -471,10 +445,13 @@ class FlagTuneModelManager:
         members: Dict[str, bytes],
         package_path: Path,
         model_member: str,
+        *,
+        package_version: Optional[str] = None,
     ) -> LoadedFlagTuneModel:
         source = f"{package_path}:{model_member}"
         variant, predictor = self._validate_bundle_members(identity, model_version, members, source)
-        return LoadedFlagTuneModel(identity, variant, predictor, package_path, model_member, model_version)
+        return LoadedFlagTuneModel(identity, variant, predictor, package_path, model_member, model_version,
+                                   package_version or model_version)
 
     def _validate_bundle_members(
         self,
@@ -495,8 +472,7 @@ class FlagTuneModelManager:
         declared_version = config.get("model_version")
         if declared_version != model_version:
             raise IncompatibleModelError(
-                f"model version mismatch for {source}: package={model_version!r}, config={declared_version!r}")
-        self._validate_flagtune_version(config, source)
+                f"model version mismatch for {source}: expected={model_version!r}, config={declared_version!r}")
         config_digest = model_config_sha256(config)
         predictor = _XGBoostPredictorCompat(
             members["xgboost_ranker.json"],
@@ -551,7 +527,7 @@ class FlagTuneModelManager:
                 raise IncompatibleModelError(f"invalid FlagTune child model at {source}:{member}: {exc}") from exc
             self._validate_bundle_members(
                 identity,
-                package.package_version,
+                package.models[artifact].get("model_version", package.package_version),
                 members,
                 f"{source}:{member}",
             )

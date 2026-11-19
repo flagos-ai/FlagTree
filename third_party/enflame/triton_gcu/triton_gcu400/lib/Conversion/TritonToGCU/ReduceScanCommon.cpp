@@ -72,12 +72,12 @@ CombineOpDesc::matchCombiningKind(Region &combineOp) {
           dyn_cast<triton::ExternElementwiseOp>(elementWiseOp)) {
     return llvm::StringSwitch<std::optional<vector::CombiningKind>>(
                externElementwiseOp.getSymbol())
-        .Case("__nv_fmaxf", vector::CombiningKind::MAXIMUMF)
-        .Case("__nv_max", vector::CombiningKind::MAXSI)
-        .Case("__nv_umax", vector::CombiningKind::MAXUI)
-        .Case("__nv_fminf", vector::CombiningKind::MINIMUMF)
-        .Case("__nv_min", vector::CombiningKind::MINSI)
-        .Case("__nv_umin", vector::CombiningKind::MINUI)
+        .Case("__ef_fmaxf", vector::CombiningKind::MAXIMUMF)
+        .Case("__ef_max", vector::CombiningKind::MAXSI)
+        .Case("__ef_umax", vector::CombiningKind::MAXUI)
+        .Case("__ef_fminf", vector::CombiningKind::MINIMUMF)
+        .Case("__ef_min", vector::CombiningKind::MINSI)
+        .Case("__ef_umin", vector::CombiningKind::MINUI)
         .Default(std::nullopt);
   }
   return TypeSwitch<Operation *, std::optional<vector::CombiningKind>>(

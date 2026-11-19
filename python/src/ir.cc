@@ -488,6 +488,35 @@ void init_triton_ir(py::module &&m) {
                int id = arg.getArgNumber();
                std::string attrName = name + "_arg" + std::to_string(id);
                Block *owner = arg.getOwner();
+#ifdef __TLE__
+               if (owner->isEntryBlock()) {
+                 auto function = dyn_cast<FuncOp>(owner->getParentOp());
+                 if (function &&
+                     (name == "tt.divisibility" || name == "tt.contiguity" ||
+                      name == "tt.constancy")) {
+                   Attribute hint = attr;
+                   if (!isa<RankedTensorType>(self.getType())) {
+                     if (auto values = dyn_cast<DenseIntElementsAttr>(attr))
+                       hint =
+                           IntegerAttr::get(values.getElementType(),
+                                            *values.getValues<APInt>().begin());
+                   }
+                   function.setArgAttr(id, name, hint);
+                   // Keep semantic promises separate from caller-inferred
+                   // argument facts, which may be weaker or change per call.
+                   auto declared = function.getArgAttrOfType<DictionaryAttr>(
+                       id, "tle.argument_hints");
+                   NamedAttrList promises(
+                       declared ? declared
+                                : DictionaryAttr::get(self.getContext()));
+                   promises.set(name, hint);
+                   function.setArgAttr(
+                       id, "tle.argument_hints",
+                       promises.getDictionary(self.getContext()));
+                   return;
+                 }
+               }
+#endif
                if (owner->isEntryBlock() &&
                    !isa<FuncOp>(owner->getParentOp())) {
                  owner->getParentOp()->setAttr(attrName, attr);

@@ -117,19 +117,19 @@ void populateArithPatternsAndLegality(GCUTritonGPUTypeConverter &typeConverter,
       GenericOpPattern<arith::OrIOp>, GenericOpPattern<arith::XOrIOp>,
       GenericOpPattern<arith::ShLIOp>, GenericOpPattern<arith::ShRUIOp>,
       GenericOpPattern<arith::ShRSIOp>, GenericOpPattern<arith::AddFOp>,
-      GenericOpPattern<arith::SubFOp>, GenericOpPattern<arith::MaximumFOp>,
-      GenericOpPattern<arith::MaxNumFOp>, GenericOpPattern<arith::MaxSIOp>,
-      GenericOpPattern<arith::MaxUIOp>, GenericOpPattern<arith::MinimumFOp>,
-      GenericOpPattern<arith::MinNumFOp>, GenericOpPattern<arith::MinSIOp>,
-      GenericOpPattern<arith::MinUIOp>, GenericOpPattern<arith::MulFOp>,
-      GenericOpPattern<arith::DivFOp>, GenericOpPattern<arith::RemFOp>,
-      GenericOpPattern<arith::CmpIOp>, GenericOpPattern<arith::CmpFOp>,
-      GenericOpPattern<arith::SelectOp>, GenericOpPattern<arith::TruncIOp>,
-      GenericOpPattern<arith::TruncFOp>, GenericOpPattern<arith::ExtUIOp>,
-      GenericOpPattern<arith::ExtSIOp>, GenericOpPattern<arith::ExtFOp>,
-      GenericOpPattern<arith::SIToFPOp>, GenericOpPattern<arith::FPToSIOp>,
-      GenericOpPattern<arith::FPToUIOp>, GenericOpPattern<arith::UIToFPOp>>(
-      typeConverter, context);
+      GenericOpPattern<arith::SubFOp>, GenericOpPattern<arith::NegFOp>,
+      GenericOpPattern<arith::MaximumFOp>, GenericOpPattern<arith::MaxNumFOp>,
+      GenericOpPattern<arith::MaxSIOp>, GenericOpPattern<arith::MaxUIOp>,
+      GenericOpPattern<arith::MinimumFOp>, GenericOpPattern<arith::MinNumFOp>,
+      GenericOpPattern<arith::MinSIOp>, GenericOpPattern<arith::MinUIOp>,
+      GenericOpPattern<arith::MulFOp>, GenericOpPattern<arith::DivFOp>,
+      GenericOpPattern<arith::RemFOp>, GenericOpPattern<arith::CmpIOp>,
+      GenericOpPattern<arith::CmpFOp>, GenericOpPattern<arith::SelectOp>,
+      GenericOpPattern<arith::TruncIOp>, GenericOpPattern<arith::TruncFOp>,
+      GenericOpPattern<arith::ExtUIOp>, GenericOpPattern<arith::ExtSIOp>,
+      GenericOpPattern<arith::ExtFOp>, GenericOpPattern<arith::SIToFPOp>,
+      GenericOpPattern<arith::FPToSIOp>, GenericOpPattern<arith::FPToUIOp>,
+      GenericOpPattern<arith::UIToFPOp>>(typeConverter, context);
 }
 
 //===----------------------------------------------------------------------===//
@@ -580,9 +580,12 @@ void populateTritonPatterns(GCUTritonGPUTypeConverter &typeConverter,
                             RewritePatternSet &patterns, bool hasReduceOps) {
   MLIRContext *context = patterns.getContext();
   patterns.insert<
-      // clang-format off
+  // clang-format off
+#if TRITON_VERSION < 38
+      // Triton 3.8 移除了 block pointer 体系（tt.advance / tt.make_tensor_ptr）。
       GenericOpPattern<triton::AdvanceOp>,
       GenericOpPattern<triton::MakeTensorPtrOp>,
+#endif
       GenericOpPattern<triton::ReshapeOp>,
       GenericOpPattern<triton::BitcastOp>,
       GenericOpPattern<triton::FpToFpOp>,
