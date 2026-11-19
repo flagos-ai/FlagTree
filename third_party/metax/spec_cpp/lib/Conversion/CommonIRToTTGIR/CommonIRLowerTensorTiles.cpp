@@ -1,7 +1,6 @@
 #include "triton/Conversion/CommonIRToTTGIR/CommonIRLowerTensorTiles.h"
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h"
 
-#include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "mlir-ext/Dialect/CommonIR/IR/LayoutHintAttrs.h"
 #include "mlir/IR/Matchers.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -10,6 +9,10 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
 
+#ifdef __MCTLE__
+#include "mctle/dialect/include/IR/Dialect.h"
+#endif
+
 #include <limits>
 #include <numeric>
 
@@ -17,6 +20,29 @@ namespace mlir::triton::metax {
 
 #define GEN_PASS_DEF_COMMONIRLOWERTENSORTILES
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h.inc"
+
+bool isMctleExtractTile(Operation *op) {
+#ifdef __MCTLE__
+  return isa_and_nonnull<mctle::ExtractTileOp>(op);
+#else
+  return false;
+#endif
+}
+
+bool isMctleInsertTile(Operation *op) {
+#ifdef __MCTLE__
+  return isa_and_nonnull<mctle::InsertTileOp>(op);
+#else
+  return false;
+#endif
+}
+
+bool isStaticMctleTile(Operation *op) {
+  if (!isMctleExtractTile(op) && !isMctleInsertTile(op))
+    return false;
+  APInt index;
+  return matchPattern(op->getOperands().back(), m_ConstantInt(&index));
+}
 
 namespace {
 
@@ -46,8 +72,6 @@ static bool preservesMmaCoordinates(RankedTensorType fullTy,
   auto unit = ttg::getShapePerCTATile(fullTy);
   int64_t repN = fullTy.getDimSize(1) / unit[1];
   int64_t elemM = mma.getElementsMNK()[0], elemN = mma.getElementsMNK()[1];
-  int64_t beginM = tileIndex[0] * tileTy.getDimSize(0) / unit[0];
-  int64_t beginN = tileIndex[1] * tileTy.getDimSize(1) / unit[1];
   int64_t countM = tileTy.getDimSize(0) / unit[0];
   int64_t countN = tileTy.getDimSize(1) / unit[1];
   auto coordinates = [&](const LinearLayout &layout, int32_t slot) {
@@ -61,8 +85,7 @@ static bool preservesMmaCoordinates(RankedTensorType fullTy,
     // Matches emitSubOffsetForMmaLayoutMACA's physical register order.
     int64_t m = slot / (4 * elemM * elemN * repN);
     int64_t n = (slot / (4 * elemN * (mma.getColMajor() ? 1 : elemM))) % repN;
-    if (m < beginM || m >= beginM + countM || n < beginN ||
-        n >= beginN + countN)
+    if (m / countM != tileIndex[0] || n / countN != tileIndex[1])
       continue;
     if (selected >= part.getInDimSize(reg))
       return false;
@@ -161,7 +184,7 @@ static FailureOr<SmallVector<int64_t>> getTileIndex(Operation *op,
       op->emitError(message);
     return failure();
   };
-  bool isExtract = isa<tile::ExtractTileOp>(op);
+  bool isExtract = isMctleExtractTile(op);
   auto fullTy = cast<RankedTensorType>(op->getOperand(0).getType());
   auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
   auto tileTy = isExtract ? resultTy
@@ -210,7 +233,7 @@ static FailureOr<TensorTilePlan> planTile(Operation *op) {
   if (failed(tileIndex))
     return failure();
   auto fullTy = cast<RankedTensorType>(op->getOperand(0).getType());
-  auto tileTy = cast<RankedTensorType>(isa<tile::ExtractTileOp>(op)
+  auto tileTy = cast<RankedTensorType>(isMctleExtractTile(op)
                                            ? op->getResult(0).getType()
                                            : op->getOperand(1).getType());
   Attribute encoding = fullTy.getEncoding();
@@ -274,7 +297,7 @@ struct CommonIRLowerTensorTilesPass
   void runOnOperation() override {
     SmallVector<TensorTilePlan> plans;
     WalkResult result = getOperation().walk([&](Operation *op) {
-      if (!isa<tile::ExtractTileOp, tile::InsertTileOp>(op))
+      if (!isStaticMctleTile(op))
         return WalkResult::advance();
       auto plan = planTile(op);
       if (failed(plan))
@@ -292,7 +315,7 @@ struct CommonIRLowerTensorTilesPass
       Value full =
           convertLayout(builder, loc, op->getOperand(0), plan.fullType);
       Value replacement;
-      if (isa<tile::ExtractTileOp>(op)) {
+      if (isMctleExtractTile(op)) {
         replacement = builder.create<ttg::ExtractTensorOp>(
             loc, plan.tileType, full, plan.ctaIndices, plan.elementIndices);
       } else {
@@ -320,13 +343,13 @@ struct CommonIRLowerTensorTilesPass
 } // namespace
 
 bool canLowerTensorTileInEncoding(Operation *op, Attribute encoding) {
-  if (!isa<tile::ExtractTileOp, tile::InsertTileOp>(op))
+  if (!isStaticMctleTile(op))
     return false;
   auto index = getTileIndex(op, /*diagnose=*/false);
   if (failed(index))
     return false;
   auto fullTy = cast<RankedTensorType>(op->getOperand(0).getType());
-  auto tileTy = cast<RankedTensorType>(isa<tile::ExtractTileOp>(op)
+  auto tileTy = cast<RankedTensorType>(isMctleExtractTile(op)
                                            ? op->getResult(0).getType()
                                            : op->getOperand(1).getType());
   auto plan = planForEncoding(op, fullTy, tileTy, *index, encoding);

@@ -8,13 +8,19 @@
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
-#include "triton/Conversion/CommonIRToTTGIR/MmaLayout.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 
 #include <string>
 
 namespace mlir::triton::metax {
+
+struct DotLayoutPlan {
+  Attribute mma;
+  Attribute operandA;
+  Attribute operandB;
+};
 
 // Enumerate locally valid layouts, with the default first.
 // Full-kernel compilation may still reject a candidate.
@@ -23,20 +29,21 @@ generateDotLayoutPlans(triton::DotOp dot, int computeCapability, int numWarps);
 
 struct DotLayoutDomain {
   triton::DotOp dot;
-  std::string functionName;
-  unsigned dotIndex;
+  // <function>/dot/<index>. Each function numbers all dots in preorder from
+  // zero, including fixed dots. Re-enumerate if the name or dot order changes.
+  std::string dotId;
   SmallVector<DotLayoutPlan> plans;
 };
 
-// Validate choices and insert A/B/result set_layout ops into unencoded TTIR.
-LogicalResult
-insertDotLayoutHints(ModuleOp module, int capability, int numWarps,
-                     const llvm::StringMap<DotLayoutPlan> &selection);
-
-// Number dots in preorder within each function. IDs are valid only until
-// the IR structure changes.
+// Skip dots with explicit dot-operand layouts on both A and B and an explicit
+// MMA layout on the accumulator or result.
 FailureOr<SmallVector<DotLayoutDomain>>
 enumerateDotLayoutPlans(ModuleOp module, int computeCapability, int numWarps);
+
+// Insert one selected plan per returned dotId into unencoded TTIR.
+LogicalResult
+insertDotLayoutHints(ModuleOp module,
+                     const llvm::StringMap<DotLayoutPlan> &selection);
 
 // Stable layout ID, independent of context and SSA names.
 std::string getDotLayoutPlanId(const DotLayoutPlan &plan);

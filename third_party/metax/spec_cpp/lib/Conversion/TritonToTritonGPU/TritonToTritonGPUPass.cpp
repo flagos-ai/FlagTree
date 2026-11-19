@@ -650,9 +650,8 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
   patterns.add<GenericOpPattern<LocalAllocOp>, GenericOpPattern<LocalStoreOp>>(
       typeConverter, context);
 #endif
-  patterns.add<GenericOpPattern<LocalLoadOp>, GenericOpPattern<BsmPermOp>>(
-      typeConverter, context);
-  patterns.add<GenericOpPattern<AsyncCopyGlobalToLocalOp>>(typeConverter,
+  patterns.add<GenericOpPattern<LocalLoadOp>,
+               GenericOpPattern<AsyncCopyGlobalToLocalOp>>(typeConverter,
                                                            context);
 }
 //
@@ -863,7 +862,6 @@ void populateCommonIRTensorPatternsAndLegality(TypeConverter &typeConverter,
                                                ConversionTarget &target) {
   tile::populateSetLayoutToTritonGPUPatterns(typeConverter, patterns, target);
   patterns.add<LayoutConversionPattern>(typeConverter, patterns.getContext());
-  tile::populateTensorTileTypePatterns(typeConverter, patterns, target);
   target.addDynamicallyLegalOp<ConvertLayoutOp>(
       [&typeConverter](Operation *op) { return typeConverter.isLegal(op); });
 }
@@ -886,7 +884,9 @@ public:
     if (!srcEnc) {
       return op.emitError("source tensor must have encoding attribute");
     }
-    Type retType = op.getType().cloneWithEncoding(srcEnc);
+    auto retType = op.getType();
+    if (!retType.getEncoding())
+      retType = retType.cloneWithEncoding(srcEnc);
 
     auto newOp = rewriter.replaceOpWithNewOp<tle::ExtractTileOp>(
         op, retType, adaptor.getSrc(), adaptor.getIndex());

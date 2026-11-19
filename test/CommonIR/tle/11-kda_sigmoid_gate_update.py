@@ -310,12 +310,9 @@ def _sigmoid_gating_delta_rule_pc_kernel(
         tle.gpu.metax.barrier_shared()
 
         # local_load 只能整块装载（TLE 没有 slice-load）
-        k_tile = tle.gpu.metax.local_load(
-            k_smem.slot(cur), intrinsic=True, is_constant_offs=True).to(tl.float32)
-        q_tile = tle.gpu.metax.local_load(
-            q_smem.slot(cur), intrinsic=True, is_constant_offs=True).to(tl.float32)
-        v_tile = tle.gpu.metax.local_load(
-            v_smem.slot(cur), intrinsic=True, is_constant_offs=True).to(tl.float32)
+        k_tile = k_smem.slot(cur).load().to(tl.float32)
+        q_tile = q_smem.slot(cur).load().to(tl.float32)
+        v_tile = v_smem.slot(cur).load().to(tl.float32)
 
         # 消费当前块：逐行提取（extract_tile 在该 layout 上编译不过，故用 where/max）
         for i in tl.static_range(TT):

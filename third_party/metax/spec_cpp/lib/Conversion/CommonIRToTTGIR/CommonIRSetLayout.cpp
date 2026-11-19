@@ -1,20 +1,38 @@
 #include "triton/Conversion/CommonIRToTTGIR/CommonIRSetLayout.h"
 #include "triton/Conversion/CommonIRToTTGIR/CommonIRLowerTensorTiles.h"
-#include "triton/Conversion/CommonIRToTTGIR/MmaLayout.h"
 
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "mlir-ext/Dialect/CommonIR/Transforms/LayoutHints.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 #include <numeric>
+#include <optional>
 
 namespace mlir::triton::metax {
 
 namespace ttg = mlir::triton::gpu;
 
 namespace {
+
+std::optional<StringRef> checkMACAMmaEncoding(ttg::MACAMmaEncodingAttr mma) {
+  auto powersOfTwo = [](ArrayRef<unsigned> values) {
+    return llvm::all_of(values,
+                        [](unsigned v) { return llvm::isPowerOf2_64(v); });
+  };
+  if (mma.getVersionMajor() != 2 || mma.getWarpsPerCTA().size() != 2 ||
+      mma.getElementsMNK().size() != 3 || !powersOfTwo(mma.getWarpsPerCTA()) ||
+      !powersOfTwo(mma.getElementsMNK()) || mma.getColMajor() > 1)
+    return "requires a rank-2 MACA MMA v2 layout with power-of-two "
+           "warp/element counts and colMajor 0 or 1";
+  if (mma.getIsATrans() || mma.getIsBTrans())
+    return "MACA MMA linear layout conversion does not support LDS transpose";
+  if (mma.getElementsStride() != ArrayRef<unsigned>({1, 1}))
+    return "MACA MMA without LDS transpose requires unit strides [1, 1]";
+  return std::nullopt;
+}
 
 LogicalResult validateLayoutHints(ModuleOp module, bool &hasHints) {
   auto product = [](ArrayRef<unsigned> values) {
@@ -40,19 +58,8 @@ LogicalResult validateLayoutHints(ModuleOp module, bool &hasHints) {
       return WalkResult::interrupt();
     }
     if (mma) {
-      auto powersOfTwo = [](ArrayRef<unsigned> values) {
-        return llvm::all_of(values,
-                            [](unsigned v) { return llvm::isPowerOf2_64(v); });
-      };
-      if (mma.getVersionMajor() != 2 || mma.getWarpsPerCTA().size() != 2 ||
-          mma.getElementsMNK().size() != 3 ||
-          !powersOfTwo(mma.getWarpsPerCTA()) ||
-          !powersOfTwo(mma.getElementsMNK()) || mma.getColMajor() > 1 ||
-          mma.getIsATrans() || mma.getIsBTrans() ||
-          mma.getElementsStride() != ArrayRef<unsigned>({1, 1})) {
-        op.emitOpError(
-            "requires a rank-2 MACA MMA v2 layout with power-of-two "
-            "warp/element counts, unit strides and no LDS transpose");
+      if (auto error = checkMACAMmaEncoding(mma)) {
+        op.emitOpError(*error);
         return WalkResult::interrupt();
       }
     }
@@ -201,6 +208,9 @@ Attribute getRequiredOperandEncoding(Operation *op, unsigned operandIndex) {
   if (auto dot = dyn_cast<triton::DotOp>(op))
     return operandIndex == 2 ? dot.getType().getEncoding() : Attribute{};
 
+  if (isMctleInsertTile(op) && operandIndex == 0)
+    return cast<RankedTensorType>(op->getResult(0).getType()).getEncoding();
+
   // Gather ties only its indices to its result; the source is independent.
   if (isa<triton::GatherOp>(op) && operandIndex != 1)
     return {};
@@ -256,46 +266,6 @@ void insertRequiredLayoutConversions(ModuleOp module) {
   });
 }
 
-LogicalResult validateDotLayouts(ModuleOp module) {
-  WalkResult result = module.walk([&](triton::DotOp dot) {
-    Attribute mma = dot.getType().getEncoding();
-    Attribute a = dot.getA().getType().getEncoding();
-    Attribute b = dot.getB().getType().getEncoding();
-    auto isMmaOperand = [](Attribute encoding) {
-      auto operand = dyn_cast_or_null<ttg::DotOperandEncodingAttr>(encoding);
-      return operand && isa<ttg::MACAMmaEncodingAttr>(operand.getParent());
-    };
-    if (!isa_and_nonnull<ttg::MACAMmaEncodingAttr>(mma) && !isMmaOperand(a) &&
-        !isMmaOperand(b))
-      return WalkResult::advance();
-    if (!isa_and_nonnull<ttg::MACAMmaEncodingAttr>(mma)) {
-      dot.emitError("MACA dot layout hints require an MMA layout for the "
-                    "result or accumulator");
-      return WalkResult::interrupt();
-    }
-    if (!isMmaOperand(a) || !isMmaOperand(b)) {
-      dot.emitError("MMA layout hints require explicit dot-operand layouts "
-                    "for A and B");
-      return WalkResult::interrupt();
-    }
-    auto target = module->getAttrOfType<StringAttr>(ttg::AttrTargetName);
-    int capability;
-    if (!target ||
-        target.getValue().split(':').second.getAsInteger(10, capability)) {
-      dot.emitError("requires a target compute capability for MMA validation");
-      return WalkResult::interrupt();
-    }
-    if (auto error = checkMacaDotLayout(dot, mma, a, b, capability,
-                                        ttg::lookupNumWarps(dot))) {
-      dot.emitError("MMA layout is not legal for this dot and target: ")
-          << *error;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  return failure(result.wasInterrupted());
-}
-
 } // namespace
 
 LogicalResult applyCommonIRLayoutHints(ModuleOp module) {
@@ -309,12 +279,30 @@ LogicalResult applyCommonIRLayoutHints(ModuleOp module) {
                           RankedTensorType type) -> Value {
     return builder.create<ttg::ConvertLayoutOp>(loc, type, source).getResult();
   };
+  // The insert base and result always have the same type. Its update (or
+  // an extract source) can share that encoding only for a native slice.
+  auto tileOperandEncoding = [](OpOperand &operand,
+                                Attribute encoding) -> Attribute {
+    auto *op = operand.getOwner();
+    if (isMctleInsertTile(op) && operand.getOperandNumber() == 0)
+      return encoding;
+    return canLowerTensorTileInEncoding(op, encoding) ? encoding : Attribute{};
+  };
+  auto inferOperand = [&](OpOperand &operand, Attribute encoding) {
+    auto *op = operand.getOwner();
+    if (isMctleExtractTile(op) || isMctleInsertTile(op))
+      return tileOperandEncoding(operand, encoding);
+    return inferSrcEncoding(op, encoding);
+  };
+  auto inferResult = [&](OpOperand &operand, Attribute encoding) {
+    auto *op = operand.getOwner();
+    if (isMctleExtractTile(op) || isMctleInsertTile(op))
+      return tileOperandEncoding(operand, encoding);
+    return inferDstEncoding(op, encoding);
+  };
   const tile::LayoutHintCallbacks callbacks{
-      inferSrcEncoding, inferDstEncoding, getTiedArgs,
-      canPropagateTo,   convertLayout,    canLowerTensorTileInEncoding};
+      inferOperand, inferResult, getTiedArgs, canPropagateTo, convertLayout};
   if (failed(tile::propagateLayoutHints(module, callbacks)))
-    return failure();
-  if (failed(validateDotLayouts(module)))
     return failure();
 
   insertRequiredLayoutConversions(module);

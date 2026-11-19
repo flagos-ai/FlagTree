@@ -2085,25 +2085,6 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
              return self.create<mlir::triton::tile::SetLayoutOp>(
                  value.getType(), value, layout);
            })
-      .def("create_tile_extract_tile",
-           [](TritonOpBuilder &self, Value source, Value index,
-              const std::vector<int64_t> &tileShape) -> Value {
-             auto srcTy = mlir::cast<RankedTensorType>(source.getType());
-             auto resTy = RankedTensorType::get(
-                 tileShape, srcTy.getElementType(), srcTy.getEncoding());
-             return self
-                 .create<mlir::triton::tile::ExtractTileOp>(resTy, source,
-                                                            index)
-                 .getResult();
-           })
-      .def("create_tile_insert_tile",
-           [](TritonOpBuilder &self, Value base, Value update,
-              Value index) -> Value {
-             return self
-                 .create<mlir::triton::tile::InsertTileOp>(base.getType(), base,
-                                                           update, index)
-                 .getResult();
-           })
 #endif
       ;
 

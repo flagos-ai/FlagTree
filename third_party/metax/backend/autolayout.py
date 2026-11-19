@@ -98,9 +98,7 @@ def prepare_layout_candidates(src, backend, options, env_vars):
 
 
 def _make_candidates(module, options, capability, cache):
-    dots = []
-    module.walk(lambda op: dots.append(op) if op.get_name() == "tt.dot" else None)
-    domains = metax.autolayout.enumerate_dot_layout_plans(module, capability, options.num_warps) if dots else []
+    domains = metax.autolayout.enumerate_dot_layout_plans(module, capability, options.num_warps)
 
     assignments = compose_kernel_candidates(domains)
     variants, failures = [], []

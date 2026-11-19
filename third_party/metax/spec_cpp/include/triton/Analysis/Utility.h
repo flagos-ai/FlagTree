@@ -280,6 +280,8 @@ bool supportMMA(Value value, int version);
 bool supportMMA(triton::DotOp op, int major, int minor);
 
 bool supportMMA(Value value, int major, int minor);
+
+unsigned getMinMmaElementsPerK(triton::DotOp dot, unsigned versionMinor);
 #endif
 
 // Conversion from `srcTy` to `dstTy` involving the minimum amount of data

@@ -566,9 +566,8 @@ public:
     bool hasRemainingGpuTileOps = false;
     module.walk([&](Operation *op) {
       if (op->getName().getDialectNamespace() == "tile") {
-        // Preserve tensor tile ops for type conversion and lowering after
-        // TTIR -> TTGIR assigns concrete layouts.
-        if (isa<tile::ExtractTileOp, tile::InsertTileOp, tile::SetLayoutOp>(op))
+        // Layout hints are consumed during TTIR -> TTGIR conversion.
+        if (isa<tile::SetLayoutOp>(op))
           return;
         op->emitError("was not eliminated by GPU TileIR conversion");
         hasRemainingGpuTileOps = true;

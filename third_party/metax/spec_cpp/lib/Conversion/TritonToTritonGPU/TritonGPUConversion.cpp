@@ -94,7 +94,7 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
   addDynamicallyLegalOp<triton::gpu::LocalAllocOp, triton::gpu::LocalStoreOp>(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
 #endif
-  addDynamicallyLegalOp<triton::gpu::LocalLoadOp, triton::gpu::BsmPermOp,
+  addDynamicallyLegalOp<triton::gpu::LocalLoadOp,
                         triton::gpu::AsyncCopyGlobalToLocalOp>(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,

@@ -194,10 +194,17 @@ void LayoutRematerialization::cleanup() {
 // Return true if the op is an op with a layout we don't want to change. We will
 // propagate the layout starting from anchor ops.
 bool isLayoutAnchor(Operation *op) {
-  // Physical tensor slices select registers using layout-dependent indices.
-  // Preserve those layouts and propagate them to users, including loop yields.
-  if (isa<ExtractTensorOp, InsertTensorOp>(op))
-    return true;
+#ifdef __FLAGTREE_COMMON_IR__
+  // Carry the MMA accumulator layout into the next loop iteration.
+  if (auto insert = dyn_cast<InsertTensorOp>(op)) {
+    if (isa<MACAMmaEncodingAttr>(insert.getType().getEncoding()) &&
+        llvm::any_of(insert->getUsers(), [](Operation *user) {
+          return isa<scf::YieldOp>(user) &&
+                 isa<scf::ForOp>(user->getParentOp());
+        }))
+      return true;
+  }
+#endif
   if (isa<DescriptorOpInterface>(op))
     return true;
   if (isa<LoadOp, StoreOp>(op))

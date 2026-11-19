@@ -10,6 +10,7 @@
 #ifdef __FLAGTREE_COMMON_IR__
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "mlir-ext/Dialect/CommonIR/Transforms/Passes.h"
+#include "triton/Conversion/CommonIRToTTGIR/CommonIRLowerTensorTiles.h"
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h"
 #endif
 #include "triton/Dialect/Gluon/Transforms/Passes.h"
@@ -125,14 +126,17 @@ void init_triton_passes_llvmir(py::module &&m) {
 #ifdef __FLAGTREE_COMMON_IR__
 void init_triton_passes_commonir(py::module &&m) {
   m.def("has_layout_hints", [](mlir::ModuleOp module) {
-    bool hasHints = false, hasMctle = false;
+    bool hasHints = false, needsMctleSelector = false;
     module.walk([&](mlir::Operation *op) {
       hasHints |= mlir::isa<mlir::triton::tile::SetLayoutOp>(op);
-      hasMctle |= op->getName().getDialectNamespace() == "mctle";
+      needsMctleSelector |= op->getName().getDialectNamespace() == "mctle" &&
+                            !mlir::triton::metax::isStaticMctleTile(op);
     });
-    if (hasHints && hasMctle)
+    if (hasHints && needsMctleSelector)
       throw std::invalid_argument(
-          "CommonIR set_layout cannot yet be combined with MCTLE operations");
+          "CommonIR set_layout cannot yet be combined with MCTLE operations "
+          "that require encoding selection, including dynamically indexed "
+          "tiles");
     return hasHints;
   });
   ADD_PASS_WRAPPER_0("add_clear_layout_hints",
@@ -142,6 +146,8 @@ void init_triton_passes_commonir(py::module &&m) {
   ADD_PASS_WRAPPER_0(
       "add_optimize_tensor_tile_layouts",
       mlir::triton::metax::createCommonIROptimizeTensorTileLayouts);
+  ADD_PASS_WRAPPER_0("add_coalesce_async_copy",
+                     mlir::triton::metax::createCommonIRCoalesceAsyncCopy);
   ADD_PASS_WRAPPER_0("add_optimize_shared_layouts",
                      mlir::triton::metax::createCommonIROptimizeSharedLayouts);
   ADD_PASS_WRAPPER_0("add_to_ttgir",
