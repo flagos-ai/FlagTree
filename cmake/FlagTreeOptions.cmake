@@ -129,9 +129,9 @@ macro(flagtree_configure_options)
       list(APPEND TRITON_PLUGIN_NAMES "mctle")
       add_definitions(-D__MCTLE__)
     endif()
-    # MetaX spec headers do not implement the generic TLE dialect. Drop
-    # __TLE__ for every MetaX build. Keep FLAGTREE_TLE on when CommonIR is
-    # enabled so third_party/tle still configures the slim DSL->tile.* plugin.
+    # Keep the generic TLE dialect disabled throughout the MetaX build,
+    # including CLI dialect registration. FLAGTREE_TLE still selects the
+    # CommonIR-only frontend when CommonIR is enabled.
     remove_definitions(-D__TLE__)
     list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
     if(NOT FLAGTREE_COMMON_IR_ENABLED)
