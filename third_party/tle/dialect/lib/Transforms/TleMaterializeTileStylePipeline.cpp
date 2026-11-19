@@ -788,7 +788,9 @@ materializeConsumeAt(OpBuilder &builder, scf::ForOp forOp,
                                                    plan, builder, mapping)))
       return failure();
     if (op == plan.firstDotOp) {
-      auto waitOp = ttg::AsyncWaitOp::create(builder, op->getLoc(), ValueRange(tokens), builder.getI32IntegerAttr(waitNum));
+      auto waitOp =
+          ttg::AsyncWaitOp::create(builder, op->getLoc(), ValueRange(tokens),
+                                   builder.getI32IntegerAttr(waitNum));
       waitOp.setNum(waitNum);
     }
     cloneWithUpdatedMemDescViewType(builder, op, mapping);
@@ -908,8 +910,9 @@ static Operation *materializeExplicitOneStepLead(OpBuilder &builder,
           then2Builder, forOp.getLoc(), forOp.getUpperBound(), forOp.getStep());
       Value steadyUpper = arith::SubIOp::create(
           then2Builder, forOp.getLoc(), upperMinusStep, forOp.getStep());
-      auto steadyFor = scf::ForOp::create(then2Builder, forOp.getLoc(), forOp.getLowerBound(), steadyUpper, forOp.getStep(),
-          steadyInitArgs);
+      auto steadyFor = scf::ForOp::create(then2Builder, forOp.getLoc(),
+                                          forOp.getLowerBound(), steadyUpper,
+                                          forOp.getStep(), steadyInitArgs);
       steadyFor->setAttr(kTleExplicitTileStylePipelineAttr,
                          then2Builder.getI32IntegerAttr(1));
       steadyFor->setAttr(kTleAsyncTileProducerCountAttr,

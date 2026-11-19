@@ -164,7 +164,8 @@ class PromoteLocalStoreStagingPass
           continue;
 
         OpBuilder builder(store);
-        auto stage = ttg::LocalAllocOp::create(builder, store.getLoc(), store.getDst().getType(), store.getSrc());
+        auto stage = ttg::LocalAllocOp::create(
+            builder, store.getLoc(), store.getDst().getType(), store.getSrc());
 
         Operation *storeOp = store.getOperation();
         dst.replaceUsesWithIf(stage.getResult(), [&](OpOperand &use) {

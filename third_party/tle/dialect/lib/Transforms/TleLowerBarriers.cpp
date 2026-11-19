@@ -84,7 +84,8 @@ static BarrierAllocOp findBarrierAlloc(Value value) {
         dyn_cast<ttg::WarpSpecializeOp>(partitions->getParentOp());
     if (!warpSpecialize)
       return {};
-    OperandRange captures = warpSpecialize.getPartitionOp().getExplicitCaptures();
+    OperandRange captures =
+        warpSpecialize.getPartitionOp().getExplicitCaptures();
     if (blockArg.getArgNumber() >= captures.size())
       return {};
     value = captures[blockArg.getArgNumber()];
@@ -95,9 +96,10 @@ static BarrierAllocOp findBarrierAlloc(Value value) {
 #if !defined(__HCU__)
 static std::pair<Value, Value>
 createNamedBarrierOperands(OpBuilder &builder, Location loc, Operation *op) {
-  Value id =
-      arith::ConstantIntOp::create(builder, loc, getI32Attr(op, "named_id"), 32);
-  Value threads = arith::ConstantIntOp::create(builder, loc, getI32Attr(op, "named_num_threads"), 32);
+  Value id = arith::ConstantIntOp::create(builder, loc,
+                                          getI32Attr(op, "named_id"), 32);
+  Value threads = arith::ConstantIntOp::create(
+      builder, loc, getI32Attr(op, "named_num_threads"), 32);
   return {id, threads};
 }
 #endif
@@ -146,7 +148,7 @@ struct TritonTleLowerBarriers
       StringRef backend = op->getAttrOfType<StringAttr>("backend").getValue();
       if (backend == "mbarrier") {
         ttng::WaitBarrierOp::create(builder, loc, op.getBarrier(),
-                                            op.getPhase());
+                                    op.getPhase());
       } else {
 #if defined(__HCU__)
         op.emitOpError("named barrier lowering is only supported on NVIDIA "
@@ -169,7 +171,7 @@ struct TritonTleLowerBarriers
       if (backend == "mbarrier") {
         int64_t count = getI32Attr(op.getOperation(), "arrive_count");
         ttng::ArriveBarrierOp::create(builder, loc, op.getBarrier(),
-                                              static_cast<uint32_t>(count));
+                                      static_cast<uint32_t>(count));
       } else {
 #if defined(__HCU__)
         op.emitOpError("named barrier lowering is only supported on NVIDIA "
@@ -214,7 +216,8 @@ struct TritonTleLowerBarriers
       if (!namedOnly) {
         for (int64_t i = 0; i < numBarriers; ++i) {
           Value slot = createBarrierSlot(builder, loc, alloc, i);
-          ttng::InitBarrierOp::create(builder, loc, slot, static_cast<uint32_t>(arriveCount));
+          ttng::InitBarrierOp::create(builder, loc, slot,
+                                      static_cast<uint32_t>(arriveCount));
         }
       }
       op.getResult().replaceAllUsesWith(alloc);

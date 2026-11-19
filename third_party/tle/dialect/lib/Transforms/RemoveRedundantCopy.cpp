@@ -181,8 +181,8 @@ ForOpArgConversion::matchAndRewrite(scf::ForOp forOp,
     rewrite.hoistedAlloc =
         ttg::LocalAllocOp::create(rewriter, forOp.getLoc(), memDescTy);
     ttg::LocalStoreOp::create(rewriter, forOp.getLoc(),
-                                       forOp.getInitArgs()[rewrite.yieldIdx],
-                                       rewrite.hoistedAlloc);
+                              forOp.getInitArgs()[rewrite.yieldIdx],
+                              rewrite.hoistedAlloc);
     yieldIndexToRewriteAfterHoist[rewrite.yieldIdx] = idx;
   }
 
@@ -190,8 +190,9 @@ ForOpArgConversion::matchAndRewrite(scf::ForOp forOp,
   for (auto &rewrite : rewrites)
     newInitArgs[rewrite.yieldIdx] = rewrite.hoistedAlloc;
 
-  auto newForOp = scf::ForOp::create(rewriter, forOp.getLoc(), forOp.getLowerBound(), forOp.getUpperBound(),
-      forOp.getStep(), newInitArgs);
+  auto newForOp =
+      scf::ForOp::create(rewriter, forOp.getLoc(), forOp.getLowerBound(),
+                         forOp.getUpperBound(), forOp.getStep(), newInitArgs);
   Region &oldRegion = forOp.getRegion();
   Region &newRegion = newForOp.getRegion();
   if (!newRegion.empty()) {
@@ -244,7 +245,8 @@ ForOpArgConversion::matchAndRewrite(scf::ForOp forOp,
     auto iter = yieldIndexToRewriteAfterHoist.find(idx);
     if (iter != yieldIndexToRewriteAfterHoist.end()) {
       auto oldResult = forOp.getResult(idx);
-      auto localLoadOp = ttg::LocalLoadOp::create(rewriter, forOp.getLoc(), oldResult.getType(), newResult);
+      auto localLoadOp = ttg::LocalLoadOp::create(
+          rewriter, forOp.getLoc(), oldResult.getType(), newResult);
       results.push_back(localLoadOp);
       ttg::LocalDeallocOp::create(rewriter, forOp.getLoc(), newResult);
     } else {

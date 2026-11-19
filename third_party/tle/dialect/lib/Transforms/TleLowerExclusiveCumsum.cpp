@@ -101,7 +101,7 @@ static LogicalResult buildReduceSelectByIndexRegion(OpBuilder &builder,
   Value selectedVal =
       arith::SelectOp::create(builder, loc, chooseLhs, lhsVal, rhsVal);
   triton::ReduceReturnOp::create(builder, loc,
-                                         ValueRange{selectedIdx, selectedVal});
+                                 ValueRange{selectedIdx, selectedVal});
   return success();
 }
 
@@ -138,8 +138,9 @@ class LowerExclusiveCumsumPass
       const Type elemTy = srcTy.getElementType();
       OpBuilder builder(op);
 
-      auto scan = triton::ScanOp::create(builder, op.getLoc(), ValueRange{op.getSrc()}, static_cast<int>(op.getAxis()),
-          op.getReverse());
+      auto scan = triton::ScanOp::create(
+          builder, op.getLoc(), ValueRange{op.getSrc()},
+          static_cast<int>(op.getAxis()), op.getReverse());
       if (failed(buildScanAddRegion(builder, scan, elemTy, op.getLoc()))) {
         op.emitOpError("failed to build add combiner for triton.scan");
         signalPassFailure();
@@ -156,11 +157,13 @@ class LowerExclusiveCumsumPass
 
       RankedTensorType idxTy = RankedTensorType::get(
           srcTy.getShape(), builder.getI32Type(), srcTy.getEncoding());
-      Value indices = triton::MakeRangeOp::create(builder, op.getLoc(), idxTy, /*start=*/0u,
-                              /*end=*/static_cast<uint32_t>(axisExtent))
-                          .getResult();
-      auto reduce = triton::ReduceOp::create(builder, op.getLoc(), ValueRange{indices, inclusive},
-          static_cast<int>(op.getAxis()));
+      Value indices =
+          triton::MakeRangeOp::create(builder, op.getLoc(), idxTy, /*start=*/0u,
+                                      /*end=*/static_cast<uint32_t>(axisExtent))
+              .getResult();
+      auto reduce = triton::ReduceOp::create(builder, op.getLoc(),
+                                             ValueRange{indices, inclusive},
+                                             static_cast<int>(op.getAxis()));
       bool pickMaxIndex = !op.getReverse();
       if (failed(buildReduceSelectByIndexRegion(builder, reduce, elemTy,
                                                 op.getLoc(), pickMaxIndex))) {

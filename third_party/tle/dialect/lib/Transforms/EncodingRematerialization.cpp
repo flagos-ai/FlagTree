@@ -455,9 +455,10 @@ static FailureOr<Value> rematerializeMakeRange(triton::MakeRangeOp range,
   if (targetTy.getRank() != 1 || !targetTy.getElementType().isInteger(32))
     return failure();
 
-  return triton::MakeRangeOp::create(rewriter, range.getLoc(), targetTy,
-          static_cast<uint32_t>(range.getStartAttr().getInt()),
-          static_cast<uint32_t>(range.getEndAttr().getInt()))
+  return triton::MakeRangeOp::create(
+             rewriter, range.getLoc(), targetTy,
+             static_cast<uint32_t>(range.getStartAttr().getInt()),
+             static_cast<uint32_t>(range.getEndAttr().getInt()))
       .getResult();
 }
 
@@ -486,8 +487,9 @@ rematerializeExpandDims(EncodingRematerializer &rematerializer,
   if (failed(input))
     return failure();
 
-  return triton::ExpandDimsOp::create(rematerializer.getRewriter(), expand.getLoc(), targetTy, *input,
-                                    expand.getAxisAttr())
+  return triton::ExpandDimsOp::create(rematerializer.getRewriter(),
+                                      expand.getLoc(), targetTy, *input,
+                                      expand.getAxisAttr())
       .getResult();
 }
 
@@ -506,7 +508,8 @@ rematerializeBroadcast(EncodingRematerializer &rematerializer,
   if (failed(input))
     return failure();
 
-  return triton::BroadcastOp::create(rematerializer.getRewriter(), broadcast.getLoc(), targetTy, *input)
+  return triton::BroadcastOp::create(rematerializer.getRewriter(),
+                                     broadcast.getLoc(), targetTy, *input)
       .getResult();
 }
 
@@ -742,7 +745,7 @@ EncodingRematerializer::rematerialize(Value value, Attribute targetEncoding,
         !policy.hasInterveningSharedMemoryWriteAlias(localLoad, insertBefore,
                                                      localLoad.getSrc())) {
       auto newLoad = LocalLoadOp::create(rewriter, localLoad.getLoc(), targetTy,
-                                                  localLoad.getSrc());
+                                         localLoad.getSrc());
       newLoad->setAttrs(localLoad->getAttrs());
       result = newLoad.getResult();
     }

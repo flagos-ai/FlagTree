@@ -308,7 +308,8 @@ static void applyRootRewrite(LogicalRootRewriteAction &action) {
   assert(storageTileEncoding && "shared encoding must be planned");
 
   OpBuilder builder(oldAlloc);
-  auto ctaLayout = ttg::CGAEncodingAttr::get1CTALayout(oldAlloc.getContext(), 2);
+  auto ctaLayout =
+      ttg::CGAEncodingAttr::get1CTALayout(oldAlloc.getContext(), 2);
   auto exactEncoding = ttg::SwizzledSharedEncodingAttr::get(
       oldAlloc.getContext(), 8, 1, 1, {1, 0}, ctaLayout);
   auto exactType = ttg::MemDescType::get(

@@ -890,7 +890,8 @@ static void _launch(int gridX, int gridY, int gridZ, int num_warps,
     if (use_cluster_dims || num_ctas != 1) {
       CUlaunchAttribute clusterAttr = {};
       clusterAttr.id = CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION;
-      clusterAttr.value.clusterDim.x = use_cluster_dims ? clusterDimX : num_ctas;
+      clusterAttr.value.clusterDim.x =
+          use_cluster_dims ? clusterDimX : num_ctas;
       clusterAttr.value.clusterDim.y = use_cluster_dims ? clusterDimY : 1;
       clusterAttr.value.clusterDim.z = use_cluster_dims ? clusterDimZ : 1;
       launchAttr[num_attrs] = clusterAttr;
@@ -1403,9 +1404,8 @@ static PyObject *launchKernel(PyObject *self, PyObject *args) {
 
   Py_BEGIN_ALLOW_THREADS;
   _launch(gridX, gridY, gridZ, num_warps, num_ctas, clusterDimX, clusterDimY,
-          clusterDimZ, launch_cooperative_grid,
-          launch_pdl, shared_memory, (CUstream)_stream, (CUfunction)_function,
-          params);
+          clusterDimZ, launch_cooperative_grid, launch_pdl, shared_memory,
+          (CUstream)_stream, (CUfunction)_function, params);
   Py_END_ALLOW_THREADS;
   if (PyErr_Occurred()) {
     goto cleanup;

@@ -150,8 +150,10 @@ static void init_triton_tle_ir(py::module m) {
              self.getContext()->getOrLoadDialect<dsa::DsaDialect>();
              auto &builder = self.getBuilder();
              auto *ctx = builder.getContext();
-             return dsa::CumsumOp::create(builder, self.getLastLoc(), TypeRange{exclusiveTy, totalTy}, input,
-                 builder.getI32IntegerAttr(axis), builder.getBoolAttr(reverse),
+             return dsa::CumsumOp::create(
+                 builder, self.getLastLoc(), TypeRange{exclusiveTy, totalTy},
+                 input, builder.getI32IntegerAttr(axis),
+                 builder.getBoolAttr(reverse),
                  DenseI64ArrayAttr::get(ctx, shape),
                  builder.getI64IntegerAttr(pad));
            })
@@ -161,8 +163,10 @@ static void init_triton_tle_ir(py::module m) {
               int16_t fmt) -> OpState {
              self.getContext()->getOrLoadDialect<dsa::DsaDialect>();
              auto &builder = self.getBuilder();
-             return dsa::RandGenOp::create(builder, self.getLastLoc(), TypeRange{outTy, seed0OutTy, seed1OutTy},
-                 seed0, seed1, builder.getI32IntegerAttr(byteCount),
+             return dsa::RandGenOp::create(
+                 builder, self.getLastLoc(),
+                 TypeRange{outTy, seed0OutTy, seed1OutTy}, seed0, seed1,
+                 builder.getI32IntegerAttr(byteCount),
                  builder.getI16IntegerAttr(fmt));
            })
       // Vendor-neutral same-nbytes type/shape reinterpret (e.g.

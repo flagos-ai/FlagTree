@@ -241,7 +241,7 @@ struct DistributedBarrierOpConversion
     rewriter.setInsertionPointToEnd(curBlock);
     mlir::gpu::BarrierOp::create(rewriter, loc);
     LLVM::CondBrOp::create(rewriter, loc, workerPred, workBlock, ValueRange{},
-                                    doneBlock, ValueRange{});
+                           doneBlock, ValueRange{});
 
     rewriter.setInsertionPointToEnd(workBlock);
     Value expectedMinusOne = b.sub(totalCTAs, b.i32_val(1));
@@ -276,8 +276,7 @@ struct DistributedBarrierOpConversion
     Value flippedBit = b.and_(xorVal, b.i32_val(0x80000000u));
     Value hasFlipped = b.icmp_ne(flippedBit, b.i32_val(0));
     LLVM::CondBrOp::create(rewriter, loc, hasFlipped, workerDoneBlock,
-                                    ValueRange{}, waitBlock,
-                                    ValueRange{oldArriveArg});
+                           ValueRange{}, waitBlock, ValueRange{oldArriveArg});
 
     rewriter.setInsertionPointToEnd(workerDoneBlock);
     LLVM::BrOp::create(rewriter, loc, ValueRange{}, endBlock);
@@ -360,9 +359,10 @@ struct DistributedBarrierOpConversion
 
     int32_t leaderCTAId = subgroupMask.front();
     Value leaderCTA = b.i32_val(leaderCTAId);
-    Value counterPtr = NVVM::MapaOp::create(rewriter, loc, clusterPtrTy, counterLocalPtr, leaderCTA);
+    Value counterPtr = NVVM::MapaOp::create(rewriter, loc, clusterPtrTy,
+                                            counterLocalPtr, leaderCTA);
     Value phasePtr = NVVM::MapaOp::create(rewriter, loc, clusterPtrTy,
-                                                   phaseLocalPtr, leaderCTA);
+                                          phaseLocalPtr, leaderCTA);
 
     Value clusterCTAId = triton::nvgpu::ClusterCTAIdOp::create(rewriter, loc);
     Value isParticipant = b.false_val();
@@ -388,7 +388,7 @@ struct DistributedBarrierOpConversion
     NVVM::ClusterArriveOp::create(rewriter, loc, unit);
     NVVM::ClusterWaitOp::create(rewriter, loc, unit);
     LLVM::CondBrOp::create(rewriter, loc, doInit, initBlock, ValueRange{},
-                                    postInitBlock, ValueRange{});
+                           postInitBlock, ValueRange{});
 
     rewriter.setInsertionPointToEnd(initBlock);
     LLVM::StoreOp::create(rewriter, loc, b.i32_val(0), counterPtr);
@@ -409,39 +409,43 @@ struct DistributedBarrierOpConversion
     rewriter.setInsertionPointToEnd(curBlock);
     mlir::gpu::BarrierOp::create(rewriter, loc);
     LLVM::CondBrOp::create(rewriter, loc, workerPred, workBlock, ValueRange{},
-                                    doneBlock, ValueRange{});
+                           doneBlock, ValueRange{});
 
     rewriter.setInsertionPointToEnd(workBlock);
     Value oldPhase =
-        LLVM::AtomicRMWOp::create(rewriter, loc, LLVM::AtomicBinOp::add, phasePtr, b.i32_val(0),
-                LLVM::AtomicOrdering::acquire, StringRef("device"))
+        LLVM::AtomicRMWOp::create(
+            rewriter, loc, LLVM::AtomicBinOp::add, phasePtr, b.i32_val(0),
+            LLVM::AtomicOrdering::acquire, StringRef("device"))
             .getResult();
     Value prevCount =
-        LLVM::AtomicRMWOp::create(rewriter, loc, LLVM::AtomicBinOp::add, counterPtr, b.i32_val(1),
-                LLVM::AtomicOrdering::acq_rel, StringRef("device"))
+        LLVM::AtomicRMWOp::create(
+            rewriter, loc, LLVM::AtomicBinOp::add, counterPtr, b.i32_val(1),
+            LLVM::AtomicOrdering::acq_rel, StringRef("device"))
             .getResult();
     Value arrived = b.add(prevCount, b.i32_val(1));
     Value isLast = b.icmp_eq(arrived, b.i32_val(subgroupMask.size()));
     LLVM::CondBrOp::create(rewriter, loc, isLast, lastBlock, ValueRange{},
-                                    waitBlock, ValueRange{oldPhase});
+                           waitBlock, ValueRange{oldPhase});
 
     rewriter.setInsertionPointToEnd(waitBlock);
     Value expectedPhase = waitBlock->getArgument(0);
     Value currentPhase =
-        LLVM::AtomicRMWOp::create(rewriter, loc, LLVM::AtomicBinOp::add, phasePtr, b.i32_val(0),
-                LLVM::AtomicOrdering::acquire, StringRef("device"))
+        LLVM::AtomicRMWOp::create(
+            rewriter, loc, LLVM::AtomicBinOp::add, phasePtr, b.i32_val(0),
+            LLVM::AtomicOrdering::acquire, StringRef("device"))
             .getResult();
     Value keepWaiting = b.icmp_eq(currentPhase, expectedPhase);
     LLVM::CondBrOp::create(rewriter, loc, keepWaiting, waitBlock,
-                                    ValueRange{expectedPhase}, doneBlock,
-                                    ValueRange{});
+                           ValueRange{expectedPhase}, doneBlock, ValueRange{});
 
     rewriter.setInsertionPointToEnd(lastBlock);
-    LLVM::AtomicRMWOp::create(rewriter, loc, LLVM::AtomicBinOp::add, counterPtr,
+    LLVM::AtomicRMWOp::create(
+        rewriter, loc, LLVM::AtomicBinOp::add, counterPtr,
         b.i32_val(-static_cast<int64_t>(subgroupMask.size())),
         LLVM::AtomicOrdering::release, StringRef("device"));
-    LLVM::AtomicRMWOp::create(rewriter, loc, LLVM::AtomicBinOp::add, phasePtr, b.i32_val(1),
-        LLVM::AtomicOrdering::release, StringRef("device"));
+    LLVM::AtomicRMWOp::create(rewriter, loc, LLVM::AtomicBinOp::add, phasePtr,
+                              b.i32_val(1), LLVM::AtomicOrdering::release,
+                              StringRef("device"));
     LLVM::BrOp::create(rewriter, loc, ValueRange{}, doneBlock);
 
     rewriter.setInsertionPointToEnd(doneBlock);

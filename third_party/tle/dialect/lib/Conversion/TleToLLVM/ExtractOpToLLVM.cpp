@@ -102,7 +102,8 @@ ExtractAllocatedPtrOpConversion::ExtractAllocatedPtrOpConversion(
 LogicalResult ExtractAllocatedPtrOpConversion::matchAndRewrite(
     tle::ExtractAllocatedPtrOp op, OpAdaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
-  LLVM::ExtractValueOp newOp = LLVM::ExtractValueOp::create(rewriter, op.getLoc(), adaptor.getInput(), SmallVector<int64_t>{0});
+  LLVM::ExtractValueOp newOp = LLVM::ExtractValueOp::create(
+      rewriter, op.getLoc(), adaptor.getInput(), SmallVector<int64_t>{0});
   rewriter.replaceOp(op, newOp.getResult());
   return success();
 }
@@ -114,7 +115,8 @@ ExtractAlignedPtrOpConversion::ExtractAlignedPtrOpConversion(
 LogicalResult ExtractAlignedPtrOpConversion::matchAndRewrite(
     tle::ExtractAlignedPtrOp op, OpAdaptor adaptor,
     ConversionPatternRewriter &rewriter) const {
-  LLVM::ExtractValueOp newOp = LLVM::ExtractValueOp::create(rewriter, op.getLoc(), adaptor.getInput(), SmallVector<int64_t>{0});
+  LLVM::ExtractValueOp newOp = LLVM::ExtractValueOp::create(
+      rewriter, op.getLoc(), adaptor.getInput(), SmallVector<int64_t>{0});
   rewriter.replaceOp(op, newOp.getResult());
   return success();
 }
@@ -142,7 +144,8 @@ LogicalResult ExtractSizesOpConversion::matchAndRewrite(
           dyn_cast<ttg::MemDescType>(op.getInput().getType())) {
     SmallVector<Value> sizes;
     for (int64_t size : memdesc.getShape()) {
-      auto newOp = arith::ConstantOp::create(rewriter, op.getLoc(), rewriter.getI64IntegerAttr(size));
+      auto newOp = arith::ConstantOp::create(rewriter, op.getLoc(),
+                                             rewriter.getI64IntegerAttr(size));
       sizes.push_back(newOp);
     }
     rewriter.replaceOpWithMultiple(op, sizes);
@@ -173,7 +176,8 @@ LogicalResult ExtractStridesOpConversion::matchAndRewrite(
     }
     llvm::SmallVector<Value> strideValues;
     for (unsigned i = 0; i < shape.size(); ++i) {
-      strideValues.push_back(arith::ConstantOp::create(rewriter, op.getLoc(), rewriter.getI64IntegerAttr(strides[i])));
+      strideValues.push_back(arith::ConstantOp::create(
+          rewriter, op.getLoc(), rewriter.getI64IntegerAttr(strides[i])));
     }
     rewriter.replaceOpWithMultiple(op, strideValues);
     return success();

@@ -32,6 +32,7 @@ from typing import List, Optional, Sequence, Tuple, Union
 from triton._C.libtriton import ir
 from triton.language.semantic import TritonSemantic
 import triton.language.core as tl
+
 COMMON_IR_ENABLED = False
 from . import types as tle
 from .mthreads import copy as mthreads_copy

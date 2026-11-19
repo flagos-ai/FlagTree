@@ -180,11 +180,12 @@ public:
           return op.emitOpError("with explicit completion barrier requires "
                                 "positive expect_bytes");
         if (expectBytes.getInt() > 0)
-          triton::nvidia_gpu::BarrierExpectOp::create(rewriter, loc, userBarrier, static_cast<int32_t>(expectBytes.getInt()),
-              pred);
-        auto tmaLoad =
-            triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp::create(rewriter, op.getLoc(), op.getSrc(), indices, userBarrier, dstMemDesc,
-                pred);
+          triton::nvidia_gpu::BarrierExpectOp::create(
+              rewriter, loc, userBarrier,
+              static_cast<int32_t>(expectBytes.getInt()), pred);
+        auto tmaLoad = triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp::create(
+            rewriter, op.getLoc(), op.getSrc(), indices, userBarrier,
+            dstMemDesc, pred);
         tmaLoad.setEvict(evictionPolicy);
       } else {
         if (op->hasAttr(op.getExpectBytesAttrName()))
@@ -219,13 +220,13 @@ public:
                 op->getAttrOfType<IntegerAttr>(kLogicalTMACopyBytesAttr))
           sizeInBytes = static_cast<int>(logicalBytes.getInt());
 
-        triton::nvidia_gpu::BarrierExpectOp::create(rewriter, loc, mbarrierAlloc,
-                                                             sizeInBytes, pred);
+        triton::nvidia_gpu::BarrierExpectOp::create(
+            rewriter, loc, mbarrierAlloc, sizeInBytes, pred);
 
         // Perform async TMA copy from global to existing shared memory
-        auto tmaLoad =
-            triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp::create(rewriter, op.getLoc(), op.getSrc(), indices, mbarrierAlloc, dstMemDesc,
-                pred);
+        auto tmaLoad = triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp::create(
+            rewriter, op.getLoc(), op.getSrc(), indices, mbarrierAlloc,
+            dstMemDesc, pred);
         tmaLoad.setEvict(evictionPolicy);
 
         // Wait for completion and invalidate barrier
@@ -262,8 +263,8 @@ public:
       auto indices = SmallVector<Value>(op.getIndices());
 
       // Perform async TMA copy from shared to global memory
-      auto tmaStore =
-          triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp::create(rewriter, op.getLoc(), op.getDst(), indices, op.getSrc());
+      auto tmaStore = triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp::create(
+          rewriter, op.getLoc(), op.getDst(), indices, op.getSrc());
       tmaStore->setAttr(kTleTMAStoreExplicitCommitAttr, rewriter.getUnitAttr());
       TMAStoreCommitGroupOp::create(rewriter, loc);
 

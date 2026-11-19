@@ -124,10 +124,13 @@ SmallVector<Value> computeThreadOffsets(Location loc,
   for (auto t : threadsPerWarp)
     warpSizeVal *= t;
   // Compute the total number of threads in a warp (product of threadsPerWarp).
-  Value warpSizeV = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)warpSizeVal));
+  Value warpSizeV = LLVM::ConstantOp::create(
+      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)warpSizeVal));
 
-  Value laneId = LLVM::URemOp::create(rewriter, loc, i32Ty, threadId, warpSizeV);
-  Value warpId = LLVM::UDivOp::create(rewriter, loc, i32Ty, threadId, warpSizeV);
+  Value laneId =
+      LLVM::URemOp::create(rewriter, loc, i32Ty, threadId, warpSizeV);
+  Value warpId =
+      LLVM::UDivOp::create(rewriter, loc, i32Ty, threadId, warpSizeV);
   // Compute the thread's lane index in each dimension within the warp.
   SmallVector<Value> laneInDim(rank);
   {
@@ -135,7 +138,8 @@ SmallVector<Value> computeThreadOffsets(Location loc,
     for (int i = 0; i < rank; ++i) {
       unsigned dim = order[i];
       unsigned count = threadsPerWarp[dim];
-      Value cv = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)count));
+      Value cv = LLVM::ConstantOp::create(
+          rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)count));
       laneInDim[dim] = LLVM::URemOp::create(rewriter, loc, i32Ty, rem, cv);
       rem = LLVM::UDivOp::create(rewriter, loc, i32Ty, rem, cv);
     }
@@ -147,7 +151,8 @@ SmallVector<Value> computeThreadOffsets(Location loc,
     for (int i = 0; i < rank; ++i) {
       unsigned dim = order[i];
       unsigned count = warpsPerCTA[dim];
-      Value cv = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)count));
+      Value cv = LLVM::ConstantOp::create(
+          rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)count));
       warpInDim[dim] = LLVM::URemOp::create(rewriter, loc, i32Ty, rem, cv);
       rem = LLVM::UDivOp::create(rewriter, loc, i32Ty, rem, cv);
     }
@@ -155,8 +160,12 @@ SmallVector<Value> computeThreadOffsets(Location loc,
 
   SmallVector<Value> threadOffsets(rank);
   for (int d = 0; d < rank; ++d) {
-    Value tpw = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)threadsPerWarp[d]));
-    Value spt = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)sizePerThread[d]));
+    Value tpw = LLVM::ConstantOp::create(
+        rewriter, loc, i32Ty,
+        rewriter.getI32IntegerAttr((int32_t)threadsPerWarp[d]));
+    Value spt = LLVM::ConstantOp::create(
+        rewriter, loc, i32Ty,
+        rewriter.getI32IntegerAttr((int32_t)sizePerThread[d]));
     // warpID * threadsPerWarp gives the starting thread index of this warp in
     // the dimension.
     Value warpContrib =

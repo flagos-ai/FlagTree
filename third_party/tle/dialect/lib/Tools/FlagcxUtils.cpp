@@ -87,7 +87,8 @@ LLVM::CallOp getNumPesFunCall(mlir::Location loc,
       runtimeNames.lookup("getNumPesFunction").data(), module, {PtrTy}, i32Ty);
 
   auto comm_dev_ptr = getFlagcxMemOrCommPtr(loc, rewriter, memPtrInt);
-  return LLVM::CallOp::create(rewriter, loc, TypeRange{func.getFunctionType().getReturnType()},
+  return LLVM::CallOp::create(
+      rewriter, loc, TypeRange{func.getFunctionType().getReturnType()},
       FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr});
 }
 
@@ -105,7 +106,8 @@ LLVM::CallOp getWorldRankFuncCall(mlir::Location loc,
                          module, {ptrTy}, i32Ty);
 
   auto commDevPtr = getFlagcxMemOrCommPtr(loc, rewriter, memPtrInt);
-  return LLVM::CallOp::create(rewriter, loc, TypeRange{func.getFunctionType().getReturnType()},
+  return LLVM::CallOp::create(
+      rewriter, loc, TypeRange{func.getFunctionType().getReturnType()},
       FlatSymbolRefAttr::get(func), ValueRange{commDevPtr});
 }
 
@@ -144,8 +146,9 @@ LLVM::CallOp getUnifiedBarrierFuncCall(
   auto orderVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty, order);
   auto scopeVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty, scope);
   return LLVM::CallOp::create(rewriter, loc, func,
-      ValueRange{commDevPtr, teamKindVal, barrierIndexVal, contextIdVal,
-                 coopKindVal, orderVal, scopeVal});
+                              ValueRange{commDevPtr, teamKindVal,
+                                         barrierIndexVal, contextIdVal,
+                                         coopKindVal, orderVal, scopeVal});
 }
 
 LLVM::CallOp getLocalPeFuncCall(mlir::Location loc,
@@ -161,7 +164,8 @@ LLVM::CallOp getLocalPeFuncCall(mlir::Location loc,
       runtimeNames.lookup("getLocalPeFunction").data(), module, {PtrTy}, i32Ty);
 
   auto comm_dev_ptr = getFlagcxMemOrCommPtr(loc, rewriter, memPtrInt);
-  return LLVM::CallOp::create(rewriter, loc, TypeRange{func.getFunctionType().getReturnType()},
+  return LLVM::CallOp::create(
+      rewriter, loc, TypeRange{func.getFunctionType().getReturnType()},
       FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr});
 }
 
@@ -181,10 +185,18 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
   auto voidTy = LLVM::LLVMVoidType::get(ctx);
   auto commPtr = getFlagcxMemOrCommPtr(loc, rewriter, comm);
 
-  auto teamKindValue = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(teamKind)));
-  auto coopKindValue = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(coopKind)));
-  auto contextIdValue = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(contextId)));
-  auto scopeValue = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(scope)));
+  auto teamKindValue = LLVM::ConstantOp::create(
+      rewriter, loc, i32Ty,
+      rewriter.getI32IntegerAttr(static_cast<int32_t>(teamKind)));
+  auto coopKindValue = LLVM::ConstantOp::create(
+      rewriter, loc, i32Ty,
+      rewriter.getI32IntegerAttr(static_cast<int32_t>(coopKind)));
+  auto contextIdValue = LLVM::ConstantOp::create(
+      rewriter, loc, i32Ty,
+      rewriter.getI32IntegerAttr(static_cast<int32_t>(contextId)));
+  auto scopeValue = LLVM::ConstantOp::create(
+      rewriter, loc, i32Ty,
+      rewriter.getI32IntegerAttr(static_cast<int32_t>(scope)));
 
   // Unified: (comm, teamKind, peer, signal, contextId, coopKind, scope)
   SmallVector<Value> args{commPtr,        teamKindValue, peer,      slotId,
@@ -209,7 +221,8 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
 
   auto signalFunc =
       createFuncInstance(runtimeName.data(), module, argTypes, voidTy);
-  return LLVM::CallOp::create(rewriter, loc, TypeRange{}, FlatSymbolRefAttr::get(signalFunc), args);
+  return LLVM::CallOp::create(rewriter, loc, TypeRange{},
+                              FlatSymbolRefAttr::get(signalFunc), args);
 }
 
 LLVM::CallOp getDevNetWaitFuncCallByKind(
@@ -226,15 +239,21 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(
   auto VoidTy = LLVM::LLVMVoidType::get(ctx);
 
   auto commPtr = getFlagcxMemOrCommPtr(loc, rewriter, comm);
-  auto coop_kind_val = LLVM::ConstantOp::create(rewriter, loc, I32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(coop_kind)));
-  auto contextIdValue = LLVM::ConstantOp::create(rewriter, loc, I32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(contextId)));
-  auto orderValue = LLVM::ConstantOp::create(rewriter, loc, I32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(order)));
+  auto coop_kind_val = LLVM::ConstantOp::create(
+      rewriter, loc, I32Ty,
+      rewriter.getI32IntegerAttr(static_cast<int32_t>(coop_kind)));
+  auto contextIdValue = LLVM::ConstantOp::create(
+      rewriter, loc, I32Ty,
+      rewriter.getI32IntegerAttr(static_cast<int32_t>(contextId)));
+  auto orderValue = LLVM::ConstantOp::create(
+      rewriter, loc, I32Ty,
+      rewriter.getI32IntegerAttr(static_cast<int32_t>(order)));
 
   LLVM::ConstantOp bits;
   LLVM::LLVMFuncOp func;
   auto make_call = [&](ValueRange args) {
     return LLVM::CallOp::create(rewriter, loc, TypeRange{},
-                                         FlatSymbolRefAttr::get(func), args);
+                                FlatSymbolRefAttr::get(func), args);
   };
 
   switch (wait_kind) {

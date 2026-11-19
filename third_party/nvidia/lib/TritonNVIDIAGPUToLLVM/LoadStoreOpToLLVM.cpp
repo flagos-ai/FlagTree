@@ -444,7 +444,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
       const char *addrConstraint = "l";
       if (isClusterSharedPtr) {
         addrVal = LLVM::PtrToIntOp::create(rewriter, loc, rewriter.getI32Type(),
-                                                    addrVal);
+                                           addrVal);
         addrConstraint = "r";
       }
       auto *addrOpr =
@@ -685,7 +685,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       const char *addrConstraint = "l";
       if (isClusterSharedPtr) {
         addrVal = LLVM::PtrToIntOp::create(rewriter, loc, rewriter.getI32Type(),
-                                                    addrVal);
+                                           addrVal);
         addrConstraint = "r";
       }
       auto *asmAddr =
@@ -1231,7 +1231,8 @@ public:
       const char *addrConstraint = "l";
       if (useClusterSharedAtomic &&
           isa<LLVM::LLVMPointerType>(addrOperand.getType())) {
-        addrOperand = LLVM::PtrToIntOp::create(rewriter, loc, rewriter.getI32Type(), addrOperand);
+        addrOperand = LLVM::PtrToIntOp::create(
+            rewriter, loc, rewriter.getI32Type(), addrOperand);
         addrConstraint = "r";
       }
       auto *ptrOpr =

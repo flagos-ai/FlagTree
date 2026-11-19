@@ -118,9 +118,11 @@ class EarlyAssignMemorySpacePass
     Value other = loadOp.getOther();
     auto allocTy = cast<triton::gpu::MemDescType>(localAllocOp.getType());
 
-    auto copyAsync = triton::gpu::AsyncCopyGlobalToLocalOp::create(builder, loc, src, localAllocOp, mask, other, loadOp.getCache(),
+    auto copyAsync = triton::gpu::AsyncCopyGlobalToLocalOp::create(
+        builder, loc, src, localAllocOp, mask, other, loadOp.getCache(),
         loadOp.getEvict(), loadOp.getIsVolatile());
-    auto commit = triton::gpu::AsyncCommitGroupOp::create(builder, loc, copyAsync->getResult(0));
+    auto commit = triton::gpu::AsyncCommitGroupOp::create(
+        builder, loc, copyAsync->getResult(0));
     // insert wait before the first use of loadop
     Operation *firstUse = nullptr;
     for (Operation *user : loadOp->getResult(0).getUsers()) {
@@ -149,7 +151,8 @@ class EarlyAssignMemorySpacePass
     auto loc = loadOp.getLoc();
     auto type = llvm::cast<RankedTensorType>(loadOp.getType());
 
-    auto localLoadOp = triton::gpu::LocalLoadOp::create(builder, loc, type, localAllocOp, token);
+    auto localLoadOp = triton::gpu::LocalLoadOp::create(builder, loc, type,
+                                                        localAllocOp, token);
     return localLoadOp;
   }
 };

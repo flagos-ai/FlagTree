@@ -82,9 +82,9 @@ class TritonTleLowerAsyncLoadPass
               // Replace new local alloc + local load + local alloc + trans with
               // the new local alloc + new trans
               builder.setInsertionPointAfter(otherMemDescTransOp);
-              auto newMemDescTransOp =
-                  triton::gpu::MemDescTransOp::create(builder, otherMemDescTransOp.getLoc(), localAlloc,
-                      otherMemDescTransOp.getOrder());
+              auto newMemDescTransOp = triton::gpu::MemDescTransOp::create(
+                  builder, otherMemDescTransOp.getLoc(), localAlloc,
+                  otherMemDescTransOp.getOrder());
               otherMemDescTransOp->replaceAllUsesWith(newMemDescTransOp);
             } else if (auto otherWarpGroupDotOp =
                            llvm::dyn_cast<triton::nvidia_gpu::WarpGroupDotOp>(
@@ -128,9 +128,11 @@ class TritonTleLowerAsyncLoadPass
     Value other = loadOp.getOther();
     auto allocTy = cast<triton::gpu::MemDescType>(localAllocOp.getType());
 
-    auto copyAsync = triton::gpu::AsyncCopyGlobalToLocalOp::create(builder, loc, src, localAllocOp, mask, other, loadOp.getCache(),
+    auto copyAsync = triton::gpu::AsyncCopyGlobalToLocalOp::create(
+        builder, loc, src, localAllocOp, mask, other, loadOp.getCache(),
         loadOp.getEvict(), loadOp.getIsVolatile());
-    auto commit = triton::gpu::AsyncCommitGroupOp::create(builder, loc, copyAsync->getResult(0));
+    auto commit = triton::gpu::AsyncCommitGroupOp::create(
+        builder, loc, copyAsync->getResult(0));
     // insert wait before the first use of loadop
     Operation *firstUse = nullptr;
     for (Operation *user : loadOp->getResult(0).getUsers()) {
@@ -159,7 +161,8 @@ class TritonTleLowerAsyncLoadPass
     auto loc = loadOp.getLoc();
     auto type = llvm::cast<RankedTensorType>(loadOp.getType());
 
-    auto localLoadOp = triton::gpu::LocalLoadOp::create(builder, loc, type, localAllocOp, token);
+    auto localLoadOp = triton::gpu::LocalLoadOp::create(builder, loc, type,
+                                                        localAllocOp, token);
     return localLoadOp;
   }
 };

@@ -267,7 +267,9 @@ def wrap_handle_tensordesc(launcher, signature, tensordesc_meta, arg_offset=0):
 
     # arg_offset: number of hidden leading kernel arguments (flagtree tle distributed)
     tensordesc_indices = set([
-        i + arg_offset for i, sig in enumerate(signature.values()) if isinstance(sig, str) and sig.startswith("tensordesc")
+        i + arg_offset
+        for i, sig in enumerate(signature.values())
+        if isinstance(sig, str) and sig.startswith("tensordesc")
     ])
     assert not tensordesc_meta or len(tensordesc_meta) == len(tensordesc_indices)
     if not tensordesc_meta:

@@ -311,9 +311,10 @@ rematerializeMakeRange(triton::MakeRangeOp range, RankedTensorType targetTy,
   if (!targetTy.getElementType().isInteger(32) || targetTy.getRank() != 1)
     return std::nullopt;
 
-  Value newRange = triton::MakeRangeOp::create(builder, range.getLoc(), targetTy,
-                           static_cast<uint32_t>(range.getStartAttr().getInt()),
-                           static_cast<uint32_t>(range.getEndAttr().getInt()))
+  Value newRange = triton::MakeRangeOp::create(
+                       builder, range.getLoc(), targetTy,
+                       static_cast<uint32_t>(range.getStartAttr().getInt()),
+                       static_cast<uint32_t>(range.getEndAttr().getInt()))
                        .getResult();
   return RematerializedValue{newRange, false};
 }
@@ -326,8 +327,8 @@ rematerializeSplat(triton::SplatOp splat, RankedTensorType targetTy,
       sourceTy.getElementType() != targetTy.getElementType())
     return std::nullopt;
 
-  Value newSplat =
-      triton::SplatOp::create(builder, splat.getLoc(), targetTy, splat.getSrc());
+  Value newSplat = triton::SplatOp::create(builder, splat.getLoc(), targetTy,
+                                           splat.getSrc());
   return RematerializedValue{newSplat, false};
 }
 
@@ -351,7 +352,7 @@ static std::optional<RematerializedValue> rematerializeBroadcast(
     return std::nullopt;
 
   Value newBroadcast = triton::BroadcastOp::create(builder, broadcast.getLoc(),
-                                                        targetTy, input->value)
+                                                   targetTy, input->value)
                            .getResult();
   return RematerializedValue{newBroadcast, input->usesLocalPointerLoad};
 }
@@ -383,8 +384,8 @@ static std::optional<RematerializedValue> rematerializeExpandDims(
     return std::nullopt;
 
   Value newExpand =
-      triton::ExpandDimsOp::create(builder, expand.getLoc(), targetTy, input->value,
-                                        expand.getAxisAttr())
+      triton::ExpandDimsOp::create(builder, expand.getLoc(), targetTy,
+                                   input->value, expand.getAxisAttr())
           .getResult();
   return RematerializedValue{newExpand, input->usesLocalPointerLoad};
 }
@@ -437,14 +438,17 @@ static std::optional<RematerializedValue> rematerializeLocalPointerLoad(
                                                kSharedMemoryAddressSpace);
   auto targetPtrTy = RankedTensorType::get(targetTy.getShape(), ptrElementTy,
                                            targetTy.getEncoding());
-  auto newLocalPointers = tle::LocalPointersOp::create(builder, localPointers.getLoc(), targetPtrTy, localPointers.getSrc(), indices);
+  auto newLocalPointers =
+      tle::LocalPointersOp::create(builder, localPointers.getLoc(), targetPtrTy,
+                                   localPointers.getSrc(), indices);
   for (NamedAttribute attr : localPointers->getAttrs())
     newLocalPointers->setAttr(attr.getName(), attr.getValue());
 
-  Value newLoad = triton::LoadOp::create(builder, load.getLoc(), newLocalPointers.getResult(),
-                          load.getCache(), load.getEvict(),
-                          load.getIsVolatile(), load.getFlagtreeHintsAttr())
-                      .getResult();
+  Value newLoad =
+      triton::LoadOp::create(
+          builder, load.getLoc(), newLocalPointers.getResult(), load.getCache(),
+          load.getEvict(), load.getIsVolatile(), load.getFlagtreeHintsAttr())
+          .getResult();
   return RematerializedValue{newLoad, true};
 }
 
@@ -524,9 +528,10 @@ static std::optional<RematerializedValue> rematerializeForLayout(
       auto offset = rematerializeForLayout(addPtr.getOffset(), targetOffsetTy,
                                            builder, cache, depth + 1);
       if (ptr && offset) {
-        Value result = triton::AddPtrOp::create(builder, addPtr.getLoc(), targetTy,
-                                                     ptr->value, offset->value)
-                           .getResult();
+        Value result =
+            triton::AddPtrOp::create(builder, addPtr.getLoc(), targetTy,
+                                     ptr->value, offset->value)
+                .getResult();
         rematerialized = RematerializedValue{
             result, ptr->usesLocalPointerLoad || offset->usesLocalPointerLoad};
       }
@@ -548,7 +553,7 @@ static std::optional<RematerializedValue> rematerializeForLayout(
       if (lhs && rhs) {
         Value result =
             arith::CmpIOp::create(builder, cmp.getLoc(), cmp.getPredicate(),
-                                       lhs->value, rhs->value)
+                                  lhs->value, rhs->value)
                 .getResult();
         rematerialized = RematerializedValue{
             result, lhs->usesLocalPointerLoad || rhs->usesLocalPointerLoad};
@@ -565,10 +570,10 @@ static std::optional<RematerializedValue> rematerializeForLayout(
       auto falseValue = rematerializeForLayout(select.getFalseValue(), targetTy,
                                                builder, cache, depth + 1);
       if (cond && trueValue && falseValue) {
-        Value result =
-            arith::SelectOp::create(builder, select.getLoc(), targetTy, cond->value,
-                                         trueValue->value, falseValue->value)
-                .getResult();
+        Value result = arith::SelectOp::create(
+                           builder, select.getLoc(), targetTy, cond->value,
+                           trueValue->value, falseValue->value)
+                           .getResult();
         rematerialized =
             RematerializedValue{result, cond->usesLocalPointerLoad ||
                                             trueValue->usesLocalPointerLoad ||
@@ -727,7 +732,8 @@ class OptimizeLocalPointerLoadsPass
       OpBuilder builder(item.load);
       Value memDesc = createSubviewForLoad(builder, item.load.getLoc(),
                                            std::move(item.match));
-      auto localLoad = ttg::LocalLoadOp::create(builder, item.load.getLoc(), item.load.getType(), memDesc);
+      auto localLoad = ttg::LocalLoadOp::create(builder, item.load.getLoc(),
+                                                item.load.getType(), memDesc);
       item.load.replaceAllUsesWith(localLoad.getResult());
       item.load.erase();
     }

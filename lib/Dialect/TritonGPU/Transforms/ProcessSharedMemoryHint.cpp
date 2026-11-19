@@ -47,7 +47,8 @@ struct ProcessSharedMemoryHintPass
                                      Value counter, Value modulus, Value zero,
                                      Value one) {
     Value addOne = arith::AddIOp::create(builder, loc, counter, one);
-    Value outOfRangeCond = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sge, addOne, modulus);
+    Value outOfRangeCond = arith::CmpIOp::create(
+        builder, loc, arith::CmpIPredicate::sge, addOne, modulus);
 
     return arith::SelectOp::create(builder, loc, outOfRangeCond, zero, addOne);
   }
@@ -65,7 +66,8 @@ struct ProcessSharedMemoryHintPass
     auto viewDescType = triton::gpu::MemDescType::get(
         shape, allocDescType.getElementType(), allocDescType.getEncoding(),
         allocDescType.getMemorySpace(), allocDescType.getMutableMemory());
-    return triton::gpu::MemDescIndexOp::create(builder, alloc.getLoc(), viewDescType, alloc, idx);
+    return triton::gpu::MemDescIndexOp::create(builder, alloc.getLoc(),
+                                               viewDescType, alloc, idx);
   }
 
   void createAsyncCopyForLoad(triton::LoadOp loadOp, Value alloc,
@@ -83,13 +85,15 @@ struct ProcessSharedMemoryHintPass
 
     // Create async copy
     Value view = createSingleBufferViewForLoad(builder, alloc, insertIdx);
-    Operation *copy = triton::gpu::AsyncCopyGlobalToLocalOp::create(builder, loc, src, view, mask, other, loadOp.getCache(), loadOp.getEvict(),
-        loadOp.getIsVolatile());
-    Operation *commmit = triton::gpu::AsyncCommitGroupOp::create(builder, loc, copy->getResult(0));
+    Operation *copy = triton::gpu::AsyncCopyGlobalToLocalOp::create(
+        builder, loc, src, view, mask, other, loadOp.getCache(),
+        loadOp.getEvict(), loadOp.getIsVolatile());
+    Operation *commmit = triton::gpu::AsyncCommitGroupOp::create(
+        builder, loc, copy->getResult(0));
 
     // Create wait and local load
-    auto wait =
-        triton::gpu::AsyncWaitOp::create(builder, loc, commmit->getResult(0), 0);
+    auto wait = triton::gpu::AsyncWaitOp::create(builder, loc,
+                                                 commmit->getResult(0), 0);
     auto viewLoad = createSingleBufferViewForLoad(builder, alloc, extractIdx);
 
     replaceUsesWithLocalLoad(builder, loadOp->getResult(0), viewLoad,
@@ -114,8 +118,8 @@ struct ProcessSharedMemoryHintPass
     auto memdescType = triton::gpu::MemDescType::get(
         bufferShape, ty.getElementType(), sharedEnc, sharedMemorySpace, true);
 
-    Value alloc =
-        triton::gpu::LocalAllocOp::create(builder, loadOp.getLoc(), memdescType);
+    Value alloc = triton::gpu::LocalAllocOp::create(builder, loadOp.getLoc(),
+                                                    memdescType);
     return alloc;
   }
 

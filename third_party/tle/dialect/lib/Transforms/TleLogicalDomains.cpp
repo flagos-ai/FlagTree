@@ -1184,7 +1184,8 @@ private:
       if (auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(
               argument.getOwner()->getParentOp())) {
         auto warp = cast<ttg::WarpSpecializeOp>(partitions->getParentOp());
-        Value capture = warp.getPartitionOp().getExplicitCaptures()[argument.getArgNumber()];
+        Value capture = warp.getPartitionOp()
+                            .getExplicitCaptures()[argument.getArgNumber()];
         const auto *source = getLatticeElementFor(
             getProgramPointBefore(argument.getOwner()), capture);
         propagateIfChanged(lattice, lattice->join(source->getValue()));

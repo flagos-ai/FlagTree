@@ -447,12 +447,14 @@ LogicalResult lowerDeviceSpace(Location loc, Value mem_ptr,
   Value comm_dev_ptr =
       LLVM::IntToPtrOp::create(rewriter, loc, genericPtrTy, memPtr);
 
-  auto getPeerPtrCall = LLVM::CallOp::create(rewriter, loc, TypeRange{func.getFunctionType().getReturnType()},
+  auto getPeerPtrCall = LLVM::CallOp::create(
+      rewriter, loc, TypeRange{func.getFunctionType().getReturnType()},
       FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr, byteOffset, peer});
 
   // The external C ABI returns a generic pointer. The remote tensor remains
   // global memory, so restore AS1 explicitly at the call boundary.
-  Value peerPtr = LLVM::AddrSpaceCastOp::create(rewriter, loc, globalPtrTy, getPeerPtrCall.getResult());
+  Value peerPtr = LLVM::AddrSpaceCastOp::create(rewriter, loc, globalPtrTy,
+                                                getPeerPtrCall.getResult());
   resultPtrs.push_back(peerPtr);
 
   return success();

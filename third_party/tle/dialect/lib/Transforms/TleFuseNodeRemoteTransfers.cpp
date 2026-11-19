@@ -302,7 +302,8 @@ static Value materializeDynamicPrefixLength(OpBuilder &builder, Location loc,
       mask.isUnsigned ? arith::CmpIPredicate::ule : arith::CmpIPredicate::sle;
   Value withinExtent =
       arith::CmpIOp::create(builder, loc, predicate, limitI64, upper);
-  tt::AssertOp::create(builder, loc, withinExtent,
+  tt::AssertOp::create(
+      builder, loc, withinExtent,
       builder.getStringAttr("valid_n must not exceed tl.arange extent"));
   return limitI64;
 }
@@ -735,7 +736,8 @@ struct TritonTleFuseNodeRemoteTransfers
       if (!prefixMask)
         nelems = arith::ConstantIntOp::create(builder, loc, extent, 64);
       else if (constantValidN)
-        nelems = arith::ConstantIntOp::create(builder, loc, *constantValidN, 64);
+        nelems =
+            arith::ConstantIntOp::create(builder, loc, *constantValidN, 64);
       else
         nelems =
             materializeDynamicPrefixLength(builder, loc, *prefixMask, extent);
@@ -749,15 +751,17 @@ struct TritonTleFuseNodeRemoteTransfers
       auto marker = remoteExpr.remote;
 
       if (isPut) {
-        tle::NodePutOp::create(builder, loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
-            marker.getShardId(), srcOffset, dstOffset, nelems,
-            marker.getContextIdAttr(), builder.getI64IntegerAttr(elemBytes),
-            marker.getCoopKindAttr());
+        tle::NodePutOp::create(builder, loc, marker.getSrc(), marker.getSrc(),
+                               marker.getComm(), marker.getShardId(), srcOffset,
+                               dstOffset, nelems, marker.getContextIdAttr(),
+                               builder.getI64IntegerAttr(elemBytes),
+                               marker.getCoopKindAttr());
       } else {
-        tle::NodeGetOp::create(builder, loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
-            marker.getShardId(), srcOffset, dstOffset, nelems,
-            marker.getContextIdAttr(), builder.getI64IntegerAttr(elemBytes),
-            marker.getCoopKindAttr());
+        tle::NodeGetOp::create(builder, loc, marker.getSrc(), marker.getSrc(),
+                               marker.getComm(), marker.getShardId(), srcOffset,
+                               dstOffset, nelems, marker.getContextIdAttr(),
+                               builder.getI64IntegerAttr(elemBytes),
+                               marker.getCoopKindAttr());
       }
 
       unsigned localArgNumber = localExpr.localArg.getArgNumber();

@@ -381,18 +381,19 @@ class OptimizeLocalPointerStoresPass
           auto targetMaskTy =
               RankedTensorType::get(maskTy.getShape(), maskTy.getElementType(),
                                     valueTy.getEncoding());
-          mask = ttg::ConvertLayoutOp::create(builder, store.getLoc(), targetMaskTy,
-                                                   mask)
+          mask = ttg::ConvertLayoutOp::create(builder, store.getLoc(),
+                                              targetMaskTy, mask)
                      .getResult();
         }
-        Value oldValue = ttg::LocalLoadOp::create(builder, store.getLoc(), valueTy, localPointers.getSrc());
+        Value oldValue = ttg::LocalLoadOp::create(
+            builder, store.getLoc(), valueTy, localPointers.getSrc());
         valueToStore = arith::SelectOp::create(builder, store.getLoc(), mask,
-                                                    valueToStore, oldValue)
+                                               valueToStore, oldValue)
                            .getResult();
       }
 
       ttg::LocalStoreOp::create(builder, store.getLoc(), valueToStore,
-                                        localPointers.getSrc());
+                                localPointers.getSrc());
       store.erase();
     }
   }

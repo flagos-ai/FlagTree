@@ -80,7 +80,8 @@ public:
         continue;
 
       OpBuilder builder(op);
-      auto newOp = tle::ExclusiveCumsumOp::create(builder, op.getLoc(), TypeRange{srcBaseTy, op.getTotal().getType()},
+      auto newOp = tle::ExclusiveCumsumOp::create(
+          builder, op.getLoc(), TypeRange{srcBaseTy, op.getTotal().getType()},
           srcCvt.getSrc(), op.getAxisAttr(), op.getReverseAttr());
 
       for (auto cvt : outCvts)

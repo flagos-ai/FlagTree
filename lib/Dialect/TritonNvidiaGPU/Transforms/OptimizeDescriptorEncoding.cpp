@@ -355,7 +355,8 @@ void assignMemoryLayouts(FuncOp &func) {
 
 #ifdef __TLE__
       if (auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(op)) {
-        for (auto [i, capture] : llvm::enumerate(wsOp.getPartitionOp().getExplicitCaptures())) {
+        for (auto [i, capture] :
+             llvm::enumerate(wsOp.getPartitionOp().getExplicitCaptures())) {
           if (!isa<TensorDescType>(capture.getType()))
             continue;
           updateEncoding(getWarpSpecializeTiedDescValues(wsOp, i),

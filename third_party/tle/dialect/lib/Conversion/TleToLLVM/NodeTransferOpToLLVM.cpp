@@ -137,31 +137,40 @@ lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
 
   auto emitTransfer = [&]() {
     LLVM::LLVMFuncOp getNet = getOrInsertNetFromComm(module, ctx);
-    Value contextIdValue = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(contextId));
-    auto getNetCall = LLVM::CallOp::create(rewriter, loc, TypeRange{ptrTy}, FlatSymbolRefAttr::get(getNet),
-        ValueRange{comm, contextIdValue});
-    Value teamKind = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(2));
-    Value coopKind = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(coopKindValue));
+    Value contextIdValue = LLVM::ConstantOp::create(
+        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(contextId));
+    auto getNetCall = LLVM::CallOp::create(rewriter, loc, TypeRange{ptrTy},
+                                           FlatSymbolRefAttr::get(getNet),
+                                           ValueRange{comm, contextIdValue});
+    Value teamKind = LLVM::ConstantOp::create(rewriter, loc, i32Ty,
+                                              rewriter.getI32IntegerAttr(2));
+    Value coopKind = LLVM::ConstantOp::create(
+        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(coopKindValue));
 
     if (kind == NodeTransferKind::Put) {
       LLVM::LLVMFuncOp put = getOrInsertNetPut(module, ctx);
-      LLVM::CallOp::create(rewriter, loc, TypeRange{}, FlatSymbolRefAttr::get(put),
-          ValueRange{getNetCall.getResult(), comm, teamKind, peer, dstMem,
-                     dstByteOffset, srcMem, srcByteOffset, byteCount,
-                     coopKind});
+      LLVM::CallOp::create(rewriter, loc, TypeRange{},
+                           FlatSymbolRefAttr::get(put),
+                           ValueRange{getNetCall.getResult(), comm, teamKind,
+                                      peer, dstMem, dstByteOffset, srcMem,
+                                      srcByteOffset, byteCount, coopKind});
       return;
     }
 
     LLVM::LLVMFuncOp get = getOrInsertNetGet(module, ctx);
-    LLVM::CallOp::create(rewriter, loc, TypeRange{}, FlatSymbolRefAttr::get(get),
+    LLVM::CallOp::create(
+        rewriter, loc, TypeRange{}, FlatSymbolRefAttr::get(get),
         ValueRange{getNetCall.getResult(), comm, teamKind, peer, srcMem,
                    srcByteOffset, dstMem, dstByteOffset, byteCount, coopKind});
   };
 
   if (!constantNelems) {
-    Value zero = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI64Type(), rewriter.getI64IntegerAttr(0));
-    Value hasElements = LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::sgt, nelems, zero);
-    triton::AssertOp::create(rewriter, loc, hasElements,
+    Value zero = LLVM::ConstantOp::create(rewriter, loc, rewriter.getI64Type(),
+                                          rewriter.getI64IntegerAttr(0));
+    Value hasElements = LLVM::ICmpOp::create(
+        rewriter, loc, LLVM::ICmpPredicate::sgt, nelems, zero);
+    triton::AssertOp::create(
+        rewriter, loc, hasElements,
         rewriter.getStringAttr(
             "node remote transfer requires nelems > 0; use an unmasked scalar "
             "transfer, or with offsets = tl.arange(0, N), require 1 <= valid_n "

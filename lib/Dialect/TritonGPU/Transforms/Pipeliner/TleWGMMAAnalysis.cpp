@@ -179,11 +179,11 @@ static bool isWgmmaCommitGroupBoundary(Operation *op) {
   // dependency only needs a commit boundary, not an accumulator wait.
   return isa<ttng::WaitBarrierOp, ttng::ArriveBarrierOp,
              ttng::FenceAsyncSharedOp, ttng::WarpGroupDotCommitOp,
-             ttng::WarpGroupDotWaitOp, ttng::TMAStoreWaitOp,
-             ttg::BarrierOp, ttnvws::ProducerAcquireOp,
-             ttnvws::ProducerCommitOp, ttnvws::ConsumerWaitOp,
-             ttnvws::ConsumerReleaseOp, tttle::WGMMASharedOperandFenceOp,
-             tttle::TMAStoreCommitGroupOp, tttle::DistributedBarrierOp>(op);
+             ttng::WarpGroupDotWaitOp, ttng::TMAStoreWaitOp, ttg::BarrierOp,
+             ttnvws::ProducerAcquireOp, ttnvws::ProducerCommitOp,
+             ttnvws::ConsumerWaitOp, ttnvws::ConsumerReleaseOp,
+             tttle::WGMMASharedOperandFenceOp, tttle::TMAStoreCommitGroupOp,
+             tttle::DistributedBarrierOp>(op);
 }
 
 static bool isWgmmaAccumulatorChainBoundary(Operation *op) {
@@ -198,11 +198,10 @@ static bool isWgmmaAccumulatorChainBoundary(Operation *op) {
   // non-WGMMA boundary.
   return isa<ttng::WaitBarrierOp, ttng::ArriveBarrierOp,
              ttng::FenceAsyncSharedOp, ttng::WarpGroupDotWaitOp,
-             ttng::TMAStoreWaitOp, ttg::BarrierOp,
-             ttnvws::ProducerAcquireOp, ttnvws::ProducerCommitOp,
-             ttnvws::ConsumerWaitOp, ttnvws::ConsumerReleaseOp,
-             tttle::WGMMASharedOperandFenceOp, tttle::TMAStoreCommitGroupOp,
-             tttle::DistributedBarrierOp>(op);
+             ttng::TMAStoreWaitOp, ttg::BarrierOp, ttnvws::ProducerAcquireOp,
+             ttnvws::ProducerCommitOp, ttnvws::ConsumerWaitOp,
+             ttnvws::ConsumerReleaseOp, tttle::WGMMASharedOperandFenceOp,
+             tttle::TMAStoreCommitGroupOp, tttle::DistributedBarrierOp>(op);
 }
 
 static bool hasWgmmaCommitGroupBoundaryBetween(Operation *from, Operation *to) {

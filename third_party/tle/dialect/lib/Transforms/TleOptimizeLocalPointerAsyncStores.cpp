@@ -430,7 +430,8 @@ static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group) {
     OpBuilder builder(store);
     Value dst =
         createSubviewForStore(builder, store.getLoc(), candidate->match);
-    auto asyncCopy = ttg::AsyncCopyGlobalToLocalOp::create(builder, store.getLoc(), candidate->load.getPtr(), dst,
+    auto asyncCopy = ttg::AsyncCopyGlobalToLocalOp::create(
+        builder, store.getLoc(), candidate->load.getPtr(), dst,
         candidate->load.getMask(), candidate->load.getOther(),
         candidate->load.getCache(), candidate->load.getEvict(),
         candidate->load.getIsVolatile());
@@ -446,8 +447,9 @@ static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group) {
     OpBuilder builder(lastStore);
     builder.setInsertionPointAfter(lastStore);
     auto commit = ttg::AsyncCommitGroupOp::create(builder, lastStore.getLoc(),
-                                                          ValueRange(tokens));
-    ttg::AsyncWaitOp::create(builder, lastStore.getLoc(), commit.getResult(), 0);
+                                                  ValueRange(tokens));
+    ttg::AsyncWaitOp::create(builder, lastStore.getLoc(), commit.getResult(),
+                             0);
   }
 
   for (AsyncStoreCandidate *candidate : group)

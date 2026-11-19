@@ -104,10 +104,11 @@ TleDSLRegionInlineConversion::matchAndRewrite(tle::DSLRegionOp op,
     for (Operation &operation : oldBlock.getOperations()) {
       if (auto yieldOp = dyn_cast<tle::YieldOp>(operation)) {
         LLVM::BrOp::create(rewriter, operation.getLoc(),
-            llvm::map_to_vector(
-                yieldOp.getOperands(),
-                [&mapper](Value v) -> Value { return mapper.lookup(v); }),
-            continuation);
+                           llvm::map_to_vector(yieldOp.getOperands(),
+                                               [&mapper](Value v) -> Value {
+                                                 return mapper.lookup(v);
+                                               }),
+                           continuation);
       } else {
         rewriter.clone(operation, mapper);
       }

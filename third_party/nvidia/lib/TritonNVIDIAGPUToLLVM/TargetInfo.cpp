@@ -511,7 +511,8 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
     Value addrOperand = ptr;
     const char *addrConstraint = "l";
     if (useCluster && isa<LLVM::LLVMPointerType>(addrOperand.getType())) {
-      addrOperand = LLVM::PtrToIntOp::create(rewriter, loc, i32_ty, addrOperand);
+      addrOperand =
+          LLVM::PtrToIntOp::create(rewriter, loc, i32_ty, addrOperand);
       addrConstraint = "r";
     }
     ld(outOpr, builder.newAddrOperand(addrOperand, addrConstraint))

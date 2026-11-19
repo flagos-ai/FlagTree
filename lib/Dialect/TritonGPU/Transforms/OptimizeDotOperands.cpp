@@ -324,8 +324,11 @@ public:
               srcMemDescTy.getMutableMemory(), srcMemDescTy.getAllocShape());
           srcMemDesc.setType(updatedMemDescTy);
         }
-        auto newTrans = MemDescTransOp::create(rewriter, trans.getLoc(), srcMemDesc, ArrayRef<int32_t>({1, 0}));
-        auto localLoadOp = LocalLoadOp::create(rewriter, trans.getLoc(), sharedLoadTy, newTrans, srcLocalLoad.getToken());
+        auto newTrans = MemDescTransOp::create(
+            rewriter, trans.getLoc(), srcMemDesc, ArrayRef<int32_t>({1, 0}));
+        auto localLoadOp =
+            LocalLoadOp::create(rewriter, trans.getLoc(), sharedLoadTy,
+                                newTrans, srcLocalLoad.getToken());
         rewriter.modifyOpInPlace(cvtOp, [&]() {
           cvtOp.getSrcMutable().assign(localLoadOp.getResult());
         });

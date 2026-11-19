@@ -265,9 +265,14 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
   }
   SmallVector<Value> tileStartVals(rank), tileEndVals(rank);
   for (int d = 0; d < rank; ++d) {
-    Value sv = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)suffix[d]));
-    Value gv = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)logicalGrid[d]));
-    Value tv = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
+    Value sv = LLVM::ConstantOp::create(
+        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)suffix[d]));
+    Value gv = LLVM::ConstantOp::create(
+        rewriter, loc, i32Ty,
+        rewriter.getI32IntegerAttr((int32_t)logicalGrid[d]));
+    Value tv = LLVM::ConstantOp::create(
+        rewriter, loc, i32Ty,
+        rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
     Value coord = LLVM::UDivOp::create(rewriter, loc, i32Ty, dynIndex, sv);
     coord = LLVM::URemOp::create(rewriter, loc, i32Ty, coord, gv);
     tileStartVals[d] = LLVM::MulOp::create(rewriter, loc, i32Ty, coord, tv);
@@ -277,26 +282,33 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
 
   auto tileVals = unpackLLElements(loc, adaptor.getTile(), rewriter);
   for (unsigned i = 0; i < tileElemsPerThread; ++i) {
-    Value smemByteOffsetV = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(0));
+    Value smemByteOffsetV = LLVM::ConstantOp::create(
+        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(0));
 
     for (int d = 0; d < rank; ++d) {
-      Value baseOff = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)tileOffsets[i][d]));
+      Value baseOff = LLVM::ConstantOp::create(
+          rewriter, loc, i32Ty,
+          rewriter.getI32IntegerAttr((int32_t)tileOffsets[i][d]));
       Value globalCoordV = LLVM::AddOp::create(rewriter, loc, i32Ty, baseOff,
-                                                        tileThreadOffsets[d]);
+                                               tileThreadOffsets[d]);
 
-      Value tileShapeV = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
+      Value tileShapeV = LLVM::ConstantOp::create(
+          rewriter, loc, i32Ty,
+          rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
       Value tileLocalCoordV =
           LLVM::URemOp::create(rewriter, loc, i32Ty, globalCoordV, tileShapeV);
 
-      Value sb = LLVM::ConstantOp::create(rewriter, loc, i32Ty,
+      Value sb = LLVM::ConstantOp::create(
+          rewriter, loc, i32Ty,
           rewriter.getI32IntegerAttr((int32_t)(smemStrides[d] * elemBytes)));
-      smemByteOffsetV = LLVM::AddOp::create(rewriter, loc, i32Ty, smemByteOffsetV,
+      smemByteOffsetV = LLVM::AddOp::create(
+          rewriter, loc, i32Ty, smemByteOffsetV,
           LLVM::MulOp::create(rewriter, loc, i32Ty, tileLocalCoordV, sb));
     }
 
     Value sp = LLVM::GEPOp::create(rewriter, loc, smemPtrTy, i8Ty, smemBase,
-                                            ValueRange{smemByteOffsetV},
-                                            LLVM::GEPNoWrapFlags::inbounds);
+                                   ValueRange{smemByteOffsetV},
+                                   LLVM::GEPNoWrapFlags::inbounds);
     // Store tile value to shared memory buffer.
     LLVM::StoreOp::create(rewriter, loc, tileVals[i], sp, elemBytes);
   }
@@ -312,33 +324,42 @@ lowerInsertTileViaSMEMDynamic(InsertTileOp op, InsertTileOp::Adaptor adaptor,
 
   // For each source element, check if it should be overwritten by tile.
   for (unsigned i = 0; i < srcElemsPerThread; ++i) {
-    Value inRange = LLVM::ConstantOp::create(rewriter, loc, i1Ty, rewriter.getIntegerAttr(i1Ty, 1));
-    Value smemByteOffsetV = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(0));
+    Value inRange = LLVM::ConstantOp::create(rewriter, loc, i1Ty,
+                                             rewriter.getIntegerAttr(i1Ty, 1));
+    Value smemByteOffsetV = LLVM::ConstantOp::create(
+        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(0));
 
     for (int d = 0; d < rank; ++d) {
-      Value baseOff = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)srcOffsets[i][d]));
+      Value baseOff = LLVM::ConstantOp::create(
+          rewriter, loc, i32Ty,
+          rewriter.getI32IntegerAttr((int32_t)srcOffsets[i][d]));
       Value globalCoordV = LLVM::AddOp::create(rewriter, loc, i32Ty, baseOff,
-                                                        srcThreadOffsets[d]);
+                                               srcThreadOffsets[d]);
 
       Value ge = LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::uge,
-                                               globalCoordV, tileStartVals[d]);
+                                      globalCoordV, tileStartVals[d]);
       Value lt = LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::ult,
-                                               globalCoordV, tileEndVals[d]);
-      inRange = LLVM::AndOp::create(rewriter, loc, LLVM::AndOp::create(rewriter, loc, ge, lt), inRange);
+                                      globalCoordV, tileEndVals[d]);
+      inRange = LLVM::AndOp::create(
+          rewriter, loc, LLVM::AndOp::create(rewriter, loc, ge, lt), inRange);
 
-      Value tileShapeV = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
+      Value tileShapeV = LLVM::ConstantOp::create(
+          rewriter, loc, i32Ty,
+          rewriter.getI32IntegerAttr((int32_t)tileShape[d]));
       Value tileLocalSafeV =
           LLVM::URemOp::create(rewriter, loc, i32Ty, globalCoordV, tileShapeV);
 
-      Value sb = LLVM::ConstantOp::create(rewriter, loc, i32Ty,
+      Value sb = LLVM::ConstantOp::create(
+          rewriter, loc, i32Ty,
           rewriter.getI32IntegerAttr((int32_t)(smemStrides[d] * elemBytes)));
-      smemByteOffsetV = LLVM::AddOp::create(rewriter, loc, i32Ty, smemByteOffsetV,
+      smemByteOffsetV = LLVM::AddOp::create(
+          rewriter, loc, i32Ty, smemByteOffsetV,
           LLVM::MulOp::create(rewriter, loc, i32Ty, tileLocalSafeV, sb));
     }
 
     Value lp = LLVM::GEPOp::create(rewriter, loc, smemPtrTy, i8Ty, smemBase,
-                                            ValueRange{smemByteOffsetV},
-                                            LLVM::GEPNoWrapFlags::inbounds);
+                                   ValueRange{smemByteOffsetV},
+                                   LLVM::GEPNoWrapFlags::inbounds);
     Value tileLoaded =
         LLVM::LoadOp::create(rewriter, loc, llvmElemTy, lp, elemBytes);
     // Overwrite source value with tile value if in range.

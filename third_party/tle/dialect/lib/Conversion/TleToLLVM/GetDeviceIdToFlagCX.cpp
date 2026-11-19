@@ -72,7 +72,8 @@ struct GetDeviceIdOpConversion
     }
     auto comm = getDistDevicePtr(op, srcElems);
     rewriter.modifyOpInPlace(op, [&]() { op->insertOperands(0, comm); });
-    auto localRank = tle::GetLocalRankOp::create(rewriter, op.getLoc(), rewriter.getI32Type(), comm);
+    auto localRank = tle::GetLocalRankOp::create(rewriter, op.getLoc(),
+                                                 rewriter.getI32Type(), comm);
     rewriter.replaceOp(op, localRank.getResult());
 
     return success();

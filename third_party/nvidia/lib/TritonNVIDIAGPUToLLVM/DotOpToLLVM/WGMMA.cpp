@@ -454,8 +454,9 @@ convertLogicalDot(const LLVMTypeConverter *typeConverter,
           "tle.wgmma_active_n must equal the tiled SMEM logical N extent");
     bLoader = buildTlePlannedSMEMLoader(loc, rewriter, baseB, *tiledPlan);
   } else {
-    auto loader = DotOpMmaSmemLoader::build(
-        loc, rewriter, bTensorTy, baseB, {K, physicalN}, 1, 3, false, dTensorTy);
+    auto loader =
+        DotOpMmaSmemLoader::build(loc, rewriter, bTensorTy, baseB,
+                                  {K, physicalN}, 1, 3, false, dTensorTy);
     if (failed(loader))
       return mlir::emitError(loc, "failed to find valid wgmma layout for "
                                   "operand B in shared memory ")

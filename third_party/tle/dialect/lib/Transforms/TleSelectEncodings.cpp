@@ -290,7 +290,8 @@ static Value getOrCreateCachedConvertLayout(OpBuilder &builder,
       RankedTensorType::get(vTy.getShape(), vTy.getElementType(), encoding);
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPoint(insertBefore);
-  auto converted = triton::gpu::ConvertLayoutOp::create(builder, insertBefore->getLoc(), convertedTy, v);
+  auto converted = triton::gpu::ConvertLayoutOp::create(
+      builder, insertBefore->getLoc(), convertedTy, v);
   Value convertedValue = converted.getResult();
   cache[key].push_back(convertedValue);
   return convertedValue;
@@ -523,7 +524,8 @@ static void bridgeResultTypeToOldEncoding(Value result, Type oldType,
     return;
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointAfter(def);
-  auto bridge = triton::gpu::ConvertLayoutOp::create(builder, def->getLoc(), oldTensorTy, result);
+  auto bridge = triton::gpu::ConvertLayoutOp::create(builder, def->getLoc(),
+                                                     oldTensorTy, result);
   result.replaceAllUsesExcept(bridge.getResult(), bridge.getOperation());
 }
 
@@ -818,7 +820,9 @@ class SelectEncodingsPass
                 if (oldAtomicTy) {
                   OpBuilder::InsertionGuard guard(builder);
                   builder.setInsertionPointAfter(atomic);
-                  auto bridge = triton::gpu::ConvertLayoutOp::create(builder, atomic.getLoc(), oldAtomicTy, atomic.getResult());
+                  auto bridge = triton::gpu::ConvertLayoutOp::create(
+                      builder, atomic.getLoc(), oldAtomicTy,
+                      atomic.getResult());
                   atomic.getResult().replaceAllUsesExcept(
                       bridge.getResult(), bridge.getOperation());
                 }
@@ -843,7 +847,8 @@ class SelectEncodingsPass
                 if (oldCasTy) {
                   OpBuilder::InsertionGuard guard(builder);
                   builder.setInsertionPointAfter(cas);
-                  auto bridge = triton::gpu::ConvertLayoutOp::create(builder, cas.getLoc(), oldCasTy, cas.getResult());
+                  auto bridge = triton::gpu::ConvertLayoutOp::create(
+                      builder, cas.getLoc(), oldCasTy, cas.getResult());
                   cas.getResult().replaceAllUsesExcept(bridge.getResult(),
                                                        bridge.getOperation());
                 }

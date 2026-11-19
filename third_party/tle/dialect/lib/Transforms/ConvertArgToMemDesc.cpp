@@ -93,7 +93,8 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
             dyn_cast<RankedTensorType>(operand.getType())) {
       PatternRewriter::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(op);
-      ttg::LocalAllocOp allocOp = ttg::LocalAllocOp::create(rewriter, op->getLoc(), getPlainMemDesc(tensorTy));
+      ttg::LocalAllocOp allocOp = ttg::LocalAllocOp::create(
+          rewriter, op->getLoc(), getPlainMemDesc(tensorTy));
       ttg::LocalStoreOp::create(rewriter, op->getLoc(), operand, allocOp);
       rewriter.setInsertionPointAfter(op);
       ttg::LocalDeallocOp::create(rewriter, op->getLoc(), allocOp);
@@ -127,7 +128,8 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
   if (!hasConversion) {
     return failure();
   }
-  tle::DSLRegionOp newOp = tle::DSLRegionOp::create(rewriter, op.getLoc(), newRetTys, newOperands, op.getRegionDialectAttr(),
+  tle::DSLRegionOp newOp = tle::DSLRegionOp::create(
+      rewriter, op.getLoc(), newRetTys, newOperands, op.getRegionDialectAttr(),
       op.getArgDialectAttr(), op.getOutputOperandIndicesAttr(),
       op->getAttrOfType<StringAttr>("hint"));
   newOp->setAttrs(op->getAttrs());
@@ -156,7 +158,8 @@ TleArgConversion::matchAndRewrite(tle::DSLRegionOp op,
       if (tle::PackOp packOp = dyn_cast<tle::PackOp>(operation)) {
         if (auto tensorTy =
                 dyn_cast<RankedTensorType>(packOp.getOutput().getType())) {
-          tle::PackOp newPackOp = tle::PackOp::create(rewriter, packOp.getLoc(), getPlainMemDesc(tensorTy),
+          tle::PackOp newPackOp = tle::PackOp::create(
+              rewriter, packOp.getLoc(), getPlainMemDesc(tensorTy),
               mapper.lookup(packOp.getInput()));
           mapper.map(packOp.getOutput(), newPackOp.getOutput());
           continue;

@@ -55,15 +55,19 @@ PackOpConversion::matchAndRewrite(tle::PackOp op, OpAdaptor adaptor,
           dyn_cast<ttg::MemDescType>(op.getOutput().getType())) {
     LLVM::LLVMStructType llvmStructType =
         cast<LLVM::LLVMStructType>(typeConverter->convertType(memdesc));
-    LLVM::ExtractValueOp basePtr = LLVM::ExtractValueOp::create(rewriter, op.getLoc(), adaptor.getInput(), SmallVector<int64_t>{0});
+    LLVM::ExtractValueOp basePtr = LLVM::ExtractValueOp::create(
+        rewriter, op.getLoc(), adaptor.getInput(), SmallVector<int64_t>{0});
     Value llvmStruct =
         LLVM::PoisonOp::create(rewriter, op.getLoc(), llvmStructType);
-    LLVM::InsertValueOp insertOp = LLVM::InsertValueOp::create(rewriter, op.getLoc(), llvmStructType, llvmStruct, basePtr,
+    LLVM::InsertValueOp insertOp = LLVM::InsertValueOp::create(
+        rewriter, op.getLoc(), llvmStructType, llvmStruct, basePtr,
         SmallVector<int64_t>{0});
     for (int64_t i = 1; i < llvmStructType.getBody().size(); ++i) {
-      LLVM::ConstantOp zeroOp = LLVM::ConstantOp::create(rewriter, op.getLoc(), rewriter.getIntegerType(32), 0);
-      insertOp = LLVM::InsertValueOp::create(rewriter, op.getLoc(), llvmStructType, insertOp, zeroOp,
-          SmallVector<int64_t>{i});
+      LLVM::ConstantOp zeroOp = LLVM::ConstantOp::create(
+          rewriter, op.getLoc(), rewriter.getIntegerType(32), 0);
+      insertOp = LLVM::InsertValueOp::create(rewriter, op.getLoc(),
+                                             llvmStructType, insertOp, zeroOp,
+                                             SmallVector<int64_t>{i});
     }
     rewriter.replaceOp(op, insertOp->getResults());
     return success();
