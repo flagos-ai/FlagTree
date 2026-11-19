@@ -623,9 +623,14 @@ class amd_knobs(base_knobs):
     # We use strs so that we can have a default value based on other runtime info
     use_block_pingpong: env_opt_bool = env_opt_bool("TRITON_HIP_USE_BLOCK_PINGPONG")
     use_in_thread_transpose: env_opt_bool = env_opt_bool("TRITON_HIP_USE_IN_THREAD_TRANSPOSE")
+    use_async_copy: env_opt_bool = env_opt_bool("TRITON_HIP_USE_ASYNC_COPY")
 
-    use_async_copy: env_bool = env_bool("TRITON_HIP_USE_ASYNC_COPY")
     scalarize_packed_fops: env_bool = env_bool("AMDGCN_SCALARIZE_PACKED_FOPS")
+
+    # Path to dump MIR files for debugging/analysis
+    dump_mir: env_opt_str = env_opt_str("TRITON_DUMP_MIR")
+    # Path to externally-provided MIR files to use instead of generated ones
+    swap_mir: env_opt_str = env_opt_str("TRITON_SWAP_MIR")
 
 
 # flagtree hcu
@@ -642,14 +647,9 @@ class hcu_knobs(base_knobs):
     # We use strs so that we can have a default value based on other runtime info
     use_block_pingpong: env_opt_bool = env_opt_bool("TRITON_HIP_USE_BLOCK_PINGPONG")
     use_in_thread_transpose: env_opt_bool = env_opt_bool("TRITON_HIP_USE_IN_THREAD_TRANSPOSE")
-    use_async_copy: env_opt_bool = env_opt_bool("TRITON_HIP_USE_ASYNC_COPY")
 
+    use_async_copy: env_bool = env_bool("TRITON_HIP_USE_ASYNC_COPY")
     scalarize_packed_fops: env_bool = env_bool("AMDGCN_SCALARIZE_PACKED_FOPS")
-
-    # Path to dump MIR files for debugging/analysis
-    dump_mir: env_opt_str = env_opt_str("TRITON_DUMP_MIR")
-    # Path to externally-provided MIR files to use instead of generated ones
-    swap_mir: env_opt_str = env_opt_str("TRITON_SWAP_MIR")
 
 
 # flagtree metax
