@@ -19,7 +19,7 @@
 # SOFTWARE.
 
 add_compile_definitions(__TRITON_VERSION_MAJOR__=3)
-add_compile_definitions(__TRITON_VERSION_MINOR__=6)
+add_compile_definitions(__TRITON_VERSION_MINOR__=7)
 
 macro(flagtree_configure_options)
   set(FLAGTREE_DEFAULT_OPTION ON)
