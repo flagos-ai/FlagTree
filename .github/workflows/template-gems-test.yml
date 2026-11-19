@@ -271,6 +271,8 @@ jobs:
         id: run-vllm-test
         if: ${{ !cancelled() && inputs.flaggems-vllm-tag != '' && steps.check_backend.outputs.should_skip != 'true' && steps.build.outcome == 'success' }}
         uses: flagos-ai/FlagTree/.github/actions/run-flaggems-test@main
+        env:
+           PYTHONPATH: '${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}/FlagGems/src'
         with:
           flaggems-path: '${{ steps.setup.outputs.VLLM_REPO_DIR }}/FlagGems-vllm'
           gpus: '${{ steps.setup.outputs.gpus }}'
