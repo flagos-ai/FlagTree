@@ -28,13 +28,17 @@ _BYTE_DTYPES = ("int8", "uint8", "int16", "uint16", "int32", "uint32", "fp16", "
 _WIDE_DTYPES = ("int64", "uint64", "fp64")
 
 
-def _make_resolve_dot(arch: str):
+def _make_resolve_dot(arch: str, matrix_instr_nonkdim: int):
     product = arch.split(":")[0]
     # The unscaled HCU MMAC table uses 16x16 output tiles.
     k_width = {"fp32": 8, "fp16": 16, "bf16": 16, "int8": 32, "fp64": 4}
 
     def resolve_dot(a_dtype: str, b_dtype: str, acc_dtype: str, M: int, N: int, K: int) -> DotCap:
         fp8_pair = a_dtype in _FP8 and b_dtype in _FP8
+        if (fp8_pair or a_dtype == b_dtype == "fp16") and acc_dtype not in ("fp16", "fp32"):
+            return DotCap(
+                DotSupport.UNSUPPORTED, f"tl.dot: {a_dtype} x {b_dtype} on hip/{arch} "
+                f"requires out_dtype fp16 or fp32, got {acc_dtype}")
         if not fp8_pair and not (a_dtype == b_dtype and a_dtype in k_width):
             return DotCap(
                 DotSupport.UNSUPPORTED, f"tl.dot: {a_dtype} x {b_dtype} is not supported on hip/{arch}; "
@@ -44,8 +48,9 @@ def _make_resolve_dot(arch: str):
                 DotSupport.NON_NATIVE, f"tl.dot: {a_dtype} x {b_dtype} on hip/{arch} "
                 "uses software FP8 decoding to FP16 (native=false)")
         k_tile = 32 if fp8_pair else k_width[a_dtype]
-        if (product in _HCU_MMAC_ARCHES and not (M % 16 or N % 16 or K % k_tile)
-                and (a_dtype != "fp64" or product == "gfx936")):
+        # A forced 16x16 instruction can pad a smaller output tile.
+        fits_mn = matrix_instr_nonkdim == 16 or (matrix_instr_nonkdim == 0 and M % 16 == 0 and N % 16 == 0)
+        if (product in _HCU_MMAC_ARCHES and fits_mn and K % k_tile == 0 and (a_dtype != "fp64" or product == "gfx936")):
             return DotCap(DotSupport.NATIVE)
         return DotCap(
             DotSupport.NON_NATIVE, f"tl.dot: {a_dtype} x {b_dtype} on hip/{arch} with tile "
@@ -325,7 +330,7 @@ class HIPBackend(BaseBackend):
         return {
             "convert_custom_types": utils._convert_fp8,
             "min_dot_size": get_min_dot_size(self.target),
-            "resolve_dot": _make_resolve_dot(options.arch),
+            "resolve_dot": _make_resolve_dot(options.arch, options.matrix_instr_nonkdim),
             "resolve_dot_scaled": _make_resolve_dot_scaled(options.arch),
             "get_dot_scaled_lowering": utils._get_dot_scaled_lowering,
         }

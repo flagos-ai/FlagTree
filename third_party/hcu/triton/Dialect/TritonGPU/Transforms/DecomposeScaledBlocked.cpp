@@ -44,7 +44,15 @@ static TypedValue<RankedTensorType> decodeArg(PatternRewriter &rewriter,
         opIdx == 0 ? scaledDotOp.getLhsKPack() : scaledDotOp.getRhsKPack();
     int packingDim = kPack ? kDim : (opIdx == 0 ? rank - 2 : rank - 1);
     v = Fp4ToFpOp::create(rewriter, loc, v, computeType, packingDim);
-  } else {
+  } else if (v.getType().getElementType().isBF16() && computeType.isF16()) {
+    // Widen BF16 exactly, then round once to the FP16 MMAC input type.
+    auto wide = arith::ExtFOp::create(
+        rewriter, loc, v.getType().clone(rewriter.getF32Type()), v);
+    v = cast<TypedValue<RankedTensorType>>(
+        arith::TruncFOp::create(rewriter, loc, v.getType().clone(computeType),
+                                wide)
+            .getResult());
+  } else if (v.getType().getElementType() != computeType) {
     auto vType16 = v.getType().clone(computeType);
     v = cast<TypedValue<RankedTensorType>>(
         FpToFpOp::create(rewriter, loc, vType16, v).getResult());

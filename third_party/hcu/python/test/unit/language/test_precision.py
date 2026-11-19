@@ -483,7 +483,7 @@ def compile_scaled(format_a, format_b, scale_mode, with_acc=True, geometry=(16, 
 
 
 FORMAT_PAIRS = [("e2m1", "e2m1"), ("e2m1", "e4m3"), ("e4m3", "e2m1"), ("e2m1", "bf16"), ("bf16", "e2m1"),
-                ("e2m1", "fp16"), ("fp16", "e2m1"), ("e4m3", "e4m3")]
+                ("e2m1", "fp16"), ("fp16", "e2m1"), ("e4m3", "e4m3"), ("bf16", "fp16"), ("fp16", "bf16")]
 
 
 @pytest.mark.parametrize("format_a,format_b", FORMAT_PAIRS)
@@ -538,6 +538,27 @@ def test_hcu_dot_path_diagnostics(dtype, inner, matrix, software, fresh_triton_c
             target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4, "num_stages": 1})
     assert bool(re.search(r"\bv_mmac_", compiled.asm["amdgcn"])) == matrix
     assert any("native=false" in str(item.message) for item in caught) == software
+
+
+@pytest.mark.parametrize("m,nonkdim,native", [(32, 0, True), (32, 16, True), (32, 32, False), (8, 16, True)])
+def test_hcu_dot_forced_instruction_tile(m, nonkdim, native, fresh_triton_cache):
+    source = ASTSource(precision_dot, {"A": "*fp16", "B": "*fp16", "C": "*fp32"},
+                       constexprs={"ACC": None, "M": m, "N": 32, "K": 32, "B_COLUMN": False})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        compiled = triton.compile(source, target=GPUTarget("hip", "gfx936", 64),
+                                  options={"matrix_instr_nonkdim": nonkdim, "num_warps": 4, "num_stages": 1})
+    assert ("v_mmac_" in compiled.asm["amdgcn"]) == native
+    assert any("native=false" in str(item.message) for item in caught) == (not native)
+
+
+@pytest.mark.parametrize("arch", ["gfx936", "gfx938"])
+@pytest.mark.parametrize("out", ["i32", "fp64"])
+def test_hcu_fp8_dot_invalid_output(arch, out):
+    source = ASTSource(precision_dot, {"A": "*fp8e4nv", "B": "*fp8e4nv", "C": "*" + out},
+                       constexprs={"ACC": None, "M": 32, "N": 32, "K": 32, "B_COLUMN": False})
+    with pytest.raises(triton.CompilationError, match=r"fp8e4nv x fp8e4nv.*requires out_dtype fp16 or fp32"):
+        triton.compile(source, target=GPUTarget("hip", arch, 64))
 
 
 @pytest.mark.parametrize("dtype,accumulator", [("i8", "fp32"), ("fp32", "i32")])

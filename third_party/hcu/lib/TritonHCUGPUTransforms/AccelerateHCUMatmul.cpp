@@ -337,7 +337,6 @@ getCompatibleDotOpEncoding(int opIdx, ttg::DotOperandEncodingAttr dotAEncoding,
 
 FailureOr<MfmaIntrinsic>
 chooseMfmaInstructionWithMLS(tt::DotOp dot, int mfmaVersion,
-                             int enforcedNonKDim,
                              std::optional<MatrixLoadInfo> &aMatInfo,
                              std::optional<MatrixLoadInfo> &bMatInfo,
                              HCUISAFeature features = HCUISAFeature::NONE) {
@@ -355,8 +354,6 @@ chooseMfmaInstructionWithMLS(tt::DotOp dot, int mfmaVersion,
   auto rank = resShape.size();
   auto M = resShape[rank - 2];
   auto N = resShape[rank - 1];
-
-  (void)enforcedNonKDim;
 
   // Determine the mDim and nDim based on the matrix load and numWarps Info.
   unsigned mDim = !aMatInfo.has_value()
@@ -879,11 +876,16 @@ public:
     auto aMatInfo = getDotOperandMatrixLoadInfo(dotOp, 0);
     auto bMatInfo = getDotOperandMatrixLoadInfo(dotOp, 1);
     bool useMatrixLoad = aMatInfo.has_value() || bMatInfo.has_value();
+    if (useMatrixLoad && nonKDim != 0 && nonKDim != 16)
+      return rewriter.notifyMatchFailure(
+          dotOp, "HCU matrix loads require a 16x16 MMAC instruction");
 
     FailureOr<MfmaIntrinsic> mfmaInstr;
     if (useMatrixLoad) {
-      mfmaInstr = chooseMfmaInstructionWithMLS(dotOp, mfmaVersion, nonKDim,
-                                               aMatInfo, bMatInfo, features);
+      mfmaInstr = chooseMfmaInstructionWithMLS(dotOp, mfmaVersion, aMatInfo,
+                                               bMatInfo, features);
+      if (failed(mfmaInstr))
+        return failure();
     } else {
       // If mfmaVersion == 4 and both inputs are of F8F6F4 types, we will try to
       // use the V_MFMA_*_F8F6F4 instructions since it has higher FLOPs per
