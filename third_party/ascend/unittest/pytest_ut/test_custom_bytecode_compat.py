@@ -155,6 +155,27 @@ def test_join_lowering_policy_is_validated_and_hashed():
         backend.parse_options({'structured_join_lowering': 'unknown'})
 
 
+def test_backend_hash_with_missing_mlir_optimizer(tmp_path, monkeypatch):
+    from triton.backends.compiler import GPUTarget
+
+    target = GPUTarget('npu', 'Ascend910_9382', 0)
+    optimizer = tmp_path / 'triton-mlir-opt'
+
+    def get_tool():
+        if not optimizer.exists():
+            raise FileNotFoundError(optimizer)
+        return str(optimizer)
+
+    monkeypatch.setattr(compiler, '_get_triton_mlir_opt_path', get_tool)
+    monkeypatch.setattr(compiler, 'get_structured_permutation_bitcode', lambda: tmp_path / 'custom_ops.bc')
+    without_tool = compiler.AscendBackend(target).hash()
+    with pytest.raises(FileNotFoundError, match='triton-mlir-opt'):
+        compiler.linalg_to_bc_by_triton_mlir_opt('module {}', {}, SimpleNamespace(debug=False))
+
+    optimizer.write_bytes(b'optimizer v1')
+    assert compiler.AscendBackend(target).hash() != without_tool
+
+
 @pytest.mark.parametrize('missing', ['none', 'metadata', 'binary', 'empty_binary', 'directory'])
 def test_kernel_cache_completeness(tmp_path, missing):
     from triton.runtime.cache import _is_complete_kernel_cache

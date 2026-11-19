@@ -65,17 +65,17 @@ jobs:
         with:
           backend: ascend
 
-      - name: Cleanup FlagTree Environment
-        if: steps.check_backend.outputs.should_skip != 'true'
-        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
-
       - name: Build FlagTree
         if: steps.check_backend.outputs.should_skip != 'true'
         shell: bash
         run: |
           set -x
           export FLAGTREE_BACKEND=ascend
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+          # Multiple Ascend runners on one host share the system site-packages.
+          venv=$(mktemp -d "$RUNNER_TEMP/flagtree-venv.XXXXXX")
+          python3 -m venv --system-site-packages "$venv"
+          MAX_JOBS=32 "$venv/bin/python" -m pip install . --no-build-isolation --ignore-installed --no-deps -v
+          echo "FLAGTREE_TEST_VENV=$venv" >> "$GITHUB_ENV"
 
       - name: Clear cache if ClearCache label present
         if: steps.check_backend.outputs.should_skip != 'true'
@@ -92,6 +92,7 @@ jobs:
           set -x
           source /usr/local/Ascend/ascend-toolkit/set_env.sh
           source ~/env.sh
+          source "$FLAGTREE_TEST_VENV/bin/activate"
           ## tutorials
           pushd third_party/ascend/tutorials
           python3 01-vector-add.py

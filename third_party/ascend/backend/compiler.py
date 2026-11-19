@@ -440,10 +440,10 @@ def _parse_linalg_metadata(linalg: str, metadata: dict):
     metadata["bitcodes"] = [val for group in bitcodes for val in group if val]
     metadata["uses_computed_dot_transfer"] = "flagtree.vector_to_cube" in linalg
     metadata["uses_structured_permutation"] = any(
-        name in linalg for name in ("custom_flagtree_stride_gather_", "custom_flagtree_split_",
-                                    "custom_flagtree_byte_to_word", "custom_flagtree_word_to_byte",
-                                    "custom_flagtree_short_row_store_", "custom_flagtree_short_row_load_",
-                                    "custom_flagtree_strided_store_"))
+        name in linalg
+        for name in ("custom_flagtree_stride_gather_", "custom_flagtree_split_", "custom_flagtree_byte_to_word",
+                     "custom_flagtree_word_to_byte", "custom_flagtree_short_row_store_",
+                     "custom_flagtree_short_row_load_", "custom_flagtree_strided_store_"))
     if metadata["uses_structured_permutation"]:
         # This is a compiler-generated primitive; callers need not import TLE
         # or annotate kernels with a bitcode path. The Ascend build produces
@@ -1314,9 +1314,13 @@ class AscendBackend(BaseBackend):
             implementation = _permutation_bitcode_hash(str(bitcode), stat.st_size, stat.st_mtime_ns)
         else:
             implementation = "missing-permutation-bitcode"
-        optimizer = Path(_get_triton_mlir_opt_path())
-        stat = optimizer.stat()
-        optimizer_hash = _permutation_bitcode_hash(str(optimizer), stat.st_size, stat.st_mtime_ns)
+        try:
+            optimizer = Path(_get_triton_mlir_opt_path())
+            stat = optimizer.stat()
+            optimizer_hash = _permutation_bitcode_hash(str(optimizer), stat.st_size, stat.st_mtime_ns)
+        except FileNotFoundError:
+            # Bytecode conversion and the structured lowering check the tool when used.
+            optimizer_hash = "missing-triton-mlir-opt"
         adapters = tuple(
             hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
             for name in ("structured_permute_hivmc.py", "structured_permute_ir.py"))
