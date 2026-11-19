@@ -326,7 +326,7 @@ def _prune_reduce_scatter_config(config, input_tensor, ctx):
             and all(t.is_contiguous() and t.data_ptr() % 16 == 0 for t in (input_tensor, ctx.scatter_buf, ctx.output))
             and max(sm, rm) <= ctx.M_per_rank and max(sn, rn) <= ctx.N
             # A TMA tile must not cross a source rank's row boundary.
-            and ctx.M_per_rank % rm == 0 and (ctx.N * input_tensor.element_size()) % 16 == 0:
+            and ctx.M_per_rank % rm == 0 and (ctx.N * input_tensor.element_size()) % 16 == 0):
         return False
 
     # Tutorial search-budget heuristics, not hardware validity requirements:
