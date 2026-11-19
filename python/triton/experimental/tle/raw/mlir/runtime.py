@@ -39,7 +39,6 @@ class MLIRJITFunction(RawJITFunction):
         super().__init__(fn, **kwargs)
         if self.deferred:
             raise RuntimeError("Deferred MLIR raw is not supported; use eager mode")
-        self.absfilename: Final[str] = inspect.getabsfile(self.fn)
         self.pipeline: Final[List[str]] = ([*pipeline] if pipeline is not None else [
             "convert-scf-to-cf",
             "finalize-memref-to-llvm",
@@ -60,6 +59,10 @@ class MLIRJITFunction(RawJITFunction):
     @cached_property
     def ast(self) -> ast.Module:
         return ast.parse(self.src)
+
+    @cached_property
+    def absfilename(self) -> str:
+        return inspect.getabsfile(self.fn)
 
     @cached_property
     def fnname(self) -> str:
