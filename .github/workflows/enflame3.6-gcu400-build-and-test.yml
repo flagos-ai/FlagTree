@@ -115,9 +115,7 @@ jobs:
               --ignore=python/test/tle/integration/test_tle_shared_arena_alignment.py
 
           ## tle raw test
-          # python3 -m pytest third_party/enflame/python/test/tle/raw \
-          #     --ignore=third_party/enflame/python/test/tle/raw/mlir/02-fused-softmax.py
-          python3 third_party/enflame/python/test/tle/raw/tops/01-vector-add.py
+          python3 -m pytest -v third_party/enflame/python/test/tle/raw/tops/test_tops_scripts.py
 
           ## tle tutorials test
           # python3 python/tutorials/tle/01-fft.py

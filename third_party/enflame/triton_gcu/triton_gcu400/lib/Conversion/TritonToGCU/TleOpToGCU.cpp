@@ -167,8 +167,11 @@ struct RemoteMemDescOpLowering
 };
 
 // ===----------------------------------------------------------------------===
-// Convert TleDSLRegionOp (deferred raw TLE) to a plain llvm.call.
+// tle.dsl_region (deferred TLE raw) → plain llvm.call.
+//
 // Non-deferred (already materialized) regions are not supported on GCU.
+// The deferred builder leaves the region empty, so there is no need to
+// inspect the region body before replacing the op.
 // ===----------------------------------------------------------------------===
 #ifdef ENABLE_TLE
 struct TleDSLRegionOpLowering
