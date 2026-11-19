@@ -92,7 +92,7 @@ std::optional<UseInfo> getUseInfo(Operation *op) {
       auto dst = cast<ttg::MemDescType>(copy.getDst().getType());
       info.descriptor = cast<TypedValue<TensorDescType>>(copy.getSrc());
       info.desiredSharedEncoding = dst.getEncoding();
-      info.ctaLayout = ttg::getCGALayout(dst.getEncoding());
+      info.cgaLayout = ttg::getCGALayout(dst.getEncoding());
       info.shape = expandToRank(
           dst.getShape(), info.descriptor.getType().getBlockType().getRank());
       return info;
