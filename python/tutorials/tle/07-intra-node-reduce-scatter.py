@@ -365,7 +365,6 @@ def _prune_reduce_scatter_config(config, input_tensor, ctx):
 @autotune(
     config_space=CONFIG_SPACE,
     key_fn=_reduce_scatter_key,
-    prune_fn=_prune_reduce_scatter_config,
     cache_version="tle-intra-node-rs-pruned-space-v1",
 )
 def reduce_scatter(input_tensor: torch.Tensor, ctx: ReduceScatterContext, *, config: dict) -> torch.Tensor:
