@@ -5024,11 +5024,14 @@ bool retargetTleSqmmaStores(ModuleOp module) {
     if (!store || !store->getBlock())
       continue;
     auto valueConvert = store.getValue().getDefiningOp<ConvertLayoutOp>();
-    if (!valueConvert || isExplicitLayoutConversion(valueConvert))
+    if (!valueConvert)
+      continue;
+    if (isTleExplicitConvertLayoutOp(valueConvert))
       continue;
     auto targetTy = dyn_cast<RankedTensorType>(valueConvert.getSrc().getType());
-    if (!targetTy || !targetTy.getEncoding() ||
-        !isa<MUSASqmmaEncodingAttr>(targetTy.getEncoding()))
+    if (!targetTy || !targetTy.getEncoding())
+      continue;
+    if (!isa<MUSASqmmaEncodingAttr>(targetTy.getEncoding()))
       continue;
 
     auto ptrTy = dyn_cast<RankedTensorType>(store.getPtr().getType());
@@ -5051,6 +5054,7 @@ bool retargetTleSqmmaStores(ModuleOp module) {
       valueConvert.erase();
     changed = true;
   }
+
   return changed;
 }
 #endif
