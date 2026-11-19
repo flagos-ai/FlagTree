@@ -530,8 +530,10 @@ struct FDivOpConversion
   }
 };
 
-// An absent integer attribute selects the original lowering. An empty result
-// signals pattern failure when the requested vector width cannot be preserved.
+// RemoveLayoutConversions tags an i32 -> f32 conversion whose per-thread vector
+// width must survive lowering. Emit the whole group as one width-wide vector
+// cast. Return std::nullopt for an untagged op and an empty result (pattern
+// failure) when the tag does not fit the operands.
 template <typename CastOp, typename SourceOp>
 static std::optional<SmallVector<Value>>
 lowerWidthPreservingIntToFp(SourceOp op, const LLVMTypeConverter *typeConverter,
