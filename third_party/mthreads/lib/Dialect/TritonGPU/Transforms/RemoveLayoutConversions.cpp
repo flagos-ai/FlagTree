@@ -23,6 +23,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "TritonMUSACommon/RlcAttrs.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -1636,7 +1637,7 @@ bool LayoutPropagation::commitProposal(const Proposal &proposal) {
     unsigned width = getPreservedIntToFpVectorWidth(it.first, it.second);
     if (width != 0)
       defOp->setAttr(
-          "ttg.rlc-preserve-int-to-fp-vector-width",
+          musa::kRlcPreserveIntToFpVectorWidthAttr,
           IntegerAttr::get(IntegerType::get(defOp->getContext(), 32), width));
   }
   return changed;
