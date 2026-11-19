@@ -8,6 +8,7 @@ add_triton_library(TritonTransforms
   LoopInvariantCodeMotion.cpp
   LoopPeeling.cpp
   LoopUnroll.cpp
+  ${PROJECT_SOURCE_DIR}/lib/Dialect/Triton/Transforms/LoopVectorize.cpp
   ReorderBroadcast.cpp
   RewriteTensorPointer.cpp
   RewriteTensorDescriptorToPointer.cpp
