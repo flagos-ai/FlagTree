@@ -110,15 +110,18 @@ def _parallel_params(m: int) -> tuple[int, int, int]:
 
 def _acl():
     for p in (
-        "/usr/local/Ascend/cann-9.1.0/lib64/libascendcl.so",
-        "/usr/local/Ascend/ascend-toolkit/latest/lib64/libascendcl.so",
-        "/usr/local/Ascend/cann/lib64/libascendcl.so",
+            "/usr/local/Ascend/cann-9.1.0/lib64/libascendcl.so",
+            "/usr/local/Ascend/ascend-toolkit/latest/lib64/libascendcl.so",
+            "/usr/local/Ascend/cann/lib64/libascendcl.so",
     ):
         if Path(p).is_file():
             lib = ctypes.CDLL(p)
             lib.aclrtMemcpy.argtypes = [
-                ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
-                ctypes.c_size_t, ctypes.c_int,
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                ctypes.c_int,
             ]
             lib.aclrtMemcpy.restype = ctypes.c_int
             return lib
@@ -135,13 +138,19 @@ def _read_windows_in(context: int) -> tuple[int, int]:
         (ctypes.byref(win_size), 8, _OFF_WIN_SIZE),
     ):
         rc = acl.aclrtMemcpy(
-            dst, size, ctypes.c_void_p(context + off), size, ACL_MEMCPY_DEVICE_TO_HOST,
+            dst,
+            size,
+            ctypes.c_void_p(context + off),
+            size,
+            ACL_MEMCPY_DEVICE_TO_HOST,
         )
         if rc != 0:
             raise RuntimeError(f"read OpRes field off={off} rc={rc}")
     rc = acl.aclrtMemcpy(
-        ctypes.byref(win_ptr), 8,
-        ctypes.c_void_p(context + _OFF_WINDOWS_IN0 + 8 * int(rank_id.value)), 8,
+        ctypes.byref(win_ptr),
+        8,
+        ctypes.c_void_p(context + _OFF_WINDOWS_IN0 + 8 * int(rank_id.value)),
+        8,
         ACL_MEMCPY_DEVICE_TO_HOST,
     )
     if rc != 0:
@@ -160,11 +169,9 @@ def _window_view(n_elems: int) -> torch.Tensor:
     dev = torch.device("npu", torch.npu.current_device())
     storage = torch_npu._C._construct_storage_from_data_pointer(_WIN_PTR, dev, nbytes)
     ten = torch.empty(0, dtype=torch.float16, device=dev)
-    ten.set_(storage, storage_offset=0, size=(n_elems,), stride=(1,))
+    ten.set_(storage, storage_offset=0, size=(n_elems, ), stride=(1, ))
     if int(ten.data_ptr()) != int(_WIN_PTR):
-        raise RuntimeError(
-            f"window view data_ptr mismatch: ten=0x{ten.data_ptr():x} win=0x{_WIN_PTR:x}"
-        )
+        raise RuntimeError(f"window view data_ptr mismatch: ten=0x{ten.data_ptr():x} win=0x{_WIN_PTR:x}")
     _WIN_TEN = ten
     _WIN_NELEMS = n_elems
     return ten
@@ -213,9 +220,7 @@ def prepare(rank: int, world: int, max_m: int, max_n: int) -> None:
         _WIN_PTR, win_size = _read_windows_in(_SESSION.context)
         need = need_elems * 2
         if _WIN_PTR == 0 or win_size < need:
-            raise RuntimeError(
-                f"WINDOW_IN too small: win=0x{_WIN_PTR:x} winSize={win_size} need={need}"
-            )
+            raise RuntimeError(f"WINDOW_IN too small: win=0x{_WIN_PTR:x} winSize={win_size} need={need}")
         _WIN_TEN = None
         _WIN_NELEMS = 0
     else:
@@ -224,10 +229,8 @@ def prepare(rank: int, world: int, max_m: int, max_n: int) -> None:
         _WIN_PTR, win_size = _read_windows_in(_SESSION.context)
         need = need_elems * 2
         if _WIN_PTR == 0 or win_size < need:
-            raise RuntimeError(
-                f"WINDOW_IN too small for shape: winSize={win_size} need={need} "
-                f"(re-open session with larger max_m*max_n)"
-            )
+            raise RuntimeError(f"WINDOW_IN too small for shape: winSize={win_size} need={need} "
+                               f"(re-open session with larger max_m*max_n)")
 
 
 def begin_op(out_flat, *, m: int, n: int, tile_cnt: int | None = None) -> None:
@@ -258,9 +261,9 @@ def end_op() -> None:
 def _ensure_bufs() -> None:
     global _HBOX, _STATUS, _SKEL_BUF
     if _HBOX is None:
-        _HBOX = torch.full((1,), -1, dtype=torch.int64, device=DEVICE)
-        _STATUS = torch.zeros((1,), dtype=torch.int32, device=DEVICE)
-        _SKEL_BUF = torch.zeros((_HCCL_SKEL_I64,), dtype=torch.int64, device=DEVICE)
+        _HBOX = torch.full((1, ), -1, dtype=torch.int64, device=DEVICE)
+        _STATUS = torch.zeros((1, ), dtype=torch.int32, device=DEVICE)
+        _SKEL_BUF = torch.zeros((_HCCL_SKEL_I64, ), dtype=torch.int64, device=DEVICE)
 
 
 def _warmup_gemm_ar(a, b, out_flat, win, *, strip_m: int, tile_cnt: int, grid: int) -> None:
@@ -277,11 +280,30 @@ def _warmup_gemm_ar(a, b, out_flat, win, *, strip_m: int, tile_cnt: int, grid: i
     n_elems = m * n
     use_win = MC2_BUFFER_TYPE_WINDOW_IN
     gemm_ar_kernel.run(
-        a, b, out_flat, win, _CTX, _HBOX, _STATUS, _SKEL_BUF,
-        m, n, k, strip_m, tile_cnt, n_elems, use_win, grid,
-        a.stride(0), a.stride(1), b.stride(0), b.stride(1),
-        BLOCK_M, BLOCK_N, BLOCK_K,
-        grid=(grid,),
+        a,
+        b,
+        out_flat,
+        win,
+        _CTX,
+        _HBOX,
+        _STATUS,
+        _SKEL_BUF,
+        m,
+        n,
+        k,
+        strip_m,
+        tile_cnt,
+        n_elems,
+        use_win,
+        grid,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        BLOCK_M,
+        BLOCK_N,
+        BLOCK_K,
+        grid=(grid, ),
         warmup=True,
         enable_legacy_insert_load_store_for_mix_cv=True,
     )
@@ -305,11 +327,30 @@ def _prime_gemm_ar(a, b, out_flat, win, *, strip_m: int, tile_cnt: int, grid: in
     if not _SESSION.started:
         _SESSION.start()
         _OP_STARTED = True
-    gemm_ar_kernel[(grid,)](
-        a, b, out_flat, win, _CTX, _HBOX, _STATUS, _SKEL_BUF,
-        m, n, k, strip_m, tile_cnt, n_elems, use_win, grid,
-        a.stride(0), a.stride(1), b.stride(0), b.stride(1),
-        BLOCK_M, BLOCK_N, BLOCK_K,
+    gemm_ar_kernel[(grid, )](
+        a,
+        b,
+        out_flat,
+        win,
+        _CTX,
+        _HBOX,
+        _STATUS,
+        _SKEL_BUF,
+        m,
+        n,
+        k,
+        strip_m,
+        tile_cnt,
+        n_elems,
+        use_win,
+        grid,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        BLOCK_M,
+        BLOCK_N,
+        BLOCK_K,
         enable_legacy_insert_load_store_for_mix_cv=True,
     )
     torch.npu.current_stream().synchronize()
@@ -321,10 +362,29 @@ def _prime_gemm_ar(a, b, out_flat, win, *, strip_m: int, tile_cnt: int, grid: in
 
 @triton.jit
 def gemm_ar_kernel(
-    a_ptr, b_ptr, out_ptr, win_ptr, ctx, hbox, status, skel_buf,
-    M, N, K, STRIP_ROWS, TILE_CNT, N_ELEMS, USE_WIN, NUM_PROGRAMS,
-    stride_am, stride_ak, stride_bk, stride_bn,
-    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    a_ptr,
+    b_ptr,
+    out_ptr,
+    win_ptr,
+    ctx,
+    hbox,
+    status,
+    skel_buf,
+    M,
+    N,
+    K,
+    STRIP_ROWS,
+    TILE_CNT,
+    N_ELEMS,
+    USE_WIN,
+    NUM_PROGRAMS,
+    stride_am,
+    stride_ak,
+    stride_bk,
+    stride_bn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
 ):
     # ops InnerProcess: MM → WINDOW strip, SyncAll, Commit; Wait/Finalize last.
     # out_ptr = AllReduce dst; win_ptr = windowsIn (host-wrapped, real ptr arg).
@@ -426,11 +486,30 @@ def run_gemm_ar(a, b, symm, out_flat, rank: int, world: int) -> None:
         _OP_STARTED = True
 
     t0 = time.perf_counter()
-    gemm_ar_kernel[(grid,)](
-        a, b, out_flat, win, _CTX, _HBOX, _STATUS, _SKEL_BUF,
-        m, n, k, strip_m, tile_cnt, n_elems, use_win, grid,
-        a.stride(0), a.stride(1), b.stride(0), b.stride(1),
-        BLOCK_M, BLOCK_N, BLOCK_K,
+    gemm_ar_kernel[(grid, )](
+        a,
+        b,
+        out_flat,
+        win,
+        _CTX,
+        _HBOX,
+        _STATUS,
+        _SKEL_BUF,
+        m,
+        n,
+        k,
+        strip_m,
+        tile_cnt,
+        n_elems,
+        use_win,
+        grid,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        BLOCK_M,
+        BLOCK_N,
+        BLOCK_K,
         enable_legacy_insert_load_store_for_mix_cv=True,
     )
     torch.npu.current_stream().synchronize()
