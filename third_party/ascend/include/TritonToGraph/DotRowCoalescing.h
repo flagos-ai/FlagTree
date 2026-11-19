@@ -1,0 +1,43 @@
+/*
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
+#ifndef TRITON_TO_GRAPH_DOT_ROW_COALESCING_H
+#define TRITON_TO_GRAPH_DOT_ROW_COALESCING_H
+
+#include "TritonToGraph/GraphOptimizationRule.h"
+
+#include <memory>
+
+namespace mlir {
+namespace triton {
+namespace cfg {
+
+// Return a privately rewritten and verified plan for independent dot rows.
+// Unsupported inputs return nullptr without changing the original IR.
+std::unique_ptr<RewritePlan> createDotRowCoalescingPlan(triton::FuncOp function,
+                                                        unsigned epoch);
+
+} // namespace cfg
+} // namespace triton
+} // namespace mlir
+
+#endif // TRITON_TO_GRAPH_DOT_ROW_COALESCING_H

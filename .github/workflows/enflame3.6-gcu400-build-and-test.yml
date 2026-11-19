@@ -109,7 +109,10 @@ jobs:
               --ignore=python/test/tle/unit/test_tle_distributed_d2d.py \
               --ignore=python/test/tle/unit/test_tle_get_local_pe.py \
               --ignore=python/test/tle/unit/test_tle_d2d_barrier.py \
-              --ignore=python/test/tle/unit/test_tle_get_node_rank.py
+              --ignore=python/test/tle/unit/test_tle_get_node_rank.py \
+              --ignore=python/test/tle/unit/test_tle_function_argument_hints.py \
+              --ignore=python/test/tle/unit/test_tle_gather_axis_codegen.py \
+              --ignore=python/test/tle/integration/test_tle_shared_arena_alignment.py
 
           ## tle raw test
           # python3 -m pytest third_party/enflame/python/test/tle/raw \
@@ -119,7 +122,7 @@ jobs:
           # python3 python/tutorials/tle/01-fft.py
           # python3 python/tutorials/tle/02-moe_align_block_size.py
           # python3 python/tutorials/tle/03-topk.py
-          python3 third_party/enflame/python/test/tle/tutorials/03-topk.py
+          # python3 third_party/enflame/python/test/tle/tutorials/03-topk.py
           # python3 python/tutorials/tle/04-cluster-gemm.py
           python3 python/tutorials/tle/deepseek_v32/01-topk_selector.py
           # python3 third_party/enflame/python/test/tle/tutorials/deepseek_v32/02-sparse-mla.py

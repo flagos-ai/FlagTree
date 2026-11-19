@@ -95,6 +95,36 @@ def GCUTleLowerAsyncLoad
                            "mlir::triton::TritonDialect"];
 }
 
+def GCUTleAssignMemorySpace
+    : Pass<"gcu-tle-assign-memory-space", "mlir::ModuleOp"> {
+  let summary = "Materialize TLE memory-space hints into GCU IR markers";
+
+  let description = [{
+    Materializes the `tt.memory_space` hint set by
+    `tle.gpu.memory_space(...)` in the source program.
+
+    "shared_memory": wraps the hinted value with
+      `ttg.local_alloc(value)` + `ttg.local_load`, i.e. the value is staged in
+      shared memory, and marks the producer so the convert-triton-to-gcu
+      lowering can compute straight into the smem tile.
+
+    "register": marks the producer so its output buffer is allocated with
+      `memref.alloca` (vector.load/vector.store) instead of `memref.alloc`
+      (tar_load/tar_store).
+
+    The pass runs once, after `gcu-triton-fusion` and before
+    `triton-gcu-local-mem-optimize`. That position lets the load staging be
+    folded into `copy_global_to_local` by the local-mem optimize pass, and
+    makes hints on ops that were pulled into an elementwise fusion region land
+    on the region result.
+  }];
+
+  let dependentDialects = [
+    "mlir::triton::TritonDialect",
+    "mlir::triton::gpu::TritonGPUDialect",
+  ];
+}
+
 def GCUTestWSTaskPartition : Pass<"gcu-test-ws-task-partition", "mlir::ModuleOp"> {
   let summary = "test warp specialization task partition";
 

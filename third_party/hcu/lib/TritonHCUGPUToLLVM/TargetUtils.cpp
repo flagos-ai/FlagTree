@@ -105,7 +105,7 @@ HCUISAFeature deduceHCUISAFeature(llvm::StringRef arch) {
   static const llvm::DenseMap<llvm::AMDGPU::GPUKind, HCUISAFeature>
       hcuIsaFeatures = {
           {llvm::AMDGPU::GK_GFX928, HCUISAFeature::NONE},
-          {llvm::AMDGPU::GK_GFX936, HCUISAFeature::NONE},
+          {llvm::AMDGPU::GK_GFX936, HCUISAFeature::MMAC_FP64},
           {llvm::AMDGPU::GK_GFX938, commonFeatures1},
           {llvm::AMDGPU::GK_GFX92A,
            commonFeatures1 | HCUISAFeature::MMAC_FP6FP4},

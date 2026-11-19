@@ -47,6 +47,7 @@ if [[ -f "$PID_FILE" ]]; then
     fi
 fi
 bash "${SCRIPT_DIR}/clear_fuser_process.sh"
+rm -f /dev/shm/* 2>/dev/null || true
 
 start=$(date +%s)
 
@@ -60,7 +61,7 @@ nohup vllm serve ./Qwen3.6-27B/  \
     --trust-remote-code \
     --limit-mm-per-prompt '{"image": 1}' \
     --gpu-memory-utilization 0.65 \
-    --dtype bfloat16 2>&1 >vllm.log &
+    --dtype bfloat16 >vllm.log 2>&1 &
 echo "$!" >pid.txt
 
 PID_FILE="pid.txt"

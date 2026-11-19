@@ -908,8 +908,11 @@ public:
                              dotOp.getMaxNumImpreciseAcc());
     }
 
-    rewriter.replaceOpWithNewOp<ConvertLayoutOp>(dotOp, dotOp.getType(),
-                                                 newDot->getResult(0));
+    Attribute explicitEncoding = getTleExplicitResultEncoding(dotOp, 0);
+    auto result = rewriter.replaceOpWithNewOp<ConvertLayoutOp>(
+        dotOp, dotOp.getType(), newDot->getResult(0));
+    if (explicitEncoding)
+      setTleExplicitResultEncoding(result, 0, explicitEncoding);
     return success();
   }
 };
@@ -1443,6 +1446,8 @@ static void transposeDotOp(DotScaledOp dotOp) {
       dotOp.getBElemType(), dotOp.getAElemType(), dotOp.getFastMath());
   Operation *transposedResult =
       TransOp::create(builder, result.getLoc(), result, transOrder);
+  if (Attribute encoding = getTleExplicitResultEncoding(dotOp, 0))
+    setTleExplicitResultEncoding(transposedResult, 0, encoding);
   dotOp.replaceAllUsesWith(transposedResult);
   dotOp.erase();
 }

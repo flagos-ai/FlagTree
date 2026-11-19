@@ -13,6 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <algorithm>
+
 #include "CodePartitionUtility.h"
 #include "Utils/TritonVersionCompat.h"
 
@@ -39,6 +41,10 @@ unsigned scanRegUsage(Block *block, AsyncTaskId asyncTaskId,
 Operation *SpecializeOp(Operation *op, IRMapping &mapping,
                         OpBuilderWithAsyncTaskIds &builder,
                         AsyncTaskId asyncTaskId);
+
+Operation *SpecializeWhileOp(scf::WhileOp whileOp, IRMapping &mapping,
+                             OpBuilderWithAsyncTaskIds &builder,
+                             AsyncTaskId asyncTaskId);
 
 // Collect argument indices that are used by the specific taskId.
 static SmallVector<unsigned> collectBlockArgsForTask(scf::ForOp forOp,
@@ -233,6 +239,114 @@ Operation *SpecializeIfOp(scf::IfOp ifOp, IRMapping &mapping,
   return newIfOp;
 }
 
+// Compare two async task id lists as sets.
+static bool sameTaskIds(ArrayRef<AsyncTaskId> lhs, ArrayRef<AsyncTaskId> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  SmallVector<AsyncTaskId> a(lhs.begin(), lhs.end());
+  SmallVector<AsyncTaskId> b(rhs.begin(), rhs.end());
+  std::sort(a.begin(), a.end());
+  std::sort(b.begin(), b.end());
+  return a == b;
+}
+
+// The code partition clones every op that carries async task ids into the
+// region of each task that owns it. For scf.for and scf.if that is self
+// contained: their results/operands carry the task ids of whoever consumes
+// them, so a clone never refers to a value that was cloned into another task.
+// An scf.while cannot work that way, because the loop hands its state from one
+// iteration to the next *inside* its regions and the partition has no way to
+// pass a scalar value from one task to another: the loop body has to be cloned
+// as a whole into every task that owns the loop (see SpecializeWhileOp). That
+// is only sound when the whole loop -- the op, both region terminators and
+// every op nested in either region -- carries the same set of task ids.
+// Reject the others here, before the function is rewritten, so that the caller
+// can keep the kernel on the non-WS path instead of partitioning it wrongly.
+bool isSupportedForCodePartition(triton::FuncOp &funcOp) {
+  bool supported = true;
+  funcOp.walk([&](scf::WhileOp whileOp) {
+    auto whileTaskIds = getAsyncTaskIds(whileOp);
+    // Without task ids the loop is not part of a partition; it stays where it
+    // is. (An op inside it that got partitioned would have labelled the loop.)
+    if (whileTaskIds.empty())
+      return;
+    whileOp->walk([&](Operation *op) {
+      if (sameTaskIds(getAsyncTaskIds(op), whileTaskIds))
+        return;
+      LDBG() << "scf.while is not partitioned as a whole, body op " << *op;
+      supported = false;
+    });
+  });
+  return supported;
+}
+
+// Clone one scf.while per task. The loop interface (inits, results, region
+// arguments) is shared by every task that owns the loop, so each clone keeps
+// it unchanged and only the ops of the two regions are cloned per task -- the
+// terminator of each region is rebuilt from the remapped operands. See
+// isSupportedForCodePartition for why a mixed-task loop is rejected earlier
+// instead of being handled here.
+Operation *SpecializeWhileOp(scf::WhileOp whileOp, IRMapping &mapping,
+                             OpBuilderWithAsyncTaskIds &builder,
+                             AsyncTaskId asyncTaskId) {
+  LLVM_DEBUG({
+    LDBG() << "specialize whileOp ";
+    whileOp.dump();
+  });
+
+  SmallVector<Value> newInits;
+  for (Value init : whileOp.getInits())
+    newInits.push_back(mapping.lookupOrDefault(init));
+  SmallVector<Type> newResultTypes(whileOp->getResultTypes());
+
+  MLIRContext *context = whileOp.getContext();
+  SmallVector<AsyncTaskId> taskIds{asyncTaskId};
+
+  // Clone the ops of one region that belong to this task and rebuild that
+  // region's terminator: scf.condition for the "before" region, scf.yield
+  // (which feeds the loop back) for the "after" region.
+  auto cloneRegion = [&](Block *oldBlock, Block *newBlock, bool isBefore) {
+    OpBuilderWithAsyncTaskIds regionBuilder(context);
+    regionBuilder.setInsertionPointToEnd(newBlock);
+    regionBuilder.setAsynTaskIdsFromArray(taskIds);
+    for (Operation &op : oldBlock->without_terminator())
+      SpecializeOp(&op, mapping, regionBuilder, asyncTaskId);
+
+    Operation *terminator = oldBlock->getTerminator();
+    SmallVector<Value> operands;
+    for (Value operand : terminator->getOperands())
+      operands.push_back(mapping.lookupOrDefault(operand));
+    if (isBefore)
+      regionBuilder.createWithAsyncTaskIds<scf::ConditionOp>(
+          terminator->getLoc(), operands.front(),
+          ValueRange(operands).drop_front());
+    else
+      regionBuilder.createWithAsyncTaskIds<scf::YieldOp>(terminator->getLoc(),
+                                                         operands);
+  };
+
+  // The region arguments only exist while the bodies are built, so map them
+  // from inside the body builders.
+  auto newWhileOp = builder.createWithAsyncTaskIds<scf::WhileOp>(
+      whileOp.getLoc(), newResultTypes, newInits,
+      [&](OpBuilder &b, Location, ValueRange beforeArgs) {
+        auto oldArgs = whileOp.getBeforeArguments();
+        for (unsigned i = 0; i < beforeArgs.size(); ++i)
+          mapping.map(oldArgs[i], beforeArgs[i]);
+        cloneRegion(whileOp.getBeforeBody(), b.getBlock(), /*isBefore=*/true);
+      },
+      [&](OpBuilder &b, Location, ValueRange afterArgs) {
+        auto oldArgs = whileOp.getAfterArguments();
+        for (unsigned i = 0; i < afterArgs.size(); ++i)
+          mapping.map(oldArgs[i], afterArgs[i]);
+        cloneRegion(whileOp.getAfterBody(), b.getBlock(), /*isBefore=*/false);
+      });
+
+  for (unsigned i = 0; i < whileOp.getNumResults(); ++i)
+    mapping.map(whileOp.getResult(i), newWhileOp.getResult(i));
+  return newWhileOp;
+}
+
 Operation *SpecializeForOp(scf::ForOp forOp, IRMapping &mapping,
                            OpBuilderWithAsyncTaskIds &builder,
                            AsyncTaskId asyncTaskId) {
@@ -326,6 +440,8 @@ Operation *SpecializeOp(Operation *op, IRMapping &mapping,
       return SpecializeIfOp(ifOp, mapping, builder, asyncTaskId);
     } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
       return SpecializeForOp(forOp, mapping, builder, asyncTaskId);
+    } else if (auto whileOp = dyn_cast<scf::WhileOp>(op)) {
+      return SpecializeWhileOp(whileOp, mapping, builder, asyncTaskId);
     } else if (auto reduceOp = dyn_cast<triton::ReduceOp>(op)) {
       Operation *newOp = builder.clone(*op, mapping);
       // recursively set async task ids for child ops
@@ -379,6 +495,39 @@ void specializeRegion(triton::FuncOp funcOp, int32_t numWarps,
     if (asyncTaskId == 0)
       continue;
     partitionNumWarps.push_back(numWarps);
+  }
+
+  // The partitioner assigns a task id only to the ops that produce or consume
+  // partition state, so an op with no id at all can survive inside a region
+  // that is about to be cloned -- a side-effecting op whose results no
+  // partition depends on, such as tt.print. SpecializeOp clones only ops that
+  // carry the target task id and the original op is erased below, so such an op
+  // would be dropped silently. Run it in the same tasks as the other ops of its
+  // region instead (every task when the region has none), mirroring upstream's
+  // assignPartitionsForOpsWithNoUse: an op no partition depends on belongs to
+  // every partition the region is split into. A result consumed by a
+  // partitioned op already carries its id -- the backward propagation meets a
+  // result's lattice into all of its operands -- so this only adds ids to code
+  // that no partition uses.
+  DenseMap<Block *, SmallVector<AsyncTaskId>> blockTaskIds;
+  for (Operation *op : opList) {
+    op->walk([&](Block *block) {
+      if (blockTaskIds.count(block))
+        return;
+      SmallVector<AsyncTaskId> &taskIds = blockTaskIds[block];
+      for (Operation &nestedOp : *block)
+        for (AsyncTaskId taskId : getAsyncTaskIds(&nestedOp))
+          if (!llvm::is_contained(taskIds, taskId))
+            taskIds.push_back(taskId);
+    });
+  }
+  for (auto &[block, taskIds] : blockTaskIds) {
+    ArrayRef<AsyncTaskId> ids = taskIds.empty()
+                                    ? ArrayRef<AsyncTaskId>(nTaskIds)
+                                    : ArrayRef<AsyncTaskId>(taskIds);
+    for (Operation &nestedOp : *block)
+      if (getAsyncTaskIds(&nestedOp).empty())
+        setAsyncTaskIds(&nestedOp, ids);
   }
 
   // Search insertion point

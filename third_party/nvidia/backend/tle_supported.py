@@ -1,6 +1,9 @@
 TLE_SUPPORTED_PRIMITIVES = [
+    ## TLE-Raw
     "raw.call",
     "raw.call_smem",
+
+    ## TLE-Lite
     "load",
     "extract_tile",
     "insert_tile",
@@ -10,6 +13,8 @@ TLE_SUPPORTED_PRIMITIVES = [
     "shard_id",
     "distributed_barrier",
     "remote",
+    "signal",
+    "signal_wait",
     "cumsum",
     "pipe",
     "pipe.reader",
@@ -19,16 +24,20 @@ TLE_SUPPORTED_PRIMITIVES = [
     "pipe.writer.acquire",
     "pipe.writer.commit",
     "pipe.writer.close",
-    "gpu.alloc",
-    "gpu.buffered_tensor.reshape",
+
+    ## TLE-Struct GPU
+    "gpu.buffered_tensor.load",  # CommonIR
+    "gpu.buffered_tensor.store",  # CommonIR
     "gpu.buffered_tensor.slot",
+    "gpu.buffered_tensor.reshape",
     "gpu.buffered_tensor.subslice",
+    "gpu.alloc",
     "gpu.copy",
-    "gpu.buffered_tensor.load",
-    "gpu.buffered_tensor.store",
     "gpu.local_ptr",
     "gpu.memory_space",
     "gpu.set_layout",
+    "gpu.tensor_map_fenceproxy_acquire",
+    "gpu.reinterpret_tensor_map",
     "gpu.warp_specialize",
     "gpu.alloc_barrier",
     "gpu.alloc_barriers",
@@ -36,5 +45,4 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.barrier_arrive",
     "gpu.wgmma",
     "gpu.wgmma_wait",
-    "gpu.range",
 ]

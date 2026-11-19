@@ -118,8 +118,9 @@ bool isAddCombine(triton::ScanOp op) {
 //                              every tensor dimension without holes.
 //   3. isDegenerateScan      - check whether the scan axis is too narrow for
 //                              efficient multi-SIP parallel execution.
-//   4. mustRunOnMasterThread - final gate: true  -> gather onto master thread
-//                                                   and scan serially.
+//   4. mustRunOnMasterThread - final gate: true  -> stage the tile in shared
+//                                                   memory and scan it there
+//                                                   on the master thread.
 //                                          false -> scan in-place on each warp.
 // ===----------------------------------------------------------------------===
 
@@ -265,8 +266,12 @@ Value applyOneDimReshapeScanCommon(OpBuilder &rewriter, Location loc,
   int64_t numBlocks = M + (tail > 0 ? 1 : 0);
   auto vecTy = VectorType::get(VL, elemTy);
 
-  // - Reshape in / out as [numBlocks, VL]
-  auto flatTy = MemRefType::get(ArrayRef<int64_t>{numBlocks, VL}, elemTy);
+  auto flatTyOf = [&](Value buf) {
+    return MemRefType::get(ArrayRef<int64_t>{numBlocks, VL}, elemTy,
+                           AffineMap{},
+                           cast<MemRefType>(buf.getType()).getMemorySpace());
+  };
+  auto flatTy = flatTyOf(inMemRef);
   Value inFlat = rewriter.create<memref::ReinterpretCastOp>(
       loc, flatTy, inMemRef, ValueRange{}, ValueRange{}, ValueRange{},
       ArrayRef<int64_t>{0}, ArrayRef<int64_t>{numBlocks, VL},
@@ -275,8 +280,8 @@ Value applyOneDimReshapeScanCommon(OpBuilder &rewriter, Location loc,
   Value outFlat = inFlat;
   if (inMemRef != outMemRef) {
     outFlat = rewriter.create<memref::ReinterpretCastOp>(
-        loc, flatTy, outMemRef, ValueRange{}, ValueRange{}, ValueRange{},
-        ArrayRef<int64_t>{0}, ArrayRef<int64_t>{numBlocks, VL},
+        loc, flatTyOf(outMemRef), outMemRef, ValueRange{}, ValueRange{},
+        ValueRange{}, ArrayRef<int64_t>{0}, ArrayRef<int64_t>{numBlocks, VL},
         ArrayRef<int64_t>{VL, 1});
   }
 
@@ -1855,7 +1860,7 @@ struct TleExclusiveCumsumLowering : SharedGenericConversionPattern {
       const TypeConverter &converter, MLIRContext *ctx,
       triton::gcu::FirstLastUserAnalysis &userAnalysis,
       std::map<Operation *, Operation *> &replaced2Origin,
-      triton::gcu::PrivateTagPool &pTagPool)
+      triton::gcu::DTETagPool &pTagPool)
       : SharedGenericConversionPattern("tle.exclusive_cumsum", converter, ctx,
                                        userAnalysis, replaced2Origin,
                                        pTagPool) {}
@@ -1869,76 +1874,166 @@ private:
   }
 
 public:
-  // === Scan execution strategies ==========================================
-  // Contract: given srcInput (memref with totalNumElems elements) and
-  // exclusiveOut (same shape), produce the total scalar value.
+  // === Scan forms =========================================================
+  // Contract: given srcInput and exclusiveOut (memrefs of `totalNumElems`
+  // elements), produce the total scalar value.  Either buffer may be private
+  // memory (per-thread path) or the shared staging buffer (master path), and
+  // `srcInput` may equal `exclusiveOut`: both forms are safe in place (an index
+  // is loaded before it is stored and touched only once), which is how the
+  // master path avoids a second buffer and a second DTE round trip.
   //
-  // To add a new strategy (vectorised block scan, 2D reshape, etc.):
-  //   1. Implement a method with this exact signature.
-  //   2. Select it in matchAndRewrite based on element type / shape heuristics.
+  //   1  runVectorizedExclusiveScan   Hillis-Steele over VL-wide vector blocks
+  //   2  runSerialExclusiveScan       O(N) straight-line chain
+  //
+  // runExclusiveScan picks between them: the vectorized form whenever the row
+  // covers at least one OACC line (VL elements), the serial form otherwise.
+  //
+  // Placement (see matchAndRewrite):
+  //  - single-warp tile: the per-thread buffers, out of place.  The result is
+  //    a pooled buffer or, with `tle_use_alloca`, a private stack alloca.
+  //  - master thread: the tile is staged in one shared buffer and whichever
+  //    form applies scans that buffer in place, so the scan costs no private
+  //    buffer and no DTE round trip (storeToSharedMem always produces one
+  //    identity-layout run of the whole tile; asserted, see canScanInPlace).
+  //    The result is broadcast back to each thread's slice through the same
+  //    buffer, and the serial form runs one element at a time here (see
+  //    runSerialExclusiveScan).
+  //
+  // `tle.exclusive_cumsum` is a rank-1 op (the verifier rejects higher ranks),
+  // so a row is always one contiguous run along the scan axis and both forms
+  // are sound for every shape.
+  //
+  // To add a new form:
+  //   1. Implement it with the same contract (may scan in place, returns the
+  //      total).
+  //   2. Select it in runExclusiveScan, or in matchAndRewrite for a new
+  //      placement.
   //   3. Validate with python/test/tle/unit/test_tle_cumsum.py.
   // ========================================================================
 
-  // Strategy 0: scalar sequential scan, O(N).  Baseline, always correct.
-  Value runScalarExclusiveScan(Operation *op, OpBuilder &rewriter,
-                               Value srcInput, Value exclusiveOut,
-                               int64_t totalNumElems, bool reverse,
-                               Type elemTy) const {
-    auto loc = op->getLoc();
-    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    auto flatRank = MemRefType::get({totalNumElems}, elemTy);
-    auto srcFlat1d = rewriter.create<memref::ReinterpretCastOp>(
-        loc, flatRank, srcInput, ValueRange{}, ValueRange{}, ValueRange{},
-        ArrayRef<int64_t>{0}, ArrayRef<int64_t>{totalNumElems},
-        ArrayRef<int64_t>{1});
-    auto excFlat1d = rewriter.create<memref::ReinterpretCastOp>(
-        loc, flatRank, exclusiveOut, ValueRange{}, ValueRange{}, ValueRange{},
-        ArrayRef<int64_t>{0}, ArrayRef<int64_t>{totalNumElems},
-        ArrayRef<int64_t>{1});
+  // Elements in one OACC line for `elemTy`, floored at 32 bits: the widest
+  // vector the selector admits, and the bound below which the serial form is
+  // emitted straight-line instead of as a rolled loop.  (The vectorized form
+  // scales the line by the real element size instead; see its `VL`.)
+  static int64_t scanVectorLength(Type elemTy) {
+    return oaccSizeInBytes / std::max(mlir::triton::gcu::getBpe(elemTy), 4u);
+  }
 
+  // Flat 1D view over a scan buffer.  memref.reinterpret_cast keeps the memory
+  // space of its source, so the same view builder yields a private-memory
+  // buffer (per-thread path) or a shared-memory staging buffer (master path).
+  static Value buildFlatScanView(OpBuilder &b, Location loc, Value buf,
+                                 int64_t totalNumElems, Type elemTy) {
+    auto bufTy = cast<MemRefType>(buf.getType());
+    auto flatTy = MemRefType::get({totalNumElems}, elemTy, AffineMap{},
+                                  bufTy.getMemorySpace());
+    return b.create<memref::ReinterpretCastOp>(
+        loc, flatTy, buf, ValueRange{}, ValueRange{}, ValueRange{},
+        ArrayRef<int64_t>{0}, ArrayRef<int64_t>{totalNumElems},
+        ArrayRef<int64_t>{1});
+  }
+
+  // Elements whose source loads are issued as one group.  A serial scan is one
+  // load, one store and one add per element; with the loads inside the
+  // accumulator chain every load waits for the previous add, so a group of
+  // loads up front lets their memory latency overlap the adds of the group.
+  // The backend does not reorder them for us: straight-lining the loop (load,
+  // store, add per element, any trip count) yields exactly the rolled
+  // instruction sequence, so the hoisting is explicit.
+  //
+  // Chained-scan microbenchmark (one scan per iteration, the iteration
+  // depending on the previous total, 24 programs x 500 iterations, best of 4
+  // rounds in one process, us per scan):
+  //   N=32  no hoist 510.1   16 hoisted 482.6   all hoisted 484.6
+  //   N=64  no hoist 752.6   16 hoisted 648.9   all hoisted 653.4
+  // Smaller groups lose at N=64 (2/4/8 hoisted: 934/840/793) because the add
+  // chain still serialises and the extra live values buy nothing, so 16 is the
+  // knee and a group never spans more than one OACC line.
+  static constexpr int64_t kScanGroupSteps = 16;
+
+  // Emits the serial exclusive scan over the flat view(s) and returns the
+  // total: one load, one store and one combine per element, straight-line with
+  // compile-time indices, and at most `stepsPerGroup` source loads hoisted
+  // before the group's stores.  A group of 1 keeps the plain
+  // load/store/combine sequence with no hoisting.
+  //
+  // srcFlat and dstFlat may be the same buffer: within a group an index is
+  // loaded before it is stored and no group touches an index twice, so the
+  // in-place update is safe.
+  Value emitSerialScan(OpBuilder &b, Location loc, Value srcFlat, Value dstFlat,
+                       int64_t totalNumElems, Value initVal, bool reverse,
+                       int64_t stepsPerGroup, Type elemTy) const {
+    assert(stepsPerGroup >= 1 && "a group holds at least one element");
+    Value acc = initVal;
+    for (int64_t base = 0; base < totalNumElems; base += stepsPerGroup) {
+      int64_t groupSize = std::min(stepsPerGroup, totalNumElems - base);
+      SmallVector<Value, 16> vals;
+      SmallVector<Value, 16> idxs;
+      vals.reserve(groupSize);
+      idxs.reserve(groupSize);
+      for (int64_t j = 0; j < groupSize; ++j) {
+        int64_t i = base + j;
+        idxs.push_back(b.create<arith::ConstantIndexOp>(
+            loc, reverse ? totalNumElems - 1 - i : i));
+      }
+      for (int64_t j = 0; j < groupSize; ++j)
+        vals.push_back(
+            b.create<memref::LoadOp>(loc, srcFlat, ValueRange{idxs[j]}));
+      for (int64_t j = 0; j < groupSize; ++j) {
+        b.create<memref::StoreOp>(loc, acc, dstFlat, ValueRange{idxs[j]});
+        acc = addCombine(b, loc, acc, vals[j], elemTy);
+      }
+    }
+    return acc;
+  }
+
+  // Serial form: one load, one store and one add per element, O(N).  Used
+  // whenever no vector block exists (the row is shorter than one OACC line) and
+  // as the fallback for a row the vectorized form declines.  `srcInput` may be
+  // `exclusiveOut` (in-place scan).
+  //
+  // `hoistLoads` selects the hoisted form for a row that fits one OACC line
+  // (see kScanGroupSteps).  The per-thread paths pass `true`; the master path
+  // passes `false` because it scans the shared staging buffer, where hoisting
+  // measured *slower* than one element at a time (us per scan, master thread
+  // over a shared buffer, same harness as kScanGroupSteps):
+  //   N=16  no hoist 1520.1   16 hoisted 1571.4   4 interleaved 1498.7
+  //   N=32  no hoist 1603.1   16 hoisted 1609.3
+  //   N=64  no hoist 1881.2   16 hoisted 1794.4
+  // i.e. 16 hoisted is only ahead at 64, where the vectorized form takes over.
+  Value runSerialExclusiveScan(Operation *op, OpBuilder &rewriter,
+                               Value srcInput, Value exclusiveOut,
+                               int64_t totalNumElems, bool reverse, Type elemTy,
+                               bool hoistLoads) const {
+    auto loc = op->getLoc();
+    Value srcFlat =
+        buildFlatScanView(rewriter, loc, srcInput, totalNumElems, elemTy);
+    Value dstFlat = srcInput == exclusiveOut
+                        ? srcFlat
+                        : buildFlatScanView(rewriter, loc, exclusiveOut,
+                                            totalNumElems, elemTy);
     Value zeroVal = rewriter.create<arith::ConstantOp>(
         loc, elemTy, rewriter.getZeroAttr(elemTy));
 
-    auto totalElemsVal =
-        rewriter.create<arith::ConstantIndexOp>(loc, totalNumElems);
+    // A row that fits one OACC line gets the hoisted form; anything else (a
+    // longer row, or the shared staging buffer, see above) is scanned one
+    // element at a time.  Both are straight-line, so there is no rolled form.
+    bool grouped = hoistLoads && totalNumElems <= scanVectorLength(elemTy);
+    int64_t stepsPerGroup =
+        grouped ? std::min(kScanGroupSteps, totalNumElems) : 1;
+    return emitSerialScan(rewriter, loc, srcFlat, dstFlat, totalNumElems,
+                          zeroVal, reverse, stepsPerGroup, elemTy);
+  }
 
-    if (!reverse) {
-      // Forward exclusive scan with carried accumulator.
-      // acc starts at 0; each iteration: exc[i]=acc, acc+=src[i].
-      // Total = final acc after the loop (= sum of all src).
-      auto forOp = rewriter.create<scf::ForOp>(
-          loc, zero, totalElemsVal, one, ValueRange{zeroVal},
-          [&](OpBuilder &b, Location loc, Value iv, ValueRange iterArgs) {
-            Value acc = iterArgs[0];
-            b.create<memref::StoreOp>(loc, acc, excFlat1d, ValueRange{iv});
-            Value srcVal =
-                b.create<memref::LoadOp>(loc, srcFlat1d, ValueRange{iv});
-            Value newAcc = addCombine(b, loc, acc, srcVal, elemTy);
-            b.create<scf::YieldOp>(loc, ValueRange(newAcc));
-          });
-      return forOp.getResult(0);
-
-    } else {
-      // Reverse exclusive scan with carried accumulator.
-      // acc starts at 0; iterate from N-1 down to 0:
-      //   exc[i]=acc, acc+=src[i].
-      auto forOp = rewriter.create<scf::ForOp>(
-          loc, zero, totalElemsVal, one, ValueRange{zeroVal},
-          [&](OpBuilder &b, Location loc, Value iv, ValueRange iterArgs) {
-            Value acc = iterArgs[0];
-            Value actualIdx = b.create<arith::SubIOp>(
-                loc, b.create<arith::ConstantIndexOp>(loc, totalNumElems - 1),
-                iv);
-            b.create<memref::StoreOp>(loc, acc, excFlat1d,
-                                      ValueRange{actualIdx});
-            Value srcVal =
-                b.create<memref::LoadOp>(loc, srcFlat1d, ValueRange{actualIdx});
-            Value newAcc = addCombine(b, loc, acc, srcVal, elemTy);
-            b.create<scf::YieldOp>(loc, ValueRange(newAcc));
-          });
-      return forOp.getResult(0);
-    }
+  // Invariant of the master-thread placement: `storeToSharedMem` stages the
+  // tile as exactly one flat contiguous run, so the in-place forms can flatten
+  // it with a single `memref.reinterpret_cast`.  This is asserted rather than
+  // branched on; a padded or swizzled staging buffer would need a gather path
+  // (gather to thread 0, scan there, scatter back) again.
+  static bool canScanInPlace(Value buf, int64_t totalNumElems) {
+    auto memRefTy = dyn_cast<MemRefType>(buf.getType());
+    return memRefTy && memRefTy.getLayout().isIdentity() &&
+           memRefTy.getNumElements() == totalNumElems;
   }
 
   // ===---------------------------------------------------------------------===
@@ -1999,10 +2094,10 @@ public:
     return vec;
   }
 
-  // Strategy 1: vectorized exclusive scan via the common 1D-reshape framework.
+  // Vectorized form: exclusive scan via the common 1D-reshape framework.
   // Uses Hillis-Steele O(log2(VL)) parallel prefix sum.
   // Returns the total scalar (final carry), or null Value to
-  // signal fallback to runScalarExclusiveScan.
+  // signal fallback to the serial form.
   //
   // Per-block cost: log2(VL) shift+add (inclusive) + 1 extract + 1 scalar add
   // (carry) + 1 shift + 1 broadcast + 1 vector add (inclusive->exclusive).
@@ -2013,8 +2108,13 @@ public:
                                    int64_t totalNumElems, bool reverse,
                                    Type elemTy) const {
     auto loc = op->getLoc();
-    unsigned bpe = mlir::triton::gcu::getBpe(elemTy);
-    int64_t VL = oaccSizeInBytes / bpe;
+    // A full OACC line in elements.  This is deliberately *not*
+    // scanVectorLength(): that one floors the element size at 32 bits for the
+    // selector and the serial-form threshold, whereas the vectorized form loads
+    // and stores a whole line of the real element type.  Emitting the floored
+    // width instead (e.g. 128 f16 lanes = a 256-byte vector) fails in llc with
+    // "Cannot select: store (s512) ... align 512".
+    int64_t VL = oaccSizeInBytes / mlir::triton::gcu::getBpe(elemTy);
     std::array<int64_t, 3> dims = {1, 1, totalNumElems};
     int64_t N, M, tail;
     if (!isOneDimReshapeCandidate(dims, /*scanAxis=*/2, VL, N, M, tail))
@@ -2062,211 +2162,18 @@ public:
                                         exclusiveScan, scalarCombine);
   }
 
-  // Strategy 2: batch-1D interleaved exclusive scan for {1, N, B} shapes.
-  // Uses interleaved Hillis-Steele with stride=B*2^k, then converts
-  // inclusive->exclusive by shifting by B and inserting per-lane carry.
-  // Returns the total scalar (sum of all elements), or null to signal fallback.
-  Value runBatchOneDimExclusiveScan(Operation *op, OpBuilder &rewriter,
-                                    Value srcInput, Value exclusiveOut,
-                                    const std::array<int64_t, 3> &scanInOutDims,
-                                    int64_t scanAxis, bool reverse,
-                                    Type elemTy) const {
-    unsigned bpe = mlir::triton::gcu::getBpe(elemTy);
-    unsigned minBpe = bpe < 4 ? 4 : bpe;
-    int64_t VL = oaccSizeInBytes / minBpe;
-
-    int64_t N, B, M, tail;
-    if (!isBatchOneDimCandidate(scanInOutDims, scanAxis, VL, N, B, M, tail))
-      return Value();
-
-    auto loc = op->getLoc();
-    auto vecTy = VectorType::get(VL, elemTy);
-    auto flatTy = MemRefType::get({M + (tail > 0 ? 1 : 0), VL}, elemTy);
-
-    Value srcFlat = rewriter.create<memref::ReinterpretCastOp>(
-        loc, flatTy, srcInput, ValueRange{}, ValueRange{}, ValueRange{},
-        ArrayRef<int64_t>{0}, ArrayRef<int64_t>{M + (tail > 0 ? 1 : 0), VL},
-        ArrayRef<int64_t>{VL, 1});
-    Value outFlat = rewriter.create<memref::ReinterpretCastOp>(
-        loc, flatTy, exclusiveOut, ValueRange{}, ValueRange{}, ValueRange{},
-        ArrayRef<int64_t>{0}, ArrayRef<int64_t>{M + (tail > 0 ? 1 : 0), VL},
-        ArrayRef<int64_t>{VL, 1});
-
-    auto zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-    auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    auto shiftDir = reverse ? gcu::VectorShiftDirection::LEFT
-                            : gcu::VectorShiftDirection::RIGHT;
-
-    Value zeroVal = rewriter.create<arith::ConstantOp>(
-        loc, elemTy, rewriter.getZeroAttr(elemTy));
-    Value zeroVec = rewriter.create<arith::ConstantOp>(
-        loc, vecTy, rewriter.getZeroAttr(vecTy));
-
-    bool useVectorCarry = B >= kVectorCarryThreshold;
-
-    auto carryShiftDir = reverse ? gcu::VectorShiftDirection::RIGHT
-                                 : gcu::VectorShiftDirection::LEFT;
-    Value carryShiftAmt;
-    if (useVectorCarry) {
-      carryShiftAmt = rewriter.create<arith::ConstantIntOp>(
-          loc, rewriter.getI32Type(), VL - B);
-    }
-
-    // Lambda: interleaved inclusive scan + convert to exclusive.
-    // carryArgs: B scalars (B < threshold) or 1 vector (B >= threshold).
-    auto interleavedExclusiveScan =
-        [&](OpBuilder &builder, Location loc, Value vec,
-            ArrayRef<Value> carryArgs,
-            bool isFirstBlock) -> std::pair<Value, SmallVector<Value>> {
-      // Fuse carry into boundary lanes before inclusive scan
-      if (!isFirstBlock) {
-        if (useVectorCarry) {
-          Value shifted = builder.create<gcu::VectorShiftOp>(
-              loc, carryShiftDir, carryArgs[0], carryShiftAmt);
-          if (isa<FloatType>(elemTy))
-            vec = builder.create<arith::AddFOp>(loc, vecTy, shifted, vec);
-          else
-            vec = builder.create<arith::AddIOp>(loc, vecTy, shifted, vec);
-        } else {
-          for (int64_t bi = 0; bi < B; ++bi) {
-            int64_t lane = reverse ? VL - B + bi : bi;
-            Value vecElem = builder.create<vector::ExtractOp>(
-                loc, vec, ArrayRef<int64_t>{lane});
-            Value combined =
-                addCombine(builder, loc, carryArgs[bi], vecElem, elemTy);
-            vec = builder.create<vector::InsertOp>(loc, combined, vec,
-                                                   ArrayRef<int64_t>{lane});
-          }
-        }
-      }
-
-      // Hillis-Steele inclusive with stride B, 2B, 4B, ...
-      for (int64_t stride = B; stride < VL; stride *= 2) {
-        Value shiftVal = builder.create<arith::ConstantIntOp>(
-            loc, builder.getI32Type(), stride);
-        Value shifted =
-            builder.create<gcu::VectorShiftOp>(loc, shiftDir, vec, shiftVal);
-        if (isa<FloatType>(elemTy))
-          vec = builder.create<arith::AddFOp>(loc, vecTy, shifted, vec);
-        else
-          vec = builder.create<arith::AddIOp>(loc, vecTy, shifted, vec);
-      }
-
-      Value inclusive = vec;
-
-      // Convert inclusive -> exclusive: shift by B, fill boundary lanes.
-      Value bShift =
-          builder.create<arith::ConstantIntOp>(loc, builder.getI32Type(), B);
-      Value excVec =
-          builder.create<gcu::VectorShiftOp>(loc, shiftDir, inclusive, bShift);
-
-      if (useVectorCarry) {
-        if (!isFirstBlock) {
-          Value carryPrefix = builder.create<gcu::VectorShiftOp>(
-              loc, carryShiftDir, carryArgs[0], carryShiftAmt);
-          if (isa<FloatType>(elemTy))
-            excVec =
-                builder.create<arith::AddFOp>(loc, vecTy, excVec, carryPrefix);
-          else
-            excVec =
-                builder.create<arith::AddIOp>(loc, vecTy, excVec, carryPrefix);
-        }
-        return {excVec, {inclusive}};
-      }
-
-      // Scalar carry: extract B carry scalars, insert into boundary lanes.
-      SmallVector<Value> newCarry(B);
-      for (int64_t bIdx = 0; bIdx < B; ++bIdx) {
-        int64_t lane = reverse ? bIdx : VL - B + bIdx;
-        newCarry[bIdx] = builder.create<vector::ExtractOp>(
-            loc, inclusive, ArrayRef<int64_t>{lane});
-      }
-      for (int64_t bi = 0; bi < B; ++bi) {
-        int64_t lane = reverse ? VL - B + bi : bi;
-        Value carryVal = isFirstBlock ? zeroVal : carryArgs[bi];
-        excVec = builder.create<vector::InsertOp>(loc, carryVal, excVec,
-                                                  ArrayRef<int64_t>{lane});
-      }
-      return {excVec, newCarry};
-    };
-
-    // First block
-    int64_t firstBlkIdx = reverse ? M - 1 : 0;
-    auto blkI = rewriter.create<arith::ConstantIndexOp>(loc, firstBlkIdx);
-    Value vec = rewriter.create<vector::LoadOp>(loc, vecTy, srcFlat,
-                                                ValueRange{blkI, zero});
-    auto [excVec, carryArgs] =
-        interleavedExclusiveScan(rewriter, loc, vec, {}, true);
-    rewriter.create<vector::StoreOp>(loc, excVec, outFlat,
-                                     ValueRange{blkI, zero});
-
-    // Remaining M-1 blocks
-    if (M > 1) {
-      SmallVector<Value> initArgs(carryArgs.begin(), carryArgs.end());
-      Value lb = reverse ? zero : one;
-      Value ub = reverse ? rewriter.create<arith::ConstantIndexOp>(loc, M - 1)
-                         : rewriter.create<arith::ConstantIndexOp>(loc, M);
-      auto mMinusTwo = rewriter.create<arith::ConstantIndexOp>(loc, M - 2);
-      auto forOp = rewriter.create<scf::ForOp>(
-          loc, lb, ub, one, initArgs,
-          [&](OpBuilder &b, Location loc, Value blkIdx, ValueRange iterArgs) {
-            SmallVector<Value> blkCarry(iterArgs.begin(), iterArgs.end());
-            Value blkI = reverse
-                             ? b.create<arith::SubIOp>(loc, mMinusTwo, blkIdx)
-                             : blkIdx;
-            Value vec = b.create<vector::LoadOp>(loc, vecTy, srcFlat,
-                                                 ValueRange{blkI, zero});
-            auto [excVec, newCarry] =
-                interleavedExclusiveScan(b, loc, vec, blkCarry, false);
-            b.create<vector::StoreOp>(loc, excVec, outFlat,
-                                      ValueRange{blkI, zero});
-            b.create<scf::YieldOp>(loc, ValueRange(SmallVector<Value>(
-                                            newCarry.begin(), newCarry.end())));
-          });
-      for (size_t i = 0; i < carryArgs.size(); ++i)
-        carryArgs[i] = forOp.getResult(i);
-    }
-
-    // Tail handling: masked vector load/store for the partial last block.
-    // TODO(haizhu,shao TBD): if tail is small, it may be more efficient to
-    // scalarize instead of vectorize with a mask.
-    if (tail > 0) {
-      int64_t tailBlkIdx = reverse ? 0 : M;
-      auto tailBlkI = rewriter.create<arith::ConstantIndexOp>(loc, tailBlkIdx);
-      Value tailCount = rewriter.create<arith::ConstantIndexOp>(loc, tail);
-      auto maskTy = VectorType::get(VL, rewriter.getI1Type());
-      Value mask =
-          rewriter.create<vector::CreateMaskOp>(loc, maskTy, tailCount);
-
-      Value tailSrc = rewriter.create<vector::MaskedLoadOp>(
-          loc, vecTy, srcFlat, ValueRange{tailBlkI, zero}, mask, zeroVec);
-      auto [tailExc, tailCarry] =
-          interleavedExclusiveScan(rewriter, loc, tailSrc, carryArgs,
-                                   /*isFirstBlock=*/false);
-      rewriter.create<vector::MaskedStoreOp>(
-          loc, outFlat, ValueRange{tailBlkI, zero}, mask, tailExc);
-      for (size_t i = 0; i < carryArgs.size(); ++i)
-        carryArgs[i] = tailCarry[i];
-    }
-
-    // Total = sum of all B lane carries
-    Value total;
-    if (useVectorCarry) {
-      int64_t firstCarryLane = reverse ? 0 : VL - B;
-      total = rewriter.create<vector::ExtractOp>(
-          loc, carryArgs[0], ArrayRef<int64_t>{firstCarryLane});
-      for (int64_t i = 1; i < B; ++i)
-        total = addCombine(
-            rewriter, loc, total,
-            rewriter.create<vector::ExtractOp>(
-                loc, carryArgs[0], ArrayRef<int64_t>{firstCarryLane + i}),
-            elemTy);
-    } else {
-      total = carryArgs[0];
-      for (int64_t i = 1; i < B; ++i)
-        total = addCombine(rewriter, loc, total, carryArgs[i], elemTy);
-    }
-    return total;
+  // The one entry point: vectorized form when a vector block fits, serial form
+  // otherwise.  `srcInput` may be `exclusiveOut` (in-place scan); `hoistLoads`
+  // is forwarded to the serial form.
+  Value runExclusiveScan(Operation *op, OpBuilder &rewriter, Value srcInput,
+                         Value exclusiveOut, int64_t totalNumElems,
+                         bool reverse, Type elemTy, bool hoistLoads) const {
+    if (Value total =
+            runVectorizedExclusiveScan(op, rewriter, srcInput, exclusiveOut,
+                                       totalNumElems, reverse, elemTy))
+      return total;
+    return runSerialExclusiveScan(op, rewriter, srcInput, exclusiveOut,
+                                  totalNumElems, reverse, elemTy, hoistLoads);
   }
 
   LogicalResult
@@ -2295,9 +2202,7 @@ public:
     auto elemTy = srcTensorTy.getElementType();
     Value adaptorSrc = operands[0];
 
-    unsigned bpe = mlir::triton::gcu::getBpe(elemTy);
-    unsigned minBpe = bpe < 4 ? 4 : bpe;
-    unsigned vectorLength = oaccSizeInBytes / minBpe;
+    unsigned vectorLength = static_cast<unsigned>(scanVectorLength(elemTy));
 
     auto numElems = triton::gcu::getElemsPerThread(srcTensorTy);
     auto [scanInOutDims, scanAxis] = triton::gcu::foldTo3D(numElems, axis);
@@ -2311,13 +2216,24 @@ public:
       return failure();
     auto exclusiveLastUser = userAnalysis.getLastUser(op->getResult(0));
 
-    Value exclusiveOut =
-        syncAllocOp(rewriter, loc, exclusiveLastUser, userAnalysis,
-                    replaced2Origin, exclusiveMemRefTy);
+    bool masterThreadPath = mustRunOnMasterThread(
+        srcTensorTy, axis, scanInOutDims, scanAxis, vectorLength);
+    bool wantsResultAlloca = op->hasAttr(kTleResultInAlloca);
+    Value exclusiveOut;
+    if (wantsResultAlloca && masterThreadPath)
+      op->emitRemark() << "tle_use_alloca ignored: the cumulative result is "
+                          "produced by a shared-memory broadcast";
+    if (wantsResultAlloca && !masterThreadPath) {
+      auto allocaOp = rewriter.create<memref::AllocaOp>(loc, exclusiveMemRefTy);
+      allocaOp.setAlignment(oaccSizeInBytes);
+      exclusiveOut = allocaOp.getResult();
+    } else {
+      exclusiveOut = syncAllocOp(rewriter, loc, exclusiveLastUser, userAnalysis,
+                                 replaced2Origin, exclusiveMemRefTy);
+    }
     Value totalScalar;
 
-    if (mustRunOnMasterThread(srcTensorTy, axis, scanInOutDims, scanAxis,
-                              vectorLength)) {
+    if (masterThreadPath) {
       auto tag = pTagPool.getPrivateSyncTagInfo(op);
 
       // Store src to shared memory
@@ -2325,26 +2241,11 @@ public:
                                          false, std::make_pair(op, -1),
                                          userAnalysis, replaced2Origin);
 
-      // Load to thread 0
-      auto mergedTensorTy = RankedTensorType::get(
-          srcTensorTy.getShape(), elemTy,
-          triton::gpu::getDefaultBlockedEncoding(
-              getContext(), srcTensorTy.getShape(), 1, 1, 1));
-      Value mergedSrc =
-          loadFromSharedMem(rewriter, tag, mergedTensorTy, sharedSrc, true,
-                            std::make_pair(op, -1), std::make_pair(nullptr, -1),
-                            userAnalysis, replaced2Origin);
-
-      // Allocate merged exclusive output on thread 0
-      auto mergedMemRefTy =
-          dyn_cast<MemRefType>(getTypeConverter()->convertType(mergedTensorTy));
-      Value mergedExclusive =
-          syncAllocOp(rewriter, loc, std::make_pair(op, -1), userAnalysis,
-                      replaced2Origin, mergedMemRefTy);
-
       int64_t totalMergedElems = 1;
       for (auto d : srcTensorTy.getShape())
         totalMergedElems *= d;
+      assert(canScanInPlace(sharedSrc, totalMergedElems) &&
+             "the shared staging buffer is one flat identity run");
 
       // Allocate a 0-d memref to pass total through the scf::IfOp boundary
       auto totalScalarMemRef = MemRefType::get({}, elemTy);
@@ -2358,53 +2259,31 @@ public:
           loc, arith::CmpIPredicate::eq,
           rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x),
           rewriter.create<arith::ConstantIndexOp>(loc, masterWarpId));
+
       rewriter.create<scf::IfOp>(
           loc, isMasterThread, [&](OpBuilder &b, Location loc) {
-            Value tv =
-                runVectorizedExclusiveScan(op, b, mergedSrc, mergedExclusive,
-                                           totalMergedElems, reverse, elemTy);
-            if (!tv) {
-              // Recompute fold for merged shape (all warps combined)
-              auto mergedNumElems =
-                  triton::gcu::getElemsPerThread(mergedTensorTy);
-              auto [mergedDims, mergedScanAxis] =
-                  triton::gcu::foldTo3D(mergedNumElems, axis);
-              tv = runBatchOneDimExclusiveScan(op, b, mergedSrc,
-                                               mergedExclusive, mergedDims,
-                                               mergedScanAxis, reverse, elemTy);
-            }
-            if (!tv)
-              tv = runScalarExclusiveScan(op, b, mergedSrc, mergedExclusive,
-                                          totalMergedElems, reverse, elemTy);
+            // In place (src == dst): a block is read before it is overwritten
+            // and no block is revisited.
+            Value tv = runExclusiveScan(op, b, sharedSrc, sharedSrc,
+                                        totalMergedElems, reverse, elemTy,
+                                        /*hoistLoads=*/false);
             b.create<memref::StoreOp>(loc, tv, mergedTotal);
             b.create<scf::YieldOp>(loc);
           });
-
-      // Scatter exclusive result back via shared memory
-      Value sharedExclusive = storeToSharedMem(
-          rewriter, tag, mergedTensorTy, mergedExclusive, true,
-          std::make_pair(op, -1), userAnalysis, replaced2Origin);
+      rewriter.create<gpu::BarrierOp>(loc);
+      // Broadcast the scanned tile back to each thread's own slice.
       exclusiveOut = loadFromSharedMem(
-          rewriter, tag, exclusiveTensorTy, sharedExclusive, false,
-          exclusiveLastUser, std::make_pair(nullptr, -1), userAnalysis,
-          replaced2Origin);
+          rewriter, tag, exclusiveTensorTy, sharedSrc, false, exclusiveLastUser,
+          std::make_pair(nullptr, -1), userAnalysis, replaced2Origin);
 
       // Total: all threads read from the shared 0-d memref
       totalScalar = rewriter.create<memref::LoadOp>(loc, mergedTotal);
     } else {
       // Single-warp path: direct scan on per-thread data
       auto totalNumElems = triton::gcu::getTotalElemsPerThread(srcTensorTy);
-      totalScalar =
-          runVectorizedExclusiveScan(op, rewriter, adaptorSrc, exclusiveOut,
-                                     totalNumElems, reverse, elemTy);
-      if (!totalScalar)
-        totalScalar = runBatchOneDimExclusiveScan(op, rewriter, adaptorSrc,
-                                                  exclusiveOut, scanInOutDims,
-                                                  scanAxis, reverse, elemTy);
-      if (!totalScalar)
-        totalScalar =
-            runScalarExclusiveScan(op, rewriter, adaptorSrc, exclusiveOut,
-                                   totalNumElems, reverse, elemTy);
+      totalScalar = runExclusiveScan(op, rewriter, adaptorSrc, exclusiveOut,
+                                     totalNumElems, reverse, elemTy,
+                                     /*hoistLoads=*/true);
     }
 
     // Build final outputs
@@ -2434,7 +2313,7 @@ void mlir::triton::populateScanOpToGCUPatterns(
     const TypeConverter &converter, RewritePatternSet &patterns,
     triton::gcu::FirstLastUserAnalysis &userAnalysis,
     std::map<Operation *, Operation *> &replaced2Origin,
-    triton::gcu::PrivateTagPool &pTagPool) {
+    triton::gcu::DTETagPool &pTagPool) {
   patterns.add<TTScanOpLowering>(converter, patterns.getContext(), userAnalysis,
                                  replaced2Origin, pTagPool);
   patterns.add<TleExclusiveCumsumLowering>(converter, patterns.getContext(),

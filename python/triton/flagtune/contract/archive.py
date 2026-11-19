@@ -33,6 +33,7 @@ memory and archives may contain only root-level regular files.
 from __future__ import annotations
 
 import gzip
+import hashlib
 import io
 import json
 import os
@@ -154,7 +155,7 @@ def _validate_platform_member(member: tarfile.TarInfo, seen: set[str]) -> str:
     return name
 
 
-def _validate_child_archive(payload: bytes, identity: ModelIdentity, version: str, source: str) -> None:
+def _validate_child_archive(payload: bytes, identity: ModelIdentity, version: str | None, source: str) -> str:
     members = read_model_archive_bytes(payload, source=source)
     try:
         from triton.flagtune.contract.operator_schema import load_model_config_bytes, model_identity_from_config
@@ -166,9 +167,10 @@ def _validate_child_archive(payload: bytes, identity: ModelIdentity, version: st
     if declared_identity != identity:
         raise ModelArchiveError(f"child model identity mismatch at {source}: "
                                 f"{declared_identity.artifact_key!r} != {identity.artifact_key!r}")
-    if config.get("model_version") != version:
-        raise ModelArchiveError(
-            f"child model version mismatch at {source}: {config.get('model_version')!r} != {version!r}")
+    child_version = validate_model_version(config.get("model_version"))
+    if version is not None and child_version != version:
+        raise ModelArchiveError(f"child model version mismatch at {source}: {child_version!r} != {version!r}")
+    return child_version
 
 
 def _write_deterministic_tar(path: Path, members: Mapping[str, bytes]) -> Path:
@@ -212,8 +214,16 @@ def write_platform_package(
         package_version: str,
         model_archives: Mapping[ModelIdentity, Path | str],
         required_identities=(),
+        schema_version: int | None = None,
 ) -> Path:
-    """Write a reproducible platform package containing indexed child archives."""
+    """Write a package without changing its child archives.
+
+    Keep schema 1 when every child shares the release version. Otherwise use
+    schema 2, which indexes each child's independent version and SHA-256.
+    Set ``schema_version=2`` to use the new index even for uniform versions.
+    """
+    if schema_version is not None and (type(schema_version) is not int or schema_version not in (1, 2)):
+        raise ModelArchiveError("platform package schema_version must be 1 or 2")
     platform = validate_platform_key(platform_key)
     version = validate_model_version(package_version)
     missing = sorted(set(required_identities) - set(model_archives), key=lambda identity: identity.artifact_key)
@@ -222,6 +232,7 @@ def write_platform_package(
         raise ModelArchiveError(f"platform package is missing required identities: {missing_keys}")
     models: Dict[str, Dict[str, str]] = {}
     archives: Dict[str, bytes] = {}
+    child_versions = {}
     for identity, archive_path in sorted(model_archives.items(), key=lambda item: item[0].artifact_key):
         if not isinstance(identity, ModelIdentity):
             raise TypeError("platform package model archive keys must be ModelIdentity values")
@@ -230,14 +241,23 @@ def write_platform_package(
                 f"model identity platform does not match package: {identity.platform_key!r} != {platform!r}")
         member_path = _platform_model_path(identity)
         payload = Path(archive_path).read_bytes()
-        _validate_child_archive(payload, identity, version, str(archive_path))
+        child_versions[identity.artifact_key] = _validate_child_archive(payload, identity, None, str(archive_path))
         models[identity.artifact_key] = {"path": member_path}
         archives[member_path] = payload
+    uniform_versions = all(v == version for v in child_versions.values())
+    if schema_version is None:
+        schema_version = 1 if uniform_versions else 2
+    if schema_version == 1 and not uniform_versions:
+        raise ModelArchiveError("schema 1 requires every child model version to match package_version")
+    if schema_version == 2:
+        for artifact, entry in models.items():
+            entry["model_version"] = child_versions[artifact]
+            entry["sha256"] = hashlib.sha256(archives[entry["path"]]).hexdigest()
     manifest = {
         "models": models,
         "package_version": version,
         "platform_key": platform,
-        "schema_version": 1,
+        "schema_version": schema_version,
     }
     manifest_payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
     members = {PACKAGE_MANIFEST_NAME: manifest_payload}
@@ -304,7 +324,8 @@ def read_platform_package_bytes(
     root_keys = {"schema_version", "platform_key", "package_version", "models"}
     if not isinstance(manifest, dict) or set(manifest) != root_keys:
         raise ModelArchiveError(f"platform package Manifest must have exact root keys: {sorted(root_keys)}")
-    if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1:
+    schema_version = manifest["schema_version"]
+    if type(schema_version) is not int or schema_version not in (1, 2):
         raise ModelArchiveError(f"unsupported platform package schema at {source}")
     platform = manifest["platform_key"]
     version = manifest["package_version"]
@@ -327,8 +348,18 @@ def read_platform_package_bytes(
     indexed_paths: Dict[str, str] = {}
     for artifact, entry in models.items():
         identity = _identity_from_artifact_key(artifact)
-        if not isinstance(entry, dict) or set(entry) != {"path"}:
-            raise ModelArchiveError(f"platform package model {artifact!r} must have exact entry keys: ['path']")
+        entry_keys = {"path"} if schema_version == 1 else {"path", "model_version", "sha256"}
+        if not isinstance(entry, dict) or set(entry) != entry_keys:
+            raise ModelArchiveError(
+                f"platform package model {artifact!r} must have exact entry keys: {sorted(entry_keys)}")
+        if schema_version == 2:
+            try:
+                validate_model_version(entry["model_version"])
+            except ValueError as exc:
+                raise ModelArchiveError(f"invalid child model version for {artifact!r}: {exc}") from exc
+            digest = entry["sha256"]
+            if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                raise ModelArchiveError(f"invalid child model sha256 for {artifact!r}")
         path = entry["path"]
         if not isinstance(path, str):
             raise ModelArchiveError(f"platform package model path must be a string for {artifact!r}")
@@ -353,7 +384,10 @@ def read_platform_package_bytes(
     archives: Dict[str, bytes] = {}
     for path, artifact in indexed_paths.items():
         child_source = f"{source}:{path}"
-        _validate_child_archive(members[path], identities[artifact], version, child_source)
+        entry = models[artifact]
+        if schema_version == 2 and hashlib.sha256(members[path]).hexdigest() != entry["sha256"]:
+            raise ModelArchiveError(f"child model sha256 mismatch at {child_source}")
+        _validate_child_archive(members[path], identities[artifact], entry.get("model_version", version), child_source)
         archives[artifact] = members[path]
     return PlatformPackage(platform, version, models, archives)
 

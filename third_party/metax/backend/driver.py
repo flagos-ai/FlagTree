@@ -1,3 +1,6 @@
+# FlagPrism：route instrumented launches through the existing host gateway.
+from flagtree import _flagprism
+# FlagPrism end
 import functools
 import os
 import hashlib
@@ -459,6 +462,16 @@ class MacaLauncher(object):
         cst_key = lambda i: src.fn.arg_names.index(i) if isinstance(i, str) else i
         constants = {cst_key(key): value for key, value in constants.items()}
         signature = {cst_key(key): value for key, value in src.signature.items()}
+        # FlagPrism：reserve exactly one final argument for instrumented kernels.
+        self.metadata = metadata
+        self.user_arg_count = len(signature)
+        self.num_ctas = getattr(metadata, "num_ctas", 1)
+        # FlagPrism：use the hidden-argument ABI flag for both signature and launch, as MThreads does.
+        self._debug_enabled = bool(getattr(metadata, "debug_launch_hidden_arg", False))
+        # if bool(getattr(metadata, "debug_launch_hidden_arg", False)):
+        if self._debug_enabled:
+            signature[len(signature)] = "*i8"
+        # FlagPrism end
         src = make_launcher(constants, signature, ids)
         mod = compile_module_from_src(
             src=src,
@@ -483,10 +496,27 @@ class MacaLauncher(object):
                 return alloc_fn(alloc_size, align, stream)
             return None
 
-        global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align, _allocation._allocator)
-        profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
-                                           _allocation._profile_allocator)
-        self.launch(gridX, gridY, gridZ, stream, function, global_scratch, profile_scratch, *args)
+        # FlagPrism：preserve the original launch path and append the debug control pointer only when requested.
+        # global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align, _allocation._allocator)
+        # profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
+        #                                    _allocation._profile_allocator)
+        # self.launch(gridX, gridY, gridZ, stream, function, global_scratch, profile_scratch, *args)
+        def launch(hidden_args=()):
+            global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align,
+                                              _allocation._allocator)
+            profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
+                                               _allocation._profile_allocator)
+            self.launch(gridX, gridY, gridZ, stream, function, global_scratch, profile_scratch, *args, *hidden_args)
+
+        # if not bool(getattr(self.metadata, "debug_enabled", False)):
+        if not self._debug_enabled:
+            return launch()
+        user_args = args[-self.user_arg_count:] if self.user_arg_count else ()
+        launch_metadata = args[1] if len(args) > 1 else None
+        with _flagprism.debugger_launch_context("maca", self.metadata, (gridX, gridY, gridZ), stream, launch_metadata,
+                                                user_args) as hidden_args:
+            return launch(hidden_args)
+        # FlagPrism end
 
 
 class MacaDriver(GPUDriver):

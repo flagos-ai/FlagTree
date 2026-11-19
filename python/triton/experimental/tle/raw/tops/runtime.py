@@ -29,6 +29,36 @@ from triton._C.libtriton import llvm
 from triton._C.libtriton.tle.llvm import parse_llvm_ir
 from triton.experimental.tle.raw.runtime import RawJITFunction
 
+# `library=` values a TOPS EDSL may request. efshmem is the Enflame GCU port of
+# NVSHMEM (same API, `tops*` runtime), so "nvshmem" is accepted as an alias.
+EFSHMEM_LIBRARIES: Final[tuple[str, ...]] = ("efshmem", "nvshmem")
+EFSHMEM_CUMODULE_INIT_HOOK: Final[str] = "efshmem_cumodule_init"
+# Set by CUDAJITFunction.mark_kernel_init_hook and read by run_kernel_init_hooks.
+_KERNEL_INIT_HOOK_ATTR: Final[str] = "tle.raw.kernel_init_hooks"
+
+
+def uses_efshmem(library: str) -> bool:
+    return library in EFSHMEM_LIBRARIES
+
+
+def enable_efshmem_for_library(library: str) -> None:
+    """Turn on the efshmem device bitcode for this kernel."""
+    if not uses_efshmem(library):
+        return
+    from triton.experimental.tle.raw.tops.efshmem.utils import enable_efshmem_device_bc
+    enable_efshmem_device_bc(True)
+
+
+def get_efshmem_compile_flags(library: str) -> list[str]:
+    """Extra topscc flags: the efshmem headers for a `.tops` that includes efshmem.h."""
+    if not uses_efshmem(library):
+        return []
+    try:
+        from triton.experimental.tle.raw.tops.efshmem.utils import get_efshmem_include_flags
+    except ImportError:
+        return []
+    return get_efshmem_include_flags()
+
 
 def _find_tops_include_dir() -> str:
     env_dir = os.getenv("TOPS_INCLUDE_DIR")
@@ -74,7 +104,10 @@ class TOPSJITFunction(RawJITFunction):
                  extra_flags: Optional[List[str]] = None, *args, **kwargs) -> None:
         super().__init__(fn, **kwargs)
         self.arch: Final[str] = arch or _get_gcu_arch()
-        self.extra_flags: Final[List[str]] = extra_flags or []
+        # `library="efshmem"` (or its "nvshmem" alias) brings in the efshmem
+        # device bitcode; the GCU backend picks it up through extern_libs.
+        enable_efshmem_for_library(self.library)
+        self.extra_flags: Final[List[str]] = [*get_efshmem_compile_flags(self.library), *(extra_flags or [])]
         self.region_dialect: Final[str] = "tops"
         self.arg_dialect: Final[str] = "llvm"
         self.extern_func_name: Final[Optional[str]] = kwargs.get("extern_func_name", None)
@@ -99,13 +132,28 @@ class TOPSJITFunction(RawJITFunction):
 
     @property
     def cache_key(self) -> str:
-        """Hash of the .tops source content + arch + extern_func_name.
+        """Hash of the .tops source content + arch + extern_func_name + build flags.
 
         Included in JITFunction.cache_key via DependenciesFinder so that
         changes to the .tops file invalidate the compile cache.
         """
-        payload = f"{self.region_dialect}\0{self.extern_func_name or ''}\0{self.arch}\0{self.code}"
+        payload = (f"{self.region_dialect}\0{self.extern_func_name or ''}\0{self.arch}\0"
+                   f"{self.library}\0{' '.join(self.extra_flags)}\0{self.code}")
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def mark_kernel_init_hook(self, semantic, generator) -> None:
+        # Same module attribute CUDAJITFunction stamps; run_kernel_init_hooks
+        # picks it up after the kernel is compiled and loaded.
+        if not uses_efshmem(self.library):
+            return
+        operation = generator.module.get_operation()
+        hooks = operation.get_str_attr(_KERNEL_INIT_HOOK_ATTR)
+        hook_names = set(hooks.split(",")) if hooks else set()
+        hook_names.add(EFSHMEM_CUMODULE_INIT_HOOK)
+        generator.module.set_attr(
+            _KERNEL_INIT_HOOK_ATTR,
+            semantic.builder.get_string_attr(",".join(sorted(hook_names))),
+        )
 
     @staticmethod
     def _detect_topscc_style(topscc: str) -> str:
@@ -221,3 +269,16 @@ class TOPSJITFunction(RawJITFunction):
         llvm_ctx = llvm.context()
         module = parse_llvm_ir(llvm_ir_text, llvm_ctx, mlir_context)
         return f"{module}"
+
+
+# # Post-compile efshmem cumodule init hook. Registered at import time, mirroring
+# # how `cuda.runtime` registers its own nvshmem hook; the idempotent wrapper
+# # lives in the efshmem utils module that owns `efshmem_module()`.
+# try:
+#     from triton.experimental.tle.raw.tops.efshmem.utils import (
+#         register_efshmem_cumodule_init_hook,
+#     )
+# except ImportError:
+#     pass
+# else:
+#     register_efshmem_cumodule_init_hook()

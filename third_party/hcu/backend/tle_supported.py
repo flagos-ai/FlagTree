@@ -1,10 +1,17 @@
 TLE_SUPPORTED_PRIMITIVES = [
+    ## TLE-Raw
+    "raw.call",
+    "raw.call_smem",
+
+    ## TLE-Lite
     "range",
-    "gpu.range",
+    "extract_tile",
     "cumsum",
+
+    ## TLE-Struct GPU
+    "gpu.range",
     "gpu.alloc",
     "gpu.copy",
     "gpu.local_ptr",
     "gpu.set_layout",
-    "extract_tile",
 ]

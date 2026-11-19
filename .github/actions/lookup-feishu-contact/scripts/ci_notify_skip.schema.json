@@ -1,0 +1,48 @@
+{
+  "_comment": [
+    "Workflows whose failures should not notify anyone, one row per workflow.",
+    "",
+    "A workflow that is known to fail turns notifications into noise, and noise",
+    "is how a notification channel stops being read. This is the escape hatch.",
+    "",
+    "In the Bitable rather than the repository for the same reason as",
+    "ci_contacts: which backend is currently broken is operational state that",
+    "changes faster than code review, and whoever knows it is not always",
+    "whoever can land a PR.",
+    "",
+    "Types: 1=text 5=datetime(ms since epoch).",
+    "",
+    "workflow   the workflow's `name:` field, e.g. 'Xpu3.6-Build-And-Test',",
+    "           NOT the file name. Same spelling as the lists in",
+    "           auto-rerun.yml and notify-pr-owner.yml.",
+    "reason     why it is skipped. Required by convention rather than by the",
+    "           schema: in six months this is the only thing that explains why",
+    "           a backend went quiet.",
+    "until      when the skip expires. Once it is in the past the workflow",
+    "           notifies again and the log says the entry is stale, so a skip",
+    "           cannot be forgotten into permanence. Leave it empty for an",
+    "           indefinite skip -- that is allowed, and warns every time, so",
+    "           'forever' stays visible rather than becoming invisible.",
+    "added_by   who added it, for asking about it later."
+  ],
+  "table_name": "ci_notify_skip",
+  "dedup_field": "workflow",
+  "fields": [
+    {
+      "field_name": "workflow",
+      "type": 1
+    },
+    {
+      "field_name": "reason",
+      "type": 1
+    },
+    {
+      "field_name": "until",
+      "type": 5
+    },
+    {
+      "field_name": "added_by",
+      "type": 1
+    }
+  ]
+}
