@@ -18,6 +18,7 @@ add_mlir_conversion_library(MLIRTritonToGCU_${arch}
   TritonLoadStoreToDma.cpp
   TritonGCULayoutOptimize.cpp
   OptimizeDotLayout.cpp
+  TritonGCURemoveLayoutConversions.cpp
   TritonConvertTensorPointer.cpp
   Utils.cpp
   TritonGCUPingpong/TritonGCUPingpong.cpp

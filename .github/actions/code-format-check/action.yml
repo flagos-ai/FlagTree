@@ -33,7 +33,7 @@ runs:
       uses: pre-commit/action@v3.0.1
 
     - name: Auto-commit changes
-      uses: stefanzweifel/git-auto-commit-action@v4
+      uses: stefanzweifel/git-auto-commit-action@v7
       if: always()
       with:
         commit_message: Apply code-format changes

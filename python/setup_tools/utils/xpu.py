@@ -39,7 +39,7 @@ BACKEND_ROOT = "third_party/xpu/backend"
 # public `llvm_trust` tarball -- and the public LLVM 22 frontend knows no
 # `llvm.xcn.*` / `llvm.xpu.*` names at all, so there is no public counterpart to
 # decode either.  Both tables therefore travel pre-decoded in the compiled
-# Python package (`xpu-python-impl-so`), and this build only checks they arrived.
+# Python package (`xpu-python-impl-so_v0.3.6.9.0`), and this build only checks they arrived.
 _TABLE_TAGS = ("l19", "l22")
 
 FLAGTREE_PYTHON_ROOT = "python"
@@ -102,7 +102,7 @@ def generate_intrinsic_tables():
         dest = backends_dir / "_tables" / f"{tag}.json"
         if not dest.is_file():
             raise RuntimeError(f"XPU {tag} intrinsic table is missing: {dest}. It ships in the "
-                               f"compiled Python package (xpu-python-impl-so) and this build "
+                               f"compiled Python package (xpu-python-impl-so_v0.3.6.9.0) and this build "
                                f"staged none; without it the intrinsic gates judge nothing.")
         table = decoder.load(dest)
         if table.tag != tag:
@@ -719,7 +719,7 @@ def check_pybind11_abi(cache):
     """Verify the env pybind11 ABI matches the prebuilt SDNN objects."""
     scan_dir = None
     try:
-        scan_dir = Path(cache.get("xpu-sdnn-objects"))
+        scan_dir = Path(cache.get("xpu-sdnn-objects_v0.3.6.9.1"))
     except KeyError:
         scan_dir = None
     if scan_dir is None or not scan_dir.is_dir():
@@ -965,56 +965,37 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
                 copy_src_path=f"{cache.dir_path}/{flagtree_backend}/xpu-device-libs",
                 copy_dst_path=f"third_party/{flagtree_backend}/device")
     cache.store(
-        file="xpu-sdnn-objects", condition=is_xpu,
-        # v0.3.6.9.0: **public-LLVM leg** (the toolchain the
-        # public-LLVM compatibility layer and the rest of this branch are built
-        # against).  Numbered from the newest *published* package (v0.3.6.8.1,
-        # verified present on BOS) -- locally built candidates do not consume a
-        # version number, they are invisible to consumers.
-        # Earlier local drafts on the XTDK leg were cut under the same name; they
-        # were never uploaded.  Their SDNN objects and `libTritonSharedForXPU.a`
-        # reference the XTDK MLIR signature
-        # `...visitRegionSuccessors(...RegionBranchPoint...)` and the out-of-line
-        # `APFloatBase::PPCDoubleDouble()`, neither of which the public LLVM 22
-        # provides -- `import triton` died on the first missing symbol.
-        # See evidence 2026-09-24-import-broken-sdnn-xdk-leg.
-        url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.9.0.tar.gz",
+        file="xpu-sdnn-objects_v0.3.6.9.1", condition=is_xpu,
+        # v0.3.6.9.1: prebuilt SDNN objects (TritonSDNN dialect / conversions /
+        # analysis) plus libTritonSharedForXPU.a, linked into libtriton at build
+        # time. libTritonSharedForXPU.a is a CMake IMPORTED target with no build
+        # rule of its own, so it must be present for a cold-cache build to link.
+        url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.9.1.tar.gz",
         # Only the first 8 hex chars of the digest are compared (see
-        # setup_helper.check_file). The value was verified by re-downloading the
-        # artifact: for multipart uploads BOS's ETag (prefixed with '-') is not
-        # the file's md5, so the ETag cannot serve as a digest.
-        # Re-issued under the same version: the closed-source packaging added
-        # gluon_ir_sdnn.cc.o and abi_table.cc.o to this package.  A rebuilt
-        # candidate does not consume a version number, so only the digest moves.
-        # Re-issued under the same version twice: the first re-issue added
-        # gluon_ir_sdnn.cc.o and abi_table.cc.o, the second restored
-        # libTritonSharedForXPU.a, which the first one dropped.  That `.a` is a
-        # CMake IMPORTED target with no build rule, so a cold-cache build died
-        # on it while every warm cache (which still had the old copy) passed.
-        # A rebuilt candidate does not consume a version number, so only the
-        # digest moves.
-        # Third re-issue (2026-10-07): split gluon_ir_sdnn.cc.o restored
-        # <pybind11/stl.h> (vector args were un-callable); triton_xpu_sdnn.cc.o
-        # v12 -> v11.
-        md5_digest="e92ded7a", version="v0.3.6.9.0",
+        # setup_helper.check_file). Use the file's md5, not BOS's multipart ETag
+        # (an ETag prefixed with '-' is not the file md5).
+        md5_digest="bf4a67e0", version="v0.3.6.9.1",
         post_hook=lambda path: install_sdnn_objects(path, cache.flagtree_dir))
     cache.store(
-        file="xpu-python-impl-so", condition=is_xpu,
+        file="xpu-python-impl-so_v0.3.6.9.2", condition=is_xpu,
         # The XPU Python implementation, compiled to extension modules.  abi3
         # (`Py_LIMITED_API`) is what makes this shippable as a prebuilt artifact
         # at all: one `.so` serves every CPython >= 3.8, so the package does not
         # have to track the builder's interpreter version.
+        # This build includes `tle.raw` `object=` support. Runtime helpers are
+        # compiled into the extension modules, so the artifact contains no
+        # plaintext `.py` files.
         # The `.py` it replaces are absent from the tree on purpose -- this
         # download is the only source for them, so a fetch failure must surface
         # rather than fall back to readable sources that no longer exist.
-        url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-python-impl-so_v0.3.6.9.0.tar.gz",
-        # Only the first 8 hex chars are compared (see setup_helper.check_file).
-        # Verified by re-downloading the artifact: BOS's ETag is prefixed with
-        # '-' for multipart uploads and is not the file's md5.
-        md5_digest="5cd84a56", version="v0.3.6.9.0",
+        url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-python-impl-so_v0.3.6.9.2.tar.gz",
+        # Only the first 8 hex chars of the digest are compared (see
+        # setup_helper.check_file). Use the file's md5, not BOS's multipart ETag
+        # (an ETag prefixed with '-' is not the file md5).
+        md5_digest="98126024", version="v0.3.6.9.2",
         post_hook=lambda path: install_python_impl(path, cache.flagtree_dir))
     cache.store(
-        file="xtdk-llvm19",
+        file="xtdk-llvm19_20261013",
         condition=is_xpu,
         # The per-arch elfconv toolchain, and it must be LLVM 19 -- not the
         # LLVM 22 frontend `llvm_trust` stages.  `make_elf` lowers the kernel
@@ -1022,14 +1003,15 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         # object carries LLVM 19's `.XPU.attributes` section type
         # (0x70000003); the CRT object is compiled by `$CLANG_PATH/clang` and
         # must agree, or the link dies with `section type mismatch`.  This pin
-        # is the *desensitized* build (version.txt `Date: 20260916` / commit
-        # cdc64fae); the internal tree stays on 20260827 until the change is
-        # carried back.  `trust/latest/` may be re-uploaded in place -- the
-        # digest pin turns that into a loud failure instead of a silent stage
-        # (a dated fixed path is requested from the provider).
-        url="https://klx-sdk-release-public.su.bcebos.com/xtdk_llvm19/trust/latest/xtdk-llvm19-ubuntu2004_x86_64.tar.gz",
+        # is the *desensitized* build (version.txt `Date: 20261012` / commit
+        # bdb544df); the internal tree stays on 20260827 until the change is
+        # carried back.  The URL is pinned to the dated `trust/20261013/` path
+        # rather than rolling `trust/latest/` (which may be re-uploaded in
+        # place); the digest pin turns any drift into a loud failure.
+        url=
+        "https://klx-sdk-release-public.su.bcebos.com/xtdk_llvm19/trust/20261013/xtdk-llvm19-ubuntu2004_x86_64.tar.gz",
         md5_digest="d1eb1e77",
-        version="20260916",
+        version="20261013",
     )
     cache.store(
         file="xtdk-llvm19-printf",
@@ -1042,7 +1024,7 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         url="https://klx-sdk-release-public.su.bcebos.com/v1/triton/XTDK/20260403/xtdk-llvm19-ubuntu2004_x86_64.tar.gz",
         version="20260403",
     )
-    _llvm19_pkg = f"{cache.dir_path}/{flagtree_backend}/xtdk-llvm19"
+    _llvm19_pkg = f"{cache.dir_path}/{flagtree_backend}/xtdk-llvm19_20261013"
     _printf_pkg = f"{cache.dir_path}/{flagtree_backend}/xtdk-llvm19-printf"
     if is_xpu:
         _sweep_stale_llvm19_staging(cache.flagtree_dir)
@@ -1092,8 +1074,7 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         # outside the SDK packaging step, so the build dies with `base64: invalid input` on every
         # kernel (not just tle.raw/dsa ones). Ship the file so the fallback is never taken.
         files=("clang", "xpu-xxd", "xpu3-elfconv", "xpu-kernel.t", "ld.lld", "llvm-readelf", "llvm-objdump",
-               "llvm-objcopy", "xpu3-crt.xpu"), condition=is_xpu,
-        copy_src_path=f"{cache.dir_path}/{flagtree_backend}/xtdk-llvm19/bin",
+               "llvm-objcopy", "xpu3-crt.xpu"), condition=is_xpu, copy_src_path=f"{_llvm19_pkg}/bin",
         copy_dst_path="third_party/xpu/backend/xpu3/bin")
     if is_xpu:
         link_elfconv_triton(cache.flagtree_dir)
@@ -1114,8 +1095,7 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         # `#include`s "xpu/kernel/xtdk.h", which only lives here.  Without it an
         # installed (non-checkout) triton fails with
         # `fatal error: 'xpu/kernel/xtdk.h' file not found`.
-        files=("include", ), condition=is_xpu,
-        copy_src_path=f"{cache.dir_path}/{flagtree_backend}/xtdk-llvm19/lib/clang/19",
+        files=("include", ), condition=is_xpu, copy_src_path=f"{_llvm19_pkg}/lib/clang/19",
         copy_dst_path="third_party/xpu/backend/xpu3/lib/clang/19")
     cache.store(files=("include", "so"), condition=is_xpu, copy_src_path=f"{cache.dir_path}/xpu/xre-Linux-x86_64",
                 copy_dst_path="third_party/xpu/backend/xpu3")

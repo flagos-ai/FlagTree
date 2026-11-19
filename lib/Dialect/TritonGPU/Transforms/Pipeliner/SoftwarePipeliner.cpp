@@ -69,7 +69,20 @@ static constexpr llvm::StringLiteral kTleWgmmaCompilerAutoMode("compiler_auto");
 static constexpr llvm::StringLiteral kTleWgmmaUserPromiseMode("user_promise");
 #endif
 
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+// Module attribute set when a loop keeps its wgmma accumulator groups in
+// flight across the back-edge (the "wgmma carry").
+static constexpr llvm::StringLiteral
+    kFlagTreeWgmmaCarryAttr("flagtree.pipeline_wgmma_carry");
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
+
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+static LogicalResult pipelineWgmma(ModuleOp moduleOp, unsigned numStages,
+                                   bool enablePipelineEnhance,
+                                   bool hoistAsyncCopy, bool wgmmaCarry) {
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
 static LogicalResult pipelineWgmma(ModuleOp moduleOp, unsigned numStages) {
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 #ifdef __TLE__
   StringRef mode = kTleWgmmaCompilerAutoMode;
   if (auto attr =
@@ -88,6 +101,10 @@ static LogicalResult pipelineWgmma(ModuleOp moduleOp, unsigned numStages) {
   SmallVector<scf::ForOp> loops;
   moduleOp->walk([&](scf::ForOp forOp) { loops.push_back(forOp); });
 
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+  bool carried = false;
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
+
   for (scf::ForOp forOp : loops) {
     if (getNumStagesOrDefault(forOp, numStages) >= 1) {
 #ifdef __TLE__
@@ -96,9 +113,23 @@ static LogicalResult pipelineWgmma(ModuleOp moduleOp, unsigned numStages) {
         continue;
       }
 #endif
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+      if (enablePipelineEnhance) {
+        carried |= mlir::triton::asyncLaunchDots(forOp, wgmmaCarry);
+        if (hoistAsyncCopy)
+          mlir::triton::hoistAsyncCopiesBeforeWgmmaWait(forOp);
+        continue;
+      }
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
       mlir::triton::asyncLaunchDots(forOp);
     }
   }
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+  // The backend reads this to revert the carry when it adds register spills.
+  if (carried)
+    moduleOp->setAttr(kFlagTreeWgmmaCarryAttr,
+                      BoolAttr::get(moduleOp.getContext(), true));
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   return success();
 }
 
@@ -256,8 +287,20 @@ struct PipelinePass : public impl::TritonGPUPipelineBase<PipelinePass> {
     // Cleanup the IR from the pipeline attributes.
     removePipeliningAttributes(moduleOp);
 
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+    if (failed(pipelineWgmma(moduleOp, numStages, enablePipelineEnhance,
+                             enablePipelineEnhance && hoistAsyncCopy,
+                             enablePipelineEnhance && wgmmaCarry)))
+      return signalPassFailure();
+    // The ring tags only serve the wgmma scheduling above.
+    moduleOp->walk([](triton::gpu::MemDescIndexOp view) {
+      view->removeAttr(kFlagTreeRingInsertAttr);
+      view->removeAttr(kFlagTreeRingExtractAttr);
+    });
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
     if (failed(pipelineWgmma(moduleOp, numStages)))
       return signalPassFailure();
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 
     // schedule the waits
     mlir::triton::updateWaits(getOperation());

@@ -1,0 +1,65 @@
+add_triton_library(TritonToGraph
+  AliasAnalysis.cpp
+  ControlFlowGraph.cpp
+  ControlFlowGraphBuilder.cpp
+  DataflowGraph.cpp
+  EntryArgPointerAliasAnalysis.cpp
+  GraphOptimizationContext.cpp
+  ResourceCostModel.cpp
+  GraphOptimizationPass.cpp
+  LayoutMemoryCompatibilityPass.cpp
+  MemorySsaBuilder.cpp
+  MergeConcatLoadBuffer.cpp
+  PermutationAnalysis.cpp
+  ProgramAxisDependenceAnalysis.cpp
+  ProgramMappingScalarSpecialization.cpp
+  ProgramGridTransform.cpp
+  MergeConcatLoadBuffer.cpp
+  Passes.cpp
+  LegacyMemoryAccess/ChunkCoalescing.cpp
+  LegacyMemoryAccess/RowCoalescing.cpp
+  LegacyMemoryAccess/StridedAxisCoalescing.cpp
+  LegacyMemoryAccess/StridedLoadStoreRewrite.cpp
+  Rules/ConvertModuloToMaskRule.cpp
+  Rules/ReservedGraphOptimizationRule.cpp
+  Rules/DiagonalMaskRemovalRule.cpp
+  Rules/IndependentAxisTensorizeRule.cpp
+  Rules/PersistentTaskStripMiningRule.cpp
+  Rules/ResidentLoadForwardingRule.cpp
+  Rules/IntermediatePrecisionBoundaryElisionRule.cpp
+  Rules/StoreCoveragePlanningRule.cpp
+  Rules/ContiguousBlockAccessFormationRule.cpp
+  Rules/LoadStoreTransposeRule.cpp
+  Rules/RowCoalescingRule.cpp
+  Rules/DotRowCoalescing.cpp
+  Rules/TransposePointwiseReorderRule.cpp
+  Rules/StoreCoalescingRule.cpp
+
+  DEPENDS
+  TritonToGraphPassIncGen
+
+  LINK_LIBS PUBLIC
+  BiShengIRHACCUtils
+  MLIRArithDialect
+  MLIRBufferizationDialect
+  MLIRControlFlowDialect
+  MLIRDialectUtils
+  MLIRIR
+  MLIRFuncDialect
+  MLIRLinalgDialect
+  MLIRMemRefDialect
+  MLIRMathDialect
+  MLIRLinalgDialect
+  MLIRMemRefDialect
+  MLIRPass
+  MLIRSCFDialect
+  MLIRSupport
+  MLIRTensorDialect
+  MLIRTransforms
+  MLIRTritonNPUUtils
+  TritonAscendIR
+  TritonIR
+  TritonMemoryAccessAnalysis
+  TritonToStructured
+  TritonTransforms
+)
