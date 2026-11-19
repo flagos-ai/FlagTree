@@ -77,9 +77,9 @@
 // flagtree tle
 // Pointer to the TritonOpBuilder class, used to register IR ops for third-party
 // dialects.
-static py::class_<TritonOpBuilder> *builderClassPtr = nullptr;
+static pybind11::class_<TritonOpBuilder> *builderClassPtr = nullptr;
 namespace ir {
-py::class_<TritonOpBuilder> *getBuilderClass() { return builderClassPtr; }
+pybind11::class_<TritonOpBuilder> *getBuilderClass() { return builderClassPtr; }
 } // namespace ir
 #endif
 
