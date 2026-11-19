@@ -107,6 +107,8 @@ public:
     addLegalOp<mlir::UnrealizedConversionCastOp>();
     addDynamicallyLegalOp<tle::DSLRegionOp, tle::YieldOp>(
         [&](Operation *op) -> bool {
+          if (op->hasAttr("tle_raw.wrapper_symbol"))
+            return false;
           bool hasLegalRegions = true;
           for (auto &region : op->getRegions()) {
             hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);

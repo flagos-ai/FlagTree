@@ -167,15 +167,7 @@ struct RemoteMemDescOpLowering
 };
 
 // ===----------------------------------------------------------------------===
-// tle.dsl_region (deferred raw TLE) -> a plain llvm.call.
-//
-// The deferred body is only a stub (`tle.yield %arg[idx]`), i.e. every result
-// is an alias of one of the operands. The shell is therefore dropped entirely:
-// the call is emitted in place and the results are replaced by the operands.
-// Keeping the shell would force TleDSLRegionInline to split the surrounding
-// block later on, which produces multi-block scf regions and fails to verify
-// (e.g. "'scf.for' op expects region #0 to have 0 or 1 blocks").
-//
+// Convert TleDSLRegionOp (deferred raw TLE) to a plain llvm.call.
 // Non-deferred (already materialized) regions are not supported on GCU.
 // ===----------------------------------------------------------------------===
 #ifdef ENABLE_TLE
@@ -195,17 +187,6 @@ struct TleDSLRegionOpLowering
     if (!externAttr)
       return op.emitError(
           "deferred tle.dsl_region is missing tle_raw.extern_func_name");
-
-    Region &region = op.getBody();
-    if (!region.hasOneBlock())
-      return op.emitError(
-          "deferred tle.dsl_region must have exactly one block");
-    Block &body = region.front();
-    if (body.empty())
-      return op.emitError("deferred tle.dsl_region has an empty body");
-    for (Operation &innerOp : body)
-      if (isa<LLVM::CallOp>(innerOp))
-        return op.emitError("deferred tle.dsl_region is already materialized");
 
     auto loc = op.getLoc();
     SmallVector<Value> newOperands;
@@ -231,36 +212,6 @@ struct TleDSLRegionOpLowering
         newOperands.push_back(operand);
       }
     }
-
-    auto outputIndicesAttr =
-        op->getAttrOfType<DenseI32ArrayAttr>("output_operand_indices");
-    if (!outputIndicesAttr)
-      return op.emitError(
-          "tle.dsl_region requires an output_operand_indices attribute");
-    ArrayRef<int32_t> outputIndices = outputIndicesAttr.asArrayRef();
-    if (op->getResultTypes().size() != outputIndices.size())
-      return op.emitError("tle.dsl_region output_operand_indices size (")
-             << outputIndices.size() << ") does not match result count ("
-             << op->getResultTypes().size() << ")";
-    for (int32_t idx : outputIndices)
-      if (idx < 0 || static_cast<size_t>(idx) >= newOperands.size())
-        return op.emitError("tle.dsl_region output_operand_indices contains "
-                            "out-of-range index ")
-               << idx;
-
-    // The shell is dropped below, so the stub body must be exactly
-    // `tle.yield %arg[idx]...`; anything else would be silently lost.
-    auto yieldOp = dyn_cast<triton::tle::YieldOp>(body.getTerminator());
-    if (!yieldOp)
-      return op.emitError("deferred tle.dsl_region must end with tle.yield");
-    if (yieldOp.getNumOperands() != outputIndices.size())
-      return op.emitError("deferred tle.dsl_region yields ")
-             << yieldOp.getNumOperands() << " values but declares "
-             << outputIndices.size() << " results";
-    for (auto [i, idx] : llvm::enumerate(outputIndices))
-      if (yieldOp.getOperand(i) != body.getArgument(idx))
-        return op.emitError("deferred tle.dsl_region result #")
-               << i << " must alias operand " << idx;
 
     // Signature of the extern "C" device function: memref operands are passed
     // as a raw pointer followed by rank dims and rank strides, e.g.
@@ -331,9 +282,9 @@ struct TleDSLRegionOpLowering
     callOp.setAlwaysInline(true);
     leaveTritionOp(rewriter, op.getOperation());
 
-    // The stub body yields the aliased operands, so the results are just the
-    // operands themselves. Reuse the pre-LLVM (converted) values so users keep
-    // their !gcu.ptr / memref types.
+    // Results alias the corresponding input memory objects. Reuse
+    // converted inputs so users retain their !gcu.ptr / memref types.
+    auto outputIndices = op.getOutputOperandIndices();
     SmallVector<Value> replacements;
     replacements.reserve(outputIndices.size());
     for (int32_t idx : outputIndices)
