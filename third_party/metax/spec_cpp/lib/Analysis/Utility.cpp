@@ -1053,6 +1053,19 @@ bool supportMMA(Value value, int version) {
 }
 
 #ifdef USE_MACA
+unsigned getMinMmaElementsPerK(triton::DotOp dot, unsigned versionMinor) {
+  Type elem = dot.getA().getType().getElementType();
+  if (elem.isF32() && dot.getInputPrecision() == InputPrecision::TF32)
+    return 2;
+  if (elem.isF16() || elem.isBF16())
+    return 4;
+  if (elem.isSignlessInteger(8))
+    return versionMinor >= 6 ? 8 : 4;
+  if (isa<Float8E4M3FNType, Float8E5M2Type>(elem))
+    return 8;
+  return 1;
+}
+
 bool supportMMA(triton::DotOp op, int major, int minor) {
   // Refer to mma section for the data type supported by Volta and Hopper
   // Tensor Core in

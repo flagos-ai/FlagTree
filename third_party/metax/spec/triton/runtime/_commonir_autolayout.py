@@ -18,36 +18,8 @@ from triton.runtime.jit import JITFunction, KernelInterface, compute_cache_key
 from triton.runtime._distributed import DistributedRtContext, validate_node_launch_bindings
 
 _LOGGER = logging.getLogger(__name__)
-# One elimination look after 16 samples, then refine survivors to 32.
-_PROTOCOL = "commonir-autolayout-v5"
 _WARMUP = 5
-_COARSE_SAMPLES = 16
-_TOTAL_SAMPLES = 32
-_ELIMINATION_ALPHA = 0.01
-
-
-def _require_quantile_test():
-    try:
-        from scipy.stats import quantile_test
-    except ImportError as error:
-        raise ImportError("CommonIR autolayout tuning requires scipy>=1.12; "
-                          "install it with pip install 'scipy>=1.12'.") from error
-    return quantile_test
-
-
-def _median_intervals(samples, candidate_count):
-    quantile_test = _require_quantile_test()
-    # Bonferroni over ALL candidates, at ONE predeclared look. Under i.i.d.
-    # timings, simultaneous coverage is >= 99%; this is not a guarantee that
-    # the final empirical winner is optimal. No repeated/adaptive CI checks.
-    confidence = 1 - _ELIMINATION_ALPHA / candidate_count
-    intervals = {}
-    for identity, values in samples.items():
-        ci = quantile_test(values, p=0.5).confidence_interval(confidence)
-        lower, upper = float(ci.low), float(ci.high)
-        # Too few observations for the requested confidence: never prune.
-        intervals[identity] = (lower, upper) if math.isfinite(lower) and math.isfinite(upper) else None
-    return intervals
+_SAMPLES = 32
 
 
 def _specialization_key(bundle):
@@ -60,9 +32,8 @@ def _specialization_key(bundle):
     import torch
 
     device = torch.cuda.get_device_properties(torch.cuda.current_device())
-    payload = (_PROTOCOL, "jit-specialization-v1", bundle.hash, str(getattr(device, "uuid", device.name)), device.name,
-               device.multi_processor_count)
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    payload = (bundle.hash, str(getattr(device, "uuid", device.name)), device.name, device.multi_processor_count)
+    return hashlib.sha256(json.dumps(payload).encode()).hexdigest()
 
 
 def _scratch_arguments(args):
@@ -102,7 +73,7 @@ def _scratch_arguments(args):
     return copied, reset
 
 
-def _benchmark(kernel, grid, stream, args, reset, *, warmup=_WARMUP, repetitions=_COARSE_SAMPLES):
+def _benchmark(kernel, grid, stream, args, reset):
     import torch
     from triton.runtime.driver import driver
 
@@ -113,11 +84,11 @@ def _benchmark(kernel, grid, stream, args, reset, *, warmup=_WARMUP, repetitions
     def run():
         launch(*grid, stream, kernel.function, kernel.packed_metadata, None, None, None, *args)
 
-    for _ in range(warmup):
+    for _ in range(_WARMUP):
         reset()
         active.clear_cache(cache)
         run()
-    starts = [torch.cuda.Event(enable_timing=True) for _ in range(repetitions)]
+    starts = [torch.cuda.Event(enable_timing=True) for _ in range(_SAMPLES)]
     ends = [torch.cuda.Event(enable_timing=True) for _ in starts]
     for start, end in zip(starts, ends):
         reset()
@@ -302,62 +273,21 @@ class LayoutTuner(KernelInterface):
         return compiled, failures
 
     def _benchmark_candidates(self, compiled, failures, grid, stream, args, reset):
-        samples, measurements = {}, {}
+        timings, measurements = {}, {}
         for identity, candidate in compiled.items():
             try:
-                samples[identity] = _benchmark(candidate, grid, stream, args, reset)
+                samples = _benchmark(candidate, grid, stream, args, reset)
+                timings[identity] = statistics.median(samples)
+                measurements[identity] = {"samples_ms": samples, "status": "complete"}
             except Exception as error:
                 failures[identity] = f"benchmark: {error}"
                 _LOGGER.warning("CommonIR candidate %s failed benchmarking: %s", identity, error)
-        intervals = _median_intervals(samples, len(compiled)) if samples else {}
-        finite = {identity: interval for identity, interval in intervals.items() if interval is not None}
-        reference = min(finite, key=lambda identity: finite[identity][1]) if finite else None
-        pruned = set()
-        for identity, values in samples.items():
-            interval = intervals[identity]
-            dominated = reference is not None and interval is not None and interval[0] > finite[reference][1]
-            measurements[identity] = {
-                "samples_ms": values,
-                "median_ci_ms": interval,
-                "status": "pruned" if dominated else "retained",
-            }
-            if dominated:
-                pruned.add(identity)
-                measurements[identity]["dominated_by"] = reference
-
-        def refine(identities):
-            for identity in identities:
-                try:
-                    samples[identity].extend(
-                        _benchmark(compiled[identity], grid, stream, args, reset, warmup=0,
-                                   repetitions=_TOTAL_SAMPLES - _COARSE_SAMPLES))
-                    measurements[identity]["status"] = "complete"
-                except Exception as error:
-                    measurements[identity]["status"] = "failed"
-                    failures[identity] = f"benchmark: {error}"
-                    _LOGGER.warning("CommonIR candidate %s failed benchmarking: %s", identity, error)
-
-        refine(identity for identity in samples if identity not in pruned)
-        # If every survivor failed to launch, recover viable pruned candidates
-        # instead of failing a workload that still has executable alternatives.
-        if samples and not any(item["status"] == "complete" for item in measurements.values()):
-            refine(identity for identity in samples if identity in pruned)
-        timings = {
-            identity: statistics.median(samples[identity])
-            for identity, item in measurements.items()
-            if item["status"] == "complete"
-        }
         report = {
-            "protocol": _PROTOCOL,
             "warmup": _WARMUP,
-            "coarse_samples": _COARSE_SAMPLES,
-            "total_samples": _TOTAL_SAMPLES,
-            "elimination_alpha": _ELIMINATION_ALPHA,
+            "total_samples": _SAMPLES,
             "candidate_count": len(compiled),
             "candidates": measurements,
         }
-        _LOGGER.info("CommonIR autolayout benchmark: %d candidates, %d pruned, %d fully measured", len(compiled),
-                     sum(item["status"] == "pruned" for item in measurements.values()), len(timings))
         return timings, report
 
     def _remember_winner(self, kernel_cache, key, winner):
@@ -404,7 +334,6 @@ class LayoutTuner(KernelInterface):
 
             # Materialize all binaries before benchmarking, keeping compiler
             # and launcher setup out of the timed regions.
-            _require_quantile_test()
             compiled, failures = self._compile_candidates(bundle)
             if not compiled:
                 self._raise_all_failed(bundle, failures)

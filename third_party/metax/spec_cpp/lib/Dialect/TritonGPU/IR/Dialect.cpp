@@ -365,17 +365,15 @@ SmallVector<unsigned> orderPerDimImpl(const LinearLayout &ll,
 }
 
 bool isExpensiveCat(CatOp cat, Attribute targetEncoding) {
-  // Non-blocked layouts can change which lanes hold duplicate elements.
-  if (!isa<gpu::BlockedEncodingAttr>(targetEncoding))
-    return true;
-  // Cat lowering concatenates the input registers. Folding a conversion must
-  // preserve their total count, even when the new layout needs more registers.
+  // If the new elements per thread is less than the old one, we will need to
+  // do convert encoding that goes through shared memory anyway. So we
+  // consider it as expensive.
   RankedTensorType tensorTy = cat.getType();
   auto totalElemsPerThread = gpu::getTotalElemsPerThread(tensorTy);
   auto shape = tensorTy.getShape();
   auto newTotalElemsPerThread =
       gpu::getTotalElemsPerThread(targetEncoding, shape);
-  return newTotalElemsPerThread != totalElemsPerThread;
+  return newTotalElemsPerThread < totalElemsPerThread;
 }
 
 static LogicalResult
@@ -3381,14 +3379,49 @@ struct TritonGPUInferLayoutInterface
     if (aEncoding.getKWidth() != bEncoding.getKWidth())
       return op->emitError("mismatching kWidth between A and B operands");
 
+    auto dotOp = cast<DotOp>(op);
+    auto resEnc = dotOp.getResult().getType().getEncoding();
+#ifdef USE_MACA
+    if (auto mma = dyn_cast_or_null<MACAMmaEncodingAttr>(resEnc)) {
+      unsigned minor = mma.getVersionMinor();
+      if (mma.getVersionMajor() != 2 || !supportMMA(dotOp, 2, minor))
+        return op->emitError("unsupported MACA MMA version or operand type");
+
+      auto module = op->getParentOfType<ModuleOp>();
+      if (auto target = module->getAttrOfType<StringAttr>(AttrTargetName)) {
+        unsigned capability;
+        if (target.getValue().split(':').second.getAsInteger(10, capability) ||
+            capability / 10 != 8 || capability % 10 != minor)
+          return op->emitError(
+              "MMA versionMinor must match the target compute capability");
+      }
+      if (aEncoding.getKWidth() != 0)
+        return op->emitError("MACA MMA dot operands require kWidth = 0");
+      auto halfType = [](Type type) { return type.isF16() || type.isBF16(); };
+      if (mma.getColMajor() &&
+          (!halfType(dotOp.getA().getType().getElementType()) ||
+           !halfType(dotOp.getB().getType().getElementType())))
+        return op->emitError(
+            "column-major MACA MMA requires FP16/BF16 operands");
+      auto elements = mma.getElementsMNK();
+      if (dotOp.getA().getType().getRank() != 2 || elements.size() != 3)
+        return op->emitError(
+            "MACA MMA requires a rank-2 dot and three elementsMNK fields");
+      unsigned group = elements[2];
+      int64_t k = dotOp.getA().getType().getShape()[1];
+      if (group < getMinMmaElementsPerK(dotOp, minor) ||
+          k % (int64_t(group) * getMmaThreadShape()[2]) != 0)
+        return op->emitError("MMA K register group must fit the instruction "
+                             "and dot K dimension");
+      return success();
+    }
+#endif
     // Check if we have already selected an MMA version for Nvidia. If so,
     // validate that the encodings are correct and compatible.
     auto mmaAEncoding =
         dyn_cast_or_null<NvidiaMmaEncodingAttr>(aEncoding.getParent());
     auto mmaBEncoding =
         dyn_cast_or_null<NvidiaMmaEncodingAttr>(bEncoding.getParent());
-    auto dotOp = cast<DotOp>(op);
-    auto resEnc = dotOp.getResult().getType().getEncoding();
     auto mmaResEncoding = dyn_cast<NvidiaMmaEncodingAttr>(resEnc);
     if (mmaAEncoding || mmaBEncoding || mmaResEncoding) {
       // Check that they are all set and have the same version.

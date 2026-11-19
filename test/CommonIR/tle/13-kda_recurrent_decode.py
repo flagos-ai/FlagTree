@@ -149,8 +149,7 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
     # 3) 等 h 落地，再进寄存器
     if USE_SMEM:
         tle.gpu.metax.barrier()
-        h = tle.gpu.metax.local_load(
-            h_smem, intrinsic=True, is_constant_offs=True).to(tl.float32)
+        h = h_smem.load().to(tl.float32)
     else:
         if ALIGNED:
             h = tl.load(p_h + o_h).to(tl.float32)

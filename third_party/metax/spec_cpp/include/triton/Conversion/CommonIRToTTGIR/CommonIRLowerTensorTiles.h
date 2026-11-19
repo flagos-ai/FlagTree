@@ -5,6 +5,10 @@
 
 namespace mlir::triton::metax {
 
+bool isMctleExtractTile(Operation *op);
+bool isMctleInsertTile(Operation *op);
+bool isStaticMctleTile(Operation *op);
+
 // Whether input and result can use encoding without layout conversions.
 bool canLowerTensorTileInEncoding(Operation *op, Attribute encoding);
 

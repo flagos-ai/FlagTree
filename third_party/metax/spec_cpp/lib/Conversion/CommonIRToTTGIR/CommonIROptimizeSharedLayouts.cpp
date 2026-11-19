@@ -1,17 +1,15 @@
 // MIT License
 // Copyright (c) 2026 The FlagOS Contributors
-#include "mlir-ext/Dialect/CommonIR/Analysis/AxisInfoExt.h"
-#include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
-#include "mlir-ext/Dialect/CommonIR/IR/LayoutHintAttrs.h"
+#include "LayoutConversionUtils.h"
 #include "triton/Analysis/AxisInfo.h"
-#include "triton/Conversion/CommonIRToTTGIR/AsyncCopyUtils.h"
+#include "triton/Conversion/CommonIRToTTGIR/CommonIRCoalesceAsyncCopy.h"
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h"
-#include "triton/Conversion/CommonIRToTTGIR/TensorLayoutRules.h"
+#include "triton/Conversion/CommonIRToTTGIR/TensorTileAxisInfo.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "triton/Dialect/TritonGPU/Transforms/CoalesceUtils.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SetVector.h"
 
 namespace mlir::triton::metax {
 namespace ttg = mlir::triton::gpu;
@@ -141,134 +139,38 @@ LogicalResult collectSharedLayoutUpdates(Value allocation, Attribute encoding,
   return success();
 }
 
-using WriterLayoutMap = llvm::MapVector<Operation *, Attribute>;
-
-ttg::BlockedEncodingAttr
-getCopyCoalescedPreference(ModuleOp module, ttg::AsyncCopyGlobalToLocalOp copy,
-                           ModuleAxisInfoAnalysis &axisInfo) {
-  auto type = copy.getSrc().getType();
-  return ttg::buildCoalescedEncoding(
-      module.getContext(), axisInfo, copy, ttg::lookupNumWarps(copy),
-      ttg::TritonGPUDialect::getThreadsPerWarp(module),
-      ttg::getCTALayout(type.getEncoding()), ttg::getShapePerCTA(type));
-}
-
-bool comesFromLogicalTile(Value value) {
-  // Coalesce may already have placed a conversion immediately after the tile.
-  while (auto convert = value.getDefiningOp<ttg::ConvertLayoutOp>())
-    value = convert.getSrc();
-  return isa_and_nonnull<tile::ExtractTileOp, tile::InsertTileOp>(
-      value.getDefiningOp());
-}
-
-// Writer preferences guide shared order; they are not applied to tensors here.
-void collectCopyWriterPreferences(ModuleOp module,
-                                  ModuleAxisInfoAnalysis &axisInfo,
-                                  WriterLayoutMap &preferences) {
-  SmallVector<ttg::AsyncCopyGlobalToLocalOp> copies;
-  module.walk([&](ttg::AsyncCopyGlobalToLocalOp copy) {
-    if (comesFromLogicalTile(copy.getSrc()))
-      copies.push_back(copy);
-  });
-  if (copies.empty())
-    return;
-  for (auto copy : copies) {
-    if (tile::getExplicitMemoryEncoding(copy) ||
-        llvm::any_of(copy->getOperands(), [](Value value) {
-          return bool(tile::getExplicitValueEncoding(value));
-        }))
-      continue;
-    preferences[copy] = getCopyCoalescedPreference(module, copy, axisInfo);
-  }
-}
-
-// Ordinary stores inherit the existing coalesced load layout through views.
-void collectLoadStoreLayouts(ModuleOp module, WriterLayoutMap &layouts) {
-  TTGIRLayoutAdapter adapter;
-  module.walk([&](ttg::LocalStoreOp store) {
-    Value source = store.getSrc();
-    SmallVector<Operation *> views;
-    bool hasTile = false;
-    // Follow only logical views. Loads stay effect boundaries: use their
-    // existing coalesced encoding without cloning or moving the memory read.
-    while (true) {
-      if (Value input = adapter.getConversionSource(source)) {
-        source = input;
-        continue;
-      }
-      Operation *op = source.getDefiningOp();
-      if (!isa_and_nonnull<tile::ExtractTileOp, triton::TransOp>(op))
-        break;
-      hasTile |= isa<tile::ExtractTileOp>(op);
-      views.push_back(op);
-      source = op->getOperand(0);
-    }
-    if (!hasTile)
-      return;
-
-    Attribute encoding;
-    // Include prefetched loads carried across loop iterations. Conflicting
-    // load encodings do not provide one unambiguous transport requirement.
-    for (Value value : collectTensorLayoutComponent(source, adapter)) {
-      auto load = value.getDefiningOp<triton::LoadOp>();
-      if (!load)
-        continue;
-      auto type = dyn_cast<RankedTensorType>(value.getType());
-      if (!type || !isa<ttg::BlockedEncodingAttr>(type.getEncoding()))
-        return;
-      if (encoding && encoding != type.getEncoding())
-        return;
-      encoding = type.getEncoding();
-    }
-    if (!encoding)
-      return;
-    for (Operation *view : llvm::reverse(views)) {
-      if (isa<triton::TransOp>(view))
-        encoding = mlir::inferDstEncoding(view, encoding);
-      if (!encoding)
-        return;
-    }
-    layouts[store] = encoding;
-  });
-}
-
 // Express writer orders in allocation coordinates. Use neutral swizzle
 // parameters only to reuse the existing slot/transpose projection rules.
 llvm::DenseMap<Value, Attribute>
-collectWriterOrders(ModuleOp module, const WriterLayoutMap &copyPreferences,
-                    const WriterLayoutMap &storeLayouts) {
+collectWriterOrders(ModuleOp module, ModuleAxisInfoAnalysis &axisInfo) {
   llvm::DenseMap<Value, Attribute> orders;
   auto collect = [&](OpOperand &source, Value destination) {
     Value root = getSharedAllocation(destination);
     if (!root || root.getDefiningOp()->hasAttr("tle.gpu_layout"))
       return;
-    auto type = dyn_cast<RankedTensorType>(source.get().getType());
+    auto type = cast<RankedTensorType>(source.get().getType());
+    Operation *writer = source.getOwner();
+    Attribute preferred;
+    if (auto store = dyn_cast<ttg::LocalStoreOp>(writer))
+      preferred = getTileStoreSourcePreference(store);
+    else if (auto copy = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(writer))
+      preferred = getAsyncCopySourcePreference(copy, axisInfo);
+    if (preferred)
+      type = type.cloneWithEncoding(preferred);
     Attribute order;
-    if (type) {
-      Attribute encoding = type.getEncoding();
-      Attribute requested = isa<ttg::LocalStoreOp>(source.getOwner())
-                                ? storeLayouts.lookup(source.getOwner())
-                                : copyPreferences.lookup(source.getOwner());
-      if (requested)
-        encoding = requested;
-      if (isa<ttg::BlockedEncodingAttr>(encoding)) {
-        type = type.cloneWithEncoding(encoding);
-        auto contiguity = ttg::getContigPerThread(type);
-        auto blocked = cast<ttg::BlockedEncodingAttr>(encoding);
-        auto writerOrder = blocked.getOrder();
-        // A scalar or equally contiguous writer supplies no clear preference.
-        unsigned dim = writerOrder.front();
-        bool unambiguous = contiguity[dim] > 1;
-        for (unsigned other : writerOrder.drop_front())
-          unambiguous &= contiguity[dim] > contiguity[other];
-        if (unambiguous) {
-          order = ttg::SwizzledSharedEncodingAttr::get(
-              module.getContext(), 1, 1, 1, writerOrder,
-              ttg::getCTALayout(encoding));
-          for (Value view = destination; view != root && order;
-               view = getSharedViewSource(view))
-            order = getSharedSourceEncoding(view, order);
-        }
+    if (auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(type.getEncoding())) {
+      auto contiguity = ttg::getContigPerThread(type);
+      auto writerOrder = blocked.getOrder();
+      unsigned width = contiguity[writerOrder.front()];
+      // A scalar or equally contiguous writer supplies no clear preference.
+      if (width > 1 && llvm::all_of(writerOrder.drop_front(), [&](unsigned d) {
+            return width > contiguity[d];
+          })) {
+        order = ttg::SwizzledSharedEncodingAttr::get(
+            module.getContext(), 1, 1, 1, writerOrder, blocked.getCTALayout());
+        for (Value view = destination; view != root && order;
+             view = getSharedViewSource(view))
+          order = getSharedSourceEncoding(view, order);
       }
     }
     auto [it, inserted] = orders.try_emplace(root, order);
@@ -320,56 +222,16 @@ FailureOr<Attribute> inferSharedEncoding(ttg::LocalLoadOp load,
       type.getElementType(), /*needTrans=*/false));
 }
 
-Attribute chooseCopyLayout(ttg::AsyncCopyGlobalToLocalOp copy,
-                           ttg::MemDescType destination,
-                           ModuleAxisInfoAnalysis &axisInfo,
-                           const WriterLayoutMap &preferences,
-                           unsigned minVec = 1, bool emitErrors = false) {
-  auto reject = [&](StringRef message) -> Attribute {
-    if (emitErrors)
-      copy.emitOpError(message);
-    return {};
-  };
-  auto source = copy.getSrc().getType();
-  if (Attribute preferred = preferences.lookup(copy))
-    source = source.cloneWithEncoding(preferred);
-  if (!isa<ttg::BlockedEncodingAttr>(source.getEncoding()) ||
-      !isa<ttg::SwizzledSharedEncodingAttr>(destination.getEncoding()))
-    return reject("requires blocked source and swizzled shared destination");
-  if (!isAsyncCopyDestinationSupported(destination))
-    return reject("native MetaX async copy does not support swizzled "
-                  "shared views with a different allocation shape");
-  auto maxVec =
-      getAsyncCopyMaxVectorSize(copy, destination, axisInfo, emitErrors);
-  if (failed(maxVec))
-    return {};
-  auto encoding = chooseAsyncCopyLayout(source, destination,
-                                        axisInfo.getAxisInfo(copy.getSrc()),
-                                        minVec, *maxVec);
-  if (!encoding)
-    return reject("cannot legalize lane-to-shared addresses and mask vector "
-                  "width for MetaX async copy");
-  return encoding;
-}
-
 LogicalResult checkSharedAccesses(const SharedLayoutUpdates &updates,
-                                  ModuleAxisInfoAnalysis &axisInfo,
-                                  const WriterLayoutMap &preferences,
-                                  WriterLayoutMap &copyLayouts) {
+                                  ModuleAxisInfoAnalysis &axisInfo) {
   for (OpOperand *access : updates.accesses) {
     Operation *op = access->getOwner();
     auto shared = cast<ttg::MemDescType>(updates.getType(access->get()));
     if (ttg::getNumCTAs(shared.getEncoding()) != 1)
       return failure();
     if (auto copy = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(op)) {
-      unsigned elemBytes = shared.getElementTypeBitWidth() / 8;
-      Attribute encoding = chooseCopyLayout(copy, shared, axisInfo, preferences,
-                                            std::max(4 / elemBytes, 1u));
-      if (!encoding)
+      if (!canWriteMmaSharedLayout(copy, shared, axisInfo))
         return failure();
-      // Keep the layout that made this shared candidate feasible. The tile
-      // optimizer consumes the resulting conversions without choosing again.
-      copyLayouts[copy] = encoding;
     } else if (auto load = dyn_cast<ttg::LocalLoadOp>(op)) {
       if (load.getMmaMode() != -1 ||
           load.getType().getElementType() != shared.getElementType())
@@ -381,14 +243,23 @@ LogicalResult checkSharedAccesses(const SharedLayoutUpdates &updates,
   return success();
 }
 
+SmallVector<ttg::LocalLoadOp> collectMmaOperandSharedLoads(Value operand) {
+  SmallVector<ttg::LocalLoadOp> loads;
+  llvm::SmallSetVector<Value, 4> sources;
+  sources.insert(operand);
+  for (unsigned i = 0; i < sources.size(); ++i) {
+    Value value = sources[i];
+    if (auto load = value.getDefiningOp<ttg::LocalLoadOp>())
+      loads.push_back(load);
+    else
+      appendTensorSources(value, sources);
+  }
+  return loads;
+}
+
 void optimizeSharedLayouts(ModuleOp module, ArrayRef<triton::DotOp> dots,
-                           const WriterLayoutMap &copyPreferences,
-                           const WriterLayoutMap &storeLayouts,
-                           ModuleAxisInfoAnalysis &axisInfo,
-                           WriterLayoutMap &selectedCopies) {
-  TTGIRLayoutAdapter tensors;
-  auto writerOrders =
-      collectWriterOrders(module, copyPreferences, storeLayouts);
+                           ModuleAxisInfoAnalysis &axisInfo) {
+  auto writerOrders = collectWriterOrders(module, axisInfo);
   // A null encoding marks an allocation whose consumers cannot agree on a
   // supported layout. Keep that allocation unchanged, including all its views.
   llvm::MapVector<Value, Attribute> encodings;
@@ -397,11 +268,7 @@ void optimizeSharedLayouts(ModuleOp module, ArrayRef<triton::DotOp> dots,
       Attribute operandEncoding =
           cast<RankedTensorType>(dot->getOperand(index).getType())
               .getEncoding();
-      for (Value value :
-           collectTensorLayoutComponent(dot->getOperand(index), tensors)) {
-        auto load = value.getDefiningOp<ttg::LocalLoadOp>();
-        if (!load)
-          continue;
+      for (auto load : collectMmaOperandSharedLoads(dot->getOperand(index))) {
         Value root = getSharedAllocation(load.getSrc());
         if (!root || root.getDefiningOp()->hasAttr("tle.gpu_layout"))
           continue;
@@ -435,14 +302,10 @@ void optimizeSharedLayouts(ModuleOp module, ArrayRef<triton::DotOp> dots,
     if (!encoding)
       continue;
     SharedLayoutUpdates updates;
-    WriterLayoutMap copyLayouts;
     if (failed(collectSharedLayoutUpdates(root, encoding, updates)) ||
-        failed(checkSharedAccesses(updates, axisInfo, copyPreferences,
-                                   copyLayouts)))
+        failed(checkSharedAccesses(updates, axisInfo)))
       continue;
     accepted.push_back(std::move(updates));
-    for (auto entry : copyLayouts)
-      selectedCopies.insert(entry);
   }
   for (const auto &updates : accepted)
     updates.apply();
@@ -463,52 +326,10 @@ struct CommonIROptimizeSharedLayoutsPass
         return;
       dots.push_back(dot);
     });
-    // Writer preferences guide shared order even when logical tiles hide
-    // global contiguity from the ordinary Coalesce pass.
-    WriterLayoutMap copyPreferences, storeLayouts, copyLayouts;
-    {
-      // Reuse axis info until shared types change; reanalyze copies below.
-      ModuleAxisInfoAnalysis axisInfo(module,
-                                      tile::addCommonIRAxisInfoVisitors);
-      collectCopyWriterPreferences(module, axisInfo, copyPreferences);
-      collectLoadStoreLayouts(module, storeLayouts);
-      optimizeSharedLayouts(module, dots, copyPreferences, storeLayouts,
-                            axisInfo, copyLayouts);
-    }
-
-    // Adapt remaining copies to their fixed/default shared layouts.
-    SmallVector<ttg::AsyncCopyGlobalToLocalOp> remainingCopies;
-    module.walk([&](ttg::AsyncCopyGlobalToLocalOp copy) {
-      if (!copyLayouts.contains(copy))
-        remainingCopies.push_back(copy);
-    });
-    if (!remainingCopies.empty()) {
-      ModuleAxisInfoAnalysis axisInfo(module,
-                                      tile::addCommonIRAxisInfoVisitors);
-      for (auto copy : remainingCopies) {
-        Attribute encoding = chooseCopyLayout(
-            copy, copy.getResult().getType(), axisInfo, copyPreferences,
-            /*minVec=*/1, /*emitErrors=*/true);
-        if (!encoding)
-          return signalPassFailure();
-        copyLayouts[copy] = encoding;
-      }
-    }
-
-    TTGIRLayoutAdapter tensors;
-    auto convertOperand = [&](OpOperand &use, Attribute encoding) {
-      Value value = use.get();
-      auto type =
-          cast<RankedTensorType>(value.getType()).cloneWithEncoding(encoding);
-      use.set(tensors.convertLayout(value, type, use.getOwner()));
-    };
-    for (auto [copy, encoding] : copyLayouts)
-      for (OpOperand &operand : copy->getOpOperands())
-        if (isa<RankedTensorType>(operand.get().getType()))
-          convertOperand(operand, encoding);
-    // Preserve Coalesce's load layout by converting at the store boundary.
-    for (auto [store, encoding] : storeLayouts)
-      convertOperand(store->getOpOperand(0), encoding);
+    if (dots.empty())
+      return;
+    ModuleAxisInfoAnalysis axisInfo(module, addTensorTileAxisInfoVisitors);
+    optimizeSharedLayouts(module, dots, axisInfo);
   }
 };
 

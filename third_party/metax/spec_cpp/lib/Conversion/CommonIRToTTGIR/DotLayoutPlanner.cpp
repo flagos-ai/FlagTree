@@ -5,15 +5,18 @@
 #include "triton/Conversion/CommonIRToTTGIR/DotLayoutPlanner.h"
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 
+#include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/SHA256.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
+#include <array>
+#include <limits>
 
 namespace mlir::triton::metax {
 
@@ -43,72 +46,127 @@ std::string hashDescription(StringRef description) {
 }
 
 struct DotLayoutConstraints {
-  int64_t m, n, k;
+  std::array<unsigned, 2> atomsMN;
+  unsigned versionMinor;
+  unsigned minElementsK, maxElementsK;
+  bool isSquare;
   bool supportsColMajor;
 
-  unsigned maxElements(unsigned dim, unsigned warps) const {
-    return getMmaRegisterGroupLimit(dim == 0 ? m : n,
-                                    ttg::getMmaThreadShape()[dim], warps);
+  unsigned maxElementsMN(unsigned dim, unsigned warps) const {
+    return llvm::divideCeil(atomsMN[dim], warps);
   }
 };
 
-// Powers of two in [1, maximum], e.g. maximum=4 -> {1, 2, 4}.
-SmallVector<unsigned, 4> powerOfTwoGroupings(unsigned maximum) {
-  SmallVector<unsigned, 4> result;
-  for (unsigned value = 1; value <= maximum; value <<= 1)
-    result.push_back(value);
-  if (result.empty())
-    result.push_back(1);
-  return result;
-}
-
 FailureOr<DotLayoutConstraints>
 getDotLayoutConstraints(tt::DotOp dot, int computeCapability, int numWarps) {
-  auto aTy = cast<RankedTensorType>(dot.getA().getType());
-  auto bTy = cast<RankedTensorType>(dot.getB().getType());
-  auto dTy = cast<RankedTensorType>(dot.getD().getType());
-  if (auto error =
-          checkMacaDotPreconditions(dot, computeCapability, numWarps)) {
-    dot.emitError("cannot enumerate dot layouts: ") << *error;
+  auto reject = [&](StringRef reason) -> FailureOr<DotLayoutConstraints> {
+    dot.emitError("cannot enumerate dot layouts: ") << reason;
     return failure();
+  };
+  if (computeCapability < 80 || computeCapability >= 90)
+    return reject("requires MACA MMA version 2");
+  if (numWarps <= 0 || !llvm::isPowerOf2_64(numWarps))
+    return reject("requires a positive power-of-two warp count");
+  auto aTy = dot.getA().getType();
+  auto bTy = dot.getB().getType();
+  auto dTy = dot.getType();
+  for (auto type : {aTy, bTy, dTy}) {
+    if (type.getRank() != 2)
+      return reject("requires rank-2 tensors");
+    if (llvm::any_of(type.getShape(), [](int64_t dim) {
+          return dim <= 0 || dim > std::numeric_limits<int>::max() ||
+                 !llvm::isPowerOf2_64(dim);
+        }))
+      return reject(
+          "requires static power-of-two dimensions representable as i32");
   }
+  const unsigned versionMinor = computeCapability % 10;
+  if (!mlir::supportMMA(dot, 2, versionMinor))
+    return reject("dot dtype/precision is not supported by the target MMA "
+                  "instructions");
 
-  int64_t m = dTy.getShape()[0];
-  int64_t n = dTy.getShape()[1];
-  int64_t k = aTy.getShape()[1];
+  unsigned m = static_cast<unsigned>(dTy.getShape()[0]);
+  unsigned n = static_cast<unsigned>(dTy.getShape()[1]);
+  unsigned k = static_cast<unsigned>(aTy.getShape()[1]);
+  auto threadShape = ttg::getMmaThreadShape();
   Type aElem = aTy.getElementType();
   Type bElem = bTy.getElementType();
   const bool supportsColMajor =
       (aElem.isF16() || aElem.isBF16()) && (bElem.isF16() || bElem.isBF16());
-  return DotLayoutConstraints{m, n, k, supportsColMajor};
+  return DotLayoutConstraints{
+      {llvm::divideCeil(m, threadShape[0]),
+       llvm::divideCeil(n, threadShape[1])},
+      versionMinor,
+      getMinMmaElementsPerK(dot, versionMinor),
+      k / threadShape[2],
+      m == n,
+      supportsColMajor,
+  };
+}
+
+void appendPlansForWarpGrid(tt::DotOp dot,
+                            const DotLayoutConstraints &constraints,
+                            ArrayRef<unsigned> warps, bool colMajor,
+                            SmallVectorImpl<DotLayoutPlan> &plans) {
+  // Keep candidate order M, N, K for row-major and N, M, K for column-major.
+  unsigned maxOuter = constraints.maxElementsMN(0, warps[0]);
+  unsigned maxInner = constraints.maxElementsMN(1, warps[1]);
+  if (colMajor)
+    std::swap(maxOuter, maxInner);
+  for (unsigned outer = 1; outer <= maxOuter; outer <<= 1) {
+    for (unsigned inner = 1; inner <= maxInner; inner <<= 1) {
+      unsigned elementsM = colMajor ? inner : outer;
+      unsigned elementsN = colMajor ? outer : inner;
+      for (unsigned elementsK = constraints.minElementsK;
+           elementsK <= constraints.maxElementsK; elementsK <<= 1) {
+        auto mma = ttg::MACAMmaEncodingAttr::get(
+            dot.getContext(), 2, constraints.versionMinor, warps,
+            {elementsM, elementsN, elementsK}, colMajor, /*isATrans=*/false,
+            /*isBTrans=*/false, {1, 1});
+        plans.push_back(makeDotLayoutPlan(dot, mma));
+      }
+    }
+  }
+}
+
+Attribute getSetLayout(Operation *op) {
+  auto hint = dyn_cast_or_null<tile::SetLayoutOp>(op);
+  return hint ? hint.getLayout() : Attribute{};
+}
+
+bool hasExplicitMmaLayout(tt::DotOp dot) {
+  for (Value operand : {dot.getA(), dot.getB()})
+    if (!isa_and_nonnull<ttg::DotOperandEncodingAttr>(
+            getSetLayout(operand.getDefiningOp())))
+      return false;
+  auto hasMmaLayout = [](Operation *op) {
+    return isa_and_nonnull<ttg::MACAMmaEncodingAttr>(getSetLayout(op));
+  };
+  return hasMmaLayout(dot.getC().getDefiningOp()) ||
+         llvm::any_of(dot.getResult().getUsers(), hasMmaLayout);
 }
 
 bool matchesExplicitDotHints(tt::DotOp dot, const DotLayoutPlan &plan) {
   auto matches = [](Value value, Attribute expected) {
-    auto hint = value.getDefiningOp<tile::SetLayoutOp>();
-    if (!hint)
-      return true;
-    Attribute layout = hint.getLayout();
+    Attribute layout = getSetLayout(value.getDefiningOp());
     // A blocked producer may feed a dot through a layout conversion. Only
     // explicit MMA/dot-operand anchors constrain the candidate's dot ports.
-    return !isa<ttg::MACAMmaEncodingAttr, ttg::DotOperandEncodingAttr>(
-               layout) ||
+    return !isa_and_nonnull<ttg::MACAMmaEncodingAttr,
+                            ttg::DotOperandEncodingAttr>(layout) ||
            layout == expected;
   };
   if (!matches(dot.getA(), plan.operandA) ||
       !matches(dot.getB(), plan.operandB) || !matches(dot.getC(), plan.mma))
     return false;
   for (Operation *user : dot.getResult().getUsers()) {
-    auto hint = dyn_cast<tile::SetLayoutOp>(user);
-    if (hint && isa<ttg::MACAMmaEncodingAttr>(hint.getLayout()) &&
-        hint.getLayout() != plan.mma)
+    Attribute layout = getSetLayout(user);
+    if (isa_and_nonnull<ttg::MACAMmaEncodingAttr>(layout) && layout != plan.mma)
       return false;
   }
   return true;
 }
 
-// Enumeration and application must use the same function-local dot IDs.
-FailureOr<SmallVector<DotLayoutDomain>> collectDots(ModuleOp module) {
+FailureOr<SmallVector<DotLayoutDomain>> collectTunableDots(ModuleOp module) {
   SmallVector<DotLayoutDomain> domains;
   DenseMap<Operation *, unsigned> nextIndex;
   WalkResult result = module.walk<WalkOrder::PreOrder>([&](tt::DotOp dot) {
@@ -117,26 +175,17 @@ FailureOr<SmallVector<DotLayoutDomain>> collectDots(ModuleOp module) {
       dot.emitError("dot layout enumeration requires an enclosing tt.func");
       return WalkResult::interrupt();
     }
-    domains.push_back({dot,
-                       function.getSymName().str(),
-                       nextIndex[function.getOperation()]++,
-                       {}});
+    unsigned index = nextIndex[function.getOperation()]++;
+    if (!hasExplicitMmaLayout(dot))
+      domains.push_back(
+          {dot,
+           function.getSymName().str() + "/dot/" + std::to_string(index),
+           {}});
     return WalkResult::advance();
   });
   if (result.wasInterrupted())
     return failure();
   return domains;
-}
-
-LogicalResult validateDotLayoutCandidate(tt::DotOp dot,
-                                         const DotLayoutPlan &plan,
-                                         int computeCapability, int numWarps) {
-  if (auto error =
-          checkMacaDotLayout(dot, plan.mma, plan.operandA, plan.operandB,
-                             computeCapability, numWarps))
-    return dot.emitError("MMA layout is not legal for this dot and target: ")
-           << *error;
-  return success();
 }
 
 } // namespace
@@ -146,59 +195,21 @@ generateDotLayoutPlans(tt::DotOp dot, int computeCapability, int numWarps) {
   auto constraints = getDotLayoutConstraints(dot, computeCapability, numWarps);
   if (failed(constraints))
     return failure();
-  MLIRContext *ctx = dot.getContext();
-  unsigned atomK = ttg::getMmaThreadShape()[2];
 
   SmallVector<DotLayoutPlan> plans;
-  DenseSet<Attribute> seen;
-  auto tryAppend = [&](ArrayRef<unsigned> warps, ArrayRef<unsigned> elements,
-                       unsigned colMajor) {
-    auto mma =
-        buildMmaEncoding(ctx, computeCapability, warps, elements, colMajor);
-    if (!seen.insert(mma).second)
-      return;
-    DotLayoutPlan plan = makeDotLayoutPlan(dot, mma);
-    if (checkMacaDotLayout(dot, plan.mma, plan.operandA, plan.operandB,
-                           computeCapability, numWarps))
-      return;
-    plans.push_back(std::move(plan));
-  };
 
   // The column-major accumulator lowering supports FP16/BF16 operands only.
-  for (unsigned colMajor : {0u, 1u}) {
+  for (bool colMajor : {false, true}) {
     if (colMajor && !constraints->supportsColMajor)
       continue;
-    const unsigned packedDim = colMajor ? 0 : 1;
-    const unsigned replicaDim = 1 - packedDim;
-    for (unsigned replicaWarps = 1; replicaWarps <= unsigned(numWarps);
-         replicaWarps <<= 1) {
-      // M/N coverage may exceed the tensor shape; validate each warp grid
-      // below.
-      if (numWarps % replicaWarps)
-        continue;
-      unsigned packedWarps = numWarps / replicaWarps;
-      unsigned maxReplicaElements =
-          constraints->maxElements(replicaDim, replicaWarps);
-      unsigned maxPackedElements =
-          constraints->maxElements(packedDim, packedWarps);
-      for (unsigned replicaElements : powerOfTwoGroupings(maxReplicaElements)) {
-        for (unsigned packedElements : powerOfTwoGroupings(maxPackedElements)) {
-          // Instruction packing limits are checked by checkMacaDotLayout.
-          for (unsigned elementsK = 1;
-               static_cast<uint64_t>(elementsK) * atomK <=
-               static_cast<uint64_t>(constraints->k);
-               elementsK <<= 1) {
-            SmallVector<unsigned, 2> warps(2);
-            SmallVector<unsigned, 3> elements(3);
-            warps[replicaDim] = replicaWarps;
-            warps[packedDim] = packedWarps;
-            elements[replicaDim] = replicaElements;
-            elements[packedDim] = packedElements;
-            elements[2] = elementsK;
-            tryAppend(warps, elements, colMajor);
-          }
-        }
-      }
+    for (unsigned outerWarps = 1; outerWarps <= unsigned(numWarps);
+         outerWarps <<= 1) {
+      unsigned warpsM = outerWarps;
+      unsigned warpsN = numWarps / outerWarps;
+      if (colMajor)
+        std::swap(warpsM, warpsN);
+      appendPlansForWarpGrid(dot, *constraints, {warpsM, warpsN}, colMajor,
+                             plans);
     }
   }
 
@@ -215,7 +226,7 @@ generateDotLayoutPlans(tt::DotOp dot, int computeCapability, int numWarps) {
         auto right = cast<ttg::MACAMmaEncodingAttr>(rhs.mma);
         if (left.getColMajor() != right.getColMajor())
           return left.getColMajor() < right.getColMajor();
-        if (constraints->m != constraints->n)
+        if (!constraints->isSquare)
           return false;
         auto imbalance = [](ttg::MACAMmaEncodingAttr mma) {
           auto warps = mma.getWarpsPerCTA();
@@ -228,7 +239,7 @@ generateDotLayoutPlans(tt::DotOp dot, int computeCapability, int numWarps) {
 
 FailureOr<SmallVector<DotLayoutDomain>>
 enumerateDotLayoutPlans(ModuleOp module, int computeCapability, int numWarps) {
-  auto domains = collectDots(module);
+  auto domains = collectTunableDots(module);
   if (failed(domains))
     return failure();
   for (auto &domain : *domains) {
@@ -249,15 +260,15 @@ enumerateDotLayoutPlans(ModuleOp module, int computeCapability, int numWarps) {
   return domains;
 }
 
-LogicalResult
-insertDotLayoutHints(ModuleOp module, int capability, int numWarps,
-                     const llvm::StringMap<DotLayoutPlan> &selection) {
-  auto domains = collectDots(module);
+static FailureOr<SmallVector<DotLayoutChoice>>
+collectValidatedChoices(ModuleOp module,
+                        const llvm::StringMap<DotLayoutPlan> &selection) {
+  auto domains = collectTunableDots(module);
   if (failed(domains))
     return failure();
   if (selection.size() != domains->size())
     return module.emitError(
-        "candidate must select exactly one plan for every dot");
+        "candidate must select exactly one plan for every tunable dot");
 
   SmallVector<DotLayoutChoice> choices;
   for (const auto &domain : *domains) {
@@ -266,38 +277,49 @@ insertDotLayoutHints(ModuleOp module, int capability, int numWarps,
       if (cast<RankedTensorType>(value.getType()).getEncoding())
         return dot.emitError(
             "layout hint injection requires unencoded TTIR tensors");
-    std::string id =
-        domain.functionName + "/dot/" + std::to_string(domain.dotIndex);
-    auto selected = selection.find(id);
+    auto selected = selection.find(domain.dotId);
     if (selected == selection.end())
-      return dot.emitError("candidate is missing a plan for ") << id;
+      return dot.emitError("candidate is missing a plan for ") << domain.dotId;
     const auto &plan = selected->second;
-    if (failed(validateDotLayoutCandidate(dot, plan, capability, numWarps)))
-      return failure();
+    for (Attribute layout : {plan.mma, plan.operandA, plan.operandB})
+      if (!layout || layout.getContext() != module.getContext())
+        return dot.emitError(
+            "candidate layouts must belong to the module's context");
     if (!matchesExplicitDotHints(dot, plan))
       return dot.emitError(
           "candidate conflicts with explicit set_layout requirements");
     choices.push_back({dot, plan});
   }
+  return choices;
+}
 
-  // Validate the complete selection before mutating any dot. Clones share the
-  // same snapshot and context, so the function-local IDs still identify them.
-  for (auto [dot, plan] : choices) {
+LogicalResult
+insertDotLayoutHints(ModuleOp module,
+                     const llvm::StringMap<DotLayoutPlan> &selection) {
+  auto choices = collectValidatedChoices(module, selection);
+  if (failed(choices))
+    return failure();
+
+  for (auto [dot, plan] : *choices) {
     OpBuilder builder(dot);
-    for (auto [index, encoding] : llvm::enumerate(
-             SmallVector<Attribute>{plan.operandA, plan.operandB})) {
-      Value source = dot->getOperand(index);
-      auto existing = source.getDefiningOp<tile::SetLayoutOp>();
-      if (existing && existing.getLayout() == encoding)
-        continue;
+    auto setOperandHint = [&](OpOperand &operand, Attribute encoding) {
+      Value source = operand.get();
+      if (getSetLayout(source.getDefiningOp()) == encoding)
+        return;
       auto hint = builder.create<tile::SetLayoutOp>(
           dot.getLoc(), source.getType(), source, encoding);
-      dot->setOperand(index, hint.getResult());
-    }
+      operand.set(hint.getResult());
+    };
+    setOperandHint(dot.getAMutable(), plan.operandA);
+    setOperandHint(dot.getBMutable(), plan.operandB);
+
+    Value result = dot.getResult();
+    if (result.hasOneUse() && getSetLayout(*result.user_begin()) == plan.mma)
+      continue;
     builder.setInsertionPointAfter(dot);
-    auto hint = builder.create<tile::SetLayoutOp>(dot.getLoc(), dot.getType(),
-                                                  dot.getResult(), plan.mma);
-    dot.getResult().replaceAllUsesExcept(hint.getResult(), hint);
+    auto hint = builder.create<tile::SetLayoutOp>(
+        dot.getLoc(), result.getType(), result, plan.mma);
+    result.replaceAllUsesExcept(hint.getResult(), hint);
   }
   return success();
 }
@@ -310,11 +332,12 @@ std::string getDotLayoutPlanId(const DotLayoutPlan &plan) {
     encoding.print(os);
     os << '\n';
   }
-  os.flush();
   return hashDescription(description);
 }
 
 std::string getDotLayoutProfileId(const DotLayoutPlan &plan) {
+  // Omit isATrans, isBTrans and elementsStride from the profile because every
+  // candidate disables LDS transpose and uses unit strides for both operands.
   auto mma = cast<ttg::MACAMmaEncodingAttr>(plan.mma);
   std::string description;
   llvm::raw_string_ostream os(description);
@@ -325,7 +348,6 @@ std::string getDotLayoutProfileId(const DotLayoutPlan &plan) {
   llvm::interleaveComma(mma.getElementsMNK(), os);
   os << '\n' << mma.getColMajor() << '\n';
   os << mma.getCTALayout().getLinearLayout() << '\n';
-  os.flush();
   return hashDescription(description);
 }
 

@@ -1,13 +1,18 @@
-#include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
+#include "LayoutConversionUtils.h"
 #include "mlir-ext/Dialect/CommonIR/IR/LayoutHintAttrs.h"
 #include "mlir/Analysis/SliceAnalysis.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "triton/Conversion/CommonIRToTTGIR/CommonIRLowerTensorTiles.h"
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h"
-#include "triton/Conversion/CommonIRToTTGIR/TensorLayoutRules.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include <memory>
 #include <tuple>
@@ -16,12 +21,68 @@ namespace mlir::triton::metax {
 #define GEN_PASS_DEF_COMMONIROPTIMIZETENSORTILELAYOUTS
 #include "triton/Conversion/CommonIRToTTGIR/Passes.h.inc"
 
+Attribute getTileStoreSourcePreference(gpu::LocalStoreOp store) {
+  Value source = store.getSrc();
+  SmallVector<Operation *> views;
+  bool hasTile = false;
+  // Follow only logical views. Loads stay effect boundaries: use their
+  // existing coalesced encoding without cloning or moving the memory read.
+  while (true) {
+    if (Value input = getConversionSource(source)) {
+      if (tile::getExplicitValueEncoding(source))
+        return {};
+      source = input;
+      continue;
+    }
+    Operation *op = source.getDefiningOp();
+    if (isMctleExtractTile(op) && isStaticMctleTile(op))
+      hasTile = true;
+    else if (!isa_and_nonnull<triton::TransOp>(op))
+      break;
+    views.push_back(op);
+    source = op->getOperand(0);
+  }
+  if (!hasTile)
+    return {};
+
+  Attribute encoding;
+  // Only follow definitions that can supply this store. A loop-carried
+  // value can come from either the initial value or the previous iteration.
+  llvm::SmallSetVector<Value, 4> sources;
+  sources.insert(source);
+  for (unsigned i = 0; i < sources.size(); ++i) {
+    Value value = sources[i];
+    if (auto load = value.getDefiningOp<triton::LoadOp>()) {
+      auto type = dyn_cast<RankedTensorType>(load.getType());
+      if (!type || !isa<gpu::BlockedEncodingAttr>(type.getEncoding()))
+        return {};
+      if (encoding && encoding != type.getEncoding())
+        return {};
+      encoding = type.getEncoding();
+      continue;
+    }
+    if (!appendTensorSources(value, sources))
+      return {};
+  }
+  if (!encoding)
+    return {};
+  for (Operation *view : llvm::reverse(views)) {
+    if (isa<triton::TransOp>(view))
+      encoding = mlir::inferDstEncoding(view, encoding);
+    else if (!canLowerTensorTileInEncoding(view, encoding))
+      return {};
+    if (!encoding)
+      return {};
+    if (auto fixed = tile::getExplicitValueEncoding(view->getResult(0)))
+      if (fixed != encoding)
+        return {};
+  }
+  return encoding;
+}
+
 namespace {
 
-struct TensorLayoutRequirement {
-  OpOperand *use;
-  Attribute encoding;
-};
+using TensorLayoutRequirements = llvm::MapVector<OpOperand *, Attribute>;
 
 struct Recipe {
   Value source;
@@ -31,14 +92,35 @@ struct Recipe {
   Value materialized;
 };
 
+bool canChangeEncoding(Value value, Attribute encoding) {
+  auto fixed = tile::getExplicitValueEncoding(value);
+  return !fixed || fixed == encoding;
+}
+
+Attribute inferOperandEncoding(Operation *op, Attribute encoding) {
+  if (auto constant = dyn_cast<arith::ConstantOp>(op))
+    return isa<DenseElementsAttr>(constant.getValue()) ? encoding : Attribute{};
+  if (isa<triton::MakeRangeOp, triton::SplatOp, triton::BroadcastOp>(op))
+    return encoding;
+  if (isStaticMctleTile(op))
+    return canLowerTensorTileInEncoding(op, encoding) ? encoding : Attribute{};
+  // Rematerialize only address/mask arithmetic and simple tensor views.
+  // Loads and other operations with effects remain conversion boundaries.
+  bool arithmetic = op->getName().getDialectNamespace() == "arith" &&
+                    op->hasTrait<OpTrait::Elementwise>();
+  if (!isMemoryEffectFree(op) ||
+      !(arithmetic ||
+        isa<triton::AddPtrOp, triton::ExpandDimsOp, triton::TransOp>(op)))
+    return {};
+  return mlir::inferSrcEncoding(op, encoding);
+}
+
 class PlannedTensorLayouts {
 public:
-  PlannedTensorLayouts(ArrayRef<TensorLayoutRequirement> requirements,
-                       const TTGIRLayoutAdapter &adapter)
-      : adapter(adapter) {
-    for (const auto &requirement : requirements) {
-      Recipe *recipe = get(requirement.use->get(), requirement.encoding);
-      uses.emplace_back(requirement.use, recipe);
+  explicit PlannedTensorLayouts(const TensorLayoutRequirements &requirements) {
+    for (auto [use, encoding] : requirements) {
+      Recipe *recipe = get(use->get(), encoding);
+      uses.emplace_back(use, recipe);
     }
   }
 
@@ -82,9 +164,9 @@ private:
     if (!type)
       return make(value, {});
     auto target = type.cloneWithEncoding(encoding);
-    if (!adapter.canChangeEncoding(value, encoding))
+    if (!canChangeEncoding(value, encoding))
       return make(value, target);
-    if (Value source = adapter.getConversionSource(value))
+    if (Value source = getConversionSource(value))
       return get(source, encoding);
     auto key = std::make_pair(value, encoding);
     if (Recipe *cached = rewritten.lookup(key))
@@ -107,7 +189,7 @@ private:
     Operation *op = value.getDefiningOp();
     if (!op || op->getNumResults() != 1 || op->getNumRegions() != 0)
       return recipe;
-    Attribute input = adapter.inferOperandEncoding(op, encoding);
+    Attribute input = inferOperandEncoding(op, encoding);
     if (!input)
       return recipe;
     recipe->clone = true;
@@ -117,22 +199,24 @@ private:
   }
 
   void planLoopSlot(scf::ForOp loop, unsigned index, Attribute encoding) {
-    auto values = getLoopSlotValues(loop, index);
-    if (!adapter.canChangeEncoding(values[1], encoding) ||
-        !adapter.canChangeEncoding(values[2], encoding))
+    BlockArgument iterArg = loop.getRegionIterArgs()[index];
+    Value result = loop.getResult(index);
+    if (!canChangeEncoding(iterArg, encoding) ||
+        !canChangeEncoding(result, encoding))
       return;
     // The first requirement chooses the carrier; incompatible users receive
     // conversions. Publish the carrier before visiting the loop backedge.
-    if (assignments.count(values[1]))
+    if (assignments.count(iterArg))
       return;
-    assignments[values[1]] = encoding;
-    assignments[values[2]] = encoding;
+    assignments[iterArg] = encoding;
+    assignments[result] = encoding;
     auto yield = cast<scf::YieldOp>(loop.getBody()->getTerminator());
-    Recipe *initial = get(values[0], encoding);
-    Recipe *next = get(values[3], encoding);
-    uses.emplace_back(&loop->getOpOperand(loop.getNumControlOperands() + index),
-                      initial);
-    uses.emplace_back(&yield->getOpOperand(index), next);
+    OpOperand *initial = loop.getTiedLoopInit(iterArg);
+    OpOperand &yielded = yield->getOpOperand(index);
+    Recipe *initialRecipe = get(initial->get(), encoding);
+    Recipe *nextRecipe = get(yielded.get(), encoding);
+    uses.emplace_back(initial, initialRecipe);
+    uses.emplace_back(&yielded, nextRecipe);
   }
 
   Value convert(Value value, RankedTensorType type, Operation *before) {
@@ -148,7 +232,7 @@ private:
         conversion->moveBefore(before);
       return cached;
     }
-    return conversions[key] = adapter.convertLayout(value, type, before);
+    return conversions[key] = convertLayout(value, type, before);
   }
 
   Value materialize(Recipe *recipe, Operation *before) {
@@ -158,15 +242,19 @@ private:
       return recipe->source;
     if (!recipe->clone)
       return convert(recipe->source, recipe->type, before);
-    SmallVector<Value> operands;
     Operation *op = recipe->source.getDefiningOp();
-    for (Recipe *operand : recipe->operands)
-      operands.push_back(materialize(operand, op));
-    return recipe->materialized =
-               adapter.cloneWithLayout(op, recipe->type, operands);
+    IRMapping mapping;
+    for (auto [operand, input] : llvm::zip(op->getOperands(), recipe->operands))
+      mapping.map(operand, materialize(input, op));
+    Operation *copy = OpBuilder(op).clone(*op, mapping);
+    copy->getResult(0).setType(recipe->type);
+    if (auto constant = dyn_cast<arith::ConstantOp>(copy)) {
+      auto value = cast<DenseElementsAttr>(constant.getValue());
+      constant.setValueAttr(value.reshape(recipe->type));
+    }
+    return recipe->materialized = copy->getResult(0);
   }
 
-  const TTGIRLayoutAdapter &adapter;
   llvm::MapVector<Value, Attribute> assignments;
   SmallVector<std::unique_ptr<Recipe>> recipes;
   DenseMap<std::pair<Value, Attribute>, Recipe *> rewritten;
@@ -196,7 +284,7 @@ struct CommonIROptimizeTensorTileLayoutsPass
     : impl::CommonIROptimizeTensorTileLayoutsBase<
           CommonIROptimizeTensorTileLayoutsPass> {
   void runOnOperation() override {
-    SmallVector<TensorLayoutRequirement> requirements;
+    TensorLayoutRequirements requirements;
     getOperation().walk([&](gpu::ConvertLayoutOp convert) {
       if (tile::getExplicitResultEncoding(convert, 0))
         return;
@@ -208,9 +296,8 @@ struct CommonIROptimizeTensorTileLayoutsPass
         return op->getNumRegions() == 0 && isMemoryEffectFree(op);
       };
       if (failed(getBackwardSlice(convert.getOperation(), &slice, options)) ||
-          !llvm::any_of(slice, [](Operation *op) {
-            return isa<tile::ExtractTileOp, tile::InsertTileOp>(op);
-          }))
+          !llvm::any_of(slice,
+                        [](Operation *op) { return isStaticMctleTile(op); }))
         return;
       Attribute encoding = convert.getType().getEncoding();
       for (OpOperand &use : convert.getResult().getUses()) {
@@ -218,13 +305,17 @@ struct CommonIROptimizeTensorTileLayoutsPass
         // Propagate only the final consumer's requirement.
         if (isa<gpu::ConvertLayoutOp>(use.getOwner()))
           continue;
-        requirements.push_back({&use, encoding});
+        requirements[&use] = encoding;
       }
+    });
+    getOperation().walk([&](gpu::LocalStoreOp store) {
+      if (auto preferred = getTileStoreSourcePreference(store))
+        if (preferred != store.getSrc().getType().getEncoding())
+          requirements[&store->getOpOperand(0)] = preferred;
     });
     if (requirements.empty())
       return;
-    TTGIRLayoutAdapter adapter;
-    PlannedTensorLayouts(requirements, adapter).apply();
+    PlannedTensorLayouts(requirements).apply();
     eraseDeadProducers(getOperation());
   }
 };

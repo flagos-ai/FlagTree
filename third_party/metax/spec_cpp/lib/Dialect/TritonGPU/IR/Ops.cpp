@@ -374,7 +374,8 @@ struct CanonicalizeConvertFromConvert
 
     // cvt(cat) -> cat
     if (auto cat = dyn_cast<CatOp>(arg)) {
-      if (isExpensiveCat(cat, op.getType().getEncoding()))
+      if (hasExplicitLayout(op) ||
+          isExpensiveCat(cat, op.getType().getEncoding()))
         return failure();
 
       replaceWithHint<CatOp>(op, rewriter, op->getResult(0).getType(),

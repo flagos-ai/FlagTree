@@ -288,6 +288,7 @@ class MACABackend(BaseBackend):
         passes.ttgpuir.add_coalesce(pm)
         if COMMON_IR_ENABLED:
             passes.commonir.add_optimize_shared_layouts(pm)
+            passes.commonir.add_coalesce_async_copy(pm)
             passes.commonir.add_optimize_tensor_tile_layouts(pm)
             passes.commonir.add_lower_tensor_tiles(pm)
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)

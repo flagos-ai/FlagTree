@@ -44,9 +44,8 @@ py::list enumerateDotLayoutPlanDescriptions(mlir::ModuleOp &module,
                    "mma"_a = attribute(plan.mma),
                    "operand_a"_a = attribute(plan.operandA),
                    "operand_b"_a = attribute(plan.operandB)));
-    result.append(py::dict("dot_id"_a = domain.functionName + "/dot/" +
-                                        std::to_string(domain.dotIndex),
-                           "plans"_a = std::move(plans)));
+    result.append(
+        py::dict("dot_id"_a = domain.dotId, "plans"_a = std::move(plans)));
   }
   return result;
 }
@@ -63,7 +62,7 @@ void init_triton_metax_autolayout(py::module &&m) {
       "Raise ValueError for unsupported dots; return [] if there are no dots.");
   m.def(
       "insert_dot_layout_hints",
-      [](mlir::ModuleOp module, int capability, int numWarps,
+      [](mlir::ModuleOp module, int /*capability*/, int /*numWarps*/,
          const std::map<std::string, std::array<mlir::Attribute, 3>> &layouts) {
         llvm::StringMap<mlir::triton::metax::DotLayoutPlan> plans;
         for (const auto &[id, encodings] : layouts)
@@ -75,8 +74,8 @@ void init_triton_metax_autolayout(py::module &&m) {
               os << diag << '\n';
               return mlir::success();
             });
-        if (mlir::failed(mlir::triton::metax::insertDotLayoutHints(
-                module, capability, numWarps, plans)))
+        if (mlir::failed(
+                mlir::triton::metax::insertDotLayoutHints(module, plans)))
           throw py::value_error("failed to insert dot layout hints: " +
                                 diagnostics);
       },
