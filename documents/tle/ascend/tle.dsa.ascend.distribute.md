@@ -29,7 +29,7 @@ def init_communicator(ip_port=None, ash_size=None, engine_type=None):
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `ip_port` | `str` | 通信的端口号。默认是本机的 8666：`tcp://127.0.0.1:8666` |
+| `ip_port` | `str` | 通信的端口号，如 `tcp://127.0.0.1:8666`。不传时默认由 rank0 自动挑选空闲端口并广播给所有 rank（避免同机多次运行时端口冲突）；也可通过环境变量 `ASH_MASTER_PORT` / `ASH_MASTER_ADDR` 指定 |
 | `ash_size` | `int` | 创建当前通信域的大小，每张卡上的每个进程都会给本卡创建 `ash_size` 大小的通信域（Ascend 上是 HCCL 的 `buf_size` 大小），默认是 1 个 G |
 | `engine_type` | `str` | 通信协议。如果只是 intra-node 模式，Ascend 上是 MTE3；如果需要 inter-node 模式，则是 ROCE/RDMA |
 
@@ -40,6 +40,7 @@ def init_communicator(ip_port=None, ash_size=None, engine_type=None):
 **约束说明**：
 
 - 需要 `torch.distributed` 算子库和 shmem 库
+- 通信端口必须与本机其他进程 / 上一次运行不冲突：`aclshmem_init` 返回 ret=-4（内部错误）通常即端口被占用。默认动态选端口可规避该问题；如需固定端口，设置 `ASH_MASTER_PORT`
 
 **示例**：
 
@@ -558,6 +559,369 @@ for block_id in range(pid, num_tiles_m * num_loops_n * rank_size, ncore):
 
 ---
 
+### 3.8 get_global_rank
+
+**背景**：
+
+获取当前 PE 在通信域中的全局编号（world rank）。 Lowering为 `aclshmem_my_pe`（与 `GetRankOp` / `shard_id(axis=0/-1)` 同源）。
+
+**接口说明**：
+
+```python
+def get_global_rank(device_dptr, _semantic=None, ret_dtype=tl.int32):
+```
+
+**入参说明**：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `device_dptr` | 指针 | 签名兼容占位（保留 GPU 版形态），当前未使用 |
+| `ret_dtype` | `tl.dtype` | 返回类型，默认 `tl.int32` |
+
+**返回值**：
+
+`tl.int32`：当前 PE 的全局编号（0..rank_size-1）。
+
+**约束说明**：
+
+- 节点内编号请使用 `get_local_rank`（TODO 引入 team 后区分）
+
+**示例**：
+
+参考 `12-signal-wait.py` / `13-shmem-put-get-nbi.py`：
+
+```python
+@triton.jit
+def kernel_pe(out_ptr):
+    gr = tle.get_global_rank(None)
+    tl.store(out_ptr + 0, gr.to(tl.int32))
+```
+
+### 3.9 get_local_rank
+
+**背景**：
+
+获取当前进程的本机设备号（节点内 rank id）。当前无 team 概念，lowering为 `aclshmem_my_pe`——单机部署下与 `get_global_rank` 等价；多机区分需引入 node-local team（TODO）。
+
+**接口说明**：
+
+```python
+def get_local_rank(device_dptr, _semantic=None, ret_dtype=tl.int32):
+```
+
+**入参说明**：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `device_dptr` | 指针 | 签名兼容占位（保留 GPU 版形态），当前未使用 |
+| `ret_dtype` | `tl.dtype` | 返回类型，默认 `tl.int32` |
+
+**返回值**：
+
+`tl.int32`：节点内设备号（当前实现与全局 rank 相同）。
+
+**约束说明**：
+
+- 多机部署下返回全局编号而非节点内编号（TODO：引入 team 后切换 `aclshmem_team_my_pe`）
+
+**示例**：
+
+参考 `get_global_rank` 示例，替换函数名即可。
+
+### 3.10 n_pes
+
+**背景**：
+
+获取通信域内的总 PE（rank）数。Lowering为 `aclshmem_n_pes`，与 `GetNumRanksOp` / `num_ranks` 同源。
+
+**接口说明**：
+
+```python
+def n_pes(dev_mem_ptr, _semantic=None, ret_dtype=tl.int32):
+```
+
+**入参说明**：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `dev_mem_ptr` | 指针 | 签名兼容占位，当前未使用 |
+| `ret_dtype` | `tl.dtype` | 返回类型，默认 `tl.int32` |
+
+**返回值**：
+
+`tl.int32`：通信域内总 rank 数。
+
+**约束说明**：
+
+- 当前返回全局总数（单机部署两者等价，多机区分 TODO）
+
+**示例**：
+
+参考 `kernel_pe`：`np_ = tle.n_pes(None)`，校验 `np_ == world_size`。
+
+### 3.11 signal
+
+**背景**：
+
+单边远端信号更新：把 `value` 写入 peer 的对称信号槽位。只发信号，不传数据、不阻塞对端；与 `signal_wait` 配对形成生产者/消费者握手（生产者：写数据 → `shmem_fence` → `signal`；消费者：`signal_wait` → `consume_token` → 读数据）。Lowering为 `aclshmem_<ty>_p`（SET）或 `aclshmemx_signal_op`（inc/add，int32）。
+
+**接口说明**：
+
+```python
+def signal(device_dptr, peer, value=None, op="inc",
+           space="intra_node", group_kind="block",
+           context_id=0, scope="system", _semantic=None):
+```
+
+**入参说明**：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `device_dptr` | 指针 | 对称信号缓冲指针（int32/int64/uint64），信号写入其指向的槽位 |
+| `peer` | `int` | 目标 rank（0..rank_size-1），信号写入对端缓冲的同地址槽位 |
+| `value` | `int` | 信号值（0/1 等标志态）；`op="add"/"set"` 必填，`op="inc"` 忽略 |
+| `op` | `str` | `"inc"`（置 1，flag 式通知）/ `"add"`（SET value）/ `"set"`（SET value）。当前均以 SET 落地（`aclshmem_<ty>_p` 稳定路径）。|
+| `space` | `str` | 通信域：`intra_node` / `inter_node`（默认 `inter_node`） |
+| `group_kind` | `str` | FlagCX S-Path 组粒度（thread/warp/block），Ascend 固定 block 级 |
+| `context_id` | `int` | FlagCX 预分配网络上下文 id，Ascend 忽略 |
+| `scope` | `str` | 内存域（system/device/block/thread） |
+
+**返回值**：
+
+无（`tl.void`）。信号发射异步完成，数据就绪顺序由 `shmem_fence` 保证。
+
+**约束说明**：
+
+- 信号缓冲 dtype 必须为 int32/int64/uint64，且分配在对称内存（`create_dist_tensor`）
+- 64-bit 信号的 `op="inc"/"add"` 仅 Ascend950 支持，更早的卡请用 int32
+- 发送侧建议在 `signal` 后跟 `shmem_fence`，保证远端写完成后再退出 kernel
+
+**示例**：
+
+参考 `12-signal-wait.py`（生产者对 peer 的 slot 0 发 inc 信号）：
+
+```python
+@triton.jit
+def k_signal_peer(sig_ptr, peer):
+    # 单边写：peer 的信号槽 += 1（SET 置位）
+    tle.signal(sig_ptr, peer, value=1, op="set")
+    tle.shmem_fence()  # 完成远端写后再退出 kernel
+
+@triton.jit
+def k_wait(sig_ptr, waitValue):
+    # 自旋等 peer 写入的信号值 >= waitValue，返回 token
+    tok = tle.signal_wait(sig_ptr, 1, "gpu", "acquire", waitValue=waitValue)
+    tle.consume_token(sig_ptr, tok)  # 建立数据依赖
+```
+
+### 3.12 signal_wait
+
+**背景**：
+
+自旋等待本 rank 的信号槽达到目标值（signal >= target 即 ready），完成后返回 int32 token。与 `signal` 配对使用：对端 `signal` 写入的值到达本端对称内存后，本端观察到并解除阻塞。lowering为 `aclshmemi_signal_wait_until_eq`。
+
+**接口说明**：
+
+```python
+def signal_wait(device_dptr, slot_id=None, wait_kind="signal",
+                target=1, order="acquire", scope="gpu", _semantic=None):
+```
+
+**入参说明**：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `device_dptr` | 指针 | 对称信号缓冲指针（int32/int64/uint64） |
+| `slot_id` | `int` | 槽位元素偏移，默认 `None`（即基址槽位） |
+| `wait_kind` | `str` | 等待类型，Ascend 仅支持 `"signal"`（阈值等值等待）；GPU 版的 `"counter"`/`"shadow"` 未建模 |
+| `target` | `int` | 阈值（signal >= target 即 ready），默认 1 |
+| `order` | `str` | 内存序：`"acquire"` / `"release"`（默认 acquire） |
+| `scope` | `str` | 内存同步域：`"gpu"` / `"intra_node"` / `"inter_node"`（默认 gpu） |
+
+**返回值**：
+
+`tl.int32`：token，必须传给 `consume_token` 建立与信号所保护内存的数据依赖。
+
+**约束说明**：
+
+- `wait_kind` 仅支持 `"signal"`（阈值等值等待）；不支持 `"shadow"`
+- token 未消费前不读信号保护的数据，避免编译器把 load 提前到 wait 之前
+
+**示例**：
+
+参考 `12-signal-wait.py`（消费者等 slot 0 达到 1，然后读对端写入的数据段）：
+
+```python
+@triton.jit
+def k_wait(sig_ptr, waitValue):
+    tok = tle.signal_wait(sig_ptr, 1, "gpu", "acquire", waitValue=waitValue)
+    tle.consume_token(sig_ptr, tok)  # 建立数据依赖
+```
+
+### 3.13 consume_token
+
+**背景**：
+
+消费 `signal_wait` 返回的 token，在 IR 层建立“信号等待 → 数据读取”的数据依赖，防止编译器把受保护的 load 优化提前到 wait 之前。
+
+**接口说明**：
+
+```python
+def consume_token(value, token, _semantic=None):
+```
+
+**入参说明**：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `value` | 指针/tensor | 被 signal 保护的数据（与 `signal_wait` 同一缓冲） |
+| `token` | `tl.int32` | `signal_wait` 返回的 token |
+
+**返回值**：
+
+与 `value` 同型的句柄（后续读写应使用返回的句柄而非原参数）。
+
+**约束说明**：
+
+- `token` 必须来自 `signal_wait`；token 未消费前不读信号保护的数据
+
+**示例**：
+
+参考 `12-signal-wait.py`（消费者等 slot 0 达到 1，然后读对端写入的数据段）：
+
+```python
+@triton.jit
+def k_wait(sig_ptr, waitValue):
+    tok = tle.signal_wait(sig_ptr, 1, "gpu", "acquire", waitValue=waitValue)
+    tle.consume_token(sig_ptr, tok)  # 建立数据依赖
+```
+
+### 3.14 shmem_put_nbi
+
+**背景**：
+
+单边数据搬运：把本 rank GM 的一段数据写入对端 rank 的对称内存（非阻塞，完成由 `shmem_fence` 保证）。Lowering为 `aclshmem_<T>_putmem_nbi`。
+
+**接口说明**：
+
+```python
+def shmem_put_nbi(src, dst, nelems, pe, _semantic=None):
+```
+
+**入参说明**：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `src` | 指针 | 本 rank GM 数据源（起始地址，连续 nelems 个元素） |
+| `dst` | 指针 | 对端对称内存的目标地址（如 `tle.remote(...)` 的返回值） |
+| `nelems` | `int` | 搬运元素数 |
+| `pe` | `int` | 目标 rank |
+
+**返回值**：
+
+无（`tl.void`）。异步发起，完成由 `shmem_fence` 保证。
+
+**约束说明**：
+
+- 一次搬运一段连续数据；非连续场景请多次调用或先做本地重排
+- 完成保证：后续必须 `shmem_fence`（对端可见后才能 notify/读）
+
+**示例**：
+
+参考 `13-shmem-put-get-nbi.py`（把本地块写入 peer 段的对称地址并 fence）：
+
+```python
+@triton.jit
+def kernel_put(put_seg_ptr, src_ptr, n: tl.constexpr):
+    offs = tl.arange(0, n)
+    val = tl.load(src_ptr + offs)
+    tl.store(put_seg_ptr + offs, val)   # 对称地址直写（PUT 等价实现）
+    tle.shmem_fence()                    # 完成远端写
+```
+
+### 3.15 shmem_get_nbi
+
+**背景**：
+
+单边数据搬运：把对端 rank 对称内存的一段数据拉取到本 rank GM（非阻塞）。Lowering为 `aclshmem_<T>_getmem_nbi`。
+
+**接口说明**：
+
+```python
+def shmem_get_nbi(dst, src, nelems, pe, _semantic=None):
+```
+
+**入参说明**：
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `dst` | 指针 | 本 rank GM 目标地址（起始地址，连续 nelems 个元素） |
+| `src` | 指针 | 对端对称内存的源地址（如 `tle.remote(...)` 的返回值） |
+| `nelems` | `int` | 搬运元素数 |
+| `pe` | `int` | 源 rank |
+
+**返回值**：
+
+无（`tl.void`）。异步发起，完成由 `shmem_fence` 保证。
+
+**约束说明**：
+
+- 一次搬运一段连续数据；后续 `shmem_fence` 保证完成后再读
+
+
+**示例**：
+
+参考 `13-shmem-put-get-nbi.py`（把 peer 段的对称地址数据拉取到本地并 fence）：
+
+```python
+@triton.jit
+def kernel_get(get_seg_ptr, recv_ptr, n: tl.constexpr):
+    offs = tl.arange(0, n)
+    val = tl.load(get_seg_ptr + offs)   # 对称地址直读（GET 等价实现）
+    tl.store(recv_ptr + offs, val)
+    tle.shmem_fence()                    # 完成远端读
+```
+
+### 3.16 shmem_fence
+
+**背景**：
+
+保证本 Rank 此前发出的所有远端内存操作（put/get/信号）**已完成并target rank可见**，之后的操作才会执行。Lowering为 `aclshmem_fence`（语义与 `aclshmem_quiet` 等价：既保顺序也保完成）。
+
+**接口说明**：
+
+```python
+def shmem_fence(_semantic=None):
+```
+
+**入参说明**：
+
+不涉及
+
+**返回值**：
+
+无（`tl.void`）。
+
+**约束说明**：
+
+- 放在数据写入（put/store）之后、`signal`/对端读之前
+- 13-shmem-put-get-nbi.py 实测：生产者/消费者配对不加 fence 会随机丢信号，加后稳定
+
+**示例**：
+
+参考 `13-shmem-put-get-nbi.py`（数据写入后 fence，防止对端读到旧值）：
+
+```python
+@triton.jit
+def kernel_put(put_seg_ptr, src_ptr, n: tl.constexpr):
+    offs = tl.arange(0, n)
+    val = tl.load(src_ptr + offs)
+    tl.store(put_seg_ptr + offs, val)   # 数据写到对端对称内存
+    tle.shmem_fence()                    # 等待远端写完成/可见，再继续
+```
+
+---
+
 ## 4. 与社区 GPU Op 对比
 
 社区 GPU 版是一套从核内到跨节点全覆盖的分布式原语；Ascend 版当前只覆盖“卡间”（NPU 间）一层，且同步粒度固定为“全部 rank”，无法做到核间（单卡内跨核）通信与子组同步，需要做 teamOp。
@@ -594,6 +958,19 @@ for block_id in range(pid, num_tiles_m * num_loops_n * rank_size, ncore):
 
 - GPU 版按 mesh 形态支持四种维度的同步。
 - Ascend 版：无分派，恒等于 `aclshmem_barrier_all`（全 rank 屏障）；其余参数（group_kind / barrier_kind / order）完全忽略。即：只有“卡间全同步”一种粒度，既没有子组，也没有核内/核间粒度。
+
+**signal**
+
+- Ascend 版：底层 `aclshmem_<ty>_p`（SET）或 `aclshmemx_signal_op`（int32 inc/add）；`op="inc"/"add"` 当前均以 SET 落地（`aclshmem_<ty>_p` 稳定路径）；`space` 仅 intra_node/inter_node 两种（默认 inter_node）；`group_kind`/`context_id`/`scope` 不处理。与 `signal_wait` 配对形成生产者/消费者握手。
+
+**signal_wait**
+
+- Ascend 版：阈值等值等待（signal >= target 即 ready）；`slot_id` 可选（默认基址槽位）；返回 **int32 token**（必须传给 `consume_token` 建立数据依赖）。`wait_kind` 仅支持 `"signal"`（counter/shadow 未建模）；`group_kind`/`context_id` 不支持；`order`只支持（acquire/release）。
+
+**get_global_rank / get_local_rank / n_pes**
+
+- GPU 版：`_get_world_rank`（`flagcxDevCommGetRank`，全局编号）、`_get_local_rank`（`flagcxDevCommGetIntraRank`，节点内编号）、`n_pes`（`flagcxDevCommGetIntraSize`，节点内规模）。
+- Ascend 版：`get_global_rank` / `get_local_rank` 均为 `aclshmem_my_pe`（当前无 team，两者等价）；`n_pes` 为 `aclshmem_n_pes`（全局总数）。多机区分需引入 team（TODO）。
 
 ### 4.3 Ascend 独有（GPU 版无对应）
 
@@ -639,7 +1016,6 @@ AscendC shmem 中：每张卡数据和通信量都是开发人员在 host 端和
 
 ## 5. TODO
 
-1. **team**：待实现。
-2. **Signal / wait / fence OP**：待合入。
-3. **InterNode 节点间通信**：待实现。
-4. **device_mesh**：待扩展 GM->GM IntraNode mode。
+1. **team**：待实现（引入后 `get_local_rank` / `n_pes` 可切换节点内语义：`aclshmem_team_my_pe` / `aclshmem_team_n_pes`）。
+2. **InterNode 节点间通信**：待实现。
+3. **device_mesh**：待扩展 GM->GM IntraNode mode。

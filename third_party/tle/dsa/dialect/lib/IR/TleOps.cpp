@@ -14,6 +14,31 @@ void SymmAtOp::getEffects(
                        SideEffects::DefaultResource::get());
 }
 
+// -- WaitOp --
+void WaitOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get(),
+                       SideEffects::DefaultResource::get());
+}
+
+// -- ConsumeTokenOp --
+void ConsumeTokenOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  //   empty effects
+}
+
+// -- NotifyOp --
+void NotifyOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get(),
+                       SideEffects::DefaultResource::get());
+  effects.emplace_back(MemoryEffects::Read::get(),
+                       SideEffects::DefaultResource::get());
+}
+
 // -- ExternCallOp --
 void ExternCallOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>

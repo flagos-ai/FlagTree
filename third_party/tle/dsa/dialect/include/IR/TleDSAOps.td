@@ -5,9 +5,11 @@
 
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/CommonTypeConstraints.td"
+include "triton/Dialect/Triton/IR/TritonAttrDefs.td"
 include "triton/Dialect/Triton/IR/TritonInterfaces.td"
 include "triton/Dialect/Triton/IR/TritonTypes.td"
 include "tle/dsa/dialect/include/IR/TleDSADialect.td"
+include "tle/dsa/dialect/include/IR/TleDSAAttrDefs.td"
 
 //
 // Op Base
@@ -149,7 +151,7 @@ def TLE_DSAMinOp : TLE_Op<"dsa_min", [Pure, MemoryEffects<[MemWrite]>,
 ///
 ///   let assemblyFormat = "$inA `,` $inB `,` $res attr-dict `:` type($inA) `,` type($inB) `,` type($res)";
 /// }
-def TT_GetRankOp : TLE_Op<"get_rank", [Pure]> {
+def TLE_GetRankOp : TLE_Op<"get_rank", [Pure]> {
   let summary = "Rank of the calling PE";
 
   let arguments = (ins I32:$axis);
@@ -159,7 +161,17 @@ def TT_GetRankOp : TLE_Op<"get_rank", [Pure]> {
   let assemblyFormat = "$axis attr-dict `:` type($result)";
 }
 
-def TT_SymmAtOp : TLE_Op<"symm_at", [
+def TLE_GetNumRanksOp : TLE_Op<"get_num_ranks", [Pure]> {
+  let summary = "Get the number of PEs runing in the program";
+
+  let arguments = (ins I32:$axis);
+
+  let results = (outs I32:$result);
+
+  let assemblyFormat = "$axis attr-dict `:` type($result)";
+}
+
+def TLE_SymmAtOp : TLE_Op<"symm_at", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
   TypesMatchWith<"remoteAddr matches symmAddr type", "symmAddr", "remoteAddr", "$_self">,
 ]> {
@@ -176,7 +188,7 @@ def TT_SymmAtOp : TLE_Op<"symm_at", [
 }
 
 
-def TT_ExternCallOp : TLE_Op<"extern_call", [
+def TLE_ExternCallOp : TLE_Op<"extern_call", [
    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
 ]> {
 
@@ -196,5 +208,87 @@ def TT_ExternCallOp : TLE_Op<"extern_call", [
       Speculation::Speculatability getSpeculatability();
     }];
 }
+
+def TLE_WaitOp : TLE_Op<"wait", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+  TypesMatchWith<"result matches ptr type", "barrierPtr", "waitValue", "getPointeeType($_self)">,
+]> {
+  let summary = "Wait for a signal to be ready (becomes 1) and produce a token.";
+
+  let description = [{
+    The operator creates a wait node that represents a spin lock waiting
+    for a list of signals pointed by the `barrierPtr` to be set ready (set to 1).
+
+    Example:
+
+    ```mlir
+    token = tle.dsa.ascend.wait() {barrierPtr, num_barriers, scope = 1 : i32, semantic = 0 : i32}
+    ```
+  }];
+  let arguments = (
+    ins
+    TT_PtrLike:$barrierPtr,
+    TT_IntLike:$numBarriers,
+    TT_Int: $waitValue,
+    DefaultValuedAttr<TT_MemSyncScopeAttr, "MemSyncScope::GPU">:$scope,
+    DefaultValuedAttr<TT_MemSemanticAttr, "MemSemantic::ACQUIRE">:$semantic
+  );
+
+  let results = (outs TT_IntLike:$token);
+
+  let assemblyFormat = [{
+      $barrierPtr `,` $numBarriers `,` $waitValue `,`
+      `scope` `=` $scope `semantic` `=` $semantic
+      attr-dict `:` type($barrierPtr) `,` type($numBarriers) `,` type($waitValue) `->` type($token)
+    }];
+}
+
+def TLE_ConsumeTokenOp : TLE_Op<"consume_token", [
+  Elementwise,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+  DeclareOpInterfaceMethods<InferTypeOpInterface>,
+  TypesMatchWith<"result matches input type", "input", "result", "$_self">,
+]> {
+  let summary = "Consumes a token and builds data dependency between wait ops and input";
+
+  let description = [{
+    The operator creates a consume node that represents a data dependency between a wait node
+    that produces a token and another node that uses the input data (e.g., load).
+
+    Example:
+
+    ```mlir
+    tle.dsa.ascend.consume_token() {input, token}
+    ```
+  }];
+  let arguments = (
+    ins
+    AnyTypeOf<[TT_Type, TT_TensorDescType]>:$input,
+    TT_IntLike:$token
+  );
+
+  let results = (outs AnyTypeOf<[TT_Type, TT_TensorDescType]>:$result);
+
+  let assemblyFormat = [{
+      $input `,` $token `,`
+      attr-dict `:` type($input) `,` type($token) `->` type($result)
+    }];
+}
+
+def TLE_NotifyOp : TLE_Op<"notify", [
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+]> {
+  let summary = "Update sigAddr with signalVal using operation sigOp on the specified rank";
+
+  let arguments = (ins
+    TT_Ptr:$sigAddr,
+    I64:$signalVal,
+    I32:$rank,
+    TT_SignalOpAttr:$sigOp,
+    TT_CommScopeAttr:$commScope
+  );
+
+}
+
 
 #endif

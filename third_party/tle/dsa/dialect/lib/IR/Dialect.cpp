@@ -6,6 +6,9 @@
 #define GET_ATTRDEF_CLASSES
 #include "tle/dsa/dialect/include/IR/TleDSAAttrDefs.cpp.inc"
 
+// Definitions for the enum attrs (no GET_* section guards in these files).
+#include "tle/dsa/dialect/include/IR/TleDSAEnums.cpp.inc"
+
 #define GET_OP_CLASSES
 #include "tle/dsa/dialect/include/IR/TleDSAOps.cpp.inc"
 

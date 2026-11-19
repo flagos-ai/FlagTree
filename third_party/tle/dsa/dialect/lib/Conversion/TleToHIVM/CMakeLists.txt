@@ -9,6 +9,7 @@ add_triton_library(TleDSAToHIVM
   LINK_LIBS PUBLIC
   TleIR
   TleDSAIR
+  MLIRArithDialect
   MLIRIR
   MLIRTensorDialect
 )

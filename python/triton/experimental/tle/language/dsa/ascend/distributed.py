@@ -1,10 +1,36 @@
 # Copyright 2026- Xcoresigma Technology Co., Ltd
 
+from __future__ import annotations
+
 import triton.language.core as tl
 import triton.language as dl
 import triton
 from triton.language.core import builtin, tensor
 from typing import List
+
+from enum import IntEnum
+
+
+class _SignalOp(IntEnum):
+    SET = 1
+    ADD = 2
+
+
+class _CommScope(IntEnum):
+    GPU = 1
+    INTRA_NODE = 2
+    INTER_NODE = 3
+
+
+# Signaling scope (FlagCX-style API) -> aclshmem comm scope:
+#   "block" -> gpu         (intra-device)
+#   "rank"  -> intra_node  (intra-node, cross-device)
+#   "node"  -> inter_node  (inter-node)
+_SIGNAL_SCOPE_TO_COMM_SCOPE = {
+    "block": "gpu",
+    "rank": "intra_node",
+    "node": "inter_node",
+}
 
 _SHMEM_DTYPE_MAP = {
     tl.float16: "half",
@@ -346,3 +372,258 @@ def gemm_swizzle2d_Nz(
     if n_tile_idx % 2 == 1:
         data_row_idx = data_row_loop_num - data_row_idx - 1
     return data_row_idx, data_col_idx
+
+
+@builtin
+def n_pes(dev_mem_ptr, _semantic=None, ret_dtype=tl.int32):
+    """The total number of PEs (ranks) in the program.
+
+    TODO: multi-node is not modeled yet — the GPU-side ``n_pes`` returns the
+    per-node device count; aligning that semantics needs node-local team
+    support (aclshmem_team_n_pes).
+    """
+    return _extern_call(
+        "libshmem_device",
+        "",
+        [],
+        {
+            (): ("aclshmem_n_pes", tl.int32),
+        },
+        is_pure=True,
+        _semantic=_semantic,
+    )
+
+
+@builtin
+def get_local_rank(device_dptr, _semantic=None, axis=-1, ret_dtype=tl.int32):
+    """Get the current device id (rank) of the current process.
+
+    TODO: multi-node is not modeled yet — returning the intra-node rank needs
+    node-local team support (aclshmem_team_my_pe).
+    """
+    axis = _semantic._convert_elem_to_ir_value(axis, require_i64=False)
+    return tl.tensor(_semantic.builder.create_get_rank(axis), tl.int32)
+
+
+@builtin
+def get_global_rank(device_dptr, _semantic=None, axis=-1, ret_dtype=tl.int32):
+    """Get the current world rank (global PE id)."""
+    axis = _semantic._convert_elem_to_ir_value(axis, require_i64=False)
+    return tl.tensor(_semantic.builder.create_get_rank(axis), tl.int32)
+
+
+def _str_to_dist_signal_op(sig_op):
+    """str -> _SignalOp attr value ("set"/"add")."""
+    cache = None
+    if sig_op:
+        if sig_op == "set":
+            cache = _SignalOp.SET
+        elif sig_op == "add":
+            cache = _SignalOp.ADD
+        else:
+            raise ValueError(f"Signal Op {sig_op} not supported")
+    return cache
+
+
+def _str_to_dist_comm_scopre(comm_scope):
+    """str -> _CommScope attr value ("gpu"/"intra_node"/"inter_node")."""
+    scope = None
+    if comm_scope:
+        if comm_scope == "gpu":
+            scope = _CommScope.GPU
+        elif comm_scope == "intra_node":
+            scope = _CommScope.INTRA_NODE
+        elif comm_scope == "inter_node":
+            scope = _CommScope.INTER_NODE
+        else:
+            raise ValueError(f"Comm Scope {comm_scope} not supported")
+    return scope
+
+
+@builtin
+def signal(device_dptr, peer, slot_id=None, value: int | None = None, op: str = "inc", space: str = "rank",
+           group_kind: str = "block", context_id: int = 0, scope: str = "system", _semantic=None):
+    """
+    One-sided remote signal update: write ``value`` into the peer's
+    symmetric signal slot. Signal-only primitive (no payload, no blocking
+    on the peer); pair with ``signal_wait`` on the peer to form the
+    producer/consumer handshake.
+    Args:
+        device_dptr: pointer to the symmetric signal buffer of THIS rank
+            (element dtype int32 / int64 / uint64).
+        peer: id of the target rank (0..rank_size-1).
+        slot_id: offsets — accepted for FlagCX API compatibility, ignored on
+            Ascend (the signal is written at ``device_dptr``).
+        value: 0/1 signal value; required for op="add"/"set".
+        op: "inc" (set 1) / "add" / "set" — all lowered as SET via the
+            reliable aclshmem_<ty>_p path.
+        space: "intra_node" / "inter_node" (default "inter_node"; "world" is
+            not modeled on Ascend).
+        group_kind / context_id / scope: FlagCX concepts; TODO — not modeled
+            on Ascend (block-level only; ordering/visibility via shmem_fence).
+
+    FlagCX: default OP=inc signal+1.
+    """
+    assert not device_dptr.type.is_block() and device_dptr.type.is_ptr(), \
+        "device_dptr must be a scalar pointer to the symmetric signal array"
+    assert group_kind in (None, "block"), \
+        (f"TODO: group_kind='{group_kind}' not supported on Ascend "
+         f"(the aclshmem signal path is block-level)")
+
+    # slot_id is accepted for FlagCX API compatibility but ignored on Ascend:
+    # the notify path writes the signal at device_dptr (single flag slot).
+
+    if op == "inc":
+        sig_op, signal_val = "set", 1
+    elif op in ("add", "set"):
+        assert value is not None, f"op='{op}' requires a value"
+        sig_op, signal_val = "set", value
+    else:
+        raise ValueError(f"signal op '{op}' not supported (use 'inc', 'add' or 'set')")
+
+    assert space in (None, "block", "rank", "node"), \
+        f"space '{space}' not supported (use 'block', 'rank' or 'node')"
+
+    comm_scope = _SIGNAL_SCOPE_TO_COMM_SCOPE[tl._unwrap_if_constexpr(space) or "rank"]
+
+    # Not Support context_id / scope with Ascend
+    sig_ptr = device_dptr
+    peer_ir = _semantic._convert_elem_to_ir_value(peer, require_i64=False)
+    signal_ir = _semantic._convert_elem_to_ir_value(signal_val, require_i64=True)
+    sig_op_attr = _str_to_dist_signal_op(sig_op)
+    comm_attr = _str_to_dist_comm_scopre(comm_scope)
+    return tl.tensor(
+        _semantic.builder.create_notify(sig_ptr.handle, signal_ir, peer_ir, sig_op_attr, comm_attr),
+        tl.void,
+    )
+
+
+@builtin
+def signal_wait(device_dptr, slot_id=None, wait_kind="signal", target=1, group_kind="block", context_id=0,
+                order="acquire", scope="rank", _semantic=None):
+    """
+    Args:
+        device_dptr: pointer to the symm signal buf.
+        slot_id: slot element offset (default None = slot at device_dptr).
+        wait_kind: only the threshold wait ("signal") is supported on Ascend
+            (the GPU-side "counter"/"shadow" kinds are not modeled).
+        target: the threshold value the wait compares against.
+        group_kind / context_id: FlagCX S-Path concepts — accepted for API
+            compatibility, not modeled on Ascend (block-level, single context).
+        order: memory order, "acquire" / "release".
+        scope: signaling scope — "block" (intra-device), "rank" (intra-node)
+            or "node" (inter-node); mapped to the aclshmem comm scope.
+
+    Returns an int32 token that must be passed to ``consume_token`` to build
+    a data dependency on the memory guarded by this signal.
+    """
+    wait_kind = tl._unwrap_if_constexpr(wait_kind)
+    if wait_kind != "signal":
+        raise ValueError(f"wait_kind '{wait_kind}' not supported on Ascend "
+                         f"(only the threshold 'signal' wait)")
+
+    assert group_kind in (None, "block"), \
+        (f"TODO: group_kind='{group_kind}' not supported on Ascend "
+         f"(the aclshmem signal path is block-level)")
+
+    assert order in ("acquire", "release"), \
+        f"order '{order}' not supported (use 'acquire' or 'release')"
+
+    assert scope in (None, "block", "rank", "node"), \
+        f"scope '{scope}' not supported (use 'block', 'rank' or 'node')"
+
+    if not device_dptr.type.scalar.is_ptr():
+        raise ValueError(f"Unsupported device_dptr type {device_dptr.type.__repr__()} in `signal_wait`")
+    slot_id = tl._unwrap_if_constexpr(slot_id)
+
+    if slot_id is None:
+        sig_ptr = device_dptr  # wait the slot at device_dptr
+    else:
+        sig_ptr = _semantic.add(device_dptr, slot_id, True)
+    num_barriers = _semantic.to_tensor(1)
+    elem_ty = device_dptr.dtype.element_ty
+    require_i64 = False
+    if elem_ty.is_int64() or elem_ty.is_uint64():
+        require_i64 = True
+    target_ir = _semantic._convert_elem_to_ir_value(target, require_i64=require_i64)
+    # NOTE: `scope` is FlagCX API metadata only on Ascend — the aclshmem
+    # threshold wait is a plain equal-spin on local GM (the peer's write
+    # arrives via topology-routed engines regardless of scope), so the
+    # MEM_SYNC_SCOPE attr is fixed to the default GPU bucket.
+    mem_scope_ir = _semantic._str_to_scope("gpu")
+    order = _semantic._str_to_sem(order)
+    return tl.tensor(
+        _semantic.builder.create_signal_wait(
+            sig_ptr.handle,
+            num_barriers.handle,
+            target_ir,
+            mem_scope_ir,
+            order,
+            tl.int32.to_ir(_semantic.builder),
+        ),
+        tl.int32,
+    )
+
+
+@builtin
+def consume_token(value, token, _semantic=None):
+    assert token.type.scalar.is_int(), "token must be of int type"
+    handle = _semantic.builder.create_consume_token(value.handle, token.handle)
+    if isinstance(value, tl.tensor_descriptor):
+        return tl.tensor_descriptor(handle, value.shape, value.strides, value.block_type)
+    else:
+        return tl.tensor(handle, value.type)
+
+
+@builtin
+def shmem_put_nbi(src, dst, nelems, pe, _semantic=None):
+    """Copy contiguous data from local GM to remote GM (non-blocking)."""
+    dtype = src.dtype
+    symbol = f"aclshmem_{_shmem_dtype(dtype)}_putmem_nbi"
+    s = _semantic.to_tensor
+    return _extern_call(
+        "libshmem_device",
+        "",
+        [dst, src, nelems, pe],
+        {(_scalar_dtype(s(dst)), _scalar_dtype(s(src)), tl.int32, tl.int32): (symbol, ())},
+        is_pure=False,
+        _semantic=_semantic,
+    )
+
+
+@builtin
+def shmem_get_nbi(dst, src, nelems, pe, _semantic=None):
+    """Copy contiguous data from remote GM to local GM (non-blocking).
+
+    Args: dst (tensor): local destination buffer
+          src (tensor): remote source buffer (on peer PE)
+          nelems (int): number of elements
+          pe (int): source PE rank
+    """
+    dtype = dst.dtype
+    symbol = f"aclshmem_{_shmem_dtype(dtype)}_getmem_nbi"
+    s = _semantic.to_tensor
+    return _extern_call(
+        "libshmem_device",
+        "",
+        [dst, src, nelems, pe],
+        {(_scalar_dtype(s(dst)), _scalar_dtype(s(src)), tl.int32, tl.int32): (symbol, ())},
+        is_pure=False,
+        _semantic=_semantic,
+    )
+
+
+@builtin
+def shmem_fence(_semantic=None):
+    """Fence: order all prior remote memory operations of this thread
+    (e.g. stores into peer symmetric memory) before all subsequent ones
+    (e.g. ``notify`` signals). Call it between the data stores and the
+    notify loop, mirroring ``libshmem_device.fence()``."""
+    return _extern_call(
+        "libshmem_device",
+        "",
+        [],
+        {(): ("aclshmem_fence", ())},
+        is_pure=False,
+        _semantic=_semantic,
+    )

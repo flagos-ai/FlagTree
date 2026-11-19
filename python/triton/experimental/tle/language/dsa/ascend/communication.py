@@ -1,6 +1,7 @@
 # Copyright 2026- Xcoresigma Technology Co., Ltd
 
 import os
+import socket
 import torch
 import torch.distributed as dist
 import shmem as ash
@@ -18,6 +19,20 @@ def _get_ash_ip_port():
     return f"tcp://{ash_addr}:{ash_port}"
 
 
+def _find_free_port(host):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        return s.getsockname()[1]
+
+
+def _get_dynamic_ash_ip_port():
+    ash_addr = os.environ.get("ASH_MASTER_ADDR", "127.0.0.1")
+    port = _find_free_port(ash_addr) if _g_pe == 0 else 0
+    port_tensor = torch.tensor([port], dtype=torch.int64, device="npu")
+    dist.broadcast(port_tensor, src=0)
+    return f"tcp://{ash_addr}:{int(port_tensor.item())}"
+
+
 def init_communicator(ip_port=None, ash_size=None, engine_type=None):
     global _g_pe, _g_world_size, _g_mem_count
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -32,14 +47,20 @@ def init_communicator(ip_port=None, ash_size=None, engine_type=None):
     attributes.my_rank = _g_pe
     attributes.n_ranks = _g_world_size
     attributes.local_mem_size = ash_size if ash_size is not None else 1024 * 1024 * 1024
-    attributes.ip_port = ip_port if ip_port is not None else _get_ash_ip_port()
+    if ip_port is not None:
+        attributes.ip_port = ip_port
+    elif "ASH_MASTER_PORT" in os.environ:
+        attributes.ip_port = _get_ash_ip_port()
+    else:
+        attributes.ip_port = _get_dynamic_ash_ip_port()
     # ROCE/RDMA is the inter-node (multi-machine) protocol; MTE is intra-node only.
     if engine_type is None:
         engine_type = ash.OpEngineType.MTE
     attributes.option_attr.data_op_engine_type = engine_type
     ret = ash.aclshmem_init(attributes)
     if ret != 0:
-        raise ValueError("[ERROR] aclshmem_init failed")
+        raise ValueError(f"[ERROR] aclshmem_init failed (ret={ret}, ip_port={attributes.ip_port}); "
+                         "the port may conflict with a previous run, set ASH_MASTER_PORT to a free port")
     _g_mem_count = 0
 
 

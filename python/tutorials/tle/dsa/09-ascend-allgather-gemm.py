@@ -75,7 +75,7 @@ def kernel_allgather_gemm(
         if subblock_idx == 0:
             for k in range(pid, comm_num_m_blocks * comm_num_k_blocks * rank_size, ncore):
                 if USE_COMM_SWIZZLE:
-                    block_id_m, block_id_k, target_rank, comm_row_shape, comm_col_shape = (tle.swizzle2d_Nz(
+                    block_id_m, block_id_k, target_rank, comm_row_shape, comm_col_shape = (tle.dsa.ascend.swizzle2d_Nz(
                         k,
                         rank_size,
                         actual_block_size_m,
@@ -111,7 +111,7 @@ def kernel_allgather_gemm(
         num_tiles_m = tl.cdiv(actual_block_size_m, BLOCK_SIZE_M)
         for block_id in range(pid, num_tiles_m * num_loops_n * rank_size, ncore):
             if USE_GEMM_SWIZZLE:
-                block_id_m, block_id_n = tle.gemm_swizzle2d_Nz(
+                block_id_m, block_id_n = tle.dsa.ascend.gemm_swizzle2d_Nz(
                     block_id,
                     rank_size * BLOCK_SIZE_M * num_tiles_m,
                     N,

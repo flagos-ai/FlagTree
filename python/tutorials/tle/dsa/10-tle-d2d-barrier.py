@@ -66,6 +66,6 @@ class TestD2DBarrier:
         _runtime_verify(output, device_dptr, grid, rank, world_size)
 
 
-# cmd: torchrun --nproc-per-node=2 python/python/tutorials/tle/dsa/10-tle-d2d-barrier.py
+# cmd: torchrun --nproc-per-node=2 python/tutorials/tle/dsa/10-tle-d2d-barrier.py
 if __name__ == "__main__":
     TestD2DBarrier().test_tle_d2d_barrier()
