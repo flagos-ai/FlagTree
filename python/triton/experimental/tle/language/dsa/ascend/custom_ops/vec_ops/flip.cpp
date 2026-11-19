@@ -32,13 +32,13 @@
 // ordering versus neighbouring ops is the caller's responsibility.
 namespace {
 
-constexpr uint32_t FLIP_BLK = 32;    // one 32B addressable row unit
-constexpr uint32_t B8_CHUNK = 512;   // two interleaved 16x16 byte matrices
-constexpr uint32_t B16_CHUNK = 512;  // 16x16 halves per chunk
+constexpr uint32_t FLIP_BLK = 32;   // one 32B addressable row unit
+constexpr uint32_t B8_CHUNK = 512;  // two interleaved 16x16 byte matrices
+constexpr uint32_t B16_CHUNK = 512; // 16x16 halves per chunk
 constexpr uint32_t MAX_REPEATS = 255;
 
-__aiv__ __attribute__((always_inline)) uint32_t
-src_row_of(uint32_t i, bool word_mode) {
+__aiv__ __attribute__((always_inline)) uint32_t src_row_of(uint32_t i,
+                                                           bool word_mode) {
   return word_mode ? (15u - (i ^ 1u)) : (15u - i);
 }
 
@@ -131,8 +131,7 @@ reverse_chunk_b8(__ubuf__ uint8_t *dst, __ubuf__ uint8_t *tmp,
 template <typename T>
 __aiv__ __attribute__((always_inline)) bool
 reverse_chunked(__ubuf__ uint8_t *dst, __ubuf__ uint8_t *tmp,
-                __ubuf__ uint8_t *src, uint32_t row_bytes,
-                uint32_t row_cnt) {
+                __ubuf__ uint8_t *src, uint32_t row_bytes, uint32_t row_cnt) {
   if (row_bytes % B16_CHUNK != 0) {
     return false;
   }
@@ -170,9 +169,9 @@ flip_impl(memref_t<__ubuf__ T, 2> *src, memref_t<__ubuf__ T, 2> *tmp,
   const uint32_t row_bytes = (uint32_t)(cols * sizeof(T));
   const bool blk_aligned =
       (((uint64_t)sp | (uint64_t)tp | (uint64_t)dp) % FLIP_BLK) == 0;
-  const bool contiguous =
-      blk_aligned && src->strides[0] == cols && dst->strides[0] == cols &&
-      src->strides[1] == 1 && dst->strides[1] == 1;
+  const bool contiguous = blk_aligned && src->strides[0] == cols &&
+                          dst->strides[0] == cols && src->strides[1] == 1 &&
+                          dst->strides[1] == 1;
 
   if (contiguous && reverse_chunked<T>(dp, tp, sp, row_bytes, (uint32_t)rows)) {
     return;
@@ -192,12 +191,12 @@ flip_impl(memref_t<__ubuf__ T, 2> *src, memref_t<__ubuf__ T, 2> *tmp,
 
 } // namespace
 
-#define REGISTER_CUSTOM_FLIP(TYPE_NAME, T)                                      \
-  extern "C" __aiv__ __attribute__((always_inline)) void                        \
-      _mlir_ciface_custom_flip_##TYPE_NAME(                                     \
-          memref_t<__ubuf__ T, 2> *src, memref_t<__ubuf__ T, 2> *tmp,           \
-          memref_t<__ubuf__ T, 2> *dst) {                                       \
-    flip_impl<T>(src, tmp, dst);                                                \
+#define REGISTER_CUSTOM_FLIP(TYPE_NAME, T)                                     \
+  extern "C" __aiv__ __attribute__((always_inline)) void                       \
+      _mlir_ciface_custom_flip_##TYPE_NAME(memref_t<__ubuf__ T, 2> *src,       \
+                                           memref_t<__ubuf__ T, 2> *tmp,       \
+                                           memref_t<__ubuf__ T, 2> *dst) {     \
+    flip_impl<T>(src, tmp, dst);                                               \
   }
 
 REGISTER_CUSTOM_FLIP(half, half)

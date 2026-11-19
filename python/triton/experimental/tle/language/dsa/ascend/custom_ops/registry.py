@@ -579,8 +579,7 @@ class flip:
             f"to match src dtype ({_element_dtype(src)})")
         assert len(src.shape) == 2, f"flip requires a 2D tile, got shape {src.shape}"
         assert len(out.shape) == 2, f"flip requires a 2D out tile, got shape {out.shape}"
-        assert out.shape == src.shape, (
-            f"flip requires out shape ({out.shape}) to match src shape ({src.shape})")
+        assert out.shape == src.shape, (f"flip requires out shape ({out.shape}) to match src shape ({src.shape})")
         assert len(tmp.shape) == 2, f"flip requires a 2D tmp tile, got shape {tmp.shape}"
         tmp_bytes = tmp.numel.value * _element_dtype(tmp).primitive_bitwidth // 8
         assert tmp_bytes >= 512, (f"flip requires a tmp buffer of at least 512 bytes, "
