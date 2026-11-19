@@ -414,6 +414,9 @@ class _Platform:
     def default_rings(self, world):
         return [list(range(world))], "identity"
 
+    def num_warps(self, block):
+        return min(16, max(4, block // 256))
+
     def kernel_args(self):
         return dict(RECV_LOAD=self.recv_load, REMOTE_STORE=self.remote_store, SIGNAL=self.signal, WAIT=self.wait)
 
@@ -431,6 +434,10 @@ class PpuPlatform(_Platform):
 class HcuPlatform(_Platform):
     name, soname, prefix = "hcu", "libamdhip64.so", "hip"
     tle_supported = False
+
+    def num_warps(self, block):
+        # BW1101 uses 64 lanes per wave: four waves give 256 threads per program.
+        return 4
 
     def allocate(self, ptr, size):
         # hipDeviceMallocUncached: coarse-grained hipMalloc breaks peer flag visibility.
@@ -739,7 +746,7 @@ class fused_rs_add_rms_norm_ag:
             H=H,
             BLOCK_H=BLOCK_H,
             DO_AG=gather,
-            num_warps=min(16, max(4, BLOCK_H // 256)),
+            num_warps=comm.platform.num_warps(BLOCK_H),
             **comm.launch_args(),
         )
         return out
@@ -832,7 +839,7 @@ class fused_qkv_norm_ag:
             Q=self.q_dim,
             KV=self.kv_dim,
             BLOCK=BLOCK,
-            num_warps=min(16, max(4, BLOCK // 256)),
+            num_warps=comm.platform.num_warps(BLOCK),
             **comm.launch_args(),
         )
         return out
