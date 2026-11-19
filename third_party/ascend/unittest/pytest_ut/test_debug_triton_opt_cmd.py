@@ -40,6 +40,7 @@ def _make_metadata():
         "enable_sync_block_lock": False,
         "enable_mask_fallback_conversion": False,
         "optimize_dynamic_offset": False,
+        "enable_auto_blockify": False,
         "auto_blockify_size": 1,
         "add_auto_scheduling": False,
         "enable_dynamic_cv_pipeline": False,
@@ -51,6 +52,7 @@ def _make_metadata():
 def _make_opt(debug):
     opt = MagicMock()
     opt.debug = debug
+    opt.structured_join_lowering = "auto"
     return opt
 
 
@@ -71,7 +73,6 @@ def _run_ttir_to_linalg(debug, capsys):
 
     with patch(f"{MOD}._get_triton_opt_path", return_value=FAKE_TOOL), \
          patch(f"{MOD}._get_triton_adapter_opt_path", return_value="/fake/triton-adapter-opt"), \
-         patch(f"{MOD}._is_auto_map_parallel_blocks_enabled", return_value=False), \
          patch(f"{MOD}.ir", ir_mock), \
          patch(f"{MOD}.ascend", MagicMock()), \
          patch(f"{MOD}.passes", MagicMock()), \

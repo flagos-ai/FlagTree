@@ -33,7 +33,7 @@ def _copy(X, Y, N, B: tl.constexpr, VIEW: tl.constexpr, STEP: tl.constexpr, VIEW
 def test_unit_pointer_and_mask_view(view, step, view_mask):
     torch.manual_seed(92813)
     n, block = 4079, 256
-    host = torch.randn(n * step)
+    host = torch.randn(n * step, device='cpu')
     src = host.npu()
     backing = torch.full((n + 128, ), 31415.25, device='npu')
     out = backing[64:-64]
@@ -60,12 +60,13 @@ def _nonunit_view(X, Y):
 
 
 def test_nonunit_product_keeps_general_fallback():
-    host = torch.arange(304, dtype=torch.float32)
+    host = torch.arange(304, dtype=torch.float32, device='cpu')
     src = host.npu()
     buf = torch.full((384, ), 31415.25, device='npu')
     k = _nonunit_view[(1, )](src, buf[64:-64], num_warps=4, num_stages=1, multibuffer=False, enable_auto_blockify=True)
     torch.npu.synchronize()
-    expected = host[(torch.arange(16)[:, None] * 19 + torch.arange(16)[None, :]).flatten()]
+    axis = torch.arange(16, device=host.device)
+    expected = host[(axis[:, None] * 19 + axis[None, :]).flatten()]
     assert torch.equal(buf[64:-64].cpu(), expected)
     assert (buf[:64].cpu() == 31415.25).all() and (buf[-64:].cpu() == 31415.25).all()
     assert 'DiscreteMemAccess' in k.asm['ttadapter']
@@ -81,7 +82,7 @@ def _conditional_unit_mask(X, Y, valid):
 
 
 def test_removed_unit_axis_condition_is_preserved():
-    host = torch.arange(32, dtype=torch.float32)
+    host = torch.arange(32, dtype=torch.float32, device='cpu')
     src = host.npu()
     buf = torch.full((160, ), 31415.25, device='npu')
     for valid in (0, 1):
