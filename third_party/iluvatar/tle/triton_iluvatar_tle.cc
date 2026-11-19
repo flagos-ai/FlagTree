@@ -311,8 +311,8 @@ void init_triton_iluvatar_tle_ir(py::module m) {
              auto indexType = builder.getIndexType();
              for (mlir::Value offset : offsets) {
                if (offset.getType() != indexType)
-                 offset = self.create<mlir::arith::IndexCastOp>(indexType,
-                                                               offset);
+                 offset =
+                     self.create<mlir::arith::IndexCastOp>(indexType, offset);
                indexOffsets.push_back(offset);
              }
              auto srcBuf = mlir::cast<tile::BufType>(source.getType());
@@ -334,10 +334,8 @@ void init_triton_iluvatar_tle_ir(py::module m) {
              return self.create<tile::ToTensorOp>(resTy, src).getResult();
            })
       .def("create_tile_store_tensor",
-           [](TritonOpBuilder &self, mlir::Value &src,
-              mlir::Value &dst) -> void {
-             self.create<tile::StoreTensorOp>(src, dst);
-           })
+           [](TritonOpBuilder &self, mlir::Value &src, mlir::Value &dst)
+               -> void { self.create<tile::StoreTensorOp>(src, dst); })
       .def("create_tile_gm_offset",
            [](TritonOpBuilder &self, mlir::Value &base,
               std::vector<mlir::Value> &indices,
@@ -348,7 +346,8 @@ void init_triton_iluvatar_tle_ir(py::module m) {
              auto indexType = builder.getIndexType();
              for (mlir::Value index : indices) {
                if (index.getType() != indexType)
-                 index = self.create<mlir::arith::IndexCastOp>(indexType, index);
+                 index =
+                     self.create<mlir::arith::IndexCastOp>(indexType, index);
                indexValues.push_back(index);
              }
              for (mlir::Value stride : strides) {

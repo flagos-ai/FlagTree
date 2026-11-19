@@ -30,6 +30,7 @@ def test_missing_common_ir_capability_is_disabled(monkeypatch, binding):
 @pytest.mark.parametrize("plugin", ["tle", "iluvatar"])
 @pytest.mark.parametrize("enabled", [False, True])
 def test_common_ir_capability_is_queried_once(monkeypatch, plugin, enabled):
+    monkeypatch.setenv("FLAGTREE_COMMON_IR", "1")
     calls = []
 
     def query():
@@ -43,6 +44,7 @@ def test_common_ir_capability_is_queried_once(monkeypatch, plugin, enabled):
 
 
 def test_tle_capability_is_preferred_over_vendor(monkeypatch):
+    monkeypatch.setenv("FLAGTREE_COMMON_IR", "1")
 
     def tle_query():
         return True
@@ -55,6 +57,18 @@ def test_tle_capability_is_preferred_over_vendor(monkeypatch):
         SimpleNamespace(tle=SimpleNamespace(is_common_ir_enabled=tle_query),
                         iluvatar=SimpleNamespace(is_common_ir_enabled=vendor_query)))
     assert module.ENABLED is True
+
+
+@pytest.mark.parametrize("setting, expected", [(None, False), ("0", False), ("1", True)])
+def test_common_ir_runtime_opt_in(monkeypatch, setting, expected):
+    if setting is None:
+        monkeypatch.delenv("FLAGTREE_COMMON_IR", raising=False)
+    else:
+        monkeypatch.setenv("FLAGTREE_COMMON_IR", setting)
+    binding = SimpleNamespace(tle=SimpleNamespace(is_common_ir_enabled=lambda: True))
+    module = _load_capability(monkeypatch, binding)
+    assert module.AVAILABLE is True
+    assert module.ENABLED is expected
 
 
 @pytest.mark.parametrize("plugin", ["tle", "iluvatar"])

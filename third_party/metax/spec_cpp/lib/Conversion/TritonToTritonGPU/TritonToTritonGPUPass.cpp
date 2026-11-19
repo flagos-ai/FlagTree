@@ -943,8 +943,8 @@ public:
 #endif
     patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);
 #ifdef __FLAGTREE_COMMON_IR__
-    // [metax+CommonIR] CommonIRToTTGIR emits undecorated ttg.local_load/store in
-    // make_ttir; register GenericOpPatterns so the TypeConverter can attach
+    // [metax+CommonIR] CommonIRToTTGIR emits undecorated ttg.local_load/store
+    // in make_ttir; register GenericOpPatterns so the TypeConverter can attach
     // blocked encodings (dynamically legal only once encoded).
     patterns.insert<GenericOpPattern<mlir::triton::gpu::LocalLoadOp>,
                     GenericOpPattern<mlir::triton::gpu::LocalStoreOp>>(

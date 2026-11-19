@@ -1,22 +1,23 @@
 // [metax+CommonIR] Slim CommonIR-only TLE bindings.
-// Mirrors only the __FLAGTREE_COMMON_IR__ tile.* builder methods from triton_tle.cc.
-// Depends on FLIR CommonIR (tile) only — no TLE-raw/Lite and no ttng Hopper.
+// Mirrors only the __FLAGTREE_COMMON_IR__ tile.* builder methods from
+// triton_tle.cc. Depends on FLIR CommonIR (tile) only — no TLE-raw/Lite and no
+// ttng Hopper.
+#include "CommonIRToTTGIR/Passes.h"
 #include "Python.h"
 #include "ir.h"
 #include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Pass/PassManager.h"
-#include "CommonIRToTTGIR/Passes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Value.h"
+#include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
-#include "llvm/ADT/SmallVector.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
+#include "llvm/ADT/SmallVector.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -27,7 +28,8 @@ using namespace mlir;
 namespace tile = triton::tile;
 
 static std::string attrToLowerString(Attribute attr) {
-  if (!attr) return "";
+  if (!attr)
+    return "";
   std::string text;
   llvm::raw_string_ostream os(text);
   attr.print(os);
@@ -38,10 +40,15 @@ static std::string attrToLowerString(Attribute attr) {
 }
 static tile::MemorySpace attrToCommonIRMemorySpace(Attribute attr) {
   auto text = attrToLowerString(attr);
-  if (text.find("register") != std::string::npos) return tile::MemorySpace::Register;
-  if (text.find("shared") != std::string::npos || text.find("smem") != std::string::npos) return tile::MemorySpace::Shared;
-  if (text.find("global") != std::string::npos) return tile::MemorySpace::Global;
-  if (text.find("local") != std::string::npos) return tile::MemorySpace::Local;
+  if (text.find("register") != std::string::npos)
+    return tile::MemorySpace::Register;
+  if (text.find("shared") != std::string::npos ||
+      text.find("smem") != std::string::npos)
+    return tile::MemorySpace::Shared;
+  if (text.find("global") != std::string::npos)
+    return tile::MemorySpace::Global;
+  if (text.find("local") != std::string::npos)
+    return tile::MemorySpace::Local;
   return tile::MemorySpace::Shared;
 }
 
@@ -55,16 +62,16 @@ void init_triton_tle_passes_commonir(py::module &&m) {
 
 void init_triton_tle(py::module &&m) {
   m.def("is_common_ir_enabled", []() { return true; });
-  m.def("load_dialects", [](mlir::MLIRContext &context) {
-    context.loadAllAvailableDialects();
-  });
+  m.def("load_dialects",
+        [](mlir::MLIRContext &context) { context.loadAllAvailableDialects(); });
   m.def("load_tile_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
     registry.insert<mlir::triton::tile::CommonIRDialect>();
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });
-  init_triton_tle_passes_commonir(m.def_submodule("passes").def_submodule("commonir"));
+  init_triton_tle_passes_commonir(
+      m.def_submodule("passes").def_submodule("commonir"));
   auto &builder_cls = *ir::getBuilderClass();
   builder_cls
       .def("tile_get_string_attr",
@@ -171,6 +178,5 @@ void init_triton_tle(py::module &&m) {
                  .create<tile::GmOffsetOp>(base.getType(), base, indexValues,
                                            strideValues)
                  .getResult();
-           })
-      ;
+           });
 }
