@@ -670,6 +670,22 @@ class JITFunction(JITCallable, KernelInterface[T]):
         assert callable(hook)
         self.pre_run_hooks.append(hook)
 
+    def add_pre_launch_hook(self, hook):
+        '''
+        Hook around the real device launch only (skipped on warmup).
+        Runs immediately before kernel.run enqueue.
+        '''
+        assert callable(hook)
+        self.pre_launch_hooks.append(hook)
+
+    def add_post_launch_hook(self, hook):
+        '''
+        Hook after the real device launch enqueue (skipped on warmup).
+        Always runs in a finally relative to pre_launch + launch.
+        '''
+        assert callable(hook)
+        self.post_launch_hooks.append(hook)
+
     def create_binder(self):
         """
         Precompute as much as possible.
@@ -755,10 +771,20 @@ class JITFunction(JITCallable, KernelInterface[T]):
             grid_2 = grid[2] if grid_size > 2 else 1
             if hasattr(kernel, "result"):
                 kernel = kernel.result()
-            # launch kernel
+            try:
+                from triton.experimental.tle.raw.cann.runtime import bind_kernel_launch_hooks
+                bind_kernel_launch_hooks(self, kernel)
+            except ImportError:
+                pass
             launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
-            kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
-                       knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *bound_args.values())
+            for hook in self.pre_launch_hooks:
+                hook(*args, **kwargs)
+            try:
+                kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
+                           knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *bound_args.values())
+            finally:
+                for hook in self.post_launch_hooks:
+                    hook(*args, **kwargs)
         return kernel
 
     def repr(self, _):
@@ -799,6 +825,9 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
         # Hooks that will be called prior to executing "run"
         self.pre_run_hooks = []
+        # Host-side hooks around the actual device launch (not warmup)
+        self.pre_launch_hooks = []
+        self.post_launch_hooks = []
 
     def warmup(self, *args, grid, **kwargs):
         return self.run(grid=grid, warmup=True, *map(MockTensor.wrap_dtype, args), **kwargs)
