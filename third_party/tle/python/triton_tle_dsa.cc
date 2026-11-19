@@ -29,7 +29,7 @@ static void defBinaryOp(py::class_<TritonOpBuilder> &builderCls,
   builderCls.def(
       name, [](TritonOpBuilder &self, Value lhs, Value rhs, Value out) -> void {
         self.getContext()->getOrLoadDialect<dsa::DsaDialect>();
-        self.getBuilder().create<DsaOpT>(self.getLastLoc(), lhs, rhs, out);
+        DsaOpT::create(self.getBuilder(), self.getLastLoc(), lhs, rhs, out);
       });
 }
 
@@ -67,14 +67,14 @@ static void init_triton_tle_ir(py::module m) {
              auto shapeAttr = DenseI64ArrayAttr::get(b.getContext(), dims);
              Type elementTy = py::cast<Type>(elementTyObj);
              auto bufTy = MemRefType::get(dims, elementTy);
-             auto op = self.getBuilder().create<dsa::AllocOp>(self.getLastLoc(),
-                                                              bufTy, shapeAttr);
+             auto op = dsa::AllocOp::create(
+                 self.getBuilder(), self.getLastLoc(), bufTy, shapeAttr);
              return op.getResult();
            })
       .def("create_dsa_copy",
            [](TritonOpBuilder &self, Value src, Value dst) -> void {
              self.getContext()->getOrLoadDialect<dsa::DsaDialect>();
-             self.getBuilder().create<dsa::CopyOp>(self.getLastLoc(), src, dst);
+             dsa::CopyOp::create(self.getBuilder(), self.getLastLoc(), src, dst);
            })
       .def("create_dsa_local_pointers",
            [](TritonOpBuilder &self, Type resultTy, Value src,
