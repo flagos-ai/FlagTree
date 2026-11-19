@@ -18,6 +18,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from .core import call, call_smem
+from .core import fragment, call, call_smem
 
-__all__ = ["call", "call_smem"]
+__all__ = ["fragment", "call", "call_smem"]
