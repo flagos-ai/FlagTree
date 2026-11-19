@@ -22,10 +22,10 @@ launch different grids. The parity of the data slots flips every call: a predece
 runs ahead into call n + 1 never touches what call n still reads. Every rank must make the
 same calls in the same order on one stream (eager only).
 
-Peer memory: USE_TLE reaches it with ``tle.remote(space="device")`` on a FlagCX window;
-otherwise (PPU, whose backend does not lower tle.remote yet) through a CUDA IPC address
-table. Writes into it are plain ``tl.store`` either way, so the kernels need no change once
-the PPU backend lowers them to remote bulk stores.
+At setup RingComm selects the host platform, ring orders and peer transport. The
+launchers pass the peer address, receive load, remote store and flag operations as
+constexpr JIT functions. IPC uses a peer address table. TLE uses a FlagCX window.
+The default remote store is an ordinary masked store on all platforms.
 
 Run from the repository root on one node with at least two GPUs:
 
@@ -33,7 +33,7 @@ Run from the repository root on one node with at least two GPUs:
 
 Env: H (7168), Q / KV / D (1536 / 512 / 2112, DeepSeek-V3 MLA), DTYPE (bf16 / fp16),
 TOKENS (comma list for the benchmark), ITERS, NCHANNELS, PEER (auto / tle / ipc),
-RINGS (auto / identity / ppu810e), OUT_JSON (write the benchmark there),
+RS_NORM_AG_PLATFORM (auto / ppu / hcu / metax / xpu / mthreads / cuda), RINGS (auto / identity / ppu810e), OUT_JSON (write the benchmark there),
 COMPARE_FLAGGEMS (path of FlagGems fused_rs_norm_ag.py, benchmarked alongside).
 TLE needs matching FlagTree/FlagCX runtime and device bitcode (FLAGCX_MODULE_PATH or
 ~/.flagtree/flagcx).
@@ -44,6 +44,7 @@ import importlib.util
 import json
 import os
 import statistics
+from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 import torch
@@ -80,9 +81,24 @@ def _wait(flag, target, err_ptr, max_spin):
 
 
 @triton.jit
-def _peer_ptr(peer_ptr, rank, dtype: tl.constexpr, offset):
+def _ipc_ptr(ctx: tl.constexpr, peer_ptr, rank, dtype: tl.constexpr, offset):
     # IPC path: element `offset` of `rank`'s buffer
     return tl.load(peer_ptr + rank).to(tl.pointer_type(dtype)) + offset
+
+
+@triton.jit
+def _tle_ptr(ctx: tl.constexpr, peer_ptr, rank, dtype: tl.constexpr, offset):
+    return tle.remote(ctx, shard_id=rank, space="device", dtype=dtype, offset=offset)
+
+
+@triton.jit
+def _recv_load(ptr, mask):
+    return tl.load(ptr, mask=mask, other=0.0, cache_modifier=".cg")
+
+
+@triton.jit
+def _remote_store(ptr, value, mask):
+    tl.store(ptr, value, mask=mask)
 
 
 @triton.jit(do_not_specialize=[
@@ -114,7 +130,11 @@ def rs_norm_ag_ring_kernel(
     H: tl.constexpr,
     BLOCK_H: tl.constexpr,
     DO_AG: tl.constexpr,  # False: stop after the norm, out holds only my rows
-    USE_TLE: tl.constexpr,
+    PEER_PTR: tl.constexpr,
+    RECV_LOAD: tl.constexpr,
+    REMOTE_STORE: tl.constexpr,
+    SIGNAL: tl.constexpr,
+    WAIT: tl.constexpr,
 ):
     pid = tl.program_id(0)
     G = tl.num_programs(0)
@@ -131,12 +151,8 @@ def rs_norm_ag_ring_kernel(
     se = slot_elems.to(tl.int64)
     my_flag = flag_ptr + pid
     mine = buf_ptr + pe
-    if USE_TLE:
-        succ_flag = tle.remote(dist_ctx, shard_id=nxt_rank, space="device", dtype=tl.int32, offset=flag_off + pid)
-        nxt = tle.remote(dist_ctx, shard_id=nxt_rank, space="device", dtype=dt, offset=pe)
-    else:
-        succ_flag = _peer_ptr(peer_ptr, nxt_rank, tl.int32, flag_off + pid)
-        nxt = _peer_ptr(peer_ptr, nxt_rank, dt, pe)
+    succ_flag = PEER_PTR(dist_ctx, peer_ptr, nxt_rank, tl.int32, flag_off + pid)
+    nxt = PEER_PTR(dist_ctx, peer_ptr, nxt_rank, dt, pe)
 
     # RS step 0: my partial sums of chunk order[p - 1] -> succ slot 0
     k = tl.load(ring + (p + WORLD - 1) % WORLD)
@@ -144,32 +160,32 @@ def rs_norm_ag_ring_kernel(
     n = tl.minimum((k + 1) * chunk, num_tokens) - b
     for lr in range(pid, n, G):
         v = tl.load(x_ptr + (b + lr).to(tl.int64) * H + cols, mask=m)
-        tl.store(nxt + lr.to(tl.int64) * H + cols, v, mask=m)
-    _signal(succ_flag, base + 1)
+        REMOTE_STORE(nxt + lr.to(tl.int64) * H + cols, v, mask=m)
+    SIGNAL(succ_flag, base + 1)
 
     # RS steps 1 .. W-2: add my partial sums to the received chunk, pass it on
     for s in range(1, WORLD - 1):
-        _wait(my_flag, base + s, err_ptr, max_spin)
+        WAIT(my_flag, base + s, err_ptr, max_spin)
         k = tl.load(ring + (p + 2 * WORLD - s - 1) % WORLD)
         b = tl.minimum(k * chunk, num_tokens)
         n = tl.minimum((k + 1) * chunk, num_tokens) - b
         for lr in range(pid, n, G):
             row = lr.to(tl.int64) * H
             # written by a peer: bypass L1
-            acc = tl.load(mine + (s - 1) * se + row + cols, mask=m, cache_modifier=".cg").to(tl.float32)
+            acc = RECV_LOAD(mine + (s - 1) * se + row + cols, mask=m).to(tl.float32)
             acc += tl.load(x_ptr + (b + lr).to(tl.int64) * H + cols, mask=m).to(tl.float32)
-            tl.store(nxt + s * se + row + cols, acc.to(dt), mask=m)
-        _signal(succ_flag, base + s + 1)
+            REMOTE_STORE(nxt + s * se + row + cols, acc.to(dt), mask=m)
+        SIGNAL(succ_flag, base + s + 1)
 
     # owner: the last hop brings the sum of the other W - 1 ranks of my rows
-    _wait(my_flag, base + WORLD - 1, err_ptr, max_spin)
+    WAIT(my_flag, base + WORLD - 1, err_ptr, max_spin)
     mb = tl.minimum(rank * chunk, num_tokens)
     mn = tl.minimum((rank + 1) * chunk, num_tokens) - mb
     w = tl.load(w_ptr + cols, mask=m, other=0.0).to(tl.float32)
     for lr in range(pid, mn, G):
         row = lr.to(tl.int64) * H
         g = (mb + lr).to(tl.int64) * H
-        x = tl.load(mine + (WORLD - 2) * se + row + cols, mask=m, other=0.0, cache_modifier=".cg").to(tl.float32)
+        x = RECV_LOAD(mine + (WORLD - 2) * se + row + cols, mask=m).to(tl.float32)
         x += tl.load(x_ptr + g + cols, mask=m, other=0.0).to(tl.float32)
         x += tl.load(res_ptr + row + cols, mask=m, other=0.0).to(tl.float32)
         rrms = 1 / tl.sqrt(tl.sum(x * x) / H + eps)
@@ -177,26 +193,26 @@ def rs_norm_ag_ring_kernel(
         y = (x * rrms * w).to(dt)
         if DO_AG:
             tl.store(out_ptr + g + cols, y, mask=m)
-            tl.store(nxt + (WORLD - 1) * se + row + cols, y, mask=m)
+            REMOTE_STORE(nxt + (WORLD - 1) * se + row + cols, y, mask=m)
         else:
             tl.store(out_ptr + row + cols, y, mask=m)
 
     if DO_AG:
-        _signal(succ_flag, base + WORLD)
+        SIGNAL(succ_flag, base + WORLD)
         # AG steps: chunk order[p - t] arrives in slot W - 2 + t; keep it, pass it on
         for t in range(1, WORLD):
-            _wait(my_flag, base + WORLD - 1 + t, err_ptr, max_spin)
+            WAIT(my_flag, base + WORLD - 1 + t, err_ptr, max_spin)
             k = tl.load(ring + (p + WORLD - t) % WORLD)
             b = tl.minimum(k * chunk, num_tokens)
             n = tl.minimum((k + 1) * chunk, num_tokens) - b
             for lr in range(pid, n, G):
                 row = lr.to(tl.int64) * H
-                v = tl.load(mine + (WORLD - 2 + t) * se + row + cols, mask=m, cache_modifier=".cg")
+                v = RECV_LOAD(mine + (WORLD - 2 + t) * se + row + cols, mask=m)
                 tl.store(out_ptr + (b + lr).to(tl.int64) * H + cols, v, mask=m)
                 if t < WORLD - 1:
-                    tl.store(nxt + (WORLD - 1 + t) * se + row + cols, v, mask=m)
+                    REMOTE_STORE(nxt + (WORLD - 1 + t) * se + row + cols, v, mask=m)
             if t < WORLD - 1:
-                _signal(succ_flag, base + WORLD + t)
+                SIGNAL(succ_flag, base + WORLD + t)
 
 
 @triton.jit(do_not_specialize=[
@@ -231,7 +247,11 @@ def qkv_norm_ag_ring_kernel(
     Q: tl.constexpr,
     KV: tl.constexpr,
     BLOCK: tl.constexpr,
-    USE_TLE: tl.constexpr,
+    PEER_PTR: tl.constexpr,
+    RECV_LOAD: tl.constexpr,
+    REMOTE_STORE: tl.constexpr,
+    SIGNAL: tl.constexpr,
+    WAIT: tl.constexpr,
 ):
     # owner: norm q and kv of my rows, keep them, send them to succ slot 0;
     # AG step t = 1 .. W-1: chunk order[p - t] arrives in slot t - 1, keep it, pass it on
@@ -252,12 +272,8 @@ def qkv_norm_ag_ring_kernel(
     se = slot_elems.to(tl.int64)
     my_flag = flag_ptr + pid
     mine = buf_ptr + pe
-    if USE_TLE:
-        succ_flag = tle.remote(dist_ctx, shard_id=nxt_rank, space="device", dtype=tl.int32, offset=flag_off + pid)
-        nxt = tle.remote(dist_ctx, shard_id=nxt_rank, space="device", dtype=dt, offset=pe)
-    else:
-        succ_flag = _peer_ptr(peer_ptr, nxt_rank, tl.int32, flag_off + pid)
-        nxt = _peer_ptr(peer_ptr, nxt_rank, dt, pe)
+    succ_flag = PEER_PTR(dist_ctx, peer_ptr, nxt_rank, tl.int32, flag_off + pid)
+    nxt = PEER_PTR(dist_ctx, peer_ptr, nxt_rank, dt, pe)
 
     wq = tl.load(qw_ptr + cols, mask=is_q, other=0.0).to(tl.float32)
     wkv = tl.load(kvw_ptr + (cols - Q), mask=is_kv, other=0.0).to(tl.float32)
@@ -272,52 +288,41 @@ def qkv_norm_ag_ring_kernel(
         rkv = 1 / tl.sqrt(tl.sum(tl.where(is_kv, xx, 0.0)) / KV + kv_eps)
         y = tl.where(is_q, x * rq * w, tl.where(is_kv, x * rkv * w, x)).to(dt)
         tl.store(out_ptr + (mb + lr).to(tl.int64) * D + cols, y, mask=in_row)
-        tl.store(nxt + lr.to(tl.int64) * D + cols, y, mask=in_row)
-    _signal(succ_flag, base + 1)
+        REMOTE_STORE(nxt + lr.to(tl.int64) * D + cols, y, mask=in_row)
+    SIGNAL(succ_flag, base + 1)
 
     for t in range(1, WORLD):
-        _wait(my_flag, base + t, err_ptr, max_spin)
+        WAIT(my_flag, base + t, err_ptr, max_spin)
         k = tl.load(ring + (p + WORLD - t) % WORLD)
         b = tl.minimum(k * chunk, num_tokens)
         n = tl.minimum((k + 1) * chunk, num_tokens) - b
         for lr in range(pid, n, G):
             row = lr.to(tl.int64) * D
-            v = tl.load(mine + (t - 1) * se + row + cols, mask=in_row, cache_modifier=".cg")
+            v = RECV_LOAD(mine + (t - 1) * se + row + cols, mask=in_row)
             tl.store(out_ptr + (b + lr).to(tl.int64) * D + cols, v, mask=in_row)
             if t < WORLD - 1:
-                tl.store(nxt + t * se + row + cols, v, mask=in_row)
+                REMOTE_STORE(nxt + t * se + row + cols, v, mask=in_row)
         if t < WORLD - 1:
-            _signal(succ_flag, base + t + 1)
-
-
-# pccl's 810E graph (pccl/liuda/810e_topo/28channnel/ring.xml): 7 distinct rings,
-# each used by 4 of the 28 channels. Every hop is an ICN link.
-PPU810E_RINGS = [
-    [0, 1, 2, 6, 5, 4, 7, 3, 10, 14, 13, 12, 15, 11, 8, 9],
-    [0, 1, 2, 6, 5, 4, 7, 14, 13, 12, 15, 11, 8, 9, 10, 3],
-    [0, 3, 7, 4, 5, 6, 2, 11, 15, 12, 13, 14, 10, 9, 8, 1],
-    [0, 3, 7, 4, 5, 12, 8, 10, 11, 9, 13, 14, 15, 6, 2, 1],
-    [0, 2, 3, 1, 8, 11, 15, 13, 9, 10, 14, 12, 5, 7, 6, 4],
-    [0, 9, 11, 10, 8, 12, 13, 4, 6, 15, 14, 7, 5, 1, 3, 2],
-    [0, 4, 13, 15, 12, 14, 10, 9, 8, 11, 2, 1, 5, 6, 7, 3],
-]
-# ICN neighbours of every PPU (topo_rank0000.xml)
-PPU810E_ICN = {
-    0: (1, 2, 3, 4, 9), 1: (0, 2, 3, 5, 8), 2: (0, 1, 3, 6, 11), 3: (0, 1, 2, 7, 10),
-    4: (0, 5, 6, 7, 13), 5: (1, 4, 6, 7, 12), 6: (2, 4, 5, 7, 15), 7: (3, 4, 5, 6, 14),
-    8: (1, 9, 10, 11, 12), 9: (0, 8, 10, 11, 13), 10: (3, 8, 9, 11, 14), 11: (2, 8, 9, 10, 15),
-    12: (5, 8, 13, 14, 15), 13: (4, 9, 12, 14, 15), 14: (7, 10, 12, 13, 15), 15: (6, 11, 12, 13, 14),
-}
+            SIGNAL(succ_flag, base + t + 1)
 
 
 def ppu810e_rings(phys_ids: Sequence[int]) -> List[List[int]]:
     """pccl's 810E rings restricted to the PPUs of the group (rank i = phys_ids[i]).
     Keeps the rings whose every hop is still an ICN link; returns rank-space rings."""
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:
+        raise ImportError("Loading the PPU 810E ring configuration requires PyYAML") from exc
+
+    path = Path(__file__).resolve().parent / "config" / "topology" / "ppu810e.yml"
+    with path.open(encoding="utf-8") as f:
+        topology = yaml.safe_load(f)
+    neighbors = topology["icn_neighbors"]
     where = {d: i for i, d in enumerate(phys_ids)}
     rings, fallback = [], []
-    for full in PPU810E_RINGS:
+    for full in topology["rings"]:
         r = [d for d in full if d in where]
-        ok = all(r[(i + 1) % len(r)] in PPU810E_ICN[r[i]] for i in range(len(r)))
+        ok = all(r[(i + 1) % len(r)] in neighbors[r[i]] for i in range(len(r)))
         (rings if ok else fallback).append([where[d] for d in r])
     return rings or fallback
 
@@ -336,75 +341,139 @@ class _CudaIpcHandle(ctypes.Structure):
     _fields_ = [("internal", ctypes.c_byte * 64)]
 
 
-class _HipAsCuda:
-    """ROCm / DTK has no libcudart: forward cudaXxx to hipXxx of libamdhip64 (same arguments,
-    the IPC handle is 64 bytes as well)."""
+class _Platform:
+    """Host runtime policy and device callbacks. The CUDA defaults keep the original NVIDIA path."""
 
-    def __init__(self, lib):
-        self._lib = lib
+    name = "cuda"
+    soname = "libcudart.so"
+    prefix = "cuda"
+    device_type = "cuda"
+    ipc_supported = True
+    tle_supported = True
+    recv_load = staticmethod(_recv_load)
+    remote_store = staticmethod(_remote_store)
+    signal = staticmethod(_signal)
+    wait = staticmethod(_wait)
 
-    def __getattr__(self, name):
-        if name.startswith("cuda"):
-            return getattr(self._lib, "hip" + name[4:])
-        return getattr(self._lib, name)
+    @property
+    def api(self):
+        return getattr(torch, self.device_type)
 
-
-class _CudaRT:
-    """The libcudart (or libamdhip64) torch already loaded, for raw allocations and IPC handles."""
-
-    def __init__(self):
-        path = None
-        with open("/proc/self/maps") as f:
-            for line in f:
+    def load_runtime(self):
+        # Bind the runtime torch already loaded, not a different SDK version on LD_LIBRARY_PATH.
+        path = self.soname
+        with open("/proc/self/maps") as maps:
+            for line in maps:
                 if "/" in line:
-                    p = line[line.index("/"):].strip()
-                    name = os.path.basename(p)
-                    if (name.startswith("libcudart") or name.startswith("libamdhip64")) and "stub" not in name:
-                        path = p
+                    candidate = line[line.index("/"):].strip()
+                    name = os.path.basename(candidate)
+                    if (name == path or name.startswith(path + ".")) and "/stubs/" not in candidate:
+                        path = candidate
                         break
-        if path is None:
-            path = "libamdhip64.so" if torch.version.hip else "libcudart.so"
-        lib = ctypes.CDLL(path)
-        self.lib = _HipAsCuda(lib) if "amdhip" in os.path.basename(path) else lib
-        self.lib.cudaGetErrorString.restype = ctypes.c_char_p
+        self.lib = ctypes.CDLL(path)
+        self.fn("GetErrorString").restype = ctypes.c_char_p
 
-    def check(self, err):
-        if err != 0:
-            raise RuntimeError(f"CUDA runtime error {err}: {self.lib.cudaGetErrorString(err).decode()}")
+    def fn(self, suffix):
+        return getattr(self.lib, self.prefix + suffix)
+
+    def check(self, status):
+        if status:
+            detail = self.fn("GetErrorString")(status)
+            raise RuntimeError(f"{self.name} runtime error {status}: {detail!r}")
+
+    def allocate(self, ptr, size):
+        return self.fn("Malloc")(ptr, size)
 
     def malloc(self, nbytes):
-        ptr = ctypes.c_void_p()
-        if isinstance(self.lib, _HipAsCuda):
-            # hipMalloc memory is coarse-grained: a peer's atomic_xchg on the flags is not seen
-            # by the owner's acquire reads, the waits time out. Allocate uncached memory, as
-            # vLLM's ROCm custom all-reduce does for its signals.
-            hip_device_malloc_uncached = 3
-            self.check(self.lib._lib.hipExtMallocWithFlags(ctypes.byref(ptr), ctypes.c_size_t(nbytes),
-                                                           ctypes.c_uint(hip_device_malloc_uncached)))
-        else:
-            self.check(self.lib.cudaMalloc(ctypes.byref(ptr), ctypes.c_size_t(nbytes)))
-        self.check(self.lib.cudaMemset(ptr, 0, ctypes.c_size_t(nbytes)))
+        ptr, size = ctypes.c_void_p(), ctypes.c_size_t(nbytes)
+        self.check(self.allocate(ctypes.byref(ptr), size))
+        try:
+            self.check(self.fn("Memset")(ptr, 0, size))
+        except Exception:
+            self.free(ptr.value)
+            raise
         return ptr.value
 
     def free(self, ptr):
-        self.check(self.lib.cudaFree(ctypes.c_void_p(ptr)))
+        self.check(self.fn("Free")(ctypes.c_void_p(ptr)))
 
     def ipc_get(self, ptr):
         handle = _CudaIpcHandle()
-        self.check(self.lib.cudaIpcGetMemHandle(ctypes.byref(handle), ctypes.c_void_p(ptr)))
+        self.check(self.fn("IpcGetMemHandle")(ctypes.byref(handle), ctypes.c_void_p(ptr)))
         return bytes(handle.internal)
 
     def ipc_open(self, raw):
-        # cudaIpcMemHandle_t goes by value: a Structure, not an array (arrays decay to pointers)
-        handle = _CudaIpcHandle()
-        ctypes.memmove(handle.internal, raw, 64)
+        handle = _CudaIpcHandle.from_buffer_copy(raw)
         ptr = ctypes.c_void_p()
-        # 1 = cudaIpcMemLazyEnablePeerAccess
-        self.check(self.lib.cudaIpcOpenMemHandle(ctypes.byref(ptr), handle, ctypes.c_uint(1)))
+        self.check(self.fn("IpcOpenMemHandle")(ctypes.byref(ptr), handle, ctypes.c_uint(1)))
         return ptr.value
 
     def ipc_close(self, ptr):
-        self.check(self.lib.cudaIpcCloseMemHandle(ctypes.c_void_p(ptr)))
+        self.check(self.fn("IpcCloseMemHandle")(ctypes.c_void_p(ptr)))
+
+    def default_rings(self, world):
+        return [list(range(world))], "identity"
+
+    def kernel_args(self):
+        return dict(RECV_LOAD=self.recv_load, REMOTE_STORE=self.remote_store, SIGNAL=self.signal, WAIT=self.wait)
+
+
+class PpuPlatform(_Platform):
+    name = "ppu"
+    tle_supported = False
+
+    def default_rings(self, world):
+        if "810E" in self.api.get_device_name():
+            return ppu810e_rings(_phys_ids(world)), "ppu810e"
+        return super().default_rings(world)
+
+
+class HcuPlatform(_Platform):
+    name, soname, prefix = "hcu", "libamdhip64.so", "hip"
+    tle_supported = False
+
+    def allocate(self, ptr, size):
+        # hipDeviceMallocUncached: coarse-grained hipMalloc breaks peer flag visibility.
+        return self.fn("ExtMallocWithFlags")(ptr, size, ctypes.c_uint(3))
+
+
+class MetaxPlatform(_Platform):
+    name = "metax"
+    tle_supported = ipc_supported = False  # Native host IPC ABI has not been validated.
+
+
+class KunlunPlatform(_Platform):
+    name = "xpu"
+    # XPU3's default CreateGM2LM pass rejects our release/sys atomic_xchg.
+    tle_supported = ipc_supported = False
+
+
+class MthreadsPlatform(_Platform):
+    name, device_type = "mthreads", "musa"
+    tle_supported = ipc_supported = False  # Native host IPC ABI has not been validated.
+
+
+_PLATFORMS = {cls.name: cls for cls in (_Platform, PpuPlatform, HcuPlatform, MetaxPlatform, KunlunPlatform,
+                                        MthreadsPlatform)}
+
+
+def _platform(name="auto"):
+    if name == "auto":
+        try:
+            from triton._flagtree_backend import FLAGTREE_BACKEND
+        except ImportError:
+            FLAGTREE_BACKEND = None
+        name = FLAGTREE_BACKEND or ""
+        if not name:
+            target = triton.runtime.driver.active.get_current_target().backend
+            if target == "cuda" and "PPU" in torch.cuda.get_device_name().upper():
+                name = "ppu"
+            else:
+                name = target
+        name = {"hip": "hcu", "amd": "hcu", "maca": "metax", "musa": "mthreads", "nvidia": "cuda"}.get(name, name)
+    if name not in _PLATFORMS:
+        raise ValueError(f"unknown platform {name!r}; choose RS_NORM_AG_PLATFORM from {tuple(_PLATFORMS)}")
+    return _PLATFORMS[name]()
 
 
 class _RawCuda:
@@ -412,6 +481,67 @@ class _RawCuda:
 
     def __init__(self, ptr, nbytes):
         self.__cuda_array_interface__ = {"data": (ptr, False), "shape": (nbytes, ), "typestr": "|u1", "version": 3}
+
+
+class _IpcPeer:
+    ptr = staticmethod(_ipc_ptr)
+    ctx = None
+
+    def __init__(self, platform):
+        if not platform.ipc_supported:
+            raise NotImplementedError(f"{platform.name}: host IPC is unavailable; use the compiler for offline checks")
+        self.platform = platform
+        platform.load_runtime()
+        if not dist.is_initialized():
+            dist.init_process_group(backend="nccl")
+
+    def buffers(self, nbytes, device, world, rank):
+        rt = self.platform
+        self.local = rt.malloc(nbytes)
+        self.opened = []
+        try:
+            buf = torch.as_tensor(_RawCuda(self.local, nbytes), device=device)
+            if self.local != buf.data_ptr():
+                raise RuntimeError("IPC buffer must alias its allocation")
+            handles = [None] * world
+            dist.all_gather_object(handles, rt.ipc_get(self.local))
+            ptrs = [self.local] * world
+            for r, h in enumerate(handles):
+                if r != rank:
+                    ptrs[r] = rt.ipc_open(h)
+                    self.opened.append(ptrs[r])
+            return buf, torch.tensor(ptrs, dtype=torch.int64, device=device)
+        except Exception:
+            self._release()
+            raise
+
+    def _release(self):
+        for ptr in self.opened:
+            self.platform.ipc_close(ptr)
+        self.platform.free(self.local)
+
+    def close(self):
+        dist.barrier()
+        self._release()
+        dist.destroy_process_group()
+
+
+class _TlePeer:
+    ptr = staticmethod(_tle_ptr)
+
+    def __init__(self):
+        self.pool = tle.get_mem_pool()  # also initializes the process group
+        if self.pool is None:
+            raise RuntimeError("FlagCX memory pool unavailable")
+
+    def buffers(self, nbytes, device, world, rank):
+        with torch.cuda.use_mem_pool(self.pool):
+            buf = torch.zeros(nbytes, dtype=torch.uint8, device=device)
+        self.ctx = tle.create_dist_tensor(buf)
+        return buf, torch.zeros(world, dtype=torch.int64, device=device)  # unused address table
+
+    def close(self):
+        tle.cleanup_communicator()
 
 
 class RingComm:
@@ -424,8 +554,8 @@ class RingComm:
 
     peer: "tle" registers the buffer as a FlagCX window and reaches peers with tle.remote
     (TLE keeps one window per process, which is why every op lives in this buffer); "ipc"
-    uses cudaMalloc + CUDA IPC; "auto" takes tle when TLE distributed is usable.
-    rings: rank orders, one per distinct ring (default identity); nchannels: channels per
+    uses the platform allocator and IPC handles; "auto" takes tle when supported.
+    rings: rank orders, one per distinct ring (default from platform); nchannels: channels per
     call, the rings repeat to fill them. Creation runs collectives: call it on every rank.
     """
 
@@ -436,33 +566,39 @@ class RingComm:
         rings: Optional[Sequence[Sequence[int]]] = None,
         nchannels: int = 16,
         max_spin: int = 1 << 22,
+        platform="auto",
     ):
+        self.platform = platform if isinstance(platform, _Platform) else _platform(platform)
+        can_tle = self.platform.tle_supported and tle is not None and tle.communication.enabled
         if peer == "auto":
-            peer = "tle" if tle is not None and tle.communication.enabled else "ipc"
+            peer = "tle" if can_tle else "ipc"
         if peer not in ("tle", "ipc"):
             raise ValueError(f"peer must be auto, tle or ipc, got {peer!r}")
         self.use_tle = peer == "tle"
-        if self.use_tle:
-            mem_pool = tle.get_mem_pool()  # also initializes the process group
-            if mem_pool is None:
-                raise RuntimeError("FlagCX memory pool is unavailable; check FlagCX build and environment variables.")
-        elif not dist.is_initialized():
-            dist.init_process_group(backend="nccl")
+        if self.use_tle and not can_tle:
+            raise RuntimeError(f"{self.platform.name}: TLE device windows unavailable")
+        self.peer = _TlePeer() if self.use_tle else _IpcPeer(self.platform)
         W, rank = dist.get_world_size(), dist.get_rank()
         if W < 2:
             raise ValueError("needs at least 2 ranks")
         self.world_size, self.rank = W, rank
         self.max_spin = max_spin
-        self.device = torch.device("cuda", torch.cuda.current_device())
+        self.device = torch.device(self.platform.device_type, self.platform.api.current_device())
         self._seq = 0
         self._signals = 0
         self.closed = False
 
-        rings = [list(r) for r in (rings or [list(range(W))])]
+        if rings is None:
+            rings, self.ring_kind = self.platform.default_rings(W)
+        else:
+            self.ring_kind = "custom"
+        rings = [list(r) for r in rings]
+        if not rings:
+            raise ValueError("at least one ring is required")
         for r in rings:
             if sorted(r) != list(range(W)):
                 raise ValueError(f"ring {r} is not a permutation of the {W} ranks")
-        self.max_programs = torch.cuda.get_device_properties(self.device).multi_processor_count
+        self.max_programs = self.platform.api.get_device_properties(self.device).multi_processor_count
         # a program waits on the same pid of its predecessor: every program of the grid
         # must be resident at once, so at most one per SM
         self.nchannels = max(1, min(nchannels, self.max_programs))
@@ -474,27 +610,12 @@ class RingComm:
         self.parity_bytes = triton.cdiv(parity_bytes, 512) * 512
         data_bytes = 2 * self.parity_bytes
         nbytes = data_bytes + self.max_programs * 4
-        if self.use_tle:
-            with torch.cuda.use_mem_pool(mem_pool):
-                self.buf = torch.zeros(nbytes, dtype=torch.uint8, device=self.device)
-            self.ctx = tle.create_dist_tensor(self.buf)
-            self.peers = torch.zeros(W, dtype=torch.int64, device=self.device)  # unused
-        else:
-            self._rt = _CudaRT()
-            self._ptr = self._rt.malloc(nbytes)
-            self.buf = torch.as_tensor(_RawCuda(self._ptr, nbytes), device=self.device)
-            handles = [None] * W
-            dist.all_gather_object(handles, self._rt.ipc_get(self._ptr))
-            self._opened = [self._rt.ipc_open(h) for r, h in enumerate(handles) if r != rank]
-            it = iter(self._opened)
-            ptrs = [self._ptr if r == rank else next(it) for r in range(W)]
-            self.peers = torch.tensor(ptrs, dtype=torch.int64, device=self.device)
-            self.ctx = None
+        self.buf, self.peers = self.peer.buffers(nbytes, self.device, W, rank)
         self.flags = self.buf[data_bytes:].view(torch.int32)
         self.flag_off = data_bytes // 4
         self.err = torch.zeros(1, dtype=torch.int32, device=self.device)
         # every flag buffer is zeroed before any peer can signal into it
-        torch.cuda.synchronize()
+        self.platform.api.synchronize()
         dist.barrier()
 
     def data(self, dtype: torch.dtype) -> torch.Tensor:
@@ -527,19 +648,12 @@ class RingComm:
         if self.closed:
             return
         self.closed = True
-        torch.cuda.synchronize()
-        if self.use_tle:
-            tle.cleanup_communicator()  # barrier, FlagCX teardown, destroy_process_group
-            return
-        dist.barrier()
-        for ptr in self._opened:
-            self._rt.ipc_close(ptr)
+        self.platform.api.synchronize()
+        self.peer.close()
         self.buf = self.flags = None
-        self._rt.free(self._ptr)
-        dist.destroy_process_group()
 
     def launch_args(self):
-        return dict(dist_ctx=self.ctx, USE_TLE=self.use_tle)
+        return dict(dist_ctx=self.peer.ctx, PEER_PTR=self.peer.ptr, **self.platform.kernel_args())
 
 
 class fused_rs_add_rms_norm_ag:
@@ -813,13 +927,15 @@ def _load_flaggems(path):
     return mod
 
 
-def _default_rings(W):
+def _default_rings(platform, world):
     kind = os.environ.get("RINGS", "auto")
     if kind == "auto":
-        kind = "ppu810e" if "810E" in torch.cuda.get_device_name() else "identity"
+        return platform.default_rings(world)
     if kind == "identity":
-        return None, kind
-    return ppu810e_rings(_phys_ids(W)), kind
+        return [list(range(world))], kind
+    if kind == "ppu810e" and platform.name == "ppu":
+        return ppu810e_rings(_phys_ids(world)), kind
+    raise ValueError(f"invalid RINGS={kind!r} for {platform.name}")
 
 
 def _phys_ids(W):
@@ -829,7 +945,8 @@ def _phys_ids(W):
 
 def main():
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-    torch.cuda.set_device(local_rank)
+    platform = _platform(os.environ.get("RS_NORM_AG_PLATFORM", "auto"))
+    platform.api.set_device(local_rank)
     W0 = int(os.environ["WORLD_SIZE"])
     if W0 != int(os.environ.get("LOCAL_WORLD_SIZE", W0)):
         raise ValueError("This tutorial is designed for a single node")
@@ -841,11 +958,12 @@ def main():
     nchannels = int(os.environ.get("NCHANNELS", "16"))
     T_max = max(tokens)
     eps = 1e-6
-    rings, ring_kind = _default_rings(W0)
+    rings, ring_kind = _default_rings(platform, W0)
 
     comm = RingComm(
         max(fused_rs_add_rms_norm_ag.parity_bytes(W0, T_max, H, dtype),
             fused_qkv_norm_ag.parity_bytes(W0, T_max, D, dtype)),
+        platform=platform,
         peer=os.environ.get("PEER", "auto"),
         rings=rings,
         nchannels=nchannels,
@@ -854,7 +972,7 @@ def main():
     log = print if rank == 0 else (lambda *a, **k: None)
     rs = fused_rs_add_rms_norm_ag(comm, T_max, H, dtype)
     qkv = fused_qkv_norm_ag(comm, T_max, Q, KV, D, dtype)
-    log(f"{torch.cuda.get_device_name()} W={W} {dtype} H={H} Q/KV/D={Q}/{KV}/{D} max_tokens={T_max} "
+    log(f"{platform.name} {platform.api.get_device_name()} W={W} {dtype} H={H} Q/KV/D={Q}/{KV}/{D} max_tokens={T_max} "
         f"peer={'tle' if comm.use_tle else 'ipc'} rings={ring_kind}({len(comm.rings)}) "
         f"nchannels={comm.nchannels} SMs={comm.max_programs} buffer={comm.buf.numel() / 2**20:.0f} MiB")
 
@@ -881,7 +999,7 @@ def main():
     if fg_path:
         fgm = _load_flaggems(fg_path)
         cpu = dist.new_group(backend="gloo")
-        fg_rings = fgm.ppu810e_rings(_phys_ids(W)) if ring_kind == "ppu810e" else None
+        fg_rings = comm.rings if ring_kind == "ppu810e" else None
         fg = (fgm.fused_rs_add_rms_norm_ag(dist.group.WORLD, comm.device, T_max, H, dtype, cpu_group=cpu,
                                            rings=fg_rings, nchannels=nchannels),
               fgm.fused_qkv_norm_ag(dist.group.WORLD, comm.device, T_max, Q, KV, D, dtype, cpu_group=cpu,
@@ -942,7 +1060,7 @@ def main():
     out_json = os.environ.get("OUT_JSON")
     if rank == 0 and out_json:
         meta = {"W": W, "dtype": str(dtype), "H": H, "Q": Q, "KV": KV, "D": D, "iters": iters,
-                "gpu": torch.cuda.get_device_name(), "peer": "tle" if comm.use_tle else "ipc",
+                "gpu": platform.api.get_device_name(), "platform": platform.name, "peer": "tle" if comm.use_tle else "ipc",
                 "rings": ring_kind, "nchannels": comm.nchannels}
         with open(out_json, "w") as f:
             json.dump({"meta": meta, "results": results}, f, indent=1)
