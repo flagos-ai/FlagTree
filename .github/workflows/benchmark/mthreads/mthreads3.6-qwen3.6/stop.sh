@@ -33,8 +33,12 @@ if [[ ! "$pid" =~ ^[0-9]+$ ]]; then
 fi
 
 if ! kill -0 "$pid" 2>/dev/null; then
-    echo "[ERROR] Process $pid does not exist, no need to stop."
-    exit 1
+    if [[ -d "/proc/$pid" ]]; then
+        echo "[ERROR] Cannot signal process $pid."
+        exit 1
+    fi
+    echo "[WARNING] Process $pid has already exited. Check vllm.log for details."
+    exit 0
 fi
 
 CURRENT_DIR="$(pwd -P)"
