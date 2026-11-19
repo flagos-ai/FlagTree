@@ -22,6 +22,8 @@
 """isort:skip_file"""
 __version__ = '3.7.1'
 
+from triton._flagtree_spec import spec_call
+
 # ---------------------------------------
 # Note: import order is significant here.
 
@@ -49,6 +51,9 @@ from . import testing
 from . import tools
 
 must_use_result = language.core.must_use_result
+
+# flagtree backend call specialization
+spec_call("triton_extend_globals", globals())
 
 __all__ = [
     "AsyncCompileMode",

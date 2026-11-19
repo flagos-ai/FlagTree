@@ -65,6 +65,13 @@ class DriverBase(metaclass=ABCMeta):
         """
         raise NotImplementedError
 
+    # FlagTree-only additive extension (no matching upstream Triton PR and no
+    # original block replaced): let each backend declare its TensorDescriptor
+    # stride-alignment contract while retaining Triton's 16-byte default.
+    def get_tensor_descriptor_stride_alignment(self) -> int:
+        """Return the target's required byte alignment for descriptor strides."""
+        return 16
+
     def __init__(self) -> None:
         pass
 

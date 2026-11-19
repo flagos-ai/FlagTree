@@ -846,10 +846,22 @@ class TritonSemantic(Generic[TensorTy]):
                                  "Source scalar type is " + str(src_sca_ty) + " and destination type is " +
                                  str(dst_sca_ty))
 
-        if (src_sca_ty.is_fp8e4b15() or dst_sca_ty.is_fp8e4b15()):
-            assert self.builder.codegen_fns.get(
-                "convert_custom_types") is not None, "target doesn't provide conversion for this type."
-            return self.builder.codegen_fns["convert_custom_types"](input, dst_ty, fp_downcast_rounding, _semantic=self)
+        # flagtree fp8 cast declaration routing
+        if src_sca_ty.is_fp8() or dst_sca_ty.is_fp8():
+            options = self.builder.options
+            cast_whitelist = getattr(options, "supported_fp8_cast_dtypes", None)
+            if cast_whitelist is not None and src_sca_ty.is_floating() and dst_sca_ty.is_floating():
+                for ty in (src_sca_ty, dst_sca_ty):
+                    if ty.is_fp8() and ty.name not in cast_whitelist:
+                        raise ValueError(f"cast involving type {ty} is not supported in this architecture. "
+                                         f"The supported fp8 cast dtypes are {cast_whitelist}")
+            # Backends declare fp8 dtypes with software casts under "custom_cast_fp8_dtypes";
+            # the default preserves the legacy fp8e4b15-only routing.
+            custom_cast_dtypes = getattr(options, "custom_cast_fp8_dtypes", ("fp8e4b15", ))
+            if src_sca_ty.name in custom_cast_dtypes or dst_sca_ty.name in custom_cast_dtypes:
+                custom_cast = self.builder.codegen_fns.get("convert_custom_types")
+                assert custom_cast is not None, "target doesn't provide conversion for this type."
+                return custom_cast(input, dst_ty, fp_downcast_rounding, _semantic=self)
         # Casting with customized floating types involved: fp8 <=> bf16, fp16, fp32, fp64
         # and non-default rounding modes for downcasting
         if (src_sca_ty.is_fp8() and dst_sca_ty.is_floating()) or \
@@ -1024,7 +1036,8 @@ class TritonSemantic(Generic[TensorTy]):
             return sorted(boundary_check)
         return ()
 
-    def _load_block_pointer(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile):
+    def _load_block_pointer(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile,
+                            flagtree_hints):
         # Load by a block pointer: `pointer_type<block_type<>>`
         # Block pointer can not have `mask` and `other` arguments
         if mask is not None or other is not None:
@@ -1043,10 +1056,10 @@ class TritonSemantic(Generic[TensorTy]):
 
         # Build IR
         return self.tensor(
-            self.builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile),
-            dst_ty)
+            self.builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile,
+                                                    flagtree_hints), dst_ty)
 
-    def _load_legacy(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile):
+    def _load_legacy(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, flagtree_hints):
         # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
         if not ptr.type.scalar.is_ptr():
             raise ValueError(f"Unsupported ptr type {ptr.type.__repr__()} in `tl.load`")
@@ -1097,17 +1110,19 @@ class TritonSemantic(Generic[TensorTy]):
 
         # Build IR
         if mask is None:
-            ret = self.tensor(self.builder.create_load(ptr.handle, cache, eviction, is_volatile), dst_ty)
+            ret = self.tensor(self.builder.create_load(ptr.handle, cache, eviction, is_volatile, flagtree_hints),
+                              dst_ty)
         else:
             ret = self.tensor(
                 self.builder.create_masked_load(ptr.handle, mask.handle, other.handle if other else None, cache,
-                                                eviction, is_volatile), dst_ty)
+                                                eviction, is_volatile, flagtree_hints), dst_ty)
         if is_bool:
             ret = self.cast(ret, tl.int1)
         return ret
 
     def load(self, ptr: TensorTy, mask: Optional[TensorTy], other: Optional[TensorTy], boundary_check: Tuple,
-             padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool) -> TensorTy:
+             padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool,
+             flagtree_hints: str) -> TensorTy:
         # Cache, eviction and padding options
         cache = self._str_to_load_cache_modifier(cache_modifier)
         eviction = self._str_to_eviction_policy(eviction_policy)
@@ -1115,10 +1130,12 @@ class TritonSemantic(Generic[TensorTy]):
 
         if ptr.type.is_ptr() and ptr.type.element_ty.is_block():
             # Load by a block pointer: `pointer_type<block_type<>>`
-            return self._load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile)
+            return self._load_block_pointer(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile,
+                                            flagtree_hints)
         else:
             # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
-            return self._load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile)
+            return self._load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile,
+                                     flagtree_hints)
 
     def descriptor_load(self, desc: tl.tensor_descriptor_base, offsets, cache_modifier: str,
                         eviction_policy: str) -> TensorTy:
@@ -1513,10 +1530,12 @@ class TritonSemantic(Generic[TensorTy]):
             max_num_imprecise_acc: int, out_dtype: tl.dtype) -> TensorTy:
         assert lhs.type.is_block() and rhs.type.is_block()
 
+        # flagtree: resolve_dot backends own the dtype rules (queried once shapes are known)
+        resolve_dot = self.builder.codegen_fns.get("resolve_dot")
         if lhs.dtype.is_fp8() and rhs.dtype.is_fp8():
             # All combinations of supported fp8 x fp8 are permitted
             pass
-        else:
+        elif resolve_dot is None:  # flagtree
             assert lhs.dtype in (tl.int8, tl.uint8, tl.float16, tl.bfloat16, tl.float32,
                                  tl.float64), f"Unsupported lhs dtype {lhs.dtype}"
             assert rhs.dtype in (tl.int8, tl.uint8, tl.float16, tl.bfloat16, tl.float32,
@@ -1556,6 +1575,15 @@ class TritonSemantic(Generic[TensorTy]):
             -2].value, f"First input shape ({lhs.shape}) and second input shape {rhs.shape} are not compatible for matmul (second index of first shape ({lhs.shape[-1].value}) must be equal to first index of second shape ({rhs.shape[-2].value})"
         assert self.builder.codegen_fns.get(
             "min_dot_size") is not None, "target doesn't provide lower shape bounds for dot."
+        if resolve_dot is not None:  # flagtree
+            # queried after the legacy e4b15/fnuz upcasts above so rules see the effective dtypes
+            dot_cap = resolve_dot(lhs.dtype.name, rhs.dtype.name, out_dtype.name, lhs.shape[-2].value,
+                                  rhs.shape[-1].value, lhs.shape[-1].value)
+            if not dot_cap.supported:
+                raise ValueError(dot_cap.diag or f"tl.dot: {lhs.dtype} x {rhs.dtype} is not supported on this product")
+            if not dot_cap.native:
+                warnings.warn(dot_cap.diag or f"tl.dot: {lhs.dtype} x {rhs.dtype} is not native on this "
+                              "product: non-native path (native=false)")
         min_dot_size = self.builder.codegen_fns["min_dot_size"](lhs.type, rhs.type)
         assert lhs.shape[-2].value >= min_dot_size[0] and lhs.shape[-1].value >= min_dot_size[2] \
             and rhs.shape[-1].value >= min_dot_size[1], \
@@ -1587,7 +1615,12 @@ class TritonSemantic(Generic[TensorTy]):
             acc_handle = self.builder.create_splat(ret_ty.to_ir(self.builder), _0)
         else:
             acc_handle = acc.handle
-            assert acc.type.shape == ret_ty.shape and acc.type.element_ty == out_dtype
+            # flagtree: separate shape/dtype asserts with messages; the dtype must match the actual
+            # result element type, which for integer dot is int32 regardless of out_dtype
+            assert acc.type.shape == ret_ty.shape, \
+                f"expected accumulator shape {ret_ty.shape}, got {acc.type.shape}"
+            assert acc.type.element_ty == ret_scalar_ty, \
+                f"expected accumulator dtype {ret_scalar_ty}, got {acc.type.element_ty}"
 
         # max_num_imprecise_acc only applies to fp8 -> fp32 dot on sm_90
         if max_num_imprecise_acc is None:
@@ -1655,6 +1688,16 @@ class TritonSemantic(Generic[TensorTy]):
         allowed_formats = {"e2m1", "e4m3", "e5m2", "bf16", "fp16"}
         assert lhs_format in allowed_formats, f"NYI: lhs_format {lhs_format}"
         assert rhs_format in allowed_formats, f"NYI: rhs_format {rhs_format}"
+        # flagtree: non-native (decomposed) format combinations warn at compile time
+        resolve_dot_scaled = self.builder.codegen_fns.get("resolve_dot_scaled")
+        if resolve_dot_scaled is not None:
+            scaled_cap = resolve_dot_scaled(lhs_format, rhs_format)
+            if not scaled_cap.supported:
+                raise ValueError(scaled_cap.diag
+                                 or f"tl.dot_scaled: {lhs_format} x {rhs_format} is not supported on this product")
+            if not scaled_cap.native:
+                warnings.warn(scaled_cap.diag or f"tl.dot_scaled: {lhs_format} x {rhs_format} is not native "
+                              "on this product: decomposed to a non-native path (native=false)")
         rhs_scale_is_none = rhs_scale is None or (isinstance(rhs_scale, tl.constexpr) and rhs_scale.value is None)
         lhs_scale_is_none = lhs_scale is None or (isinstance(lhs_scale, tl.constexpr) and lhs_scale.value is None)
         lhs = self._bitcast_to_fp_type(lhs, lhs_format)
@@ -1684,7 +1727,12 @@ class TritonSemantic(Generic[TensorTy]):
             acc_handle = self.builder.create_splat(ret_ty.to_ir(self.builder), _0)
         else:
             acc_handle = acc.handle
-            assert acc.type.shape == ret_ty.shape and acc.type.element_ty == out_dtype
+            # flagtree: separate shape/dtype asserts with messages
+            assert acc.type.shape == ret_ty.shape, \
+                f"expected accumulator shape {ret_ty.shape}, got {acc.type.shape}"
+            assert acc.type.element_ty == out_dtype, \
+                f"expected accumulator dtype {out_dtype}, got {acc.type.element_ty}; " \
+                f"pass out_dtype={acc.type.element_ty} to use this accumulator dtype"
         rhs_scale_handle = None if rhs_scale_is_none else rhs_scale.handle
         lhs_scale_handle = None if lhs_scale_is_none else lhs_scale.handle
         self.verify_scaled_shape(M, N, K, None if lhs_scale_is_none else lhs_scale,

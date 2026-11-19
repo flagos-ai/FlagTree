@@ -39,6 +39,9 @@
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "triton/Analysis/Utility.h"
+#ifdef __TLE__
+#include "triton/Dialect/Triton/IR/Dialect.h"
+#endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
@@ -46,6 +49,116 @@
 namespace mlir {
 namespace triton {
 namespace gpu {
+
+#ifdef __TLE__
+static bool isLikelyRemotePtr(Value ptr) {
+  SmallVector<Value> worklist{ptr};
+  DenseSet<Value> visited;
+  while (!worklist.empty()) {
+    Value cur = worklist.pop_back_val();
+    if (!visited.insert(cur).second)
+      continue;
+    Operation *def = cur.getDefiningOp();
+    if (!def)
+      continue;
+    if (def->getName().getStringRef() == "tle.remote_pointers")
+      return true;
+    if (auto addPtr = dyn_cast<triton::AddPtrOp>(def)) {
+      worklist.push_back(addPtr.getPtr());
+      worklist.push_back(addPtr.getOffset());
+      continue;
+    }
+    if (auto cvt = dyn_cast<triton::gpu::ConvertLayoutOp>(def)) {
+      worklist.push_back(cvt.getSrc());
+      continue;
+    }
+    if (auto bcast = dyn_cast<triton::BroadcastOp>(def)) {
+      worklist.push_back(bcast.getSrc());
+      continue;
+    }
+    if (auto expand = dyn_cast<triton::ExpandDimsOp>(def)) {
+      worklist.push_back(expand.getSrc());
+      continue;
+    }
+    if (auto reshape = dyn_cast<triton::ReshapeOp>(def)) {
+      worklist.push_back(reshape.getSrc());
+      continue;
+    }
+  }
+  return false;
+}
+
+static bool comesFromRemoteLoad(Value value, DenseSet<Value> &visited) {
+  if (!visited.insert(value).second)
+    return false;
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return false;
+
+  if (auto load = dyn_cast<triton::LoadOp>(def))
+    return isLikelyRemotePtr(load.getPtr());
+
+  if (auto ifOp = dyn_cast<scf::IfOp>(def)) {
+    auto result = dyn_cast<OpResult>(value);
+    if (!result)
+      return false;
+    unsigned idx = result.getResultNumber();
+    bool thenRemote =
+        comesFromRemoteLoad(ifOp.thenYield().getOperand(idx), visited);
+    Block *elseBlock = ifOp.elseBlock();
+    if (!elseBlock)
+      return thenRemote;
+    return thenRemote ||
+           comesFromRemoteLoad(ifOp.elseYield().getOperand(idx), visited);
+  }
+
+  for (Value operand : def->getOperands()) {
+    if (comesFromRemoteLoad(operand, visited))
+      return true;
+  }
+  return false;
+}
+
+static bool isYieldedToRemoteLoadMergedIf(Value value) {
+  for (OpOperand &use : value.getUses()) {
+    auto yield = dyn_cast<scf::YieldOp>(use.getOwner());
+    if (!yield)
+      continue;
+
+    auto ifOp = dyn_cast<scf::IfOp>(yield->getParentOp());
+    if (!ifOp)
+      continue;
+
+    unsigned idx = use.getOperandNumber();
+    if (idx >= ifOp.getNumResults())
+      continue;
+
+    DenseSet<Value> remoteVisited;
+    if (comesFromRemoteLoad(ifOp.getResult(idx), remoteVisited))
+      return true;
+  }
+  return false;
+}
+
+static bool mergedWithRemoteLoadThroughIf(Value value,
+                                          DenseSet<Value> &visited) {
+  if (!visited.insert(value).second)
+    return false;
+
+  if (isYieldedToRemoteLoadMergedIf(value))
+    return true;
+
+  for (OpOperand &use : value.getUses()) {
+    auto cast = dyn_cast<UnrealizedConversionCastOp>(use.getOwner());
+    if (!cast)
+      continue;
+    for (Value result : cast->getResults())
+      if (mergedWithRemoteLoadThroughIf(result, visited))
+        return true;
+  }
+  return false;
+}
+#endif
 
 #define GEN_PASS_DEF_TRITONGPUREDUCEDATADUPLICATION
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
@@ -67,6 +180,17 @@ public:
           dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstType.getEncoding());
       if (!dstDotOp)
         return;
+#ifdef __TLE__
+      DenseSet<Value> visited;
+      if (comesFromRemoteLoad(cvtOp.getSrc(), visited))
+        return;
+      DenseSet<Value> resultVisited;
+      // A cluster-local branch and a cluster-remote branch can merge into the
+      // same dot operand. If any arm comes from a remote load, keep all arms on
+      // the direct register conversion path instead of staging only one arm.
+      if (mergedWithRemoteLoadThroughIf(cvtOp.getResult(), resultVisited))
+        return;
+#endif
       if (!cvtNeedsSharedMemory(srcType, dstType))
         return;
       auto order = getOrderForMemory(srcType);

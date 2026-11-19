@@ -23,7 +23,7 @@
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Union
+from typing import Dict, Optional, Union  # flagtree
 from types import ModuleType
 
 
@@ -36,10 +36,54 @@ class GPUTarget(object):
     warp_size: int
 
 
+# flagtree dot capability contract
+class DotSupport(Enum):
+    """How a backend supports a dot dtype/format combination."""
+    NATIVE = "native"
+    NON_NATIVE = "non-native"
+    UNSUPPORTED = "unsupported"
+
+
+@dataclass(frozen=True)
+class DotCap:
+    """Answer to a backend `resolve_dot(a_dtype, b_dtype, acc_dtype, M, N, K)` /
+    `resolve_dot_scaled(lhs_format, rhs_format)` codegen-function query: the
+    semantic layer rejects UNSUPPORTED combinations with `diag` as the error
+    message and emits `diag` as a compile-time warning for NON_NATIVE ones."""
+    support: DotSupport
+    diag: Optional[str] = None
+
+    @property
+    def supported(self) -> bool:
+        return self.support is not DotSupport.UNSUPPORTED
+
+    @property
+    def native(self) -> bool:
+        return self.support is DotSupport.NATIVE
+
+
 class Language(Enum):
     """The input language being compiled by the backend."""
     TRITON = 0
     GLUON = 1
+
+
+# flagtree pipeline enhance
+class ReplaceLowering(Exception):
+    """Raised by a backend stage to replace the lowering with one made with adjusted options.
+
+    `products` maps stage extensions (ttgir, llir, ...) to the outputs of that
+    lowering and `metadata` is its metadata; the compiler records them in place
+    of the outputs of the stages it ran. The cache key keeps the options the
+    user asked for. The NVIDIA backend uses it to revert the wgmma carry
+    (pipeline_wgmma_carry) when ptxas spills more registers with it.
+    """
+
+    def __init__(self, products, metadata, reason=""):
+        super().__init__(reason)
+        self.products = products
+        self.metadata = metadata
+        self.reason = reason
 
 
 class BaseBackend(metaclass=ABCMeta):
@@ -48,6 +92,26 @@ class BaseBackend(metaclass=ABCMeta):
     def __init__(self, target: GPUTarget) -> None:
         self.target = target
         assert self.supports_target(target)
+
+    @classmethod
+    def route_target(cls, target: GPUTarget, jit_fn):
+        """Return an alternate per-kernel target, or ``None`` to keep ``target``."""
+        return None
+
+    @classmethod
+    def get_language_extension(cls):
+        """Return an optional module contributing symbols to ``triton.language.ext``."""
+        return None
+
+    def make_ir(self, src, options, codegen_fns, module_map, context):
+        """Create the initial IR module for this backend."""
+        return src.make_ir(self.target, options, codegen_fns, module_map, context)
+
+    # flagtree tileir: allow backend-specific TensorDescriptor cache specialization.
+    @staticmethod
+    def get_tensor_descriptor_specialization(arg):
+        """Return backend-specific TensorDescriptor cache-key attributes."""
+        return None
 
     @staticmethod
     @abstractmethod

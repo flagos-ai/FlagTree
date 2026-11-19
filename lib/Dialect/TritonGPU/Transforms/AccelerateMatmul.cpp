@@ -24,6 +24,9 @@
  */
 
 #include "mlir/Analysis/SliceAnalysis.h"
+#ifdef __TLE__
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#endif
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/TypeUtilities.h"
@@ -35,6 +38,10 @@
 #include "triton/Analysis/Utility.h"
 #include "triton/Conversion/MLIRTypes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/TleUtility.h"
+#endif
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
@@ -54,6 +61,65 @@ namespace triton {
 namespace gpu {
 
 namespace {
+
+#ifdef __TLE__
+static Value getWarpSpecializeCapture(Value value) {
+  auto blockArg = dyn_cast<BlockArgument>(value);
+  if (!blockArg)
+    return value;
+
+  Block *block = blockArg.getOwner();
+  auto partitions =
+      dyn_cast_or_null<WarpSpecializePartitionsOp>(block->getParentOp());
+  if (!partitions)
+    return value;
+
+  auto wsOp = dyn_cast<WarpSpecializeOp>(partitions->getParentOp());
+  if (!wsOp)
+    return value;
+
+  unsigned argNo = blockArg.getArgNumber();
+  OperandRange captures = wsOp.getPartitionOp().getExplicitCaptures();
+  if (argNo >= captures.size())
+    return value;
+  return captures[argNo];
+}
+
+static Value getUnderlyingMemDesc(Value value) {
+  while (true) {
+    value = getWarpSpecializeCapture(value);
+    if (auto index = value.getDefiningOp<MemDescIndexOp>()) {
+      value = index.getSrc();
+      continue;
+    }
+    if (auto subslice = value.getDefiningOp<MemDescSubsliceOp>()) {
+      value = subslice.getSrc();
+      continue;
+    }
+    if (auto alias = value.getDefiningOp<tle::MemDescAliasOp>()) {
+      value = alias.getSrc();
+      continue;
+    }
+    if (auto trans = value.getDefiningOp<MemDescTransOp>()) {
+      value = trans.getSrc();
+      continue;
+    }
+    if (auto reshape = value.getDefiningOp<MemDescReshapeOp>()) {
+      value = reshape.getSrc();
+      continue;
+    }
+    if (auto reinterpret = value.getDefiningOp<MemDescReinterpretOp>()) {
+      value = reinterpret.getSrc();
+      continue;
+    }
+    return value;
+  }
+}
+
+static bool isBackedByLocalAlloc(Value value) {
+  return getUnderlyingMemDesc(value).getDefiningOp<LocalAllocOp>() != nullptr;
+}
+#endif
 
 // Get the highest version supported for the hardware and the dot.
 static int getMMAVersionSafe(int computeCapability, DotOp op) {
@@ -161,6 +227,9 @@ SmallVector<unsigned> warpsPerTileV2(DotOpInterface dotOp,
 SmallVector<unsigned, 2>
 warpsPerTileV3(DotOpInterface dotOp, const ArrayRef<int64_t> shape,
                int numWarps, const SmallVector<unsigned, 3> &instrShape) {
+#ifdef __TLE__
+  return getNvidiaMmaV3WarpsPerCTA(dotOp.getD(), shape, numWarps);
+#else
   SetVector<Operation *> slices;
   mlir::getForwardSlice(dotOp.getD(), &slices);
   // Contains a chained dot. We prefer to assign warps to one axis
@@ -184,6 +253,7 @@ warpsPerTileV3(DotOpInterface dotOp, const ArrayRef<int64_t> shape,
     }
   } while (true);
   return ret;
+#endif
 }
 
 // Returns a shared memory allocation that can be used by a dotMMA op for the
@@ -233,6 +303,26 @@ getSharedMemoryMMAOperand(Value v, mlir::PatternRewriter &rewriter, int opIdx,
       argType.getElementType(), isMMAv5Fp4Padded);
   auto newType = MemDescType::get(argType.getShape(), argType.getElementType(),
                                   newLayout, SharedMemorySpace);
+#ifdef __TLE__
+  // TLE can materialize a full shared-memory tile as:
+  //   tensor = ttg.local_load(existing_smem)
+  // If WGMMA needs the exact same shared layout, reuse the existing allocation
+  // instead of allocating another identical staging buffer.
+  if (auto localLoad = arg.getDefiningOp<LocalLoadOp>()) {
+    if (!localLoad.getToken()) {
+      Value src = localLoad.getSrc();
+      if (isBackedByLocalAlloc(src)) {
+        auto srcType = dyn_cast<MemDescType>(src.getType());
+        if (srcType && srcType.getShape() == newType.getShape() &&
+            srcType.getElementType() == newType.getElementType() &&
+            srcType.getMemorySpace() == newType.getMemorySpace() &&
+            srcType.getEncoding() == newType.getEncoding()) {
+          return src;
+        }
+      }
+    }
+  }
+#endif
   rewriter.setInsertionPointAfterValue(arg);
   return LocalAllocOp::create(rewriter, arg.getLoc(), newType, arg);
 }

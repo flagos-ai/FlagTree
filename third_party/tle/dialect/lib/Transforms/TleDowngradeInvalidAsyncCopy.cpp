@@ -1,0 +1,589 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dominance.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/Support/LLVM.h"
+#include "tle/dialect/include/Analysis/AxisInfoExt.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/SMEMPlan.h"
+#include "tle/dialect/include/Transforms/EncodingRematerialization.h"
+#include "tle/dialect/include/Transforms/Passes.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
+#include "triton/Analysis/AxisInfo.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "llvm/Support/MathExtras.h"
+
+#include <numeric>
+#include <optional>
+
+namespace mlir {
+namespace triton {
+namespace tle {
+
+#define GEN_PASS_DEF_TRITONTLEDOWNGRADEINVALIDASYNCCOPY
+#include "tle/dialect/include/Transforms/Passes.h.inc"
+
+namespace {
+
+namespace tt = mlir::triton;
+namespace ttg = mlir::triton::gpu;
+
+static unsigned product(ArrayRef<unsigned> values) {
+  unsigned result = 1;
+  for (unsigned value : values)
+    result *= value;
+  return result;
+}
+
+static bool hasLegalCpAsyncWidth(ttg::AsyncCopyGlobalToLocalOp copyOp,
+                                 tt::ModuleAxisInfoAnalysis &axisInfo) {
+  auto dstTy = cast<ttg::MemDescType>(copyOp.getResult().getType());
+  Type elemTy = dstTy.getElementType();
+  if (!elemTy.isIntOrFloat())
+    return true;
+
+  unsigned elemBits = elemTy.getIntOrFloatBitWidth();
+  if (elemBits == 0)
+    return false;
+
+  unsigned maxVec = axisInfo.getContiguity(copyOp.getSrc());
+  if (Value mask = copyOp.getMask())
+    maxVec = std::min<unsigned>(maxVec, axisInfo.getMaskAlignment(mask));
+  maxVec = std::max<unsigned>(maxVec, copyOp.getContiguity());
+  maxVec = std::min<unsigned>(maxVec, 128 / elemBits);
+  auto srcTy = cast<RankedTensorType>(copyOp.getSrc().getType());
+  auto regLayout = ttg::toLinearLayout(srcTy);
+  auto sharedLayout = ttg::toLinearLayout(dstTy);
+  maxVec = std::min<unsigned>(
+      maxVec,
+      regLayout.invertAndCompose(sharedLayout).getNumConsecutiveInOut());
+
+  unsigned vecBytes = maxVec * elemBits / 8;
+  return llvm::is_contained({4u, 8u, 16u}, vecBytes);
+}
+
+static std::optional<Region *>
+getEnclosingWarpSpecializePartition(Operation *op) {
+  for (Region *region = op->getParentRegion(); region;) {
+    Operation *parent = region->getParentOp();
+    if (!parent)
+      break;
+    if (isa<ttg::WarpSpecializePartitionsOp>(parent))
+      return region;
+    region = parent->getParentRegion();
+  }
+  return std::nullopt;
+}
+
+static bool isInLoopFreeWarpSpecializePartition(Operation *op) {
+  auto partition = getEnclosingWarpSpecializePartition(op);
+  if (!partition)
+    return false;
+
+  Operation *partitionOp = (*partition)->getParentOp();
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (isa<scf::ForOp>(parent))
+      return false;
+    if (parent == partitionOp)
+      return true;
+  }
+  return false;
+}
+
+static bool hasL2CachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
+  return copyOp.getEvict() == tt::EvictionPolicy::EVICT_FIRST ||
+         copyOp.getEvict() == tt::EvictionPolicy::EVICT_LAST;
+}
+
+static void
+dropUnsafeLoopFreePartitionCachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
+  if (!copyOp->hasAttr(kTleLocalPointerAsyncStoreAttr) ||
+      !hasL2CachePolicy(copyOp) || !isInLoopFreeWarpSpecializePartition(copyOp))
+    return;
+
+  // PTXAS may emit undefined uniform registers for straight-line
+  // warp-specialize producer partitions that use cp.async L2 cache-policy
+  // operands. Eviction policy is a non-semantic hint, so keep the async copy
+  // and drop only the unsafe hint in loop-free partitions.
+  copyOp.setEvictAttr(tt::EvictionPolicyAttr::get(copyOp.getContext(),
+                                                  tt::EvictionPolicy::NORMAL));
+}
+
+static unsigned floorPowerOfTwo(unsigned value) {
+  if (value == 0)
+    return 0;
+  return 1u << llvm::Log2_32(value);
+}
+
+static unsigned getLegalCpAsyncVec(unsigned maxVec, unsigned elemBits) {
+  if (elemBits == 0)
+    return 0;
+
+  maxVec = std::min<unsigned>(maxVec, 128 / elemBits);
+  maxVec = floorPowerOfTwo(maxVec);
+  while (maxVec > 0) {
+    unsigned vecBytes = maxVec * elemBits / 8;
+    if (llvm::is_contained({4u, 8u, 16u}, vecBytes))
+      return maxVec;
+    maxVec >>= 1;
+  }
+  return 0;
+}
+
+static unsigned getSmallestLegalCpAsyncVec(unsigned maxVec, unsigned elemBits) {
+  if (elemBits == 0)
+    return 0;
+
+  maxVec = std::min<unsigned>(maxVec, 128 / elemBits);
+  for (unsigned vecBytes : {4u, 8u, 16u}) {
+    unsigned vecBits = vecBytes * 8;
+    if (vecBits % elemBits != 0)
+      continue;
+    unsigned vec = vecBits / elemBits;
+    if (llvm::isPowerOf2_32(vec) && vec <= maxVec)
+      return vec;
+  }
+  return 0;
+}
+
+static unsigned
+getMaxVectorElementsOnAxis(Value value, unsigned axis, unsigned elemBits,
+                           tt::ModuleAxisInfoAnalysis &axisInfo) {
+  auto tensorTy = dyn_cast<RankedTensorType>(value.getType());
+  if (!tensorTy)
+    return 1;
+  auto *info = axisInfo.getAxisInfo(value);
+  if (!info || axis >= static_cast<unsigned>(info->getRank()))
+    return 1;
+
+  auto elemBytes = std::max<unsigned>(elemBits / 8, 1);
+  unsigned contiguity = std::max<int64_t>(info->getContiguity(axis), 1);
+  unsigned divisibility = std::max<int64_t>(info->getDivisibility(axis), 1);
+  unsigned maxMultiple = divisibility;
+  if (isa<tt::PointerType>(tensorTy.getElementType()))
+    maxMultiple = std::max<unsigned>(divisibility / elemBytes, 1);
+  return std::min(contiguity, maxMultiple);
+}
+
+struct RequiredAsyncCopyLayout {
+  ttg::BlockedEncodingAttr encoding;
+  unsigned contiguity;
+};
+
+static std::optional<RequiredAsyncCopyLayout>
+getRequiredAsyncCopyLayout(ttg::AsyncCopyGlobalToLocalOp copyOp,
+                           tt::ModuleAxisInfoAnalysis &axisInfo) {
+  auto srcTy = dyn_cast<RankedTensorType>(copyOp.getSrc().getType());
+  auto dstTy = dyn_cast<ttg::MemDescType>(copyOp.getResult().getType());
+  if (!srcTy || !dstTy)
+    return std::nullopt;
+  auto blockedEnc = dyn_cast<ttg::BlockedEncodingAttr>(srcTy.getEncoding());
+  if (!blockedEnc)
+    return std::nullopt;
+
+  Type elemTy = dstTy.getElementType();
+  if (!elemTy.isIntOrFloat())
+    return std::nullopt;
+  unsigned elemBits = elemTy.getIntOrFloatBitWidth();
+  if (elemBits == 0)
+    return std::nullopt;
+
+  auto *ptrInfo = axisInfo.getAxisInfo(copyOp.getSrc());
+  if (!ptrInfo)
+    return std::nullopt;
+
+  SmallVector<unsigned> order(srcTy.getRank());
+  std::iota(order.begin(), order.end(), 0);
+  llvm::stable_sort(order, [&](unsigned lhs, unsigned rhs) {
+    return ptrInfo->getContiguity(lhs) > ptrInfo->getContiguity(rhs);
+  });
+
+  Value mask = copyOp.getMask();
+  auto *maskInfo = mask ? axisInfo.getAxisInfo(mask) : nullptr;
+  auto sizePerThread = llvm::to_vector(blockedEnc.getSizePerThread());
+
+  for (unsigned axis : order) {
+    unsigned maxVec =
+        getMaxVectorElementsOnAxis(copyOp.getSrc(), axis, elemBits, axisInfo);
+    if (maskInfo && axis < static_cast<unsigned>(maskInfo->getRank()))
+      maxVec = std::min<unsigned>(
+          maxVec, std::max<int64_t>(maskInfo->getConstancy(axis), 1));
+    maxVec = std::min<unsigned>(maxVec, srcTy.getShape()[axis]);
+
+    // Introduce only the minimum redundant-thread ownership required for a
+    // legal cp.async transaction (for example [1, 256]xbf16 on eight warps).
+    unsigned legalVec = getSmallestLegalCpAsyncVec(maxVec, elemBits);
+    if (legalVec == 0)
+      continue;
+
+    SmallVector<unsigned> newSizePerThread(sizePerThread);
+    newSizePerThread[axis] = std::max(newSizePerThread[axis], legalVec);
+    unsigned numWarps = product(blockedEnc.getWarpsPerCTA());
+    unsigned threadsPerWarp = product(blockedEnc.getThreadsPerWarp());
+    auto newEnc = ttg::BlockedEncodingAttr::get(
+        copyOp.getContext(), srcTy.getShape(), newSizePerThread, order,
+        numWarps, threadsPerWarp, blockedEnc.getCGALayout());
+    auto newSrcTy =
+        RankedTensorType::get(srcTy.getShape(), srcTy.getElementType(), newEnc);
+    auto regLayout = ttg::toLinearLayout(newSrcTy);
+    auto sharedLayout = ttg::toLinearLayout(dstTy);
+    if (regLayout.invertAndCompose(sharedLayout).getNumConsecutiveInOut() <
+        legalVec)
+      continue;
+    return RequiredAsyncCopyLayout{newEnc, legalVec};
+  }
+
+  return std::nullopt;
+}
+
+static std::optional<ttg::BlockedEncodingAttr>
+getCoalescedFallbackLoadEncoding(ttg::AsyncCopyGlobalToLocalOp copyOp,
+                                 tt::ModuleAxisInfoAnalysis &axisInfo) {
+  if (!copyOp->hasAttr(kTleLocalPointerAsyncStoreAttr))
+    return std::nullopt;
+
+  auto srcTy = dyn_cast<RankedTensorType>(copyOp.getSrc().getType());
+  auto dstTy = dyn_cast<ttg::MemDescType>(copyOp.getResult().getType());
+  if (!srcTy || !dstTy)
+    return std::nullopt;
+  auto blockedEnc = dyn_cast<ttg::BlockedEncodingAttr>(srcTy.getEncoding());
+  if (!blockedEnc)
+    return std::nullopt;
+
+  Type elemTy = dstTy.getElementType();
+  if (!elemTy.isIntOrFloat())
+    return std::nullopt;
+  unsigned elemBits = elemTy.getIntOrFloatBitWidth();
+  if (elemBits == 0)
+    return std::nullopt;
+
+  auto *ptrInfo = axisInfo.getAxisInfo(copyOp.getSrc());
+  if (!ptrInfo)
+    return std::nullopt;
+
+  SmallVector<unsigned> order(srcTy.getRank());
+  std::iota(order.begin(), order.end(), 0);
+  llvm::stable_sort(order, [&](unsigned lhs, unsigned rhs) {
+    return ptrInfo->getContiguity(lhs) > ptrInfo->getContiguity(rhs);
+  });
+
+  Value mask = copyOp.getMask();
+  auto *maskInfo = mask ? axisInfo.getAxisInfo(mask) : nullptr;
+  auto sizePerThread = llvm::to_vector(blockedEnc.getSizePerThread());
+
+  for (unsigned axis : order) {
+    unsigned maxVec =
+        getMaxVectorElementsOnAxis(copyOp.getSrc(), axis, elemBits, axisInfo);
+    if (maskInfo && axis < static_cast<unsigned>(maskInfo->getRank()))
+      maxVec = std::min<unsigned>(
+          maxVec, std::max<int64_t>(maskInfo->getConstancy(axis), 1));
+    maxVec = std::min<unsigned>(maxVec, srcTy.getShape()[axis]);
+
+    unsigned legalVec = getLegalCpAsyncVec(maxVec, elemBits);
+    if (legalVec == 0 || legalVec <= sizePerThread[axis])
+      continue;
+
+    SmallVector<unsigned> newSizePerThread(sizePerThread);
+    newSizePerThread[axis] = legalVec;
+    unsigned numWarps = product(blockedEnc.getWarpsPerCTA());
+    unsigned threadsPerWarp = product(blockedEnc.getThreadsPerWarp());
+    auto newEnc = ttg::BlockedEncodingAttr::get(
+        copyOp.getContext(), srcTy.getShape(), newSizePerThread, order,
+        numWarps, threadsPerWarp, blockedEnc.getCGALayout());
+    return newEnc;
+  }
+
+  return std::nullopt;
+}
+
+static Value convertTensorEncoding(IRRewriter &rewriter, Location loc,
+                                   Value value, Attribute encoding) {
+  if (!value)
+    return value;
+  auto ty = dyn_cast<RankedTensorType>(value.getType());
+  if (!ty || ty.getEncoding() == encoding)
+    return value;
+  auto newTy = ty.cloneWithEncoding(encoding);
+  return ttg::ConvertLayoutOp::create(rewriter, loc, newTy, value).getResult();
+}
+
+class LogicalCopyRematerializationPolicy final
+    : public ttg::EncodingRematerializationPolicy {
+public:
+  bool isCustomEncodingPolymorphicOp(Operation *op) const override {
+    return isa<ExtractTileOp>(op);
+  }
+
+  FailureOr<Value> rematerializeCustomValue(
+      ttg::EncodingRematerializer &rematerializer, Value value,
+      RankedTensorType targetType, Attribute targetEncoding,
+      llvm::SmallPtrSetImpl<Value> &active, unsigned depth) const override {
+    auto extract = value.getDefiningOp<ExtractTileOp>();
+    if (!extract)
+      return failure();
+
+    FailureOr<Value> source = rematerializer.rematerialize(
+        extract.getSrc(), targetEncoding, active, depth + 1);
+    if (failed(source))
+      return failure();
+
+    auto rematerialized = ExtractTileOp::create(
+        rematerializer.getRewriter(), extract.getLoc(), *source,
+        extract.getIndex(), targetType.getShape());
+    rematerialized->setAttrs(extract->getAttrs());
+    if (rematerialized.getType() != targetType)
+      return failure();
+    return rematerialized.getResult();
+  }
+};
+
+static bool rematerializeLogicalAsyncCopy(
+    ttg::AsyncCopyGlobalToLocalOp copyOp, tt::ModuleAxisInfoAnalysis &axisInfo,
+    ttg::EncodingRematerializationCache &cache, DominanceInfo &dominance) {
+  std::optional<ttg::BlockedEncodingAttr> encoding =
+      getCoalescedFallbackLoadEncoding(copyOp, axisInfo);
+  if (!encoding)
+    return false;
+
+  IRRewriter rewriter(copyOp.getContext());
+  LogicalCopyRematerializationPolicy policy;
+  auto rematerialize = [&](Value value) -> FailureOr<Value> {
+    if (!value)
+      return Value();
+    return ttg::rematerializeWithEncoding(rewriter, copyOp, value, *encoding,
+                                          cache, dominance, policy);
+  };
+
+  FailureOr<Value> src = rematerialize(copyOp.getSrc());
+  FailureOr<Value> mask = rematerialize(copyOp.getMask());
+  FailureOr<Value> other = rematerialize(copyOp.getOther());
+  if (failed(src) || failed(mask) || failed(other))
+    return false;
+
+  unsigned contiguousAxis = encoding->getOrder().front();
+  unsigned copyContiguity = encoding->getSizePerThread()[contiguousAxis];
+
+  rewriter.modifyOpInPlace(copyOp, [&]() {
+    copyOp.getSrcMutable().assign(*src);
+    if (copyOp.getMask())
+      copyOp.getMaskMutable().assign(*mask);
+    if (copyOp.getOther())
+      copyOp.getOtherMutable().assign(*other);
+    copyOp.setContiguity(copyContiguity);
+  });
+  return true;
+}
+
+static LogicalResult
+legalizeRequiredAsyncCopy(IRRewriter &rewriter,
+                          ttg::AsyncCopyGlobalToLocalOp copyOp,
+                          tt::ModuleAxisInfoAnalysis &axisInfo) {
+  auto layout = getRequiredAsyncCopyLayout(copyOp, axisInfo);
+  if (!layout)
+    return failure();
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(copyOp);
+  Value src = convertTensorEncoding(rewriter, copyOp.getLoc(), copyOp.getSrc(),
+                                    layout->encoding);
+  Value mask = convertTensorEncoding(rewriter, copyOp.getLoc(),
+                                     copyOp.getMask(), layout->encoding);
+  Value other = convertTensorEncoding(rewriter, copyOp.getLoc(),
+                                      copyOp.getOther(), layout->encoding);
+  rewriter.modifyOpInPlace(copyOp, [&]() {
+    copyOp.getSrcMutable().assign(src);
+    if (mask)
+      copyOp.getMaskMutable().assign(mask);
+    if (other)
+      copyOp.getOtherMutable().assign(other);
+    copyOp.setContiguity(layout->contiguity);
+  });
+  return success();
+}
+
+static LogicalResult
+collectErasableTokenUsers(Value token,
+                          SmallPtrSetImpl<Operation *> &visitedTokenOps,
+                          SmallPtrSetImpl<Operation *> &localLoadSet,
+                          SmallVectorImpl<ttg::LocalLoadOp> &localLoads,
+                          SmallVectorImpl<Operation *> &eraseOps) {
+  SmallVector<OpOperand *> uses;
+  for (OpOperand &use : token.getUses())
+    uses.push_back(&use);
+
+  for (OpOperand *use : uses) {
+    Operation *user = use->getOwner();
+    if (auto localLoad = dyn_cast<ttg::LocalLoadOp>(user)) {
+      if (localLoadSet.insert(user).second)
+        localLoads.push_back(localLoad);
+      continue;
+    }
+
+    if (!isa<ttg::AsyncCommitGroupOp, ttg::AsyncWaitOp>(user))
+      return failure();
+
+    // Rewriting a token out of a multi-token commit/wait would require
+    // rebuilding the remaining async dependency chain. Keep this pass
+    // conservative and only erase self-contained single-token chains.
+    if (user->getNumOperands() != 1)
+      return failure();
+
+    if (visitedTokenOps.insert(user).second) {
+      if (failed(collectErasableTokenUsers(user->getResult(0), visitedTokenOps,
+                                           localLoadSet, localLoads, eraseOps)))
+        return failure();
+      eraseOps.push_back(user);
+    }
+  }
+
+  return success();
+}
+
+static void recreateLocalLoadWithoutToken(IRRewriter &rewriter,
+                                          ttg::LocalLoadOp localLoad) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(localLoad);
+  auto replacement = ttg::LocalLoadOp::create(
+      rewriter, localLoad.getLoc(), localLoad.getType(), localLoad.getSrc());
+  replacement->setAttrs(localLoad->getAttrs());
+  localLoad.replaceAllUsesWith(replacement.getResult());
+  rewriter.eraseOp(localLoad);
+}
+
+static LogicalResult downgradeAsyncCopy(IRRewriter &rewriter,
+                                        ttg::AsyncCopyGlobalToLocalOp copyOp,
+                                        tt::ModuleAxisInfoAnalysis &axisInfo) {
+  SmallPtrSet<Operation *, 8> visitedTokenOps;
+  SmallPtrSet<Operation *, 8> localLoadSet;
+  SmallVector<ttg::LocalLoadOp> localLoads;
+  SmallVector<Operation *> eraseOps;
+  if (failed(collectErasableTokenUsers(copyOp.getToken(), visitedTokenOps,
+                                       localLoadSet, localLoads, eraseOps)))
+    return failure();
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(copyOp);
+  auto originalSrcTy = cast<RankedTensorType>(copyOp.getSrc().getType());
+  Value src = copyOp.getSrc();
+  Value mask = copyOp.getMask();
+  Value other = copyOp.getOther();
+  if (auto encoding = getCoalescedFallbackLoadEncoding(copyOp, axisInfo)) {
+    src = convertTensorEncoding(rewriter, copyOp.getLoc(), src, *encoding);
+    mask = convertTensorEncoding(rewriter, copyOp.getLoc(), mask, *encoding);
+    other = convertTensorEncoding(rewriter, copyOp.getLoc(), other, *encoding);
+  }
+  auto load = tt::LoadOp::create(rewriter, copyOp.getLoc(), src, mask, other,
+                                 copyOp.getCache(), copyOp.getEvict(),
+                                 copyOp.getIsVolatile());
+  Value storeValue = load.getResult();
+  auto loadTy = cast<RankedTensorType>(storeValue.getType());
+  if (loadTy.getEncoding() != originalSrcTy.getEncoding()) {
+    auto storeFriendlyTy =
+        loadTy.cloneWithEncoding(originalSrcTy.getEncoding());
+    storeValue = ttg::ConvertLayoutOp::create(rewriter, copyOp.getLoc(),
+                                              storeFriendlyTy, storeValue)
+                     .getResult();
+  }
+  ttg::LocalStoreOp::create(rewriter, copyOp.getLoc(), storeValue,
+                            copyOp.getResult());
+
+  for (ttg::LocalLoadOp localLoad : localLoads)
+    recreateLocalLoadWithoutToken(rewriter, localLoad);
+  for (Operation *op : eraseOps)
+    rewriter.eraseOp(op);
+  rewriter.eraseOp(copyOp);
+
+  return success();
+}
+
+struct DowngradeInvalidAsyncCopyPass
+    : impl::TritonTleDowngradeInvalidAsyncCopyBase<
+          DowngradeInvalidAsyncCopyPass> {
+  using Base::Base;
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    SmallVector<ttg::AsyncCopyGlobalToLocalOp> plannedCopies;
+    module.walk([&](ttg::AsyncCopyGlobalToLocalOp copyOp) {
+      if (copyOp->hasAttr(kCopyPlanAttr))
+        plannedCopies.push_back(copyOp);
+    });
+    if (!plannedCopies.empty()) {
+      tle::ModuleAxisInfoAnalysis initialAxisInfo(module);
+      DominanceInfo dominance(module);
+      llvm::DenseMap<Block *, ttg::EncodingRematerializationCache> caches;
+      for (auto copyOp : plannedCopies)
+        rematerializeLogicalAsyncCopy(copyOp, initialAxisInfo,
+                                      caches[copyOp->getBlock()], dominance);
+    }
+    downgradeCopies<tt::ModuleAxisInfoAnalysis>(module, false);
+    if (!plannedCopies.empty())
+      downgradeCopies<tle::ModuleAxisInfoAnalysis>(module, true);
+  }
+
+  template <typename AxisAnalysis>
+  void downgradeCopies(ModuleOp module, bool planned) {
+    AxisAnalysis axisInfo(module);
+    SmallVector<ttg::AsyncCopyGlobalToLocalOp> invalidCopies;
+    module.walk([&](ttg::AsyncCopyGlobalToLocalOp copyOp) {
+      if (copyOp->hasAttr(kCopyPlanAttr) != planned)
+        return;
+      dropUnsafeLoopFreePartitionCachePolicy(copyOp);
+      if (hasLegalCpAsyncWidth(copyOp, axisInfo))
+        return;
+      invalidCopies.push_back(copyOp);
+    });
+
+    IRRewriter rewriter(&getContext());
+    for (ttg::AsyncCopyGlobalToLocalOp copyOp : invalidCopies) {
+      if (copyOp->hasAttr(kTleRequiredAsyncCopyAttr)) {
+        if (succeeded(legalizeRequiredAsyncCopy(rewriter, copyOp, axisInfo)))
+          continue;
+        copyOp.emitError(
+            "explicit tle.gpu.copy(is_async=True) cannot be represented by "
+            "a legal NVIDIA cp.async width; refusing synchronous downgrade");
+        signalPassFailure();
+        return;
+      }
+      if (copyOp->getBlock() &&
+          failed(downgradeAsyncCopy(rewriter, copyOp, axisInfo))) {
+        copyOp.emitError("cannot downgrade invalid async copy with non-trivial "
+                         "async token users");
+        signalPassFailure();
+        return;
+      }
+    }
+  }
+};
+
+} // namespace
+} // namespace tle
+} // namespace triton
+} // namespace mlir

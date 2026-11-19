@@ -30,6 +30,13 @@
 #include <memory>
 #include <string>
 
+#ifdef __TLE__
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+#include <pybind11/stl_bind.h>
+namespace py = pybind11;
+#endif
+
 // A custom op builder that keeps track of the last location
 class TritonOpBuilder {
 public:
@@ -125,3 +132,9 @@ private:
     return builder->getUnknownLoc();
   }
 };
+
+#ifdef __TLE__
+namespace ir {
+extern py::class_<TritonOpBuilder> *getBuilderClass();
+} // namespace ir
+#endif

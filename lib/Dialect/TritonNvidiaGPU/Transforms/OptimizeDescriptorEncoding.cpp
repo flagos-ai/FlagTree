@@ -86,6 +86,19 @@ SmallVector<int64_t> expandToRank(ArrayRef<int64_t> shape, int rank) {
 std::optional<UseInfo> getUseInfo(Operation *op) {
   UseInfo info;
   info.use = op;
+#ifdef __TLE__
+  if (auto copy = dyn_cast<ttg::TMACopyOp>(op)) {
+    if (op->hasAttr("tle.logical_tma_copy_bytes")) {
+      auto dst = cast<ttg::MemDescType>(copy.getDst().getType());
+      info.descriptor = cast<TypedValue<TensorDescType>>(copy.getSrc());
+      info.desiredSharedEncoding = dst.getEncoding();
+      info.ctaLayout = ttg::getCGALayout(dst.getEncoding());
+      info.shape = expandToRank(
+          dst.getShape(), info.descriptor.getType().getBlockType().getRank());
+      return info;
+    }
+  }
+#endif
   if (auto load = dyn_cast<DescriptorLoadOp>(op)) {
     info.descriptor = load.getDesc();
     info.desiredSharedEncoding = findLoadEncodingFromUsers(op);
@@ -268,6 +281,32 @@ TensorDescType getTensorDescTypeWithEncoding(Operation *op,
   return TensorDescType::get(existingTy.getContext(), blockTy);
 }
 
+#ifdef __TLE__
+SmallVector<Value> getWarpSpecializeTiedDescValues(ttg::WarpSpecializeOp wsOp,
+                                                   unsigned operandNumber) {
+  SmallVector<Value> values;
+  auto capture = wsOp.getPartitionOp().getExplicitCaptures()[operandNumber];
+  if (isa<TensorDescType>(capture.getType()))
+    values.push_back(capture);
+  for (Region *region : wsOp.getPartitionRegions()) {
+    auto arg = region->getArgument(operandNumber);
+    if (isa<TensorDescType>(arg.getType()))
+      values.push_back(arg);
+  }
+  return values;
+}
+
+void syncWarpSpecializePartitionArgTypes(FuncOp func) {
+  func.walk([](ttg::WarpSpecializeOp wsOp) {
+    auto captures = wsOp.getPartitionOp().getExplicitCaptures();
+    for (Region *region : wsOp.getPartitionRegions()) {
+      for (auto [i, capture] : llvm::enumerate(captures))
+        region->getArgument(i).setType(capture.getType());
+    }
+  });
+}
+#endif
+
 void assignMemoryLayouts(FuncOp &func) {
   std::unordered_set<EncodingInfo> encodings;
   llvm::MapVector<TypedValue<TensorDescType>, const EncodingInfo *>
@@ -314,6 +353,17 @@ void assignMemoryLayouts(FuncOp &func) {
       auto einfo =
           internEncoding(encodings, EncodingInfo{{}, {}, {}, forcedToDefault});
 
+#ifdef __TLE__
+      if (auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(op)) {
+        for (auto [i, capture] : llvm::enumerate(wsOp.getPartitionOp().getExplicitCaptures())) {
+          if (!isa<TensorDescType>(capture.getType()))
+            continue;
+          updateEncoding(getWarpSpecializeTiedDescValues(wsOp, i),
+                         EncodingInfo{});
+        }
+      }
+#endif
+
       auto setEncoding = [&](Value v) {
         auto typedVal = cast<TypedValue<TensorDescType>>(v);
         valueToEncodingInfo.try_emplace(typedVal, einfo);
@@ -344,6 +394,14 @@ void assignMemoryLayouts(FuncOp &func) {
       } else if (isa<scf::YieldOp>(op)) {
         auto vals = getTiedArgs(op->getParentOp(), use.getOperandNumber());
         updateEncoding(vals, EncodingInfo{});
+#ifdef __TLE__
+      } else if (auto partitions =
+                     dyn_cast<ttg::WarpSpecializePartitionsOp>(op)) {
+        auto wsOp = cast<ttg::WarpSpecializeOp>(partitions->getParentOp());
+        auto vals =
+            getWarpSpecializeTiedDescValues(wsOp, use.getOperandNumber());
+        updateEncoding(vals, EncodingInfo{});
+#endif
       }
     }
 
@@ -360,6 +418,14 @@ void assignMemoryLayouts(FuncOp &func) {
         auto offset = isa<scf::ForOp>(parentOp);
         auto vals = getTiedArgs(parentOp, blockArg.getArgNumber() - offset);
         updateEncoding(vals, EncodingInfo{});
+#ifdef __TLE__
+      } else if (auto partitions =
+                     dyn_cast<ttg::WarpSpecializePartitionsOp>(parentOp)) {
+        auto wsOp = cast<ttg::WarpSpecializeOp>(partitions->getParentOp());
+        auto vals =
+            getWarpSpecializeTiedDescValues(wsOp, blockArg.getArgNumber());
+        updateEncoding(vals, EncodingInfo{});
+#endif
       }
     }
   }
@@ -392,6 +458,9 @@ void assignMemoryLayouts(FuncOp &func) {
           nullptr, descTy.getBlockType(), encoding);
     }
   }
+#ifdef __TLE__
+  syncWarpSpecializePartitionArgTypes(func);
+#endif
   func.setFunctionType(FunctionType::get(ctx, argTys, resultTys));
 }
 

@@ -1,0 +1,295 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
+#include "tle/dialect/include/Transforms/Passes.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
+
+using namespace mlir;
+using namespace triton;
+using namespace triton::gpu;
+using namespace nvidia_gpu;
+
+namespace mlir::triton::tle {
+
+#define GEN_PASS_DEF_TRITONTLELOWERTMACOPY
+#include "tle/dialect/include/Transforms/Passes.h.inc"
+
+namespace {
+
+static LogicalResult verifyTmaCopyTypes(TMACopyOp op, TensorDescType descTy,
+                                        MemDescType memDescTy, Value desc,
+                                        StringRef direction) {
+  RankedTensorType blockTy = descTy.getSignlessBlockType();
+  ArrayRef<int64_t> blockShape = blockTy.getShape();
+  ArrayRef<int64_t> memShape = memDescTy.getShape();
+
+  if (blockShape.size() > memShape.size()) {
+    unsigned rankDiff = blockShape.size() - memShape.size();
+    for (unsigned i = 0; i < rankDiff; ++i) {
+      if (blockShape[i] != 1) {
+        return op.emitOpError(direction)
+               << " requires tensor descriptor block shape " << blockShape
+               << " to match memdesc shape " << memShape
+               << " except for unit leading dimensions";
+      }
+    }
+    blockShape = blockShape.take_back(memShape.size());
+  }
+
+  if (blockShape.size() != memShape.size())
+    return op.emitOpError(direction)
+           << " requires tensor descriptor rank " << blockShape.size()
+           << " to match memdesc rank " << memShape.size();
+
+  if (blockShape != memShape)
+    return op.emitOpError(direction)
+           << " requires tensor descriptor block shape " << blockShape
+           << " to match memdesc shape " << memShape;
+
+  if (blockTy.getElementType() != memDescTy.getElementType())
+    return op.emitOpError(direction)
+           << " requires tensor descriptor element type "
+           << blockTy.getElementType() << " to match memdesc element type "
+           << memDescTy.getElementType();
+
+  if (!isa<SharedEncodingTrait>(memDescTy.getEncoding()))
+    return op.emitOpError(direction)
+           << " requires a shared-memory encoding on the destination memdesc";
+
+  auto memTensorTy =
+      RankedTensorType::get(memDescTy.getShape(), memDescTy.getElementType(),
+                            memDescTy.getEncoding());
+  Attribute expectedEncoding = getEncodingFromDescriptor(op, memTensorTy, desc);
+  if (expectedEncoding != memDescTy.getEncoding())
+    return op.emitOpError(direction)
+           << " requires tensor descriptor shared encoding " << expectedEncoding
+           << " to match memdesc encoding " << memDescTy.getEncoding();
+
+  unsigned expectedIndices = descTy.getBlockType().getRank();
+  if (op.getIndices().size() != expectedIndices)
+    return op.emitOpError(direction)
+           << " requires " << expectedIndices << " TMA coordinates, but got "
+           << op.getIndices().size();
+
+  return success();
+}
+
+class TMACopyLowering : public OpRewritePattern<TMACopyOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  enum class TransferDirection {
+    GM_TO_SHARMEMORY = 0,
+    SHARMEMORY_TO_GM = 1,
+    INVALID = -1
+  };
+
+  TMACopyLowering(mlir::MLIRContext *context)
+      : OpRewritePattern<TMACopyOp>(context) {}
+
+  LogicalResult matchAndRewrite(TMACopyOp op,
+                                PatternRewriter &rewriter) const override {
+    TransferDirection direction = TransferDirection::INVALID;
+    auto loc = op.getLoc();
+
+    // Determine direction based on operand types
+    if (isa<TensorDescType>(op.getSrc().getType()) &&
+        isa<MemDescType>(op.getDst().getType())) {
+      direction = TransferDirection::GM_TO_SHARMEMORY;
+    } else if (isa<MemDescType>(op.getSrc().getType()) &&
+               isa<TensorDescType>(op.getDst().getType())) {
+      direction = TransferDirection::SHARMEMORY_TO_GM;
+    } else {
+      return failure();
+    }
+
+    // Backend dialects without an eviction field retain the default policy.
+    // Use Operation::getAttr for both inherent and discardable attributes.
+    auto evictionPolicy = triton::EvictionPolicy::NORMAL;
+    if (Attribute attr = op->getAttr("evict")) {
+      auto policyAttr = dyn_cast<triton::EvictionPolicyAttr>(attr);
+      if (!policyAttr)
+        return op.emitOpError("requires a valid eviction policy");
+      evictionPolicy = policyAttr.getValue();
+    }
+    if (evictionPolicy != triton::EvictionPolicy::NORMAL &&
+        llvm::none_of(op->getName().getAttributeNames(), [](StringAttr name) {
+          return name.getValue() == "evict";
+        }))
+      return op.emitOpError("backend does not support TMA eviction policies");
+
+    if (direction == TransferDirection::GM_TO_SHARMEMORY) {
+      // Load from global memory to shared memory
+      auto srcType = cast<TensorDescType>(op.getSrc().getType());
+
+      // Use the existing shared memory allocation (should use #shared encoding
+      // like Gluon)
+      Value dstMemDesc = op.getDst();
+      auto dstType = cast<MemDescType>(dstMemDesc.getType());
+      if (failed(verifyTmaCopyTypes(op, srcType, dstType, op.getSrc(),
+                                    "global-to-shared TMA copy")))
+        return failure();
+      auto tensorType = RankedTensorType::get(
+          dstType.getShape(), dstType.getElementType(), dstType.getEncoding());
+
+      Value pred = arith::ConstantIntOp::create(rewriter, loc, 1, 1);
+
+      // Create TMA indices
+      auto indices = SmallVector<Value>(op.getIndices());
+
+#if !defined(__HCU__)
+      if (Value userBarrier = op.getBarrier()) {
+        auto expectBytes =
+            op->getAttrOfType<IntegerAttr>(op.getExpectBytesAttrName());
+        // Zero is reserved for continuation tiles of a planned logical copy.
+        if (!expectBytes || expectBytes.getInt() < 0 ||
+            (expectBytes.getInt() == 0 &&
+             !op->hasAttr(kLogicalTMACopyBytesAttr)))
+          return op.emitOpError("with explicit completion barrier requires "
+                                "positive expect_bytes");
+        if (expectBytes.getInt() > 0)
+          triton::nvidia_gpu::BarrierExpectOp::create(rewriter, loc, userBarrier, static_cast<int32_t>(expectBytes.getInt()),
+              pred);
+        auto tmaLoad =
+            triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp::create(rewriter, op.getLoc(), op.getSrc(), indices, userBarrier, dstMemDesc,
+                pred);
+        tmaLoad.setEvict(evictionPolicy);
+      } else {
+        if (op->hasAttr(op.getExpectBytesAttrName()))
+          return op.emitOpError("expect_bytes requires an explicit completion "
+                                "barrier");
+#endif
+
+        // Create minimal mbarrier allocation with #shared2 encoding (similar to
+        // our current implementation)
+        auto mbarrierCGALayout = gpu::CGAEncodingAttr::fromSplitParams(
+            tensorType.getContext(), {1}, {1}, {0});
+        auto mbarrierEncoding = gpu::SwizzledSharedEncodingAttr::get(
+            tensorType.getContext(), 1, 1, 1, {0}, mbarrierCGALayout);
+        Attribute sharedMemorySpace =
+            triton::gpu::SharedMemorySpaceAttr::get(op.getContext());
+
+        gpu::MemDescType mbarrierMemDescType =
+            gpu::MemDescType::get({1}, rewriter.getI64Type(), mbarrierEncoding,
+                                  sharedMemorySpace, /*mutableMemory=*/true);
+
+        Value mbarrierAlloc =
+            gpu::LocalAllocOp::create(rewriter, loc, mbarrierMemDescType);
+        InitBarrierOp::create(rewriter, loc, mbarrierAlloc, 1);
+
+        // Calculate size in bytes
+        auto encoding = getEncodingFromDescriptor(op, tensorType, op.getSrc());
+        auto shapePerCTA = getShapePerCTA(encoding, tensorType.getShape());
+        int sizeInBytes = product(shapePerCTA) *
+                          tensorType.getElementType().getIntOrFloatBitWidth() /
+                          8;
+        if (auto logicalBytes =
+                op->getAttrOfType<IntegerAttr>(kLogicalTMACopyBytesAttr))
+          sizeInBytes = static_cast<int>(logicalBytes.getInt());
+
+        triton::nvidia_gpu::BarrierExpectOp::create(rewriter, loc, mbarrierAlloc,
+                                                             sizeInBytes, pred);
+
+        // Perform async TMA copy from global to existing shared memory
+        auto tmaLoad =
+            triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp::create(rewriter, op.getLoc(), op.getSrc(), indices, mbarrierAlloc, dstMemDesc,
+                pred);
+        tmaLoad.setEvict(evictionPolicy);
+
+        // Wait for completion and invalidate barrier
+        Value phase = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+        WaitBarrierOp::create(rewriter, loc, mbarrierAlloc, phase);
+        InvalBarrierOp::create(rewriter, loc, mbarrierAlloc);
+#if !defined(__HCU__)
+      }
+#endif
+
+    } else {
+      if (evictionPolicy != triton::EvictionPolicy::NORMAL)
+        return op.emitOpError("eviction policies are supported only for "
+                              "global-to-shared TMA copies");
+#if !defined(__HCU__)
+      if (op.getBarrier())
+        return op.emitOpError(
+            "barrier is only supported for global-to-shared TMA copy");
+#endif
+
+      // Store from shared memory to global memory
+      auto dstType = cast<TensorDescType>(op.getDst().getType());
+      auto srcType = cast<MemDescType>(op.getSrc().getType());
+      if (failed(verifyTmaCopyTypes(op, dstType, srcType, op.getDst(),
+                                    "shared-to-global TMA copy")))
+        return failure();
+      auto tensorType = RankedTensorType::get(
+          srcType.getShape(), srcType.getElementType(), srcType.getEncoding());
+
+      // Fence shared memory before store
+      triton::nvidia_gpu::FenceAsyncSharedOp::create(rewriter, loc, false);
+
+      // Create TMA indices
+      auto indices = SmallVector<Value>(op.getIndices());
+
+      // Perform async TMA copy from shared to global memory
+      auto tmaStore =
+          triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp::create(rewriter, op.getLoc(), op.getDst(), indices, op.getSrc());
+      tmaStore->setAttr(kTleTMAStoreExplicitCommitAttr, rewriter.getUnitAttr());
+      TMAStoreCommitGroupOp::create(rewriter, loc);
+
+      // Wait for store completion
+      triton::nvidia_gpu::TMAStoreWaitOp::create(rewriter, loc, 0);
+    }
+
+    // Remove the TMACopyOp after processing
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+} // namespace
+
+class TritonTleLowerTmaCopy
+    : public impl::TritonTleLowerTmaCopyBase<TritonTleLowerTmaCopy> {
+  void runOnOperation() override {
+    MLIRContext *context = &getContext();
+    ModuleOp m = getOperation();
+
+    mlir::RewritePatternSet patterns(context);
+    patterns.add<TMACopyLowering>(context);
+    if (applyPatternsGreedily(m, std::move(patterns)).failed())
+      signalPassFailure();
+  }
+};
+
+} // namespace mlir::triton::tle

@@ -33,6 +33,9 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
+#include "tle/dialect/include/Transforms/ReorderLoopLoads.h"
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
 #include "llvm/Support/Debug.h"
 
 namespace mlir::triton {
@@ -71,9 +74,24 @@ public:
     auto ctx = getOperation()->getContext();
     for (auto loop : loops) {
       auto unrollFactor = getUnrollFactorOrDefault(loop);
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
+      bool needsReorder = tle::hasReorderLoopLoadsAttr(loop);
+      bool fullyUnrolls = tle::willFullyUnroll(loop, unrollFactor);
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
       loop->removeAttr(loopUnrollFactorAttrName);
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
+      if (needsReorder)
+        tle::removeReorderLoopLoadsAttr(loop);
+      Block *parentBlock = loop->getBlock();
+      Operation *opBeforeLoop = loop->getPrevNode(); // may be nullptr
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
       LDBG("Unrolling loop by " << unrollFactor << " times\n" << loop);
       auto resultLoops = loopUnrollByFactor(loop, unrollFactor);
+#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
+      if (needsReorder && succeeded(resultLoops))
+        tle::reorderLoopLoadsAfterUnroll(*resultLoops, parentBlock,
+                                         opBeforeLoop, loop, fullyUnrolls);
+#endif // __FLAGTREE_REORDER_LOOP_LOADS__
       // Do not pipeline the epilog loop.
       if (succeeded(resultLoops) && resultLoops->epilogueLoopOp) {
         (*resultLoops->epilogueLoopOp)

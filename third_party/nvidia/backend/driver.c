@@ -839,10 +839,15 @@ static void ensureCudaContext() {
 }
 
 static void _launch(int gridX, int gridY, int gridZ, int num_warps,
-                    int num_ctas, int launch_cooperative_grid, int launch_pdl,
-                    int shared_memory, CUstream stream, CUfunction function,
-                    void **params) {
+                    int num_ctas, int clusterDimX, int clusterDimY,
+                    int clusterDimZ, int launch_cooperative_grid,
+                    int launch_pdl, int shared_memory, CUstream stream,
+                    CUfunction function, void **params) {
   if (gridX * gridY * gridZ > 0) {
+    // flagtree tle: explicit cluster dims launch clusters of
+    // clusterDimX x clusterDimY x clusterDimZ blocks per program.
+    int cluster_size = clusterDimX * clusterDimY * clusterDimZ;
+    bool use_cluster_dims = cluster_size != 1;
     // 4 attributes that we can currently pass maximum
     CUlaunchAttribute launchAttr[4];
     static cuLaunchKernelEx_t cuLaunchKernelExHandle = NULL;
@@ -853,6 +858,11 @@ static void _launch(int gridX, int gridY, int gridZ, int num_warps,
     config.gridDimX = gridX * num_ctas;
     config.gridDimY = gridY;
     config.gridDimZ = gridZ;
+    if (use_cluster_dims) {
+      config.gridDimX *= clusterDimX;
+      config.gridDimY *= clusterDimY;
+      config.gridDimZ *= clusterDimZ;
+    }
 
     config.blockDimX = 32 * num_warps;
     config.blockDimY = 1;
@@ -877,12 +887,12 @@ static void _launch(int gridX, int gridY, int gridZ, int num_warps,
       ++num_attrs;
     }
 
-    if (num_ctas != 1) {
+    if (use_cluster_dims || num_ctas != 1) {
       CUlaunchAttribute clusterAttr = {};
       clusterAttr.id = CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION;
-      clusterAttr.value.clusterDim.x = num_ctas;
-      clusterAttr.value.clusterDim.y = 1;
-      clusterAttr.value.clusterDim.z = 1;
+      clusterAttr.value.clusterDim.x = use_cluster_dims ? clusterDimX : num_ctas;
+      clusterAttr.value.clusterDim.y = use_cluster_dims ? clusterDimY : 1;
+      clusterAttr.value.clusterDim.z = use_cluster_dims ? clusterDimZ : 1;
       launchAttr[num_attrs] = clusterAttr;
       ++num_attrs;
 
@@ -897,7 +907,7 @@ static void _launch(int gridX, int gridY, int gridZ, int num_warps,
 
     // num_ctas == 16 is non-portable. Does work for H100 and B200 tho
     config.numAttrs = num_attrs;
-    if (num_ctas == 16) {
+    if (num_ctas == 16 || cluster_size == 16) {
       CUDA_CHECK(cuFuncSetAttribute(
           function, CU_FUNC_ATTRIBUTE_NON_PORTABLE_CLUSTER_SIZE_ALLOWED, 1));
     }
@@ -1287,6 +1297,8 @@ static PyObject *launchKernel(PyObject *self, PyObject *args) {
   int launch_cooperative_grid;
   int launch_pdl;
   int num_warps, num_ctas, shared_memory;
+  int clusterDimX = 1, clusterDimY = 1, clusterDimZ = 1;
+  PyObject *kernel_metadata = NULL;
   PyObject *launch_metadata = NULL;
   PyObject *launch_enter_hook = NULL;
   PyObject *launch_exit_hook = NULL;
@@ -1295,12 +1307,33 @@ static PyObject *launchKernel(PyObject *self, PyObject *args) {
   PyObject *arg_annotations = NULL;
   Py_buffer signature;
   PyObject *kernel_args = NULL;
-  if (!PyArg_ParseTuple(args, "iiiKKpp(iii)OOOOOOy*O", &gridX, &gridY, &gridZ,
+  if (!PyArg_ParseTuple(args, "iiiKKppOOOOOOOy*O", &gridX, &gridY, &gridZ,
                         &_stream, &_function, &launch_cooperative_grid,
-                        &launch_pdl, &num_warps, &num_ctas, &shared_memory,
-                        &launch_metadata, &launch_enter_hook, &launch_exit_hook,
+                        &launch_pdl, &kernel_metadata, &launch_metadata,
+                        &launch_enter_hook, &launch_exit_hook,
                         &global_scratch_obj, &profile_scratch_obj,
                         &arg_annotations, &signature, &kernel_args)) {
+    return NULL;
+  }
+  // flagtree tle: kernel_metadata is (num_warps, num_ctas, shared_memory) or
+  // (num_warps, num_ctas, shared_memory, clusterDimX, clusterDimY, clusterDimZ)
+  if (!PyTuple_Check(kernel_metadata) ||
+      !(PyTuple_GET_SIZE(kernel_metadata) == 3 ||
+        PyTuple_GET_SIZE(kernel_metadata) == 6)) {
+    PyErr_SetString(PyExc_TypeError,
+                    "kernel_metadata must be a tuple of 3 or 6 integers");
+    PyBuffer_Release(&signature);
+    return NULL;
+  }
+  if (!PyArg_ParseTuple(kernel_metadata, "iii|iii", &num_warps, &num_ctas,
+                        &shared_memory, &clusterDimX, &clusterDimY,
+                        &clusterDimZ)) {
+    PyBuffer_Release(&signature);
+    return NULL;
+  }
+  if (clusterDimX <= 0 || clusterDimY <= 0 || clusterDimZ <= 0) {
+    PyErr_SetString(PyExc_ValueError, "cluster dims must be positive");
+    PyBuffer_Release(&signature);
     return NULL;
   }
 
@@ -1369,7 +1402,8 @@ static PyObject *launchKernel(PyObject *self, PyObject *args) {
   }
 
   Py_BEGIN_ALLOW_THREADS;
-  _launch(gridX, gridY, gridZ, num_warps, num_ctas, launch_cooperative_grid,
+  _launch(gridX, gridY, gridZ, num_warps, num_ctas, clusterDimX, clusterDimY,
+          clusterDimZ, launch_cooperative_grid,
           launch_pdl, shared_memory, (CUstream)_stream, (CUfunction)_function,
           params);
   Py_END_ALLOW_THREADS;

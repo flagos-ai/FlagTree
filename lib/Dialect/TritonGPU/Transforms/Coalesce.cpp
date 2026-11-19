@@ -36,6 +36,9 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/StrUtil.h"
 #include "llvm/Support/Debug.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Analysis/CoalescingSlice.h"
+#endif
 
 #define DEBUG_TYPE "tritongpu-coalesce"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -102,13 +105,39 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
   void runOnOperation() override {
     // Run axis info analysis
     ModuleOp moduleOp = getOperation();
+#ifdef __TLE__
+    llvm::DenseSet<Block *> nonExecutableBlocks;
+    bool failedReachability = false;
+    moduleOp.walk([&](FunctionOpInterface function) {
+      if (failed(tle::collectNonExecutableCoalescingBlocks(
+              function, nonExecutableBlocks)))
+        failedReachability = true;
+    });
+    if (failedReachability) {
+      moduleOp.emitError(
+          "failed to prove executable blocks for TLE coalescing");
+      signalPassFailure();
+      return;
+    }
+#endif
     ModuleAxisInfoAnalysis axisInfoAnalysis(moduleOp);
 
     // For each i/o operation, we determine what layout
     // the pointers should have for best memory coalescing
     llvm::MapVector<Operation *, Attribute> layoutMap;
     int threadsPerWarp = TritonGPUDialect::getThreadsPerWarp(moduleOp);
+#ifdef __TLE__
+    bool failedExplicitEncoding = false;
+#endif
     moduleOp.walk([&](Operation *curr) {
+#ifdef __TLE__
+      if (failedExplicitEncoding)
+        return;
+#endif
+#ifdef __TLE__
+      if (nonExecutableBlocks.contains(curr->getBlock()))
+        return;
+#endif
       Value ptr = getMemAccessPtr(curr);
       if (!ptr)
         return;
@@ -118,16 +147,39 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
         isPtrTensor = isa<PointerType>(tensorType.getElementType());
       if (!isPtrTensor)
         return;
+#ifdef __TLE__
+      Attribute explicitEncoding;
+      if (failed(inferTleExplicitMemoryEncoding(curr, explicitEncoding))) {
+        failedExplicitEncoding = true;
+        return;
+      }
+      if (explicitEncoding) {
+        LDBG("skip coalescing memory op with hard TLE encoding: " << *curr);
+        return;
+      }
+#endif
       int numWarps = lookupNumWarps(curr);
 
       auto tensorType = cast<RankedTensorType>(ptr.getType());
       CGAEncodingAttr cgaLayout = getCGALayout(tensorType.getEncoding());
       SmallVector<int64_t> shapePerCTA = getShapePerCTA(tensorType);
+#ifdef __TLE__
+      auto layout = buildCoalescedEncoding(axisInfoAnalysis, curr, numWarps,
+                                           threadsPerWarp, cgaLayout,
+                                           shapePerCTA, nonExecutableBlocks);
+#else
       auto layout =
           buildCoalescedEncoding(axisInfoAnalysis, curr, numWarps,
                                  threadsPerWarp, cgaLayout, shapePerCTA);
+#endif
       layoutMap[curr] = layout;
     });
+#ifdef __TLE__
+    if (failedExplicitEncoding) {
+      signalPassFailure();
+      return;
+    }
+#endif
 
     // Also pick a layout for descriptor load/store ops.
     pickDescriptorLoadStoreLayout(moduleOp, layoutMap);

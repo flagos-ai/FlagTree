@@ -22,7 +22,7 @@ from pathlib import Path
 import importlib.util
 import os
 from . import tools, default
-from .tools import flagtree_configs, OfflineBuildManager
+from .tools import flagtree_configs, OfflineBuildManager, is_skip_cuda_toolkits
 
 
 class SubmoduleRegistrar:
@@ -58,11 +58,19 @@ submodule_registrar = SubmoduleRegistrar(submodules=(
         "name": "triton_shared", "url": "https://github.com/microsoft/triton-shared.git", "commit_id":
         "5842469a16b261e45a2c67fbfc308057622b03ee"
     },
-    {"name": "flir", "url": "https://github.com/FlagTree/flir.git"},
-    {"name": "flagcx", "url": "https://github.com/flagos-ai/FlagCX.git", "relative_path": "tle/third_party/flagcx"},
+    {"name": "flir", "url": "https://github.com/flagos-ai/flir.git"},
+    {"name": "FlagPrism", "url": "https://github.com/flagos-ai/FlagPrism.git"},
     {
-        "name": "tileir", "url": "https://github.com/NVIDIA/cuda-tile", "relative_path": "tileir/third_party/cuda-tile",
-        "commit_id": "2e5ccba66fb3afdba34b26cf358418283027c248"
+        "name": "AscendNPU-IR", "url": "https://gitcode.com/Ascend/AscendNPU-IR.git", "relative_path":
+        "ascend/AscendNPU-IR", "commit_id": "efb7141581c009bbd1d676b18941ed15ede62a68"
+    },
+    {
+        "name": "flagcx", "url": "https://github.com/flagos-ai/FlagCX.git", "relative_path": "tle/third_party/flagcx",
+        "commit_id": "c93438decaba8d935e7aa6ae8377e56fd3910b32"
+    },
+    {
+        "name": "cuda-tile", "url": "https://github.com/NVIDIA/cuda-tile.git", "relative_path":
+        "tileir/third_party/cuda-tile", "commit_id": "7e8e2e68fa219716103824c01f7303367cf7df8d"
     },
 ))
 
@@ -84,4 +92,4 @@ def activate(backend, suffix=".py"):
     return module
 
 
-__all__ = ["aipu", "default", "activate", "flagtree_submodules", "OfflineBuildManager", "tools", "submodule_registrar"]
+__all__ = ["default", "activate", "flagtree_submodules", "OfflineBuildManager", "tools", "submodule_registrar"]

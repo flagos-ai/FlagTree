@@ -1,0 +1,270 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "tle/dialect/include/Tools/FlagcxUtils.h"
+
+#include "mlir/Conversion/LLVMCommon/Pattern.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "triton/Dialect/Triton/IR/Types.h"
+#include "llvm/ADT/SmallVector.h"
+
+namespace mlir::triton::tle {
+using namespace mlir;
+
+static const llvm::StringMap<StringRef> runtimeNames = {
+    {"getLocalPeFunction", "flagcxDevCommGetIntraRank"},
+    {"getWorldRankFunction", "flagcxDevCommGetRank"},
+    {"getNumPesFunction", "flagcxDevCommGetIntraSize"},
+    {"getBarrierArriveFunction", "flagcxDevBarrierArrive"},
+    {"getBarrierWaitFunction", "flagcxDevBarrierWait"},
+    {"getBarrierSyncFunction", "flagcxDevBarrierSync"},
+    {"signalIncFunction", "flagcxDevSignalInc"},
+    {"signalAddFunction", "flagcxDevSignalAdd"},
+    {"waitSignalFunction", "flagcxDevWaitSignal"},
+    {"waitShadowFunction", "flagcxDevWaitSignalMeetShadow"},
+    {"waitCounterFunction", "flagcxDevWaitCounter"}};
+
+static inline LLVM::LLVMFuncOp createFuncInstance(const char *funcName,
+                                                  ModuleOp module,
+                                                  ArrayRef<Type> argTypes,
+                                                  Type returnType) {
+  if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
+    return func;
+  auto funcType = LLVM::LLVMFunctionType::get(returnType, argTypes, false);
+
+  OpBuilder builder(module.getBodyRegion());
+  auto func =
+      LLVM::LLVMFuncOp::create(builder, module.getLoc(), funcName, funcType);
+
+  func.setLinkage(LLVM::Linkage::External);
+  return func;
+}
+
+// The frontend passes the FlagCX global memory/communication pointer as an
+// integer. Convert it back to an LLVM pointer in global address space (AS1)
+// before passing it to device/runtime functions.
+static inline Value getFlagcxMemOrCommPtr(mlir::Location loc,
+                                          ConversionPatternRewriter &rewriter,
+                                          Value memPtrInt) {
+  auto ctx = rewriter.getContext();
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  return LLVM::IntToPtrOp::create(rewriter, loc, ptrTy, memPtrInt);
+}
+
+LLVM::CallOp getNumPesFunCall(mlir::Location loc,
+                              ConversionPatternRewriter &rewriter,
+                              Value memPtrInt) {
+  auto ctx = rewriter.getContext();
+  ModuleOp module =
+      rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
+
+  auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto i32Ty = IntegerType::get(ctx, 32);
+  auto func = createFuncInstance(
+      runtimeNames.lookup("getNumPesFunction").data(), module, {PtrTy}, i32Ty);
+
+  auto comm_dev_ptr = getFlagcxMemOrCommPtr(loc, rewriter, memPtrInt);
+  return LLVM::CallOp::create(rewriter, loc, TypeRange{func.getFunctionType().getReturnType()},
+      FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr});
+}
+
+LLVM::CallOp getWorldRankFuncCall(mlir::Location loc,
+                                  ConversionPatternRewriter &rewriter,
+                                  Value memPtrInt) {
+  auto ctx = rewriter.getContext();
+  ModuleOp module =
+      rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
+
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto i32Ty = IntegerType::get(ctx, 32);
+  auto func =
+      createFuncInstance(runtimeNames.lookup("getWorldRankFunction").data(),
+                         module, {ptrTy}, i32Ty);
+
+  auto commDevPtr = getFlagcxMemOrCommPtr(loc, rewriter, memPtrInt);
+  return LLVM::CallOp::create(rewriter, loc, TypeRange{func.getFunctionType().getReturnType()},
+      FlatSymbolRefAttr::get(func), ValueRange{commDevPtr});
+}
+
+LLVM::CallOp getUnifiedBarrierFuncCall(
+    mlir::Location loc, ConversionPatternRewriter &rewriter, Value comm,
+    int32_t teamKind, int32_t barrierIndex, int32_t contextId, int32_t coopKind,
+    int32_t order, int32_t scope, llvm::StringRef barrierType) {
+  auto ctx = rewriter.getContext();
+  ModuleOp module =
+      rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
+
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto i32Ty = IntegerType::get(ctx, 32);
+  auto voidTy = LLVM::LLVMVoidType::get(ctx);
+  StringRef funcName;
+  if (barrierType == "arrive") {
+    funcName = "getBarrierArriveFunction";
+  } else if (barrierType == "wait") {
+    funcName = "getBarrierWaitFunction";
+  } else if (barrierType == "sync") {
+    funcName = "getBarrierSyncFunction";
+  } else {
+    llvm_unreachable("Unknown barrier type");
+  }
+
+  auto func = createFuncInstance(
+      runtimeNames.lookup(funcName).data(), module,
+      {ptrTy, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty}, voidTy);
+
+  auto commDevPtr = getFlagcxMemOrCommPtr(loc, rewriter, comm);
+  auto teamKindVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty, teamKind);
+  auto barrierIndexVal =
+      LLVM::ConstantOp::create(rewriter, loc, i32Ty, barrierIndex);
+  auto contextIdVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty, contextId);
+  auto coopKindVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty, coopKind);
+  auto orderVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty, order);
+  auto scopeVal = LLVM::ConstantOp::create(rewriter, loc, i32Ty, scope);
+  return LLVM::CallOp::create(rewriter, loc, func,
+      ValueRange{commDevPtr, teamKindVal, barrierIndexVal, contextIdVal,
+                 coopKindVal, orderVal, scopeVal});
+}
+
+LLVM::CallOp getLocalPeFuncCall(mlir::Location loc,
+                                ConversionPatternRewriter &rewriter,
+                                Value memPtrInt) {
+  auto ctx = rewriter.getContext();
+  ModuleOp module =
+      rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
+
+  auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto i32Ty = IntegerType::get(ctx, 32);
+  auto func = createFuncInstance(
+      runtimeNames.lookup("getLocalPeFunction").data(), module, {PtrTy}, i32Ty);
+
+  auto comm_dev_ptr = getFlagcxMemOrCommPtr(loc, rewriter, memPtrInt);
+  return LLVM::CallOp::create(rewriter, loc, TypeRange{func.getFunctionType().getReturnType()},
+      FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr});
+}
+
+LLVM::CallOp getSignalFuncCall(mlir::Location loc,
+                               ConversionPatternRewriter &rewriter, Value comm,
+                               Value peer, Value slotId, Value value,
+                               uint32_t contextId, FlagCXTeamKind teamKind,
+                               FlagCXCoopKind coopKind, SignalOpKind signalOp,
+                               SyncScope scope) {
+  auto ctx = rewriter.getContext();
+  ModuleOp module =
+      rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
+
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto i32Ty = IntegerType::get(ctx, 32);
+  auto i64Ty = IntegerType::get(ctx, 64);
+  auto voidTy = LLVM::LLVMVoidType::get(ctx);
+  auto commPtr = getFlagcxMemOrCommPtr(loc, rewriter, comm);
+
+  auto teamKindValue = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(teamKind)));
+  auto coopKindValue = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(coopKind)));
+  auto contextIdValue = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(contextId)));
+  auto scopeValue = LLVM::ConstantOp::create(rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(scope)));
+
+  // Unified: (comm, teamKind, peer, signal, contextId, coopKind, scope)
+  SmallVector<Value> args{commPtr,        teamKindValue, peer,      slotId,
+                          contextIdValue, coopKindValue, scopeValue};
+  SmallVector<Type> argTypes{ptrTy, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty};
+
+  StringRef runtimeName;
+  switch (signalOp) {
+  case SignalOpKind::INC:
+    runtimeName = runtimeNames.lookup("signalIncFunction");
+    break;
+  case SignalOpKind::ADD:
+    runtimeName = runtimeNames.lookup("signalAddFunction");
+    // Unified: (comm, teamKind, peer, signal, value, contextId, coopKind,
+    // scope)
+    argTypes.insert(argTypes.begin() + 4, i64Ty);
+    args.insert(args.begin() + 4, value);
+    break;
+  default:
+    llvm_unreachable("unknown signal operation");
+  }
+
+  auto signalFunc =
+      createFuncInstance(runtimeName.data(), module, argTypes, voidTy);
+  return LLVM::CallOp::create(rewriter, loc, TypeRange{}, FlatSymbolRefAttr::get(signalFunc), args);
+}
+
+LLVM::CallOp getDevNetWaitFuncCallByKind(
+    mlir::Location loc, ConversionPatternRewriter &rewriter, Value comm,
+    Value slot_id, SignalWaitKind wait_kind, std::optional<Value> target,
+    FlagCXCoopKind coop_kind, uint32_t contextId, MemoryOrder order) {
+  auto ctx = rewriter.getContext();
+  ModuleOp module =
+      rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
+
+  auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto I32Ty = IntegerType::get(ctx, 32);
+  auto I64Ty = IntegerType::get(ctx, 64);
+  auto VoidTy = LLVM::LLVMVoidType::get(ctx);
+
+  auto commPtr = getFlagcxMemOrCommPtr(loc, rewriter, comm);
+  auto coop_kind_val = LLVM::ConstantOp::create(rewriter, loc, I32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(coop_kind)));
+  auto contextIdValue = LLVM::ConstantOp::create(rewriter, loc, I32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(contextId)));
+  auto orderValue = LLVM::ConstantOp::create(rewriter, loc, I32Ty, rewriter.getI32IntegerAttr(static_cast<int32_t>(order)));
+
+  LLVM::ConstantOp bits;
+  LLVM::LLVMFuncOp func;
+  auto make_call = [&](ValueRange args) {
+    return LLVM::CallOp::create(rewriter, loc, TypeRange{},
+                                         FlatSymbolRefAttr::get(func), args);
+  };
+
+  switch (wait_kind) {
+  case SignalWaitKind::COUNTER:
+    // Unified: (comm, counter, least, bits, contextId, coopKind, order)
+    func = createFuncInstance(
+        runtimeNames.lookup("waitCounterFunction").data(), module,
+        {PtrTy, I32Ty, I64Ty, I32Ty, I32Ty, I32Ty, I32Ty}, VoidTy);
+    bits = LLVM::ConstantOp::create(rewriter, loc, I32Ty, 56);
+    return make_call(ValueRange{commPtr, slot_id, target.value(), bits,
+                                contextIdValue, coop_kind_val, orderValue});
+  case SignalWaitKind::SIGNAL:
+    // Unified: (comm, signal, least, bits, contextId, coopKind, order)
+    func = createFuncInstance(
+        runtimeNames.lookup("waitSignalFunction").data(), module,
+        {PtrTy, I32Ty, I64Ty, I32Ty, I32Ty, I32Ty, I32Ty}, VoidTy);
+    bits = LLVM::ConstantOp::create(rewriter, loc, I32Ty, 64);
+    return make_call(ValueRange{commPtr, slot_id, target.value(), bits,
+                                contextIdValue, coop_kind_val, orderValue});
+  case SignalWaitKind::SHADOW:
+    // Unified: (comm, contextId, signal, bits, coopKind, order)
+    func = createFuncInstance(
+        runtimeNames.lookup("waitShadowFunction").data(), module,
+        {PtrTy, I32Ty, I32Ty, I32Ty, I32Ty, I32Ty}, VoidTy);
+    bits = LLVM::ConstantOp::create(rewriter, loc, I32Ty, 64);
+    return make_call(ValueRange{commPtr, contextIdValue, slot_id, bits,
+                                coop_kind_val, orderValue});
+  default:
+    llvm_unreachable("unknown wait kind");
+  }
+}
+
+} // namespace mlir::triton::tle

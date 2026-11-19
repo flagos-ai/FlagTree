@@ -24,6 +24,9 @@
  */
 
 #include "triton/Analysis/AxisInfo.h"
+#ifdef __TLE__
+#include "triton/Dialect/Triton/IR/Types.h"
+#endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/MMAv5PipelineUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
@@ -87,6 +90,15 @@ public:
                       DenseMap<Operation *, int> &opLatency)
       : forOp(forOp), numStages(numStages), opLatency(opLatency) {};
 
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+  AssignLoadLatencies(scf::ForOp forOp, int numStages,
+                      DenseMap<Operation *, int> &opLatency,
+                      bool prefetchIndexLoads)
+      : AssignLoadLatencies(forOp, numStages, opLatency) {
+    this->prefetchIndexLoads = prefetchIndexLoads;
+  }
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
+
   void run() {
     bool pipelineWithoutDot = forOp->hasAttr(mlir::triton::kNumStagesAttrName);
     ModuleOp moduleOp = forOp->getParentOfType<ModuleOp>();
@@ -102,6 +114,19 @@ public:
     int maxIndirectionLevel = 0;
     for (auto &[loadOp, info] : loadOpToIndLevel)
       maxIndirectionLevel = std::max(maxIndirectionLevel, info.first);
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+    if (!prefetchIndexLoads && maxIndirectionLevel > 0) {
+      // The index loads (level >= 1) are small and the data loads they
+      // address are large, so sharing the prefetch depth between them wastes
+      // most of it: the index loads stay synchronous and the data loads get
+      // the whole depth.
+      for (auto &[loadOp, info] : loadOpToIndLevel) {
+        if (info.first == 0)
+          opLatency[loadOp] = numStages - 1;
+      }
+      return;
+    }
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
     unsigned loadLatency = (numStages - 1) / (maxIndirectionLevel + 1);
 
     for (auto [loadOp, dist] : loadOpToIndLevel) {
@@ -113,6 +138,10 @@ private:
   scf::ForOp forOp;
   int numStages;
   DenseMap<Operation *, int> &opLatency;
+
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+  bool prefetchIndexLoads = true;
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 
 public:
   static bool canHaveSharedEncoding(tt::LoadOp op) {
@@ -127,6 +156,16 @@ public:
                          tt::ModuleAxisInfoAnalysis &axisInfoAnalysis,
                          bool filterSmall) {
     if (auto loadOp = dyn_cast<tt::LoadOp>(op)) {
+#ifdef __TLE__
+      auto ptrTy = loadOp.getPtr().getType();
+      if (auto tensorTy = dyn_cast<RankedTensorType>(ptrTy))
+        ptrTy = tensorTy.getElementType();
+      if (auto ttPtrTy = dyn_cast<tt::PointerType>(ptrTy);
+          ttPtrTy.getAddressSpace() == 3) {
+        // Shared-memory loads should not be pipelined into async global copies.
+        return false;
+      }
+#endif
       if (filterSmall && !canBeConvertedToAsyncLoad(loadOp, axisInfoAnalysis)) {
         LDBG("Load " << *loadOp << " is too small for pipelining");
         return false;
@@ -134,6 +173,33 @@ public:
     }
     if (isa<tt::DescriptorLoadOp, tt::DescriptorGatherOp>(op))
       return true;
+#ifdef __TLE__
+    bool hasLocalAllocUser = llvm::any_of(op->getUsers(), [&](Operation *user) {
+      return isa<ttg::LocalAllocOp>(user);
+    });
+    if (!hasLocalAllocUser && !canHaveSharedEncoding(cast<tt::LoadOp>(op))) {
+      LDBG("Load " << *op << " cannot have shared encoding");
+      return false;
+    }
+    ttg::SharedEncodingTrait localAllocEnc;
+    if (hasLocalAllocUser) {
+      for (auto user : op->getUsers()) {
+        auto localAlloc = dyn_cast<ttg::LocalAllocOp>(user);
+        if (!localAlloc)
+          continue;
+        auto enc = mlir::cast<ttg::SharedEncodingTrait>(
+            localAlloc.getType().getEncoding());
+        if (!localAllocEnc) {
+          localAllocEnc = enc;
+        }
+        if (enc != localAllocEnc) {
+          // If the load is used by a LocalAllocOp, all the users need to have
+          // the same encoding.
+          return false;
+        }
+      }
+    }
+#else
     if (!canHaveSharedEncoding(cast<tt::LoadOp>(op))) {
       LDBG("Load " << *op << " cannot have shared encoding");
       return false;
@@ -159,6 +225,7 @@ public:
         }
       }
     }
+#endif
 
     if (localAllocEnc) {
       auto registerTy = cast<RankedTensorType>(op->getResultTypes()[0]);
@@ -274,7 +341,12 @@ private:
 // requested number of stages assign the latencies in a way that cover all the
 // stages with the sum of latencies in the chain from the first load to the
 // final dot op.
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+void assignLatencies(ModuleOp moduleOp, int defaultNumStages,
+                     bool prefetchIndexLoads = true) {
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
 void assignLatencies(ModuleOp moduleOp, int defaultNumStages) {
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   SmallVector<scf::ForOp> loops;
   moduleOp->walk([&](scf::ForOp forOp) {
     // Bail out for loops with num_stage <= 1.
@@ -292,7 +364,11 @@ void assignLatencies(ModuleOp moduleOp, int defaultNumStages) {
       continue;
     }
     int numStages = getNumStagesOrDefault(forOp, defaultNumStages);
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+    AssignLoadLatencies(forOp, numStages, opLatency, prefetchIndexLoads).run();
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
     AssignLoadLatencies(forOp, numStages, opLatency).run();
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
     AssignMMALatencies(forOp, opLatency).run();
   }
   serializeLatencies(moduleOp, opLatency);
@@ -399,7 +475,13 @@ struct AssignLatencies
     : public impl::TritonGPUAssignLatenciesBase<AssignLatencies> {
   using TritonGPUAssignLatenciesBase::TritonGPUAssignLatenciesBase;
 
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+  void runOnOperation() override {
+    assignLatencies(getOperation(), numStages, prefetchIndexLoads);
+  }
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
   void runOnOperation() override { assignLatencies(getOperation(), numStages); }
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 };
 
 } // namespace mlir::triton::gpu

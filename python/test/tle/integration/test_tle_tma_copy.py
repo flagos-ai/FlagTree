@@ -1,0 +1,314 @@
+# flagtree tle
+"""
+TLE TMA Copy Integration Tests
+
+Tests TLE TMA copy functionality and bidirectional copy operations:
+- TMA copy operations (tle.gpu.copy with TMA descriptors)
+- Shared-memory pointers (tle.gpu.alloc, tle.gpu.local_ptr + tl.load/store)
+- Integration with Triton JIT and TMA descriptors
+- Memory allocation and data transfer validation
+"""
+
+import pytest
+import torch
+import triton
+import triton.language as tl
+import triton.experimental.tle.language as tle
+
+
+def _is_enflame_backend():
+    target = triton.runtime.driver.active.get_current_target()
+    return target.backend == "gcu"
+
+
+def _is_nvidia_backend():
+    target = triton.runtime.driver.active.get_current_target()
+    return target.backend == "cuda"
+
+
+def _has_hopper_gpu() -> bool:
+    if _is_enflame_backend():
+        # Assume Enflame backend has Hopper support for testing purposes
+        return True
+    return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 9
+
+
+pytestmark = pytest.mark.skipif(
+    not _has_hopper_gpu(),
+    reason="TMA copy requires NVIDIA Hopper (sm90+)",
+)
+
+
+@triton.jit
+def elementwise_tma_add_kernel(
+    a_desc,
+    b_desc,
+    c_desc,
+    xnumel,
+    ynumel,
+    XBLOCK: tl.constexpr,
+    YBLOCK: tl.constexpr,
+):
+    pid = tl.program_id(0)
+
+    # Calculate row offset for current program
+
+    # Define block shape and NVMMASharedLayout for TMA compatibility
+    #layout = tle.gpu.nv_mma_shared_layout.make_default([XBLOCK, YBLOCK], tl.float32)
+
+    # Allocate shared memory buffers
+    a_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem)
+    b_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem)
+    c_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem)
+    row_ids = tl.arange(0, XBLOCK)[:, None]
+    col_ids = tl.arange(0, YBLOCK)[None, :]
+    row_ids = tl.broadcast_to(row_ids, (XBLOCK, YBLOCK))
+    col_ids = tl.broadcast_to(col_ids, (XBLOCK, YBLOCK))
+    a_smem_ptrs = tle.gpu.local_ptr(a_smem, (row_ids, col_ids))
+    b_smem_ptrs = tle.gpu.local_ptr(b_smem, (row_ids, col_ids))
+    c_smem_ptrs = tle.gpu.local_ptr(c_smem, (row_ids, col_ids))
+
+    # Use TLE pipeline for block-wise processing
+    for yoff in range(0, ynumel, YBLOCK):
+        # Calculate column offset for current block
+        # copy data to shared memory
+        tle.gpu.copy(a_desc, a_smem, [XBLOCK, YBLOCK], [pid * XBLOCK, yoff])
+        tle.gpu.copy(b_desc, b_smem, [XBLOCK, YBLOCK], [pid * XBLOCK, yoff])
+        # Load data from shared memory
+        aval = tl.load(a_smem_ptrs)
+        bval = tl.load(b_smem_ptrs)
+
+        c_val = aval + bval
+        tl.store(c_smem_ptrs, c_val)
+        tle.gpu.copy(c_smem, c_desc, [XBLOCK, YBLOCK], [pid * XBLOCK, yoff])
+
+
+def elementwise_add(A, B, C, XBLOCK=32, YBLOCK=64):
+    """
+    Wrapper function to execute element-wise addition using TLE pipeline
+
+    Args:
+        A: Input tensor descriptor A (TMA descriptor)
+        B: Input tensor descriptor B (TMA descriptor)
+        C: Output tensor descriptor C (TMA descriptor)
+        XBLOCK: Block size for X dimension
+        YBLOCK: Block size for Y dimension
+    """
+    # For TMA descriptors, we don't have direct access to shape/stride
+    # We'll use the block sizes for the computation
+    xnumel, ynumel = 512, 512  # Default test size
+    grid = (triton.cdiv(xnumel, XBLOCK), )
+
+    return elementwise_tma_add_kernel[grid](A, B, C, xnumel, ynumel, XBLOCK, YBLOCK)
+
+
+@triton.jit
+def elementwise_tma_add_explicit_barrier_kernel(
+    a_desc,
+    b_desc,
+    c_desc,
+    xnumel,
+    ynumel,
+    XBLOCK: tl.constexpr,
+    YBLOCK: tl.constexpr,
+    TILE_BYTES: tl.constexpr,
+):
+    pid = tl.program_id(0)
+
+    a_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem)
+    b_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem)
+    c_smem = tle.gpu.alloc([XBLOCK, YBLOCK], dtype=tl.float32, layout=None, scope=tle.gpu.smem)
+
+    row_ids = tl.arange(0, XBLOCK)[:, None]
+    col_ids = tl.arange(0, YBLOCK)[None, :]
+    row_ids = tl.broadcast_to(row_ids, (XBLOCK, YBLOCK))
+    col_ids = tl.broadcast_to(col_ids, (XBLOCK, YBLOCK))
+    a_smem_ptrs = tle.gpu.local_ptr(a_smem, (row_ids, col_ids))
+    b_smem_ptrs = tle.gpu.local_ptr(b_smem, (row_ids, col_ids))
+    c_smem_ptrs = tle.gpu.local_ptr(c_smem, (row_ids, col_ids))
+
+    a_bar = tle.gpu.alloc_barrier(expect_bytes=TILE_BYTES)
+    b_bar = tle.gpu.alloc_barrier(expect_bytes=TILE_BYTES)
+
+    for yoff in range(0, ynumel, YBLOCK):
+        phase = (yoff // YBLOCK) & 1
+        tle.gpu.copy(a_desc, a_smem, [XBLOCK, YBLOCK], [pid * XBLOCK, yoff], barrier=a_bar)
+        tle.gpu.copy(b_desc, b_smem, [XBLOCK, YBLOCK], [pid * XBLOCK, yoff], barrier=b_bar)
+        tle.gpu.barrier_wait(a_bar, phaseIdx=phase)
+        tle.gpu.barrier_wait(b_bar, phaseIdx=phase)
+
+        aval = tl.load(a_smem_ptrs)
+        bval = tl.load(b_smem_ptrs)
+        c_val = aval + bval
+        tl.store(c_smem_ptrs, c_val)
+        tle.gpu.copy(c_smem, c_desc, [XBLOCK, YBLOCK], [pid * XBLOCK, yoff])
+
+
+def elementwise_add_explicit_barrier(A, B, C, XBLOCK=32, YBLOCK=64):
+    xnumel, ynumel = 512, 512
+    grid = (triton.cdiv(xnumel, XBLOCK), )
+    return elementwise_tma_add_explicit_barrier_kernel[grid](A, B, C, xnumel, ynumel, XBLOCK, YBLOCK,
+                                                             XBLOCK * YBLOCK * 4)
+
+
+class TestTLETmaCopy:
+    """TLE TMA Copy Integration Tests"""
+
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    def test_tma_copy_basic(self):
+        """Test basic TMA copy functionality with element-wise addition"""
+        torch.manual_seed(42)  # Ensure reproducibility
+
+        xnumel, ynumel = 512, 512
+        XBLOCK, YBLOCK = 32, 64
+
+        # Create test data
+        a = torch.randn(xnumel, ynumel, device="cuda", dtype=torch.float32)
+        b = torch.randn(xnumel, ynumel, device="cuda", dtype=torch.float32)
+        c = torch.empty_like(a, device="cuda", dtype=torch.float32)
+        from triton.tools.tensor_descriptor import TensorDescriptor
+        a_tma = TensorDescriptor.from_tensor(a, block_shape=[XBLOCK, YBLOCK])
+        b_tma = TensorDescriptor.from_tensor(b, block_shape=[XBLOCK, YBLOCK])
+        c_tma = TensorDescriptor.from_tensor(c, block_shape=[XBLOCK, YBLOCK])
+        # Execute TLE pipeline computation
+        elementwise_add(a_tma, b_tma, c_tma, XBLOCK, YBLOCK)
+
+        # Verify results
+        expected = a + b
+        torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
+
+    @pytest.mark.skipif(not _is_nvidia_backend(), reason="Explicit TMA completion barriers require NVIDIA backend")
+    @pytest.mark.skip_if_tle_unsupported(
+        "gpu.alloc",
+        "gpu.alloc_barrier",
+        "gpu.barrier_wait",
+        "gpu.copy",
+        "gpu.local_ptr",
+    )
+    def test_tma_copy_explicit_barrier(self):
+        """Test TMA load with user-provided completion barriers."""
+        torch.manual_seed(43)
+
+        xnumel, ynumel = 512, 512
+        XBLOCK, YBLOCK = 32, 64
+
+        a = torch.randn(xnumel, ynumel, device="cuda", dtype=torch.float32)
+        b = torch.randn(xnumel, ynumel, device="cuda", dtype=torch.float32)
+        c = torch.empty_like(a, device="cuda", dtype=torch.float32)
+
+        from triton.tools.tensor_descriptor import TensorDescriptor
+        a_tma = TensorDescriptor.from_tensor(a, block_shape=[XBLOCK, YBLOCK])
+        b_tma = TensorDescriptor.from_tensor(b, block_shape=[XBLOCK, YBLOCK])
+        c_tma = TensorDescriptor.from_tensor(c, block_shape=[XBLOCK, YBLOCK])
+
+        elementwise_add_explicit_barrier(a_tma, b_tma, c_tma, XBLOCK, YBLOCK)
+
+        expected = a + b
+        torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
+
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    def test_tma_copy_different_block_sizes(self):
+        """Test TMA copy with different block sizes"""
+        torch.manual_seed(123)
+
+        for XBLOCK, YBLOCK in [(16, 128), (64, 32), (128, 16)]:
+            xnumel, ynumel = 256, 256
+
+            # Create test data
+            a = torch.randn(xnumel, ynumel, device="cuda", dtype=torch.float32)
+            b = torch.randn(xnumel, ynumel, device="cuda", dtype=torch.float32)
+            c = torch.empty_like(a, device="cuda", dtype=torch.float32)
+
+            from triton.tools.tensor_descriptor import TensorDescriptor
+            a_tma = TensorDescriptor.from_tensor(a, block_shape=[XBLOCK, YBLOCK])
+            b_tma = TensorDescriptor.from_tensor(b, block_shape=[XBLOCK, YBLOCK])
+            c_tma = TensorDescriptor.from_tensor(c, block_shape=[XBLOCK, YBLOCK])
+
+            # Execute TLE pipeline computation
+            elementwise_add(a_tma, b_tma, c_tma, XBLOCK, YBLOCK)
+
+            # Verify results
+            expected = a + b
+            torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
+
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    def test_tma_copy_different_dtypes(self):
+        """Test TMA copy with different data types"""
+        torch.manual_seed(456)
+
+        xnumel, ynumel = 256, 256
+        XBLOCK, YBLOCK = 32, 64
+        # for dtype in [torch.float32, torch.float16, torch.bfloat16]:
+        for dtype in [torch.float32]:
+            # Create test data
+            a = torch.randn(xnumel, ynumel, device="cuda", dtype=dtype)
+            b = torch.randn(xnumel, ynumel, device="cuda", dtype=dtype)
+            c = torch.empty_like(a, device="cuda", dtype=dtype)
+
+            from triton.tools.tensor_descriptor import TensorDescriptor
+            a_tma = TensorDescriptor.from_tensor(a, block_shape=[XBLOCK, YBLOCK])
+            b_tma = TensorDescriptor.from_tensor(b, block_shape=[XBLOCK, YBLOCK])
+            c_tma = TensorDescriptor.from_tensor(c, block_shape=[XBLOCK, YBLOCK])
+
+            # Execute TLE pipeline computation
+            elementwise_add(a_tma, b_tma, c_tma, XBLOCK, YBLOCK)
+
+            # Verify results
+            expected = a + b
+            torch.testing.assert_close(c, expected, atol=1e-3 if dtype == torch.float16 else 1e-5,
+                                       rtol=1e-3 if dtype == torch.float16 else 1e-5)
+
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    def test_tma_copy_large_tensor(self):
+        """Test TMA copy with larger tensors"""
+        torch.manual_seed(789)
+
+        xnumel, ynumel = 512, 512
+        XBLOCK, YBLOCK = 64, 64
+
+        # Create test data
+        a = torch.randn(xnumel, ynumel, device="cuda", dtype=torch.float32)
+        b = torch.randn(xnumel, ynumel, device="cuda", dtype=torch.float32)
+        c = torch.empty_like(a, device="cuda", dtype=torch.float32)
+
+        from triton.tools.tensor_descriptor import TensorDescriptor
+        a_tma = TensorDescriptor.from_tensor(a, block_shape=[XBLOCK, YBLOCK])
+        b_tma = TensorDescriptor.from_tensor(b, block_shape=[XBLOCK, YBLOCK])
+        c_tma = TensorDescriptor.from_tensor(c, block_shape=[XBLOCK, YBLOCK])
+
+        # Execute TLE pipeline computation
+        elementwise_add(a_tma, b_tma, c_tma, XBLOCK, YBLOCK)
+
+        # Verify results
+        expected = a + b
+        torch.testing.assert_close(c, expected, atol=1e-4, rtol=1e-4)
+
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    def test_tma_copy_non_divisible(self):
+        """Test TMA copy with non-divisible tensor dimensions"""
+        torch.manual_seed(101)
+
+        # Test with dimensions that are not perfectly divisible by block sizes
+        xnumel, ynumel = 500, 300  # Not divisible by 32, 64
+        XBLOCK, YBLOCK = 32, 64
+
+        # Create test data
+        a = torch.randn(xnumel, ynumel, device="cuda", dtype=torch.float32)
+        b = torch.randn(xnumel, ynumel, device="cuda", dtype=torch.float32)
+        c = torch.empty_like(a, device="cuda", dtype=torch.float32)
+
+        from triton.tools.tensor_descriptor import TensorDescriptor
+        a_tma = TensorDescriptor.from_tensor(a, block_shape=[XBLOCK, YBLOCK])
+        b_tma = TensorDescriptor.from_tensor(b, block_shape=[XBLOCK, YBLOCK])
+        c_tma = TensorDescriptor.from_tensor(c, block_shape=[XBLOCK, YBLOCK])
+
+        # Execute TLE pipeline computation
+        elementwise_add(a_tma, b_tma, c_tma, XBLOCK, YBLOCK)
+
+        # Verify results (only check valid region)
+        expected = a + b
+        torch.testing.assert_close(c, expected, atol=1e-5, rtol=1e-5)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "-s"])

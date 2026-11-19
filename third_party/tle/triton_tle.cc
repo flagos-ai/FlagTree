@@ -1,0 +1,1392 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "Python.h"
+#include "Transforms/Passes.h"
+#include "ir.h" // TritonOpBuilder
+#ifdef __FLAGTREE_COMMON_IR__
+#include "mlir-ext/Dialect/CommonIR/IR/CommonIRDialect.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#endif // __FLAGTREE_COMMON_IR__
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinDialect.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Value.h"
+#include "mlir/Parser/Parser.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Target/LLVMIR/Import.h"
+#include "passes.h"
+#include "pybind11/pybind11.h"
+#include "pybind11/pytypes.h"
+#include "pybind11/stl.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
+#include "tle/dialect/include/IR/VerifyUtils.h"
+#include "tle/dialect/include/Transforms/Passes.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "triton/Tools/LayoutUtils.h"
+#include "triton/Tools/LinearLayout.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVectorExtras.h"
+#include "llvm/IRReader/IRReader.h"
+#include "llvm/Support/Casting.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/raw_ostream.h"
+#include <algorithm>
+#include <cctype>
+#include <cstdint>
+
+namespace py = pybind11;
+using namespace mlir;
+namespace tt = triton;
+namespace ttg = triton::gpu;
+namespace ttng = triton::nvidia_gpu;
+namespace tle = triton::tle;
+#ifdef __FLAGTREE_COMMON_IR__
+namespace tile = triton::tile;
+
+static std::string attrToLowerString(Attribute attr) {
+  if (!attr)
+    return "";
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  attr.print(os);
+  os.flush();
+  std::transform(text.begin(), text.end(), text.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return text;
+}
+
+static tile::MemorySpace attrToCommonIRMemorySpace(Attribute attr) {
+  auto text = attrToLowerString(attr);
+  if (text.find("register") != std::string::npos)
+    return tile::MemorySpace::Register;
+  if (text.find("shared") != std::string::npos ||
+      text.find("smem") != std::string::npos)
+    return tile::MemorySpace::Shared;
+  if (text.find("global") != std::string::npos)
+    return tile::MemorySpace::Global;
+  if (text.find("local") != std::string::npos)
+    return tile::MemorySpace::Local;
+  return tile::MemorySpace::Shared;
+}
+#endif // __FLAGTREE_COMMON_IR__
+
+extern std::vector<int64_t>
+computeAliasOperandIndices(TritonOpBuilder &self, std::string_view text,
+                           const std::vector<Value> &args,
+                           std::string_view funcName);
+
+extern tle::DSLRegionOp
+createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
+                             std::string_view regionDialect,
+                             std::string_view argDialect,
+                             const std::vector<Value> &args,
+                             const std::vector<int64_t> &aliasOperandIndices,
+                             std::string_view hint, std::string_view funcName);
+
+extern tle::DSLRegionOp createTLERawRegionDeferred(
+    TritonOpBuilder &self, std::string_view sourceId,
+    std::string_view regionDialect, std::string_view argDialect,
+    const std::vector<Value> &args,
+    const std::vector<int64_t> &aliasOperandIndices, std::string_view hint,
+    std::string_view dsl_file_name, std::string_view extern_func_name);
+
+static Value resolveWarpSpecializeCapture(Value value) {
+  while (auto blockArg = dyn_cast<BlockArgument>(value)) {
+    auto partitions = dyn_cast<ttg::WarpSpecializePartitionsOp>(
+        blockArg.getOwner()->getParentOp());
+    if (!partitions)
+      break;
+    auto warpSpecialize =
+        dyn_cast<ttg::WarpSpecializeOp>(partitions->getParentOp());
+    if (!warpSpecialize)
+      break;
+    auto captures = warpSpecialize.getPartitionOp().getExplicitCaptures();
+    unsigned index = blockArg.getArgNumber();
+    if (index >= captures.size())
+      break;
+    Value capture = captures[index];
+    if (capture == value)
+      break;
+    value = capture;
+  }
+  return value;
+}
+
+void init_triton_tle_ir(py::module &&m) {
+
+  // Get the existing builder class from the main ir module (TLX style)
+  auto &builder_cls = *ir::getBuilderClass();
+
+  // Add TLE extensions to the existing TritonOpBuilder class
+  builder_cls
+      .def("create_tle_gpu_tensor_map_fenceproxy_acquire",
+           [](TritonOpBuilder &self, Value descriptor) {
+             self.create<ttng::TensormapFenceproxyAcquireOp>(descriptor);
+           })
+      .def("create_tle_gpu_reinterpret_tensor_map",
+           [](TritonOpBuilder &self, Value descriptor, Type blockType,
+              bool isSigned) -> Value {
+             auto descriptorType = tt::TensorDescType::get(
+                 self.getContext(), cast<RankedTensorType>(blockType),
+                 isSigned);
+             return self.create<ttng::ReinterpretTensorDescOp>(descriptorType,
+                                                               descriptor);
+           })
+      // TLE-Lite
+      .def(
+          "create_extract_tile",
+          [](TritonOpBuilder &self, Value &input,
+             // std::vector<int64_t> &offsets,
+             Value &index, std::vector<int64_t> &tileShape) -> Value {
+            auto op = self.create<tle::ExtractTileOp>(input, index, tileShape);
+            return op.getResult();
+          },
+          py::arg("input"), py::arg("index"), py::arg("tileShape"),
+          "Create extract_tile operation")
+      .def(
+          "create_insert_tile",
+          [](TritonOpBuilder &self, Value &input, Value &tile,
+             Value &index) -> Value {
+            auto op = self.create<tle::InsertTileOp>(input, tile, index);
+            return op.getResult();
+          },
+          py::arg("input"), py::arg("tile"), py::arg("index"),
+          "Create insert_tile operation")
+      // TLE-Struct
+      .def("make_swizzled_shared_encoding_attr",
+           [](TritonOpBuilder &self, unsigned vectorSize, unsigned perPhase,
+              unsigned maxPhase, std::vector<unsigned> order,
+              std::vector<unsigned> CTAsPerCGA,
+              std::vector<unsigned> CTASplitNum,
+              std::vector<unsigned> CTAOrder) {
+             assert(order.size() == CTAsPerCGA.size() && "shape mismatch");
+             assert(order.size() == CTASplitNum.size() && "shape mismatch");
+             assert(order.size() == CTAOrder.size() && "shape mismatch");
+             auto context = self.getBuilder().getContext();
+             auto CGALayout = ttg::CGAEncodingAttr::fromSplitParams(
+                 context, CTAsPerCGA, CTASplitNum, CTAOrder);
+             return mlir::cast<Attribute>(ttg::SwizzledSharedEncodingAttr::get(
+                 context, vectorSize, perPhase, maxPhase, order, CGALayout));
+           })
+      .def("make_nv_mma_shared_encoding_attr",
+           [](TritonOpBuilder &self, std::vector<int64_t> shape,
+              std::vector<unsigned> order, Type &elemType,
+              std::vector<unsigned> CTAsPerCGA,
+              std::vector<unsigned> CTASplitNum, std::vector<unsigned> CTAOrder,
+              bool fp4Padded, bool swizzled) {
+             /* Validation logic for user defined layout encoding begin */
+             assert(shape.size() == order.size());
+             assert(order.size() == CTAsPerCGA.size());
+             assert(CTAsPerCGA.size() == CTASplitNum.size());
+             assert(CTASplitNum.size() == CTAOrder.size());
+             /* Validation logic for user defined layout encoding end */
+
+             auto context = self.getBuilder().getContext();
+             auto CGALayout = ttg::CGAEncodingAttr::fromSplitParams(
+                 context, CTAsPerCGA, CTASplitNum, CTAOrder);
+             if (swizzled) {
+               return mlir::cast<Attribute>(ttg::NVMMASharedEncodingAttr::get(
+                   context, shape, order, CGALayout, elemType, fp4Padded));
+             } else {
+               return mlir::cast<Attribute>(ttg::NVMMASharedEncodingAttr::get(
+                   context, /*swizzlingByteWidth=*/0,
+                   /*transposed=*/order[0] == 0,
+                   elemType.getIntOrFloatBitWidth(), fp4Padded, CGALayout));
+             }
+           })
+      .def("make_shared_linear_encoding_attr",
+           [](TritonOpBuilder &self,
+              std::vector<std::vector<int32_t>> offsetBases,
+              std::vector<std::vector<int32_t>> blockBases, unsigned alignment,
+              unsigned rank) {
+             if (rank == 0)
+               throw py::value_error(
+                   "shared linear layout requires a positive rank");
+             auto context = self.getBuilder().getContext();
+             auto kOffset = StringAttr::get(context, "offset");
+             auto kBlock = StringAttr::get(context, "block");
+             tt::LinearLayout layout({{kOffset, std::move(offsetBases)},
+                                      {kBlock, std::move(blockBases)}},
+                                     tt::standardOutDimNames(context, rank));
+             return mlir::cast<Attribute>(ttg::SharedLinearEncodingAttr::get(
+                 context, std::move(layout), alignment));
+           })
+      .def("make_tensor_memory_encoding_attr",
+           [](TritonOpBuilder &self, unsigned blockM, unsigned blockN,
+              bool unpacked, unsigned CTASplitM, unsigned CTASplitN) {
+             auto context = self.getBuilder().getContext();
+             const unsigned colStride = unpacked ? 2 : 1;
+             return mlir::cast<Attribute>(ttng::TensorMemoryEncodingAttr::get(
+                 context, blockM, blockN, colStride, CTASplitM, CTASplitN,
+                 /*twoCTAs=*/false));
+           })
+      .def("make_nv_mma_encoding_attr",
+           [](TritonOpBuilder &self, Value opndA, Value opndAcc,
+              unsigned versionMajor, unsigned versionMinor,
+              unsigned moduleNumWarps) {
+             auto context = self.getBuilder().getContext();
+             auto dtypeA =
+                 cast<ttg::TensorOrMemDesc>(opndA.getType()).getElementType();
+             auto retType = cast<RankedTensorType>(opndAcc.getType());
+             Operation *parentOp =
+                 self.getBuilder().getInsertionBlock()->getParentOp();
+             unsigned numWarps =
+                 ttg::maybeLookupNumWarps(parentOp).value_or(moduleNumWarps);
+             auto instrShape = mmaVersionToInstrShape(
+                 versionMajor, retType.getShape(), dtypeA, numWarps);
+
+             // Match the current Hopper WGMMA lowering convention: partition
+             // the accumulator rows across the warp group.
+             SmallVector<unsigned, 2> warpsPerCTA = {numWarps, 1};
+             SmallVector<unsigned, 2> CTAsPerCGA = {1, 1};
+             SmallVector<unsigned, 2> CTASplitNum = {1, 1};
+             SmallVector<unsigned, 2> CTAOrder = {1, 0};
+             auto CGALayout = ttg::CGAEncodingAttr::fromSplitParams(
+                 context, CTAsPerCGA, CTASplitNum, CTAOrder);
+             return mlir::cast<Attribute>(ttg::NvidiaMmaEncodingAttr::get(
+                 context, versionMajor, versionMinor, warpsPerCTA, CGALayout,
+                 instrShape));
+           })
+      .def("make_dot_operand_encoding_attr",
+           [](TritonOpBuilder &self, Value opnd, unsigned opIdx,
+              Attribute parentEnc) -> Attribute {
+             auto context = self.getBuilder().getContext();
+             auto eltType =
+                 cast<RankedTensorType>(opnd.getType()).getElementType();
+             return ttg::DotOperandEncodingAttr::get(context, opIdx, parentEnc,
+                                                     eltType);
+           })
+      .def("get_block_ty_with_encoding",
+           [](TritonOpBuilder &self, Type &elementType,
+              std::vector<int64_t> &shape, Attribute &encoding) -> Type {
+             return RankedTensorType::get(shape, elementType, encoding);
+           })
+      .def("create_convert_layout",
+           [](TritonOpBuilder &self, Type resultTy, Value value) -> Value {
+             return self.create<ttg::ConvertLayoutOp>(resultTy, value);
+           })
+      .def("create_local_alloc",
+           [](TritonOpBuilder &self, std::vector<int64_t> shape,
+              Type &elementType, Attribute &encoding) -> mlir::Value {
+             auto context = self.getBuilder().getContext();
+             auto memorySpace = ttg::SharedMemorySpaceAttr::get(context);
+             auto memDesc =
+                 ttg::MemDescType::get(shape, elementType, encoding,
+                                       memorySpace, /*mutableMemory=*/true);
+             return self.create<ttg::LocalAllocOp>(memDesc);
+           })
+      .def("create_local_alloc",
+           [](TritonOpBuilder &self, Type resultTy,
+              std::optional<Value> value) -> Value {
+             return self.create<ttg::LocalAllocOp>(resultTy,
+                                                   value.value_or(Value()));
+           })
+      .def("mark_logical_tensor_descriptor",
+           [](TritonOpBuilder &self, Value value,
+              std::vector<int64_t> logicalShape) {
+             Value descriptorValue = resolveWarpSpecializeCapture(value);
+             auto op = dyn_cast_or_null<triton::MakeTensorDescOp>(
+                 descriptorValue.getDefiningOp());
+             if (!op)
+               throw py::value_error("logical tensor descriptor must be "
+                                     "defined by make_tensor_descriptor");
+             ArrayRef<int64_t> requested(logicalShape);
+             auto pending = op->getAttrOfType<DenseI64ArrayAttr>(
+                 "tle.logical_descriptor_pending");
+             auto candidate = op->getAttrOfType<DenseI64ArrayAttr>(
+                 "tle.logical_descriptor_candidate");
+             auto active = op->getAttrOfType<DenseI64ArrayAttr>(
+                 "tle.logical_descriptor_shape");
+             if ((!pending && !candidate && !active) ||
+                 (pending && pending.asArrayRef() != requested) ||
+                 (candidate && candidate.asArrayRef() != requested) ||
+                 (active && active.asArrayRef() != requested))
+               throw py::value_error("logical tensor descriptor shape does not "
+                                     "match its frontend metadata");
+             op->removeAttr("tle.logical_descriptor_candidate");
+             op->removeAttr("tle.logical_descriptor_pending");
+             op->setAttr("tle.logical_descriptor_shape",
+                         self.getBuilder().getDenseI64ArrayAttr(logicalShape));
+           })
+      .def("mark_logical_tensor_descriptor_pending",
+           [](TritonOpBuilder &self, Value value,
+              std::vector<int64_t> logicalShape) {
+             cast<triton::MakeTensorDescOp>(value.getDefiningOp())
+                 ->setAttr(
+                     "tle.logical_descriptor_pending",
+                     self.getBuilder().getDenseI64ArrayAttr(logicalShape));
+           })
+      .def("validate_logical_tensor_descriptors",
+           [](TritonOpBuilder &, mlir::ModuleOp &module) {
+             bool hasPendingDescriptor = false;
+             module.walk([&](Operation *op) {
+               hasPendingDescriptor |=
+                   op->hasAttr("tle.logical_descriptor_pending");
+             });
+             if (hasPendingDescriptor)
+               throw py::value_error(
+                   "non-power-of-two tensor descriptors require tle.gpu.copy");
+           })
+#ifdef __TLE_TILED_SMEM__
+      .def("mark_logical_alloc_candidate",
+           [](TritonOpBuilder &self, Value value,
+              std::vector<int64_t> logicalShape, int32_t nonPowerAxis) {
+             Operation *op = value.getDefiningOp();
+             if (!op || !isa<ttg::LocalAllocOp>(op))
+               throw py::value_error(
+                   "logical alloc candidate must be a ttg.local_alloc");
+             auto &builder = self.getBuilder();
+             op->setAttr("tle.logical_alloc_shape",
+                         builder.getDenseI64ArrayAttr(logicalShape));
+             op->setAttr("tle.logical_non_power_axis",
+                         builder.getI32IntegerAttr(nonPowerAxis));
+             op->setAttr("tle.storage_plan",
+                         builder.getStringAttr("candidate"));
+           })
+#endif // __TLE_TILED_SMEM__
+      .def("create_tma_copy",
+           [](TritonOpBuilder &self, Value src, Value dst,
+              std::vector<Value> &indices) {
+#ifdef __HCU__
+             self.create<ttg::TMACopyOp>(src, dst, indices);
+#else
+             self.create<ttg::TMACopyOp>(src, dst, indices, Value(),
+                                         IntegerAttr());
+#endif
+             return;
+           })
+      .def(
+          "create_tma_copy",
+          [](TritonOpBuilder &self, Value src, Value dst,
+             std::vector<Value> &indices, py::object barrier,
+             int32_t expectBytes, tt::EvictionPolicy evictionPolicy) {
+#ifdef __HCU__
+            if (!barrier.is_none() || expectBytes > 0 ||
+                evictionPolicy != tt::EvictionPolicy::NORMAL)
+              throw py::value_error(
+                  "TMA completion barriers and eviction policies are only "
+                  "supported on the NVIDIA backend");
+            self.create<ttg::TMACopyOp>(src, dst, indices);
+#else
+            auto &builder = self.getBuilder();
+            Value barrierValue;
+            if (!barrier.is_none())
+              barrierValue = py::cast<Value>(barrier);
+            IntegerAttr expectBytesAttr;
+            if (expectBytes > 0)
+              expectBytesAttr = builder.getI32IntegerAttr(expectBytes);
+            auto copy = self.create<ttg::TMACopyOp>(
+                src, dst, indices, barrierValue, expectBytesAttr);
+            copy.setEvict(evictionPolicy);
+#endif
+          },
+          py::arg("src"), py::arg("dst"), py::arg("indices"),
+          py::arg("barrier"), py::arg("expect_bytes"),
+          py::arg("eviction_policy") = tt::EvictionPolicy::NORMAL)
+      .def(
+          "create_tma_copy",
+          [](TritonOpBuilder &self, Value src, Value dst,
+             std::vector<Value> &indices, py::object barrier,
+             int32_t expectBytes, std::vector<int64_t> copyShape,
+             tt::EvictionPolicy evictionPolicy) {
+#ifdef __HCU__
+            if (!barrier.is_none() || expectBytes > 0 ||
+                evictionPolicy != tt::EvictionPolicy::NORMAL)
+              throw py::value_error(
+                  "TMA completion barriers and eviction policies are only "
+                  "supported on the NVIDIA backend");
+            auto op = self.create<ttg::TMACopyOp>(src, dst, indices);
+#else
+             Value barrierValue;
+             if (!barrier.is_none())
+               barrierValue = py::cast<Value>(barrier);
+             IntegerAttr expectBytesAttr;
+             if (expectBytes > 0)
+               expectBytesAttr = self.getBuilder().getI32IntegerAttr(expectBytes);
+             auto op = self.create<ttg::TMACopyOp>(
+                 src, dst, indices, barrierValue, expectBytesAttr);
+#endif
+#ifndef __HCU__
+            op.setEvict(evictionPolicy);
+#endif
+            op->setAttr(tle::kLogicalCopyShapeAttr,
+                        self.getBuilder().getDenseI64ArrayAttr(copyShape));
+          },
+          py::arg("src"), py::arg("dst"), py::arg("indices"),
+          py::arg("barrier"), py::arg("expect_bytes"), py::arg("copy_shape"),
+          py::arg("eviction_policy") = tt::EvictionPolicy::NORMAL)
+      .def("create_local_load",
+           [](TritonOpBuilder &self, Type resultTy, Value memDesc) -> Value {
+             return self.create<ttg::LocalLoadOp>(resultTy, memDesc);
+           })
+      .def("create_local_store",
+           [](TritonOpBuilder &self, Value &dst, Value &regValues) -> void {
+             self.create<ttg::LocalStoreOp>(regValues, dst);
+           })
+      .def("create_async_copy_global_to_local",
+           [](TritonOpBuilder &self, Value smem, Value pointer, Value mask,
+              Value other, tt::CacheModifier cacheModifier,
+              tt::EvictionPolicy evictionPolicy, bool isVolatile) {
+             auto copy = self.create<ttg::AsyncCopyGlobalToLocalOp>(
+                 pointer, smem, mask, other, cacheModifier, evictionPolicy,
+                 isVolatile);
+             copy->setAttr(tle::kTleRequiredAsyncCopyAttr,
+                           self.getBuilder().getUnitAttr());
+           })
+      .def("create_async_commit_group",
+           [](TritonOpBuilder &self) {
+             ValueRange tokens;
+             self.create<ttg::AsyncCommitGroupOp>(tokens);
+           })
+      .def("create_async_wait_group",
+           [](TritonOpBuilder &self, int maxPending) {
+             ValueRange tokens;
+             auto wait = self.create<ttg::AsyncWaitOp>(tokens, maxPending);
+             wait->setAttr(tle::kTleExplicitAsyncWaitGroupAttr,
+                           self.getBuilder().getUnitAttr());
+           })
+      .def("create_tle_wgmma",
+           [](TritonOpBuilder &self, mlir::Value &a, mlir::Value &b,
+              mlir::Value &c, triton::InputPrecision inputPrecision,
+              int maxNumImpreciseAcc, bool isAsync) -> mlir::Value {
+             return self.create<tle::WGMMAOp>(c.getType(), a, b, c,
+                                              inputPrecision,
+                                              maxNumImpreciseAcc, isAsync);
+           })
+      .def("create_tle_wgmma_wait",
+           [](TritonOpBuilder &self, mlir::Value &input,
+              unsigned pendings) -> mlir::Value {
+             auto pendingsAttr = self.getBuilder().getI32IntegerAttr(pendings);
+             return self
+                 .create<tle::WGMMAWaitOp>(input.getType(), input, pendingsAttr)
+                 .getOutput();
+           })
+      .def("create_warp_group_dot",
+           [](TritonOpBuilder &self, mlir::Value &a, mlir::Value &b,
+              mlir::Value &c, triton::InputPrecision inputPrecision,
+              int maxNumImpreciseAcc, bool isAsync) -> mlir::Value {
+             return self.create<ttng::WarpGroupDotOp>(
+                 c.getType(), a, b, c, Value(), inputPrecision,
+                 maxNumImpreciseAcc, isAsync);
+           })
+      .def("create_warp_group_dot_wait",
+           [](TritonOpBuilder &self, std::vector<Value> inputs,
+              unsigned pendings) -> std::vector<Value> {
+             auto waitOp =
+                 self.create<ttng::WarpGroupDotWaitOp>(inputs, pendings);
+             std::vector<Value> outputs;
+             outputs.reserve(waitOp->getNumResults());
+             for (Value result : waitOp->getResults())
+               outputs.push_back(result);
+             return outputs;
+           })
+      .def("create_local_pointers",
+           [](TritonOpBuilder &self, Type resultTy, Value memDesc,
+              py::args args) -> OpState {
+             llvm::SmallVector<Value> indices;
+             indices.reserve(args.size());
+             for (const auto &arg : args) {
+               indices.push_back(py::cast<Value>(arg));
+             }
+             return self.create<tle::LocalPointersOp>(resultTy, memDesc,
+                                                      indices);
+           })
+#ifdef __TLE_TILED_SMEM__
+      .def("mark_logical_pointer_copy",
+           [](TritonOpBuilder &self, Value value,
+              std::vector<int64_t> logicalShape) {
+             auto op = value.getDefiningOp<tle::LocalPointersOp>();
+             if (!op)
+               throw py::value_error(
+                   "logical pointer copy marker requires tle.local_pointers");
+             op->setAttr(tle::kLogicalCopyShapeAttr,
+                         self.getBuilder().getDenseI64ArrayAttr(logicalShape));
+           })
+#endif // __TLE_TILED_SMEM__
+#ifdef __FLAGTREE_COMMON_IR__
+      .def("tile_get_string_attr",
+           [](TritonOpBuilder &self, const std::string &name) -> Attribute {
+             return self.getBuilder().getStringAttr(name);
+           })
+      .def("tile_get_buffer_type",
+           [](TritonOpBuilder &self, std::vector<int64_t> &shape,
+              Type &elementType, const Attribute &memorySpace) -> Type {
+             auto memSpace = attrToCommonIRMemorySpace(memorySpace);
+             return tile::BufType::get(self.getBuilder().getContext(), shape,
+                                       elementType, memSpace);
+           })
+      .def("create_tile_alloc",
+           [](TritonOpBuilder &self, Type tileBufType,
+              Attribute targetLayout) -> Value {
+             auto bufType = mlir::cast<tile::BufType>(tileBufType);
+             auto op = self.create<tile::AllocOp>(
+                 tileBufType, bufType.getMemorySpace(),
+                 /*shape=*/mlir::ArrayAttr(), /*dtype=*/mlir::TypeAttr(),
+                 /*policy=*/tile::PolicyAttr(),
+                 /*layout=*/
+                 tile::LayoutAttr::get(self.getBuilder().getContext(),
+                                       tile::Layout::ND),
+                 /*lifetime=*/tile::LifetimeAttr(),
+                 /*comment=*/mlir::StringAttr());
+             op->setAttr("tle.gpu_layout", targetLayout);
+             return op.getResult();
+           })
+      .def("create_tile_copy",
+           [](TritonOpBuilder &self, Value &src, Value &dst,
+              bool interNoAlias) -> void {
+             auto op = self.create<tile::CopyOp>(
+                 src, dst, /*engine=*/tile::EngineAttr(),
+                 /*src_layout=*/
+                 tile::LayoutAttr::get(self.getBuilder().getContext(),
+                                       tile::Layout::ND),
+                 /*dst_nz_layout=*/tile::NZLayoutAttr(),
+                 /*transpose=*/mlir::UnitAttr(),
+                 /*comment=*/mlir::StringAttr());
+             if (interNoAlias)
+               op->setAttr("inter_no_alias",
+                           self.getBuilder().getBoolAttr(true));
+           })
+      .def("create_tile_get_memdesc",
+           [](TritonOpBuilder &self, Type resultTy, Value source) -> Value {
+             return self
+                 .create<UnrealizedConversionCastOp>(TypeRange{resultTy},
+                                                     ValueRange{source})
+                 .getResult(0);
+           })
+      .def("create_tile_subview",
+           [](TritonOpBuilder &self, Value source, std::vector<Value> &offsets,
+              const std::vector<int64_t> &sizes,
+              const std::vector<int64_t> &strides,
+              Attribute targetLayout) -> Value {
+             SmallVector<Value> indexOffsets;
+             auto &builder = self.getBuilder();
+             auto indexType = builder.getIndexType();
+             for (Value offset : offsets) {
+               if (offset.getType() != indexType)
+                 offset = self.create<arith::IndexCastOp>(indexType, offset);
+               indexOffsets.push_back(offset);
+             }
+             auto srcBuf = mlir::cast<tile::BufType>(source.getType());
+             auto resTy = tile::BufType::get(builder.getContext(), sizes,
+                                             srcBuf.getElementType(),
+                                             srcBuf.getMemorySpace());
+             auto op = self.create<tile::SubViewOp>(
+                 resTy, source, indexOffsets, builder.getI64ArrayAttr(sizes),
+                 builder.getI64ArrayAttr(strides));
+             op->setAttr("tle.gpu_layout", targetLayout);
+             return op.getResult();
+           })
+      .def("create_tile_to_tensor",
+           [](TritonOpBuilder &self, Value &src, bool /*writable*/) -> Value {
+             auto srcBuf = mlir::cast<tile::BufType>(src.getType());
+             auto resTy = RankedTensorType::get(srcBuf.getShape(),
+                                                srcBuf.getElementType());
+             return self.create<tile::ToTensorOp>(resTy, src).getResult();
+           })
+      .def("create_tile_store_tensor",
+           [](TritonOpBuilder &self, Value &src, Value &dst) -> void {
+             self.create<tile::StoreTensorOp>(src, dst);
+           })
+      .def("create_tile_gm_offset",
+           [](TritonOpBuilder &self, Value &base, std::vector<Value> &indices,
+              std::vector<Value> &strides) -> Value {
+             SmallVector<Value> indexValues;
+             SmallVector<Value> strideValues;
+             auto &builder = self.getBuilder();
+             auto indexType = builder.getIndexType();
+             for (Value index : indices) {
+               if (index.getType() != indexType)
+                 index = self.create<arith::IndexCastOp>(indexType, index);
+               indexValues.push_back(index);
+             }
+             for (Value stride : strides) {
+               if (stride.getType() != indexType)
+                 stride = self.create<arith::IndexCastOp>(indexType, stride);
+               strideValues.push_back(stride);
+             }
+             return self
+                 .create<tile::GmOffsetOp>(base.getType(), base, indexValues,
+                                           strideValues)
+                 .getResult();
+           })
+#endif // __FLAGTREE_COMMON_IR__
+      .def("create_memdesc_index",
+           [](TritonOpBuilder &self, Type resultType, Value src,
+              Value index) -> Value {
+             return self.create<ttg::MemDescIndexOp>(resultType, src, index);
+           })
+      .def("create_memdesc_wgmma_view",
+           [](TritonOpBuilder &self, Type resultType, Value src,
+              std::vector<int32_t> order) -> Value {
+             return self.create<tle::MemDescWGMMAViewOp>(resultType, src,
+                                                         order);
+           })
+      .def("create_memdesc_trans",
+           [](TritonOpBuilder &self, Value src,
+              std::vector<int> &order) -> Value {
+             return self.create<ttg::MemDescTransOp>(src, order);
+           })
+      .def("create_memdesc_reshape",
+           [](TritonOpBuilder &self, Value src,
+              std::vector<int64_t> &shape) -> Value {
+             return self.create<ttg::MemDescReshapeOp>(src, shape);
+           })
+      .def(
+          "get_tle_shared_layout_from_memdesc",
+          [](TritonOpBuilder &self, Value memdesc) -> py::dict {
+            auto type = dyn_cast<ttg::MemDescType>(memdesc.getType());
+            if (!type || !type.getEncoding())
+              throw py::value_error(
+                  "expected a memdesc with a shared-memory encoding");
+
+            py::dict result;
+            Attribute encoding = type.getEncoding();
+            if (auto nvmma = dyn_cast<ttg::NVMMASharedEncodingAttr>(encoding)) {
+              auto ctaLayout = nvmma.getCGALayout();
+              auto ctasPerCGA = ctaLayout.getCTAsPerCGA();
+              auto ctaSplitNum = ctaLayout.getCTASplitNum();
+              auto ctaOrder = ctaLayout.getCTAOrder();
+              result["kind"] = "nv_mma";
+              result["transposed"] = nvmma.getTransposed();
+              result["fp4_padded"] = nvmma.getFp4Padded();
+              result["swizzled"] = nvmma.getSwizzlingByteWidth() != 0;
+              result["ctas_per_cga"] =
+                  std::vector<unsigned>(ctasPerCGA.begin(), ctasPerCGA.end());
+              result["cta_split_num"] =
+                  std::vector<unsigned>(ctaSplitNum.begin(), ctaSplitNum.end());
+              result["cta_order"] =
+                  std::vector<unsigned>(ctaOrder.begin(), ctaOrder.end());
+              return result;
+            }
+
+            if (auto sharedLinear =
+                    dyn_cast<ttg::SharedLinearEncodingAttr>(encoding)) {
+              const auto &layout = sharedLinear.getLinearLayout();
+              auto context = encoding.getContext();
+              auto kOffset = StringAttr::get(context, "offset");
+              auto kBlock = StringAttr::get(context, "block");
+              result["kind"] = "shared_linear";
+              result["offset_bases"] = layout.getBases().lookup(kOffset);
+              result["block_bases"] = layout.getBases().lookup(kBlock);
+              result["alignment"] = sharedLinear.getAlignment();
+              result["rank"] = layout.getNumOutDims();
+              return result;
+            }
+
+            throw py::value_error(
+                "unsupported inferred shared-memory reshape encoding");
+          })
+      .def("create_barrier_alloc",
+           [](TritonOpBuilder &self, Type resultType, int32_t numBarriers,
+              int32_t arriveCount, int32_t initPolarity,
+              int32_t expectBytes) -> Value {
+             auto &builder = self.getBuilder();
+             IntegerAttr expectBytesAttr;
+             if (expectBytes > 0)
+               expectBytesAttr = builder.getI32IntegerAttr(expectBytes);
+             return self.create<tle::BarrierAllocOp>(
+                 resultType, builder.getI32IntegerAttr(numBarriers),
+                 builder.getI32IntegerAttr(arriveCount),
+                 builder.getI32IntegerAttr(initPolarity), expectBytesAttr);
+           })
+      .def("create_barrier_wait_mbarrier",
+           [](TritonOpBuilder &self, Value barrier, Value phase) -> void {
+             auto &builder = self.getBuilder();
+             self.create<tle::BarrierWaitOp>(
+                 barrier, phase, builder.getStringAttr("mbarrier"),
+                 builder.getI32IntegerAttr(0), builder.getI32IntegerAttr(0));
+           })
+      .def("create_barrier_wait_named",
+           [](TritonOpBuilder &self, Value barrier, int32_t namedId,
+              int32_t numThreads) -> void {
+             auto &builder = self.getBuilder();
+             self.create<tle::BarrierWaitOp>(
+                 barrier, Value(), builder.getStringAttr("named"),
+                 builder.getI32IntegerAttr(namedId),
+                 builder.getI32IntegerAttr(numThreads));
+           })
+      .def("create_barrier_arrive_mbarrier",
+           [](TritonOpBuilder &self, Value barrier, int32_t arriveCount,
+              py::object phase) -> void {
+             auto &builder = self.getBuilder();
+             Value phaseValue;
+             if (!phase.is_none())
+               phaseValue = py::cast<Value>(phase);
+             self.create<tle::BarrierArriveOp>(
+                 barrier, phaseValue, builder.getStringAttr("mbarrier"),
+                 builder.getI32IntegerAttr(arriveCount),
+                 builder.getI32IntegerAttr(0), builder.getI32IntegerAttr(0));
+           })
+      .def("create_barrier_arrive_named",
+           [](TritonOpBuilder &self, Value barrier, int32_t namedId,
+              int32_t numThreads) -> void {
+             auto &builder = self.getBuilder();
+             self.create<tle::BarrierArriveOp>(
+                 barrier, Value(), builder.getStringAttr("named"),
+                 builder.getI32IntegerAttr(1),
+                 builder.getI32IntegerAttr(namedId),
+                 builder.getI32IntegerAttr(numThreads));
+           })
+      .def("create_memdesc_subslice",
+           [](TritonOpBuilder &self, Type resultType, Value src,
+              std::vector<int32_t> &offsets) -> Value {
+             return self.create<ttg::MemDescSubsliceOp>(resultType, src,
+                                                        offsets);
+           })
+      .def("create_memdesc_alias",
+           [](TritonOpBuilder &self, Type resultType, Value src,
+              int64_t offsetBytes) -> Value {
+             return self.create<tle::MemDescAliasOp>(
+                 resultType, src,
+                 self.getBuilder().getI64IntegerAttr(offsetBytes));
+           })
+      .def("create_warp_return",
+           [](TritonOpBuilder &self) -> Operation * {
+             return self.create<ttg::WarpReturnOp>();
+           })
+      .def("create_warp_yield",
+           [](TritonOpBuilder &self, std::vector<Value> values) -> Operation * {
+             return self.create<ttg::WarpYieldOp>(values);
+           })
+      .def("create_warp_specialize_partitions",
+           [](TritonOpBuilder &self, std::vector<Value> explicitCaptures,
+              int numPartitions) -> Operation * {
+             return self.create<ttg::WarpSpecializePartitionsOp>(
+                 explicitCaptures, numPartitions);
+           })
+      .def("create_warp_specialize",
+           [](TritonOpBuilder &self, std::vector<Type> resultTypes,
+              std::vector<int> partitionNumWarps) {
+             return self.create<ttg::WarpSpecializeOp>(resultTypes,
+                                                       partitionNumWarps);
+           })
+      .def("create_pipe_create",
+           [](TritonOpBuilder &self, std::vector<Value> fields,
+              int32_t capacity, const std::string &scope,
+              const std::string &pipeName, std::vector<std::string> fieldNames,
+              std::vector<std::string> readerNames, bool oneShot) -> void {
+             auto &builder = self.getBuilder();
+             SmallVector<Attribute> fieldNameAttrs;
+             fieldNameAttrs.reserve(fieldNames.size());
+             for (StringRef name : fieldNames)
+               fieldNameAttrs.push_back(builder.getStringAttr(name));
+             SmallVector<Attribute> readerNameAttrs;
+             readerNameAttrs.reserve(readerNames.size());
+             for (StringRef name : readerNames)
+               readerNameAttrs.push_back(builder.getStringAttr(name));
+             StringAttr pipeNameAttr;
+             if (!pipeName.empty())
+               pipeNameAttr = builder.getStringAttr(pipeName);
+             ArrayAttr readerNamesAttr;
+             if (!readerNameAttrs.empty())
+               readerNamesAttr = builder.getArrayAttr(readerNameAttrs);
+             BoolAttr oneShotAttr;
+             if (oneShot)
+               oneShotAttr = builder.getBoolAttr(true);
+             self.create<tle::PipeCreateOp>(
+                 fields, builder.getI32IntegerAttr(capacity),
+                 builder.getStringAttr(scope), pipeNameAttr,
+                 builder.getArrayAttr(fieldNameAttrs), readerNamesAttr,
+                 oneShotAttr);
+           })
+      .def("create_pipe_writer_acquire",
+           [](TritonOpBuilder &self, std::vector<Value> fields, Value stage,
+              Value phase, int32_t capacity, const std::string &scope,
+              const std::string &pipeName,
+              std::vector<std::string> fieldNames) -> void {
+             auto &builder = self.getBuilder();
+             SmallVector<Attribute> fieldNameAttrs;
+             fieldNameAttrs.reserve(fieldNames.size());
+             for (StringRef name : fieldNames)
+               fieldNameAttrs.push_back(builder.getStringAttr(name));
+             StringAttr pipeNameAttr;
+             if (!pipeName.empty())
+               pipeNameAttr = builder.getStringAttr(pipeName);
+             self.create<tle::PipeWriterAcquireOp>(
+                 fields, stage, phase, builder.getI32IntegerAttr(capacity),
+                 builder.getStringAttr(scope), pipeNameAttr,
+                 builder.getArrayAttr(fieldNameAttrs));
+           })
+      .def("create_pipe_writer_commit",
+           [](TritonOpBuilder &self, std::vector<Value> fields, Value stage,
+              int32_t capacity, const std::string &scope,
+              const std::string &pipeName,
+              std::vector<std::string> fieldNames) -> void {
+             auto &builder = self.getBuilder();
+             SmallVector<Attribute> fieldNameAttrs;
+             fieldNameAttrs.reserve(fieldNames.size());
+             for (StringRef name : fieldNames)
+               fieldNameAttrs.push_back(builder.getStringAttr(name));
+             StringAttr pipeNameAttr;
+             if (!pipeName.empty())
+               pipeNameAttr = builder.getStringAttr(pipeName);
+             self.create<tle::PipeWriterCommitOp>(
+                 fields, stage, builder.getI32IntegerAttr(capacity),
+                 builder.getStringAttr(scope), pipeNameAttr,
+                 builder.getArrayAttr(fieldNameAttrs));
+           })
+      .def("create_pipe_writer_close",
+           [](TritonOpBuilder &self, std::vector<Value> fields, Value stage,
+              Value phase, int32_t capacity, const std::string &scope,
+              const std::string &pipeName,
+              std::vector<std::string> fieldNames) -> void {
+             auto &builder = self.getBuilder();
+             SmallVector<Attribute> fieldNameAttrs;
+             fieldNameAttrs.reserve(fieldNames.size());
+             for (StringRef name : fieldNames)
+               fieldNameAttrs.push_back(builder.getStringAttr(name));
+             StringAttr pipeNameAttr;
+             if (!pipeName.empty())
+               pipeNameAttr = builder.getStringAttr(pipeName);
+             self.create<tle::PipeWriterCloseOp>(
+                 fields, stage, phase, builder.getI32IntegerAttr(capacity),
+                 builder.getStringAttr(scope), pipeNameAttr,
+                 builder.getArrayAttr(fieldNameAttrs));
+           })
+      .def("create_pipe_reader_wait",
+           [](TritonOpBuilder &self, std::vector<Value> fields, Value stage,
+              Value phase, int32_t capacity, const std::string &scope,
+              const std::string &pipeName, std::vector<std::string> fieldNames,
+              const std::string &readerName,
+              std::vector<std::string>) -> Value {
+             auto &builder = self.getBuilder();
+             SmallVector<Attribute> fieldNameAttrs;
+             fieldNameAttrs.reserve(fieldNames.size());
+             for (StringRef name : fieldNames)
+               fieldNameAttrs.push_back(builder.getStringAttr(name));
+             StringAttr pipeNameAttr;
+             if (!pipeName.empty())
+               pipeNameAttr = builder.getStringAttr(pipeName);
+             StringAttr readerNameAttr;
+             if (!readerName.empty())
+               readerNameAttr = builder.getStringAttr(readerName);
+             return self.create<tle::PipeReaderWaitOp>(
+                 builder.getI1Type(), fields, stage, phase,
+                 builder.getI32IntegerAttr(capacity),
+                 builder.getStringAttr(scope), pipeNameAttr,
+                 builder.getArrayAttr(fieldNameAttrs), readerNameAttr);
+           })
+      .def("create_pipe_reader_release",
+           [](TritonOpBuilder &self, std::vector<Value> fields, Value stage,
+              int32_t capacity, const std::string &scope,
+              const std::string &pipeName, std::vector<std::string> fieldNames,
+              const std::string &readerName, std::vector<std::string>) -> void {
+             auto &builder = self.getBuilder();
+             SmallVector<Attribute> fieldNameAttrs;
+             fieldNameAttrs.reserve(fieldNames.size());
+             for (StringRef name : fieldNames)
+               fieldNameAttrs.push_back(builder.getStringAttr(name));
+             StringAttr pipeNameAttr;
+             if (!pipeName.empty())
+               pipeNameAttr = builder.getStringAttr(pipeName);
+             StringAttr readerNameAttr;
+             if (!readerName.empty())
+               readerNameAttr = builder.getStringAttr(readerName);
+             self.create<tle::PipeReaderReleaseOp>(
+                 fields, stage, builder.getI32IntegerAttr(capacity),
+                 builder.getStringAttr(scope), pipeNameAttr,
+                 builder.getArrayAttr(fieldNameAttrs), readerNameAttr);
+           })
+      .def("create_exclusive_cumsum",
+           [](TritonOpBuilder &self, Type exclusiveTy, Type totalTy, Value src,
+              int axis, bool reverse) -> OpState {
+             auto &builder = self.getBuilder();
+             return self.create<tle::ExclusiveCumsumOp>(
+                 TypeRange{exclusiveTy, totalTy}, src,
+                 builder.getI32IntegerAttr(axis), builder.getBoolAttr(reverse));
+           })
+      .def("create_distributed_barrier",
+           [](TritonOpBuilder &self) -> void {
+             self.create<tle::DistributedBarrierOp>(
+                 Value(), StringAttr(), StringAttr(), tle::MemoryOrderAttr(),
+                 StringAttr(), IntegerAttr(), IntegerAttr(),
+                 tle::SyncScopeAttr(), IntegerAttr(), DenseI32ArrayAttr(),
+                 DenseI32ArrayAttr(), DenseI32ArrayAttr());
+           })
+      .def(
+          "create_distributed_barrier",
+          [](TritonOpBuilder &self, std::optional<Value> src,
+             size_t barrier_index = 0, const std::string &space = "device",
+             const std::string &group_kind = "block",
+             tle::MemoryOrder order = tle::MemoryOrder::ACQ_REL,
+             const std::string &barrier_kind = "sync", size_t context_id = 0,
+             tle::SyncScope memory_scope = tle::SyncScope::SYSTEM) -> void {
+            auto &builder = self.getBuilder();
+            auto getOptStrAttr = [&](const std::string &s) -> StringAttr {
+              return s.empty() ? StringAttr() : builder.getStringAttr(s);
+            };
+            auto spaceAttr = getOptStrAttr(space);
+            auto kindAttr = getOptStrAttr(group_kind);
+            auto orderAttr = builder.getAttr<tle::MemoryOrderAttr>(order);
+            auto barrierTypeAttr = getOptStrAttr(barrier_kind);
+            auto memoryScopeAttr =
+                builder.getAttr<tle::SyncScopeAttr>(memory_scope);
+            auto barrierIndexAttr =
+                builder.getI32IntegerAttr(static_cast<int32_t>(barrier_index));
+            auto contextIdAttr =
+                builder.getI32IntegerAttr(static_cast<int32_t>(context_id));
+
+            self.create<tle::DistributedBarrierOp>(
+                src.value_or(Value()), spaceAttr, barrierTypeAttr, orderAttr,
+                kindAttr, barrierIndexAttr, contextIdAttr, memoryScopeAttr,
+                IntegerAttr(), DenseI32ArrayAttr(), DenseI32ArrayAttr(),
+                DenseI32ArrayAttr());
+          },
+          py::arg("src") = py::none(), py::arg("barrier_index"),
+          py::arg("space"), py::arg("group_kind"), py::arg("order"),
+          py::arg("barrier_kind"), py::arg("context_id") = 0,
+          py::arg("memory_scope") = "system")
+      .def(
+          "create_signal",
+          [](TritonOpBuilder &self, Value comm, Value peer, Value slotId,
+             std::optional<Value> value, tle::SignalOpKind signalOp,
+             tle::FlagCXTeamKind teamKind, tle::FlagCXCoopKind coopKind,
+             int32_t contextId, tle::SyncScope scope) -> void {
+            auto &builder = self.getBuilder();
+            if (auto err = tle::Signal::verifySignalOp(
+                    signalOp, value.value_or(Value()), scope))
+              throw py::value_error(*err);
+            self.create<tle::SignalOp>(
+                comm, peer, slotId, value.value_or(Value()),
+                builder.getAttr<tle::SignalOpKindAttr>(signalOp),
+                builder.getAttr<tle::FlagCXTeamKindAttr>(teamKind),
+                builder.getAttr<tle::FlagCXCoopKindAttr>(coopKind),
+                builder.getI32IntegerAttr(contextId),
+                builder.getAttr<tle::SyncScopeAttr>(scope));
+          },
+          py::arg("comm"), py::arg("peer"), py::arg("slot_id"),
+          py::arg("value"), py::arg("signal_op"), py::arg("team_kind"),
+          py::arg("coop_kind"), py::arg("context_id"), py::arg("scope"),
+          "Create a standalone remote signal operation")
+      .def(
+          "create_signal_wait",
+          [](TritonOpBuilder &self, Value comm_dev_ptr, Value slot_id,
+             tle::SignalWaitKind wait_kind, std::optional<Value> target,
+             tle::FlagCXCoopKind coop_kind, int32_t contextId,
+             tle::MemoryOrder order) -> void {
+            auto &builder = self.getBuilder();
+            if (auto err = tle::Signal::verifySignalWaitOp(
+                    wait_kind, target.value_or(Value()), order))
+              throw py::value_error(*err);
+            auto wait_kind_attr =
+                builder.getAttr<tle::SignalWaitKindAttr>(wait_kind);
+            auto coop_kind_attr =
+                builder.getAttr<tle::FlagCXCoopKindAttr>(coop_kind);
+            auto contextIdAttr = builder.getI32IntegerAttr(contextId);
+            auto order_attr = builder.getAttr<tle::MemoryOrderAttr>(order);
+            self.create<tle::SignalWaitOp>(
+                comm_dev_ptr, slot_id, wait_kind_attr, target.value_or(Value()),
+                coop_kind_attr, contextIdAttr, order_attr);
+          },
+          py::arg("comm"), py::arg("slot_id"), py::arg("wait_kind"),
+          py::arg("target"), py::arg("coop_kind"), py::arg("context_id"),
+          py::arg("order"), "Create a standalone remote signal_wait operation")
+      .def(
+          "create_distributed_barrier",
+          [](TritonOpBuilder &self, const std::string &groupKind,
+             const std::vector<int32_t> &groupShape,
+             const std::vector<int32_t> &groupAxes,
+             const std::vector<int32_t> &groupMask) -> void {
+            auto &builder = self.getBuilder();
+            auto *ctx = builder.getContext();
+            StringAttr kindAttr;
+            IntegerAttr rankAttr;
+            DenseI32ArrayAttr shapeAttr;
+            DenseI32ArrayAttr axesAttr;
+            DenseI32ArrayAttr maskAttr;
+
+            if (!groupKind.empty()) {
+              kindAttr = builder.getStringAttr(groupKind);
+            }
+            // Only materialize subgroup metadata when provided.
+            // This allows kind-only barriers (e.g. group_kind="grid").
+            if (!groupShape.empty() || !groupAxes.empty() ||
+                !groupMask.empty()) {
+              rankAttr = builder.getI32IntegerAttr(
+                  static_cast<int32_t>(groupShape.size()));
+              if (!groupShape.empty()) {
+                shapeAttr = DenseI32ArrayAttr::get(ctx, groupShape);
+              }
+              if (!groupAxes.empty()) {
+                axesAttr = DenseI32ArrayAttr::get(ctx, groupAxes);
+              }
+              if (!groupMask.empty()) {
+                maskAttr = DenseI32ArrayAttr::get(ctx, groupMask);
+              }
+            }
+
+            self.create<tle::DistributedBarrierOp>(
+                Value(), StringAttr(), StringAttr(), tle::MemoryOrderAttr(),
+                kindAttr, IntegerAttr(), IntegerAttr(), tle::SyncScopeAttr(),
+                rankAttr, shapeAttr, axesAttr, maskAttr);
+          },
+          py::arg("group_kind"), py::arg("group_shape"), py::arg("group_axes"),
+          py::arg("group_mask"))
+      .def(
+          "create_remote_pointers",
+          [](TritonOpBuilder &self, Type resultTy, std::optional<Value> src,
+             Value shardId, const std::string &space,
+             std::optional<Value> offset, std::optional<Value> comm,
+             std::optional<int32_t> contextId,
+             std::optional<tle::FlagCXCoopKind> coopKind) -> OpState {
+            auto &builder = self.getBuilder();
+            static const std::unordered_set<std::string> valid = {
+                "cluster", "chiplet", "device", "node"};
+            if (valid.find(space) == valid.end()) {
+              throw std::invalid_argument(
+                  "Invalid space: " + space +
+                  ". Expected one of: cluster, chiplet, device, node.");
+            }
+
+            auto spaceAttr = builder.getStringAttr(space);
+            IntegerAttr contextIdAttr =
+                contextId ? builder.getI32IntegerAttr(*contextId)
+                          : IntegerAttr();
+            tle::FlagCXCoopKindAttr coopKindAttr =
+                coopKind ? builder.getAttr<tle::FlagCXCoopKindAttr>(*coopKind)
+                         : tle::FlagCXCoopKindAttr();
+            return self.create<tle::RemotePointersOp>(
+                resultTy, src.value_or(Value()), comm.value_or(Value()),
+                shardId, spaceAttr, offset.value_or(Value()), contextIdAttr,
+                coopKindAttr);
+          },
+          py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
+          py::arg("space"), py::arg("offset") = py::none(),
+          py::arg("comm") = py::none(), py::arg("context_id") = py::none(),
+          py::arg("coop_kind") = py::none())
+      .def("get_device_id",
+           [](TritonOpBuilder &self, Type resultTy,
+              std::optional<Value> src) -> Value {
+             auto &builder = self.getBuilder();
+             return self.create<tle::GetDeviceIdOp>(resultTy,
+                                                    src.value_or(Value()));
+           })
+      .def("get_world_rank",
+           [](TritonOpBuilder &self, Type resultTy, Value src) -> Value {
+             auto &builder = self.getBuilder();
+             return self.create<tle::GetWorldRankOp>(resultTy, src);
+           })
+      .def("get_n_pes",
+           [](TritonOpBuilder &self, Type resultTy,
+              std::optional<Value> src) -> Value {
+             auto &builder = self.getBuilder();
+             return self.create<tle::GetNumPesOp>(resultTy,
+                                                  src.value_or(Value()));
+           })
+      .def("get_memdesc_type",
+           [](TritonOpBuilder &self, std::vector<int64_t> shape,
+              Type &elementType, Attribute &encoding,
+              std::string storage) -> Type {
+             auto context = self.getBuilder().getContext();
+             Attribute memorySpace;
+             if (storage == "tmem")
+               memorySpace = ttng::TensorMemorySpaceAttr::get(context);
+             else if (storage == "smem") {
+               memorySpace = ttg::SharedMemorySpaceAttr::get(context);
+             } else {
+               llvm_unreachable("Unknown storage type");
+             }
+             return ttg::MemDescType::get(shape, elementType, encoding,
+                                          memorySpace, /*mutableMemory=*/true);
+           })
+      .def("get_memdesc_type",
+           [](TritonOpBuilder &self, std::vector<int64_t> shape,
+              Type &elementType, Attribute &encoding, std::string storage,
+              std::vector<int64_t> allocShape) -> Type {
+             auto context = self.getBuilder().getContext();
+             Attribute memorySpace;
+             if (storage == "tmem")
+               memorySpace = ttng::TensorMemorySpaceAttr::get(context);
+             else if (storage == "smem") {
+               memorySpace = ttg::SharedMemorySpaceAttr::get(context);
+             } else {
+               llvm_unreachable("Unknown storage type");
+             }
+             auto type = ttg::MemDescType::getChecked(
+                 [&] { return emitError(UnknownLoc::get(context)); }, shape,
+                 elementType, encoding, memorySpace, /*mutableMemory=*/true,
+                 allocShape);
+             if (!type)
+               throw py::value_error("invalid memdesc shape or allocShape");
+             return type;
+           });
+}
+
+void init_triton_tle_attr(py::module &&m) {
+  py::enum_<tle::SignalOpKind>(m, "SignalOpKind")
+      .value("Inc", tle::SignalOpKind::INC)
+      .value("Add", tle::SignalOpKind::ADD)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeSignalOpKind(name); },
+          py::arg("name"));
+  py::enum_<tle::FlagCXTeamKind>(m, "FlagCXTeamKind")
+      .value("Intra", tle::FlagCXTeamKind::INTRA)
+      .value("Inter", tle::FlagCXTeamKind::INTER)
+      .value("World", tle::FlagCXTeamKind::WORLD)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeFlagCXTeamKind(name); },
+          py::arg("name"))
+      .def_static(
+          "from_int",
+          [](int value) -> std::optional<tle::FlagCXTeamKind> {
+            if (value < 0 || value > tle::getMaxEnumValForFlagCXTeamKind())
+              return std::nullopt;
+            else
+              return static_cast<tle::FlagCXTeamKind>(value);
+          },
+          py::arg("value"));
+  py::enum_<tle::FlagCXCoopKind>(m, "FlagCXCoopKind")
+      .value("Thread", tle::FlagCXCoopKind::THREAD)
+      .value("Warp", tle::FlagCXCoopKind::WARP)
+      .value("Block", tle::FlagCXCoopKind::BLOCK)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeFlagCXCoopKind(name); },
+          py::arg("name"));
+  py::enum_<tle::SignalWaitKind>(m, "SignalWaitKind")
+      .value("Signal", tle::SignalWaitKind::SIGNAL)
+      .value("Shadow", tle::SignalWaitKind::SHADOW)
+      .value("Counter", tle::SignalWaitKind::COUNTER)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeSignalWaitKind(name); },
+          py::arg("name"));
+  py::enum_<tle::SyncScope>(m, "SyncScope")
+      .value("System", tle::SyncScope::SYSTEM)
+      .value("Device", tle::SyncScope::DEVICE)
+      .value("Block", tle::SyncScope::BLOCK)
+      .value("Thread", tle::SyncScope::THREAD)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::symbolizeSyncScope(name); },
+          py::arg("name"));
+  py::enum_<tle::MemoryOrder>(m, "MemoryOrder")
+      .value("Relaxed", tle::MemoryOrder::RELAXED)
+      .value("Acquire", tle::MemoryOrder::ACQUIRE)
+      .value("Release", tle::MemoryOrder::RELEASE)
+      .value("AcqRel", tle::MemoryOrder::ACQ_REL)
+      .def_static(
+          "from_str",
+          [](std::string name) { return tle::parseMemoryOrder(name); },
+          py::arg("name"));
+}
+
+void init_triton_tle_utils(py::module &&m) {
+  m.def(
+      "verify_signal",
+      [](tle::SignalOpKind kind, std::optional<Value> value,
+         tle::SyncScope scope) {
+        if (auto err = tle::Signal::verifySignalOp(
+                kind, value.value_or(Value()), scope)) {
+          throw py::value_error(*err);
+        }
+      },
+      py::arg("kind"), py::arg("value") = py::none(),
+      py::arg("scope") = tle::SyncScope::SYSTEM,
+      "Validate a signal op's (kind, value, scope) combination; returns an "
+      "error message or None");
+  m.def(
+      "verify_signal_wait",
+      [](tle::SignalWaitKind kind, std::optional<Value> target,
+         tle::MemoryOrder order) {
+        if (auto err = tle::Signal::verifySignalWaitOp(
+                kind, target.value_or(Value()), order)) {
+          throw py::value_error(*err);
+        }
+      },
+      py::arg("kind"), py::arg("target") = py::none(),
+      py::arg("order") = tle::MemoryOrder::ACQUIRE,
+      "Validate a signal_wait op's (kind, target, order) combination; "
+      "returns an error message or None");
+}
+
+void init_triton_tle_passes(py::module &&m) {
+  ADD_PASS_WRAPPER_0("add_fuse_node_remote_transfers",
+                     tle::createTritonTleFuseNodeRemoteTransfers);
+  ADD_PASS_WRAPPER_0("add_params_for_distribution",
+                     tle::createTritonTleAddDistributedParams);
+  ADD_PASS_WRAPPER_0("add_early_assign_memory_space",
+                     tle::createTritonTleEarlyAssignMemorySpace);
+  ADD_PASS_WRAPPER_0("add_select_encodings",
+                     tle::createTritonTleSelectEncodings);
+  // Backward-compatible alias.
+  ADD_PASS_WRAPPER_0("add_assign_local_pointers_encoding",
+                     tle::createTritonTleSelectEncodings);
+  ADD_PASS_WRAPPER_0("add_insert_local_pointer_barriers",
+                     tle::createTritonTleInsertLocalPointerBarriers);
+  ADD_PASS_WRAPPER_0("add_optimize_local_pointer_loads",
+                     tle::createTritonTleOptimizeLocalPointerLoads);
+  ADD_PASS_WRAPPER_0("add_optimize_local_pointer_stores",
+                     tle::createTritonTleOptimizeLocalPointerStores);
+  ADD_PASS_WRAPPER_0("add_optimize_local_pointer_async_stores",
+                     tle::createTritonTleOptimizeLocalPointerAsyncStores);
+  ADD_PASS_WRAPPER_0("add_promote_local_store_staging",
+                     tle::createTritonTlePromoteLocalStoreStaging);
+  ADD_PASS_WRAPPER_0("add_tile_style_pipeline_schedule",
+                     tle::createTritonTleTileStylePipelineSchedule);
+  ADD_PASS_WRAPPER_0("add_materialize_tile_style_pipeline",
+                     tle::createTritonTleMaterializeTileStylePipeline);
+  ADD_PASS_WRAPPER_0("add_downgrade_invalid_async_copy",
+                     tle::createTritonTleDowngradeInvalidAsyncCopy);
+  ADD_PASS_WRAPPER_0("add_optimize_exclusive_cumsum_layouts",
+                     tle::createTritonTleOptimizeExclusiveCumsumLayouts);
+  ADD_PASS_WRAPPER_0("add_lower_exclusive_cumsum",
+                     tle::createTritonTleLowerExclusiveCumsum);
+  ADD_PASS_WRAPPER_0("add_lower_async_load",
+                     tle::createTritonTleLowerAsyncLoad);
+  ADD_PASS_WRAPPER_0("add_lower_wgmma", tle::createTritonTleLowerWGMMA);
+#ifdef __TLE_TILED_SMEM__
+  ADD_PASS_WRAPPER_0("add_plan_logical_domains",
+                     tle::createTritonTlePlanLogicalDomains);
+#endif // __TLE_TILED_SMEM__
+  ADD_PASS_WRAPPER_0("add_lower_pipe_to_nvws",
+                     tle::createTritonTleLowerPipeToNvws);
+  ADD_PASS_WRAPPER_0("add_lower_barriers", tle::createTritonTleLowerBarriers);
+  ADD_PASS_WRAPPER_0("add_allocate_named_barriers",
+                     tle::createTritonTleAllocateNamedBarriers);
+  ADD_PASS_WRAPPER_0("add_lower_tma_copy", tle::createTritonTleLowerTmaCopy);
+  ADD_PASS_WRAPPER_0("add_schedule_tma_store_sync",
+                     tle::createTritonTleScheduleTmaStoreSync);
+
+  ADD_PASS_WRAPPER_0("add_lower_extract_tile",
+                     tle::createTritonTleLowerExtractTile);
+
+  ADD_PASS_WRAPPER_0("add_lower_insert_tile",
+                     tle::createTritonTleLowerInsertTile);
+}
+
+void init_tle_raw_ir(py::module &&m) {
+  using ret = py::return_value_policy;
+
+  py::class_<tle::DSLRegionOp>(m, "DSLRegionOp", py::module_local(),
+                               py::dynamic_attr())
+      .def(
+          "get_results",
+          [](tle::DSLRegionOp &op) -> std::vector<OpResult> {
+            auto results_range = op->getResults();
+            return std::vector<OpResult>(results_range.begin(),
+                                         results_range.end());
+          },
+          ret::reference)
+      .def("dump", &tle::DSLRegionOp::dump);
+
+  py::class_<tle::YieldOp>(m, "YieldOp", py::module_local(), py::dynamic_attr())
+      .def("dump", &tle::YieldOp::dump);
+
+  auto *builder_cls = ir::getBuilderClass();
+  builder_cls->def("compute_alias_operand_indices", &computeAliasOperandIndices,
+                   py::arg("text"), py::arg("args"), py::arg("func_name") = "");
+  builder_cls->def("create_tle_raw_region_by_llvm_func",
+                   &createTLERawRegionByLLVMFunc, py::arg("text"),
+                   py::arg("region_dialect"), py::arg("arg_dialect"),
+                   py::arg("args"), py::arg("output_operand_indices"),
+                   py::arg("hint") = "", py::arg("func_name") = "");
+  builder_cls->def(
+      "create_tle_raw_region_deferred", &createTLERawRegionDeferred,
+      py::arg("source_id"), py::arg("region_dialect"), py::arg("arg_dialect"),
+      py::arg("args"), py::arg("output_operand_indices"), py::arg("hint") = "",
+      py::arg("dsl_file_name") = "", py::arg("extern_func_name") = "");
+  builder_cls->def("get_context", &TritonOpBuilder::getContext);
+}
+
+void init_tle_raw_passes(py::module &&m) {
+  ADD_PASS_WRAPPER_0("add_tle_convert_arg_to_memdesc",
+                     mlir::triton::tle::createTleConvertArgToMemDesc);
+  ADD_PASS_WRAPPER_0("add_tle_remove_redundant_copy",
+                     mlir::triton::tle::createTleRemoveRedundantCopy);
+  ADD_PASS_WRAPPER_0("add_tle_dsl_region_inline",
+                     mlir::triton::tle::createTleDSLRegionInline);
+}
+
+void init_llvm(py::module &&m) {
+  m.def("parse_llvm_ir",
+        [](std::string_view text, llvm::LLVMContext &llvmContext,
+           mlir::MLIRContext &mlirContext) -> mlir::ModuleOp {
+          std::unique_ptr<llvm::MemoryBuffer> buffer =
+              llvm::MemoryBuffer::getMemBuffer(text);
+          llvm::SMDiagnostic error;
+          std::unique_ptr<llvm::Module> llvmModule =
+              llvm::parseIR(buffer->getMemBufferRef(), error, llvmContext);
+          if (!llvmModule) {
+            llvm::report_fatal_error(
+                "failed to parse IR: " + error.getMessage() +
+                "lineno: " + std::to_string(error.getLineNo()));
+          }
+          return mlir::translateLLVMIRToModule(std::move(llvmModule),
+                                               &mlirContext)
+              ->clone();
+        });
+}
+
+void init_triton_tle_dsa(py::module m);
+
+void init_triton_tle(py::module &&m) {
+  m.def("is_common_ir_enabled", []() {
+#ifdef __FLAGTREE_COMMON_IR__
+    return true;
+#else  // __FLAGTREE_COMMON_IR__
+    return false;
+#endif // __FLAGTREE_COMMON_IR__
+  });
+
+  // load dialects
+  m.def("load_dialects", [](mlir::MLIRContext &context) {
+    mlir::DialectRegistry registry;
+    registry.insert<mlir::triton::tle::TleDialect>();
+    context.appendDialectRegistry(registry);
+    context.loadAllAvailableDialects();
+  });
+
+#ifdef __FLAGTREE_COMMON_IR__
+  m.def("load_tile_dialects", [](mlir::MLIRContext &context) {
+    mlir::DialectRegistry registry;
+    registry.insert<mlir::triton::tile::CommonIRDialect>();
+    context.appendDialectRegistry(registry);
+    context.loadAllAvailableDialects();
+  });
+#endif // __FLAGTREE_COMMON_IR__
+
+  init_triton_tle_attr(m.def_submodule("attr"));
+  init_triton_tle_utils(m.def_submodule("utils"));
+  init_triton_tle_ir(m.def_submodule("ir"));
+  init_triton_tle_passes(m.def_submodule("passes"));
+  init_tle_raw_ir(m.def_submodule("raw_ir"));
+  init_tle_raw_passes(m.def_submodule("raw_passes"));
+  init_llvm(m.def_submodule("llvm"));
+  init_triton_tle_dsa(m.def_submodule("dsa"));
+}

@@ -30,17 +30,29 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/StrUtil.h"
 #include "llvm/Support/Debug.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Analysis/CoalescingSlice.h"
+#endif
 
 #define DEBUG_TYPE "tritongpu-coalesce"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 namespace mlir::triton::gpu {
+#ifdef __TLE__
+BlockedEncodingAttr
+buildCoalescedEncoding(ModuleAxisInfoAnalysis &axisInfoAnalysis, Operation *op,
+                       int numWarps, int threadsPerWarp,
+                       triton::gpu::CGAEncodingAttr cgaLayout,
+                       SmallVector<int64_t> shapePerCTA,
+                       const llvm::DenseSet<Block *> &nonExecutableBlocks) {
+#else
 BlockedEncodingAttr
 buildCoalescedEncoding(ModuleAxisInfoAnalysis &axisInfoAnalysis, Operation *op,
                        int numWarps, int threadsPerWarp,
                        triton::gpu::CGAEncodingAttr cgaLayout,
                        SmallVector<int64_t> shapePerCTA) {
+#endif
   Value ptr = getMemAccessPtr(op);
   auto refTensorType = cast<RankedTensorType>(ptr.getType());
 
@@ -65,7 +77,15 @@ buildCoalescedEncoding(ModuleAxisInfoAnalysis &axisInfoAnalysis, Operation *op,
   llvm::SmallSetVector<Operation *, 32> memAccessesSameOrder;
   memAccessesSameOrder.insert(op);
   if (ptr.getDefiningOp()) {
+#ifdef __TLE__
+    for (Operation *use : triton::tle::getCoalescingSlice(op)) {
+#else
     for (Operation *use : mlir::getSlice(op)) {
+#endif
+#ifdef __TLE__
+      if (nonExecutableBlocks.contains(use->getBlock()))
+        continue;
+#endif
       Value val = getMemAccessPtr(use);
       if (!val || !matchesShape(val) || memAccessesSameOrder.contains(use))
         continue;
@@ -116,4 +136,23 @@ buildCoalescedEncoding(ModuleAxisInfoAnalysis &axisInfoAnalysis, Operation *op,
                                   sizePerThread, order, numWarps,
                                   threadsPerWarp, cgaLayout);
 }
+#ifdef __TLE__
+// Preserve the existing helper ABI for other consumers while applying the same
+// reachability contract. Coalesce itself supplies a cached per-function proof.
+BlockedEncodingAttr
+buildCoalescedEncoding(ModuleAxisInfoAnalysis &axisInfoAnalysis, Operation *op,
+                       int numWarps, int threadsPerWarp,
+                       triton::gpu::CGAEncodingAttr cgaLayout,
+                       SmallVector<int64_t> shapePerCTA) {
+  llvm::DenseSet<Block *> nonExecutableBlocks;
+  auto function = op->getParentOfType<FunctionOpInterface>();
+  if (!function || failed(tle::collectNonExecutableCoalescingBlocks(
+                       function, nonExecutableBlocks))) {
+    op->emitError("failed to prove executable blocks for TLE coalescing");
+    return {};
+  }
+  return buildCoalescedEncoding(axisInfoAnalysis, op, numWarps, threadsPerWarp,
+                                cgaLayout, shapePerCTA, nonExecutableBlocks);
+}
+#endif
 } // namespace mlir::triton::gpu

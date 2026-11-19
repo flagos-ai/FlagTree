@@ -1,5 +1,49 @@
+set(TritonGPUTransformsTleSources)
+if(FLAGTREE_TLE)
+  list(APPEND TritonGPUTransformsTleSources
+    ${CMAKE_SOURCE_DIR}/third_party/tle/dialect/lib/Transforms/EncodingRematerialization.cpp
+    Pipeliner/TleWGMMAAnalysis.cpp
+    Pipeliner/TleWGMMAUserPromisePipeline.cpp
+  )
+endif()
+
+# The pass needs ttg.concat_dot_operand, which tablegen only emits when
+# __FLAGTREE_CONCAT_DOT_OPERAND__ is defined (see cmake/FlagTreeOptions.cmake).
+set(TritonGPUTransformsConcatDotOperandSources)
+if(NOT FLAGTREE_BACKEND)
+  list(APPEND TritonGPUTransformsConcatDotOperandSources
+    ConcatDotOperand.cpp
+  )
+endif()
+
+# The pass definition is only emitted by tablegen when
+# __FLAGTREE_PIPELINE_ENHANCE__ is defined (see cmake/FlagTreeOptions.cmake).
+set(TritonGPUTransformsPipelineEnhanceSources)
+if(NOT FLAGTREE_BACKEND)
+  list(APPEND TritonGPUTransformsPipelineEnhanceSources
+    Pipeliner/MergeDuplicateLoads.cpp
+  )
+endif()
+
+set(TritonGPUTransformsSharedMemoryHintSources ProcessSharedMemoryHint.cpp)
+set(TritonGPUTransformsWarpSpecializationSources
+  WarpSpecialization/AutomaticWarpSpecialization.cpp
+  WarpSpecialization/PartitionLoops.cpp
+)
+set(TritonGPUTransformsBackendLibs
+  NVWSIR
+  NVWSTransforms
+)
+if(FLAGTREE_BACKEND STREQUAL "iluvatar")
+  set(TritonGPUTransformsSharedMemoryHintSources)
+  set(TritonGPUTransformsWarpSpecializationSources)
+  set(TritonGPUTransformsBackendLibs TritonILUVATARUtils)
+endif()
+
 add_triton_library(TritonGPUTransforms
   AccelerateMatmul.cpp
+  ${TritonGPUTransformsConcatDotOperandSources}
+  ${TritonGPUTransformsSharedMemoryHintSources}
   Coalesce.cpp
   F32DotTC.cpp
   FuseNestedLoops.cpp
@@ -14,6 +58,8 @@ add_triton_library(TritonGPUTransforms
   Pipeliner/LowerLoops.cpp
   Pipeliner/MMAv5PipelineUtility.cpp
   Pipeliner/ScheduleLoops.cpp
+  ${TritonGPUTransformsTleSources}
+  ${TritonGPUTransformsPipelineEnhanceSources}
   Pipeliner/WGMMAPipeline.cpp
   Pipeliner/PipelineExpander.cpp
   Pipeliner/TestPipelineLowerLoop.cpp
@@ -29,16 +75,22 @@ add_triton_library(TritonGPUTransforms
   Utility.cpp
   CoalesceUtils.cpp
   LayoutPropagationUtility.cpp
-  WarpSpecialization/AutomaticWarpSpecialization.cpp
+  ${TritonGPUTransformsWarpSpecializationSources}
   WarpSpecialization/Partition.cpp
   WarpSpecialization/OptimizePartitionWarps.cpp
   WarpSpecialization/PartitionBuilder.cpp
-  WarpSpecialization/PartitionLoops.cpp
   WarpSpecialization/PartitionScheduling.cpp
   WarpSpecialization/PartitionSchedulingUtility.cpp
 
   DEPENDS
   TritonGPUTransformsIncGen
+  # flagtree: fix missing Triton dependency
+  TritonTableGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCGAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   MLIRTransforms
@@ -48,8 +100,7 @@ add_triton_library(TritonGPUTransforms
   TritonTransforms
   TritonGPUIR
   TritonNvidiaGPUIR
-  NVWSIR
-  NVWSTransforms
+  ${TritonGPUTransformsBackendLibs}
   TritonToTritonGPU
   TritonInstrumentIR
   MLIRTransformUtils

@@ -1,0 +1,79 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "tle/dialect/include/Conversion/TleToLLVM/PackOpToLLVM.h"
+#include "mlir/Conversion/LLVMCommon/Pattern.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/IR/Operation.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "tle/dialect/include/IR/Dialect.h"
+
+namespace {
+
+using namespace mlir;
+namespace ttg = mlir::triton::gpu;
+using namespace mlir::triton;
+
+struct PackOpConversion : public ConvertOpToLLVMPattern<tle::PackOp> {
+  PackOpConversion(LLVMTypeConverter &typeConverter, PatternBenefit benefit);
+  LogicalResult
+  matchAndRewrite(tle::PackOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+} // namespace
+
+PackOpConversion::PackOpConversion(LLVMTypeConverter &typeConverter,
+                                   PatternBenefit benefit)
+    : ConvertOpToLLVMPattern(typeConverter, benefit) {}
+
+LogicalResult
+PackOpConversion::matchAndRewrite(tle::PackOp op, OpAdaptor adaptor,
+                                  ConversionPatternRewriter &rewriter) const {
+  if (ttg::MemDescType memdesc =
+          dyn_cast<ttg::MemDescType>(op.getOutput().getType())) {
+    LLVM::LLVMStructType llvmStructType =
+        cast<LLVM::LLVMStructType>(typeConverter->convertType(memdesc));
+    LLVM::ExtractValueOp basePtr = LLVM::ExtractValueOp::create(rewriter, op.getLoc(), adaptor.getInput(), SmallVector<int64_t>{0});
+    Value llvmStruct =
+        LLVM::PoisonOp::create(rewriter, op.getLoc(), llvmStructType);
+    LLVM::InsertValueOp insertOp = LLVM::InsertValueOp::create(rewriter, op.getLoc(), llvmStructType, llvmStruct, basePtr,
+        SmallVector<int64_t>{0});
+    for (int64_t i = 1; i < llvmStructType.getBody().size(); ++i) {
+      LLVM::ConstantOp zeroOp = LLVM::ConstantOp::create(rewriter, op.getLoc(), rewriter.getIntegerType(32), 0);
+      insertOp = LLVM::InsertValueOp::create(rewriter, op.getLoc(), llvmStructType, insertOp, zeroOp,
+          SmallVector<int64_t>{i});
+    }
+    rewriter.replaceOp(op, insertOp->getResults());
+    return success();
+  } else {
+    return failure();
+  }
+}
+
+void tle::populatePackOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                       RewritePatternSet &patterns,
+                                       PatternBenefit benefit) {
+  patterns.add<PackOpConversion>(typeConverter, benefit);
+}

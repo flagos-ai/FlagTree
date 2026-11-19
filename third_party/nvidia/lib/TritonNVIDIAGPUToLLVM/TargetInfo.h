@@ -22,6 +22,11 @@ public:
 
   void warpSync(Location loc, RewriterBase &rewriter) const override;
 
+#ifdef __TLE__
+  Value mapSharedToClusterPointer(RewriterBase &rewriter, Location loc,
+                                  Value ptr, Value ctaId) const;
+#endif
+
   void storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
                     std::optional<Value> ctaId, Value val,
                     Value pred) const override;
@@ -51,6 +56,12 @@ public:
   bool warpReduce(RewriterBase &rewriter, Location loc, SmallVector<Value> &acc,
                   triton::ReduceOp op, unsigned numLaneToReduce,
                   unsigned interleave) const override;
+
+#ifdef __TLE__
+  std::optional<Value> ctaReduceOrPredicate(RewriterBase &rewriter,
+                                            Location loc,
+                                            Value pred) const override;
+#endif
 
   std::string getMulhiFuncName(Type resultElementTy) const override;
 

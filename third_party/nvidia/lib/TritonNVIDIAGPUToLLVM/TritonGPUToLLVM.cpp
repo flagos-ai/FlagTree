@@ -4,13 +4,35 @@
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
+#ifdef __TLE__
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#endif
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/DialectConversion.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Analysis/AxisInfoExt.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/DSLRegionOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/ExclusiveCumsumOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/GetDeviceIdToFlagCX.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/NodeTransferOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/PackOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/SignalOpToLLVM.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#endif
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Membar.h"
@@ -25,6 +47,7 @@
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 
 namespace ttng = mlir::triton::nvidia_gpu;
+#include "tle/dialect/include/Transforms/PatternTleToLLVM.h"
 
 namespace mlir {
 namespace triton {
@@ -64,6 +87,9 @@ public:
         });
     addIllegalDialect<triton::nvidia_gpu::TritonNvidiaGPUDialect>();
     addIllegalDialect<mlir::gpu::GPUDialect>();
+#ifdef __TLE__
+    addIllegalDialect<tle::TleDialect>();
+#endif
     addLegalOp<mlir::UnrealizedConversionCastOp>();
 
     // Warp specialization is lowered later.
@@ -77,6 +103,32 @@ public:
         });
   }
 };
+
+#ifdef __TLE__
+class TleLLVMConversionTarget : public ConversionTarget {
+public:
+  explicit TleLLVMConversionTarget(MLIRContext &ctx,
+                                   LLVMTypeConverter &typeConverter)
+      : ConversionTarget(ctx) {
+    addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect, math::MathDialect,
+                    NVVM::NVVMDialect, mlir::gpu::GPUDialect>();
+    addIllegalDialect<tle::TleDialect>();
+    addLegalOp<mlir::UnrealizedConversionCastOp>();
+    addDynamicallyLegalOp<tle::DSLRegionOp, tle::YieldOp>(
+        [&](Operation *op) -> bool {
+          bool hasLegalRegions = true;
+          for (auto &region : op->getRegions()) {
+            hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
+          }
+          return hasLegalRegions && typeConverter.isLegal(op);
+        });
+    addLegalOp<tle::LocalPointersOp, tle::RemotePointersOp, tle::NodePutOp,
+               tle::NodeGetOp>();
+    // Allow non-TLE ops to remain during this partial conversion.
+    markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
+  }
+};
+#endif
 
 struct ConvertTritonGPUToLLVM
     : public triton::impl::ConvertTritonGPUToLLVMBase<ConvertTritonGPUToLLVM> {
@@ -116,10 +168,53 @@ struct ConvertTritonGPUToLLVM
     // because the call op has to know the shared memory base address of each
     // function
     initSharedMemory(typeConverter);
+#ifdef __TLE__
+    mlir::triton::tle::ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
+#else
     ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
+#endif
 
     RewritePatternSet patterns(context);
     int benefit = patternBenefitPrioritizeOverLLVMConversions;
+#ifdef __TLE__
+    {
+      TleLLVMConversionTarget target(*context, typeConverter);
+      RewritePatternSet patterns(context);
+      mlir::triton::tle::populateDSLRegionOpToLLVMPatterns(typeConverter,
+                                                           patterns, benefit);
+      mlir::triton::tle::populateExtractOpToLLVMPatterns(typeConverter,
+                                                         patterns, benefit);
+      mlir::triton::tle::populatePackOpToLLVMPatterns(typeConverter, patterns,
+                                                      benefit);
+      mlir::triton::tle::populateDistributedBarrierOpToLLVMPatterns(
+          typeConverter, patterns, benefit);
+      mlir::triton::tle::populateExtractTileOpToLLVMPatterns(
+          typeConverter, patterns, targetInfo, benefit);
+      mlir::triton::tle::populateInsertTileOpToLLVMPatterns(
+          typeConverter, patterns, targetInfo, benefit);
+      mlir::triton::tle::populateMemDescWGMMAViewOpToLLVMPatterns(
+          typeConverter, patterns, benefit);
+      mlir::triton::tle::populateMemDescAliasOpToLLVMPatterns(
+          typeConverter, patterns, benefit);
+      mlir::triton::tle::populateExclusiveCumsumOpToLLVMPatterns(
+          typeConverter, targetInfo, patterns, benefit);
+      mlir::triton::tle::populateWGMMASharedOperandFenceOpToLLVMPatterns(
+          typeConverter, patterns, benefit);
+      mlir::triton::tle::populateTMAStoreCommitGroupOpToLLVMPatterns(
+          typeConverter, patterns, benefit);
+      mlir::triton::tle::populateSignalOpToLLVMPatterns(typeConverter, patterns,
+                                                        benefit);
+      // FlagCX ops are lowered to LLVM.
+#ifdef FLAGCX_ENABLED
+      mlir::triton::tle::populateFlagCxOpToLLVMPatterns(typeConverter, patterns,
+                                                        benefit);
+#endif
+      if (failed(applyPartialConversion(mod, target, std::move(patterns)))) {
+        return signalPassFailure();
+      }
+    }
+#endif
+
     mlir::triton::NVIDIA::populateConvertLayoutOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, benefit);
     mlir::triton::NVIDIA::populateTensorMemorySubviewOpToLLVMPattern(
@@ -137,6 +232,17 @@ struct ConvertTritonGPUToLLVM
     populateLoadStoreOpToLLVMPatterns(typeConverter, targetInfo,
                                       computeCapability, patterns,
                                       axisInfoAnalysis, benefit);
+#ifdef __TLE__
+    // Keep local pointer SSA values alive until load/store patterns consume
+    // their AxisInfo. A preceding partial conversion replaces them by casts
+    // absent from the analysis and loses the proven vector alignment.
+    mlir::triton::tle::populateLocalPointersOpToLLVMPatterns(
+        typeConverter, targetInfo, patterns, benefit);
+    mlir::triton::tle::populateRemotePointersOpToLLVMPatterns(
+        typeConverter, targetInfo, patterns, benefit + 1);
+    mlir::triton::tle::populateNodeTransferOpToLLVMPatterns(typeConverter,
+                                                            patterns, benefit);
+#endif
     mlir::triton::populateReduceOpToLLVMPatterns(typeConverter, patterns,
                                                  targetInfo, benefit);
     mlir::triton::populateScanOpToLLVMPatterns(typeConverter, patterns,

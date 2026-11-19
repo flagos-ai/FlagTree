@@ -24,6 +24,9 @@
  */
 
 #include "triton/Analysis/AxisInfo.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Analysis/GatherAxisInfo.h"
+#endif
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "triton/Dialect/Gluon/IR/Dialect.h"
@@ -1143,6 +1146,9 @@ AxisInfoAnalysis::AxisInfoAnalysis(DataFlowSolver &solver,
                   MaxMinOpAxisInfoVisitor<arith::MinUIOp>>();
   visitors.append<LoadOpAxisInfoVisitor>();
   visitors.append<TransOpAxisInfoVisitor>();
+#ifdef __TLE__
+  visitors.append<tle::GatherOpAxisInfoVisitor>();
+#endif
 
   if (callback)
     callback(visitors);
@@ -1219,12 +1225,34 @@ void AxisInfo::initPessimisticStateFromFunc(int argNumber,
 }
 
 void AxisInfo::initDimVectorFromHint(Attribute attr, DimVectorT *vec) {
+#ifdef __TLE__
+  if (!vec)
+    return;
+  if (auto intAttr = dyn_cast_or_null<IntegerAttr>(attr)) {
+    // Scalar hints are only valid for rank-1 vectors. Ignore mismatched hints
+    // to avoid shrinking rank information (which can cause out-of-bounds axis
+    // queries later in vectorization analysis).
+    if (vec->size() == 1 || vec->empty())
+      *vec = DimVectorT(1, intAttr.getValue().getZExtValue());
+    return;
+  }
+  if (auto dense_attr = dyn_cast_or_null<DenseElementsAttr>(attr)) {
+    SmallVector<int64_t> vals;
+    vals.reserve(dense_attr.getNumElements());
+    for (APInt v : dense_attr.getValues<APInt>())
+      vals.push_back(v.getSExtValue());
+    if (vec->empty() || vals.size() == vec->size())
+      *vec = DimVectorT(vals.begin(), vals.end());
+    return;
+  }
+#else
   if (auto int_attr = dyn_cast_or_null<IntegerAttr>(attr))
     *vec = DimVectorT(1, int_attr.getValue().getZExtValue());
   if (auto dense_attr = dyn_cast_or_null<DenseElementsAttr>(attr)) {
     auto vals = dense_attr.getValues<int>();
     *vec = DimVectorT(vals.begin(), vals.end());
   }
+#endif
 }
 
 /*static*/ AxisInfo AxisInfo::getPessimisticValueState(Value value) {
@@ -1268,7 +1296,17 @@ void AxisInfo::initDimVectorFromHint(Attribute attr, DimVectorT *vec) {
     return rhs;
   if (rhs.getRank() == 0)
     return lhs;
+#ifdef __TLE__
+  if (lhs.getRank() != rhs.getRank()) {
+    // Be conservative when malformed/mismatched hints have polluted rank
+    // information. Prefer correctness and robustness over optimistic metadata.
+    const int rank = std::max(lhs.getRank(), rhs.getRank());
+    return AxisInfo(DimVectorT(rank, 1), DimVectorT(rank, 1),
+                    DimVectorT(rank, 1));
+  }
+#else
   assert(lhs.getRank() == rhs.getRank() && "Mismatched ranks");
+#endif
   DimVectorT contiguity;
   DimVectorT divisibility;
   DimVectorT constancy;
@@ -1305,11 +1343,20 @@ unsigned ModuleAxisInfoAnalysis::getContiguity(Value offsetsValue,
   auto tensorTy = cast<RankedTensorType>(offsetsValue.getType());
   auto linAttr = gpu::toLinearEncoding(tensorTy);
   auto order = linAttr.getOrder();
+#ifdef __TLE__
+  if (order.empty())
+    return 1;
+#endif
   unsigned align = getAlignment(offsetsValue, elementBitWidth);
 
   auto uniqueContigPerThread = linAttr.getContigPerThread();
+#ifdef __TLE__
+  if (order[0] >= uniqueContigPerThread.size())
+    return align;
+#else
   assert(order[0] < uniqueContigPerThread.size() &&
          "Unexpected uniqueContigPerThread size");
+#endif
   unsigned contiguity = uniqueContigPerThread[order[0]];
   LDBG("getContiguity uniqueContigPerThread = " << contiguity);
   contiguity = std::min(align, contiguity);
@@ -1338,6 +1385,13 @@ unsigned ModuleAxisInfoAnalysis::getAlignment(Value offsetsValue,
     return 1;
   auto linAttr = gpu::toLinearEncoding(tensorTy);
   auto order = linAttr.getOrder();
+#ifdef __TLE__
+  if (order.empty())
+    return 1;
+  if (order[0] >= axisInfo->getRank()) {
+    return 1;
+  }
+#endif
 
   auto divisibility = axisInfo->getDivisibility(order[0]);
   auto elemNumBytes = std::max<unsigned>(elementBitWidth / 8, 1);
@@ -1370,6 +1424,12 @@ unsigned ModuleAxisInfoAnalysis::getMaskAlignment(Value mask) {
     return 1;
   auto linAttr = gpu::toLinearEncoding(tensorTy);
   auto maskOrder = linAttr.getOrder();
+#ifdef __TLE__
+  if (maskOrder.empty())
+    return 1;
+  if (maskOrder[0] >= axisInfo->getRank())
+    return 1;
+#endif
   auto alignment = std::max<unsigned>(axisInfo->getConstancy(maskOrder[0]), 1);
   LDBG("getMaskAlignment maskOrder[0] " << maskOrder[0] << " alignment "
                                         << alignment);
@@ -1419,6 +1479,17 @@ void ModuleAxisInfoAnalysis::update(CallOpInterface callOp,
     auto index = entry.index();
     auto value = entry.value();
     auto setAttrFn = [&](StringRef attrName, int64_t prevValue) {
+#ifdef __TLE__
+      // Explicit callee promises are not weakened by caller inference. Their
+      // provenance distinguishes them from facts merged across call sites.
+      if (auto promises = callee.getArgAttrOfType<DictionaryAttr>(
+              index, "tle.argument_hints")) {
+        if (Attribute promise = promises.get(attrName)) {
+          callee.setArgAttr(index, attrName, promise);
+          return;
+        }
+      }
+#endif
       auto curValue = kMaxDivisor;
       if (callee.getArgAttrOfType<IntegerAttr>(index, attrName)) {
         curValue =
