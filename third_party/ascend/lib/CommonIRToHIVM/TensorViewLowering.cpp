@@ -538,6 +538,35 @@ void emitElementwiseFill(OpBuilder &b, Location loc,
   b.create<memref::StoreOp>(loc, ifOp.getResult(0), buffer, coords);
 }
 
+void emitBoundedElementwiseFill(OpBuilder &b, Location loc,
+                                const TensorViewAccessInfo &info,
+                                ValueRange indices, Value buffer,
+                                ValueRange validLengths) {
+  unsigned rank = info.rank();
+  Value zero = b.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<arith::ConstantIndexOp>(loc, 1);
+
+  SmallVector<Value> coords;
+  OpBuilder::InsertionGuard guard(b);
+  for (unsigned d = 0; d < rank; ++d) {
+    auto loop = b.create<scf::ForOp>(loc, zero, validLengths[d], one);
+    b.setInsertionPointToStart(loop.getBody());
+    coords.push_back(loop.getInductionVar());
+  }
+
+  // Every coordinate is inside the prefix by construction, so the flat offset
+  // is accumulated directly and no in-bounds predicate is emitted.
+  Value physOffset;
+  for (unsigned d = 0; d < rank; ++d) {
+    Value logical = emitLogicalCoord(b, loc, info, indices, d, coords[d]);
+    physOffset = emitAccumulateFlatOffset(b, loc, info, d, logical, physOffset);
+  }
+  Value elemView = emitGmElementView(b, loc, info.base, physOffset,
+                                     info.elementType);
+  Value loaded = b.create<memref::LoadOp>(loc, elemView, ValueRange{zero});
+  b.create<memref::StoreOp>(loc, loaded, buffer, coords);
+}
+
 FailureOr<Value> emitGatherLoad(OpBuilder &b, Location loc,
                                 const TensorViewAccessInfo &info,
                                 ValueRange indices, RankedTensorType type,
