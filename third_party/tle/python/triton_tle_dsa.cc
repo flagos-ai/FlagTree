@@ -74,7 +74,8 @@ static void init_triton_tle_ir(py::module m) {
       .def("create_dsa_copy",
            [](TritonOpBuilder &self, Value src, Value dst) -> void {
              self.getContext()->getOrLoadDialect<dsa::DsaDialect>();
-             dsa::CopyOp::create(self.getBuilder(), self.getLastLoc(), src, dst);
+             dsa::CopyOp::create(self.getBuilder(), self.getLastLoc(), src,
+                                 dst);
            })
       .def("create_dsa_local_pointers",
            [](TritonOpBuilder &self, Type resultTy, Value src,
