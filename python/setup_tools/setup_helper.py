@@ -784,8 +784,8 @@ def get_excluded_package_data():
     if backend_exclusions_hook:
         for package, patterns in backend_exclusions_hook().items():
             excluded_package_data.setdefault(package, [])
-            excluded_package_data[package].extend(
-                pattern for pattern in patterns if pattern not in excluded_package_data[package])
+            excluded_package_data[package].extend(pattern for pattern in patterns
+                                                  if pattern not in excluded_package_data[package])
     return excluded_package_data
 
 
