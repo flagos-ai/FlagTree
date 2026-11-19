@@ -34,17 +34,9 @@ namespace {
 
 #ifdef __TLE__
 // TLE named barriers (tle.gpu.barrier_wait/arrive without a phase) lower to PPU
-// hardware barriers. They order shared memory between warp groups, so the
-// issuing warp drains only its shared-memory accesses; its outstanding global
-// accesses keep flowing (draining them costs ~3000 cycles per barrier), so
-// unlike bar.sync on NVIDIA they do not order global memory between the
-// groups. The kernel orders data it hands over through global memory itself
-// (documented on tle.gpu.barrier_wait/arrive); the lowering does not widen the
-// fence from the ops preceding a barrier, since a scan of one block misses the
-// stores of earlier blocks and loop iterations, and widening every arrive
-// after an unrelated output store would pay the drain for nothing.
-// Asynchronous copies are covered by the explicit async_wait the producer
-// issues before signalling (see BarrierUtility.h).
+// hardware barriers with the shared-memory fence only: unlike bar.sync on
+// NVIDIA they do not order global memory between the groups. The reasoning, and
+// why asynchronous copies are still covered, is on PPUBarrierFence.
 //
 // The SDK builtin takes the thread count as a constant. TLE emits it as one
 // (arrive_count on the frontend, the group size in the pipe lowering), so a

@@ -155,13 +155,14 @@ AIULoadStrategy(unsigned numWarps, unsigned xElems, unsigned channelElems,
 // be a multiple of V. A layout with neither form stays a plain load when S and
 // V are constants, and is copied by the threads when it is found at run time.
 //
-// The widths of the size fields are not documented. On a PPU-ZW810E, a 2d row
-// length (Z) of 40000, a 3d row count (Y) of 32768 (40000 rows, clamped by the
-// lowering) and a 3d stride factor (X) of 32768 copy correctly. kAIUMaxDim,
-// inclusive, is the limit the compiler applies to the fields a form is chosen
-// from: the row stride a strided 2d copy holds in its row-length field, and
-// both factors of a 3d copy. The row count of a 2d copy is passed through, the
-// measurement above having found that field wider than the limit.
+// The widths of the size fields are not documented. On a PPU-ZW810E with
+// SDK 2.1.0, a 2d row length (Z) of 40000, a 3d row count (Y) of 32768 (40000
+// rows, clamped by the lowering) and a 3d stride factor (X) of 32768 copy
+// correctly. kAIUMaxDim, inclusive, is the limit the compiler applies to the
+// fields a form is chosen from: the row stride a strided 2d copy holds in its
+// row-length field, and both factors of a 3d copy. The row count of a 2d copy
+// is passed through, the measurement above having found that field wider than
+// the limit.
 constexpr int64_t kAIUMaxDim = 1 << 15;
 
 // Looks through the extensions that widen block-pointer shapes and strides to
@@ -188,8 +189,8 @@ inline AIURowLayout getAIURowLayout(ValueRange strides, ValueRange shape,
                                     unsigned rowDim) {
   unsigned colDim = 1 - rowDim;
   // Without a unit stride on the dimension order[0] names, the copy reads the
-  // tile in the dense layout `order` gives, which the PPU AIU tests expect
-  // (test_bp_gemm_order01).
+  // tile in the dense layout `order` gives, as the PPU AIU tests with a
+  // transposed block pointer expect.
   if (strides.empty() || getAIUConstantInt(strides[colDim]) != 1)
     return AIURowLayout::Dense;
   Value rowStride = strides[rowDim];

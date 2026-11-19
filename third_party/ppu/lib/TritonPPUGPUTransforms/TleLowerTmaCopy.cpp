@@ -40,10 +40,9 @@
 // - Restore alignment hints from ppu.tensordesc_divisibility in the cache key:
 //   bit 0 records a 16-byte aligned base; bit 1 + d records an extent divisible
 //   by 16. The outer strides are multiples of the alignment the host checks,
-//   PPUDriver.get_tensor_descriptor_stride_alignment() in
-//   third_party/ppu/backend/driver.py (16 bytes). The first pass copies these
-//   bits from the descriptor argument to its load, and the second applies them
-//   to the expanded pointer and mask operands.
+//   PPUDriver.get_tensor_descriptor_stride_alignment() (16 bytes). The first
+//   pass copies these bits from the descriptor argument to its load, and the
+//   second applies them to the expanded pointer and mask operands.
 
 #include "TritonPPUGPUTransforms/Passes.h"
 
@@ -283,8 +282,7 @@ static std::optional<unsigned> spannedDim(Value value) {
 // extent splats of the aligned dimensions, and the stride splats of the outer
 // dimensions. The strides carry no bit: TensorDescriptor checks every outer
 // stride on the host against the alignment the backend declares,
-// PPUDriver.get_tensor_descriptor_stride_alignment() in
-// third_party/ppu/backend/driver.py, which is kVectorBytes.
+// PPUDriver.get_tensor_descriptor_stride_alignment(), which is kVectorBytes.
 static void hintDescriptorAlignment(tt::LoadOp load, int64_t bits) {
   auto ptrType = cast<RankedTensorType>(load.getPtr().getType());
   int64_t elemBytes =

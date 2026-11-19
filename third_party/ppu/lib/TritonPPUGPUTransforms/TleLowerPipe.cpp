@@ -75,13 +75,12 @@ namespace ttng = triton::nvidia_gpu;
 namespace tle = triton::tle;
 
 // The named barrier id space, repeated from the passes that own it: the TLE
-// allocator (TleAllocateNamedBarriers.cpp, the same three constants) treats
-// ids at or above kFirstVirtualNamedBarrierId as virtual and maps them to the
-// physical ids 0 to kNumHardwareBarriers - 1 (kPPUNumBarriers in
-// BarrierUtility.h) at the end of the TTGIR pipeline; the warp specialization
-// lowering (ConvertWarpSpecializeToLLVM.cpp, BarrierIndex) takes the physical
-// ids of the default warp group's barrier, the switch loop, then one per
-// partition. The budget of a kernel is the physical ids left after them.
+// named barrier allocator (the same three constants) treats ids at or above
+// kFirstVirtualNamedBarrierId as virtual and maps them to the physical ids 0 to
+// kNumHardwareBarriers - 1 (kPPUNumBarriers) at the end of the TTGIR pipeline;
+// the warp specialization lowering (BarrierIndex) takes the physical ids of the
+// default warp group's barrier, the switch loop, then one per partition. The
+// budget of a kernel is the physical ids left after them.
 constexpr int64_t kFirstVirtualNamedBarrierId = 16;
 constexpr int64_t kNumHardwareBarriers = 16;
 constexpr int64_t kNumWarpSpecializeReservedBarriers = 2;
