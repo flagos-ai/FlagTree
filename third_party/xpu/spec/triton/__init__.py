@@ -10,6 +10,15 @@ def _utils_extend_globals(globals_dict):
     globals_dict["parse_xpu_arch"] = parse_xpu_arch
 
 
+def language_extend_globals(globals_dict):
+    # These XPU-only language builtins were exported by XPU's former package
+    # overlay.  Restore them through the shared language specialization hook.
+    from triton.language.core import atomic_mul
+    from triton.language.math import gelu
+    globals_dict["atomic_mul"] = atomic_mul
+    globals_dict["gelu"] = gelu
+
+
 def knobs_extend_globals(globals_dict):
     # Keep the shared knobs and their scope/reset behaviour; only XPU defaults
     # and the XPU launch fast-path switch differ.

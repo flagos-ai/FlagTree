@@ -251,6 +251,23 @@ def test_shared_utils_and_knobs(isolated_triton, monkeypatch, backend_name):
     assert knobs.compilation.store_binary_only is False
 
 
+def test_xpu_language_exports(isolated_triton, monkeypatch):
+    _root, backend = isolated_triton
+    backend.FLAGTREE_BACKEND = "xpu"
+    atomic_mul = object()
+    gelu = object()
+    core = types.ModuleType("triton.language.core")
+    core.atomic_mul = atomic_mul
+    math = types.ModuleType("triton.language.math")
+    math.gelu = gelu
+    monkeypatch.setitem(sys.modules, core.__name__, core)
+    monkeypatch.setitem(sys.modules, math.__name__, math)
+    xpu_spec = importlib.import_module("triton.spec.xpu.triton")
+    language_globals = {}
+    xpu_spec.language_extend_globals(language_globals)
+    assert language_globals == {"atomic_mul": atomic_mul, "gelu": gelu}
+
+
 @pytest.mark.parametrize("backend_name,target,expected", [
     ("xpu", "cuda", True),
     ("xpu", "xpu", True),
