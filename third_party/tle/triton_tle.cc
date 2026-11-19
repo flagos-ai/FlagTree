@@ -68,6 +68,11 @@
 #include <cstdint>
 
 namespace py = pybind11;
+
+namespace ir {
+extern py::class_<TritonOpBuilder> *getBuilderClass();
+} // namespace ir
+
 using namespace mlir;
 namespace tt = triton;
 namespace ttg = triton::gpu;

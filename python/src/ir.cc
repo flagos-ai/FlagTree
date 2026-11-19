@@ -903,7 +903,9 @@ void init_triton_ir(py::module &&m) {
 
   static py::class_<TritonOpBuilder> TritonOpBuilderBinding(
       m, "builder", py::module_local(), py::dynamic_attr());
+#ifdef __TLE__
   builderClassPtr = &TritonOpBuilderBinding;
+#endif
   TritonOpBuilderBinding.def(py::init<MLIRContext *>())
       .def("get_op_builder", &TritonOpBuilder::getBuilder, ret::reference)
       // getters
