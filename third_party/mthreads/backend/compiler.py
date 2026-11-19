@@ -807,6 +807,8 @@ class MUSAOptions:
     disable_max_ilp_scheduler: bool = False
     disable_sqmma_m_split_preference: bool = False
     enable_fp8_burst2: bool = False
+    mp31_vector_arithmetic: bool = False
+    canonicalize_lane_shuffles: bool = False
     enable_llvm_compat: bool = True
     extern_libs: Optional[tuple] = None
     debug: bool = False
@@ -975,6 +977,11 @@ class MUSABackend(BaseBackend):
         arch = knobs.runtime.override_arch or opts.get("arch", None) or self.target.arch
         args = {"arch": _normalize_arch(arch)}
         capability = _capability_from_arch(args["arch"])
+        for name in ("mp31_vector_arithmetic", "canonicalize_lane_shuffles"):
+            if type(opts.get(name, False)) is not bool:
+                raise ValueError(f"{name} must be a bool")
+            if opts.get(name) and capability != 31:
+                raise ValueError(f"{name} requires MP31")
         # The bundled MTGPU llc currently only provides processors through
         # mp_32. Reject future numeric capabilities here rather than letting
         # instruction selection terminate the compiler process.
@@ -1211,7 +1218,7 @@ class MUSABackend(BaseBackend):
         mthreads.passes.ttgpuir.add_allocate_shared_memory(pm, capability)
         passes.ttgpuir.add_allocate_global_scratch_memory(pm)
         mthreads.passes.ttgpuir.add_mtgpu_to_llvm(pm, capability)
-        mthreads.passes.ttgpuir.add_to_llvmir(pm, capability, options.enable_fp8_burst2)
+        mthreads.passes.ttgpuir.add_to_llvmir(pm, capability, options.enable_fp8_burst2, options.mp31_vector_arithmetic)
         if has_static_ws:
             # The retained operation still owns the default and static worker
             # regions here. Lower their hardware barriers once, then emit
@@ -1245,6 +1252,10 @@ class MUSABackend(BaseBackend):
                 llvm.link_extern_libs(llvm_mod, printf_paths, force_inline=False)
 
         MUSABackend._optimize_llir_module(llvm_mod, metadata, capability)
+        if options.canonicalize_lane_shuffles:
+            metadata["canonicalized_lane_shuffle_count"] = mthreads.canonicalize_lane_shuffles(llvm_mod)
+        if options.mp31_vector_arithmetic:
+            metadata["mp31_fp32_add_count"] = mthreads.lower_mp31_fp32_adds(llvm_mod)
         maxntidx = max(1, int(launch_num_warps) * int(options.warp_size))
         kernel_name_hint = src.get_entry_func_name() if hasattr(src, "get_entry_func_name") else ""
         mthreads.decorate_kernel_abi(llvm_mod, kernel_name_hint, maxntidx)
