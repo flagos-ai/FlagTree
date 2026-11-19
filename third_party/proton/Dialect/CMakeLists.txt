@@ -1,5 +1,5 @@
-# [metax+CommonIR] proton Dialect 次要组件，剥掉全局 __TLE__（回到原可编状态）
-if("$ENV{FLAGTREE_BACKEND}" STREQUAL "metax")
+# Build the Proton dialect without generic TLE support on MetaX.
+if(FLAGTREE_BACKEND STREQUAL "metax")
   remove_definitions(-D__TLE__)
   list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
 endif()

@@ -1,18 +1,16 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}")
 
-# Slim path: compile only triton_tle_commonir.cc and link flir CommonIRIR.
-# Skip the full TLE dialect stack, which mthreads already adds under the same
-# binary directories. CommonIR defaults to ON, so an unset FLAGTREE_COMMON_IR
-# must take this path. Key off FLAGTREE_COMMON_IR_ENABLED, not a non-empty
-# environment variable; only an explicit 0/OFF opts out.
-if((("$ENV{FLAGTREE_BACKEND}" STREQUAL "metax") OR ("$ENV{FLAGTREE_BACKEND}" STREQUAL "mthreads")) AND FLAGTREE_COMMON_IR_ENABLED AND TRITON_BUILD_PYTHON_MODULE)
+# Build only the CommonIR Python bindings on MetaX and MThreads when enabled.
+# The full TLE dialect stack would collide with MThreads' own build targets.
+if((FLAGTREE_BACKEND STREQUAL "metax" OR FLAGTREE_BACKEND STREQUAL "mthreads")
+   AND FLAGTREE_COMMON_IR_ENABLED AND TRITON_BUILD_PYTHON_MODULE)
   message(STATUS "[tle] ${FLAGTREE_BACKEND} CommonIR: building CommonIR-only tle binding")
   set(_slim_common_ir_libs "")
   if(TARGET CommonIRIR)
     list(APPEND _slim_common_ir_libs CommonIRIR)
   endif()
-  # [metax+CommonIR] 编译并链接通用 CommonIRToTTGIR(仅 Arith/CommonIRIR/TritonIR/TritonGPUIR,无 Hopper)
+  # Build and link the shared CommonIR lowering without Hopper dependencies.
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
   include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
   if(TARGET CommonIRIR)
@@ -32,8 +30,8 @@ if((("$ENV{FLAGTREE_BACKEND}" STREQUAL "metax") OR ("$ENV{FLAGTREE_BACKEND}" STR
   if(TARGET TleCommonIRToTTGIRPassIncGen)
     add_dependencies(TritonTLE TleCommonIRToTTGIRPassIncGen)
   endif()
-  # bin/ 的 CLI 工具经 TRITON_LIBS 仍引用这三个老 tle 库名（瘦身路不建它们）。
-  # 建三个空 stub 库满足链接（bin 已剥 __TLE__，不需要它们的符号）。
+  # The CLI still links these TLE targets through TRITON_LIBS. Provide empty
+  # libraries because the CLI builds without the generic TLE dialect.
   set(_tle_stub "${CMAKE_CURRENT_BINARY_DIR}/tle_stub.cpp")
   file(WRITE "${_tle_stub}" "")
   foreach(_stub TritonTLEAnalysis TleToLLVM TritonTLETransforms)
