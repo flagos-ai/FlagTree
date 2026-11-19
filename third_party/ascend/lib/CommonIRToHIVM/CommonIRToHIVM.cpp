@@ -532,15 +532,56 @@ static Value emitDenseTileLoad(OpBuilder &b, Location loc,
       loc,
       makeSpaceMemref(b.getContext(), info.tile, info.elementType, dstSpace));
   Value allInBounds = emitAllInBounds(b, loc, info, validLengths);
+  Value gm = emitViewGmTile(b, loc, info, offset);
   b.create<scf::IfOp>(
       loc, allInBounds,
       [&](OpBuilder &nested, Location nestedLoc) {
-        Value gm = emitViewGmTile(nested, nestedLoc, info, offset);
         nested.create<hivm::LoadOp>(nestedLoc, TypeRange{}, gm, ub);
         nested.create<scf::YieldOp>(nestedLoc);
       },
       [&](OpBuilder &nested, Location nestedLoc) {
-        emitElementwiseFill(nested, nestedLoc, info, indices, ub, pad);
+        // Boundary tile: pad the whole UB tile, then DMA only the valid
+        // prefix. A per-row DMA covers whole 32-byte units, so the prefix
+        // path is only taken when the innermost valid run is a whole number
+        // of 32-byte units and non-empty; otherwise the element-wise fill
+        // keeps the padding exact.
+        int64_t elemBits = info.elementType.getIntOrFloatBitWidth();
+        int64_t elemBytes = elemBits >= 8 ? (elemBits + 7) / 8 : 0;
+        if (elemBytes == 0) {
+          emitElementwiseFill(nested, nestedLoc, info, indices, ub, pad);
+          nested.create<scf::YieldOp>(nestedLoc);
+          return;
+        }
+        Value c0 = nested.create<arith::ConstantIndexOp>(nestedLoc, 0);
+        Value c32 = nested.create<arith::ConstantIndexOp>(nestedLoc, 32);
+        Value bytes =
+            nested.create<arith::ConstantIndexOp>(nestedLoc, elemBytes);
+        Value lastValid = validLengths.back();
+        Value rowBytes =
+            nested.create<arith::MulIOp>(nestedLoc, lastValid, bytes);
+        Value rem = nested.create<arith::RemUIOp>(nestedLoc, rowBytes, c32);
+        Value aligned = nested.create<arith::CmpIOp>(
+            nestedLoc, arith::CmpIPredicate::eq, rem, c0);
+        Value nonEmpty = nested.create<arith::CmpIOp>(
+            nestedLoc, arith::CmpIPredicate::sgt, lastValid, c0);
+        Value usePrefix =
+            nested.create<arith::AndIOp>(nestedLoc, aligned, nonEmpty);
+        nested.create<scf::IfOp>(
+            nestedLoc, usePrefix,
+            [&](OpBuilder &inner, Location innerLoc) {
+              inner.create<hivm::VBrcOp>(innerLoc, TypeRange{}, pad, ub);
+              Value gmPrefix =
+                  emitPrefixSubview(inner, innerLoc, gm, validLengths);
+              Value ubPrefix =
+                  emitPrefixSubview(inner, innerLoc, ub, validLengths);
+              inner.create<hivm::LoadOp>(innerLoc, TypeRange{}, gmPrefix,
+                                         ubPrefix);
+              inner.create<scf::YieldOp>(innerLoc);
+            },
+            [&](OpBuilder &inner, Location innerLoc) {
+              emitElementwiseFill(inner, innerLoc, info, indices, ub, pad);
+              inner.create<scf::YieldOp>(innerLoc);
+            });
         nested.create<scf::YieldOp>(nestedLoc);
       });
   return b.create<bufferization::ToTensorOp>(loc, resultTy, ub, true, false);
