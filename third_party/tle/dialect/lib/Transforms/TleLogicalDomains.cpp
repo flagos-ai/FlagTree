@@ -116,12 +116,12 @@ getReductionIdentity(triton::ReduceOp op) {
     return failure();
   return llvm::StringSwitch<FailureOr<LogicalReductionIdentity>>(
              combiner->getName().getStringRef())
-      .Cases("arith.maxnumf", "arith.maximumf",
+      .Cases({"arith.maxnumf", "arith.maximumf"},
              LogicalReductionIdentity::NegativeInfinity)
-      .Cases("arith.minnumf", "arith.minimumf",
+      .Cases({"arith.minnumf", "arith.minimumf"},
              LogicalReductionIdentity::PositiveInfinity)
-      .Cases("arith.addf", "arith.addi", LogicalReductionIdentity::Zero)
-      .Cases("arith.mulf", "arith.muli", LogicalReductionIdentity::One)
+      .Cases({"arith.addf", "arith.addi"}, LogicalReductionIdentity::Zero)
+      .Cases({"arith.mulf", "arith.muli"}, LogicalReductionIdentity::One)
       .Case("arith.andi", LogicalReductionIdentity::True)
       .Case("arith.ori", LogicalReductionIdentity::False)
       .Default(failure());
