@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 PyTorch / vLLM Trace 算子耗时分析脚本
 
@@ -301,12 +299,10 @@ def write_report(stats, path, sort_primary, trace_path, total_kernel_time, kerne
     csv_path = path.replace('.txt', '.csv')
     with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
-<<<<<<< HEAD:.github/workflows/benchmark/nvidia/nv3.6-qwen3.6/getshape.py
         writer.writerow(
             ["Op", "InputDims", "InputType", "Calls", "TotalCPU_us", "AvgCPU_us", "TotalCUDA_us", "AvgCUDA_us"])
-=======
-        writer.writerow(["Op", "InputDims", "InputType", "Calls", "TotalHost_us", "AvgHost_us", "TotalDevice_us", "AvgDevice_us"])
->>>>>>> 54f933d43 (move FlagTree/.github/workflows/benchmark/nvidia/nv3.6-qwen3.6/getshape.py to FlagTree/.github/workflows/benchmark/profile.py):.github/workflows/benchmark/profile.py
+        writer.writerow(
+            ["Op", "InputDims", "InputType", "Calls", "TotalHost_us", "AvgHost_us", "TotalDevice_us", "AvgDevice_us"])
         for (name, in_dims, in_type), s in sorted_items:
             calls = s['calls']
             avg_cpu = s['cpu_time_us'] / calls if calls else 0.0
