@@ -572,10 +572,10 @@ LogicalResult SqmmaOp::verify() {
 
 LogicalResult SqmmaWaitOp::verify() {
   auto pendings = getOperation()->getAttrOfType<IntegerAttr>("pendings");
-  if (!pendings || pendings.getInt() != 0)
-    return emitOpError(
-        "mthreads TLE wgmma_wait currently requires pendings=0; non-zero "
-        "pending groups are not supported");
+  // Lowered to tce.wait.group(pendings): at most `pendings` committed SQMMA
+  // groups stay in flight, as wgmma.wait_group does on NVIDIA.
+  if (!pendings || pendings.getInt() < 0)
+    return emitOpError("wgmma_wait pendings must be a non-negative integer");
   return success();
 }
 
