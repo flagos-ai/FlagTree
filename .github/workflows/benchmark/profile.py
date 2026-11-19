@@ -22,13 +22,13 @@ PyTorch / vLLM Trace 算子耗时分析脚本
 
 使用方法 (Usage):
     # 默认按 GPU 耗时降序排序
-    python3 getshape.py --trace /path/to/rank0.xxx.pt.trace.json.gz
+    python3 profile.py --trace /path/to/rank0.xxx.pt.trace.json.gz
 
     # 指定输出文件名
-    python3 getshape.py --trace /path/to/trace.json.gz --output my_report.txt
+    python3 profile.py --trace /path/to/trace.json.gz --output my_report.txt
 
     # 切换为按 CPU 耗时排序
-    python3 getshape.py --trace /path/to/trace.json.gz --sort cpu
+    python3 profile.py --trace /path/to/trace.json.gz --sort cpu
 
 参数说明 (Arguments):
     --trace  : 必填，指定 .pt.trace.json.gz 文件的路径。
@@ -301,8 +301,12 @@ def write_report(stats, path, sort_primary, trace_path, total_kernel_time, kerne
     csv_path = path.replace('.txt', '.csv')
     with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
         writer = csv.writer(f)
+<<<<<<< HEAD:.github/workflows/benchmark/nvidia/nv3.6-qwen3.6/getshape.py
         writer.writerow(
             ["Op", "InputDims", "InputType", "Calls", "TotalCPU_us", "AvgCPU_us", "TotalCUDA_us", "AvgCUDA_us"])
+=======
+        writer.writerow(["Op", "InputDims", "InputType", "Calls", "TotalHost_us", "AvgHost_us", "TotalDevice_us", "AvgDevice_us"])
+>>>>>>> 54f933d43 (move FlagTree/.github/workflows/benchmark/nvidia/nv3.6-qwen3.6/getshape.py to FlagTree/.github/workflows/benchmark/profile.py):.github/workflows/benchmark/profile.py
         for (name, in_dims, in_type), s in sorted_items:
             calls = s['calls']
             avg_cpu = s['cpu_time_us'] / calls if calls else 0.0
