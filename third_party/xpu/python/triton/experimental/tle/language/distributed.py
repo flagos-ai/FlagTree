@@ -401,7 +401,7 @@ def signal_wait(device_dptr, slot_id, wait_kind, target=None, group_kind="block"
 @builtin
 def remote(tensor, shard_id=None, scope=None, space="cluster", dtype=None, offset=None, _semantic=None,
            _generator=None):
-    """Map a registered device buffer to a peer, returning a global pointer."""
+    """Map a registered device buffer to a peer for stores, returning a write-only global pointer."""
     space = _unwrap_if_constexpr(space)
     scope = _unwrap_if_constexpr(scope)
     dtype = _unwrap_if_constexpr(dtype)

@@ -15,23 +15,23 @@ pytestmark = pytest.mark.skipif(
 
 
 @triton.jit
-def _remote_read_kernel(out_ptr, dmem, dtype: tl.constexpr):
+def _remote_write_kernel(in_ptr, dmem, dtype: tl.constexpr):
     pid = tl.program_id(0)
     remote_ptr = tle.remote(dmem, space="device", dtype=dtype, shard_id=1, offset=pid)
-    tl.store(out_ptr + pid, tl.load(remote_ptr))
+    tl.store(remote_ptr, tl.load(in_ptr + pid))
 
 
 @triton.jit
-def _remote_without_offset_kernel(out_ptr, dmem):
+def _remote_without_offset_kernel(in_ptr, dmem):
     remote_ptr = tle.remote(dmem, space="device", dtype=tl.float32, shard_id=1)
-    tl.store(out_ptr, tl.load(remote_ptr))
+    tl.store(remote_ptr, tl.load(in_ptr))
 
 
 @pytest.mark.parametrize("dtype,scale", [(tl.float16, 1), (tl.float32, 2)])
-def test_remote_device_read_compiles_through_llvm(dtype, scale):
+def test_remote_device_write_compiles_through_llvm(dtype, scale):
     source = triton.compiler.ASTSource(
-        fn=_remote_read_kernel,
-        signature={"out_ptr": "*fp32", "dmem": "i64", "dtype": "constexpr"},
+        fn=_remote_write_kernel,
+        signature={"in_ptr": "*fp32", "dmem": "i64", "dtype": "constexpr"},
         constexprs={"dtype": dtype},
     )
     compiled = triton.compile(source)
@@ -40,14 +40,15 @@ def test_remote_device_read_compiles_through_llvm(dtype, scale):
         assert "triton_xpu.remote_pointer" in compiled.asm["ttir"]
     if compiled.asm["llir"]:
         assert "triton_xpu.remote_pointer" not in compiled.asm["llir"]
-        assert "flagcxGetIntraPointerC" in compiled.asm["llir"]
+        assert "flagcxGetIntraPointerWithAccessC" in compiled.asm["llir"]
+        assert "@flagcxGetIntraPointerC(" not in compiled.asm["llir"]
         assert re.search(rf"\b(?:shl|mul)\b[^\n]*, (?:{scale}|{1 << scale})\b", compiled.asm["llir"])
 
 
 def test_device_remote_requires_offset():
     source = triton.compiler.ASTSource(
         fn=_remote_without_offset_kernel,
-        signature={"out_ptr": "*fp32", "dmem": "i64"},
+        signature={"in_ptr": "*fp32", "dmem": "i64"},
         constexprs={},
     )
     with pytest.raises(Exception, match="offset"):

@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import pytest
 import triton
@@ -31,9 +32,9 @@ def _barrier(out, comm, mesh: tl.constexpr):
 
 
 @triton.jit
-def _remote(out, mem):
+def _remote(inp, mem):
     ptr = tle.remote(mem, space="device", dtype=tl.float32, shard_id=1, offset=0)
-    tl.store(out, tl.load(ptr))
+    tl.store(ptr, tl.load(inp))
 
 
 @triton.jit
@@ -58,7 +59,7 @@ def _ir_text(module, path: Path):
         (_size, {"out": "*i32", "comm": "i64"}, {}, "get_num_pes", "flagcxDevCommGetIntraSize", False),
         (_barrier, {"out": "*i32", "comm": "i64", "mesh": "constexpr"
                     }, {"mesh": MESH}, "distributed_barrier", "flagcxIntraBarrierSyncS", False),
-        (_remote, {"out": "*fp32", "mem": "i64"}, {}, "remote_pointer", "flagcxGetIntraPointerC", False),
+        (_remote, {"inp": "*fp32", "mem": "i64"}, {}, "remote_pointer", "flagcxGetIntraPointerWithAccessC", False),
         (_implicit_rank, {"out": "*i32"}, {}, "get_device_id", "flagcxDevCommGetIntraRank", True),
     ],
     ids=["rank", "size", "barrier", "remote", "implicit-rank"],
@@ -96,3 +97,10 @@ def test_tle_flagcx_lowers_without_device(tmp_path, monkeypatch, fn, signature, 
     pm.run(module, "lower")
     llvm_dialect = _ir_text(module, tmp_path / "kernel.llvm.mlir")
     assert f"llvm.call @{symbol}" in llvm_dialect
+    if op == "remote_pointer":
+        assert "@flagcxGetIntraPointerC(" not in llvm_dialect
+        call = re.search(rf"llvm.call @{symbol}\(([^)]*)\)", llvm_dialect)
+        args = [arg.strip() for arg in call.group(1).split(",")]
+        assert len(args) == 4
+        assert re.search(rf"{re.escape(args[-1])} = llvm\.mlir\.constant\(1 : i32\)", llvm_dialect)
+        assert "(!llvm.ptr<1>, i64, i32, i32) -> !llvm.ptr<1>" in llvm_dialect
