@@ -4697,19 +4697,10 @@ void LayoutRematerialization::hoistConvertDotOperand(
   auto noDataMovement = [](Operation *op) {
     if (isExplicitLayoutConversion(op))
       return false;
-#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
-    // ConcatDotOperandOp is defined on logical indices, i.e. which fragment
-    // element each result element is, so it commutes with a layout convert.
-    return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op)) ||
-           isa<BroadcastOp, Fp4ToFpOp, ConvertLayoutOp, UpcastFpOpInterface,
-               ConcatDotOperandOp>(op) ||
-           isView(op);
-#else  // __FLAGTREE_CONCAT_DOT_OPERAND__
     return (op->hasTrait<OpTrait::Elementwise>() && isMemoryEffectFree(op)) ||
            isa<BroadcastOp, Fp4ToFpOp, ConvertLayoutOp, UpcastFpOpInterface>(
                op) ||
            isView(op);
-#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
   };
   // Stop the slice as soon as we find an operation that cannot be done without
   // data movement between threads
