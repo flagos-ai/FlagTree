@@ -8,6 +8,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <algorithm>
+#include <type_traits>
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -366,6 +367,35 @@ struct FpToFpOpConversion
               "MUSA fp8 downcast requires RTNE rounding mode");
         }
       }
+      auto module = op->getParentOfType<ModuleOp>();
+      auto burst4 =
+          module
+              ? module->getAttrOfType<IntegerAttr>("musa.fp8_downcast_burst4")
+              : IntegerAttr();
+      if (burst4 && burst4.getInt() && srcElemTy.isF32() &&
+          isa<Float8E4M3FNType>(dstElemTy) &&
+          roundingMode == RoundingMode::RTNE && operands.size() >= 4) {
+        // MP31 packs four independent RTNE E4M3 conversions in one register.
+        // This is target lowering of an ordinary fp_to_fp op, without changing
+        // the source layout, rounding mode or any caller-generated IR.
+        Value input = b.undef(vec_ty(f32_ty, 4));
+        for (unsigned i = 0; i < 4; ++i)
+          input = b.insert_element(input.getType(), input, operands[i][0],
+                                   b.i32_val(i));
+        Value word = LLVM::InlineAsmOp::create(
+                         rewriter, loc, i32_ty, ValueRange{input},
+                         "CVT.RTE.DENORM.BST4 $0.e4m3, $1.f32", "=R,R", false,
+                         false, LLVM::TailCallKind::None,
+                         LLVM::AsmDialectAttr::get(rewriter.getContext(),
+                                                   LLVM::AsmDialect::AD_ATT),
+                         ArrayAttr())
+                         ->getResult(0);
+        Value bytes = b.bitcast(word, vec_ty(i8_ty, 4));
+        SmallVector<Value> result;
+        for (unsigned i = 0; i < 4; ++i)
+          result.push_back(b.extract_element(i8_ty, bytes, b.i32_val(i)));
+        return result;
+      }
       auto [funcName, numElements] = getFp8ConversionFunc(
           srcElemTy, dstElemTy, roundingMode, enableFp8Burst2);
       SmallVector<Value> inVals;
@@ -639,6 +669,143 @@ struct TruncFOpConversion
   }
 };
 
+// Vectorize ordinary FP32 exp2 while retaining the scalar libdevice subnormal
+// treatment. The per-kernel width is a backend option; short fragments retain
+// the existing burst-2 path. Width one selects the generic scalar lowering.
+// Explicit native mode uses the hardware's approximate/FTZ behavior instead.
+struct Exp2OpConversionBurst2
+    : ElementwiseOpConversionBase<math::Exp2Op, Exp2OpConversionBurst2> {
+  using Base =
+      ElementwiseOpConversionBase<math::Exp2Op, Exp2OpConversionBurst2>;
+  using Base::Base;
+  using Adaptor = typename Base::OpAdaptor;
+
+  SmallVector<Value> createDestOps(math::Exp2Op op, Adaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    unsigned width = 1;
+    bool native = false;
+    if (auto module = op->getParentOfType<ModuleOp>()) {
+      if (auto attr =
+              module->getAttrOfType<IntegerAttr>("musa.exp2_vector_width"))
+        width = attr.getInt();
+      if (auto attr = module->getAttrOfType<IntegerAttr>("musa.exp2_native"))
+        native = attr.getInt() != 0;
+    }
+    if (width != 2 && width != 4)
+      return {};
+    unsigned resultWidth = width;
+    if (operands.size() < width) {
+      resultWidth = width = 2;
+    }
+    if (!elemTy.isF32() || operands.size() < resultWidth)
+      return {};
+    TritonLLVMOpBuilder b(loc, rewriter);
+    auto vectorTy = vec_ty(f32_ty, width);
+    Value input = b.undef(vectorTy);
+    SmallVector<Value> conditions;
+    for (unsigned i = 0; i < width; ++i) {
+      Value x = operands[i % resultWidth][0];
+      if (native) {
+        input = b.insert_element(vectorTy, input, x, b.i32_val(i));
+        continue;
+      }
+      Value bits = b.bitcast(x, i32_ty);
+      Value subnormal =
+          LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::ugt, bits,
+                               b.i32_val(-1023672320));
+      Value adjusted = b.select(subnormal, b.fmul(x, b.f32_val(0.5)), x);
+      input = b.insert_element(vectorTy, input, adjusted, b.i32_val(i));
+      conditions.push_back(subnormal);
+    }
+    auto fnType = LLVM::LLVMFunctionType::get(vectorTy, {vectorTy});
+    auto fn = appendOrGetExternFuncOp(
+        rewriter, op,
+        width == 4 ? "llvm.musa.exp2.f.bst4" : "llvm.musa.exp2.f.bst2", fnType);
+    // These register-only hardware operations have no memory effects. The
+    // target-independent LLVM used for middle-end optimization does not know
+    // the SDK intrinsic IDs, so make the contract explicit before translation.
+    // Otherwise calls become opaque memory barriers and inhibit scheduling.
+    fn.setMemoryEffectsAttr(LLVM::MemoryEffectsAttr::get(
+        rewriter.getContext(),
+        SmallVector<LLVM::ModRefInfo>(6, LLVM::ModRefInfo::NoModRef)));
+    fn.setNoUnwind(true);
+    auto result = LLVM::createLLVMCallOp(rewriter, loc, fn, ValueRange{input})
+                      .getResult();
+    SmallVector<Value> output;
+    for (unsigned i = 0; i < resultWidth; ++i) {
+      Value y = b.extract_element(f32_ty, result, b.i32_val(i));
+      output.push_back(native ? y : b.select(conditions[i], b.fmul(y, y), y));
+    }
+    return output;
+  }
+};
+
+// Componentwise FP32 vectors retain the standard LLVM intrinsic semantics.
+// No contraction/reassociation flags are changed. Scalar/short fragments use
+// the existing lowering. This is independent of FP8 and attention.
+template <typename Op>
+struct Fp32VectorIntrinsic
+    : ElementwiseOpConversionBase<Op, Fp32VectorIntrinsic<Op>> {
+  using Base = ElementwiseOpConversionBase<Op, Fp32VectorIntrinsic<Op>>;
+  using Base::Base;
+  using Adaptor = typename Base::OpAdaptor;
+  SmallVector<Value> createDestOps(Op op, Adaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    auto module = op->template getParentOfType<ModuleOp>();
+    auto attr = module ? module->template getAttrOfType<IntegerAttr>(
+                             "musa.fp32_vector_width")
+                       : IntegerAttr();
+    if (!attr || attr.getInt() != 4 || !elemTy.isF32() || operands.size() < 4)
+      return {};
+    if constexpr (std::is_same_v<Op, arith::SIToFPOp>) {
+      if (!operands[0][0].getType().isInteger(32))
+        return {};
+      TritonLLVMOpBuilder b(loc, rewriter);
+      auto inputTy = vec_ty(i32_ty, 4);
+      auto outputTy = vec_ty(f32_ty, 4);
+      Value input = b.undef(inputTy);
+      for (unsigned i = 0; i < 4; ++i)
+        input = b.insert_element(inputTy, input, operands[i][0], b.i32_val(i));
+      Value result = LLVM::SIToFPOp::create(rewriter, loc, outputTy, input);
+      SmallVector<Value> output;
+      for (unsigned i = 0; i < 4; ++i)
+        output.push_back(b.extract_element(f32_ty, result, b.i32_val(i)));
+      return output;
+    }
+    constexpr unsigned arity = std::is_same_v<Op, math::FmaOp> ? 3 : 2;
+    StringRef symbol;
+    if constexpr (std::is_same_v<Op, math::FmaOp>)
+      symbol = "llvm.fma.v4f32";
+    else if constexpr (std::is_same_v<Op, arith::MaxNumFOp>)
+      symbol = "llvm.maxnum.v4f32";
+    else
+      symbol = "llvm.maximum.v4f32";
+    TritonLLVMOpBuilder b(loc, rewriter);
+    auto vectorTy = vec_ty(f32_ty, 4);
+    SmallVector<Value> inputs;
+    for (unsigned arg = 0; arg < arity; ++arg) {
+      Value input = b.undef(vectorTy);
+      for (unsigned i = 0; i < 4; ++i)
+        input =
+            b.insert_element(vectorTy, input, operands[i][arg], b.i32_val(i));
+      inputs.push_back(input);
+    }
+    auto fn = appendOrGetExternFuncOp(
+        rewriter, op, symbol,
+        LLVM::LLVMFunctionType::get(vectorTy,
+                                    SmallVector<Type>(arity, vectorTy)));
+    auto result = LLVM::createLLVMCallOp(rewriter, loc, fn, inputs).getResult();
+    SmallVector<Value> output;
+    for (unsigned i = 0; i < 4; ++i)
+      output.push_back(b.extract_element(f32_ty, result, b.i32_val(i)));
+    return output;
+  }
+};
+
 struct ExpOpConversionApprox
     : ElementwiseOpConversionBase<math::ExpOp, ExpOpConversionApprox> {
   using Base = ElementwiseOpConversionBase<math::ExpOp, ExpOpConversionApprox>;
@@ -700,6 +867,15 @@ void mlir::triton::MUSA::populateElementwiseOpToLLVMPatterns(
                                        priorityBenefit);
   patterns.add<ExpOpConversionApprox>(typeConverter, axisInfoAnalysis,
                                       priorityBenefit);
+  if (computeCapability >= 31)
+    patterns.add<Exp2OpConversionBurst2>(typeConverter, axisInfoAnalysis,
+                                         priorityBenefit);
+  if (computeCapability >= 31)
+    patterns.add<Fp32VectorIntrinsic<math::FmaOp>,
+                 Fp32VectorIntrinsic<arith::MaxNumFOp>,
+                 Fp32VectorIntrinsic<arith::MaximumFOp>,
+                 Fp32VectorIntrinsic<arith::SIToFPOp>>(
+        typeConverter, axisInfoAnalysis, priorityBenefit);
   mlir::triton::populateElementwiseOpToLLVMPatterns(
       typeConverter, patterns, axisInfoAnalysis, targetInfo, benefit);
   bool hwNanPropagationSupported = targetInfo.supportMaximumMinimum();

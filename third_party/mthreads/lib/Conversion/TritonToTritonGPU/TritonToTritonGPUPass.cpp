@@ -4,6 +4,7 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "triton/Analysis/AxisInfo.h"
 #ifdef __TLE__
 #include "Dialect/MUSATLE/IR/Dialect.h"
 #include "MUSATLE/Transforms/TransformAttrs.h"
@@ -198,6 +199,40 @@ static LogicalResult updateMusaTleEncoding(ArrayRef<Value> values,
     worklist.insert(value);
   }
   return success();
+}
+
+// Only an idempotent scalar maxnum is eligible for whole-axis elision.
+static bool musaTleConstantMaxAxis(triton::ReduceOp op) {
+  if (op.getNumOperands() != 1 || op.getCombineOp().empty())
+    return false;
+  auto type = cast<RankedTensorType>(op.getOperand(0).getType());
+  auto &block = op.getCombineOp().front();
+  auto maximum = dyn_cast<arith::MaxNumFOp>(block.front());
+  if (!type.getElementType().isF32() || !maximum ||
+      std::distance(block.begin(), block.end()) != 2 ||
+      maximum.getLhs() != block.getArgument(0) ||
+      maximum.getRhs() != block.getArgument(1) ||
+      block.getTerminator()->getOperand(0) != maximum.getResult())
+    return false;
+  // Read only the proof on this SSA operand and any value-preserving
+  // set_layout chain it uses. In particular, do not visit a set_layout user
+  // of an upstream producer: its promise need not hold at sibling uses or
+  // outside the region that executes that annotation.
+  Value value = op.getOperand(0);
+  while (Operation *def = value.getDefiningOp()) {
+    if (def->getNumResults() == 1) {
+      AxisInfo::DimVectorT constancy(type.getRank(), 1);
+      AxisInfo::initDimVectorFromHint(def->getDiscardableAttr("tt.constancy"),
+                                      &constancy);
+      if (constancy[op.getAxis()] >= type.getShape()[op.getAxis()])
+        return true;
+    }
+    auto layout = dyn_cast<triton::musa_tle::SetLayoutOp>(def);
+    if (!layout)
+      break;
+    value = layout.getSrc();
+  }
+  return false;
 }
 
 static LogicalResult propagateMusaTleEncodingHints(
@@ -1820,6 +1855,13 @@ public:
     mod->setAttr(AttrTargetName, b.getStringAttr(this->target.getValue()));
 
 #ifdef __TLE__
+    // Attach the proof to the consuming reduction before the annotation can
+    // disappear. Legal reductions retain it; TritonReducePattern copies it
+    // with the other discardable attributes when changing the operand layout.
+    mod.walk([&](triton::ReduceOp reduce) {
+      if (musaTleConstantMaxAxis(reduce))
+        reduce->setAttr("musa.reduce_full_axis_constant", b.getUnitAttr());
+    });
     if (failed(applyMusaTleEncodingHints(mod)))
       return signalPassFailure();
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
