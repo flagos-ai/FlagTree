@@ -2276,9 +2276,8 @@ static bool isForwardedControlFlowOperand(Operation *op,
     SmallVector<RegionSuccessor> successors;
     branch.getSuccessorRegions(RegionBranchPoint::parent(), successors);
     for (RegionSuccessor successor : successors)
-      if (containsOperand(
-              branch.getEntrySuccessorOperands(RegionBranchPoint(successor)),
-              operandNumber))
+      if (containsOperand(branch.getEntrySuccessorOperands(successor),
+                          operandNumber))
         return true;
   }
   if (auto terminator = dyn_cast<RegionBranchTerminatorOpInterface>(op)) {
@@ -2286,9 +2285,8 @@ static bool isForwardedControlFlowOperand(Operation *op,
     SmallVector<RegionSuccessor> successors;
     terminator.getSuccessorRegions(operandAttrs, successors);
     for (RegionSuccessor successor : successors)
-      if (containsOperand(
-              terminator.getSuccessorOperands(RegionBranchPoint(successor)),
-              operandNumber))
+      if (containsOperand(terminator.getSuccessorOperands(successor),
+                          operandNumber))
         return true;
   }
   if (auto branch = dyn_cast<BranchOpInterface>(op)) {
