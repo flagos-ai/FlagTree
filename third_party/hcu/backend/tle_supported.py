@@ -9,7 +9,6 @@ TLE_SUPPORTED_PRIMITIVES = [
     "cumsum",
 
     ## TLE-Struct GPU
-    "gpu.range",
     "gpu.alloc",
     "gpu.copy",
     "gpu.local_ptr",

@@ -15,7 +15,6 @@ TLE_SUPPORTED_PRIMITIVES = [
     "pipe.writer.close",
 
     ## TLE-Struct GPU
-    "gpu.range",
     "gpu.buffered_tensor.subslice",
     "gpu.alloc",
     "gpu.copy",

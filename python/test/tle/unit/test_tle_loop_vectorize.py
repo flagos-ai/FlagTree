@@ -6,7 +6,7 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 
-pytestmark = pytest.mark.skip_if_tle_unsupported("gpu.range")
+pytestmark = pytest.mark.skip_if_tle_unsupported("range")
 
 
 def test_loop_vectorize_store(device):
