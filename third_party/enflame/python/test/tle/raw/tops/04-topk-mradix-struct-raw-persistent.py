@@ -214,11 +214,9 @@ def topk_mradix_l1_launch(
         # 0x007fffff -- below every finite key, so they can never be selected.
         tle.gpu.copy(input_ptr + row * N + offs_n, l1.slot(0), [BLOCK_N], mask=offs_n < N, other=float("-inf"))
         # S1 convert .. S4 over the staged row, in place. Both VDMEM windows
-        # are written by the region (l1 holds the sort keys, ws the published
-        # counts and the k-element staging), so both are declared as outputs:
-        # that is what orders the region against the S5 read below and keeps
-        # its effects visible to the compiler.
-        tle_raw.call(edsl_topk_mradix_l1, [tle.gpu.local_ptr(l1, (0, 0)), ws_ptr, N, K], output_indices=[0, 1])
+        # are written through their pointers. l1 holds the sort keys and ws
+        # holds the published counts and the k-element staging.
+        tle_raw.call(edsl_topk_mradix_l1, [tle.gpu.local_ptr(l1, (0, 0)), ws_ptr, N, K], output_indices=[])
         # S5 writeback: both staged streams are 32-bit words, bitcast on the
         # way out. WS_STAGE_K_MAX is the staging stride fixed by the raw region and
         # pinned by TOPK_K_MAX here; a wider read tile only adds masked-off
