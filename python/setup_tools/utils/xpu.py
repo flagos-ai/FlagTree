@@ -121,6 +121,17 @@ def get_excluded_python_packages():
     return ["triton.experimental.tle", "triton.experimental.tle.*"]
 
 
+def get_excluded_package_data():
+    # MANIFEST.in grafts the complete main ``python/triton`` tree.  Once the
+    # shared TLE packages above are excluded, setuptools otherwise treats their
+    # files as data belonging to the nearest remaining parent package
+    # (``triton.experimental``) and copies them beside XPU's TLE extension
+    # modules.  Keep the two implementations isolated: XPU TLE/RAW remains at
+    # its original backend package root, while the main-tree TLE contributes no
+    # package data to an XPU wheel.
+    return {"triton.experimental": ["tle/*", "tle/**/*"]}
+
+
 def get_python_packages():
     # TLE/RAW are not spec modules. Select the original XPU TLE package at
     # build time without redirecting triton or experimental.__path__.

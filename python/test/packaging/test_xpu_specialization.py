@@ -75,7 +75,7 @@ def layout(tmp_path, monkeypatch):
 def discovery(xpu, backend):
     return load_definitions(
         REPO / "python/setup_tools/setup_helper.py",
-        {"SpecPackageHelper", "get_spec_packages", "get_backend_python_packages"},
+        {"SpecPackageHelper", "get_spec_packages", "get_backend_python_packages", "get_excluded_package_data"},
         {
             "os": os,
             "Path": Path,
@@ -152,8 +152,14 @@ def test_stage_and_build_tle_with_binary_leaves(layout, xpu):
         "packages": packages,
         "package_dir": dirs,
         "package_data": xpu.get_package_data([]),
+        "exclude_package_data": helper.get_excluded_package_data(),
+        "include_package_data": True,
     })
     dist.script_name = "setup.py"
+    # Match the repository's manifest behavior.  Without XPU's package-data
+    # exclusion, this graft makes setuptools classify the excluded main-tree
+    # TLE as data of the parent ``triton`` package and mix it into the XPU TLE.
+    write(layout / "MANIFEST.in", "graft python/triton\ngraft third_party/xpu\n")
     command = build_py(dist)
     command.build_lib = str(layout / "build")
     command.ensure_finalized()
