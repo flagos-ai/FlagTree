@@ -25,7 +25,7 @@ from __future__ import annotations
 from functools import reduce
 from typing import Any, Callable, TYPE_CHECKING, Union, List, Dict
 
-from triton._flagtree_spec import spec_func
+from triton._flagtree_spec import spec_call, spec_func
 
 if TYPE_CHECKING:
     from .language import core
@@ -172,3 +172,4 @@ def is_namedtuple(val):
 validate_block_shape = spec_func("validate_block_shape") or validate_block_shape
 apply_with_path = spec_func("apply_with_path")
 _tuple_create = spec_func("_tuple_create")
+spec_call("_utils_extend_globals", globals())

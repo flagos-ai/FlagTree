@@ -223,16 +223,22 @@ def test_shared_utils_and_knobs(isolated_triton, monkeypatch, backend_name):
     backend.FLAGTREE_BACKEND = backend_name
     monkeypatch.delenv("TRITON_STORE_BINARY_ONLY", raising=False)
     monkeypatch.setenv("TRITON_DISABLE_LAUNCH_FAST_PATH", "1")
+    monkeypatch.setenv("TRITON_XPU_ARCH", "5")
     utils = importlib.import_module("triton._utils")
     knobs = importlib.import_module("triton.knobs")
     if backend_name == "xpu":
         assert utils.validate_block_shape([1536, 12]) == 18432
         assert utils.validate_block_shape([2**30]) == 2**30
+        assert utils.parse_xpu_arch("3") == 3
+        assert utils.parse_xpu_arch("bad") is None
+        assert utils.get_xpu_arch() == 5
         assert knobs.compilation.store_binary_only is True
         assert knobs.runtime.disable_launch_fast_path is True
     else:
         with pytest.raises(ValueError, match="power of 2"):
             utils.validate_block_shape([1536])
+        assert not hasattr(utils, "parse_xpu_arch")
+        assert not hasattr(utils, "get_xpu_arch")
         assert knobs.compilation.store_binary_only is False
         assert not hasattr(knobs.runtime, "disable_launch_fast_path")
     with knobs.compilation.scope():

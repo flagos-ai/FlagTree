@@ -1,6 +1,15 @@
 from ._utils import validate_block_shape
 
 
+def _utils_extend_globals(globals_dict):
+    # XPU's prebuilt Python modules import these helpers from ``triton._utils``.
+    # Keep their implementation in the XPU spec tree and publish them only for
+    # an active XPU build.
+    from ._utils import get_xpu_arch, parse_xpu_arch
+    globals_dict["get_xpu_arch"] = get_xpu_arch
+    globals_dict["parse_xpu_arch"] = parse_xpu_arch
+
+
 def knobs_extend_globals(globals_dict):
     # Keep the shared knobs and their scope/reset behaviour; only XPU defaults
     # and the XPU launch fast-path switch differ.
