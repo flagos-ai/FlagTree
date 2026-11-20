@@ -32,11 +32,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // NVGPU-SAME: tle.wgmma_operand_a_desc_imm
   // NVGPU-SAME: tle.wgmma_operand_b_desc_imm
   // LLVM-LABEL: @descriptor_arithmetic_remains_visible_to_ptxas
+  // LLVM: llvm.add
+  // LLVM: llvm.add
+  // LLVM-NOT: __tle_wgmma_desc
   // LLVM: llvm.inline_asm
-  // LLVM-SAME: add.u64 __tle_wgmma_desc_a
-  // LLVM-SAME: add.u64 __tle_wgmma_desc_b
   // LLVM-SAME: wgmma.mma_async.sync.aligned
-  // LLVM-SAME: __tle_wgmma_desc_a, __tle_wgmma_desc_b
   tt.func @descriptor_arithmetic_remains_visible_to_ptxas(
       %a: !ttg.memdesc<64x64xf16, #shared_a, #smem>,
       %b: !ttg.memdesc<64x64xf16, #shared_b, #smem>,
@@ -58,8 +58,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // NVGPU-COUNT-1: nvg.wgmma
   // NVGPU-SAME: n = 80 : i32
   // LLVM-LABEL: @native_active_n_for_tiled_rows
+  // LLVM: llvm.mlir.constant(4611686293305360384 : i64)
+  // LLVM: llvm.add
   // LLVM: llvm.inline_asm
-  // LLVM-SAME: 0x4000004000010000
   // LLVM-SAME: wgmma.mma_async.sync.aligned.m64n80k16
   // LLVM-NOT: wgmma.mma_async.sync.aligned.m64n16k16
   tt.func @native_active_n_for_tiled_rows(
@@ -90,8 +91,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // NVGPU: nvg.wgmma
   // NVGPU-SAME: n = 80 : i32
   // LLVM-LABEL: @planned_transposed_view
+  // LLVM: llvm.mlir.constant(4611686293305360384 : i64)
+  // LLVM: llvm.add
   // LLVM: llvm.inline_asm
-  // LLVM-SAME: 0x4000004000010000
   // LLVM-SAME: wgmma.mma_async.sync.aligned.m64n80k16
   // LLVM-NOT: wgmma.mma_async.sync.aligned.m64n16k16
   tt.func @planned_transposed_view(
@@ -125,8 +127,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // NVGPU: nvg.wgmma
   // NVGPU-SAME: n = 80 : i32
   // LLVM-LABEL: @planned_direct_view_of_transposed_storage
+  // LLVM: llvm.mlir.constant(4611686293305360384 : i64)
+  // LLVM: llvm.add
   // LLVM: llvm.inline_asm
-  // LLVM-SAME: 0x4000004000010000
   // LLVM-SAME: wgmma.mma_async.sync.aligned.m64n80k16
   // LLVM-NOT: wgmma.mma_async.sync.aligned.m64n16k16
   tt.func @planned_direct_view_of_transposed_storage(
@@ -158,8 +161,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // NVGPU: nvg.wgmma
   // NVGPU-SAME: n = 64 : i32
   // LLVM-LABEL: @planned_full_extent
+  // LLVM: llvm.mlir.constant(4611686293305360384 : i64)
+  // LLVM: llvm.add
   // LLVM: llvm.inline_asm
-  // LLVM-SAME: 0x4000004000010000
   // LLVM-SAME: wgmma.mma_async.sync.aligned.m64n64k16
   tt.func @planned_full_extent(
       %a: !ttg.memdesc<64x64xf16, #shared, #smem>,
