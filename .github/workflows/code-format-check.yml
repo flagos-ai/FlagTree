@@ -36,12 +36,25 @@ concurrency:
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
+    env:
+      FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
     steps:
     - name: Checkout code
       id: checkout
       uses: actions/checkout@v7
       with:
         token: ${{ secrets.BOT_PAT_TOKEN || github.token }}
-        ref: ${{ github.head_ref || github.ref_name }}
+        # Fork branches do not exist in the base repository. Check the PR merge ref there.
+        ref: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.head_ref || github.ref }}
+        persist-credentials: ${{ env.FORK_PR != 'true' }}
     - name: Code format check
+      if: env.FORK_PR != 'true'
       uses: flagos-ai/FlagTree/.github/actions/code-format-check@main
+    - name: Setup Python for fork checks
+      if: env.FORK_PR == 'true'
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Check formatting for fork PR
+      if: env.FORK_PR == 'true'
+      uses: pre-commit/action@v3.0.1

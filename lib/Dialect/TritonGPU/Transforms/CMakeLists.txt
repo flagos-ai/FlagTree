@@ -1,7 +1,12 @@
 set(TritonGPUTransformsTleSources)
 if(FLAGTREE_TLE)
+  # MetaX CommonIR uses the slim frontend and does not generate TleTableGen.
+  if(NOT (FLAGTREE_BACKEND STREQUAL "metax" AND FLAGTREE_COMMON_IR_ENABLED))
+    list(APPEND TritonGPUTransformsTleSources
+      ${CMAKE_SOURCE_DIR}/third_party/tle/dialect/lib/Transforms/EncodingRematerialization.cpp
+    )
+  endif()
   list(APPEND TritonGPUTransformsTleSources
-    ${CMAKE_SOURCE_DIR}/third_party/tle/dialect/lib/Transforms/EncodingRematerialization.cpp
     Pipeliner/TleWGMMAAnalysis.cpp
     Pipeliner/TleWGMMAUserPromisePipeline.cpp
   )

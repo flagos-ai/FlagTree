@@ -27,13 +27,16 @@ macro(flagtree_configure_options)
     set(FLAGTREE_DEFAULT_OPTION OFF)
   endif()
 
-  # CommonIR is an explicit opt-in for the default NVIDIA backend. Keep the
-  # build contract as a C/C++ macro without introducing a CMake cache option.
-  set(FLAGTREE_COMMON_IR_ENABLED "$ENV{FLAGTREE_COMMON_IR}")
+  # Default to CommonIR on the NVIDIA build and the backends with TTGIR lowering.
+  # Keep this default in sync with the FLIR download in setup_helper.py.
+  if(DEFINED ENV{FLAGTREE_COMMON_IR})
+    set(FLAGTREE_COMMON_IR_ENABLED "$ENV{FLAGTREE_COMMON_IR}")
+  elseif(NOT FLAGTREE_BACKEND OR FLAGTREE_BACKEND MATCHES "^(enflame|hcu|iluvatar|metax|mthreads)$")
+    set(FLAGTREE_COMMON_IR_ENABLED ON)
+  else()
+    set(FLAGTREE_COMMON_IR_ENABLED OFF)
+  endif()
   if(FLAGTREE_COMMON_IR_ENABLED)
-    if(FLAGTREE_BACKEND)
-      message(FATAL_ERROR "FLAGTREE_COMMON_IR requires the default NVIDIA backend")
-    endif()
     add_compile_definitions(__FLAGTREE_COMMON_IR__)
   endif()
 
@@ -82,7 +85,9 @@ macro(flagtree_configure_options)
     set(ENV{PATH} "$ENV{LLVM_SYSPATH}/bin:$ENV{PATH}")
     set(CMAKE_C_COMPILER clang)
     set(CMAKE_CXX_COMPILER clang++)
-    set(FLAGTREE_TLE OFF)
+    if(NOT FLAGTREE_COMMON_IR_ENABLED)   # [mthreads+CommonIR] keep TLE on for shared CommonIR frontend
+      set(FLAGTREE_TLE OFF)
+    endif()
     set(FLAGTREE_MTHREADS_TLE ON)
   elseif(FLAGTREE_BACKEND STREQUAL "aipu")
     set(CMAKE_C_COMPILER clang-16)
@@ -123,14 +128,16 @@ macro(flagtree_configure_options)
     if(BUILD_MCTLE)
       list(APPEND TRITON_PLUGIN_NAMES "mctle")
       add_definitions(-D__MCTLE__)
-      # The .td files guard their mctle parts with #ifdef __MCTLE__ too
-      # (TritonOps.td's atomic_rmw / atomic_cas pointer constraint and
-      # shared-memory effects), and add_definitions does not reach mlir-tblgen.
       list(APPEND LLVM_TABLEGEN_FLAGS -D__MCTLE__)
     endif()
-    set(FLAGTREE_TLE OFF)
+    # Keep the generic TLE dialect disabled throughout the MetaX build,
+    # including CLI dialect registration. FLAGTREE_TLE still selects the
+    # CommonIR-only frontend when CommonIR is enabled.
     remove_definitions(-D__TLE__)
     list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
+    if(NOT FLAGTREE_COMMON_IR_ENABLED)
+      set(FLAGTREE_TLE OFF)
+    endif()
   elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
     find_package(Python3 3.10 REQUIRED COMPONENTS Development.Module Interpreter)
   elseif(FLAGTREE_BACKEND STREQUAL "ppu")
@@ -702,6 +709,8 @@ function(flagtree_add_tle_generated_header_dependencies)
       TritonNVIDIAGPUToLLVM
       TritonGPUToLLVM
       NVHopperTransforms
+      TritonHCUAnalysis
+      TritonHCUGPUToLLVM
       ${_flagtree_enflame_tle_header_targets}
       triton
       triton-opt
