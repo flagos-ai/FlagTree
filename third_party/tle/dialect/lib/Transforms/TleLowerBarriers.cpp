@@ -252,7 +252,9 @@ struct TritonTleLowerBarriers
       }
       functionBarriers[function].push_back(alloc);
     }
-    for (const auto &[function, barriers] : functionBarriers) {
+    for (const auto &entry : functionBarriers) {
+      Operation *function = entry.first;
+      const auto &barriers = entry.second;
       auto solver = createDataFlowSolver();
       auto *aliases = solver->load<SharedMemoryAliasAnalysis>();
       if (failed(solver->initializeAndRun(function)))

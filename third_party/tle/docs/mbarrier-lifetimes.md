@@ -60,3 +60,35 @@ regressions. Neighbor validation covers named barrier allocation, borrowed
 barriers, TMA copies, pipe lowering, and async WGMMA rings. NVIDIA and AMD are
 built together; no native lowering, optimization flag, or hardware limits are
 changed.
+
+## C++17 compiler portability
+
+The alias-check lambda must capture a normal local reference. Capturing the
+`barriers` variable from a structured binding in the surrounding map loop is a
+C++20 extension. The older Clang used by Sunrise rejects that source while
+compiling this shared TLE pass as C++17. A strict Clang C++17 syntax check also
+reproduces the failure at the lambda's `for (Value alloc : barriers)`.
+
+Use an ordinary map entry and named `function`/`barriers` locals before creating
+the lambda. This removes the unsupported capture at its source without changing
+ownership analysis, requiring a newer language standard, or modifying a backend.
+Validate the actual translation unit with its CMake include/define arguments and
+`clang++ -std=gnu++17 -fsyntax-only -Werror=c++20-extensions`; the structured-binding
+version fails and the ordinary-reference version passes. The Sunrise CI build
+is the corresponding backend regression.
+
+A standalone reproducer for the unsupported capture (`capture.cpp`):
+
+```cpp
+#include <utility>
+void capture() {
+  std::pair<int, int> entry;
+  const auto &[function, barriers] = entry;
+  auto check = [&] { return barriers; };
+  (void)check;
+}
+```
+
+```sh
+clang++ -std=c++17 -Werror=c++20-extensions -fsyntax-only capture.cpp
+```
