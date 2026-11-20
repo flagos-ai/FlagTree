@@ -75,22 +75,27 @@ public:
     for (auto loop : loops) {
       auto unrollFactor = getUnrollFactorOrDefault(loop);
 #ifdef __FLAGTREE_REORDER_LOOP_LOADS__
-      bool needsReorder = tle::hasReorderLoopLoadsAttr(loop);
-      bool fullyUnrolls = tle::willFullyUnroll(loop, unrollFactor);
-#endif // __FLAGTREE_REORDER_LOOP_LOADS__
-      loop->removeAttr(loopUnrollFactorAttrName);
-#ifdef __FLAGTREE_REORDER_LOOP_LOADS__
-      if (needsReorder)
-        tle::removeReorderLoopLoadsAttr(loop);
+      std::optional<int64_t> reorderDistance =
+          tle::getReorderLoopLoadsDistance(loop);
+      tle::removeReorderLoopLoadsAttr(loop);
       Block *parentBlock = loop->getBlock();
       Operation *opBeforeLoop = loop->getPrevNode(); // may be nullptr
+      Operation *opAfterLoop = loop->getNextNode();  // at worst the terminator
 #endif // __FLAGTREE_REORDER_LOOP_LOADS__
+      loop->removeAttr(loopUnrollFactorAttrName);
       LDBG("Unrolling loop by " << unrollFactor << " times\n" << loop);
-      auto resultLoops = loopUnrollByFactor(loop, unrollFactor);
 #ifdef __FLAGTREE_REORDER_LOOP_LOADS__
-      if (needsReorder && succeeded(resultLoops))
-        tle::reorderLoopLoadsAfterUnroll(*resultLoops, parentBlock,
-                                         opBeforeLoop, loop, fullyUnrolls);
+      auto annotate = [](unsigned i, Operation *op, OpBuilder b) {
+        tle::annotateUnrolledIteration(i, op, b);
+      };
+      auto resultLoops = reorderDistance
+                             ? loopUnrollByFactor(loop, unrollFactor, annotate)
+                             : loopUnrollByFactor(loop, unrollFactor);
+      if (reorderDistance)
+        tle::reorderLoopLoadsAfterUnroll(parentBlock, opBeforeLoop, opAfterLoop,
+                                         *reorderDistance);
+#else
+      auto resultLoops = loopUnrollByFactor(loop, unrollFactor);
 #endif // __FLAGTREE_REORDER_LOOP_LOADS__
       // Do not pipeline the epilog loop.
       if (succeeded(resultLoops) && resultLoops->epilogueLoopOp) {

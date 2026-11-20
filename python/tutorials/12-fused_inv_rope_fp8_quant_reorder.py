@@ -19,16 +19,19 @@ In doing so, you will learn about:
 # Motivations
 # -----------
 #
-# This tutorial focuses on **reordering** as an alternative optimization strategy to pipelining.
+# This tutorial focuses on **reordering the loads** of a loop as an alternative
+# to software pipelining.
 #
 # **Reorder approach:**
-# - Transforms tensor layout in memory (e.g., [tokens, heads, dims] → [groups, tokens, heads_per_group, dims])
-# - Simpler control flow with explicit memory layout transformations
-# - Better for scenarios where memory access patterns dominate performance
+# - `tle.range(..., reorder=True)` asks the compiler to issue the loads of the
+#   unrolled iterations ahead of the compute, so several loads are in flight at
+#   once without a shared-memory staging buffer
+# - `reorder=k` bounds how far ahead the loads run, trading latency hiding for
+#   the registers that hold the prefetched values
+# - Simpler control flow than pipelining: the loop body stays as written
 #
 # **Pipeline approach:**
 # - Uses software pipelining to overlap memory loads and computation
-# - Better for compute-bound kernels with predictable memory access patterns
 # - Requires more registers and shared memory for staging buffers
 #
 # By comparing these two approaches on the same fused operation (inverse RoPE + FP8 quantization),
@@ -150,6 +153,12 @@ def _fused_inv_rope_fp8_quant_per_head_reorder(
     cos_v = tl.load(cache_base + cs_idx, mask=is_rope, other=1.0)
     sin_v = tl.load(cache_base + HALF_ROPE + cs_idx, mask=is_rope, other=0.0)
 
+    # `tle.range(..., reorder=True)` asks LoopUnroll to issue the loads of every
+    # unrolled iteration before the first iteration's compute, instead of
+    # interleaving load/compute per head. `reorder=k` (an int) keeps the loads at
+    # most k iterations ahead instead, which bounds the registers that hold the
+    # prefetched values; with heads_per_program <= 4 here, True already is at most
+    # 3 iterations of prefetch.
     for i in tle.range(0, HEADS_PER_PROGRAM, loop_unroll_factor=HEADS_PER_PROGRAM, reorder=True):
         global_head = pid_gh_base + i
         g = global_head // heads_per_group
