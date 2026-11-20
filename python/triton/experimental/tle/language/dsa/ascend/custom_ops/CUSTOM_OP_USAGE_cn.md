@@ -32,6 +32,8 @@ custom_ops/
 │   └── cast_int4_to_fp16.cpp       # packed signed INT4 → FP16
 ├── mask_ops/
 │   └── compare_scalar.cpp          # FP16/FP32 EQ/GT/GE → uint16 位掩码
+├── vec_ops/
+│   └── flip.cpp                    # 2D UB tile 沿最后一维向量化倒序
 ├── reduction_ops/
 │   └── pair_reduce_sum.cpp         # 相邻两个（奇偶）元素求和, 暂只支持 mask 连续模式
 └── sort_ops/
@@ -94,6 +96,7 @@ custom op 入口，与旧写法 `tle.dsa.ascend.raw("<op_name>", ...)` 生成的
 | `merge_exhaust_sort4` | VECTOR / V | 对最多四路有序 proposal 执行一次 exhaustion merge | `[dst_proposals, consumed_out]` | `sort_ops/merge_pack_sort.cpp:56-63` |
 | `mrgsort` | VECTOR / V | 对最多四路有序 proposal 执行归并排序 | 排序结果，对应 Ascend C `const LocalTensor<T>& dst` | `sort_ops/mrgsort.cpp` |
 | `unpack_sort` | VECTOR / V | 将 `[value, encoded_index]` proposal 拆分成 value 和 index | `[dst_value, dst_index]` | `sort_ops/unpack_sort.cpp:20-24` |
+| `flip` | VECTOR / V | 2D UB tile 沿最后一维整体倒序（向量化） | 倒序结果，对应 C++ `dst` | `vec_ops/flip.cpp` |
 
 ## 算子使用方法
 
@@ -442,8 +445,8 @@ pipeline barrier；前后序由调用方保证。
 
 ```python
 # CMPMODE::GE = 4
-mask = tle.dsa.ascend.raw("compare_scalar", values, scalar, 4, N,
-                           out=tl.full((N // 16,), 0, tl.uint16))
+mask = tle_raw.call("ascend_compare_scalar", values, scalar, 4, N,
+                    out=tl.full((N // 16,), 0, tl.uint16))
 ```
 
 测试：`python3 python/tutorials/tle/custom/test_compare_scalar.py`。
@@ -475,7 +478,7 @@ pipeline barrier；前后序由调用方保证。
 ```python
 packed = tl.load(X + tl.arange(0, N))  # uint8[N]
 values = tl.full((2 * N,), 0, tl.float16)
-values = tle.dsa.ascend.raw("cast_int4_to_fp16", packed, 0, 2 * N, out=values)  # CAST_NONE
+values = tle_raw.call("ascend_cast_int4_to_fp16", packed, 0, 2 * N, out=values)  # CAST_NONE
 ```
 
 该接口不处理 uint4b8 的零点、不乘 scale、不进行 GM 访问或 MoE 调度。
@@ -486,6 +489,26 @@ values = tle.dsa.ascend.raw("cast_int4_to_fp16", packed, 0, 2 * N, out=values)  
 `python python/tutorials/tle/custom/test_cast_ops.py`，也已接入
 `test_custom_ops.py`。测试包含全部字节编码、不同块大小和参数校验，以及
 4096 字节 tile 与 Triton `tl.interleave` 拆 nibble 再 `.to(tl.float16)` 的耗时对比。
+
+## flip
+
+`flip(src, tmp, out=dst)` 将 2D UB tile 沿最后一维整体倒序。CANN 内置 flip 走
+`hivm::VFlipOp` 库函数 `flip_1d`，为逐元素标量循环，在大规格下性能不理想，故设计该算子。
+
+- `src`：2D UB 张量，最后一维须被一个 tile 完整覆盖；行字节数为 512 的倍数时走
+  向量化路径（int8/uint8 ≥ 512 元素走 `scatter_vnchwconv_b8`，fp16/bf16 ≥ 256 元素
+  及 fp32/int32 ≥ 128 走 b16），否则回退与库 `flip_1d` 相同的标量循环
+- `tmp`：同 dtype 的 2D UB scratch，至少 512 字节（如 fp16 用 `(1, 256)`），仅作
+  逐 chunk 中转，标量路径不触碰
+- `out`：与 src 同 shape/dtype 的 2D UB 目的张量
+
+```python
+t = tl.full((1, 256), 0, tl.float16)
+y = tl.full((BLOCK_M, N), 0, tl.float16)
+y = tle_raw.call("ascend_flip", x, t, out=y)
+```
+
+完整示例见 `python/tutorials/tle/custom/test_flip_ops.py`
 
 ## @dialect(name="cann")：算子层面混合语言编程
 

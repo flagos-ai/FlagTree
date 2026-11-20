@@ -21,6 +21,7 @@ from .registry import (
     unpack_sort,
     compare_scalar,
     cast_int4_to_fp16,
+    flip,
 )
 
 __all__ = [
@@ -40,4 +41,5 @@ __all__ = [
     "unpack_sort",
     "compare_scalar",
     "cast_int4_to_fp16",
+    "flip",
 ]
