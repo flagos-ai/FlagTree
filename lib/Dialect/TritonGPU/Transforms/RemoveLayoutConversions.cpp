@@ -2462,6 +2462,94 @@ static bool widensPastRealContiguity(ModuleAxisInfoAnalysis *axisInfo,
                  << (reject ? "reject" : "allow") << "\n";
   return reject;
 }
+
+// Ops whose per-thread copy count must not grow when a producer chain is
+// retagged to a new layout.
+//
+// Deliberately separate from isExpensiveMathOp. That predicate feeds three
+// other decisions -- the remat cost model, isLayoutTransparentProducer and
+// isCoalescedLoadCopyValue -- where an integer division is *not* a reason to
+// drop a candidate: it only makes a recomputation somewhat dearer. Treating it
+// as opaque in those places cost seven unrelated kernels (combinations,
+// segment_reduce*, upsample_*_aa_backward) their layout optimisation, so this
+// predicate stays out of them.
+//
+// Its narrower purpose: multiplying an i32 div/rem once per thread is a *count*
+// problem, which the byte-based cost model cannot see. pad_circular (PPU)
+// retags its 2-D load from threadsPerWarp [4,8] to [1,32], taking the row-index
+// chain from one element per thread to four, so its divsi + remsi run 4x --
+// shared dropped to 0 and the kernel still regressed 16-44%.
+static bool isReplicationSensitiveOp(Operation *op) {
+  return isExpensiveMathOp(op) ||
+         isa<arith::DivSIOp, arith::DivUIOp, arith::RemSIOp, arith::RemUIOp>(op);
+}
+
+// True if materializing `value` in `target` multiplies how many copies of a
+// replication-sensitive op's result one thread must compute.
+//
+// Only slices are compared. A full-rank blocked value keeps
+// ceil(shape[d] / (spt*tpw*wpc)) * spt invariant under a redistribution that
+// leaves sizePerThread alone, because the slot-count product(tpw*wpc) does not
+// change -- measured on pad_circular, both `4x256` and `8x128` stay at 8
+// elements per thread across the two layouts, only the direction differs. A
+// slice, in contrast, sees a single dimension of its parent's thread map, so
+// moving warps or lanes to another dimension silently multiplies the copies it
+// holds: that same retag takes its 1-D row-index chain from 1 to 8.
+//
+// Skipping the non-slice case is not just an optimisation: a full-rank value
+// only gains copies when sizePerThread changes, and that is a register-pressure
+// question the existing load guards already own. Judging it here would reject
+// retags this check has no business rejecting.
+static bool sliceRetagMultipliesPerThreadCopies(Value value, Attribute target,
+                                                const char *what) {
+  Operation *def = value.getDefiningOp();
+  if (!def || !isReplicationSensitiveOp(def))
+    return false;
+  auto type = dyn_cast<RankedTensorType>(value.getType());
+  // Only the *current* encoding has to be a slice: that is what makes this
+  // value inherit a single dimension of a parent's thread map, and therefore
+  // what lets a redistribution of warps between dimensions change how many
+  // copies it holds. The target is deliberately left unchecked --
+  // getTotalElemsPerThread is a per-thread element count for any layout whose
+  // rank matches the value's (collectProducerClosure derives every target
+  // through inferSrcEncoding, so it always does), and demanding a slice target
+  // as well would skip the slice -> 1-D blocked case, which grows the copies
+  // just the same.
+  if (!type || !type.getEncoding() || !target ||
+      !isa<SliceEncodingAttr>(type.getEncoding()))
+    return false;
+  int64_t before = getTotalElemsPerThread(type);
+  int64_t after = getTotalElemsPerThread(type.cloneWithEncoding(target));
+  if (after <= before)
+    return false;
+  if (rlcDbgLevel() >= 1)
+    llvm::errs() << "[rlc] " << what << ": " << def->getName()
+                 << " per-thread " << before << " -> " << after << " (delta "
+                 << (after - before) << ") ("
+                 << rlcDbgEnc(type.getEncoding()) << " -> "
+                 << rlcDbgEnc(target) << ")\n";
+  return true;
+}
+
+// Phase 2 form: a proposal maps each value to its target encoding.
+static bool proposalMultipliesPerThreadCopies(
+    const llvm::MapVector<Value, Attribute> &proposal) {
+  for (auto &it : proposal)
+    if (sliceRetagMultipliesPerThreadCopies(it.first, it.second,
+                                            "producerSide reject"))
+      return true;
+  return false;
+}
+
+// Backward-remat form: a slice is a value set plus a value -> encoding map.
+static bool sliceMultipliesPerThreadCopies(
+    const SetVector<Value> &slice, const DenseMap<Value, Attribute> &layout) {
+  for (Value value : slice)
+    if (sliceRetagMultipliesPerThreadCopies(value, layout.lookup(value),
+                                            "remat reject"))
+      return true;
+  return false;
+}
 #endif // __PPU__
 
 bool LayoutPropagation::solveSmallComponents() {
@@ -2980,7 +3068,16 @@ bool LayoutPropagation::solveSmallComponents() {
   SmallVector<Proposal> producerSideProposals;
   funcOp.walk([&](ConvertLayoutOp cvtOp) {
     Proposal proposal;
-    if (collectProducerSideConvert(proposal, cvtOp))
+    if (!collectProducerSideConvert(proposal, cvtOp))
+      return;
+#ifdef __PPU__
+    // Refuse a producer-side retag that multiplies the per-thread copies of a
+    // division on the chain. Scoped to this one walk on purpose: the
+    // reduce-tail / loop-tail / store-tail walks keep their old latitude, which
+    // is what the seven kernels that broke on the broader version needed.
+    if (proposalMultipliesPerThreadCopies(proposal))
+      return;
+#endif // __PPU__
       producerSideProposals.push_back(std::move(proposal));
   });
   if (rlcDbgLevel() >= 1)
@@ -4643,6 +4740,18 @@ LogicalResult LayoutRematerialization::getRematerializableSlice(
   // accumulator) never retags the dot. Scoped to the duplicable-load path since
   // otherwise the slice already fails at the dot's input loads.
   if (allowDuplicableLoads) {
+#ifdef __PPU__
+    // Same guard as the Phase 2 producer-side walk (see
+    // isReplicationSensitiveOp). Backward rematerialization scans every
+    // surviving convert_layout *after* the rewrite, so a chain refused in
+    // Phase 2 is walked straight back into here and retagged anyway; guarding
+    // only one of the two leaves the regression on the default pipeline.
+    if (sliceMultipliesPerThreadCopies(slice, layout)) {
+      if (rlcDbgLevel() >= 1)
+        llvm::errs() << "[rlc] remat slice rejected (per-thread)\n";
+      return failure();
+    }
+#endif // __PPU__
     for (Value v : slice) {
       Operation *op = v.getDefiningOp();
       if (!op || !isa<mlir::triton::DotOpInterface>(op))
