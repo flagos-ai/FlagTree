@@ -631,4 +631,3 @@ jobs:
             --head "$BRANCH" \
             --title "[CI] Update ${KIND_DIR} skip list for ${FLAGGEMS_REF} (${BACKENDS})" \
             --body-file /tmp/pr-body.md
-

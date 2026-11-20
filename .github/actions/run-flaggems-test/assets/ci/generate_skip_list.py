@@ -215,10 +215,8 @@ def setup_logging(output_dir: Path, filename: str = "test_output.log") -> None:
     # Line-buffered so partial output survives a crash.
     _LOG_FILE_HANDLE = open(log_path, "w", buffering=1, encoding="utf-8")
 
-    sys.stdout = _Tee(sys.__stdout__, _LOG_FILE_HANDLE,
-                      strip_ansi_for={_LOG_FILE_HANDLE})
-    sys.stderr = _Tee(sys.__stderr__, _LOG_FILE_HANDLE,
-                      strip_ansi_for={_LOG_FILE_HANDLE})
+    sys.stdout = _Tee(sys.__stdout__, _LOG_FILE_HANDLE, strip_ansi_for={_LOG_FILE_HANDLE})
+    sys.stderr = _Tee(sys.__stderr__, _LOG_FILE_HANDLE, strip_ansi_for={_LOG_FILE_HANDLE})
 
     atexit.register(_close_log_file)
 
@@ -268,6 +266,7 @@ def read_skip_yaml(path: Path) -> List[str]:
 # ---------------------------------------------------------------------------
 # State persistence (resumability)
 # ---------------------------------------------------------------------------
+
 
 def load_state(state_path: Path) -> dict:
     if state_path.exists():
@@ -327,11 +326,9 @@ def parse_repo_kind(value: str) -> str:
     """
     canonical = _REPO_KIND_ALIASES.get(value.strip().lower())
     if canonical is None:
-        raise argparse.ArgumentTypeError(
-            f"invalid repo-kind '{value}'. "
-            f"Valid values: {', '.join(sorted(_REPO_KIND_ALIASES))} "
-            "(case-insensitive)."
-        )
+        raise argparse.ArgumentTypeError(f"invalid repo-kind '{value}'. "
+                                         f"Valid values: {', '.join(sorted(_REPO_KIND_ALIASES))} "
+                                         "(case-insensitive).")
     return canonical
 
 
@@ -354,8 +351,10 @@ def _capture_env(pre_command: str, base_env: Optional[dict] = None) -> dict:
 
     result = subprocess.run(
         script,
-        shell=True, executable=BASH,
-        capture_output=True, text=True,
+        shell=True,
+        executable=BASH,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0:
         warn(f"pre-command returned {result.returncode}:\n"
@@ -422,7 +421,8 @@ def _current_flagtree_version() -> Optional[str]:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "show", FLAGTREE_PIP_NAME],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
             return None
@@ -434,8 +434,7 @@ def _current_flagtree_version() -> Optional[str]:
     return None
 
 
-def _clone_repo(url: str, ref: str, dest: Path, label: str,
-                max_retries: int = 5, env: Optional[dict] = None) -> None:
+def _clone_repo(url: str, ref: str, dest: Path, label: str, max_retries: int = 5, env: Optional[dict] = None) -> None:
     """Clone `url` at `ref` into `dest`, retrying on network failures.
 
     If `dest` already is a git repo at the requested ref, skip the clone.
@@ -449,15 +448,24 @@ def _clone_repo(url: str, ref: str, dest: Path, label: str,
         try:
             cur = subprocess.run(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=dest, capture_output=True, text=True, env=env,
+                cwd=dest,
+                capture_output=True,
+                text=True,
+                env=env,
             ).stdout.strip()
             cur_ref = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
-                cwd=dest, capture_output=True, text=True, env=env,
+                cwd=dest,
+                capture_output=True,
+                text=True,
+                env=env,
             ).stdout.strip()
             wanted = subprocess.run(
                 ["git", "rev-parse", ref],
-                cwd=dest, capture_output=True, text=True, env=env,
+                cwd=dest,
+                capture_output=True,
+                text=True,
+                env=env,
             ).stdout.strip()
             if cur == ref or cur_ref == wanted:
                 info(f"{label}: already at ref '{ref}' ({cur_ref[:8]}), skip clone.")
@@ -481,8 +489,10 @@ def _clone_repo(url: str, ref: str, dest: Path, label: str,
             # checkout could not resolve the name.
             res = subprocess.run(
                 f"git clone --depth 1 --branch {ref} {url} {dest}",
-                shell=True, executable=BASH,
-                capture_output=True, text=True,
+                shell=True,
+                executable=BASH,
+                capture_output=True,
+                text=True,
                 env=env,
             )
             if res.returncode != 0:
@@ -492,8 +502,7 @@ def _clone_repo(url: str, ref: str, dest: Path, label: str,
                      f"({res.stderr.strip().splitlines()[-1:] or 'no detail'}); "
                      "doing full clone.")
                 shutil.rmtree(dest, ignore_errors=True)
-                _run(f"git clone {url} {dest} 2>&1",
-                     label=label, check=False, env=env)
+                _run(f"git clone {url} {dest} 2>&1", label=label, check=False, env=env)
                 _run(f"git checkout {ref}", cwd=dest, label=label, env=env)
             info(f"{label}: checked out '{ref}'.")
             return
@@ -502,9 +511,7 @@ def _clone_repo(url: str, ref: str, dest: Path, label: str,
             warn(f"{label}: attempt {attempt} failed: {exc}")
             shutil.rmtree(dest, ignore_errors=True)
             time.sleep(5 * attempt)
-    raise RuntimeError(
-        f"{label}: clone failed after {max_retries} attempts: {last_err}"
-    )
+    raise RuntimeError(f"{label}: clone failed after {max_retries} attempts: {last_err}")
 
 
 def _uninstall_flagtree() -> None:
@@ -518,9 +525,9 @@ def _uninstall_flagtree() -> None:
     )
     try:
         site_packages = subprocess.run(
-            [sys.executable, "-c",
-             "import sysconfig; print(sysconfig.get_path('purelib'))"],
-            capture_output=True, text=True,
+            [sys.executable, "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+            capture_output=True,
+            text=True,
         ).stdout.strip()
         if site_packages:
             triton_dir = Path(site_packages) / "triton"
@@ -531,8 +538,7 @@ def _uninstall_flagtree() -> None:
         warn(f"Could not locate site-packages for triton cleanup: {exc}")
 
 
-def _build_flagtree(flagtree_dir: Path, backend: str,
-                    build_command: str, env: dict) -> str:
+def _build_flagtree(flagtree_dir: Path, backend: str, build_command: str, env: dict) -> str:
     """Build and install FlagTree; return the installed version string.
 
     `env` is the environment the caller already prepared (--pre-command
@@ -544,18 +550,14 @@ def _build_flagtree(flagtree_dir: Path, backend: str,
     env["FLAGTREE_BACKEND"] = backend
 
     if not build_command:
-        build_command = (
-            f"{sys.executable} -m pip install . --no-build-isolation -v"
-        )
+        build_command = (f"{sys.executable} -m pip install . --no-build-isolation -v")
         warn("No --build-command given; using default pip install.")
 
     _run(build_command, cwd=flagtree_dir, env=env, label="build")
 
     version = _current_flagtree_version()
     if version is None:
-        raise RuntimeError(
-            "FlagTree build finished but `pip show flagtree` found no package."
-        )
+        raise RuntimeError("FlagTree build finished but `pip show flagtree` found no package.")
     info(f"FlagTree installed: {version}")
     return version
 
@@ -589,35 +591,33 @@ def phase0_setup(
     """
     section("Phase 0: environment setup")
 
-    p0 = state.setdefault("phase0", {
-        "flagtree_ref": flagtree_ref,
-        "flaggems_ref": flaggems_ref,
-        "flaggems_url": flaggems_url,
-        # What FlagTree build this run ended up with. Informational: it records
-        # the version actually installed, not whether Phase 0 succeeded.
-        "installed_version": None,
-        # Outcome of Phase 0:
-        #   "pending"  - not started / interrupted before finishing
-        #   "installed" - FlagTree was cloned, built and installed this run
-        #   "reused"   - a matching install already existed, nothing rebuilt
-        #   "skipped"  - --flagtree-ref not given, existing install used as-is
-        "status": "pending",
-    })
+    p0 = state.setdefault(
+        "phase0", {
+            "flagtree_ref": flagtree_ref,
+            "flaggems_ref": flaggems_ref,
+            "flaggems_url": flaggems_url,
+            # What FlagTree build this run ended up with. Informational: it records
+            # the version actually installed, not whether Phase 0 succeeded.
+            "installed_version": None,
+            # Outcome of Phase 0:
+            #   "pending"  - not started / interrupted before finishing
+            #   "installed" - FlagTree was cloned, built and installed this run
+            #   "reused"   - a matching install already existed, nothing rebuilt
+            #   "skipped"  - --flagtree-ref not given, existing install used as-is
+            "status": "pending",
+        })
 
     # --- FlagTree clone + build ------------------------------------------
     if flagtree_ref:
         flagtree_dir = work_dir / "FlagTree"
         if not skip_clone:
-            _clone_repo(FLAGTREE_URL, flagtree_ref, flagtree_dir, "FlagTree",
-                        env=env)
+            _clone_repo(FLAGTREE_URL, flagtree_ref, flagtree_dir, "FlagTree", env=env)
         else:
             info(f"Skipping FlagTree clone (--skip-clone). Using {flagtree_dir}")
 
         need_rebuild = True
         installed = _current_flagtree_version()
-        if (p0.get("status") in ("installed", "reused")
-                and p0.get("installed_version") == installed
-                and installed):
+        if (p0.get("status") in ("installed", "reused") and p0.get("installed_version") == installed and installed):
             info(f"FlagTree already built ({installed}); skipping rebuild.")
             need_rebuild = False
             p0["status"] = "reused"
@@ -626,7 +626,10 @@ def phase0_setup(
         if need_rebuild:
             _uninstall_flagtree()
             installed = _build_flagtree(
-                flagtree_dir, backend, build_command, env,
+                flagtree_dir,
+                backend,
+                build_command,
+                env,
             )
             p0["installed_version"] = installed
             p0["status"] = "installed"
@@ -642,8 +645,7 @@ def phase0_setup(
         basename = _repo_basename(flaggems_url)
         flaggems_dir = work_dir / basename
         if not skip_clone:
-            _clone_repo(flaggems_url, flaggems_ref, flaggems_dir, basename,
-                        env=env)
+            _clone_repo(flaggems_url, flaggems_ref, flaggems_dir, basename, env=env)
         else:
             info(f"Skipping {basename} clone (--skip-clone). Using {flaggems_dir}")
         flaggems_path = flaggems_dir
@@ -652,10 +654,8 @@ def phase0_setup(
         flaggems_path = flaggems_path_arg
 
     if not (flaggems_path / "src").is_dir():
-        raise RuntimeError(
-            f"FlagGems checkout at {flaggems_path} has no src/ directory; "
-            "cannot set PYTHONPATH."
-        )
+        raise RuntimeError(f"FlagGems checkout at {flaggems_path} has no src/ directory; "
+                           "cannot set PYTHONPATH.")
 
     # --- FlagGems-vllm checkout (the library under test in vllm mode) -----
     if repo_kind == "flaggems-vllm":
@@ -663,8 +663,7 @@ def phase0_setup(
             vllm_base = _repo_basename(flaggems_vllm_url)
             vllm_dir = work_dir / vllm_base
             if not skip_clone:
-                _clone_repo(flaggems_vllm_url, flaggems_vllm_ref, vllm_dir,
-                            vllm_base, env=env)
+                _clone_repo(flaggems_vllm_url, flaggems_vllm_ref, vllm_dir, vllm_base, env=env)
             else:
                 info(f"Skipping {vllm_base} clone (--skip-clone). "
                      f"Using {vllm_dir}")
@@ -673,15 +672,11 @@ def phase0_setup(
             under_test = flaggems_vllm_path_arg
 
         if under_test is None:
-            raise RuntimeError(
-                "--repo-kind flaggems-vllm requires --flaggems-vllm-ref or "
-                "--flaggems-vllm-path."
-            )
+            raise RuntimeError("--repo-kind flaggems-vllm requires --flaggems-vllm-ref or "
+                               "--flaggems-vllm-path.")
         if not (under_test / "src").is_dir():
-            raise RuntimeError(
-                f"FlagGems-vllm checkout at {under_test} has no src/ directory; "
-                "cannot set PYTHONPATH."
-            )
+            raise RuntimeError(f"FlagGems-vllm checkout at {under_test} has no src/ directory; "
+                               "cannot set PYTHONPATH.")
         return under_test, flaggems_path
 
     return flaggems_path, None
@@ -750,6 +745,7 @@ def read_skip_yaml(path: Path) -> List[str]:
 # State persistence (resumability)
 # ---------------------------------------------------------------------------
 
+
 def load_state(state_path: Path) -> dict:
     if state_path.exists():
         try:
@@ -769,6 +765,7 @@ def save_state(state_path: Path, state: dict) -> None:
 # Running ci_run_tests.py
 # ---------------------------------------------------------------------------
 
+
 def _build_cmd(
     runner_script: Path,
     flaggems_path: Path,
@@ -780,9 +777,12 @@ def _build_cmd(
     cmd = [
         sys.executable,
         str(runner_script),
-        "--gpus", gpus,
-        "--output-dir", str(output_dir),
-        "--flaggems-path", str(flaggems_path),
+        "--gpus",
+        gpus,
+        "--output-dir",
+        str(output_dir),
+        "--flaggems-path",
+        str(flaggems_path),
     ]
     if skip_file is not None:
         cmd += ["--skip-file", str(skip_file)]
@@ -880,6 +880,7 @@ def run_ci(
 # ---------------------------------------------------------------------------
 # Log parsing helpers
 # ---------------------------------------------------------------------------
+
 
 def log_is_complete(stdout_log: Path) -> bool:
     """Return True if pytest_stdout.log contains [100%] and a summary line."""
@@ -984,6 +985,7 @@ def load_marks_yaml(run_dir: Path) -> list:
 # Cascade detection (shared by both phases)
 # ---------------------------------------------------------------------------
 
+
 def scan_cascade(
     cases: List[Tuple[str, bool]],
     accuracy: dict,
@@ -1011,8 +1013,7 @@ def scan_cascade(
 
     if len(cases) >= window_size:
         tail_fail_rate = sum(1 for _, f in cases[-window_size:] if f) / window_size
-        W_tail = (max(window_size // 2, window_shrink)
-                  if tail_fail_rate > 0.5 else window_size)
+        W_tail = (max(window_size // 2, window_shrink) if tail_fail_rate > 0.5 else window_size)
     else:
         W_tail = window_shrink
     if W_tail != window_size:
@@ -1027,7 +1028,7 @@ def scan_cascade(
         effective_W = W_tail if remaining < window_size else window_size
         if remaining < effective_W:
             continue
-        window = cases[i + 1: i + 1 + effective_W]
+        window = cases[i + 1:i + 1 + effective_W]
         if sum(1 for _, f in window if f) / effective_W > threshold:
             return fname
     return None
@@ -1036,6 +1037,7 @@ def scan_cascade(
 # ---------------------------------------------------------------------------
 # Phase 1: sliding-window cascade detection
 # ---------------------------------------------------------------------------
+
 
 def phase1_sliding_window(
     runner_script: Path,
@@ -1064,17 +1066,18 @@ def phase1_sliding_window(
     """
     section("Phase 1: sliding-window cascade detection")
 
-    p1 = state.setdefault("phase1", {
-        "rounds": [],
-        "skip_list": list(skip_list),
-        "done": False,
-        "last_accuracy_dir": None,
-        # Directory of the most recent round that had NO cascade.  Phase 2
-        # seeds its reference from here: a cascade round's failures are
-        # collateral damage, and using them as the baseline blinds the
-        # per-case comparison for the rest of the run.
-        "last_clean_accuracy_dir": None,
-    })
+    p1 = state.setdefault(
+        "phase1", {
+            "rounds": [],
+            "skip_list": list(skip_list),
+            "done": False,
+            "last_accuracy_dir": None,
+            # Directory of the most recent round that had NO cascade.  Phase 2
+            # seeds its reference from here: a cascade round's failures are
+            # collateral damage, and using them as the baseline blinds the
+            # per-case comparison for the rest of the run.
+            "last_clean_accuracy_dir": None,
+        })
 
     if p1.get("done"):
         info("Phase 1 already complete (resuming).")
@@ -1101,8 +1104,7 @@ def phase1_sliding_window(
     last_accuracy: dict = {}
     consecutive_hard_failures = 0
 
-    while (p1_rounds_this_iter < max_p1
-           and total_rounds_so_far < max_total):
+    while (p1_rounds_this_iter < max_p1 and total_rounds_so_far < max_total):
 
         round_num = total_rounds_so_far + 1
         round_dir = base_dir / f"round_{round_num}"
@@ -1113,7 +1115,10 @@ def phase1_sliding_window(
              f"p1_iter_round={p1_rounds_this_iter + 1}/{max_p1})")
 
         summary = run_ci(
-            runner_script, flaggems_path, gpus, round_dir,
+            runner_script,
+            flaggems_path,
+            gpus,
+            round_dir,
             skip_operators=skip_list,
             args=args,
             label=label,
@@ -1130,12 +1135,10 @@ def phase1_sliding_window(
             warn(f"Round {round_num}: ci_run_tests produced no summary "
                  f"(consecutive hard failures: {consecutive_hard_failures}).")
             if consecutive_hard_failures >= args.max_consecutive_failures:
-                raise RuntimeError(
-                    f"Aborting: {consecutive_hard_failures} consecutive rounds "
-                    "produced no summary. Check the environment (FlagTree "
-                    "install, FlagGems checkout, GPU visibility) and rerun "
-                    "with --resume."
-                )
+                raise RuntimeError(f"Aborting: {consecutive_hard_failures} consecutive rounds "
+                                   "produced no summary. Check the environment (FlagTree "
+                                   "install, FlagGems checkout, GPU visibility) and rerun "
+                                   "with --resume.")
             p1["rounds"].append({
                 "round_num": round_num,
                 "trigger_file": None,
@@ -1197,8 +1200,12 @@ def phase1_sliding_window(
 
         # --- cascade scan ---------------------------------------------------
         trigger_file = scan_cascade(
-            cases, accuracy, set(skip_list),
-            W, W_shrink, T,
+            cases,
+            accuracy,
+            set(skip_list),
+            W,
+            W_shrink,
+            T,
         )
         new_ops_set: Set[str] = set()
         if trigger_file:
@@ -1246,6 +1253,7 @@ def phase1_sliding_window(
 # Phase 2: flaky rolling detection
 # ---------------------------------------------------------------------------
 
+
 def phase2_flaky(
     runner_script: Path,
     flaggems_path: Path,
@@ -1273,13 +1281,15 @@ def phase2_flaky(
     """
     section("Phase 2: flaky rolling detection")
 
-    p2 = state.setdefault("phase2", {
-        "rounds": [],
-        "skip_list": list(skip_list),
-        "consecutive_stable": 0,
-        "reference_results": {k: v.get("result") for k, v in seed_accuracy.items()},
-        "done": False,
-    })
+    p2 = state.setdefault(
+        "phase2", {
+            "rounds": [],
+            "skip_list": list(skip_list),
+            "consecutive_stable": 0,
+            "reference_results": {k: v.get("result")
+                                  for k, v in seed_accuracy.items()},
+            "done": False,
+        })
 
     if p2.get("done"):
         info("Phase 2 already complete (resuming).")
@@ -1293,8 +1303,7 @@ def phase2_flaky(
     reference_results: Dict[str, str] = p2["reference_results"]
     consecutive_hard_failures = 0
 
-    while (consecutive_stable < flaky_rounds_target
-           and total_rounds_so_far < max_total):
+    while (consecutive_stable < flaky_rounds_target and total_rounds_so_far < max_total):
 
         round_num = total_rounds_so_far + 1
         round_dir = base_dir / f"round_{round_num}"
@@ -1305,7 +1314,10 @@ def phase2_flaky(
              f"skip_list={len(skip_list)} ops")
 
         summary = run_ci(
-            runner_script, flaggems_path, gpus, round_dir,
+            runner_script,
+            flaggems_path,
+            gpus,
+            round_dir,
             skip_operators=skip_list,
             args=args,
             label=label,
@@ -1319,12 +1331,10 @@ def phase2_flaky(
             warn(f"Round {round_num}: no summary produced; not counting as stable "
                  f"(consecutive hard failures: {consecutive_hard_failures}).")
             if consecutive_hard_failures >= args.max_consecutive_failures:
-                raise RuntimeError(
-                    f"Aborting: {consecutive_hard_failures} consecutive rounds "
-                    "produced no summary. Check the environment (FlagTree "
-                    "install, FlagGems checkout, GPU visibility) and rerun "
-                    "with --resume."
-                )
+                raise RuntimeError(f"Aborting: {consecutive_hard_failures} consecutive rounds "
+                                   "produced no summary. Check the environment (FlagTree "
+                                   "install, FlagGems checkout, GPU visibility) and rerun "
+                                   "with --resume.")
             p2["rounds"].append({
                 "round_num": round_num,
                 "new_ops": [],
@@ -1370,8 +1380,12 @@ def phase2_flaky(
         # independently-flaky operators.
         cases = parse_stdout_cases(stdout_log)
         trigger_file = scan_cascade(
-            cases, accuracy, set(skip_list),
-            args.window_size, args.window_shrink, args.window_threshold,
+            cases,
+            accuracy,
+            set(skip_list),
+            args.window_size,
+            args.window_shrink,
+            args.window_threshold,
         )
 
         if trigger_file:
@@ -1407,9 +1421,7 @@ def phase2_flaky(
             continue
 
         # --- compare against reference ------------------------------------
-        current_results: Dict[str, str] = {
-            k: v.get("result", "") for k, v in accuracy.items()
-        }
+        current_results: Dict[str, str] = {k: v.get("result", "") for k, v in accuracy.items()}
 
         new_flaky_ops: Set[str] = set()
         for case, prev_result in reference_results.items():
@@ -1457,11 +1469,12 @@ def phase2_flaky(
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate a FlagGems CI skip list by detecting cascade-failure "
-                    "and flaky operators. Optionally clones and builds FlagTree and "
-                    "the operator library first.",
+        "and flaky operators. Optionally clones and builds FlagTree and "
+        "the operator library first.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1484,27 +1497,28 @@ Examples:
     parser.add_argument(
         "--flagtree-ref",
         help="Branch or tag of flagos-ai/FlagTree to clone and build. "
-             "If omitted, FlagTree is assumed already installed.",
+        "If omitted, FlagTree is assumed already installed.",
     )
     flaggems_src = parser.add_mutually_exclusive_group(required=True)
     flaggems_src.add_argument(
         "--flaggems-ref",
         help="Tag or branch of FlagGems to clone. The URL to clone from is "
-             "--flaggems-url.\n"
-             "When --repo-kind is flaggems-vllm this is the flag_gems "
-             "DEPENDENCY (flaggems_vllm imports it); the library actually "
-             "under test is selected by --flaggems-vllm-ref/--flaggems-vllm-path.",
+        "--flaggems-url.\n"
+        "When --repo-kind is flaggems-vllm this is the flag_gems "
+        "DEPENDENCY (flaggems_vllm imports it); the library actually "
+        "under test is selected by --flaggems-vllm-ref/--flaggems-vllm-path.",
     )
     flaggems_src.add_argument(
-        "--flaggems-path", type=Path,
+        "--flaggems-path",
+        type=Path,
         help="Path to an already-cloned FlagGems checkout. "
-             "Mutually exclusive with --flaggems-ref.",
+        "Mutually exclusive with --flaggems-ref.",
     )
     parser.add_argument(
         "--flaggems-url",
         default=DEFAULT_FLAGGEMS_URL,
         help=f"Git URL of FlagGems to clone when --flaggems-ref is used. "
-             f"Default: {DEFAULT_FLAGGEMS_URL}",
+        f"Default: {DEFAULT_FLAGGEMS_URL}",
     )
 
     # FlagGems-vllm: only meaningful with --repo-kind flaggems-vllm. Required
@@ -1513,118 +1527,148 @@ Examples:
     flaggems_vllm_src.add_argument(
         "--flaggems-vllm-ref",
         help="Tag or branch of FlagGems-vllm to clone. Required when "
-             "--repo-kind is flaggems-vllm. The URL is --flaggems-vllm-url.",
+        "--repo-kind is flaggems-vllm. The URL is --flaggems-vllm-url.",
     )
     flaggems_vllm_src.add_argument(
-        "--flaggems-vllm-path", type=Path,
+        "--flaggems-vllm-path",
+        type=Path,
         help="Path to an already-cloned FlagGems-vllm checkout. "
-             "Mutually exclusive with --flaggems-vllm-ref.",
+        "Mutually exclusive with --flaggems-vllm-ref.",
     )
     parser.add_argument(
         "--flaggems-vllm-url",
         default=DEFAULT_FLAGGEMS_VLLM_URL,
         help=f"Git URL of FlagGems-vllm to clone when --flaggems-vllm-ref is "
-             f"used. Default: {DEFAULT_FLAGGEMS_VLLM_URL}",
+        f"used. Default: {DEFAULT_FLAGGEMS_VLLM_URL}",
     )
     parser.add_argument(
-        "--work-dir", type=Path, default=None,
+        "--work-dir",
+        type=Path,
+        default=None,
         help="Directory for cloned repos and this run's output. "
-             "Default: ~/flaggems_ci/skip_list/<repo-kind>_skip_list_"
-             "<YYYYMMDD_HHMMSS>, stamped once at startup so concurrent or "
-             "successive runs never share a directory. Required when --resume "
-             "is used, so the interrupted run's directory is reused instead of "
-             "a new timestamp being minted.",
+        "Default: ~/flaggems_ci/skip_list/<repo-kind>_skip_list_"
+        "<YYYYMMDD_HHMMSS>, stamped once at startup so concurrent or "
+        "successive runs never share a directory. Required when --resume "
+        "is used, so the interrupted run's directory is reused instead of "
+        "a new timestamp being minted.",
     )
     parser.add_argument(
         "--build-command",
         help="Shell command to build and install FlagTree (run inside the clone "
-             "with FLAGTREE_BACKEND=<backend> exported). "
-             "Required when --flagtree-ref is used.",
+        "with FLAGTREE_BACKEND=<backend> exported). "
+        "Required when --flagtree-ref is used.",
     )
     parser.add_argument(
-        "--skip-clone", action="store_true",
+        "--skip-clone",
+        action="store_true",
         help="Skip git clone steps; use existing checkouts in --work-dir.",
     )
 
     # --- detection args -------------------------------------------------
     parser.add_argument(
-        "--backend", required=True,
+        "--backend",
+        required=True,
         help="Backend name (e.g. xpu). Sets FLAGTREE_BACKEND and names the "
-             "output YAML (<backend>.yaml).",
+        "output YAML (<backend>.yaml).",
     )
     parser.add_argument(
-        "--gpus", default="0",
+        "--gpus",
+        default="0",
         help='GPU IDs, comma-separated or "all". Default: "0".',
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=None,
+        "--output-dir",
+        type=Path,
+        default=None,
         help="Directory for all test outputs and state. "
-             "Default: <work-dir>/output",
+        "Default: <work-dir>/output",
     )
     parser.add_argument(
-        "--window-size", type=int, default=10,
+        "--window-size",
+        type=int,
+        default=10,
         help="W: initial look-ahead window size for cascade detection. Default: 10.",
     )
     parser.add_argument(
-        "--window-shrink", type=int, default=2,
+        "--window-shrink",
+        type=int,
+        default=2,
         help="Minimum W when tail-shrinking applies (last W cases fail>50%%). Default: 2.",
     )
     parser.add_argument(
-        "--window-threshold", type=float, default=0.8,
+        "--window-threshold",
+        type=float,
+        default=0.8,
         help="T: fail rate in look-ahead window to trigger a skip. Default: 0.8.",
     )
     parser.add_argument(
-        "--flaky-rounds", type=int, default=20,
+        "--flaky-rounds",
+        type=int,
+        default=20,
         help="Consecutive clean rounds with no new findings required to declare "
-             "the skip list done. A cascade or a new flaky operator resets the "
-             "counter. Default: 20.",
+        "the skip list done. A cascade or a new flaky operator resets the "
+        "counter. Default: 20.",
     )
     parser.add_argument(
-        "--max-phase1-rounds", type=int, default=20,
+        "--max-phase1-rounds",
+        type=int,
+        default=20,
         help="Maximum rounds in a single Phase 1 iteration. Default: 20.",
     )
     parser.add_argument(
-        "--max-detection-rounds", type=int, default=60,
+        "--max-detection-rounds",
+        type=int,
+        default=60,
         help="Total round budget shared by Phase 1 and Phase 2. Default: 60.",
     )
     parser.add_argument(
-        "--max-consecutive-failures", type=int, default=3,
+        "--max-consecutive-failures",
+        type=int,
+        default=3,
         help="Abort when this many consecutive rounds produce no summary.json "
-             "(environment problem rather than a test result). Default: 3.",
+        "(environment problem rather than a test result). Default: 3.",
     )
     parser.add_argument(
-        "--repo-kind", type=parse_repo_kind, default="flaggems",
+        "--repo-kind",
+        type=parse_repo_kind,
+        default="flaggems",
         help="Operator library under test, passed to ci_run_tests.py to select "
-             "the Python package it imports. One of: flaggems, flaggems-vllm "
-             "(case-insensitive). Default: flaggems.",
+        "the Python package it imports. One of: flaggems, flaggems-vllm "
+        "(case-insensitive). Default: flaggems.",
     )
     parser.add_argument(
-        "--first-parameter-only", action="store_true",
+        "--first-parameter-only",
+        action="store_true",
         help="Pass --first-parameter-only to ci_run_tests.py for faster runs.",
     )
     parser.add_argument(
         "--pre-command",
         help="Shell command executed once at startup, before Phase 0 (clone/"
-             "build) and before any test round. Its exported environment is "
-             "captured and propagated to the build and to every round "
-             "(e.g. 'source ~/env.sh && source ~/env-3.6.sh').",
+        "build) and before any test round. Its exported environment is "
+        "captured and propagated to the build and to every round "
+        "(e.g. 'source ~/env.sh && source ~/env-3.6.sh').",
     )
     parser.add_argument(
-        "--per-round-command", default=None,
+        "--per-round-command",
+        default=None,
         help="Shell command executed before every test round, on top of the "
-             "environment prepared by --pre-command. Its exported variables "
-             "apply to that round only. Default: empty (nothing extra runs).",
+        "environment prepared by --pre-command. Its exported variables "
+        "apply to that round only. Default: empty (nothing extra runs).",
     )
     parser.add_argument(
-        "--runner-script", type=Path, default=None,
+        "--runner-script",
+        type=Path,
+        default=None,
         help="Path to ci_run_tests.py. Defaults to the copy next to this script.",
     )
     parser.add_argument(
-        "--resume", action="store_true",
+        "--resume",
+        action="store_true",
         help="Resume from a previous interrupted run using saved state.",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Print the resolved configuration and exit without running anything.",
     )
 
@@ -1644,9 +1688,7 @@ Examples:
                   "~/flaggems_ci/skip_list/flaggems_skip_list_20261118_133721).")
             sys.exit(1)
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        args.work_dir = Path(
-            f"~/flaggems_ci/skip_list/{args.repo_kind}_skip_list_{stamp}"
-        ).expanduser()
+        args.work_dir = Path(f"~/flaggems_ci/skip_list/{args.repo_kind}_skip_list_{stamp}").expanduser()
     else:
         args.work_dir = args.work_dir.expanduser()
 
@@ -1723,8 +1765,7 @@ Examples:
     section("Pre-command")
     base_env = _capture_env(args.pre_command)
     args.base_env = base_env
-    info("Environment prepared"
-         + (" (pre-command applied)." if args.pre_command else " (no pre-command)."))
+    info("Environment prepared" + (" (pre-command applied)." if args.pre_command else " (no pre-command)."))
     if args.per_round_command:
         info(f"Per-round command: {args.per_round_command}")
 
