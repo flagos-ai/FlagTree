@@ -279,6 +279,7 @@ static TensorViewAccessInfo traceView(Value view, PatternRewriter &rewriter) {
     padding = getPaddingValue(gs.getPaddingValue());
     traversal.assign(tile.begin(), tile.end()); // contiguous step per dim
     sparseDims.assign(gs.getSparseDim().begin(), gs.getSparseDim().end());
+    info.boundsCheck = gs.getBoundsCheck();
     // A gather_scatter view keeps the base dimension order, so the tile
     // dimensions map onto the base dimensions identically.
     dimMapStorage.resize(tile.size());
@@ -513,14 +514,15 @@ static Value emitAllInBounds(OpBuilder &b, Location loc,
 }
 
 // Load a dense (partition/strided) tile, choosing at runtime between a
-// whole-tile DMA and emitElementwiseFill's padded gather. Whether the tile
-// stays in bounds is a runtime property of the base view's shape, so scf.if
-// picks the branch once per tile invocation rather than at compile time. Both
-// branches fill the same UB buffer, which keeps the scf.if result-free and
-// gives the tile a single definition regardless of which one ran. A boundary
-// tile takes the gather branch even though the view is dense, because the
-// in-bounds region of a multi-dim tile is generally L-shaped and cannot be
-// expressed as a single rectangular subview of the whole-tile DMA.
+// whole-tile DMA and the padded boundary path. Whether the tile stays in
+// bounds is a runtime property of the base view's shape, so scf.if picks the
+// branch once per tile invocation rather than at compile time. Both branches
+// fill the same UB buffer, which keeps the scf.if result-free and gives the
+// tile a single definition regardless of which one ran. A boundary tile's
+// in-bounds region is a rectangle, so the whole UB tile is filled with the
+// padding value once and the prefix is copied in as one strided subview; only
+// a tile with no in-bounds element on some dimension takes the per-element
+// gather, because there is no prefix to copy.
 static Value emitDenseTileLoad(OpBuilder &b, Location loc,
                                const TensorViewAccessInfo &info,
                                ValueRange indices, Value offset,
@@ -531,15 +533,42 @@ static Value emitDenseTileLoad(OpBuilder &b, Location loc,
       loc,
       makeSpaceMemref(b.getContext(), info.tile, info.elementType, dstSpace));
   Value allInBounds = emitAllInBounds(b, loc, info, validLengths);
+  Value gm = emitViewGmTile(b, loc, info, offset);
   b.create<scf::IfOp>(
       loc, allInBounds,
       [&](OpBuilder &nested, Location nestedLoc) {
-        Value gm = emitViewGmTile(nested, nestedLoc, info, offset);
         nested.create<hivm::LoadOp>(nestedLoc, TypeRange{}, gm, ub);
         nested.create<scf::YieldOp>(nestedLoc);
       },
       [&](OpBuilder &nested, Location nestedLoc) {
-        emitElementwiseFill(nested, nestedLoc, info, indices, ub, pad);
+        // Boundary tile: fill the whole UB tile with the padding value, then
+        // copy the in-bounds prefix out of the base view. The copy carries the
+        // strided prefix subviews, so the backend picks a legal transfer for
+        // any alignment without a per-element scatter.
+        Value nonEmpty =
+            nested.create<arith::ConstantIntOp>(nestedLoc, 1, /*width=*/1);
+        for (unsigned d = 0; d < info.rank(); ++d) {
+          Value zero = nested.create<arith::ConstantIndexOp>(nestedLoc, 0);
+          Value dimNonEmpty = nested.create<arith::CmpIOp>(
+              nestedLoc, arith::CmpIPredicate::sgt, validLengths[d], zero);
+          nonEmpty =
+              nested.create<arith::AndIOp>(nestedLoc, nonEmpty, dimNonEmpty);
+        }
+        nested.create<scf::IfOp>(
+            nestedLoc, nonEmpty,
+            [&](OpBuilder &inner, Location innerLoc) {
+              inner.create<hivm::VBrcOp>(innerLoc, TypeRange{}, pad, ub);
+              Value gmPrefix =
+                  emitPrefixSubview(inner, innerLoc, gm, validLengths);
+              Value ubPrefix =
+                  emitPrefixSubview(inner, innerLoc, ub, validLengths);
+              inner.create<memref::CopyOp>(innerLoc, gmPrefix, ubPrefix);
+              inner.create<scf::YieldOp>(innerLoc);
+            },
+            [&](OpBuilder &inner, Location innerLoc) {
+              emitElementwiseFill(inner, innerLoc, info, indices, ub, pad);
+              inner.create<scf::YieldOp>(innerLoc);
+            });
         nested.create<scf::YieldOp>(nestedLoc);
       });
   return b.create<bufferization::ToTensorOp>(loc, resultTy, ub, true, false);
@@ -562,19 +591,13 @@ static bool viewIndicesWellTyped(const TensorViewAccessInfo &info,
 }
 
 // lowerViewLoad/lowerViewStore below call emitGatherLoad/emitScatterStore from
-// TensorViewLowering.cpp; nothing reaches the emitters in the .inc any more
-// (verified: zero references to emitPerIndexPayloadGather,
-// emitSingleAffineGatherDMA or emitDensePayloadInBounds from this file).
-// Including it only compiled a second, divergent copy of helpers that share
-// names with the live ones -- edits to one silently did not affect the other.
-//
-// The file is kept rather than deleted because it holds the only working
-// implementation of the affine fast path: emitAffineGmTile (which folds the
-// index step into the sparse dim's stride) and emitAffineRunInBounds (which
-// range-checks both ends of a run once per tile). Those are what
-// emitSingleAffineGather/Scatter in TensorViewLowering.cpp need when the stubs
-// there are filled in. See documents/commonir/tensorview_known_issues.md,
-// Issues 1 and 3.
+// TensorViewLowering.cpp. The generated .inc is not included here: it defines a
+// second copy of helpers under the same names, so an edit to one copy would not
+// reach the other. It stays in the tree because it also carries the affine
+// helpers emitAffineGmTile, which folds the index step into the sparse dim's
+// stride, and emitAffineRunInBounds, which range-checks both ends of a run once
+// per tile; emitSingleAffineGather/Scatter will build on them once that
+// strategy is selected.
 
 // Lower a `tile.load` off a TensorView. Dense views use emitDenseTileLoad;
 // gather_scatter views use emitGatherLoad to select payload DMA or scalar
@@ -683,22 +706,15 @@ static LogicalResult lowerViewStore(tile::StoreOp op,
   Value ub = rewriter.create<memref::AllocOp>(
       loc, makeSpaceMemref(rewriter.getContext(), info.tile, info.elementType,
                            srcSpace));
+  // Stage the whole tile in UB with static shapes and clip only the UB -> GM
+  // DMA to the in-bounds prefix. Slicing the source tensor to the prefix first
+  // would hand the rest of the pipeline a dynamically shaped tensor, which
+  // fails to compile for any computed store value.
+  auto materialize = rewriter.create<bufferization::MaterializeInDestinationOp>(
+      loc, op.getSrc(), ub);
+  materialize->setAttr("writable", rewriter.getUnitAttr());
   Value gmSub = emitPrefixSubview(rewriter, loc, gm, validLengths);
   Value ubSub = emitPrefixSubview(rewriter, loc, ub, validLengths);
-
-  SmallVector<OpFoldResult> offsets;
-  SmallVector<OpFoldResult> sizes;
-  SmallVector<OpFoldResult> strides;
-  for (Value length : validLengths) {
-    offsets.push_back(rewriter.getIndexAttr(0));
-    sizes.push_back(OpFoldResult(length));
-    strides.push_back(rewriter.getIndexAttr(1));
-  }
-  Value slice = rewriter.create<tensor::ExtractSliceOp>(
-      loc, op.getSrc(), offsets, sizes, strides);
-  auto materialize = rewriter.create<bufferization::MaterializeInDestinationOp>(
-      loc, slice, ubSub);
-  materialize->setAttr("writable", rewriter.getUnitAttr());
   rewriter.create<hivm::StoreOp>(loc, TypeRange{}, ubSub, gmSub);
   rewriter.eraseOp(op);
   return success();

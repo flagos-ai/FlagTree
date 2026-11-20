@@ -42,7 +42,7 @@ def gather_padding_kernel(src, indices, dst, src_elements, BLOCK_SIZE: tl.conste
     offsets = tl.arange(0, BLOCK_SIZE)
     data_indices = tl.load(indices + offsets)
     src_gather = tle.make_gather_scatter_view(src, shape=[src_elements], strides=[1], tile=[BLOCK_SIZE], sparse_dim=[0],
-                                              padding_value="nan")
+                                              padding_value="nan", bounds_check=True)
     dst_view = tle.make_partition_view(dst, shape=[BLOCK_SIZE], strides=[1], tile=[BLOCK_SIZE])
 
     value = tle.tile_load(src_gather, index=(data_indices, ), dst_space=tle.language.dsa.ascend.UB)
@@ -55,7 +55,7 @@ def scatter_bounds_kernel(src, indices, dst, dst_elements, BLOCK_SIZE: tl.conste
     data_indices = tl.load(indices + offsets)
     src_view = tle.make_partition_view(src, shape=[BLOCK_SIZE], strides=[1], tile=[BLOCK_SIZE])
     dst_scatter = tle.make_gather_scatter_view(dst, shape=[dst_elements], strides=[1], tile=[BLOCK_SIZE],
-                                               sparse_dim=[0])
+                                               sparse_dim=[0], bounds_check=True)
 
     value = tle.tile_load(src_view, index=(0, ), dst_space=tle.language.dsa.ascend.UB)
     tle.tile_store(dst_scatter, value=value, index=(data_indices, ), src_space=tle.language.dsa.ascend.UB)
