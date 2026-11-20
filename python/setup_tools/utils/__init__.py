@@ -58,7 +58,10 @@ submodule_registrar = SubmoduleRegistrar(submodules=(
         "name": "triton_shared", "url": "https://github.com/microsoft/triton-shared.git", "commit_id":
         "5842469a16b261e45a2c67fbfc308057622b03ee"
     },
-    {"name": "flir", "url": "https://github.com/flagos-ai/flir.git"},
+    {
+        "name": "flir", "url": "https://github.com/Artemis6688//flir.git", "commit_id":
+        "88c3b996d174e89759b43d7de9fce8137a5208b7"
+    },
     {"name": "FlagPrism", "url": "https://github.com/flagos-ai/FlagPrism.git"},
     {
         "name": "AscendNPU-IR", "url": "https://gitcode.com/Ascend/AscendNPU-IR.git", "relative_path":
