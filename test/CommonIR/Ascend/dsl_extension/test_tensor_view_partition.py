@@ -67,6 +67,27 @@ def partition_view_padding_kernel(src, dst, src_elements, dst_elements, BLOCK_SI
     tle.tile_store(dst_tiles, value=value, index=(block, ))
 
 
+@triton.jit
+def partition_view_scaled_store_kernel(src, scale, dst, rows, cols, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
+    row_block = tl.program_id(0)
+    src_tiles = tle.make_partition_view(
+        src,
+        shape=[rows, cols],
+        strides=[cols, 1],
+        tile=[BLOCK_M, BLOCK_N],
+    )
+    dst_tiles = tle.make_partition_view(
+        dst,
+        shape=[rows, cols],
+        strides=[cols, 1],
+        tile=[BLOCK_M, BLOCK_N],
+    )
+
+    value = tle.tile_load(src_tiles, index=(row_block, 0))
+    factor = tl.load(scale + tl.arange(0, BLOCK_N))
+    tle.tile_store(dst_tiles, value=value * factor[None, :], index=(row_block, 0))
+
+
 def test_tensor_view_partition_load_store():
     rows = 128
     cols = 128
@@ -93,3 +114,20 @@ def test_tensor_view_partition_padding():
     expected = torch.full_like(actual, -torch.inf)
     expected[:src_elements] = src
     torch.testing.assert_close(actual, expected)
+
+
+def test_tensor_view_partition_store_computed_value():
+    rows = 61
+    cols = 128
+    block_m = 16
+    padded_rows = triton.cdiv(rows, block_m) * block_m
+    src = torch.rand((rows, cols), device="npu")
+    scale = torch.rand((cols, ), device="npu")
+    sentinel = -1.0
+    actual = torch.full((padded_rows, cols), sentinel, device="npu")
+
+    partition_view_scaled_store_kernel[(triton.cdiv(rows, block_m), )](src, scale, actual, rows, cols, BLOCK_M=block_m,
+                                                                       BLOCK_N=cols)
+
+    torch.testing.assert_close(actual[:rows], src * scale[None, :])
+    assert torch.all(actual[rows:] == sentinel)

@@ -683,22 +683,15 @@ static LogicalResult lowerViewStore(tile::StoreOp op,
   Value ub = rewriter.create<memref::AllocOp>(
       loc, makeSpaceMemref(rewriter.getContext(), info.tile, info.elementType,
                            srcSpace));
+  // Stage the whole tile in UB with static shapes and clip only the UB -> GM
+  // DMA to the in-bounds prefix. Slicing the source tensor to the prefix first
+  // would hand the rest of the pipeline a dynamically shaped tensor, which
+  // fails to compile for any computed store value.
+  auto materialize = rewriter.create<bufferization::MaterializeInDestinationOp>(
+      loc, op.getSrc(), ub);
+  materialize->setAttr("writable", rewriter.getUnitAttr());
   Value gmSub = emitPrefixSubview(rewriter, loc, gm, validLengths);
   Value ubSub = emitPrefixSubview(rewriter, loc, ub, validLengths);
-
-  SmallVector<OpFoldResult> offsets;
-  SmallVector<OpFoldResult> sizes;
-  SmallVector<OpFoldResult> strides;
-  for (Value length : validLengths) {
-    offsets.push_back(rewriter.getIndexAttr(0));
-    sizes.push_back(OpFoldResult(length));
-    strides.push_back(rewriter.getIndexAttr(1));
-  }
-  Value slice = rewriter.create<tensor::ExtractSliceOp>(
-      loc, op.getSrc(), offsets, sizes, strides);
-  auto materialize = rewriter.create<bufferization::MaterializeInDestinationOp>(
-      loc, slice, ubSub);
-  materialize->setAttr("writable", rewriter.getUnitAttr());
   rewriter.create<hivm::StoreOp>(loc, TypeRange{}, ubSub, gmSub);
   rewriter.eraseOp(op);
   return success();
