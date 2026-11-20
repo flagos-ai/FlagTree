@@ -48,6 +48,16 @@ jobs:
         run: |
           export no_proxy="${no_proxy:+$no_proxy,}baai-cp-web.ks3-cn-beijing.ksyuncs.com"
           export NO_PROXY="${NO_PROXY:+$NO_PROXY,}baai-cp-web.ks3-cn-beijing.ksyuncs.com"
+          python3 - <<'DNS'
+          import socket
+          from pathlib import Path
+          marker = "# flagtree-pr1541-temporary-model-dns"
+          hosts = Path("/etc/hosts")
+          entries = [line for line in hosts.read_text().splitlines() if marker not in line]
+          entries.append("43.250.35.76 baai-cp-web.ks3-cn-beijing.ksyuncs.com " + marker)
+          hosts.write_text("\n".join(entries) + "\n")
+          print("Model host resolution:", socket.getaddrinfo("baai-cp-web.ks3-cn-beijing.ksyuncs.com", 443))
+          DNS
           mkdir -p "$GEMS_DIAG_ROOT/results"
           test "$(git -C "$GEMS_DIAG_ROOT/FlagGems" rev-parse HEAD)" = a7620cc191a0b42e040194622c5758b22a7a25dc
           printf '%s\n' mm mm_out > "$GEMS_DIAG_ROOT/operators.txt"
@@ -80,3 +90,15 @@ jobs:
           print("Diagnostic totals:", totals)
           assert totals["passed"] >= 5 and totals["failed"] == 0 and totals["errors"] == 0
           VALIDATE
+      - name: Restore temporary model DNS
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'DNS'
+          from pathlib import Path
+          hosts = Path("/etc/hosts")
+          marker = "# flagtree-pr1541-temporary-model-dns"
+          entries = hosts.read_text().splitlines()
+          if any(marker in line for line in entries):
+              hosts.write_text("\n".join(line for line in entries if marker not in line) + "\n")
+          DNS
