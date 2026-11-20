@@ -22,7 +22,7 @@ name: Xpu3.6-Gems-Baseline
 
 on:
   push:
-    branches: ["main", "triton_v3.6.x", "geme-vllm-xpu"]
+    branches: ["main", "triton_v3.6.x"]
 
 permissions:
   contents: read
