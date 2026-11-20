@@ -18,23 +18,31 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: 1253565d1c2a76735bc795a6112bf2273f2a6201
-      - name: Cleanup FlagTree environment
-        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
-      - name: Build exact PR compiler
+      - name: Check existing compiler
+        id: compiler
         shell: bash
         run: |
           source ~/env-3.6.sh
           if python3 -c 'import importlib.metadata as m; v=m.version("flagtree"); print("Installed compiler:", v); assert "git1253565d" in v'; then
-            echo "Reusing the compiler already built from PR1541 head."
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
           else
-            MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Cleanup FlagTree environment
+        if: steps.compiler.outputs.reuse != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+      - name: Build exact PR compiler
+        if: steps.compiler.outputs.reuse != 'true'
+        shell: bash
+        run: |
+          source ~/env-3.6.sh
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
       - name: Clone exact FlagGems test source
         uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
         with:
           repo-url: https://github.com/flagos-ai/FlagGems.git
           ref: v5.3.5
-          clone-dir: ${{ env.GEMS_DIAG_ROOT }}/FlagGems
+          clone-dir: ${{ env.GEMS_DIAG_ROOT }}
       - name: Reproduce CI matmul cases
         shell: bash
         run: |
