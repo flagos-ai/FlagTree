@@ -32,6 +32,7 @@ on:
     branches: [main]
     paths:
       - 'packaging/backends.conf'
+      - 'packaging/build-helpers/**'
       - 'packaging/debian/**'
       - '.github/workflows/build-deb.yml'
   workflow_dispatch:

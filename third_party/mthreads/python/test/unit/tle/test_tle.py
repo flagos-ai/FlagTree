@@ -40,7 +40,8 @@ def test_tle_language_import_exports_load_signature():
         "alignment_bytes",
         "_semantic",
     ]
-    assert list(inspect.signature(tle.gpu.copy).parameters) == [
+    copy_parameters = inspect.signature(tle.gpu.copy).parameters
+    assert list(copy_parameters) == [
         "src",
         "dst",
         "shape",
@@ -49,8 +50,12 @@ def test_tle_language_import_exports_load_signature():
         "mask",
         "cache_policy",
         "other",
+        "is_async",
+        "eviction_policy",
         "_semantic",
     ]
+    assert copy_parameters["is_async"].default is False
+    assert copy_parameters["eviction_policy"].default == ""
     assert hasattr(tle.gpu, "copy")
 
 

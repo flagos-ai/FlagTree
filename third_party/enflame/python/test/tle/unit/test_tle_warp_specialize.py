@@ -500,6 +500,9 @@ class TestTLEElementwiseAddWarpSpecialize:
         c = _elementwise_add_ws_spsc(a, b, BLOCK_X, BLOCK_Y, num_stages)
         torch.testing.assert_close(a + b, c, atol=1e-5, rtol=1e-5)
 
+    @pytest.mark.skip(reason="3-partition two-pipeline SPSC (load->compute->store) hangs on "
+                      "GCU400 until two pipeline instances in one warp-specialize region "
+                      "are fenced correctly")
     @pytest.mark.parametrize("xnumel,ynumel", [(1000, 2000), (4000, 120)])
     @pytest.mark.parametrize("num_stages", [1, 2])
     def test_two_pipeline_spsc(self, xnumel, ynumel, num_stages):

@@ -245,6 +245,27 @@ bool vectorFitsRoot(Type rootOpTy) {
          vectorizedTyValid(elemTy);
 }
 
+bool vectorFitsScanOperand(triton::xpu::ScanOp scanOp, Type operandTy) {
+  unsigned numElems = 0;
+  auto axis = scanOp.getAxis();
+
+  if (auto operandTensorTy = dyn_cast<RankedTensorType>(operandTy)) {
+    auto operandShape = operandTensorTy.getShape();
+    numElems = operandShape[axis];
+  }
+
+  Type vecTy = getElementTypeOrSelf(operandTy);
+  Type elemTy = getElementTypeOrSelf(vecTy);
+  auto elemWidth = elemTy.getIntOrFloatBitWidth();
+  auto vectorWidth = 512 / elemWidth;
+
+  if (numElems < vectorWidth || numElems % vectorWidth > 0 ||
+      !vectorizedTyValid(elemTy))
+    return false;
+
+  return true;
+}
+
 bool vectorFitsReduceOperand(triton::xpu::ReduceOp redOp, Type operandTy) {
   unsigned numElems = 0;
   auto axis = redOp.getAxis();

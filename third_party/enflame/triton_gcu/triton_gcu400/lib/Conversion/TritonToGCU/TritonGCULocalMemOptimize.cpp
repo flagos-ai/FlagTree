@@ -56,6 +56,12 @@ namespace {
 // Helpers
 // ===----------------------------------------------------------------------===
 
+static bool isSharedMemoryMemDesc(Value memdesc) {
+  auto memdescTy = dyn_cast<triton::gpu::MemDescType>(memdesc.getType());
+  return memdescTy && isa_and_nonnull<triton::gpu::SharedMemorySpaceAttr>(
+                          memdescTy.getMemorySpace());
+}
+
 /// Trace through tt.addptr / tt.broadcast / tt.splat chains back to the
 /// triton_gcu.memdesc_to_ptr that produced the base pointer.
 static triton::gcu::MemDescToPtrOp traceToMemDescToPtr(Value ptrTensor) {
@@ -198,6 +204,143 @@ static bool isFullTileGcuStoreToSmem(triton::gcu::StoreOp storeOp,
   return true;
 }
 
+/// Compute an adjusted base pointer by adding a byte offset derived from
+/// tile element offsets within a row-major tensor.
+///
+/// GCU's DTE lowering ignores the `offsets` parameter of triton_gcu.load/store,
+/// always starting from the base pointer. Therefore, to load/store a tile at a
+/// non-zero position, we bake the byte offset into the pointer itself:
+///
+///   adjusted_ptr = int2ptr(ptr2int(base_ptr) + byte_offset)
+///   byte_offset = linearize(tileElemOffsets, srcShape) * elemBytes
+///
+/// Example: srcShape=[512, 512], tileElemOffsets=[128, 128], elemBytes=4
+///   elemOffset = 128*512 + 128 = 65664
+///   byteOffset = 65664 * 4 = 262656
+///   adjusted_ptr = base_ptr + 262656
+///
+static Value computeAdjustedPtr(PatternRewriter &rewriter, Location loc,
+                                Value basePtr,
+                                ArrayRef<int64_t> tileElemOffsets,
+                                ArrayRef<int64_t> srcShape, unsigned elemBytes,
+                                unsigned rank) {
+  int64_t elemOffset = 0;
+  if (rank == 2)
+    elemOffset = tileElemOffsets[0] * srcShape[1] + tileElemOffsets[1];
+  else if (rank == 1)
+    elemOffset = tileElemOffsets[0];
+  int64_t byteOffset = elemOffset * static_cast<int64_t>(elemBytes);
+
+  if (byteOffset == 0)
+    return basePtr;
+
+  auto i64Ty = rewriter.getI64Type();
+  auto ptrTy = basePtr.getType();
+  Value ptrInt = rewriter.create<triton::gcu::PtrToIntOp>(loc, i64Ty, basePtr);
+  Value offsetVal = rewriter.create<arith::ConstantIntOp>(loc, byteOffset, 64);
+  Value adjusted = rewriter.create<arith::AddIOp>(loc, ptrInt, offsetVal);
+  return rewriter.create<triton::gcu::IntToPtrOp>(loc, ptrTy, adjusted);
+}
+
+/// What a view-folding pattern did to the source dims of a copy. It decides how
+/// `broadcast_dims` has to be translated when the copy is re-created.
+enum class BroadcastMapping {
+  /// Same dims in the same order: the mapping is kept as it is.
+  Verbatim,
+  /// The copy is transposed: permute by `transOrder`
+  /// (new[i] = old[transOrder[i]]).
+  Transposed,
+  /// Dim 0 was folded into the view or the pointer: drop it from the mapping.
+  DropDim0,
+};
+
+/// Give a re-created `copy_global_to_local` the attributes that its operands do
+/// not carry, all of which a rebuild would otherwise lose:
+///   * `broadcast_dims`  - how the source dims map onto the destination tile;
+///   * `offsets_are_dst` - the offsets are destination tile offsets, not source
+///                         offsets (see `triton_gcu.load`);
+///   * `tt.load.async`   - issue the transfer without waiting for it.
+///
+/// `src` is the op the pattern replaces: the fused `triton_gcu.load`, or the
+/// copy itself when only its view changed. An attribute is set only when `src`
+/// has it, except for `tt.load.async` when the caller passes `asyncByDefault`:
+/// a plain `tle.gpu.copy` has no frontend switch for it, so the pattern that
+/// turns it into a GMEM->SMEM transfer asks for the asynchronous form itself.
+/// TTSmemLowerToGCU degrades that request to a synchronous issue when no shared
+/// tag is free, so a kernel that cannot afford one still compiles.
+static void
+inheritCopyAttributes(Operation *src, triton::gcu::CopyGlobalToLocalOp dst,
+                      BroadcastMapping mapping = BroadcastMapping::Verbatim,
+                      ArrayRef<int> transOrder = {},
+                      bool asyncByDefault = false) {
+  auto copyInherentAttrs = [&](auto srcOp) {
+    if (auto attr = srcOp.getBroadcastDimsAttr()) {
+      SmallVector<int32_t> mapped(attr.asArrayRef());
+      switch (mapping) {
+      case BroadcastMapping::Verbatim:
+        break;
+      case BroadcastMapping::Transposed:
+        for (unsigned i = 0; i < mapped.size() && i < transOrder.size(); ++i)
+          mapped[i] = attr.asArrayRef()[transOrder[i]];
+        break;
+      case BroadcastMapping::DropDim0:
+        if (!mapped.empty())
+          mapped.erase(mapped.begin());
+        break;
+      }
+      if (!mapped.empty())
+        dst.setBroadcastDimsAttr(
+            DenseI32ArrayAttr::get(dst.getContext(), mapped));
+    }
+    if (auto attr = srcOp.getOffsetsAreDstAttr())
+      dst.setOffsetsAreDstAttr(attr);
+  };
+
+  if (auto load = dyn_cast<triton::gcu::LoadOp>(src))
+    copyInherentAttrs(load);
+  else if (auto copy = dyn_cast<triton::gcu::CopyGlobalToLocalOp>(src))
+    copyInherentAttrs(copy);
+
+  if (auto asyncAttr = src->getAttr(kLoadAsync)) {
+    dst->setAttr(kLoadAsync, asyncAttr);
+  } else if (asyncByDefault) {
+    dst->setAttr(kLoadAsync, BoolAttr::get(dst.getContext(), true));
+  }
+}
+
+/// Common precondition of the FuseMemDesc*LoadLocalAlloc patterns:
+/// `memdesc` must be a pure (src-less) local_alloc result and exactly one
+/// copy_global_to_local fills it. Barriers and the ops listed in
+/// `skipUsers` (the view ops being folded) are ignored; any other user
+/// makes the fusion unsafe. Returns the alloc + fill copy on success.
+struct FusableCopy {
+  triton::gpu::LocalAllocOp alloc;
+  triton::gcu::CopyGlobalToLocalOp copy;
+};
+static std::optional<FusableCopy>
+findFusableCopy(Value memdesc, ArrayRef<Operation *> skipUsers) {
+  auto memdescTy = cast<triton::gpu::MemDescType>(memdesc.getType());
+  if (!memdescTy.getMutableMemory())
+    return std::nullopt;
+  auto localAlloc = memdesc.getDefiningOp<triton::gpu::LocalAllocOp>();
+  if (!localAlloc || localAlloc.getSrc())
+    return std::nullopt;
+  triton::gcu::CopyGlobalToLocalOp copyOp;
+  for (auto *user : memdesc.getUsers()) {
+    if (llvm::is_contained(skipUsers, user) || isa<gpu::BarrierOp>(user))
+      continue;
+    auto copy = dyn_cast<triton::gcu::CopyGlobalToLocalOp>(user);
+    if (!copy || copy.getDstMem() != memdesc)
+      return std::nullopt;
+    if (copyOp)
+      return std::nullopt;
+    copyOp = copy;
+  }
+  if (!copyOp)
+    return std::nullopt;
+  return FusableCopy{localAlloc, copyOp};
+}
+
 // ===----------------------------------------------------------------------===
 // Pattern 1: triton_gcu.load + ttg.local_store -> copy_global_to_local
 // ===----------------------------------------------------------------------===
@@ -213,13 +356,23 @@ public:
     if (!gcuLoad)
       return failure();
 
+    if (!isContiguousMemDescView(localStoreOp.getDst())) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "skip fusion: non-contiguous memdesc destination "
+                 << localStoreOp.getDst() << "\n");
+      return failure();
+    }
+
     auto copyOp = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
         gcuLoad.getLoc(), gcuLoad.getPtr(), gcuLoad.getShape(),
         gcuLoad.getStrides(), gcuLoad.getOffsets(), localStoreOp.getDst(),
         gcuLoad.getDefaultValue(), gcuLoad.getOrderHint());
-    if (gcuLoad->hasAttr(kLoadAsync)) {
-      copyOp->setAttr(kLoadAsync, gcuLoad->getAttr(kLoadAsync));
-    }
+    // The broadcast mapping, the dst-offset marker and the async request of the
+    // load all belong to the copy that replaces it. A plain `tle.gpu.copy` into
+    // shared memory is asynchronous by default, see inheritCopyAttributes.
+    inheritCopyAttributes(
+        gcuLoad, copyOp, BroadcastMapping::Verbatim, {},
+        /*asyncByDefault=*/isSharedMemoryMemDesc(copyOp.getDstMem()));
 
     rewriter.eraseOp(localStoreOp);
     if (gcuLoad->use_empty())
@@ -257,9 +410,7 @@ public:
         gcuLoad.getLoc(), gcuLoad.getPtr(), gcuLoad.getShape(),
         gcuLoad.getStrides(), gcuLoad.getOffsets(), localAllocOp.getResult(),
         gcuLoad.getDefaultValue(), gcuLoad.getOrderHint());
-    if (gcuLoad->hasAttr(kLoadAsync)) {
-      copyOp->setAttr(kLoadAsync, gcuLoad->getAttr(kLoadAsync));
-    }
+    inheritCopyAttributes(gcuLoad, copyOp);
 
     rewriter.modifyOpInPlace(localAllocOp, [&]() {
       localAllocOp->setOperands(ValueRange{});
@@ -341,9 +492,11 @@ public:
       orderHint[i] = origOrderHint[transOrder[i]];
 
     rewriter.setInsertionPointAfter(localAllocOp);
-    rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
+    auto transCopyOp = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
         gcuLoad.getLoc(), gcuLoad.getPtr(), newShapes, newStrides, newOffsets,
         localAllocOp.getResult(), gcuLoad.getDefaultValue(), orderHint);
+    inheritCopyAttributes(gcuLoad, transCopyOp, BroadcastMapping::Transposed,
+                          transOrder);
 
     rewriter.modifyOpInPlace(localAllocOp, [&]() {
       localAllocOp->setOperands(ValueRange{});
@@ -408,27 +561,11 @@ public:
 
     auto memdesc = localLoad.getSrc();
     auto memdescTy = cast<triton::gpu::MemDescType>(memdesc.getType());
-    if (!memdescTy.getMutableMemory())
+    auto fused = findFusableCopy(memdesc, {localLoad.getOperation()});
+    if (!fused)
       return failure();
-
-    auto localAlloc = memdesc.getDefiningOp<triton::gpu::LocalAllocOp>();
-    if (!localAlloc || localAlloc.getSrc())
-      return failure();
-
-    // Find the unique copy_global_to_local that fills this alloc.
-    triton::gcu::CopyGlobalToLocalOp copyOp;
-    for (auto *user : memdesc.getUsers()) {
-      if (user == localLoad || isa<gpu::BarrierOp>(user))
-        continue;
-      auto copy = dyn_cast<triton::gcu::CopyGlobalToLocalOp>(user);
-      if (!copy || copy.getDstMem() != memdesc)
-        return failure();
-      if (copyOp)
-        return failure();
-      copyOp = copy;
-    }
-    if (!copyOp)
-      return failure();
+    auto localAlloc = fused->alloc;
+    triton::gcu::CopyGlobalToLocalOp copyOp = fused->copy;
 
     // Ensure local_load has only one use (the trans).
     if (!localLoad.getResult().hasOneUse())
@@ -440,6 +577,9 @@ public:
     for (unsigned i = 0; i < rank; ++i)
       transposedShape[i] = origShape[transOrder[i]];
 
+    // The backend (DTE engine + local_load lowering) does not consume the
+    // swizzle parameters of the shared encoding, so a fixed, simple
+    // transposed nv_mma_shared encoding is used here deliberately.
     auto elemTy = memdescTy.getElementType();
     unsigned elemBitWidth = elemTy.getIntOrFloatBitWidth();
     auto ctaLayout =
@@ -475,9 +615,12 @@ public:
 
     // Replace copy_global_to_local with transposed parameters.
     rewriter.setInsertionPoint(copyOp);
-    rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
+    auto newCopy = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
         copyOp.getLoc(), copyOp.getPtr(), newShapes, newStrides, newOffsets,
-        newAlloc.getResult(), copyOp.getDefaultValue(), newOrderHint);
+        newAlloc.getResult(), copyOp.getDefaultValue(),
+        DenseI32ArrayAttr::get(rewriter.getContext(), newOrderHint));
+    inheritCopyAttributes(copyOp, newCopy, BroadcastMapping::Transposed,
+                          transOrder);
     rewriter.eraseOp(copyOp);
 
     auto transResultTy = cast<RankedTensorType>(transOp.getType());
@@ -499,9 +642,532 @@ public:
 };
 
 // ===----------------------------------------------------------------------===
-// Pattern: ttg.local_load(memdesc) + ttg.convert_layout(dot_operand)
-//          -> ttg.local_load(memdesc) : dot_operand_type
+// Pattern:
+//  copy_global_to_local -> local_alloc -> memdesc_trans -> local_load
+//  =>
+//  copy_global_to_local(transposed) -> local_alloc(transposed) -> local_load
 //
+// Folds a memdesc-level transpose (ttg.memdesc_trans) into the DTE
+// copy_global_to_local's order_hint, so DTE writes the transposed layout
+// directly into shared memory. This is the memdesc-level counterpart of
+// FuseTransLocalLoadCopyPattern (which handles tensor-level tt.trans).
+//
+// Before:
+//   %alloc = ttg.local_alloc() : memdesc<MxNxf16>
+//   ttg.copy_global_to_local %ptr, ..., [%alloc], [order_hint]
+//   %trans = ttg.memdesc_trans %alloc {order = [1, 0]}
+//            : memdesc<MxN> -> memdesc<NxM>
+//   %load = ttg.local_load %trans : tensor<NxMxf16>
+//
+// After:
+//   %alloc' = ttg.local_alloc() : memdesc<NxMxf16, nv_mma_shared(transposed)>
+//   ttg.copy_global_to_local %ptr, ..., [%alloc'], [permuted_order_hint]
+//   %load = ttg.local_load %alloc' : tensor<NxMxf16>
+// ===----------------------------------------------------------------------===
+class FuseMemDescTransLoadLocalAllocPattern
+    : public OpRewritePattern<triton::gpu::MemDescTransOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::gpu::MemDescTransOp transOp,
+                                PatternRewriter &rewriter) const override {
+    auto transOrder = transOp.getOrder();
+    unsigned rank = transOrder.size();
+    if (rank != 2)
+      return failure();
+
+    // transOp's result must have exactly one user: a local_load.
+    if (!transOp.getResult().hasOneUse())
+      return failure();
+    auto localLoad = dyn_cast<triton::gpu::LocalLoadOp>(
+        *transOp.getResult().getUsers().begin());
+    if (!localLoad)
+      return failure();
+
+    // transOp's src must be a local_alloc (pure, mutable, no src), possibly
+    // through a memdesc_subslice (transposed sub-region access produced by
+    // canonicalizeTranspose). In the subslice case the sub-region offsets
+    // are folded into the new copy's source offsets below.
+    auto memdesc = transOp.getSrc();
+    auto memdescTy = cast<triton::gpu::MemDescType>(memdesc.getType());
+    if (!memdescTy.getMutableMemory())
+      return failure();
+
+    SmallVector<int32_t> subOffsets;
+    Operation *subOp = nullptr;
+    if (auto sub = memdesc.getDefiningOp<triton::gpu::MemDescSubsliceOp>()) {
+      subOp = sub.getOperation();
+      subOffsets = SmallVector<int32_t>(sub.getOffsets());
+      memdesc = sub.getSrc();
+      memdescTy = cast<triton::gpu::MemDescType>(memdesc.getType());
+      if (!memdescTy.getMutableMemory())
+        return failure();
+    }
+    // Shape of the view feeding the trans (the sub-region when a subslice
+    // is present, the root allocation otherwise). The transposed alloc and
+    // the new copy shapes are derived from this, NOT from the root: only
+    // the sub-region needs to be copied.
+    auto viewShape =
+        cast<triton::gpu::MemDescType>(transOp.getSrc().getType()).getShape();
+
+    auto fused = findFusableCopy(memdesc, {transOp, subOp});
+    if (!fused)
+      return failure();
+    auto localAlloc = fused->alloc;
+    triton::gcu::CopyGlobalToLocalOp copyOp = fused->copy;
+    // A copy whose offsets are destination tile offsets (mask start) cannot
+    // be fused with a view: the view offsets are source offsets and both
+    // would have to share the offsets operand. Leave it to the generic
+    // memdesc lowering, which keeps the copy and the view separate.
+    if (copyOp.getOffsetsAreDst())
+      return failure();
+
+    // Ensure local_load has only one use.
+    if (!localLoad.getResult().hasOneUse())
+      return failure();
+
+    // Build transposed memdesc type with NVMMAShared transposed layout.
+    // The shape is the transposed VIEW shape (sub-region aware).
+    SmallVector<int64_t> transposedShape(rank);
+    for (unsigned i = 0; i < rank; ++i)
+      transposedShape[i] = viewShape[transOrder[i]];
+
+    // The backend (DTE engine + local_load lowering) does not consume the
+    // swizzle parameters of the shared encoding, so a fixed, simple
+    // transposed nv_mma_shared encoding is used here deliberately.
+    auto elemTy = memdescTy.getElementType();
+    unsigned elemBitWidth = elemTy.getIntOrFloatBitWidth();
+    auto ctaLayout =
+        triton_gcu::compat::getDefaultCGALayout(rewriter.getContext(), rank);
+    auto transposedEnc = triton::gpu::NVMMASharedEncodingAttr::get(
+        rewriter.getContext(),
+        /*swizzlingByteWidth=*/128,
+        /*transposed=*/true,
+        /*elementBitWidth=*/elemBitWidth,
+        /*fp4Padded=*/false, ctaLayout);
+    auto transposedMemDescTy = triton::gpu::MemDescType::get(
+        transposedShape, elemTy, transposedEnc, memdescTy.getMemorySpace(),
+        /*mutableMemory=*/true);
+
+    // Permute copy_global_to_local shapes, strides, offsets, order_hint.
+    // The new copy describes the transposed VIEW of the global source:
+    // shapes come from the view (sub-region aware), strides are permuted
+    // from the original copy, and the offsets combine the original copy
+    // offsets with the subslice offsets (both in original coordinates)
+    // before permutation.
+    auto origCopyStrides = copyOp.getStrides();
+    auto origCopyOffsets = copyOp.getOffsets();
+    auto origOrderHint = copyOp.getOrderHint();
+    SmallVector<Value> newShapes(rank), newStrides(rank), newOffsets(rank);
+    SmallVector<int32_t> newOrderHint(rank);
+    for (unsigned i = 0; i < rank; ++i) {
+      unsigned srcDim = transOrder[i];
+      newShapes[i] = rewriter.create<arith::ConstantIndexOp>(copyOp.getLoc(),
+                                                             viewShape[srcDim]);
+      newStrides[i] = origCopyStrides[srcDim];
+      Value off = origCopyOffsets[srcDim];
+      if (!subOffsets.empty()) {
+        off = rewriter.create<arith::AddIOp>(
+            copyOp.getLoc(), off,
+            rewriter.create<arith::ConstantIndexOp>(copyOp.getLoc(),
+                                                    subOffsets[srcDim]));
+      }
+      newOffsets[i] = off;
+      newOrderHint[i] = origOrderHint[srcDim];
+    }
+
+    // Replace local_alloc with transposed-shape alloc.
+    rewriter.setInsertionPoint(localAlloc);
+    auto newAlloc = rewriter.create<triton::gpu::LocalAllocOp>(
+        localAlloc.getLoc(), transposedMemDescTy, Value());
+
+    // Replace copy_global_to_local with transposed parameters.
+    rewriter.setInsertionPoint(copyOp);
+    auto newCopy = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
+        copyOp.getLoc(), copyOp.getPtr(), newShapes, newStrides, newOffsets,
+        newAlloc.getResult(), copyOp.getDefaultValue(),
+        DenseI32ArrayAttr::get(rewriter.getContext(), newOrderHint));
+    inheritCopyAttributes(copyOp, newCopy, BroadcastMapping::Transposed,
+                          transOrder);
+    rewriter.eraseOp(copyOp);
+
+    // Replace local_load + memdesc_trans with direct local_load from
+    // transposed alloc. The result type is the same as the old local_load's
+    // type (it was already reading from the transposed memdesc).
+    auto loadResultTy = cast<RankedTensorType>(localLoad.getType());
+    rewriter.setInsertionPoint(localLoad);
+    auto newLoad = rewriter.create<triton::gpu::LocalLoadOp>(
+        localLoad.getLoc(), loadResultTy, newAlloc.getResult());
+    rewriter.replaceOp(localLoad, newLoad.getResult());
+
+    // Erase memdesc_trans (its only user, local_load, has been replaced)
+    // and the (now dead) subslice op it wrapped, if any.
+    rewriter.eraseOp(transOp);
+    if (subOp)
+      rewriter.eraseOp(subOp);
+
+    // Update all remaining users (gpu.barrier etc.) to use new alloc.
+    rewriter.replaceOp(localAlloc, newAlloc.getResult());
+
+    return success();
+  }
+};
+
+// ===----------------------------------------------------------------------===
+// Pattern:
+//  copy_global_to_local -> local_alloc -> memdesc_subslice -> local_load
+//  =>
+//  copy_global_to_local(adjusted_ptr) -> local_alloc(subslice) -> local_load
+//
+// Folds a memdesc-level subslice into the DTE copy_global_to_local.
+// ConfigGcuLoad uses the offsets operand on the copy path to compute
+// vSlicehape (actual copy size) and passes them to SliceStartOp,
+// so we pass the subslice offsets directly to the new copy.
+// ===----------------------------------------------------------------------===
+
+class FuseMemDescSubsliceLoadLocalAllocPattern
+    : public OpRewritePattern<triton::gpu::MemDescSubsliceOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::gpu::MemDescSubsliceOp subOp,
+                                PatternRewriter &rewriter) const override {
+    auto offsets = subOp.getOffsets();
+    unsigned rank = offsets.size();
+
+    if (!subOp.getResult().hasOneUse())
+      return failure();
+    auto localLoad = dyn_cast<triton::gpu::LocalLoadOp>(
+        *subOp.getResult().getUsers().begin());
+    if (!localLoad)
+      return failure();
+
+    auto memdesc = subOp.getSrc();
+    auto fused = findFusableCopy(memdesc, {subOp.getOperation()});
+    if (!fused)
+      return failure();
+    auto localAlloc = fused->alloc;
+    triton::gcu::CopyGlobalToLocalOp copyOp = fused->copy;
+    // A copy whose offsets are destination tile offsets (mask start) cannot
+    // be fused with a view: the view offsets are source offsets and both
+    // would have to share the offsets operand. Leave it to the generic
+    // memdesc lowering, which keeps the copy and the view separate.
+    if (copyOp.getOffsetsAreDst())
+      return failure();
+
+    if (!localLoad.getResult().hasOneUse())
+      return failure();
+
+    auto subTy = cast<triton::gpu::MemDescType>(subOp.getType());
+    // Build a new MemDescType with allocShape == shape (required by
+    // local_alloc verifier). The subslice type inherits allocShape from
+    // the source, which may differ from the subslice shape.
+    auto newAllocTy = triton::gpu::MemDescType::get(
+        subTy.getShape(), subTy.getElementType(), subTy.getEncoding(),
+        subTy.getMemorySpace(), subTy.getMutableMemory(),
+        subTy.getShape() /* allocShape = shape */);
+
+    // Create new local_alloc with subslice result type.
+    rewriter.setInsertionPoint(localAlloc);
+    auto newAlloc = rewriter.create<triton::gpu::LocalAllocOp>(
+        localAlloc.getLoc(), newAllocTy, Value());
+
+    // Create new copy_global_to_local with subslice offsets.
+    // Keep original ptr/shape/strides unchanged. ConfigGcuLoad uses
+    // the offsets to compute vSlicehape (actual copy size) and passes
+    // them to SliceStartOp, so DTE reads only the sub-region.
+    rewriter.setInsertionPoint(copyOp);
+    SmallVector<Value> newOffsets;
+    for (unsigned i = 0; i < rank; ++i) {
+      Value subOff =
+          rewriter.create<arith::ConstantIndexOp>(copyOp.getLoc(), offsets[i]);
+      newOffsets.push_back(rewriter.create<arith::AddIOp>(
+          copyOp.getLoc(), copyOp.getOffsets()[i], subOff));
+    }
+    auto newCopy = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
+        copyOp.getLoc(), copyOp.getPtr(), copyOp.getShape(),
+        copyOp.getStrides(), newOffsets, newAlloc.getResult(),
+        copyOp.getDefaultValue(),
+        DenseI32ArrayAttr::get(rewriter.getContext(), copyOp.getOrderHint()));
+    inheritCopyAttributes(copyOp, newCopy);
+    rewriter.eraseOp(copyOp);
+
+    // Create new local_load from new alloc.
+    rewriter.setInsertionPoint(localLoad);
+    auto newLoad = rewriter.create<triton::gpu::LocalLoadOp>(
+        localLoad.getLoc(), localLoad.getType(), newAlloc.getResult());
+    rewriter.replaceOp(localLoad, newLoad.getResult());
+
+    rewriter.eraseOp(subOp);
+    rewriter.replaceOp(localAlloc, newAlloc.getResult());
+
+    return success();
+  }
+};
+
+// ===----------------------------------------------------------------------===
+// Pattern:
+//  copy_global_to_local -> local_alloc -> memdesc_reshape -> local_load
+//  =>
+//  copy_global_to_local(reshaped) -> local_alloc(reshaped) -> local_load
+//
+// Folds a memdesc-level reshape into the DTE copy_global_to_local.
+// Reshape does not move the base pointer; only the shape/strides change.
+// ===----------------------------------------------------------------------===
+
+class FuseMemDescReshapeLoadLocalAllocPattern
+    : public OpRewritePattern<triton::gpu::MemDescReshapeOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::gpu::MemDescReshapeOp reshapeOp,
+                                PatternRewriter &rewriter) const override {
+    if (!reshapeOp.getResult().hasOneUse())
+      return failure();
+    auto localLoad = dyn_cast<triton::gpu::LocalLoadOp>(
+        *reshapeOp.getResult().getUsers().begin());
+    if (!localLoad)
+      return failure();
+
+    auto memdesc = reshapeOp.getSrc();
+    auto fused = findFusableCopy(memdesc, {reshapeOp.getOperation()});
+    if (!fused)
+      return failure();
+    auto localAlloc = fused->alloc;
+    triton::gcu::CopyGlobalToLocalOp copyOp = fused->copy;
+    // A copy whose offsets are destination tile offsets (mask start) cannot
+    // be fused with a view: the view offsets are source offsets and both
+    // would have to share the offsets operand. Leave it to the generic
+    // memdesc lowering, which keeps the copy and the view separate.
+    if (copyOp.getOffsetsAreDst())
+      return failure();
+
+    if (!localLoad.getResult().hasOneUse())
+      return failure();
+
+    auto resultTy = cast<triton::gpu::MemDescType>(reshapeOp.getType());
+    auto resultShape = resultTy.getShape();
+    unsigned rank = resultShape.size();
+
+    // Verify the original copy strides are row-major w.r.t. copy shape.
+    // Reshape only preserves data layout when the source is contiguous
+    // row-major; non-row-major sources would be silently miscompiled.
+    // Guard against rank mismatch (reshape can change rank, e.g. 1D->2D).
+    if (rank != copyOp.getShape().size())
+      return failure();
+    auto origCopyShape = copyOp.getShape();
+    auto copyStrides = copyOp.getStrides();
+    for (unsigned i = 0; i < rank; ++i) {
+      auto strideCst = copyStrides[i].getDefiningOp<arith::ConstantIndexOp>();
+      if (!strideCst)
+        return failure();
+      int64_t expected = 1;
+      for (unsigned j = i + 1; j < rank; ++j) {
+        auto dimCst = origCopyShape[j].getDefiningOp<arith::ConstantIndexOp>();
+        if (!dimCst)
+          return failure();
+        expected *= dimCst.value();
+      }
+      if (strideCst.value() != expected)
+        return failure();
+    }
+
+    // Build row-major strides for the reshaped shape.
+    SmallVector<int64_t> strideVals(rank, 1);
+    for (int i = static_cast<int>(rank) - 2; i >= 0; --i)
+      strideVals[i] = strideVals[i + 1] * resultShape[i + 1];
+
+    SmallVector<Value> newShapes, newStrides, newOffsets;
+    for (unsigned i = 0; i < rank; ++i) {
+      newShapes.push_back(rewriter.create<arith::ConstantIndexOp>(
+          reshapeOp.getLoc(), resultShape[i]));
+      newStrides.push_back(rewriter.create<arith::ConstantIndexOp>(
+          reshapeOp.getLoc(), strideVals[i]));
+      newOffsets.push_back(
+          rewriter.create<arith::ConstantIndexOp>(reshapeOp.getLoc(), 0));
+    }
+    SmallVector<int32_t> orderHint(rank);
+    for (unsigned i = 0; i < rank; ++i)
+      orderHint[i] = static_cast<int32_t>(rank - 1 - i);
+
+    rewriter.setInsertionPoint(localAlloc);
+    auto newAlloc = rewriter.create<triton::gpu::LocalAllocOp>(
+        localAlloc.getLoc(), resultTy, Value());
+
+    rewriter.setInsertionPoint(copyOp);
+    auto newCopy = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
+        copyOp.getLoc(), copyOp.getPtr(), newShapes, newStrides, newOffsets,
+        newAlloc.getResult(), copyOp.getDefaultValue(),
+        DenseI32ArrayAttr::get(rewriter.getContext(), orderHint));
+    inheritCopyAttributes(copyOp, newCopy);
+    rewriter.eraseOp(copyOp);
+
+    rewriter.setInsertionPoint(localLoad);
+    auto newLoad = rewriter.create<triton::gpu::LocalLoadOp>(
+        localLoad.getLoc(), localLoad.getType(), newAlloc.getResult());
+    rewriter.replaceOp(localLoad, newLoad.getResult());
+
+    rewriter.eraseOp(reshapeOp);
+    rewriter.replaceOp(localAlloc, newAlloc.getResult());
+
+    return success();
+  }
+};
+
+// ===----------------------------------------------------------------------===
+// Pattern:
+//  copy_global_to_local -> local_alloc -> memdesc_index -> local_load
+//  =>
+//  copy_global_to_local(adjusted_ptr) -> local_alloc(indexed) -> local_load
+//
+// Folds a memdesc-level index (runtime scalar) into the DTE
+// copy_global_to_local. Since the index is a runtime value, it cannot be baked
+// into static offsets. Instead, the base pointer is adjusted at runtime:
+//   adjusted_ptr = int2ptr(ptr2int(base_ptr) + runtime_byte_offset)
+//   runtime_byte_offset = index * stride[0] * elemBytes
+// This enables DTE async copy for warp-specialize scenarios.
+// ===----------------------------------------------------------------------===
+
+class FuseMemDescIndexLoadLocalAllocPattern
+    : public OpRewritePattern<triton::gpu::MemDescIndexOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::gpu::MemDescIndexOp indexOp,
+                                PatternRewriter &rewriter) const override {
+    if (!indexOp.getResult().hasOneUse())
+      return failure();
+    auto localLoad = dyn_cast<triton::gpu::LocalLoadOp>(
+        *indexOp.getResult().getUsers().begin());
+    if (!localLoad)
+      return failure();
+
+    auto memdesc = indexOp.getSrc();
+    auto memdescTy = cast<triton::gpu::MemDescType>(memdesc.getType());
+    auto fused = findFusableCopy(memdesc, {indexOp.getOperation()});
+    if (!fused)
+      return failure();
+    auto localAlloc = fused->alloc;
+    triton::gcu::CopyGlobalToLocalOp copyOp = fused->copy;
+    // A copy whose offsets are destination tile offsets (mask start) cannot
+    // be fused with a view: the view offsets are source offsets and both
+    // would have to share the offsets operand. Leave it to the generic
+    // memdesc lowering, which keeps the copy and the view separate.
+    if (copyOp.getOffsetsAreDst())
+      return failure();
+
+    if (!localLoad.getResult().hasOneUse())
+      return failure();
+
+    auto srcShape = memdescTy.getShape();
+    unsigned srcRank = srcShape.size();
+    if (srcRank < 2)
+      return failure();
+    auto elemTy = memdescTy.getElementType();
+    unsigned elemBytes = elemTy.getIntOrFloatBitWidth() / 8;
+    auto loc = indexOp.getLoc();
+
+    // The index value must dominate copyOp, since we insert adjustedPtr
+    // ops before copyOp. In warp-specialize scenarios the index may be a
+    // loop variable or pipe_iter defined after the copy.
+    // isBeforeInBlock requires both ops to live in the same block, so bail
+    // out first on cross-block definitions (e.g. loop-carried values).
+    if (auto indexDef = indexOp.getIndex().getDefiningOp()) {
+      if (indexDef->getBlock() != copyOp->getBlock())
+        return failure();
+      if (copyOp->isBeforeInBlock(indexDef))
+        return failure();
+    }
+
+    // All new ops must be placed before copyOp so they dominate it.
+    rewriter.setInsertionPoint(copyOp);
+
+    // Compute runtime byte offset:
+    //   (index + origOffsets[0]) * strides[0] * elemBytes
+    // The original copy's dim-0 offset is folded into the index so the
+    // adjusted pointer addresses the same source tile the original copy
+    // would have read. origOffsets[0] dominates copyOp (it is an operand
+    // of the copy), so the addi below is safely placed before copyOp.
+    auto origOffsets = copyOp.getOffsets();
+    auto indexTy = rewriter.getIndexType();
+    Value idxVal =
+        rewriter.create<arith::IndexCastOp>(loc, indexTy, indexOp.getIndex());
+    idxVal = rewriter.create<arith::AddIOp>(loc, idxVal, origOffsets[0]);
+    Value stride0 = copyOp.getStrides()[0];
+    Value elemOffset = rewriter.create<arith::MulIOp>(loc, idxVal, stride0);
+    Value byteOffset = rewriter.create<arith::MulIOp>(
+        loc, elemOffset,
+        rewriter.create<arith::ConstantIndexOp>(loc, elemBytes));
+
+    // Adjust base pointer: int2ptr(ptr2int(base) + byte_offset)
+    auto i64Ty = rewriter.getI64Type();
+    auto ptrTy = copyOp.getPtr().getType();
+    Value ptrInt =
+        rewriter.create<triton::gcu::PtrToIntOp>(loc, i64Ty, copyOp.getPtr());
+    Value offsetI64 =
+        rewriter.create<arith::IndexCastOp>(loc, i64Ty, byteOffset);
+    Value adjustedInt = rewriter.create<arith::AddIOp>(loc, ptrInt, offsetI64);
+    Value adjustedPtr =
+        rewriter.create<triton::gcu::IntToPtrOp>(loc, ptrTy, adjustedInt);
+
+    // Drop dim 0 from shape/strides; the remaining dims keep the original
+    // copy offsets (dim 0 was folded into the adjusted pointer above).
+    SmallVector<Value> newShapes(copyOp.getShape().begin() + 1,
+                                 copyOp.getShape().end());
+    SmallVector<Value> newStrides(copyOp.getStrides().begin() + 1,
+                                  copyOp.getStrides().end());
+    unsigned newRank = srcRank - 1;
+    SmallVector<Value> newOffsets(origOffsets.begin() + 1, origOffsets.end());
+
+    // Renumber order_hint: drop dim 0, decrement remaining dims.
+    // If any entry is Dynamic_stride_symbol, we cannot determine the
+    // correct reduced order — use a simple [0, 1, ..., newRank-1] fallback.
+    auto origOrder = copyOp.getOrderHint();
+    SmallVector<int32_t> newOrder;
+    bool hasDynamic = false;
+    for (int32_t dim : origOrder) {
+      if (dim == Dynamic_stride_symbol) {
+        hasDynamic = true;
+        break;
+      }
+    }
+    if (hasDynamic) {
+      for (unsigned i = 0; i < newRank; ++i)
+        newOrder.push_back(static_cast<int32_t>(i));
+    } else {
+      for (int32_t dim : origOrder)
+        if (dim != 0)
+          newOrder.push_back(dim - 1);
+    }
+
+    auto indexedTy = cast<triton::gpu::MemDescType>(indexOp.getType());
+
+    // newAlloc must be before copyOp so the copy can reference it.
+    rewriter.setInsertionPoint(localAlloc);
+    auto newAlloc = rewriter.create<triton::gpu::LocalAllocOp>(
+        localAlloc.getLoc(), indexedTy, Value());
+
+    // adjustedPtr and newCopy placed before the old copyOp.
+    rewriter.setInsertionPoint(copyOp);
+    auto newCopy = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
+        copyOp.getLoc(), adjustedPtr, newShapes, newStrides, newOffsets,
+        newAlloc.getResult(), copyOp.getDefaultValue(),
+        DenseI32ArrayAttr::get(rewriter.getContext(), newOrder));
+    inheritCopyAttributes(copyOp, newCopy, BroadcastMapping::DropDim0);
+    rewriter.eraseOp(copyOp);
+
+    rewriter.setInsertionPoint(localLoad);
+    auto newLoad = rewriter.create<triton::gpu::LocalLoadOp>(
+        localLoad.getLoc(), localLoad.getType(), newAlloc.getResult());
+    rewriter.replaceOp(localLoad, newLoad.getResult());
+
+    rewriter.eraseOp(indexOp);
+    rewriter.replaceOp(localAlloc, newAlloc.getResult());
+
+    return success();
+  }
+};
+
 // When a local_load from shared memory is immediately followed by a
 // convert_layout to DotOperandEncoding, fuse them into a single local_load
 // that directly produces the dot operand type.  Without this, the lowering
@@ -583,10 +1249,14 @@ public:
     if (memdescTy.getShape() != loadResultTy.getShape())
       return failure();
 
-    rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
+    if (!isContiguousMemDescView(memdesc))
+      return failure();
+
+    auto copyOp = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
         gcuLoad.getLoc(), gcuLoad.getPtr(), gcuLoad.getShape(),
         gcuLoad.getStrides(), gcuLoad.getOffsets(), memdesc,
         gcuLoad.getDefaultValue(), gcuLoad.getOrderHint());
+    inheritCopyAttributes(gcuLoad, copyOp);
 
     rewriter.eraseOp(storeOp);
     if (gcuLoad->use_empty())
@@ -698,10 +1368,14 @@ public:
     if (!isFullTileGcuStoreToSmem(storeOp, memdesc))
       return failure();
 
-    rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
+    if (!isContiguousMemDescView(memdesc))
+      return failure();
+
+    auto copyOp = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
         gcuLoad.getLoc(), gcuLoad.getPtr(), gcuLoad.getShape(),
         gcuLoad.getStrides(), gcuLoad.getOffsets(), memdesc,
         gcuLoad.getDefaultValue(), gcuLoad.getOrderHint());
+    inheritCopyAttributes(gcuLoad, copyOp);
 
     rewriter.eraseOp(storeOp);
     if (gcuLoad->use_empty())
@@ -740,15 +1414,19 @@ public:
     if (isFullTileGcuStoreToSmem(storeOp, memdesc))
       return failure();
 
+    if (!isContiguousMemDescView(memdesc))
+      return failure();
+
     auto memdescTy = cast<triton::gpu::MemDescType>(memdesc.getType());
     auto loadResultTy = cast<RankedTensorType>(gcuLoad.getType());
     if (memdescTy.getShape() != loadResultTy.getShape())
       return failure();
 
-    rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
+    auto copyOp = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
         gcuLoad.getLoc(), gcuLoad.getPtr(), gcuLoad.getShape(),
         gcuLoad.getStrides(), gcuLoad.getOffsets(), memdesc,
         gcuLoad.getDefaultValue(), gcuLoad.getOrderHint());
+    inheritCopyAttributes(gcuLoad, copyOp);
 
     rewriter.eraseOp(storeOp);
     if (gcuLoad->use_empty())
@@ -1072,44 +1750,6 @@ static SmallVector<int64_t> delinearizeTileIndex(int64_t linearIdx,
   return tileCoords;
 }
 
-/// Compute an adjusted base pointer by adding a byte offset derived from
-/// tile element offsets within a row-major tensor.
-///
-/// GCU's DTE lowering ignores the `offsets` parameter of triton_gcu.load/store,
-/// always starting from the base pointer. Therefore, to load/store a tile at a
-/// non-zero position, we bake the byte offset into the pointer itself:
-///
-///   adjusted_ptr = int2ptr(ptr2int(base_ptr) + byte_offset)
-///   byte_offset = linearize(tileElemOffsets, srcShape) * elemBytes
-///
-/// Example: srcShape=[512, 512], tileElemOffsets=[128, 128], elemBytes=4
-///   elemOffset = 128*512 + 128 = 65664
-///   byteOffset = 65664 * 4 = 262656
-///   adjusted_ptr = base_ptr + 262656
-///
-static Value computeAdjustedPtr(PatternRewriter &rewriter, Location loc,
-                                Value basePtr,
-                                ArrayRef<int64_t> tileElemOffsets,
-                                ArrayRef<int64_t> srcShape, unsigned elemBytes,
-                                unsigned rank) {
-  int64_t elemOffset = 0;
-  if (rank == 2)
-    elemOffset = tileElemOffsets[0] * srcShape[1] + tileElemOffsets[1];
-  else if (rank == 1)
-    elemOffset = tileElemOffsets[0];
-  int64_t byteOffset = elemOffset * static_cast<int64_t>(elemBytes);
-
-  if (byteOffset == 0)
-    return basePtr;
-
-  auto i64Ty = rewriter.getI64Type();
-  auto ptrTy = basePtr.getType();
-  Value ptrInt = rewriter.create<triton::gcu::PtrToIntOp>(loc, i64Ty, basePtr);
-  Value offsetVal = rewriter.create<arith::ConstantIntOp>(loc, byteOffset, 64);
-  Value adjusted = rewriter.create<arith::AddIOp>(loc, ptrInt, offsetVal);
-  return rewriter.create<triton::gcu::IntToPtrOp>(loc, ptrTy, adjusted);
-}
-
 // ===----------------------------------------------------------------------===
 // Pattern: Fuse triton_gcu.load/tt.load + tle.extract_tile (multi-warp)
 //
@@ -1211,10 +1851,11 @@ public:
           ttLoad.getOther());
     } else {
       auto gcuLoad = src.getDefiningOp<triton::gcu::LoadOp>();
-      rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
+      auto copyOp = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
           gcuLoad.getLoc(), gcuLoad.getPtr(), gcuLoad.getShape(),
           gcuLoad.getStrides(), gcuLoad.getOffsets(), smemAlloc,
           gcuLoad.getDefaultValue(), gcuLoad.getOrderHint());
+      inheritCopyAttributes(gcuLoad, copyOp);
     }
     if (src.getDefiningOp()->use_empty())
       rewriter.eraseOp(src.getDefiningOp());
@@ -1303,7 +1944,9 @@ private:
 
     Value tileLoaded = rewriter.create<triton::LoadOp>(
         loc, tileResultTy, tilePtrs, /*mask=*/Value(), /*other=*/Value(),
+#if TRITON_VERSION < 38
         /*boundaryCheck=*/ArrayRef<int32_t>{}, /*padding=*/nullptr,
+#endif
         ttLoad.getCache(), ttLoad.getEvict(), ttLoad.getIsVolatile());
 
     rewriter.replaceOp(op, tileLoaded);
@@ -1425,10 +2068,11 @@ public:
           ttLoad.getOther());
     } else {
       auto gcuLoad = src.getDefiningOp<triton::gcu::LoadOp>();
-      rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
+      auto copyOp = rewriter.create<triton::gcu::CopyGlobalToLocalOp>(
           gcuLoad.getLoc(), gcuLoad.getPtr(), gcuLoad.getShape(),
           gcuLoad.getStrides(), gcuLoad.getOffsets(), smemAlloc,
           gcuLoad.getDefaultValue(), gcuLoad.getOrderHint());
+      inheritCopyAttributes(gcuLoad, copyOp);
     }
     if (src.getDefiningOp()->use_empty())
       rewriter.eraseOp(src.getDefiningOp());
@@ -1601,20 +2245,33 @@ private:
                              elemOffsets, dimStrides, ptrElemTy, tileEncoding);
 
       if (tileIdx == linearIdx) {
-        rewriter.create<triton::StoreOp>(
-            loc, storeTilePtrs, tile, /*mask=*/Value(),
-            /*boundaryCheck=*/ArrayRef<int32_t>{}, cache, evict);
+        rewriter.create<triton::StoreOp>(loc, storeTilePtrs, tile,
+                                         /*mask=*/Value(),
+#if TRITON_VERSION >= 38
+                                         cache, evict);
+#else
+                                         /*boundaryCheck=*/ArrayRef<int32_t>{},
+                                         cache, evict);
+#endif
       } else {
         Value loadTilePtrs = buildTilePtrTensor(
             rewriter, loc, scalarSrcPtr, tileShape, elemOffsets, srcDimStrides,
             ptrElemTy, tileEncoding);
         Value chunkLoaded = rewriter.create<triton::LoadOp>(
             loc, tileResultTy, loadTilePtrs, /*mask=*/Value(),
-            /*other=*/Value(), /*boundaryCheck=*/ArrayRef<int32_t>{},
-            /*padding=*/nullptr, cache, evict, ttLoad.getIsVolatile());
-        rewriter.create<triton::StoreOp>(
-            loc, storeTilePtrs, chunkLoaded, /*mask=*/Value(),
-            /*boundaryCheck=*/ArrayRef<int32_t>{}, cache, evict);
+            /*other=*/Value(),
+#if TRITON_VERSION < 38
+            /*boundaryCheck=*/ArrayRef<int32_t>{}, /*padding=*/nullptr,
+#endif
+            cache, evict, ttLoad.getIsVolatile());
+        rewriter.create<triton::StoreOp>(loc, storeTilePtrs, chunkLoaded,
+                                         /*mask=*/Value(),
+#if TRITON_VERSION >= 38
+                                         cache, evict);
+#else
+                                         /*boundaryCheck=*/ArrayRef<int32_t>{},
+                                         cache, evict);
+#endif
       }
     }
 
@@ -1695,9 +2352,7 @@ public:
         gcuLoad.getLoc(), gcuLoad.getPtr(), gcuLoad.getShape(),
         gcuLoad.getStrides(), gcuLoad.getOffsets(), alloc.getResult(),
         gcuLoad.getDefaultValue(), gcuLoad.getOrderHint());
-    if (gcuLoad->hasAttr(kLoadAsync)) {
-      copyOp->setAttr(kLoadAsync, gcuLoad->getAttr(kLoadAsync));
-    }
+    inheritCopyAttributes(gcuLoad, copyOp);
 
     rewriter.replaceOp(localAllocOp, alloc.getResult());
     if (broadcastOp->use_empty())
@@ -1781,7 +2436,10 @@ public:
         loc, loadOp.getPtr(), loadOp.getShape(), loadOp.getStrides(),
         loadOp.getOffsets(), alloc.getResult(), loadOp.getDefaultValue(),
         loadOp.getOrderHint());
-    copy->setAttr(kLoadAsync, rewriter.getBoolAttr(true));
+    // The dot operand is prefetched: the copy is issued asynchronously and the
+    // wait is placed at the first use of the shared buffer.
+    inheritCopyAttributes(loadOp, copy, BroadcastMapping::Verbatim, {},
+                          /*asyncByDefault=*/true);
 
     for (auto convert : dotConverts) {
       rewriter.setInsertionPoint(convert);
@@ -1835,6 +2493,10 @@ struct TritonGCULocalMemOptimizePass
     patterns
         .add<FuseLoadLocalAllocPattern, FuseBroadcastLocalAllocPattern,
              FuseTransLoadLocalAllocPattern, FuseTransLocalLoadCopyPattern,
+             FuseMemDescTransLoadLocalAllocPattern,
+             FuseMemDescSubsliceLoadLocalAllocPattern,
+             FuseMemDescReshapeLoadLocalAllocPattern,
+             FuseMemDescIndexLoadLocalAllocPattern,
              FuseLocalLoadConvertLayoutPattern, FuseGcuLoadDotOperandPattern,
              FuseLoadLocalStorePattern, FuseGcuLoadSmemStorePattern,
              ReplaceSmemLoadWithLocalLoadPattern,

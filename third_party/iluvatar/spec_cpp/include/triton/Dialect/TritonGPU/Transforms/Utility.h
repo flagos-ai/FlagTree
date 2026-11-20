@@ -6,8 +6,10 @@
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/ExplicitLayout.h"
 #include <algorithm>
 #include <numeric>
+#include <string>
 
 namespace mlir {
 class DominanceInfo;
@@ -58,6 +60,18 @@ bool isView(Operation *op);
 // Returns whether the op is a "noop op", i.e. has one input and one output
 // and lowers to llvm as the identity function (returns the input)
 bool isNoop(Operation *op);
+
+std::string getTleExplicitEncodingAttrName(unsigned resultNumber);
+Attribute getTleExplicitResultEncoding(Operation *op, unsigned resultNumber);
+void setTleExplicitResultEncoding(Operation *op, unsigned resultNumber,
+                                  Attribute encoding);
+void setTleExplicitResultEncoding(OpResult result, Attribute encoding);
+Attribute getTleExplicitMemoryEncoding(Operation *op);
+void setTleExplicitMemoryEncoding(Operation *op, Attribute encoding);
+Attribute getTleExplicitValueEncoding(Value value);
+LogicalResult inferTleExplicitMemoryEncoding(Operation *op,
+                                             Attribute &encoding);
+bool isTleExplicitConvertLayoutOp(Operation *op);
 
 /* Dump Triton IR in graphviz dot format.
  *

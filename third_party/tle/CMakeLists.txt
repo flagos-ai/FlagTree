@@ -78,6 +78,8 @@ if(TRITON_BUILD_PYTHON_MODULE)
   endif()
 endif()
 
+add_subdirectory(test)
+
 if(TRITON_BUILD_UT)
-  add_subdirectory(test)
+  add_subdirectory(unittest)
 endif()

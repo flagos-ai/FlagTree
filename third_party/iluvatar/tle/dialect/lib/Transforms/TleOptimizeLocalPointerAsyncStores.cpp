@@ -244,7 +244,14 @@ static Value createSubviewForStore(OpBuilder &builder, Location loc,
 }
 
 static std::optional<AsyncStoreCandidate>
-matchAsyncStoreCandidate(tt::StoreOp store) {
+matchAsyncStoreCandidate(tt::StoreOp store, bool &invalidExplicitEncoding) {
+  Attribute explicitEncoding;
+  if (failed(inferTleExplicitMemoryEncoding(store, explicitEncoding))) {
+    invalidExplicitEncoding = true;
+    return std::nullopt;
+  }
+  if (explicitEncoding)
+    return std::nullopt;
   if (!store.getBoundaryCheck().empty())
     return std::nullopt;
   // tle.copy never emits a mask; keep the fusion limited to that unmasked
@@ -255,6 +262,12 @@ matchAsyncStoreCandidate(tt::StoreOp store) {
   Value strippedStoreValue = stripStoreValueWrappers(store.getValue());
   auto load = strippedStoreValue.getDefiningOp<tt::LoadOp>();
   if (!load || !load->hasOneUse())
+    return std::nullopt;
+  if (failed(inferTleExplicitMemoryEncoding(load, explicitEncoding))) {
+    invalidExplicitEncoding = true;
+    return std::nullopt;
+  }
+  if (explicitEncoding)
     return std::nullopt;
   if (load.getIsVolatile() || load.getMask() || load.getOther())
     return std::nullopt;
@@ -588,13 +601,20 @@ struct OptimizeLocalPointerAsyncStoresPass
 
     SmallVector<Operation *> orderedStores;
     llvm::DenseMap<Operation *, AsyncStoreCandidate> candidates;
-    module.walk([&](tt::StoreOp store) {
+    WalkResult result = module.walk([&](tt::StoreOp store) {
       orderedStores.push_back(store.getOperation());
-      auto candidate = matchAsyncStoreCandidate(store);
-      if (!candidate || shouldDeferToPipeliner(*candidate, numStages, useSme))
-        return;
-      candidates.try_emplace(store.getOperation(), std::move(*candidate));
+      bool invalidExplicitEncoding = false;
+      auto candidate = matchAsyncStoreCandidate(store, invalidExplicitEncoding);
+      if (invalidExplicitEncoding)
+        return WalkResult::interrupt();
+      if (candidate && !shouldDeferToPipeliner(*candidate, numStages, useSme))
+        candidates.try_emplace(store.getOperation(), std::move(*candidate));
+      return WalkResult::advance();
     });
+    if (result.wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
 
     llvm::DenseSet<Operation *> processed;
     for (Operation *storeOp : orderedStores) {

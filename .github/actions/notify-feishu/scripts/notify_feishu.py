@@ -282,14 +282,16 @@ def main() -> int:
         try:
             message_id = fc.send_message(token, recipient, card, receive_id_type=receive_id_type)
         except fc.FeishuError as e:
-            # The API reports both "the bot is not in that chat" and "this user
-            # has never talked to the bot" as a permission error without
-            # saying which.
+            # Feishu answers every routing problem with the same permission
+            # error, so the likely cause has to be named rather than read off
+            # the response.
             print(f"[ERROR] Sending to {recipient} failed: {e}")
             if receive_id_type == "open_id":
-                print("[HINT] If this is a permission error, the recipient may "
-                      "never have opened a conversation with the bot. Sending "
-                      "them a message in Feishu once is enough.")
+                print("[HINT] If this is a permission error, check the app's "
+                      "availability scope in the developer console: a person "
+                      "outside it cannot be messaged. Note also that an "
+                      "open_id is scoped to one app, so an id resolved through "
+                      "a different app is accepted here and never delivers.")
             else:
                 print("[HINT] If this is a permission error, check that the bot "
                       "was added to the chat: chat settings -> Group Bots -> "
