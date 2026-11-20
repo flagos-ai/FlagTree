@@ -396,8 +396,10 @@ struct ConvertTritonMUSAGPUToLLVM
   ConvertTritonMUSAGPUToLLVM() = default;
   ConvertTritonMUSAGPUToLLVM(int32_t computeCapability)
       : ConvertTritonMUSAGPUToLLVMBase({computeCapability}) {}
-  ConvertTritonMUSAGPUToLLVM(int32_t computeCapability, bool enableFp8Burst2)
-      : ConvertTritonMUSAGPUToLLVMBase({computeCapability, enableFp8Burst2}) {}
+  ConvertTritonMUSAGPUToLLVM(int32_t computeCapability, bool enableFp8Burst2,
+                             bool enableVectorArithmetic)
+      : ConvertTritonMUSAGPUToLLVMBase(
+            {computeCapability, enableFp8Burst2, enableVectorArithmetic}) {}
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
@@ -492,7 +494,8 @@ struct ConvertTritonMUSAGPUToLLVM
                                                       benefit, targetInfo);
     mlir::triton::MUSA::populateElementwiseOpToLLVMPatterns(
         typeConverter, patterns, axisInfoAnalysis, computeCapability,
-        enableFp8Burst2, targetInfo, benefit);
+        enableFp8Burst2, enableVectorArithmetic && computeCapability == 31,
+        targetInfo, benefit);
     mlir::triton::MUSA::populateLoadStoreOpToLLVMPatterns(
         typeConverter, targetInfo, computeCapability, patterns,
         axisInfoAnalysis, benefit);
@@ -618,9 +621,10 @@ createConvertTritonMUSAGPUToLLVMPass(int32_t computeCapability) {
 
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertTritonMUSAGPUToLLVMPass(int32_t computeCapability,
-                                     bool enableFp8Burst2) {
-  return std::make_unique<ConvertTritonMUSAGPUToLLVM>(computeCapability,
-                                                      enableFp8Burst2);
+                                     bool enableFp8Burst2,
+                                     bool enableVectorArithmetic) {
+  return std::make_unique<ConvertTritonMUSAGPUToLLVM>(
+      computeCapability, enableFp8Burst2, enableVectorArithmetic);
 }
 
 } // namespace mlir::triton
