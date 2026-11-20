@@ -551,8 +551,7 @@ static Value emitDenseTileLoad(OpBuilder &b, Location loc,
         Value nonEmpty =
             nested.create<arith::ConstantIntOp>(nestedLoc, 1, /*width=*/1);
         for (unsigned d = 0; d < info.rank(); ++d) {
-          Value zero =
-              nested.create<arith::ConstantIndexOp>(nestedLoc, 0);
+          Value zero = nested.create<arith::ConstantIndexOp>(nestedLoc, 0);
           Value dimNonEmpty = nested.create<arith::CmpIOp>(
               nestedLoc, arith::CmpIPredicate::sgt, validLengths[d], zero);
           nonEmpty =
@@ -565,8 +564,8 @@ static Value emitDenseTileLoad(OpBuilder &b, Location loc,
               int64_t elemBits = info.elementType.getIntOrFloatBitWidth();
               int64_t elemBytes = elemBits >= 8 ? (elemBits + 7) / 8 : 0;
               if (elemBytes == 0) {
-                emitBoundedElementwiseFill(inner, innerLoc, info, indices,
-                                           ub, validLengths);
+                emitBoundedElementwiseFill(inner, innerLoc, info, indices, ub,
+                                           validLengths);
                 inner.create<scf::YieldOp>(innerLoc);
                 return;
               }
@@ -577,8 +576,7 @@ static Value emitDenseTileLoad(OpBuilder &b, Location loc,
               Value lastValid = validLengths.back();
               Value rowBytes =
                   inner.create<arith::MulIOp>(innerLoc, lastValid, bytes);
-              Value rem =
-                  inner.create<arith::RemUIOp>(innerLoc, rowBytes, c32);
+              Value rem = inner.create<arith::RemUIOp>(innerLoc, rowBytes, c32);
               Value aligned = inner.create<arith::CmpIOp>(
                   innerLoc, arith::CmpIPredicate::eq, rem, c0);
               inner.create<scf::IfOp>(
@@ -593,8 +591,8 @@ static Value emitDenseTileLoad(OpBuilder &b, Location loc,
                     leaf.create<scf::YieldOp>(leafLoc);
                   },
                   [&](OpBuilder &leaf, Location leafLoc) {
-                    emitBoundedElementwiseFill(leaf, leafLoc, info, indices,
-                                               ub, validLengths);
+                    emitBoundedElementwiseFill(leaf, leafLoc, info, indices, ub,
+                                               validLengths);
                     leaf.create<scf::YieldOp>(leafLoc);
                   });
               inner.create<scf::YieldOp>(innerLoc);

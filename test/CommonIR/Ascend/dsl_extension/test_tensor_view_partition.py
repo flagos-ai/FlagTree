@@ -89,8 +89,7 @@ def partition_view_scaled_store_kernel(src, scale, dst, rows, cols, BLOCK_M: tl.
 
 
 @triton.jit
-def partition_view_tail_load_kernel(src, dst, rows, cols, padded_cols,
-                                    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
+def partition_view_tail_load_kernel(src, dst, rows, cols, padded_cols, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
     row_block = tl.program_id(0)
     col_block = tl.program_id(1)
     src_tiles = tle.make_partition_view(
@@ -102,8 +101,8 @@ def partition_view_tail_load_kernel(src, dst, rows, cols, padded_cols,
     )
 
     value = tle.tile_load(src_tiles, index=(row_block, col_block))
-    offsets = (row_block * BLOCK_M * padded_cols + tl.arange(0, BLOCK_M)[:, None] * padded_cols +
-               col_block * BLOCK_N + tl.arange(0, BLOCK_N)[None, :])
+    offsets = (row_block * BLOCK_M * padded_cols + tl.arange(0, BLOCK_M)[:, None] * padded_cols + col_block * BLOCK_N +
+               tl.arange(0, BLOCK_N)[None, :])
     tl.store(dst + offsets, value)
 
 
@@ -150,6 +149,8 @@ def test_tensor_view_partition_store_computed_value():
 
     torch.testing.assert_close(actual[:rows], src * scale[None, :])
     assert torch.all(actual[rows:] == sentinel)
+
+
 def test_partition_view_tail_load():
     # cols = 5 * BLOCK_N + 16: the last column block is a boundary tile whose
     # valid prefix is a whole number of 32-byte units, so it is filled with

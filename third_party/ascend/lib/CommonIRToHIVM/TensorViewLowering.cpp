@@ -561,8 +561,8 @@ void emitBoundedElementwiseFill(OpBuilder &b, Location loc,
     Value logical = emitLogicalCoord(b, loc, info, indices, d, coords[d]);
     physOffset = emitAccumulateFlatOffset(b, loc, info, d, logical, physOffset);
   }
-  Value elemView = emitGmElementView(b, loc, info.base, physOffset,
-                                     info.elementType);
+  Value elemView =
+      emitGmElementView(b, loc, info.base, physOffset, info.elementType);
   Value loaded = b.create<memref::LoadOp>(loc, elemView, ValueRange{zero});
   b.create<memref::StoreOp>(loc, loaded, buffer, coords);
 }

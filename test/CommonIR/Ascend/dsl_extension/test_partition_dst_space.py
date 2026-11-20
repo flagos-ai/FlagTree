@@ -185,6 +185,8 @@ def test_partition_dst_space_mixed_grid():
     expected = torch.full((dh, dw), -torch.inf, device="npu")
     expected[:sh, :sw] = src
     torch.testing.assert_close(actual, expected)
+
+
 def test_partition_dst_space_tile_past_extent():
     # Three windows of 8 over 10 valid elements: window 0 is whole-tile, window 1
     # keeps a 2-element in-bounds prefix, and window 2 starts at 16 with nothing
@@ -195,10 +197,9 @@ def test_partition_dst_space_tile_past_extent():
     block_size = 8
     dst_elements = 24
     src = torch.arange(src_elements, dtype=torch.float32, device="npu")
-    actual = torch.full((dst_elements,), 123.0, dtype=torch.float32, device="npu")
+    actual = torch.full((dst_elements, ), 123.0, dtype=torch.float32, device="npu")
 
-    partition_padding_ub_kernel[(3,)](src, actual, src_elements, dst_elements,
-                                      BLOCK_SIZE=block_size)
+    partition_padding_ub_kernel[(3, )](src, actual, src_elements, dst_elements, BLOCK_SIZE=block_size)
 
     expected = torch.full_like(actual, -torch.inf)
     expected[:src_elements] = src
