@@ -9,9 +9,6 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "nvidia/lib/TritonNVIDIAGPUToLLVM/Utility.h"
-#ifdef __TLE__
-#include "llvm/ADT/StringExtras.h"
-#endif
 #include "llvm/Support/ErrorHandling.h"
 
 namespace ttn = mlir::triton::nvgpu;
@@ -35,9 +32,6 @@ static std::optional<uint64_t> getTleWgmmaDescriptorImmediate(Operation *op,
   return static_cast<uint64_t>(attr.getInt());
 }
 
-static std::string formatTlePtxImmediate(uint64_t value) {
-  return "0x" + llvm::utohexstr(value);
-}
 #endif
 
 bool isNumber(const std::string &s) {
@@ -374,7 +368,28 @@ public:
     // codegen cannot reinsert tied-operand moves in that protected window.
     std::string ptxAsm = getPtxAsm(op);
     Operation *prev = op->getPrevNode();
-    if (prev && isa<NVVM::WgmmaFenceAlignedOp>(prev)) {
+    auto operands = getOperandsAndConstraints(op);
+    bool hasFence = prev && isa<NVVM::WgmmaFenceAlignedOp>(prev);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(hasFence ? prev : op.getOperation());
+      auto b = TritonLLVMOpBuilder(op.getLoc(), rewriter);
+      auto materializeDescriptor = [&](unsigned index, StringRef attrName) {
+        if (auto immediate = getTleWgmmaDescriptorImmediate(op, attrName))
+          operands[index].first =
+              b.add(operands[index].first, b.i64_val(*immediate));
+      };
+      unsigned aIndex = op.getOpC() ? 1 : 0;
+      // Keep descriptor construction late, at its NVGPU consumer, but make
+      // the full value an SSA operand. Block-local PTX registers let ptxas
+      // sink invariant descriptors into a peeled iteration and reuse them
+      // uninitialized on other unrolled paths. SSA exposes their dominance
+      // while variant descriptors still stay next to the consuming MMA.
+      if (!isa<LLVM::LLVMStructType>(op.getOpA().getType()))
+        materializeDescriptor(aIndex, ttn::kTleWgmmaOperandADescImmAttr);
+      materializeDescriptor(aIndex + 1, ttn::kTleWgmmaOperandBDescImmAttr);
+    }
+    if (hasFence) {
       // Keep the WGMMA fence in the same inline asm block as the first
       // wgmma.mma_async. A separate fence op lets later LLVM codegen insert
       // tied-operand register moves between the fence and the WGMMA asm, which
@@ -382,7 +397,7 @@ public:
       ptxAsm = "wgmma.fence.sync.aligned;\n\t" + ptxAsm;
       rewriter.eraseOp(prev);
     }
-    return rewriteAsPtxAsm(op, rewriter, ptxAsm, getOperandsAndConstraints(op),
+    return rewriteAsPtxAsm(op, rewriter, ptxAsm, operands,
                            getOutputConstraints(op));
 #else
     return rewriteAsPtxAsm(op, rewriter, getPtxAsm(op),
@@ -498,21 +513,6 @@ public:
     // Operands
     uint32_t asmOpIdx = 0;
     std::string args = "";
-#ifdef __TLE__
-    std::string descriptorPrelude = "";
-    auto buildDescriptorOperand = [&](StringRef regName, uint32_t operandIdx,
-                                      StringRef attrName) -> std::string {
-      std::optional<uint64_t> descriptorImm =
-          getTleWgmmaDescriptorImmediate(op, attrName);
-      if (!descriptorImm)
-        return "$" + std::to_string(operandIdx);
-      descriptorPrelude += ".reg .b64 " + regName.str() + ";\n\t";
-      descriptorPrelude += "add.u64 " + regName.str() + ", $" +
-                           std::to_string(operandIdx) + ", " +
-                           formatTlePtxImmediate(*descriptorImm) + ";\n\t";
-      return regName.str();
-    };
-#endif
 
     // Output and operand C
     uint32_t numCRegs = structTypeOutput.getBody().size();
@@ -536,25 +536,11 @@ public:
       }
       args += "}, ";
     } else {
-#ifdef __TLE__
-      uint32_t opAIdx = asmOpIdx++;
-      args += buildDescriptorOperand("__tle_wgmma_desc_a", opAIdx,
-                                     ttn::kTleWgmmaOperandADescImmAttr) +
-              ", ";
-#else
       args += "$" + std::to_string(asmOpIdx++) + ", ";
-#endif
     }
 
     // Operand B (must be `desc`)
-#ifdef __TLE__
-    uint32_t opBIdx = asmOpIdx++;
-    args += buildDescriptorOperand("__tle_wgmma_desc_b", opBIdx,
-                                   ttn::kTleWgmmaOperandBDescImmAttr) +
-            ", ";
-#else
     args += "$" + std::to_string(asmOpIdx++) + ", ";
-#endif
 
     // `scale-d`
     if (op.getOpC())
@@ -580,17 +566,6 @@ public:
                   std::to_string(k) + "." + stringifyEnum(eltTypeC).str() +
                   "." + stringifyEnum(eltTypeA).str() + "." +
                   stringifyEnum(eltTypeB).str() + " " + args + ";";
-#ifdef __TLE__
-    if (!descriptorPrelude.empty()) {
-      // Descriptor localization must stay in the same PTX block as the WGMMA.
-      // A separate SSA descriptor value can be hoisted and kept live across the
-      // dot region, while a separate opaque asm result can break ptxas' gdesc
-      // pattern recognition. Keeping the canonical add.u64 immediately before
-      // the consuming wgmma preserves both the recognition pattern and the
-      // intended short live range.
-      ptxAsm = "{\n\t" + descriptorPrelude + ptxAsm + "\n}";
-    }
-#endif
     return ptxAsm;
   }
 };
