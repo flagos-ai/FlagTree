@@ -3,6 +3,7 @@ add_subdirectory(lib)
 llvm_canonicalize_cmake_booleans(
   MLIR_ENABLE_BINDINGS_PYTHON
   FLAGTREE_COMMON_IR_ENABLED
+  FLAGTREE_KEEP_SMEM_READ_ORDER_ENABLED
 )
 
 configure_lit_site_cfg(

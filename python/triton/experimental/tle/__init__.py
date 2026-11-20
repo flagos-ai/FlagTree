@@ -89,7 +89,10 @@ def primitive_name(primitive: str | Callable[..., Any]) -> str:
         ("gpu.types.", "gpu."),
         ("raw.core.", "raw."),
         ("core.", ""),
-        ("pipe.", ""),
+        # No "pipe." entry: unlike the other modules, the pipe primitives
+        # keep their module name in TLE_PRIMITIVES ("pipe.writer"), so
+        # stripping it would leave a name the list does not hold and every
+        # check would skip them.
         ("distributed.", ""),
     )
     for prefix, replacement in aliases:

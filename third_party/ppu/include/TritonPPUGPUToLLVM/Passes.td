@@ -64,6 +64,24 @@ def AllocateSharedMemoryPPU : Pass<"allocate-shared-memory-ppu", "mlir::ModuleOp
   ];
 }
 
+def ConvertWarpSpecializeToLLVMPPU : Pass<"convert-warp-specialize-to-llvm-ppu", "mlir::ModuleOp"> {
+  let summary = "Lower ttg.warp_specialize to LLVM for PPU";
+  let description = [{
+    Lowers `ttg.warp_specialize` like the NVIDIA backend does: worker warps wait
+    in a switch loop for the default warps to publish a partition state, and
+    warp groups synchronize through PPU hardware named barriers. PPU has no
+    register reallocation, so requested registers are ignored.
+  }];
+  let dependentDialects = ["mlir::LLVM::LLVMDialect",
+                           "mlir::NVVM::NVVMDialect",
+                           "mlir::triton::gpu::TritonGPUDialect"];
+  let options = [
+      Option<"computeCapability", "compute-capability",
+             "int32_t", /*default*/"80",
+             "device compute capability">,
+  ];
+}
+
 def ConvertLibdeviceFuncToPPU : Pass<"convert-libdevice-func-to-ppu", "mlir::ModuleOp"> {
   let summary = "Convert libdevice function calls to __ppu prefixed";
   let description = [{

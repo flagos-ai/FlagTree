@@ -75,7 +75,8 @@ public:
 
     Operation *copy =
         rewriter.create<triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp>(
-            loc, op.getSrcPtr(), op.getIndices(), op.getShape(), alloc);
+            loc, op.getSrcPtr(), op.getIndices(), op.getShape(),
+            op.getStrides(), op.getBoundaryCheck(), alloc);
 
     Value Zero = rewriter.create<arith::ConstantIntOp>(loc, 0, 0);
 

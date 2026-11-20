@@ -22,6 +22,7 @@
  */
 
 #include "TargetInfo.h"
+#include "BarrierUtility.h"
 #include "Dialect/PPUGPU/IR/Dialect.h"
 #include "TritonPPUGPUToLLVM/TIXAsmFormat.h"
 #include "Utility.h"
@@ -171,7 +172,15 @@ void TargetInfo::barrier(Location loc, RewriterBase &rewriter,
   if (isWarpSync) {
     NVVM::SyncWarpOp::create(rewriter, loc, b.i32_val(0xffffffff));
   } else {
-    b.barrier();
+    // Orders shared memory (scratch buffers); see createPPUSharedMemoryBarrier.
+    // The warp count comes from the insertion block's region: inside a
+    // ttg.warp_specialize partition the block's parent op is the partitions
+    // op, which lies in the default group's context, while the region itself
+    // names the partition and its warps.
+    unsigned numThreads =
+        triton::gpu::lookupNumWarps(rewriter.getInsertionBlock()->getParent()) *
+        triton::gpu::lookupThreadsPerWarp(rewriter);
+    createPPUSharedMemoryBarrier(rewriter, loc, numThreads);
   }
 }
 

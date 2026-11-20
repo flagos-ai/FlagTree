@@ -116,6 +116,13 @@ def TritonTleOptimizeLocalPointerLoads
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect",
                            "mlir::triton::tle::TleDialect"];
+
+  let options = [
+    Option<"keepSmemReadOrder", "keep-smem-read-order",
+           "bool", /*default*/"false",
+           "Re-issue a load at a layout conversion only within its block and "
+           "with no write in between (FLAGTREE_KEEP_SMEM_READ_ORDER)">
+  ];
 }
 
 def TritonTleOptimizeLocalPointerStores

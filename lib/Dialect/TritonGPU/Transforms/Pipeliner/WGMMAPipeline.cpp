@@ -74,6 +74,11 @@ static constexpr llvm::StringLiteral
 static bool shouldPreserveAsyncWaitNum(ttg::AsyncWaitOp waitOp) {
   if (waitOp->hasAttr(triton::tle::kTleExplicitAsyncWaitGroupAttr))
     return true;
+#ifdef __PPU__
+  // The PPU pipe lowering sets the wait distance of its own copies.
+  if (waitOp->hasAttr(triton::tle::kTlePipeWaitAttr))
+    return true;
+#endif // __PPU__
   Operation *parent = waitOp->getParentOp();
   while (parent) {
     if (auto forOp = dyn_cast<scf::ForOp>(parent))

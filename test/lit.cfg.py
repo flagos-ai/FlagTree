@@ -22,6 +22,11 @@ config.suffixes = ['.mlir', '.ll']
 if getattr(config, "flagtree_common_ir_enabled", False):
     config.available_features.add("flagtree-common-ir")
 
+# The keep-smem-read-order option of the pass exists only in a build that
+# defines __FLAGTREE_KEEP_SMEM_READ_ORDER__.
+if getattr(config, "flagtree_keep_smem_read_order_enabled", False):
+    config.available_features.add("flagtree-keep-smem-read-order")
+
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)
 

@@ -1499,8 +1499,10 @@ LogicalResult DescriptorStoreOp::verify() {
 
 // -- AIULoadOp --
 void AIULoadOp::build(OpBuilder &builder, OperationState &state, Type type,
-                      Value ptr, CacheModifier cache, EvictionPolicy evict) {
-  AIULoadOp::build(builder, state, type, ptr, {}, {}, {1, 0}, cache, evict);
+                      Value ptr, ArrayRef<int32_t> boundaryCheck,
+                      CacheModifier cache, EvictionPolicy evict) {
+  AIULoadOp::build(builder, state, type, ptr, {}, {}, {}, boundaryCheck, {1, 0},
+                   cache, evict);
 }
 
 } // namespace triton

@@ -25,8 +25,11 @@
 #define TRITON_THIRD_PARTY_PPU_INCLUDE_TRITONPPUGPUTRANSFORMS_PASSES_H_
 
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Pass/Pass.h"
 #include "third_party/ppu/include/Dialect/PPUGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 namespace mlir {
 

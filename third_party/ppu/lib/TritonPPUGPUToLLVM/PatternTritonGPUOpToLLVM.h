@@ -75,6 +75,10 @@ void populateSPMDOpToLLVMPattern(LLVMTypeConverter &typeConverter,
                                  RewritePatternSet &patterns,
                                  PatternBenefit benefit);
 
+void populateBarrierOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                     RewritePatternSet &patterns,
+                                     PatternBenefit benefit);
+
 void populateClampFOpToLLVMPattern(LLVMTypeConverter &typeConverter,
                                    RewritePatternSet &patterns,
                                    ModuleAxisInfoAnalysis &axisInfoAnalysis,

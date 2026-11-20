@@ -12,6 +12,8 @@ Covers:
   - Mixed: AIU load + regular load
   - is_async=False (no promotion)
   - TTGIR/LLIR stage verification
+  - Row strides: constant and run-time strides, the forms they take, and the
+    thread copy of run-time strides the descriptor cannot express
 """
 
 import os
@@ -695,3 +697,322 @@ def test_non_block_ptr_async_load_uses_cp_async_fallback():
     assert "async_copy_global_to_local" in compiled.asm["ttgir"] or \
            "cp.async" in compiled.asm.get("llir", ""), \
         "Non-block-pointer 2D fp32 async load should use cp.async fallback"
+
+
+# ---------------------------------------------------------------------------
+# 11. Row strides: rows of the tile that are not the row length apart
+# ---------------------------------------------------------------------------
+
+
+@triton.jit
+def _strided_rows_aiu_load(x_ptr, y_ptr, T, ROW_STRIDE: tl.constexpr, V: tl.constexpr, BT: tl.constexpr,
+                           BV: tl.constexpr, CHECK_COLUMNS: tl.constexpr):
+    # One [T, V] slice per program_id(1), interleaved like the heads of a [T, H, V] tensor
+    i_t, i_h = tl.program_id(0), tl.program_id(1)
+    p = tl.make_block_ptr(x_ptr + i_h * V, (T, V), (ROW_STRIDE, 1), (i_t * BT, 0), (BT, BV), (1, 0))
+    if CHECK_COLUMNS:
+        a = tle.load(p, boundary_check=(0, 1), is_async=True)
+    else:
+        a = tle.load(p, boundary_check=(0, ), is_async=True)
+    offs_t = i_t * BT + tl.arange(0, BT)
+    offs_v = tl.arange(0, BV)
+    tl.store(y_ptr + (i_h * T + offs_t[:, None]) * BV + offs_v[None, :], a, mask=offs_t[:, None] < T)
+
+
+@triton.jit
+def _runtime_stride_aiu_load(x_ptr, y_ptr, T, V, stride_t, BT: tl.constexpr, BV: tl.constexpr):
+    i_t = tl.program_id(0)
+    p = tl.make_block_ptr(x_ptr, (T, V), (stride_t, 1), (i_t * BT, 0), (BT, BV), (1, 0))
+    a = tle.load(p, boundary_check=(0, 1), is_async=True)
+    offs_t = i_t * BT + tl.arange(0, BT)
+    offs_v = tl.arange(0, BV)
+    tl.store(y_ptr + offs_t[:, None] * BV + offs_v[None, :], a, mask=offs_t[:, None] < T)
+
+
+@triton.jit
+def _strided_columns_aiu_load(x_ptr, y_ptr, M, K, COL_STRIDE: tl.constexpr, BM: tl.constexpr, BK: tl.constexpr):
+    # order=(0, 1): dim 0 is contiguous and the columns are COL_STRIDE elements apart
+    i_m = tl.program_id(0)
+    p = tl.make_block_ptr(x_ptr, (M, K), (1, COL_STRIDE), (i_m * BM, 0), (BM, BK), (0, 1))
+    a = tle.load(p, boundary_check=(0, 1), is_async=True)
+    offs_m = i_m * BM + tl.arange(0, BM)
+    offs_k = tl.arange(0, BK)
+    tl.store(y_ptr + offs_m[:, None] * BK + offs_k[None, :], a, mask=offs_m[:, None] < M)
+
+
+def _padded_tile_reference(x, cols, block_cols):
+    out = torch.zeros((x.shape[0], block_cols), dtype=x.dtype, device=x.device)
+    out[:, :cols] = x[:, :cols]
+    return out
+
+
+def _aiu_instruction_forms(llir):
+    copies = [line for line in llir.splitlines() if "ppu.cp.async.aiu" in line]
+    return [form for form in ("2d", "3d") if any(f".{form}." in line for line in copies)]
+
+
+@_skip_no_sdk
+@pytest.mark.parametrize("heads", [1, 2, 4])
+def test_strided_rows_use_3d_aiu_form(heads):
+    compiled = _compile_through_llir(_strided_rows_aiu_load, {"x_ptr": "*bf16", "y_ptr": "*bf16", "T": "i32"},
+                                     {"ROW_STRIDE": heads * 128, "V": 128, "BT": 64, "BV": 128, "CHECK_COLUMNS": True})
+    assert "tt.aiu_load" in compiled.asm["ttir"]
+    # Dense rows keep the 2d form; rows that are a multiple of V apart need the 3d form
+    assert _aiu_instruction_forms(compiled.asm["llir"]) == (["2d"] if heads == 1 else ["3d"])
+
+
+@_skip_no_sdk
+def test_strided_rows_without_column_check_use_2d_aiu_form():
+    # Nothing past the row length is zero filled, so the 2d form takes the row stride as its row length
+    compiled = _compile_through_llir(_strided_rows_aiu_load, {"x_ptr": "*bf16", "y_ptr": "*bf16", "T": "i32"},
+                                     {"ROW_STRIDE": 4 * 128, "V": 128, "BT": 64, "BV": 128, "CHECK_COLUMNS": False})
+    assert "tt.aiu_load" in compiled.asm["ttir"]
+    assert _aiu_instruction_forms(compiled.asm["llir"]) == ["2d"]
+
+
+@_skip_no_sdk
+def test_runtime_row_stride_selects_aiu_form_at_run_time():
+    compiled = _compile_through_llir(_runtime_stride_aiu_load,
+                                     {"x_ptr": "*bf16", "y_ptr": "*bf16", "T": "i32", "V": "i32", "stride_t": "i32"},
+                                     {"BT": 64, "BV": 128})
+    assert "tt.aiu_load" in compiled.asm["ttir"]
+    assert _aiu_instruction_forms(compiled.asm["llir"]) == ["2d", "3d"]
+
+
+@_skip_no_sdk
+@pytest.mark.parametrize("row_stride,row_length,check_columns,promoted", [
+    (192, 128, True, False),  # zero filling past column 128 needs a stride that is a multiple of 128
+    (192, 128, False, True),
+    (64, 128, False, False),  # overlapping rows
+    (128, 0, False, False),
+    # The 2d form holds the stride as its row length, at most 32768
+    (1 << 15, 128, False, True),
+    ((1 << 15) + 128, 128, False, False),
+    # The 3d form holds the stride as a multiple of the row length, at most 32768 times
+    ((1 << 15) + 128, 128, True, True),
+    (128 << 15, 128, True, True),
+    (128 << 16, 128, True, False),
+])
+def test_row_stride_promotion(row_stride, row_length, check_columns, promoted):
+    compiled = _compile(
+        _strided_rows_aiu_load, {"x_ptr": "*bf16", "y_ptr": "*bf16", "T": "i32"},
+        {"ROW_STRIDE": row_stride, "V": row_length, "BT": 64, "BV": 128, "CHECK_COLUMNS": check_columns})
+    assert ("tt.aiu_load" in compiled.asm["ttir"]) == promoted
+
+
+@_skip_no_sdk
+def test_non_unit_inner_stride_is_not_promoted():
+
+    @triton.jit
+    def kernel(x_ptr, y_ptr, BT: tl.constexpr, BV: tl.constexpr):
+        p = tl.make_block_ptr(x_ptr, (BT, BV), (2 * BV, 2), (0, 0), (BT, BV), (1, 0))
+        a = tle.load(p, is_async=True)
+        tl.store(y_ptr + tl.arange(0, BT)[:, None] * BV + tl.arange(0, BV)[None, :], a)
+
+    compiled = _compile(kernel, {"x_ptr": "*bf16", "y_ptr": "*bf16"}, {"BT": 64, "BV": 128})
+    assert "tt.aiu_load" not in compiled.asm["ttir"]
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+@pytest.mark.parametrize("heads", [1, 2, 4])
+@pytest.mark.parametrize("seq_len,block_t", [(256, 64), (200, 64), (100, 32)])
+@pytest.mark.parametrize("cols,block_v,check_columns", [(128, 128, True), (96, 128, True), (128, 128, False)])
+def test_strided_rows_aiu_load_device_correctness(heads, seq_len, block_t, cols, block_v, check_columns):
+    # cols < block_v and seq_len % block_t != 0 check the zero fill past the last column and row
+    torch.manual_seed(0)
+    x = torch.randn((seq_len, heads, cols), device="cuda", dtype=torch.bfloat16)
+    y = torch.full((heads, seq_len, block_v), float("nan"), device="cuda", dtype=torch.bfloat16)
+    grid = (triton.cdiv(seq_len, block_t), heads)
+    _strided_rows_aiu_load[grid](x, y, seq_len, heads * cols, cols, block_t, block_v, check_columns, num_warps=4,
+                                 num_stages=1)
+    torch.cuda.synchronize()
+    for h in range(heads):
+        expected = _padded_tile_reference(x[:, h], cols, block_v)
+        torch.testing.assert_close(y[h], expected, rtol=0, atol=0)
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+@pytest.mark.parametrize("row_stride", [128, 256, 512, 192])
+def test_runtime_row_stride_aiu_load_device_correctness(row_stride):
+    # 128 is dense, 256 and 512 use the 3d form, 192 keeps the 2d form with Z = stride
+    seq_len, cols, block_t, block_v = 200, 128, 64, 128
+    torch.manual_seed(0)
+    x = torch.randn((seq_len, row_stride), device="cuda", dtype=torch.bfloat16)
+    y = torch.full((seq_len, block_v), float("nan"), device="cuda", dtype=torch.bfloat16)
+    _runtime_stride_aiu_load[(triton.cdiv(seq_len, block_t), )](x, y, seq_len, cols, row_stride, block_t, block_v,
+                                                                num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(y, _padded_tile_reference(x, cols, block_v), rtol=0, atol=0)
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+@pytest.mark.parametrize("col_stride", [64, 128])
+def test_strided_columns_aiu_load_device_correctness(col_stride):
+    m, k, block_m, block_k = 64, 32, 64, 32
+    torch.manual_seed(0)
+    storage = torch.randn((k, col_stride), device="cuda", dtype=torch.bfloat16)
+    x = storage[:, :m].t()  # logical [M, K] with unit stride along M
+    y = torch.empty((m, block_k), device="cuda", dtype=torch.bfloat16)
+    _strided_columns_aiu_load[(1, )](storage, y, m, k, col_stride, block_m, block_k, num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(y, x, rtol=0, atol=0)
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+def test_strided_rows_pipelined_aiu_load_device_correctness():
+    # The pipeliner turns the loads of the loop into multi-buffered AIU copies
+
+    @triton.jit
+    def kernel(x_ptr, y_ptr, T, H: tl.constexpr, V: tl.constexpr, BT: tl.constexpr, BV: tl.constexpr):
+        i_h = tl.program_id(0)
+        p = tl.make_block_ptr(x_ptr + i_h * V, (T, V), (H * V, 1), (0, 0), (BT, BV), (1, 0))
+        acc = tl.zeros((BT, BV), dtype=tl.float32)
+        for _ in range(0, T, BT):
+            acc += tle.load(p, boundary_check=(0, 1), is_async=True).to(tl.float32)
+            p = tl.advance(p, (BT, 0))
+        tl.store(y_ptr + i_h * BT * BV + tl.arange(0, BT)[:, None] * BV + tl.arange(0, BV)[None, :], acc)
+
+    seq_len, heads, cols, block_t = 512, 4, 64, 64
+    torch.manual_seed(0)
+    x = torch.randn((seq_len, heads, cols), device="cuda", dtype=torch.bfloat16)
+    y = torch.empty((heads, block_t, cols), device="cuda", dtype=torch.float32)
+    kernel[(heads, )](x, y, seq_len, heads, cols, block_t, cols, num_warps=4, num_stages=3)
+    torch.cuda.synchronize()
+    expected = x.float().reshape(seq_len // block_t, block_t, heads, cols).sum(0).permute(1, 0, 2)
+    torch.testing.assert_close(y, expected, rtol=1e-5, atol=1e-5)
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+@pytest.mark.parametrize("heads", [1, 2])
+def test_strided_rows_negative_offset_aiu_load_device_correctness(heads):
+    # Tiles start ROW_SHIFT rows before the tensor: those rows read as zeros
+
+    @triton.jit
+    def kernel(x_ptr, y_ptr, T, H: tl.constexpr, V: tl.constexpr, BT: tl.constexpr, ROW_SHIFT: tl.constexpr):
+        i_t, i_h = tl.program_id(0), tl.program_id(1)
+        p = tl.make_block_ptr(x_ptr + i_h * V, (T, V), (H * V, 1), (i_t * BT - ROW_SHIFT, 0), (BT, V), (1, 0))
+        a = tle.load(p, boundary_check=(0, 1), is_async=True)
+        offs = (i_h * tl.num_programs(0) + i_t) * BT + tl.arange(0, BT)
+        tl.store(y_ptr + offs[:, None] * V + tl.arange(0, V)[None, :], a)
+
+    seq_len, cols, block_t, shift = 128, 64, 64, 16
+    torch.manual_seed(0)
+    x = torch.randn((seq_len, heads, cols), device="cuda", dtype=torch.bfloat16)
+    tiles = triton.cdiv(seq_len + shift, block_t)
+    y = torch.full((heads, tiles * block_t, cols), float("nan"), device="cuda", dtype=torch.bfloat16)
+    kernel[(tiles, heads)](x, y, seq_len, heads, cols, block_t, shift, num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+    expected = torch.zeros_like(y)
+    expected[:, shift:shift + seq_len] = x.permute(1, 0, 2)
+    torch.testing.assert_close(y, expected, rtol=0, atol=0)
+
+
+# ---------------------------------------------------------------------------
+# 12. Run-time row strides the descriptor cannot express, and large row counts
+# ---------------------------------------------------------------------------
+
+
+@triton.jit
+def _runtime_stride_aiu_load_checked(x_ptr, y_ptr, T, V, stride_t, BT: tl.constexpr, BV: tl.constexpr,
+                                     CHECK_COLUMNS: tl.constexpr):
+    i_t = tl.program_id(0)
+    p = tl.make_block_ptr(x_ptr, (T, V), (stride_t, 1), (i_t * BT, 0), (BT, BV), (1, 0))
+    if CHECK_COLUMNS:
+        a = tle.load(p, boundary_check=(0, 1), is_async=True)
+    else:
+        a = tle.load(p, boundary_check=(0, ), is_async=True)
+    offs_t = i_t * BT + tl.arange(0, BT)
+    offs_v = tl.arange(0, BV)
+    tl.store(y_ptr + offs_t[:, None] * BV + offs_v[None, :], a, mask=offs_t[:, None] < T)
+
+
+def _strided_tile_reference(x, rows, cols, row_stride, block_cols, check_columns):
+    # Row t of the tile starts at element t * row_stride, as the block pointer
+    # addresses it; the columns past `cols` read as zeros when they are checked
+    flat = x.reshape(-1)
+    out = torch.zeros((rows, block_cols), dtype=x.dtype, device=x.device)
+    read = min(cols, block_cols) if check_columns else block_cols
+    for t in range(rows):
+        out[t, :read] = flat[t * row_stride:t * row_stride + read]
+    return out
+
+
+@_skip_no_sdk
+@pytest.mark.parametrize("check_columns", [True, False])
+def test_runtime_row_stride_carries_both_copy_paths(check_columns):
+    # A run-time row stride is only known where the copy is issued, so the
+    # copy carries both ways to fill the tile: the AIU copies, and a loop in
+    # which the threads copy a tile whose layout the descriptor cannot
+    # express, as the plain load the compile-time gate keeps for such a
+    # constant stride would
+    compiled = _compile_through_llir(_runtime_stride_aiu_load_checked,
+                                     {"x_ptr": "*bf16", "y_ptr": "*bf16", "T": "i32", "V": "i32", "stride_t": "i32"},
+                                     {"BT": 64, "BV": 128, "CHECK_COLUMNS": check_columns})
+    llir = compiled.asm["llir"]
+    assert "tt.aiu_load" in compiled.asm["ttir"]
+    assert "ppu.cp.async.aiu" in llir
+    assert "ppu.ld.global" in llir
+    assert "__assertfail" not in llir
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+@pytest.mark.parametrize("num_warps", [4, 8])
+@pytest.mark.parametrize("check_columns", [True, False])
+@pytest.mark.parametrize("row_stride,cols", [
+    # Not a multiple of the row length: with a column check, the 28 padding
+    # columns of the [64, 128] tile have no form that zero fills them
+    (128, 100),
+    # Rows that overlap: the tile has columns past the stride, which the 2d
+    # form would zero fill
+    (64, 128),
+    # Beyond the row length field of the 2d form, and not a multiple of the
+    # row length for the 3d form
+    ((1 << 16) + 64, 128),
+])
+def test_runtime_row_stride_inexpressible_device_correctness(row_stride, cols, check_columns, num_warps):
+    seq_len, block_t, block_v = 200, 64, 128
+    torch.manual_seed(0)
+    x = torch.randn((seq_len - 1) * row_stride + block_v, device="cuda", dtype=torch.bfloat16)
+    y = torch.full((seq_len, block_v), float("nan"), device="cuda", dtype=torch.bfloat16)
+    grid = (triton.cdiv(seq_len, block_t), )
+    _runtime_stride_aiu_load_checked[grid](x, y, seq_len, cols, row_stride, block_t, block_v, check_columns,
+                                           num_warps=num_warps, num_stages=1)
+    torch.cuda.synchronize()
+    expected = _strided_tile_reference(x, seq_len, cols, row_stride, block_v, check_columns)
+    torch.testing.assert_close(y, expected, rtol=0, atol=0)
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+def test_runtime_row_stride_overlapping_rows_within_stride():
+    # A tile that stays within the stride reads the overlapping rows as the
+    # pointer arithmetic says: row t starts at element t * stride.
+    T, V, stride, BT, BV = 200, 128, 64, 64, 64
+    x = torch.randn(T * stride + V, device="cuda", dtype=torch.bfloat16)
+    y = torch.empty((T, BV), device="cuda", dtype=torch.bfloat16)
+    _runtime_stride_aiu_load[(triton.cdiv(T, BT), )](x, y, T, V, stride, BT=BT, BV=BV, num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+    expected = torch.stack([x[t * stride:t * stride + BV] for t in range(T)])
+    torch.testing.assert_close(y, expected, rtol=0, atol=0)
+
+
+@_skip_no_sdk
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="PPU device not available")
+def test_strided_rows_beyond_descriptor_row_field_device_correctness():
+    # More rows than the row count field of the 3d form holds (32768): the copy
+    # counts the rows from the warp's first row, so only the rows left after it
+    # are bounded
+    seq_len, cols, row_stride, block_t, block_v = 40000, 128, 256, 64, 128
+    torch.manual_seed(0)
+    x = torch.randn((seq_len, row_stride), device="cuda", dtype=torch.bfloat16)
+    y = torch.full((seq_len, block_v), float("nan"), device="cuda", dtype=torch.bfloat16)
+    _runtime_stride_aiu_load[(triton.cdiv(seq_len, block_t), )](x, y, seq_len, cols, row_stride, block_t, block_v,
+                                                                num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(y, _padded_tile_reference(x, cols, block_v), rtol=0, atol=0)

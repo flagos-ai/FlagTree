@@ -58,13 +58,17 @@ def AsyncAIUCopyGlobalToLocalOp : TT_PPUGPU_Op<"async_aiu_copy_global_to_local",
     This operation copies data from global memory to local memory asynchronously.
     This is analogue to tt.load except the data are copied to local memory pointed
     by by the memory descriptor instread of a distributed tensor. The rest of the
-    operands are the same as tt.load.
+    operands are the same as tt.load. `coord`, `shape` and `strides` describe
+    the source tile like the operands of `tt.make_tensor_ptr`, and
+    `boundaryCheck` lists the dimensions that are zero filled out of bounds.
   }];
 
   let arguments = (ins
     Arg<TT_PtrType, "", [MemRead<GlobalMemory>]>:$src,
     Variadic<I32>:$coord,
     Variadic<I64>:$shape,
+    Variadic<I64>:$strides,
+    DenseI32ArrayAttr:$boundaryCheck,
     Arg<TTG_MemDescType, "", [MemWrite<SharedMemory>]>:$result,
     DefaultValuedAttr<TT_CacheModifierAttr, "triton::CacheModifier::NONE">:$cache,
     DefaultValuedAttr<TT_EvictionPolicyAttr, "triton::EvictionPolicy::NORMAL">:$evict,
@@ -80,7 +84,8 @@ def AsyncAIUCopyGlobalToLocalOp : TT_PPUGPU_Op<"async_aiu_copy_global_to_local",
   // Note there are no commas between other, cacheModifier, and evictionPolicy,
   // due to limitations in MLIR's asm parser.
   let assemblyFormat = [{
-    $src `[` $coord `]` `[` $shape `]` $result
+    $src `[` $coord `]` `[` $shape `]` `[` $strides `]` $result
+    `boundaryCheck` `=` $boundaryCheck
     oilist(`cacheModifier` `=` $cache | `evictionPolicy` `=` $evict)
     attr-dict `:` type($src) `->` type($result)
   }];

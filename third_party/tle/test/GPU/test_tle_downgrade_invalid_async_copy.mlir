@@ -21,13 +21,15 @@
 
 // RUN: triton-opt %s -split-input-file -triton-tle-downgrade-invalid-async-copy | FileCheck %s
 
+// The copy becomes a load and a store. Its commit group and wait stay, now
+// without the token, so the commit groups keep their numbering.
 // CHECK-LABEL: tt.func @downgrade_bf16
 // CHECK-NOT: ttg.async_copy_global_to_local
-// CHECK-NOT: ttg.async_commit_group
-// CHECK-NOT: ttg.async_wait
 // CHECK: %[[LOAD:.*]] = tt.load %{{.*}} : tensor<32x512x!tt.ptr<bf16>, #{{.*}}>
 // CHECK: ttg.local_store %[[LOAD]], %{{.*}} : tensor<32x512xbf16, #{{.*}}> -> !ttg.memdesc<32x512xbf16
-// CHECK: %{{.*}} = ttg.local_load %{{.*}} : !ttg.memdesc<32x512xbf16
+// CHECK: %[[COMMIT:.*]] = ttg.async_commit_group{{$}}
+// CHECK: %[[WAIT:.*]] = ttg.async_wait %[[COMMIT]] {num = 0 : i32}
+// CHECK: %{{.*}} = ttg.local_load %{{.*}} token %[[WAIT]] : !ttg.memdesc<32x512xbf16
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 8], order = [1, 0]}>
 #shared = #ttg.swizzled_shared<{vec = 8, perPhase = 2, maxPhase = 4, order = [0, 1]}>
 #smem = #ttg.shared_memory
@@ -119,6 +121,90 @@ tt.func @preserve_loop_partition_eviction_policy(%ptrs: tensor<64x128x!tt.ptr<f3
     }
     ttg.warp_return
   } : (!ttg.memdesc<64x128xf32, #shared, #smem, mutable>, tensor<64x128x!tt.ptr<f32>, #blocked>) -> ()
+  tt.return
+}
+}
+
+// -----
+
+// A copy too narrow for cp.async can share its commit group with a copy that
+// stays asynchronous. It leaves the group and the wait, which keep serving the
+// copy that remains, instead of failing the pass.
+// CHECK-LABEL: tt.func @downgrade_shared_commit_group
+// CHECK-NOT:   ttg.async_commit_group tokens %{{.*}}, %{{.*}}
+// CHECK:       %[[LOADED:.*]] = tt.load %{{.*}} : tensor<32x512x!tt.ptr<bf16>
+// CHECK-NEXT:  ttg.local_store %[[LOADED]]
+// CHECK:       %[[VALID:.*]] = ttg.async_copy_global_to_local
+// CHECK:       %[[COMMIT:.*]] = ttg.async_commit_group tokens %[[VALID]]
+// CHECK:       %[[WAIT:.*]] = ttg.async_wait %[[COMMIT]]
+// CHECK:       ttg.local_load %{{.*}} token %[[WAIT]]
+// CHECK:       ttg.local_load %{{.*}} token %[[WAIT]]
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [1, 8], order = [1, 0]}>
+#shared = #ttg.swizzled_shared<{vec = 8, perPhase = 2, maxPhase = 4, order = [0, 1]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32} {
+tt.func @downgrade_shared_commit_group(%narrow: tensor<32x512x!tt.ptr<bf16>, #blocked>,
+                                       %wide: tensor<32x512x!tt.ptr<f32>, #blocked>,
+                                       %narrowView: !ttg.memdesc<32x512xbf16, #shared, #smem, mutable>,
+                                       %wideView: !ttg.memdesc<32x512xf32, #shared, #smem, mutable>)
+                                       -> (tensor<32x512xbf16, #blocked>, tensor<32x512xf32, #blocked>) {
+  %narrowToken = ttg.async_copy_global_to_local %narrow, %narrowView : tensor<32x512x!tt.ptr<bf16>, #blocked> -> <32x512xbf16, #shared, #smem, mutable>
+  %wideToken = ttg.async_copy_global_to_local %wide, %wideView : tensor<32x512x!tt.ptr<f32>, #blocked> -> <32x512xf32, #shared, #smem, mutable>
+  %commit = ttg.async_commit_group tokens %narrowToken, %wideToken
+  %wait = ttg.async_wait %commit {num = 0 : i32}
+  %narrowLoaded = ttg.local_load %narrowView token %wait : !ttg.memdesc<32x512xbf16, #shared, #smem, mutable> -> tensor<32x512xbf16, #blocked>
+  %wideLoaded = ttg.local_load %wideView token %wait : !ttg.memdesc<32x512xf32, #shared, #smem, mutable> -> tensor<32x512xf32, #blocked>
+  tt.return %narrowLoaded, %wideLoaded : tensor<32x512xbf16, #blocked>, tensor<32x512xf32, #blocked>
+}
+}
+
+// -----
+
+// Every copy of a commit group is too narrow. The group stays, empty, between
+// the groups of the other copies: the wait distance `num = 2` of the first
+// wait still counts it, so the copy it waits for is complete when its data is
+// read.
+// CHECK-LABEL: tt.func @downgrade_whole_commit_group
+// CHECK:       %[[FIRST:.*]] = ttg.async_commit_group tokens %{{.*}}
+// CHECK:       tt.load %{{.*}} : tensor<128x!tt.ptr<f16>
+// CHECK-NEXT:  ttg.local_store
+// CHECK:       tt.load %{{.*}} : tensor<128x!tt.ptr<f16>
+// CHECK-NEXT:  ttg.local_store
+// CHECK:       %[[EMPTY:.*]] = ttg.async_commit_group{{$}}
+// CHECK:       ttg.async_commit_group tokens %{{.*}}
+// CHECK:       %[[WAIT_FIRST:.*]] = ttg.async_wait %[[FIRST]] {num = 2 : i32}
+// CHECK:       ttg.local_load %{{.*}} token %[[WAIT_FIRST]]
+// CHECK:       %[[WAIT_EMPTY:.*]] = ttg.async_wait %[[EMPTY]] {num = 1 : i32}
+// CHECK:       ttg.local_load %{{.*}} token %[[WAIT_EMPTY]]
+// CHECK:       ttg.local_load %{{.*}} token %[[WAIT_EMPTY]]
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
+tt.func @downgrade_whole_commit_group(%first: tensor<128x!tt.ptr<f32>, #blocked> {tt.contiguity = 4 : i32, tt.divisibility = 16 : i32},
+                                      %narrowA: tensor<128x!tt.ptr<f16>, #blocked> {tt.contiguity = 1 : i32, tt.divisibility = 16 : i32},
+                                      %narrowB: tensor<128x!tt.ptr<f16>, #blocked> {tt.contiguity = 1 : i32, tt.divisibility = 16 : i32},
+                                      %last: tensor<128x!tt.ptr<f32>, #blocked> {tt.contiguity = 4 : i32, tt.divisibility = 16 : i32}) {
+  %firstView = ttg.local_alloc : () -> !ttg.memdesc<128xf32, #shared, #smem, mutable>
+  %narrowViewA = ttg.local_alloc : () -> !ttg.memdesc<128xf16, #shared, #smem, mutable>
+  %narrowViewB = ttg.local_alloc : () -> !ttg.memdesc<128xf16, #shared, #smem, mutable>
+  %lastView = ttg.local_alloc : () -> !ttg.memdesc<128xf32, #shared, #smem, mutable>
+  %firstToken = ttg.async_copy_global_to_local %first, %firstView : tensor<128x!tt.ptr<f32>, #blocked> -> <128xf32, #shared, #smem, mutable>
+  %firstCommit = ttg.async_commit_group tokens %firstToken
+  %narrowTokenA = ttg.async_copy_global_to_local %narrowA, %narrowViewA : tensor<128x!tt.ptr<f16>, #blocked> -> <128xf16, #shared, #smem, mutable>
+  %narrowTokenB = ttg.async_copy_global_to_local %narrowB, %narrowViewB : tensor<128x!tt.ptr<f16>, #blocked> -> <128xf16, #shared, #smem, mutable>
+  %narrowCommit = ttg.async_commit_group tokens %narrowTokenA, %narrowTokenB
+  %lastToken = ttg.async_copy_global_to_local %last, %lastView : tensor<128x!tt.ptr<f32>, #blocked> -> <128xf32, #shared, #smem, mutable>
+  %lastCommit = ttg.async_commit_group tokens %lastToken
+  %firstWait = ttg.async_wait %firstCommit {num = 2 : i32}
+  %firstLoaded = ttg.local_load %firstView token %firstWait : !ttg.memdesc<128xf32, #shared, #smem, mutable> -> tensor<128xf32, #blocked>
+  %narrowWait = ttg.async_wait %narrowCommit {num = 1 : i32}
+  %narrowLoadedA = ttg.local_load %narrowViewA token %narrowWait : !ttg.memdesc<128xf16, #shared, #smem, mutable> -> tensor<128xf16, #blocked>
+  %narrowLoadedB = ttg.local_load %narrowViewB token %narrowWait : !ttg.memdesc<128xf16, #shared, #smem, mutable> -> tensor<128xf16, #blocked>
+  %lastWait = ttg.async_wait %lastCommit {num = 0 : i32}
+  %lastLoaded = ttg.local_load %lastView token %lastWait : !ttg.memdesc<128xf32, #shared, #smem, mutable> -> tensor<128xf32, #blocked>
   tt.return
 }
 }
