@@ -740,6 +740,7 @@ class TritonSemantic(Generic[TensorTy]):
         )
 
     def permute(self, input: TensorTy, dims: Tuple[int]) -> TensorTy:
+        dims = tuple(tl._unwrap_if_constexpr(d) for d in tl._unwrap_if_constexpr(dims))
         if len(input.shape) != len(dims):
             raise ValueError("permute dims must have the same length as input shape")
         if sorted(tl._unwrap_if_constexpr(d) for d in dims) != list(range(len(dims))):

@@ -176,8 +176,8 @@ def _get_tool_path(tool_name: str) -> str:
     if tool_path:
         return tool_path
 
-    raise EnvironmentError(f"Could not find {tool_name} tool. "
-                           f"It should be installed in triton/_C/ directory or available in PATH.")
+    raise FileNotFoundError(f"Could not find {tool_name} tool. "
+                            f"It should be installed in triton/_C/ directory or available in PATH.")
 
 
 def _get_triton_opt_path() -> str:

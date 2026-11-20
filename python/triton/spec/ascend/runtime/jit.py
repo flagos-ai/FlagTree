@@ -711,6 +711,11 @@ class JITFunction(JITCallable, KernelInterface[T]):
         kwargs["debug"] = kwargs.get("debug", self.debug) or knobs.runtime.debug
         # FlagPrism: options must affect specialization and cache keys.
         _flagprism.apply_compile_options(kwargs)
+        # Resolve dispatch before the in-memory specialization lookup too.
+        # Backend option hashing alone only protects the on-disk cache.
+        if kwargs.get("enable_auto_blockify") is None:
+            from triton.backends.ascend.utils import _is_auto_map_parallel_blocks_enabled
+            kwargs["enable_auto_blockify"] = _is_auto_map_parallel_blocks_enabled()
 
         # parse options
         device = driver.active.get_current_device()

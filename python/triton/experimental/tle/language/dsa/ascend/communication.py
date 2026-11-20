@@ -3,7 +3,6 @@
 import os
 import torch
 import torch.distributed as dist
-import shmem as ash
 
 _g_pe = None
 _g_world_size = None
@@ -20,6 +19,8 @@ def _get_ash_ip_port():
 
 def init_communicator(ip_port=None, ash_size=None, engine_type=None):
     global _g_pe, _g_world_size, _g_mem_count
+    import shmem as ash
+
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.npu.set_device(local_rank)
     dist.init_process_group(backend="hccl", rank=local_rank)
@@ -52,6 +53,8 @@ def create_dist_tensor(buf_tensor):
     """
     global _g_mem_count
     if isinstance(buf_tensor, torch.Tensor):
+        import shmem as ash
+
         peer_mem = ash.aclshmem_create_tensor([buf_tensor.numel()], dtype=buf_tensor.dtype, device_id=_g_pe)
         _g_mem_count += 1
         return peer_mem
@@ -67,6 +70,8 @@ def cleanup_communicator(peer_mem):
     `aclshmem_finalize()` called.
     """
     global _g_mem_count
+    import shmem as ash
+
     torch.npu.synchronize()
     dist.barrier()
     ash.aclshmem_free_tensor(peer_mem)
