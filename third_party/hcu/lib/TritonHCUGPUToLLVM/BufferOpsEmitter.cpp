@@ -84,15 +84,19 @@ Value BufferEmitter::createResourceDescriptor(Value basePtr,
 #endif
   }
 
-  Value flagsConst = b.int_val(32, flags);
+  // The bundled LLVM and DTK clang disagree on the byte-count type of
+  // make.buffer.rsrc. Both accept the native GFX9 descriptor in address
+  // space 8.
+  Value base = b.and_(b.ptrtoint(i64_ty, basePtr), b.i64_val(0xffffffffffff));
+  Value baseAndStride =
+      b.or_(base, b.shl(b.zext(i64_ty, stride), b.i64_val(48)));
+  constexpr uint32_t numRecords = std::numeric_limits<int32_t>::max() - 1;
+  uint64_t extentAndFlags = (uint64_t{flags} << 32) | numRecords;
+  Value words =
+      packLLVector(loc, {baseAndStride, b.i64_val(extentAndFlags)}, rewriter);
+  Value descriptor = b.bitcast(words, rewriter.getIntegerType(128));
   Type rsrcType = LLVM::LLVMPointerType::get(rewriter.getContext(), 8);
-
-  // HCU : modify to compatible with HCU llvm.
-  Value numRecordsByte = b.int_val(32, std::numeric_limits<int>::max() - 1);
-
-  Value resource = rewriter.createOrFold<ROCDL::MakeBufferRsrcOp>(
-      loc, rsrcType, basePtr, stride, numRecordsByte, flagsConst);
-  return resource;
+  return b.inttoptr(rsrcType, descriptor);
 }
 
 Value BufferEmitter::emitLoad(Type type, Value rsrcDesc, Value offset,

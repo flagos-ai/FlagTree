@@ -73,6 +73,33 @@ def ordinary_memory_kernel(a, b, POLICY: tl.constexpr):
     tl.store(b + x, tl.load(a + x, cache_policy=POLICY), cache_policy=POLICY)
 
 
+@triton.jit
+def masked_buffer_kernel(a, b, POLICY: tl.constexpr):
+    x = tl.arange(0, 128)
+    value = tl.load(a + x, mask=x < 117, other=-7, cache_policy=POLICY)
+    tl.store(b + x, value, mask=x < 121, cache_policy=POLICY)
+
+
+@pytest.mark.parametrize("policy", (None, CachePolicy(".cs")))
+def test_default_buffer_descriptor_on_device(policy, monkeypatch):
+    pytest.importorskip("triton._C.libtriton.hcu")
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available() or triton.runtime.driver.active.get_current_target().backend != "hip":
+        pytest.skip("requires an HCU device")
+    monkeypatch.delenv("AMDGCN_USE_BUFFER_OPS", raising=False)
+    src = torch.arange(140, dtype=torch.int32, device="cuda")
+    dst = torch.full_like(src, -19)
+    kernel = masked_buffer_kernel[(1, )](src[3:], dst[5:], policy)
+    assembly = kernel.asm["amdgcn"]
+    for op in ("buffer_load_", "buffer_store_"):
+        instructions = [line for line in assembly.splitlines() if op in line]
+        assert instructions and all(("glc slc" in line) == (policy is not None) for line in instructions)
+    expected = torch.full_like(src, -19)
+    expected[5:122] = src[3:120]
+    expected[122:126] = -7
+    torch.testing.assert_close(dst, expected)
+
+
 @pytest.mark.parametrize("arch", ("gfx928", "gfx936", "gfx938"))
 def test_ordinary_streaming_load_and_store_on_hcu(arch, monkeypatch):
     pytest.importorskip("triton._C.libtriton.hcu")
