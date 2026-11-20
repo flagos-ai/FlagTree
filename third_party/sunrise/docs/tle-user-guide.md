@@ -67,7 +67,7 @@ TLE 官方（[FlagTree Wiki: TLE](https://github.com/flagos-ai/FlagTree/wiki/TLE
 | `tle.memory_space(tensor, "shared_memory")` | ✅ | 给 tensor 指定内存空间 |
 | `tle.gpu.copy(src, dst, shape)`（普通指针 / normcopy）| ✅ | 全局↔shared 拷贝 |
 | `tle.gpu.copy`（`tensor_descriptor` / tmacopy）| ❌ | TMA 是 Hopper 专有（见第 3 节）|
-| `tle.gpu.warp_specialize` / `tle.gpu.pipeline` | ❌ | 依赖 Hopper warpgroup（见第 3 节）|
+| `tle.gpu.warp_specialize` | ❌ | 依赖 Hopper warpgroup（见第 3 节）|
 
 **TLE-Raw**
 
@@ -187,7 +187,6 @@ def kernel(x_ptr, ...):
 |---|---|---|
 | `tle.gpu.pipe`（pipe/reader/writer）| TLE-Lite | 依赖 NVWS dialect + Hopper mbarrier |
 | `tle.gpu.warp_specialize` | TLE-Struct | 依赖 Hopper warpgroup + mbarrier |
-| `tle.gpu.pipeline`（tile-style 流水）| TLE-Struct | 依赖 warp specialization 基础设施 |
 | `tle.gpu.copy` 的 **tmacopy**（TMA 描述符）| TLE-Struct | TMA 引擎（Hopper 专有）|
 | WGMMA 相关 | TLE-Struct | Hopper Tensor Core 专有指令 |
 | **distributed**：`device_mesh` / `remote` / `distributed_barrier` / `distributed_dot` / `reshard` / `shard_id` | (Distributed) | 需 cluster/多卡远程内存硬件 |

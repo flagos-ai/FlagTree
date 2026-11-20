@@ -1,6 +1,9 @@
 TLE_SUPPORTED_PRIMITIVES = [
+    ## TLE-Raw
     "raw.call",
     "raw.call_smem",
+
+    ## TLE-Lite
     "load",
     "extract_tile",
     "insert_tile",
@@ -18,9 +21,17 @@ TLE_SUPPORTED_PRIMITIVES = [
     "pipe.writer.acquire",
     "pipe.writer.commit",
     "pipe.writer.close",
+
+    ## TLE-Struct GPU
     "gpu.alloc",
     "gpu.copy",
     "gpu.local_ptr",
     "gpu.memory_space",
     "gpu.warp_specialize",
+    "gpu.range",
+    "gpu.buffered_tensor.load",
+    "gpu.buffered_tensor.store",
+    "gpu.buffered_tensor.reshape",
+    "gpu.buffered_tensor.slot",
+    "gpu.buffered_tensor.subslice",
 ]

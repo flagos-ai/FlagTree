@@ -28,6 +28,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/SmallVector.h"
 #include <algorithm>
 #include <limits>
@@ -305,6 +306,11 @@ class OptimizeLocalPointerStoresPass
     for (triton::StoreOp store : stores) {
       if (!store)
         continue;
+      Attribute explicitEncoding;
+      if (failed(inferTleExplicitMemoryEncoding(store, explicitEncoding))) {
+        signalPassFailure();
+        return;
+      }
 
       Value ptr = stripConvertLayouts(store.getPtr());
       auto localPointers = ptr.getDefiningOp<LocalPointersOp>();
@@ -346,8 +352,10 @@ class OptimizeLocalPointerStoresPass
                            .getResult();
       }
 
-      ttg::LocalStoreOp::create(builder, store.getLoc(), valueToStore,
-                                localPointers.getSrc());
+      auto localStore = ttg::LocalStoreOp::create(
+          builder, store.getLoc(), valueToStore, localPointers.getSrc());
+      if (explicitEncoding)
+        setTleExplicitMemoryEncoding(localStore, explicitEncoding);
       store.erase();
     }
   }

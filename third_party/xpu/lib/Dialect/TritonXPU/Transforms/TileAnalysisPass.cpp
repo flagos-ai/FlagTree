@@ -27,6 +27,7 @@
 
 #include "triton/Analysis/TileAnalysis.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 
@@ -65,6 +66,12 @@ public:
   TritonXPUTileAnalysisPass() = default;
   TritonXPUTileAnalysisPass(unsigned vrfBudget) { this->vrfBudget = vrfBudget; }
 
+  // Set by runOnOperation: the [TileAnalysis] developer line prints only when
+  // TRITONXPU_TILE_REPORT is on. allocBytesPerCore is the module's per-core
+  // tle.gpu.alloc footprint, computed once and shared across report() sites.
+  bool verboseReport = false;
+  int64_t allocBytesPerCore = 0;
+
   void report(const char *site, Operation *op, Type valTy) {
     auto tensorTy = dyn_cast<RankedTensorType>(valTy);
     if (!tensorTy)
@@ -78,6 +85,31 @@ public:
 
     RegPressure p;
     getBlockRegPressure(getOperation(), op, p);
+
+    // Stack estimate, folded into the [TileAnalysis] developer line below.
+    // The former user-facing [StackEstim] warning was removed: the actionable
+    // "allocation too big" case is TLEPipeline's hard error (per-core LM over
+    // budget), and this register-pressure estimate is compiler reasoning that
+    // belongs in the TRITONXPU_TILE_REPORT channel, not a user message.
+    // finestSlice = largest legal iterNum (same predicate UnrollControl uses,
+    // capped by minVecWidth); residueRegs = what survives it; one vector
+    // register = 512 bits = 64 B; a ~2240 B fixed frame plus the per-tier
+    // vector registers gives the stack estimate (e.g. a 256-tier case:
+    // 48*64 + 2240 = 5312 B). wouldExceed reproduces the old warn condition
+    // purely as a developer signal.
+    const int64_t kVecRegBytes = 64;
+    const int64_t kFixedBytes = 2240;
+    const int64_t kStackBudget = 8000;
+    const int64_t kLadderFloorBudget = 4;
+    int64_t maxLegalIter = 1;
+    for (int64_t iterNum = 1; iterNum <= widthPerCore; ++iterNum)
+      if (isLegalIterNum(iterNum, numCol, widthPerCore, p.minVecWidth))
+        maxLegalIter = std::max(maxLegalIter, iterNum);
+    int64_t residueRegs = (p.vecPeak + maxLegalIter - 1) / maxLegalIter;
+    int64_t floorRegs = p.vecInvariant + residueRegs;
+    int64_t estimate = floorRegs * kVecRegBytes + kFixedBytes;
+    bool wouldExceed =
+        residueRegs > kLadderFloorBudget || estimate > kStackBudget;
 
     int64_t target =
         this->vrfBudget > 0 ? ceil<int64_t>(p.vecPeak, this->vrfBudget) : 1;
@@ -98,12 +130,19 @@ public:
                  << " numCol=" << numCol << " widthPerCore=" << widthPerCore
                  << " coresPerGroup=" << coresPerGroup
                  << " blockVecPeak=" << p.vecPeak
+                 << " blockVecInvariant=" << p.vecInvariant
                  << " blockVecTotal=" << p.vecTotal
                  << " blockScalarPeak=" << p.scalarPeak
+                 << " blockScalarInvariant=" << p.scalarInvariant
                  << " maxVecWidth=" << p.maxVecWidth
                  << " minVecWidth=" << p.minVecWidth
                  << " budget=" << this->vrfBudget << " blockTarget=" << target
-                 << " legal={" << legal << "}\n";
+                 << " legal={" << legal << "}"
+                 << " allocBytesPerCore=" << allocBytesPerCore
+                 << " estimate=" << estimate << " stackBudget=" << kStackBudget
+                 << " finestSlice=" << maxLegalIter
+                 << " residueRegs=" << residueRegs
+                 << " wouldExceed=" << (wouldExceed ? 1 : 0) << "\n";
   }
 
   void runOnOperation() override {
@@ -125,10 +164,36 @@ public:
     // must not reach the emitted module either.
     tileDecisionCheck(mod);
 
-    // Cheap by default: the walk below is pure measurement, so it is only worth
-    // paying for when someone is reading the report.
-    if (!mlir::triton::tools::getBoolEnvXPU("TRITONXPU_TILE_REPORT"))
+    // [TileAnalysis] is a developer-only report (TRITONXPU_TILE_REPORT), off
+    // by default. Scoped to TLE modules: the stack estimate folded into it is
+    // calibrated on TLE kernels and the 8000 B budget is the TLE retune
+    // ladder's. There is no user-facing warning here anymore -- the actionable
+    // over-allocation case is TLEPipeline's hard error.
+    verboseReport = mlir::triton::tools::getBoolEnvXPU("TRITONXPU_TILE_REPORT");
+    if (!verboseReport)
       return;
+
+    bool isTLE = false;
+    mod.walk([&](triton::gpu::LocalAllocOp) {
+      isTLE = true;
+      return WalkResult::interrupt();
+    });
+    if (!isTLE)
+      return;
+
+    // Per-core bytes the user's own tle.gpu.alloc buffers occupy (LM only; SM
+    // buffers are cluster-shared, not stack). Reported so a developer can see
+    // how much of the stack estimate is user allocation vs compiler
+    // temporaries. Mirrors TLEPipeline's collectBaseFootprint accounting.
+    unsigned groupSize = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
+    allocBytesPerCore = 0;
+    mod.walk([&](triton::gpu::LocalAllocOp alloc) {
+      auto memTy = dyn_cast<triton::gpu::MemDescType>(alloc.getType());
+      if (!memTy || isSharedMemDesc(alloc.getType()) ||
+          !memTy.getElementType().isIntOrFloat())
+        return;
+      allocBytesPerCore += getPerCoreBytes(alloc, groupSize);
+    });
 
     mod.walk([&](triton::xpu::StoreOp storeOp) {
       report("pointwise", storeOp, storeOp.getValue().getType());

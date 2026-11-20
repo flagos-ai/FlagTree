@@ -151,7 +151,7 @@ class SunriseBackend(BaseBackend):
         flag = knobs_sunrise.flag
         if flag is None or flag == []:
             # flag = ['enable-predicate', 'stpu-warp-alu'] # stpu-warp-alu 某些情况下会出错 ones:#12470
-            flag = ['enable-predicate']
+            flag = ['enable-predicate', 'stpu-warp-alu=0']
         if isinstance(flag, str):
             flag = flag.split()
         if opt.arch.lower() == "s3":
@@ -271,9 +271,14 @@ class SunriseBackend(BaseBackend):
                 passes.ttir.add_loop_aware_cse(pm)
                 passes.ttgpuir.add_prefetch(pm)
         else:
+            passes.ttgpuir.add_fuse_nested_loops(pm)
+            passes.common.add_canonicalizer(pm)
+            passes.ttir.add_triton_licm(pm)
+            passes.common.add_canonicalizer(pm)
+            passes.ttgpuir.add_combine_tensor_select_and_if(pm)
             if os.getenv('OFF_ASYNC', '0') == '0':
-                passes.ttir.add_loop_aware_cse(pm)
                 sunrise.passes.ttgpuir.add_pipeline(pm, num_stages)
+                passes.ttgpuir.add_remove_layout_conversions(pm)
             if os.getenv('OFF_PREF', '0') == '0':
                 passes.common.add_canonicalizer(pm)
                 passes.ttir.add_loop_aware_cse(pm)

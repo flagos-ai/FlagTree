@@ -50,10 +50,17 @@ static Attribute pickDescriptorLoadStoreLayout(int numWarps, int threadsPerWarp,
   return layout;
 }
 
-static void pickDescriptorLoadStoreLayout(
+static LogicalResult pickDescriptorLoadStoreLayout(
     ModuleOp moduleOp, llvm::MapVector<Operation *, Attribute> &layoutMap) {
   int threadsPerWarp = TritonGPUDialect::getThreadsPerWarp(moduleOp);
-  moduleOp.walk([&](Operation *op) {
+  WalkResult result = moduleOp.walk([&](Operation *op) {
+    if (!isa<DescriptorOpInterface, DescriptorStoreLikeOpInterface>(op))
+      return WalkResult::advance();
+    Attribute explicitEncoding;
+    if (failed(inferTleExplicitMemoryEncoding(op, explicitEncoding)))
+      return WalkResult::interrupt();
+    if (explicitEncoding)
+      return WalkResult::advance();
     int numWarps = lookupNumWarps(op);
     if (auto load = dyn_cast<DescriptorOpInterface>(op)) {
       if (load->getNumResults() == 1)
@@ -65,7 +72,9 @@ static void pickDescriptorLoadStoreLayout(
       layoutMap[op] = pickDescriptorLoadStoreLayout(numWarps, threadsPerWarp,
                                                     store.getSrc().getType());
     }
+    return WalkResult::advance();
   });
+  return failure(result.wasInterrupted());
 }
 
 struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
@@ -83,10 +92,28 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
     // the pointers should have for best memory coalescing
     llvm::MapVector<Operation *, Attribute> layoutMap;
     int threadsPerWarp = TritonGPUDialect::getThreadsPerWarp(moduleOp);
+    bool failedExplicitEncoding = false;
     moduleOp.walk([&](Operation *curr) {
+      if (failedExplicitEncoding)
+        return;
       Value ptr = getMemAccessPtr(curr);
       if (!ptr)
         return;
+      Attribute explicitEncoding;
+      if (failed(inferTleExplicitMemoryEncoding(curr, explicitEncoding))) {
+        failedExplicitEncoding = true;
+        return;
+      }
+      if (explicitEncoding) {
+        if (auto tensorType = dyn_cast<RankedTensorType>(ptr.getType())) {
+          if (tensorType.getEncoding() != explicitEncoding) {
+            curr->emitOpError("has explicit TLE memory encoding that does not "
+                              "match the pointer tensor encoding");
+            failedExplicitEncoding = true;
+          }
+        }
+        return;
+      }
       // We only convert `tensor<tt.ptr<>>` load/store
       bool isPtrTensor = false;
       if (auto tensorType = dyn_cast<RankedTensorType>(ptr.getType()))
@@ -104,8 +131,16 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
       layoutMap[curr] = layout;
     });
 
+    if (failedExplicitEncoding) {
+      signalPassFailure();
+      return;
+    }
+
     // Also pick a layout for descriptor load/store ops.
-    pickDescriptorLoadStoreLayout(moduleOp, layoutMap);
+    if (failed(pickDescriptorLoadStoreLayout(moduleOp, layoutMap))) {
+      signalPassFailure();
+      return;
+    }
 
     // For each memory op that has a layout L1:
     // 1. Create a coalesced memory layout L2 of the pointer operands
