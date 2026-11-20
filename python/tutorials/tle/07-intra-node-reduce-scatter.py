@@ -381,12 +381,8 @@ def _prune_reduce_scatter_config(config, input_tensor, ctx):
     return ctx.preflight_results[preflight_key]
 
 
-@autotune(
-    config_space=CONFIG_SPACE,
-    key_fn=_reduce_scatter_key,
-    cache_version="tle-intra-node-rs-pruned-space-v1",
-    prune_fn=_prune_reduce_scatter_config
-)
+@autotune(config_space=CONFIG_SPACE, key_fn=_reduce_scatter_key, cache_version="tle-intra-node-rs-pruned-space-v1",
+          prune_fn=_prune_reduce_scatter_config)
 def reduce_scatter(input_tensor: torch.Tensor, ctx: ReduceScatterContext, *, config: dict) -> torch.Tensor:
     """Tune and execute on the current stream; all ranks pass autotune_pg=dist.group.WORLD.
 
@@ -576,8 +572,9 @@ def main():
     _assert_close_on_all_ranks(ctx.output, expected, shape=(M, N), stage="post_benchmark")
     if rank == 0:
         input_bytes = input_tensor.numel() * input_tensor.element_size()
-        print(f"Benchmark: iters={BENCH_ITERS} warmup={WARMUP_ITERS} clear_l2={clear_l2}; "
-              "stat=max(per-rank median); TLE scope=core (entry barrier excluded)", flush=True)
+        print(
+            f"Benchmark: iters={BENCH_ITERS} warmup={WARMUP_ITERS} clear_l2={clear_l2}; "
+            "stat=max(per-rank median); TLE scope=core (entry barrier excluded)", flush=True)
         print(
             f"TLE: {tle_ms:.3f} ms, {input_bytes / (tle_ms * 1e6):.2f} GB/s; "
             f"Torch: {torch_ms:.3f} ms, {input_bytes / (torch_ms * 1e6):.2f} GB/s; "
