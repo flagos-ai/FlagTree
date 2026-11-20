@@ -46,6 +46,8 @@ jobs:
       - name: Reproduce CI matmul cases
         shell: bash
         run: |
+          export no_proxy="${no_proxy:+$no_proxy,}baai-cp-web.ks3-cn-beijing.ksyuncs.com"
+          export NO_PROXY="${NO_PROXY:+$NO_PROXY,}baai-cp-web.ks3-cn-beijing.ksyuncs.com"
           mkdir -p "$GEMS_DIAG_ROOT/results"
           test "$(git -C "$GEMS_DIAG_ROOT/FlagGems" rev-parse HEAD)" = a7620cc191a0b42e040194622c5758b22a7a25dc
           printf '%s\n' mm mm_out > "$GEMS_DIAG_ROOT/operators.txt"
@@ -65,3 +67,16 @@ jobs:
               print(f"--- {path.name} ---", flush=True)
               print(path.read_text(), flush=True)
           DIAGNOSTICS
+      - name: Validate diagnostic test results
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'VALIDATE'
+          import json
+          import os
+          from pathlib import Path
+          summary = Path(os.environ["GEMS_DIAG_ROOT"]) / "results" / "summary.json"
+          totals = json.loads(summary.read_text())["totals"]
+          print("Diagnostic totals:", totals)
+          assert totals["passed"] >= 5 and totals["failed"] == 0 and totals["errors"] == 0
+          VALIDATE
