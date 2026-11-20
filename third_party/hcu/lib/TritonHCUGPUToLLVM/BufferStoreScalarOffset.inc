@@ -4,7 +4,7 @@
 // splitting an exact nonnegative core+constant. No mask facts authorize bounds.
 class BufferStoreScalarOffset {
 public:
-  static constexpr uint64_t Records = uint64_t(INT32_MAX)-1;
+  static constexpr uint64_t Records = LLVM::HCU::BufferEmitter::MaxRawBufferBytes;
   static constexpr uint64_t MaxElement = (Records-2)/2; // Full i16 must fit.
   struct Node {
     enum Kind {Keep,Zero,Add,Mul,SExt,ZExt,Trunc} kind=Keep;

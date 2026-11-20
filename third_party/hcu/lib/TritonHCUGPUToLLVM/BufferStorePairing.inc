@@ -455,7 +455,7 @@ class BufferStorePairing {
     // dword-aligned address, the only case where the two original halfword
     // stores have different descriptor validity is the pair that starts
     // two bytes before NUM_RECORDS.
-    constexpr uint64_t split = (BufferStoreScalarOffset::Records - 2) / 2;
+    constexpr uint64_t split = (LLVM::HCU::BufferEmitter::MaxRawBufferBytes - 2) / 2;
     const auto form = affine(offset);
     unsigned knownLow = 31;
     SmallVector<std::pair<const LaneValues *, uint64_t>, 4> laneContributions;

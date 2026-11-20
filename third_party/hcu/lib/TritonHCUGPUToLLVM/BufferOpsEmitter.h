@@ -10,6 +10,7 @@
 #include "triton/Conversion/MLIRTypes.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include <cstdint>
+#include <limits>
 
 namespace mlir::LLVM::HCU {
 // Utility class to take care of buffer operation emission. We may add more
@@ -59,6 +60,11 @@ namespace mlir::LLVM::HCU {
 // Failure to meet 1) will result in a scalarized loop (very poor performance).
 // Failure to meet 2) and 3) will result in incorrect memory access.
 struct BufferEmitter {
+  // Default raw descriptors reserve a signed-i32 byte range. Offset and
+  // vector-store proofs must use the same bound as descriptor construction.
+  static constexpr uint64_t MaxRawBufferBytes =
+      uint64_t(std::numeric_limits<int32_t>::max()) - 1;
+
   BufferEmitter(RewriterBase &rw, Location loc,
                 mlir::triton::HCU::TargetInfo ti);
 

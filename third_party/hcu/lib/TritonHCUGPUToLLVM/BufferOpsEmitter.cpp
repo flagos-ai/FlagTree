@@ -108,7 +108,7 @@ Value BufferEmitter::createResourceDescriptor(Value basePtr, Value blockStride,
   Type rsrcType = LLVM::LLVMPointerType::get(rewriter.getContext(), 8);
 
   // ROCDL expects i64; the hardware descriptor and uniform rebase use u32.
-  constexpr int maxRecords = std::numeric_limits<int>::max() - 1;
+  constexpr uint64_t maxRecords = BufferEmitter::MaxRawBufferBytes;
   Value numRecordsByte = b.int_val(64, maxRecords);
   if (uniformByteOffset) {
     // Structured/indexed resources have different NUM_RECORDS semantics.
