@@ -28,3 +28,7 @@ add_triton_library(TritonAMDGPUTransforms
 
 target_include_directories(TritonAMDGPUTransforms PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
 target_include_directories(TritonAMDGPUTransforms PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/../../include)
+
+if(FLAGTREE_TLE)
+  target_sources(TritonAMDGPUTransforms PRIVATE ../../tle/ConvertWarpSpecialize.cpp)
+endif()
