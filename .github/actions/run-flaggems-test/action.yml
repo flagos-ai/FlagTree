@@ -141,6 +141,10 @@ runs:
         RUN_SCRIPT: ${{ inputs.run-script }}
         REPO_KIND: ${{ inputs.repo-kind }}
       run: |
+        unset https_proxy http_proxy all_proxy
+        if [ -f ~/env-domestic.sh ]; then
+          source ~/env-domestic.sh
+        fi
         set -x
 
         # Run user-provided pre-command if any (e.g. source env, set LD_LIBRARY_PATH)
