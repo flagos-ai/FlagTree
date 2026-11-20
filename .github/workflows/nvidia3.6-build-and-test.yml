@@ -1,5 +1,5 @@
 name: NVIDIA Gems PR1541 diagnostics
-true:
+on:
   workflow_dispatch: null
 permissions:
   contents: read
