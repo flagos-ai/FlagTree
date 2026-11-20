@@ -1,169 +1,54 @@
-# Copyright 2025-     FlagOS Contributors
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
-name: Nvidia3.6-Build-And-Test
-
+name: NVIDIA Gems PR1541 diagnostics
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '40 19 * * *'
-  push:
-    branches: [ "main", "triton_v3.6.x" ]
-  pull_request:
-    branches: [ "main", "triton_v3.6.x" ]
-    types: [opened, synchronize, reopened, ready_for_review]
-
 permissions:
   contents: read
-  pull-requests: read
-
-concurrency:
-  # Group by PR number for pull_request events to cancel outdated runs from the same PR.
-  # Group by commit SHA for push events to allow parallel runs from different merges.
-  # Fall back to run_id for other events (e.g., schedule) to ensure each run is independent.
-  group: ${{ github.workflow }}-${{
-    github.event_name == 'pull_request' && github.event.pull_request.number ||
-    github.event_name == 'push' && github.event.head_commit.id ||
-    github.run_id }}
-  cancel-in-progress: true
-
 jobs:
-  nv36x-unit-test:
+  diagnostics:
     runs-on: nvidia3.6
-    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
+    timeout-minutes: 45
     steps:
       - name: Setup environment
         shell: bash
         run: |
           source ~/env.sh
-          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
-
-      - name: Smart Checkout
-        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy|CUDA_VISIBLE_DEVICES)=' >> "$GITHUB_ENV" || true
+          echo "GEMS_DIAG_ROOT=$RUNNER_TEMP/pr1541-gems-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+      - name: Checkout exact PR compiler source
+        uses: actions/checkout@v6
         with:
-          checkout_version: 'v6'
-
-      - name: Check if backend-relevant files changed
-        id: check_backend
-        if: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
-        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
-        with:
-          backend: nvidia
-
-      - name: Cleanup FlagTree Environment
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+          ref: 1253565d1c2a76735bc795a6112bf2273f2a6201
+      - name: Cleanup FlagTree environment
         uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
-
-      - name: Detect Target Branch
+      - name: Build exact PR compiler
         shell: bash
         run: |
-          set -x
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            TARGET_BRANCH="${{ github.base_ref }}"
-          else
-            TARGET_BRANCH="${{ github.ref_name }}"
-          fi
-          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
-          echo "TARGET_BRANCH=$TARGET_BRANCH"
-
-      - name: Build FlagTree
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
-        shell: bash
-        run: |
-          set -x
           source ~/env-3.6.sh
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
-
-      - name: Clear cache if ClearCache label present
-        if: steps.check_backend.outputs.should_skip != 'true'
-        id: clear_cache
-        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+      - name: Clone exact FlagGems test source
+        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          backend: nvidia
-
-      - name: Unit Test
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
+          repo-url: https://github.com/flagos-ai/FlagGems.git
+          ref: a7620cc191a0b42e040194622c5758b22a7a25dc
+          clone-dir: ${{ env.GEMS_DIAG_ROOT }}/FlagGems
+      - name: Reproduce CI matmul cases
         shell: bash
         run: |
-          set -x
-          source ~/env.sh
-          ## python tutorials
-          python3 python/tutorials/01-vector-add.py --only_unit_test
-          python3 python/tutorials/02-fused-softmax.py --only_unit_test
-          python3 python/tutorials/03-matrix-multiplication.py --only_unit_test
-          python3 python/tutorials/04-low-memory-dropout.py --only_unit_test
-          python3 python/tutorials/05-layer-norm.py --only_unit_test
-          python3 python/tutorials/06-fused-attention.py --only_unit_test
-          python3 python/tutorials/07-extern-functions.py --only_unit_test
-          python3 python/tutorials/08-grouped-gemm.py --only_unit_test
-          python3 python/tutorials/09-persistent-matmul.py --only_unit_test
-          python3 python/tutorials/11-programmatic-dependent-launch.py --only_unit_test
-          python3 python/tutorials/12-fused_inv_rope_fp8_quant_reorder.py --only_unit_test
-          ## python unit test
-          python3 -m pytest -s python/test/unit/cuda
-          python3 -m pytest -s python/test/unit/instrumentation
-          python3 -m pytest -s python/test/unit/language \
-              --ignore=python/test/unit/language/test_line_info.py
-          python3 -m pytest -s python/test/unit/runtime
-          python3 -m pytest -s python/test/mixed_precision
-          if [ -d "python/test/operators" ]; then
-            python3 -m pytest -s python/test/operators
-          fi
-          ## flagtree tle python tutorials
-          python3 python/tutorials/tle/01-fft.py
-          python3 python/tutorials/tle/02-moe_align_block_size.py
-          python3 python/tutorials/tle/03-topk.py
-          python3 python/tutorials/tle/04-cluster-gemm.py
-          python3 python/tutorials/tle/deepseek_v32/01-topk_selector.py
-          python3 python/tutorials/tle/deepseek_v32/02-sparse-mla.py
-          ## flagtree tle python unit test
-          export CLANG=/usr/local/lib/python3.12/dist-packages/mlir/llvm_artifact/bin/clang-22
-          python3 -m pytest -s python/test/tle/integration
-          python3 -m pytest -s python/test/tle/unit \
-              --ignore=python/test/tle/unit/test_tle_distributed_d2d.py \
-              --ignore=python/test/tle/unit/test_tle_get_local_pe.py \
-              --ignore=python/test/tle/unit/test_tle_d2d_barrier.py \
-              --ignore=python/test/tle/unit/test_tle_get_node_rank.py \
-              --ignore=python/test/tle/unit/test_tle_signal.py \
-              --ignore=python/test/tle/unit/test_tle_signal_wait.py
-          ## flagtree hints python tutorials
-          python3 python/tutorials/hints/01/01-vector-add.py --only_unit_test
-          # python3 python/tutorials/hints/02/02-fused-softmax.py --only_unit_test
-          python3 python/tutorials/hints/03/03-matrix-multiplication.py --only_unit_test
-          python3 python/tutorials/hints/04/04-low-memory-dropout.py --only_unit_test
-          python3 python/tutorials/hints/05/05-layer-norm.py --only_unit_test
-          # python3 python/tutorials/hints/06/06-fused-attention.py --only_unit_test  # Error on 3.6
-          python3 python/tutorials/hints/07/07-extern-functions.py --only_unit_test
-          python3 python/tutorials/hints/08/08-grouped-gemm.py --only_unit_test
-          python3 python/tutorials/hints/11/11-programmatic-dependent-launch.py --only_unit_test
-          ## flagtree tle raw
-          python3 python/tutorials/tle/raw/mlir/01-vector-add.py
-          python3 python/tutorials/tle/raw/mlir/02-fused-softmax.py
-          python3 python/tutorials/tle/raw/mlir/03-matrix-multiplication.py
-          python3 python/tutorials/tle/raw/mlir/04-hello-world.py
-          python3 python/tutorials/tle/raw/mlir/05-topk.py --kernel triton
-          python3 python/tutorials/tle/raw/mlir/05-topk.py --kernel tle
-          python3 python/tutorials/tle/raw/mlir/06-test-vassert.py
-          ## flagtree tle cuda
-          python3 python/tutorials/tle/raw/cuda/01-vector-add.py
-          python3 python/tutorials/tle/raw/cuda/02-fused-softmax.py
-          python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication.py
-          python3 python/tutorials/tle/raw/cuda/03-matrix-multiplication-smem.py
+          mkdir -p "$GEMS_DIAG_ROOT/results"
+          printf '%s\n' mm mm_out > "$GEMS_DIAG_ROOT/operators.txt"
+          cp .github/actions/run-flaggems-test/assets/gems/v5.3.5/conftest.py "$GEMS_DIAG_ROOT/FlagGems/tests/conftest.py"
+          export PYTHONPATH="$GEMS_DIAG_ROOT/FlagGems/src${PYTHONPATH:+:$PYTHONPATH}"
+          python3 -c 'import sys, torch, triton, flag_gems; print("Python:", sys.version); print("Torch:", torch.__version__); print("GPU:", torch.cuda.get_device_name()); print("Triton:", triton.__file__); print("FlagGems:", flag_gems.__file__)'
+          python3 .github/actions/run-flaggems-test/assets/ci/ci_run_tests.py --gpus "${CUDA_VISIBLE_DEVICES:-0}" --output-dir "$GEMS_DIAG_ROOT/results" --flaggems-path "$GEMS_DIAG_ROOT/FlagGems" --repo-kind flaggems --first-parameter-only --op-list-file "$GEMS_DIAG_ROOT/operators.txt" --skip-file .github/workflows/gems/v5.3.5/skip_list/nvidia.yaml
+      - name: Publish detailed pytest diagnostics
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'DIAGNOSTICS'
+          import os
+          from pathlib import Path
+          root = Path(os.environ["GEMS_DIAG_ROOT"]) / "results"
+          for path in sorted(root.glob("pytest_*.log")):
+              print(f"--- {path.name} ---", flush=True)
+              print(path.read_text(), flush=True)
+          DIAGNOSTICS
