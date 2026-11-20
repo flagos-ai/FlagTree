@@ -1,6 +1,6 @@
 name: NVIDIA Gems PR1541 diagnostics
-on:
-  workflow_dispatch:
+true:
+  workflow_dispatch: null
 permissions:
   contents: read
 jobs:
@@ -8,97 +8,95 @@ jobs:
     runs-on: nvidia3.6
     timeout-minutes: 45
     steps:
-      - name: Setup environment
-        shell: bash
-        run: |
-          source ~/env.sh
-          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy|CUDA_VISIBLE_DEVICES)=' >> "$GITHUB_ENV" || true
-          echo "GEMS_DIAG_ROOT=$RUNNER_TEMP/pr1541-gems-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
-      - name: Checkout exact PR compiler source
-        uses: actions/checkout@v6
-        with:
-          ref: 1253565d1c2a76735bc795a6112bf2273f2a6201
-      - name: Check existing compiler
-        id: compiler
-        shell: bash
-        run: |
-          source ~/env-3.6.sh
-          if python3 -c 'import importlib.metadata as m; v=m.version("flagtree"); print("Installed compiler:", v); assert "git1253565d" in v'; then
-            echo "reuse=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "reuse=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Cleanup FlagTree environment
-        if: steps.compiler.outputs.reuse != 'true'
-        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
-      - name: Build exact PR compiler
-        if: steps.compiler.outputs.reuse != 'true'
-        shell: bash
-        run: |
-          source ~/env-3.6.sh
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
-      - name: Clone exact FlagGems test source
-        uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
-        with:
-          repo-url: https://github.com/flagos-ai/FlagGems.git
-          ref: v5.3.5
-          clone-dir: ${{ env.GEMS_DIAG_ROOT }}
-      - name: Reproduce CI matmul cases
-        shell: bash
-        run: |
-          export no_proxy="${no_proxy:+$no_proxy,}baai-cp-web.ks3-cn-beijing.ksyuncs.com"
-          export NO_PROXY="${NO_PROXY:+$NO_PROXY,}baai-cp-web.ks3-cn-beijing.ksyuncs.com"
-          python3 - <<'DNS'
-          import socket
-          from pathlib import Path
-          marker = "# flagtree-pr1541-temporary-model-dns"
-          hosts = Path("/etc/hosts")
-          entries = [line for line in hosts.read_text().splitlines() if marker not in line]
-          entries.append("43.250.35.76 baai-cp-web.ks3-cn-beijing.ksyuncs.com " + marker)
-          hosts.write_text("\n".join(entries) + "\n")
-          print("Model host resolution:", socket.getaddrinfo("baai-cp-web.ks3-cn-beijing.ksyuncs.com", 443))
-          DNS
-          mkdir -p "$GEMS_DIAG_ROOT/results"
-          test "$(git -C "$GEMS_DIAG_ROOT/FlagGems" rev-parse HEAD)" = a7620cc191a0b42e040194622c5758b22a7a25dc
-          printf '%s\n' mm mm_out > "$GEMS_DIAG_ROOT/operators.txt"
-          cp .github/actions/run-flaggems-test/assets/gems/v5.3.5/conftest.py "$GEMS_DIAG_ROOT/FlagGems/tests/conftest.py"
-          export PYTHONPATH="$GEMS_DIAG_ROOT/FlagGems/src${PYTHONPATH:+:$PYTHONPATH}"
-          python3 -c 'import sys, torch, triton, flag_gems; print("Python:", sys.version); print("Torch:", torch.__version__); print("GPU:", torch.cuda.get_device_name()); print("Triton:", triton.__file__); print("FlagGems:", flag_gems.__file__)'
-          python3 .github/actions/run-flaggems-test/assets/ci/ci_run_tests.py --gpus "${CUDA_VISIBLE_DEVICES:-0}" --output-dir "$GEMS_DIAG_ROOT/results" --flaggems-path "$GEMS_DIAG_ROOT/FlagGems" --repo-kind flaggems --first-parameter-only --op-list-file "$GEMS_DIAG_ROOT/operators.txt" --skip-file .github/workflows/gems/v5.3.5/skip_list/nvidia.yaml
-      - name: Publish detailed pytest diagnostics
-        if: always()
-        shell: bash
-        run: |
-          python3 - <<'DIAGNOSTICS'
-          import os
-          from pathlib import Path
-          root = Path(os.environ["GEMS_DIAG_ROOT"]) / "results"
-          for path in sorted(root.glob("pytest_*.log")):
-              print(f"--- {path.name} ---", flush=True)
-              print(path.read_text(), flush=True)
-          DIAGNOSTICS
-      - name: Validate diagnostic test results
-        if: always()
-        shell: bash
-        run: |
-          python3 - <<'VALIDATE'
-          import json
-          import os
-          from pathlib import Path
-          summary = Path(os.environ["GEMS_DIAG_ROOT"]) / "results" / "summary.json"
-          totals = json.loads(summary.read_text())["totals"]
-          print("Diagnostic totals:", totals)
-          assert totals["passed"] >= 5 and totals["failed"] == 0 and totals["errors"] == 0
-          VALIDATE
-      - name: Restore temporary model DNS
-        if: always()
-        shell: bash
-        run: |
-          python3 - <<'DNS'
-          from pathlib import Path
-          hosts = Path("/etc/hosts")
-          marker = "# flagtree-pr1541-temporary-model-dns"
-          entries = hosts.read_text().splitlines()
-          if any(marker in line for line in entries):
-              hosts.write_text("\n".join(line for line in entries if marker not in line) + "\n")
-          DNS
+    - name: Setup environment
+      shell: bash
+      run: 'source ~/env.sh
+
+        env | grep -E ''^(http_proxy|https_proxy|all_proxy|no_proxy|CUDA_VISIBLE_DEVICES)=''
+        >> "$GITHUB_ENV" || true
+
+        echo "GEMS_DIAG_ROOT=$RUNNER_TEMP/pr1541-gems-$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+
+        '
+    - name: Checkout exact PR compiler source
+      uses: actions/checkout@v6
+      with:
+        ref: 1253565d1c2a76735bc795a6112bf2273f2a6201
+    - name: Check existing compiler
+      id: compiler
+      shell: bash
+      run: "source ~/env-3.6.sh\nif python3 -c 'import importlib.metadata as m; v=m.version(\"\
+        flagtree\"); print(\"Installed compiler:\", v); assert \"git1253565d\" in\
+        \ v'; then\n  echo \"reuse=true\" >> \"$GITHUB_OUTPUT\"\nelse\n  echo \"reuse=false\"\
+        \ >> \"$GITHUB_OUTPUT\"\nfi\n"
+    - name: Cleanup FlagTree environment
+      if: steps.compiler.outputs.reuse != 'true'
+      uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+    - name: Build exact PR compiler
+      if: steps.compiler.outputs.reuse != 'true'
+      shell: bash
+      run: 'source ~/env-3.6.sh
+
+        MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+
+        '
+    - name: Clone exact FlagGems test source
+      uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
+      with:
+        repo-url: https://github.com/flagos-ai/FlagGems.git
+        ref: v5.3.5
+        clone-dir: ${{ env.GEMS_DIAG_ROOT }}
+    - name: Reproduce CI matmul cases
+      shell: bash
+      run: "mkdir -p \"$GEMS_DIAG_ROOT/results\"\ntest \"$(git -C \"$GEMS_DIAG_ROOT/FlagGems\"\
+        \ rev-parse HEAD)\" = a7620cc191a0b42e040194622c5758b22a7a25dc\nprintf '%s\\\
+        n' mm mm_out > \"$GEMS_DIAG_ROOT/operators.txt\"\ncp .github/actions/run-flaggems-test/assets/gems/v5.3.5/conftest.py\
+        \ \"$GEMS_DIAG_ROOT/FlagGems/tests/conftest.py\"\ncat >> \"$GEMS_DIAG_ROOT/FlagGems/tests/conftest.py\"\
+        \ <<'PROXY_DNS'\n# Temporary transport-only diagnostic: preserve original\
+        \ TLS hostname checks.\nimport http.client as _pr1541_http\n_pr1541_original_tunnel\
+        \ = _pr1541_http.HTTPConnection._tunnel\ndef _pr1541_model_tunnel(connection):\n\
+        \    hostname = connection._tunnel_host\n    if hostname != \"baai-cp-web.ks3-cn-beijing.ksyuncs.com\"\
+        :\n        return _pr1541_original_tunnel(connection)\n    headers = connection._tunnel_headers\n\
+        \    connection._tunnel_host = \"43.250.35.76\"\n    connection._tunnel_headers\
+        \ = dict(headers)\n    connection._tunnel_headers[\"Host\"] = \"43.250.35.76:443\"\
+        \n    try:\n        return _pr1541_original_tunnel(connection)\n    finally:\n\
+        \        connection._tunnel_host = hostname\n        connection._tunnel_headers\
+        \ = headers\n_pr1541_http.HTTPConnection._tunnel = _pr1541_model_tunnel\n\
+        PROXY_DNS\nexport PYTHONPATH=\"$GEMS_DIAG_ROOT/FlagGems/src${PYTHONPATH:+:$PYTHONPATH}\"\
+        \npython3 -c 'import sys, torch, triton, flag_gems; print(\"Python:\", sys.version);\
+        \ print(\"Torch:\", torch.__version__); print(\"GPU:\", torch.cuda.get_device_name());\
+        \ print(\"Triton:\", triton.__file__); print(\"FlagGems:\", flag_gems.__file__)'\n\
+        python3 .github/actions/run-flaggems-test/assets/ci/ci_run_tests.py --gpus\
+        \ \"${CUDA_VISIBLE_DEVICES:-0}\" --output-dir \"$GEMS_DIAG_ROOT/results\"\
+        \ --flaggems-path \"$GEMS_DIAG_ROOT/FlagGems\" --repo-kind flaggems --first-parameter-only\
+        \ --op-list-file \"$GEMS_DIAG_ROOT/operators.txt\" --skip-file .github/workflows/gems/v5.3.5/skip_list/nvidia.yaml\n"
+    - name: Publish detailed pytest diagnostics
+      if: always()
+      shell: bash
+      run: "python3 - <<'DIAGNOSTICS'\nimport os\nfrom pathlib import Path\nroot =\
+        \ Path(os.environ[\"GEMS_DIAG_ROOT\"]) / \"results\"\nfor path in sorted(root.glob(\"\
+        pytest_*.log\")):\n    print(f\"--- {path.name} ---\", flush=True)\n    print(path.read_text(),\
+        \ flush=True)\nDIAGNOSTICS\n"
+    - name: Validate diagnostic test results
+      if: always()
+      shell: bash
+      run: 'python3 - <<''VALIDATE''
+
+        import json
+
+        import os
+
+        from pathlib import Path
+
+        summary = Path(os.environ["GEMS_DIAG_ROOT"]) / "results" / "summary.json"
+
+        totals = json.loads(summary.read_text())["totals"]
+
+        print("Diagnostic totals:", totals)
+
+        assert totals["passed"] >= 5 and totals["failed"] == 0 and totals["errors"]
+        == 0
+
+        VALIDATE
+
+        '
