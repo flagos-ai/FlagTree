@@ -1,0 +1,62 @@
+# Skip operators that cause GPU state corruption
+
+skip_operators:
+  # --- A. vLLM CUDA extension not built for iluvatar -----------------------
+  - fused_add_rms_norm
+
+  # --- B. bfloat16 not supported by iluvatar backend -----------------------
+  - weight_norm_interface
+
+  # --- C. Test always skipped on iluvatar (recorded as NotFound) -----------
+  - apply_repetition_penalties
+
+  # --- D. No test file exists for these stable operators -------------------
+  - dispatch_fused_moe_kernel
+  - mul
+  - mul_
+  - mv
+
+skip_test_patterns:
+  # --- A. vLLM CUDA extension not built for iluvatar -----------------------
+  - test_topk_softmax[
+
+  # --- B. bfloat16 not supported by iluvatar backend -----------------------
+  - test_accuracy_bincount_with_weights
+  - test_accuracy_bincount_weights_edge_cases
+
+  # --- H. GPU state contamination in batch run on iluvatar -----------------
+  - test_flash_attn_varlen_func_noncontiguous_kv_cache
+  - test_flash_attn_varlen_func_swap_qg
+
+skip_test_files:
+  # --- E. FLA family: op ids not registered in conf/operators.yaml ---------
+  - tests/test_FLA/test_chunk_gated_delta_rule.py
+  - tests/test_FLA/test_chunk_gated_delta_rule_fwd_recompute.py
+  - tests/test_FLA/test_chunk_gdn2.py
+  - tests/test_FLA/test_chunk_gla.py
+
+  # --- F. DSA family: op ids not in operators.yaml or collection errors ----
+  - tests/test_DSA/test_bin_topk.py
+  - tests/test_DSA/test_indexer_k_tiled.py
+  - tests/test_DSA/test_sparse_mla_ops.py
+
+  # --- G. No clean operator-id mapping or missing dependencies -------------
+  - tests/test_attn_res.py
+  - tests/test_flash_attn_varlen_func_w8a8_int8.py
+  - tests/test_fused_allreduce_rms_norm.py
+  - tests/test_fused_inv_rope_int8_quant.py
+  - tests/test_gdn_w8a16_int8.py
+  - tests/test_glm5_numerics.py
+  - tests/test_glm_state_rows.py
+  - tests/test_kda_bounded.py
+  - tests/test_kpool.py
+  - tests/test_mhc_pre_npu.py
+  - tests/test_mhc_with_norm.py
+  - tests/test_paged_scatter.py
+  - tests/test_parallel_nsa.py
+  - tests/test_qsa_prepare.py
+  - tests/test_quant.py
+  - tests/test_router_gemm.py
+  - tests/test_scaled_int8_quant.py
+  - tests/test_slot_mapping.py
+  - tests/test_tle_capabilities.py

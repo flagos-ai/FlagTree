@@ -33,6 +33,9 @@
 #define TRITON_DIALECT_TRITONGPU_TRANSFORMS_TRITONGPUCONVERSION_H_
 
 #include "mlir/Transforms/DialectConversion.h"
+#ifdef __TLE__
+#include "llvm/ADT/DenseMap.h"
+#endif
 
 namespace mlir {
 
@@ -43,6 +46,7 @@ public:
   int getNumWarps() const { return numWarps; }
 #ifdef __TLE__
   int getNumWarps(Value value) const;
+  void snapshotNumWarps(Operation *root);
 #endif
   int getThreadsPerWarp() const { return threadsPerWarp; }
   int getNumCTAs() const { return numCTAs; }
@@ -56,6 +60,9 @@ private:
   int numWarps;
   int threadsPerWarp;
   int numCTAs;
+#ifdef __TLE__
+  llvm::DenseMap<Value, int> originalNumWarps;
+#endif
 };
 
 class TritonGPUConversionTarget : public ConversionTarget {

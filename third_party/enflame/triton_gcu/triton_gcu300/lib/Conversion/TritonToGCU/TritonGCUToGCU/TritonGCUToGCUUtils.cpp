@@ -3315,7 +3315,8 @@ void moveDeallocOp(ConversionPatternRewriter &rewriter, Value v, Operation *pos,
       break;
     }
   }
-  if (deallocOp && deallocOp->getBlock() == pos->getBlock()) {
+  if (deallocOp && deallocOp->getBlock() == pos->getBlock() &&
+      deallocOp->isBeforeInBlock(pos)) {
     deallocOp->moveAfter(pos);
   }
 }

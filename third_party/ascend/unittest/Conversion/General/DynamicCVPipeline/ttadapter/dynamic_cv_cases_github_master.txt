@@ -1,0 +1,40 @@
+# One test-derived specialization per GitHub master npu_a5_triton kernel.
+# Also supports the old layout at commit 73f472fa6ed9fefc5fea2d5963dc1595fae905e6.
+# CI overrides this server path with its fresh GitHub checkout.
+cases = [
+  { kernel = "flex:flex_attention_kernel", test = "flex", config = "sparse_2000_22000" },
+  { kernel = "flex:flex_attention_backward_dq_kernel", test = "flex", config = "sparse_2000_22000" },
+  { kernel = "paged:paged_decode_kernel", test = "paged", config = "M_BF16" },
+  { kernel = "paged:paged_decode_fd_kernel", test = "paged", config = "M_BF16_LONG" },
+  { kernel = "paged:paged_prefill_kernel", test = "paged", config = "M_BF16_WITH_CACHE" },
+  { kernel = "paged:paged_prefill_page_aggregation_kernel", test = "paged", config = "M_BF16" },
+  { kernel = "swa:_sdpa_infer_kernel", name = "swa._sdpa_infer_kernel", test = "swa_infer", config = "bf16" },
+  { kernel = "swa:_swa_paged_prefill_aggregation_kernel", test = "paged", config = "M_BF16" },
+  { kernel = "swa:_swa_paged_prefill_kernel", test = "paged", config = "M_BF16_PADDIM" },
+  { kernel = "swa:_swa_paged_decode_kernel", test = "paged", config = "M_BF16" },
+  { kernel = "swa:_swa_fwd_kernel", test = "swa_training", config = "1024" },
+  { kernel = "swa:_swa_bwd_dkdv_kernel", test = "swa_training", config = "1024" },
+  { kernel = "swa:_swa_bwd_dq_kernel", test = "swa_training", config = "1024" },
+  { kernel = "sdpa:_sdpa_infer_kernel", name = "sdpa._sdpa_infer_kernel", test = "sdpa" },
+  { kernel = "sdpa:kernel_sdpa_fwd", test = "sdpa" },
+  { kernel = "sdpa:kernel_sdpa_bwd_qkv", test = "sdpa" },
+  { kernel = "sdpa:kernel_sdpa_bwd_q", test = "sdpa" },
+]
+
+[defaults]
+root = "/data/autotest/optest_fast_pipeline/20260920234608/triton_ascend/test/mojo_operator_cases/mojo_opset"
+arch = "auto"
+layout = "ABAB"
+
+[sources]
+flex = "mojo_opset/kernels/npu_a5_triton/flex_attention.py"
+paged = "mojo_opset/kernels/npu_a5_triton/flash_attention.py"
+swa = "mojo_opset/kernels/npu_a5_triton/swa.py"
+sdpa = "mojo_opset/kernels/npu_a5_triton/sdpa.py"
+
+[tests]
+flex = "tests/functions/test_flex_attention.py::test_business"
+paged = "tests/functions/test_paged_attention.py::test_paged"
+swa_infer = "tests/functions/test_attention.py::test_swa_infer"
+swa_training = "tests/functions/test_attention.py::test_swa"
+sdpa = "tests/functions/test_sdpa.py::test_sdpa"

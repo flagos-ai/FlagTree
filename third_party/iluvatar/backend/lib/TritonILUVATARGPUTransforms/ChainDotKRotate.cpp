@@ -1,6 +1,7 @@
 #include "TritonILUVATARGPUTransforms/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 namespace mlir {
 
@@ -51,6 +52,8 @@ ttg::DotOperandEncodingAttr rotate(ttg::DotOperandEncodingAttr enc) {
 // alone rather than fixed up.
 bool canRetypeInPlace(Value operand) {
   Operation *def = operand.getDefiningOp();
+  if (def && hasTleExplicitEncoding(def))
+    return false;
   return def && def->hasOneUse() &&
          isa<ttg::ConvertLayoutOp, ttg::LocalLoadOp>(def);
 }

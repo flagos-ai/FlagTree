@@ -897,7 +897,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
                 kernel_cache[key] = kernel
                 # flagtree tle raw
                 try:
-                    from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
+                    from triton.experimental.tle.raw.kernel_hooks import run_kernel_init_hooks
                 except ImportError:
                     pass
                 else:
@@ -911,7 +911,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
             kernel_cache[key] = kernel
             # flagtree tle raw
             try:
-                from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
+                from triton.experimental.tle.raw.kernel_hooks import run_kernel_init_hooks
             except ImportError:
                 pass
             else:

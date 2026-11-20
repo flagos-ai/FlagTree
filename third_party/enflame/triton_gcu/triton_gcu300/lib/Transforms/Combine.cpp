@@ -19,7 +19,10 @@
 #include <utility>
 
 #include "Transforms/Passes.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -235,11 +238,11 @@ struct ConvertExternElementwiseOp
                                 PatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto symbol = op.getSymbol();
-    if (symbol == "__nv_logf") {
+    if (symbol == "__ef_logf") {
       rewriter.replaceOp(op,
                          rewriter.create<math::LogOp>(loc, op->getOperand(0)));
       return success();
-    } else if (symbol == "__nv_expf") {
+    } else if (symbol == "__ef_expf") {
       rewriter.replaceOp(op,
                          rewriter.create<math::ExpOp>(loc, op->getOperand(0)));
       return success();
@@ -427,6 +430,84 @@ public:
     return failure();
   }
 };
+struct RewriteSelectAbsToAbsIOp : public OpRewritePattern<arith::SelectOp> {
+  using OpRewritePattern<arith::SelectOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::SelectOp sel,
+                                PatternRewriter &rewriter) const override {
+    // %zero = arith.constant 0
+    // %cmp  = arith.cmpi slt, %x, %zero
+    // %neg  = arith.subi %zero, %x
+    // %r = arith.select %cmp, %neg, %x
+    // rewrite the above ir into math::abs
+    auto cmp = sel.getCondition().getDefiningOp<arith::CmpIOp>();
+    if (!cmp || cmp.getPredicate() != arith::CmpIPredicate::slt)
+      return failure();
+    Value x = cmp.getLhs();
+    if (sel.getFalseValue() != x)
+      return failure();
+    if (!isZeroConstant(cmp.getRhs()))
+      return failure();
+
+    auto sub = sel.getTrueValue().getDefiningOp<arith::SubIOp>();
+    if (!sub || sub.getRhs() != x || !isZeroConstant(sub.getLhs()))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<math::AbsIOp>(sel, x);
+    return success();
+  }
+
+private:
+  static bool isZeroConstant(Value v) {
+    auto cst = v.getDefiningOp<arith::ConstantOp>();
+    if (!cst)
+      return false;
+    Attribute val = cst.getValue();
+    if (auto intAttr = dyn_cast<IntegerAttr>(val))
+      return intAttr.getValue().isZero();
+    if (auto dense = dyn_cast<DenseIntElementsAttr>(val))
+      return dense.isSplat() && dense.getSplatValue<APInt>().isZero();
+    return false;
+  }
+};
+
+// instCombine folds 'x == +inf || x == -inf' into
+// 'fcmp oeq (llvm.fabs x), +inf'. and the vector llvm.fabs has no backend
+// implementation. Emit math.absf explicitly so that it is lowered to
+// tops_abs_* instead.
+template <typename LogicOp>
+struct RewriteCmpInfToAbsFOp : public OpRewritePattern<LogicOp> {
+  using OpRewritePattern<LogicOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LogicOp op,
+                                PatternRewriter &rewriter) const override {
+    auto lhs = op.getLhs().template getDefiningOp<arith::CmpFOp>();
+    auto rhs = op.getRhs().template getDefiningOp<arith::CmpFOp>();
+    if (!lhs || !rhs || lhs.getPredicate() != rhs.getPredicate() ||
+        lhs.getLhs() != rhs.getLhs())
+      return failure();
+
+    arith::CmpFPredicate pred = lhs.getPredicate();
+    bool validPred = std::is_same_v<LogicOp, arith::OrIOp>
+                         ? (pred == arith::CmpFPredicate::OEQ ||
+                            pred == arith::CmpFPredicate::UEQ)
+                         : (pred == arith::CmpFPredicate::ONE ||
+                            pred == arith::CmpFPredicate::UNE);
+    if (!validPred)
+      return failure();
+
+    Value posInf = lhs.getRhs(), negInf = rhs.getRhs();
+    if (matchPattern(posInf, m_NegInfFloat()))
+      std::swap(posInf, negInf);
+    if (!matchPattern(posInf, m_PosInfFloat()) ||
+        !matchPattern(negInf, m_NegInfFloat()))
+      return failure();
+
+    auto abs = rewriter.create<math::AbsFOp>(op.getLoc(), lhs.getLhs());
+    rewriter.replaceOpWithNewOp<arith::CmpFOp>(op, pred, abs, posInf);
+    return success();
+  }
+};
 
 struct GCUCombineOps : public impl::GCUCombineOpsBase<GCUCombineOps> {
   using Base::Base;
@@ -452,6 +533,9 @@ struct GCUCombineOps : public impl::GCUCombineOpsBase<GCUCombineOps> {
                    CombineMixedPrecisionPattern<arith::AddIOp>,
                    CombineMixedPrecisionPattern<arith::MulIOp>>(context);
     }
+    patterns.add<RewriteSelectAbsToAbsIOp>(context);
+    patterns.add<RewriteCmpInfToAbsFOp<arith::OrIOp>,
+                 RewriteCmpInfToAbsFOp<arith::AndIOp>>(context);
 
     if (applyPatternsGreedily(gpuModuleOp, std::move(patterns)).failed())
       signalPassFailure();

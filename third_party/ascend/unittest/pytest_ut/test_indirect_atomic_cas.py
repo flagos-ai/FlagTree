@@ -1,0 +1,424 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+# =============================================================================
+# Indirect atomic_cas test suite
+#
+# Test matrix (access pattern x tensor rank):
+#
+#  | access pattern                                  | 1-D  | 2-D  | 3-D  | 4-D  | 5-D  |
+#  |-------------------------------------------------|------|------|------|------|------|
+#  | partial structured: high-dim disc + low-dim cont|  -   | (B2) | (B3) | (B4) | (B5) |
+#  | fully unstructured indirect offsets             | (C1) | (C2) | (C3) | (C4) | (C5) |
+#
+# Notes:
+# 1. Case B exercises a single high-dimension discrete remap with the
+#    remaining lower dimensions kept contiguous.
+# 2. Case C exercises fully unstructured indirect offsets.
+# 3. All cases validate both the final destination tensor and the atomic_cas
+#    return value, which must be the old value observed at each access.
+# =============================================================================
+
+import math
+
+import pytest
+import torch
+import torch_npu
+import triton
+import triton.language as tl
+from triton.backends.ascend.utils import is_compile_on_910_95
+
+_TARGET_ARCH = triton.runtime.driver.active.get_current_target().arch
+
+SUPPORTED_DTYPES = [
+    ("int8", torch.int8),
+    ("int16", torch.int16),
+    ("int32", torch.int32),
+    ("int64", torch.int64),
+    ("float16", torch.float16),
+    ("float32", torch.float32),
+    ("bfloat16", torch.bfloat16),
+    ("uint32", torch.uint32),
+    ("uint64", torch.uint64),
+]
+
+RANK_SHAPES = {
+    1: (8, ),
+    2: (4, 4),
+    3: (2, 3, 4),
+    4: (2, 2, 3, 4),
+    5: (2, 2, 2, 3, 4),
+}
+
+PARTIAL_STRUCTURED_SHAPES = {
+    2: (2, 16),
+    3: (2, 2, 8),
+    4: (2, 2, 2, 8),
+    5: (2, 2, 2, 2, 8),
+}
+
+TEST_RANKS = [3]
+TEST_DTYPE = [("int32", torch.int32), ("bfloat16", torch.bfloat16)]
+
+
+@triton.jit
+def fully_unstructured_atomic_cas_1d(
+    idx_ptr,
+    cmp_ptr,
+    val_ptr,
+    out_ptr,
+    old_ptr,
+    D0: tl.constexpr,
+):
+    i0 = tl.arange(0, D0)
+    linear = i0
+    offset = tl.load(idx_ptr + linear)
+    compare = tl.load(cmp_ptr + linear)
+    value = tl.load(val_ptr + linear)
+    old = tl.atomic_cas(out_ptr + offset, compare, value)
+    tl.store(old_ptr + linear, old)
+
+
+@triton.jit
+def fully_unstructured_atomic_cas_2d(
+    idx_ptr,
+    cmp_ptr,
+    val_ptr,
+    out_ptr,
+    old_ptr,
+    D0: tl.constexpr,
+    D1: tl.constexpr,
+):
+    i0 = tl.arange(0, D0)[:, None]
+    i1 = tl.arange(0, D1)[None, :]
+    linear = i0 * D1 + i1
+    offset = tl.load(idx_ptr + linear)
+    compare = tl.load(cmp_ptr + linear)
+    value = tl.load(val_ptr + linear)
+    old = tl.atomic_cas(out_ptr + offset, compare, value)
+    tl.store(old_ptr + linear, old)
+
+
+@triton.jit
+def fully_unstructured_atomic_cas_3d(
+    idx_ptr,
+    cmp_ptr,
+    val_ptr,
+    out_ptr,
+    old_ptr,
+    D0: tl.constexpr,
+    D1: tl.constexpr,
+    D2: tl.constexpr,
+):
+    i0 = tl.arange(0, D0)[:, None, None]
+    i1 = tl.arange(0, D1)[None, :, None]
+    i2 = tl.arange(0, D2)[None, None, :]
+    linear = (i0 * D1 + i1) * D2 + i2
+    offset = tl.load(idx_ptr + linear)
+    compare = tl.load(cmp_ptr + linear)
+    value = tl.load(val_ptr + linear)
+    old = tl.atomic_cas(out_ptr + offset, compare, value)
+    tl.store(old_ptr + linear, old)
+
+
+@triton.jit
+def fully_unstructured_atomic_cas_4d(
+    idx_ptr,
+    cmp_ptr,
+    val_ptr,
+    out_ptr,
+    old_ptr,
+    D0: tl.constexpr,
+    D1: tl.constexpr,
+    D2: tl.constexpr,
+    D3: tl.constexpr,
+):
+    i0 = tl.arange(0, D0)[:, None, None, None]
+    i1 = tl.arange(0, D1)[None, :, None, None]
+    i2 = tl.arange(0, D2)[None, None, :, None]
+    i3 = tl.arange(0, D3)[None, None, None, :]
+    linear = ((i0 * D1 + i1) * D2 + i2) * D3 + i3
+    offset = tl.load(idx_ptr + linear)
+    compare = tl.load(cmp_ptr + linear)
+    value = tl.load(val_ptr + linear)
+    old = tl.atomic_cas(out_ptr + offset, compare, value)
+    tl.store(old_ptr + linear, old)
+
+
+@triton.jit
+def fully_unstructured_atomic_cas_5d(
+    idx_ptr,
+    cmp_ptr,
+    val_ptr,
+    out_ptr,
+    old_ptr,
+    D0: tl.constexpr,
+    D1: tl.constexpr,
+    D2: tl.constexpr,
+    D3: tl.constexpr,
+    D4: tl.constexpr,
+):
+    i0 = tl.arange(0, D0)[:, None, None, None, None]
+    i1 = tl.arange(0, D1)[None, :, None, None, None]
+    i2 = tl.arange(0, D2)[None, None, :, None, None]
+    i3 = tl.arange(0, D3)[None, None, None, :, None]
+    i4 = tl.arange(0, D4)[None, None, None, None, :]
+    linear = (((i0 * D1 + i1) * D2 + i2) * D3 + i3) * D4 + i4
+    offset = tl.load(idx_ptr + linear)
+    compare = tl.load(cmp_ptr + linear)
+    value = tl.load(val_ptr + linear)
+    old = tl.atomic_cas(out_ptr + offset, compare, value)
+    tl.store(old_ptr + linear, old)
+
+
+@triton.jit
+def partial_structured_atomic_cas_2d(
+    cmp_ptr,
+    val_ptr,
+    out_ptr,
+    old_ptr,
+    D0: tl.constexpr,
+    D1: tl.constexpr,
+):
+    i0 = tl.arange(0, D0)[:, None]
+    remapped_i0 = (i0 + 1) % D0
+    i1 = tl.arange(0, D1)[None, :]
+    linear = i0 * D1 + i1
+    compare = tl.load(cmp_ptr + linear)
+    value = tl.load(val_ptr + linear)
+    ptr = out_ptr + remapped_i0 * D1 + i1
+    old = tl.atomic_cas(ptr, compare, value)
+    tl.store(old_ptr + linear, old)
+
+
+@triton.jit
+def partial_structured_atomic_cas_3d(
+    cmp_ptr,
+    val_ptr,
+    out_ptr,
+    old_ptr,
+    D0: tl.constexpr,
+    D1: tl.constexpr,
+    D2: tl.constexpr,
+):
+    i0 = tl.arange(0, D0)[:, None]
+    remapped_i0 = (i0 + 1) % D0
+    i1 = tl.arange(0, D1)[None, :]
+    i2 = tl.arange(0, D2)[None, None, :]
+    linear = (i0 * D1 + i1)[:, :, None] * D2 + i2
+    compare = tl.load(cmp_ptr + linear)
+    value = tl.load(val_ptr + linear)
+    ptr = out_ptr + ((remapped_i0 * D1 + i1)[:, :, None] * D2 + i2)
+    old = tl.atomic_cas(ptr, compare, value)
+    tl.store(old_ptr + linear, old)
+
+
+@triton.jit
+def partial_structured_atomic_cas_4d(
+    cmp_ptr,
+    val_ptr,
+    out_ptr,
+    old_ptr,
+    D0: tl.constexpr,
+    D1: tl.constexpr,
+    D2: tl.constexpr,
+    D3: tl.constexpr,
+):
+    i0 = tl.arange(0, D0)[:, None, None]
+    remapped_i0 = (i0 + 1) % D0
+    i1 = tl.arange(0, D1)[None, :, None]
+    i2 = tl.arange(0, D2)[None, None, :]
+    i3 = tl.arange(0, D3)[None, None, None, :]
+    linear = (((i0 * D1 + i1) * D2 + i2)[:, :, :, None] * D3 + i3)
+    compare = tl.load(cmp_ptr + linear)
+    value = tl.load(val_ptr + linear)
+    ptr = out_ptr + ((((remapped_i0 * D1 + i1) * D2 + i2)[:, :, :, None] * D3) + i3)
+    old = tl.atomic_cas(ptr, compare, value)
+    tl.store(old_ptr + linear, old)
+
+
+@triton.jit
+def partial_structured_atomic_cas_5d(
+    cmp_ptr,
+    val_ptr,
+    out_ptr,
+    old_ptr,
+    D0: tl.constexpr,
+    D1: tl.constexpr,
+    D2: tl.constexpr,
+    D3: tl.constexpr,
+    D4: tl.constexpr,
+):
+    i0 = tl.arange(0, D0)[:, None, None, None]
+    remapped_i0 = (i0 + 1) % D0
+    i1 = tl.arange(0, D1)[None, :, None, None]
+    i2 = tl.arange(0, D2)[None, None, :, None]
+    i3 = tl.arange(0, D3)[None, None, None, :]
+    i4 = tl.arange(0, D4)[None, None, None, None, :]
+    linear = ((((i0 * D1 + i1) * D2 + i2) * D3 + i3)[:, :, :, :, None] * D4 + i4)
+    compare = tl.load(cmp_ptr + linear)
+    value = tl.load(val_ptr + linear)
+    ptr = out_ptr + (((((remapped_i0 * D1 + i1) * D2 + i2) * D3 + i3)[:, :, :, :, None] * D4) + i4)
+    old = tl.atomic_cas(ptr, compare, value)
+    tl.store(old_ptr + linear, old)
+
+
+PARTIAL_STRUCTURED_KERNELS = {
+    2: partial_structured_atomic_cas_2d,
+    3: partial_structured_atomic_cas_3d,
+    4: partial_structured_atomic_cas_4d,
+    5: partial_structured_atomic_cas_5d,
+}
+
+FULLY_UNSTRUCTURED_KERNELS = {
+    1: fully_unstructured_atomic_cas_1d,
+    2: fully_unstructured_atomic_cas_2d,
+    3: fully_unstructured_atomic_cas_3d,
+    4: fully_unstructured_atomic_cas_4d,
+    5: fully_unstructured_atomic_cas_5d,
+}
+
+
+def _build_partial_structured_offsets(shape):
+    assert len(shape) >= 2
+    first_dim = shape[0]
+    tail_shape = shape[1:]
+    tail_numel = math.prod(tail_shape)
+    remapped_first = ((torch.arange(first_dim, dtype=torch.int64) + 1) % first_dim)
+    first_offsets = remapped_first.reshape((first_dim, ) + (1, ) * len(tail_shape))
+    tail_offsets = torch.arange(tail_numel, dtype=torch.int64).reshape((1, ) + tail_shape)
+    return first_offsets * tail_numel + tail_offsets, math.prod(shape)
+
+
+def _build_fully_unstructured_offsets(shape):
+    numel = math.prod(shape)
+    output_numel = numel * 2
+    base = torch.arange(numel, dtype=torch.int64)
+    offsets = (base % 2) * numel + (base // 2)
+    offsets = offsets.reshape(shape)
+    return offsets, output_numel
+
+
+def _build_value_tensor(shape, dtype):
+    return torch.full(shape, 7, dtype=dtype)
+
+
+def _build_output_baseline(output_numel, dtype):
+    if dtype in (torch.uint32, torch.uint64):
+        return torch.arange(output_numel, dtype=torch.int64).to(dtype)
+    return torch.arange(output_numel, dtype=dtype)
+
+
+def _build_compare_tensor(offsets, baseline, dtype):
+    compute_dtype = torch.int64 if dtype in (torch.uint32, torch.uint64) else dtype
+    flat_offsets = offsets.reshape(-1).to(torch.int64)
+    base_flat = baseline.reshape(-1).to(compute_dtype)
+    compare = torch.empty(flat_offsets.numel(), dtype=compute_dtype)
+    for idx, offset in enumerate(flat_offsets.tolist()):
+        compare[idx] = base_flat[offset] if idx % 2 == 0 else base_flat[offset] + 1
+    return compare.reshape(offsets.shape).to(dtype)
+
+
+def _simulate_atomic_cas(base_output, offsets, compare, values):
+    compute_dtype = torch.int64 if base_output.dtype in (torch.uint32, torch.uint64) else base_output.dtype
+    expected_output = base_output.reshape(-1).clone().cpu().to(compute_dtype)
+    flat_offsets = offsets.reshape(-1).to(torch.int64).cpu()
+    flat_compare = compare.reshape(-1).cpu().to(compute_dtype)
+    flat_values = values.reshape(-1).cpu().to(compute_dtype)
+    flat_old = torch.zeros(flat_values.shape, dtype=compute_dtype)
+
+    for idx in range(flat_offsets.numel()):
+        offset = int(flat_offsets[idx].item())
+        flat_old[idx] = expected_output[offset]
+        if expected_output[offset] == flat_compare[idx]:
+            expected_output[offset] = flat_values[idx]
+
+    return expected_output.to(base_output.dtype), flat_old.reshape(values.shape).to(base_output.dtype)
+
+
+def _assert_equal(actual, expected, dtype_name, rank, scenario):
+    actual_cpu = actual.cpu()
+    expected_cpu = expected.cpu()
+    assert torch.equal(actual_cpu, expected_cpu), (f"scenario={scenario}, dtype={dtype_name}, rank={rank}\n"
+                                                   f"Expected:\n{expected_cpu}\nGot:\n{actual_cpu}")
+
+
+def _launch_partial_structured(rank, compare, values, output, old, shape):
+    kernel = PARTIAL_STRUCTURED_KERNELS[rank]
+    kwargs = {f"D{dim}": size for dim, size in enumerate(shape)}
+    kernel[(1, )](compare, values, output, old, **kwargs)
+
+
+def _launch_fully_unstructured(rank, offsets, compare, values, output, old, shape):
+    kernel = FULLY_UNSTRUCTURED_KERNELS[rank]
+    kwargs = {f"D{dim}": size for dim, size in enumerate(shape)}
+    kernel[(1, )](offsets, compare, values, output, old, **kwargs)
+
+
+@pytest.mark.parametrize("dtype_name, torch_dtype", TEST_DTYPE)
+@pytest.mark.parametrize("rank", TEST_RANKS)
+def test_atomic_cas_partially_structured_indirect_offsets(dtype_name, torch_dtype, rank):
+    if rank == 1:
+        pytest.skip("Partially structured test is not applicable to 1-D tensors")
+    if not is_compile_on_910_95(_TARGET_ARCH) and torch_dtype in (torch.uint32, torch.uint64):
+        pytest.skip("uint32 and uint64 atomics are only supported on 950")
+    shape = PARTIAL_STRUCTURED_SHAPES[rank]
+    offsets, output_numel = _build_partial_structured_offsets(shape)
+    baseline = _build_output_baseline(output_numel, torch_dtype)
+    compare = _build_compare_tensor(offsets, baseline, torch_dtype)
+    values = _build_value_tensor(shape, torch_dtype).npu()
+    output = baseline.clone().npu()
+    old = torch.zeros(shape, dtype=torch_dtype).npu()
+
+    _launch_partial_structured(rank, compare.npu(), values, output, old, shape)
+
+    expected_output, expected_old = _simulate_atomic_cas(
+        baseline,
+        offsets,
+        compare,
+        _build_value_tensor(shape, torch_dtype),
+    )
+    _assert_equal(output, expected_output, dtype_name, rank, "partially-structured-indirect/output")
+    _assert_equal(old, expected_old, dtype_name, rank, "partially-structured-indirect/old")
+
+
+@pytest.mark.parametrize("dtype_name, torch_dtype", TEST_DTYPE)
+@pytest.mark.parametrize("rank", TEST_RANKS)
+def test_atomic_cas_fully_unstructured_indirect_offsets(dtype_name, torch_dtype, rank):
+    if not is_compile_on_910_95(_TARGET_ARCH) and torch_dtype in (torch.uint32, torch.uint64):
+        pytest.skip("uint32 and uint64 atomics are only supported on 950")
+    shape = RANK_SHAPES[rank]
+    offsets, output_numel = _build_fully_unstructured_offsets(shape)
+    baseline = _build_output_baseline(output_numel, torch_dtype)
+    compare = _build_compare_tensor(offsets, baseline, torch_dtype)
+    values = _build_value_tensor(shape, torch_dtype).npu()
+    output = baseline.clone().npu()
+    old = torch.zeros(shape, dtype=torch_dtype).npu()
+
+    _launch_fully_unstructured(rank, offsets.npu(), compare.npu(), values, output, old, shape)
+
+    expected_output, expected_old = _simulate_atomic_cas(
+        baseline,
+        offsets,
+        compare,
+        _build_value_tensor(shape, torch_dtype),
+    )
+    _assert_equal(output, expected_output, dtype_name, rank, "fully-unstructured-indirect/output")
+    _assert_equal(old, expected_old, dtype_name, rank, "fully-unstructured-indirect/old")

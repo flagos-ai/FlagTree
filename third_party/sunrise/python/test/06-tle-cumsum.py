@@ -48,7 +48,6 @@ def _ref_exclusive(x, reverse):
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("n,BLOCK", [(128, 128), (256, 256), (100, 128)])
 def test_cumsum_int32(n, BLOCK, reverse):
-    torch.manual_seed(0)
     x = torch.randint(0, 10, (BLOCK, ), device=DEVICE, dtype=torch.int32)
     x[n:] = 0  # masked-out tail
     exclusive = torch.empty(BLOCK, device=DEVICE, dtype=torch.int32)
@@ -64,7 +63,6 @@ def test_cumsum_int32(n, BLOCK, reverse):
 
 @pytest.mark.parametrize("n,BLOCK", [(128, 128), (256, 256)])
 def test_cumsum_float32(n, BLOCK):
-    torch.manual_seed(1)
     x = torch.randn(BLOCK, device=DEVICE, dtype=torch.float32)
     x[n:] = 0.0
     exclusive = torch.empty(BLOCK, device=DEVICE, dtype=torch.float32)
