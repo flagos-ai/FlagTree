@@ -1,8 +1,23 @@
+# [metax+CommonIR] Strip the global __TLE__ define: MetaX's own lowering is
+# compiled against its fork's non-TLE headers.
+remove_definitions(-D__TLE__)
+list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
+
 # The shared Triton core targets are created by FlagTreeOptions.cmake. Keep
 # this backend CMake file focused on MetaX-only sources and plugins.
 target_sources(TritonTools PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/spec_cpp/lib/Tools/SwizzleDumpUtils.cpp
 )
+
+if(FLAGTREE_COMMON_IR_ENABLED)
+  # Layout hint metadata access is header-only; no dependency on propagation.
+  target_include_directories(TritonGPUIR PRIVATE
+    ${PROJECT_SOURCE_DIR}/third_party/flir/include)
+  add_subdirectory(spec_cpp/include/triton/Conversion/CommonIRToTTGIR
+    ${PROJECT_BINARY_DIR}/include/triton/Conversion/CommonIRToTTGIR)
+  add_subdirectory(spec_cpp/lib/Conversion/CommonIRToTTGIR)
+  target_link_libraries(TritonToTritonGPU PUBLIC MetaxCommonIRToTTGIR)
+endif()
 
 if(FLAGTREE_PLUGIN)
   set(PLUGIN_DIR "${Python3_SITELIB}/triton/_C")

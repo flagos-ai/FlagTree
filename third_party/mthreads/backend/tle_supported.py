@@ -17,6 +17,8 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.buffered_tensor.subslice",
     "gpu.alloc",
     "gpu.copy",
+    "gpu.to_tensor",
+    "gpu.store_tensor",
     "gpu.local_ptr",
     "gpu.memory_space",
     "gpu.set_layout",

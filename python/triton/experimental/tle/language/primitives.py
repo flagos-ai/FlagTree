@@ -53,6 +53,8 @@ TLE_PRIMITIVES = frozenset({
     "gpu.buffered_tensor.subslice",
     "gpu.alloc",
     "gpu.copy",
+    "gpu.to_tensor",
+    "gpu.store_tensor",
     "gpu.local_ptr",
     "gpu.memory_space",
     "gpu.set_layout",
@@ -65,6 +67,14 @@ TLE_PRIMITIVES = frozenset({
     "gpu.barrier_arrive",
     "gpu.wgmma",
     "gpu.wgmma_wait",
+
+    # TLE-Struct GPU: MetaX
+    "gpu.metax.async_copy_global_to_local",
+    "gpu.metax.gvm_arrive",
+    "gpu.metax.barrier",
+    "gpu.metax.barrier_shared",
+    "gpu.metax.sched_bound",
+    "gpu.metax.iglp",
 
     ## TLE-Struct DSA
     "dsa.alloc",

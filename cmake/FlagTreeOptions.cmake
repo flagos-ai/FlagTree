@@ -27,13 +27,16 @@ macro(flagtree_configure_options)
     set(FLAGTREE_DEFAULT_OPTION OFF)
   endif()
 
-  # CommonIR is an explicit opt-in for the default NVIDIA backend. Keep the
-  # build contract as a C/C++ macro without introducing a CMake cache option.
-  set(FLAGTREE_COMMON_IR_ENABLED "$ENV{FLAGTREE_COMMON_IR}")
+  # Default to CommonIR on the NVIDIA build and the backends with TTGIR lowering.
+  # Keep this default in sync with the FLIR download in setup_helper.py.
+  if(DEFINED ENV{FLAGTREE_COMMON_IR})
+    set(FLAGTREE_COMMON_IR_ENABLED "$ENV{FLAGTREE_COMMON_IR}")
+  elseif(NOT FLAGTREE_BACKEND OR FLAGTREE_BACKEND MATCHES "^(enflame|hcu|iluvatar|metax|mthreads)$")
+    set(FLAGTREE_COMMON_IR_ENABLED ON)
+  else()
+    set(FLAGTREE_COMMON_IR_ENABLED OFF)
+  endif()
   if(FLAGTREE_COMMON_IR_ENABLED)
-    if(FLAGTREE_BACKEND)
-      message(FATAL_ERROR "FLAGTREE_COMMON_IR requires the default NVIDIA backend")
-    endif()
     add_compile_definitions(__FLAGTREE_COMMON_IR__)
   endif()
 
@@ -43,7 +46,7 @@ macro(flagtree_configure_options)
   endif()
 
   set(FLAGCX_ENABLED OFF)
-  set(FLAGCX_SUPPORT_BACKENDS nvidia iluvatar)
+  set(FLAGCX_SUPPORT_BACKENDS nvidia)
   if(NOT FLAGTREE_BACKEND OR
      "${FLAGTREE_BACKEND}" IN_LIST FLAGCX_SUPPORT_BACKENDS)
     add_compile_definitions(FLAGCX_ENABLED)
@@ -82,7 +85,9 @@ macro(flagtree_configure_options)
     set(ENV{PATH} "$ENV{LLVM_SYSPATH}/bin:$ENV{PATH}")
     set(CMAKE_C_COMPILER clang)
     set(CMAKE_CXX_COMPILER clang++)
-    set(FLAGTREE_TLE OFF)
+    if(NOT FLAGTREE_COMMON_IR_ENABLED)   # [mthreads+CommonIR] keep TLE on for shared CommonIR frontend
+      set(FLAGTREE_TLE OFF)
+    endif()
     set(FLAGTREE_MTHREADS_TLE ON)
   elseif(FLAGTREE_BACKEND STREQUAL "aipu")
     set(CMAKE_C_COMPILER clang-16)
@@ -128,9 +133,14 @@ macro(flagtree_configure_options)
       # shared-memory effects), and add_definitions does not reach mlir-tblgen.
       list(APPEND LLVM_TABLEGEN_FLAGS -D__MCTLE__)
     endif()
-    set(FLAGTREE_TLE OFF)
+    # Keep the generic TLE dialect disabled throughout the MetaX build,
+    # including CLI dialect registration. FLAGTREE_TLE still selects the
+    # CommonIR-only frontend when CommonIR is enabled.
     remove_definitions(-D__TLE__)
     list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
+    if(NOT FLAGTREE_COMMON_IR_ENABLED)
+      set(FLAGTREE_TLE OFF)
+    endif()
   elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
     find_package(Python3 3.10 REQUIRED COMPONENTS Development.Module Interpreter)
   elseif(FLAGTREE_BACKEND STREQUAL "ppu")
@@ -295,6 +305,8 @@ macro(flagtree_configure_core_source)
       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iluvatar)
     set(TRITON_CORE_BINARY_DIR
       ${CMAKE_CURRENT_BINARY_DIR}/third_party/iluvatar)
+    option(TRITON_BUILD_GLUON
+      "Build the Gluon IR Python bindings (gluon_ir.cc)" OFF)
     include_directories(${PROJECT_SOURCE_DIR}/include)
     include_directories(${PROJECT_BINARY_DIR}/include)
     include_directories(${TRITON_CORE_SOURCE_DIR}/include)
@@ -356,6 +368,7 @@ macro(flagtree_configure_flir_dependency)
     include_directories(${PROJECT_BINARY_DIR}/third_party/flir/include)
     add_subdirectory(third_party/flir/include/mlir-ext/Dialect/CommonIR)
     add_subdirectory(third_party/flir/lib/Dialect/CommonIR)
+    add_subdirectory(third_party/flir/lib/Conversion/CommonIRToTritonGPU)
   endif()
 
   if(FLAGTREE_BACKEND STREQUAL "tsingmicro")
@@ -702,6 +715,8 @@ function(flagtree_add_tle_generated_header_dependencies)
       TritonNVIDIAGPUToLLVM
       TritonGPUToLLVM
       NVHopperTransforms
+      TritonHCUAnalysis
+      TritonHCUGPUToLLVM
       ${_flagtree_enflame_tle_header_targets}
       triton
       triton-opt
@@ -723,22 +738,37 @@ endfunction()
 
 macro(flagtree_added_python_src)
   set(_flagtree_python_sources)
+  set(_flagtree_enable_gluon_defs OFF)
   foreach(_flagtree_python_source ${ARGN})
     get_filename_component(_python_source_name "${_flagtree_python_source}" NAME)
     set(_python_source "${BACKEND_PYTHON_SRC_PATH}/${_python_source_name}")
     if(IS_DIRECTORY "${BACKEND_PYTHON_SRC_PATH}" AND EXISTS "${_python_source}")
-      list(APPEND _flagtree_python_sources "${_python_source}")
+      if(FLAGTREE_BACKEND STREQUAL "iluvatar" AND "${_python_source_name}" STREQUAL "gluon_ir.cc")
+        if(TRITON_BUILD_GLUON)
+          list(APPEND _flagtree_python_sources "${_python_source}")
+          set(_flagtree_enable_gluon_defs ON)
+        endif()
+      else()
+        list(APPEND _flagtree_python_sources "${_python_source}")
+      endif()
     else()
       list(APPEND _flagtree_python_sources "${_flagtree_python_source}")
     endif()
   endforeach()
   add_library(triton SHARED ${_flagtree_python_sources})
+  if(_flagtree_enable_gluon_defs)
+    target_compile_definitions(triton PRIVATE TRITON_BUILD_GLUON)
+  endif()
 
   if(FLAGTREE_BACKEND STREQUAL "ascend")
     # third_party/ascend/triton_ascend.cc registers the buffer_ir submodule, so
     # its implementation must be part of the triton module.
     target_sources(triton PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ascend/python/triton/extension/buffer/src/buffer_ir.cc)
+  endif()
+
+  if(FLAGTREE_BACKEND STREQUAL "metax" AND FLAGTREE_COMMON_IR_ENABLED)
+    target_sources(triton PRIVATE ${BACKEND_PYTHON_SRC_PATH}/autolayout.cc)
   endif()
 
   if(FLAGTREE_BACKEND STREQUAL "xpu")

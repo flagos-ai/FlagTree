@@ -1,6 +1,12 @@
 from triton.backends.compiler import BaseBackend, DotCap, DotSupport, GPUTarget, Language
 from triton.backends.mthreads._musa_arch import musa_capability_from_arch, normalize_musa_arch
 from triton._C.libtriton import ir, passes, mthreads
+try:
+    from triton._C.libtriton import tle
+    from triton._common_ir import ENABLED as COMMON_IR_ENABLED
+except ImportError:
+    tle = None
+    COMMON_IR_ENABLED = False
 from triton import knobs
 from triton.runtime.errors import OutOfResources, PTXASError
 
@@ -1071,12 +1077,17 @@ class MUSABackend(BaseBackend):
 
     def load_dialects(self, ctx):
         mthreads.load_dialects(ctx)
+        if COMMON_IR_ENABLED and tle is not None:
+            tle.load_dialects(ctx)
+            tle.load_tile_dialects(ctx)
 
     @staticmethod
     def make_ttir(mod, metadata, opt, capability):
         pre_pm = ir.pass_manager(mod.context)
         pre_pm.enable_debug()
         passes.common.add_inliner(pre_pm)
+        if COMMON_IR_ENABLED and tle is not None:
+            tle.passes.commonir.add_to_ttgir(pre_pm, False)  # CommonIR(tile.*) -> ttg.local_*
         passes.ttir.add_rewrite_tensor_pointer(pre_pm)
         pre_pm.run(mod, "make_ttir_pre")
 

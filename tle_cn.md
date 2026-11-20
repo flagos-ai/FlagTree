@@ -105,19 +105,17 @@ tle.gpu.* -> tile.* / !tile.buf -> CommonIRToTTGIR -> 原生 TTGIR
 `CommonIRToTTGIR` pass 必须在进入后续 TTGIR 管线前，消除全部 `tile.*`、
 `!tile.buf` 以及临时的 buffer-to-memdesc 桥接。
 
-此路径在构建时选择，默认关闭，目前只支持默认 NVIDIA 后端。
-将官方 [FLIR](https://github.com/flagos-ai/flir) `main` 分支的兼容版本放到
-`third_party/flir`，然后构建 FlagTree：
+默认 NVIDIA 构建会自动下载 [FLIR](https://github.com/flagos-ai/flir) 到
+`third_party/flir`，并编译 CommonIR 支持。在启动 Python 前开启 CommonIR 路径：
 
 ```bash
-git clone https://github.com/flagos-ai/flir.git third_party/flir
-FLAGTREE_COMMON_IR=1 python -m pip install -e . --no-build-isolation
+python -m pip install -e . --no-build-isolation
+FLAGTREE_COMMON_IR=1 python test/CommonIR/native_matmul_gpu.py
 ```
 
-环境变量 `FLAGTREE_COMMON_IR` 设置内部 CMake 变量 `FLAGTREE_COMMON_IR_ENABLED`。
-开启时，C++ 构建定义 `__FLAGTREE_COMMON_IR__`，向 Python 暴露一个统一的能力查询接口，
-并仅在此构建中注册 CommonIR dialect 和 conversion pass。不要同时设置 `FLAGTREE_BACKEND`。
-在原生路径和 CommonIR 路径之间切换需要重新构建 FlagTree，这不是逐 kernel 的运行时选项。
+安装时设置 `FLAGTREE_COMMON_IR=0` 可以跳过 CommonIR 的编译。已包含 CommonIR 支持的
+构建在运行时默认走原生路径。启动进程前设置 `FLAGTREE_COMMON_IR=1`，即可在该进程中
+启用 CommonIR。
 
 支持的 GPU buffer 形式如下：
 
