@@ -24,17 +24,22 @@ jobs:
         shell: bash
         run: |
           source ~/env-3.6.sh
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+          if python3 -c 'import importlib.metadata as m; v=m.version("flagtree"); print("Installed compiler:", v); assert "git1253565d" in v'; then
+            echo "Reusing the compiler already built from PR1541 head."
+          else
+            MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+          fi
       - name: Clone exact FlagGems test source
         uses: flagos-ai/FlagTree/.github/actions/git-clone-retry@main
         with:
           repo-url: https://github.com/flagos-ai/FlagGems.git
-          ref: a7620cc191a0b42e040194622c5758b22a7a25dc
+          ref: v5.3.5
           clone-dir: ${{ env.GEMS_DIAG_ROOT }}/FlagGems
       - name: Reproduce CI matmul cases
         shell: bash
         run: |
           mkdir -p "$GEMS_DIAG_ROOT/results"
+          test "$(git -C "$GEMS_DIAG_ROOT/FlagGems" rev-parse HEAD)" = a7620cc191a0b42e040194622c5758b22a7a25dc
           printf '%s\n' mm mm_out > "$GEMS_DIAG_ROOT/operators.txt"
           cp .github/actions/run-flaggems-test/assets/gems/v5.3.5/conftest.py "$GEMS_DIAG_ROOT/FlagGems/tests/conftest.py"
           export PYTHONPATH="$GEMS_DIAG_ROOT/FlagGems/src${PYTHONPATH:+:$PYTHONPATH}"
