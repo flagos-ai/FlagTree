@@ -1,0 +1,32 @@
+# Skip operators that cause GPU state corruption
+
+skip_operators:
+  # --- A. GPU state corruption — MUST skip first; causes cascade error 700 --------
+  - sparse_mla_fwd_interface
+
+  # --- B. Triton XPU MLIR compilation failures ------------------------------------
+  - grouped_topk
+  - inplace_fused_experts
+  - outplace_fused_experts
+  - flash_attention_forward
+  - dgeglu
+  - moe_sum
+  - rwkv_mm_sparsity
+  - topk_softmax
+  - weight_norm_interface
+  - flash_mla
+  - fused_add_rms_norm
+
+skip_test_patterns:
+  # --- D. GPU state corruption — second source ------------------------------------
+  - test_accuracy_moe_align_block_size_triton
+
+  # --- E. XDNN unimplemented: weighted bincount -----------------------------------
+  - test_accuracy_bincount_with_weights
+  - test_accuracy_bincount_weights_edge_cases
+
+skip_test_files:
+  # --- E. Collection errors: missing dependencies ---------------------------------
+  - tests/test_fp8_fp4_mqa_logits.py
+  - tests/test_fp8_fp4_paged_mqa_logits.py
+  - tests/test_megamoe.py

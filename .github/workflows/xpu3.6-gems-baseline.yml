@@ -22,7 +22,7 @@ name: Xpu3.6-Gems-Baseline
 
 on:
   push:
-    branches: ["main", "triton_v3.6.x"]
+    branches: ["main", "triton_v3.6.x", "gems-vllm-xpu"]
 
 permissions:
   contents: read
@@ -45,6 +45,7 @@ jobs:
       backend: xpu
       gpu-env-var: CUDA_VISIBLE_DEVICES
       flaggems-tag: 'v5.5.0.dev1'
+      flaggems-vllm-tag: 'v0.2.1.dev1'
       flagtree-build-command: |
         set -x
         source ~/env.sh
