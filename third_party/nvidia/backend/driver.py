@@ -9,6 +9,7 @@ from triton.runtime.build import compile_module_from_src
 from triton.runtime import _allocation
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import GPUDriver
+from triton.runtime._distributed import DistributedRtContext
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 include_dirs = [os.path.join(dirname, "include")]
@@ -259,13 +260,17 @@ def make_tensordesc_arg(arg, metadata):
     return [cu_tensor_map, *shape, *strides]
 
 
-def wrap_handle_tensordesc(launcher, signature, tensordesc_meta):
+def wrap_handle_tensordesc(launcher, signature, tensordesc_meta, arg_offset=0):
     has_tensor_desc_arg = any(isinstance(sig, str) and sig.startswith("tensordesc") for sig in signature.values())
     if not has_tensor_desc_arg:
         return launcher
 
-    tensordesc_indices = set(
-        [i for i, sig in enumerate(signature.values()) if isinstance(sig, str) and sig.startswith("tensordesc")])
+    # arg_offset: number of hidden leading kernel arguments (flagtree tle distributed)
+    tensordesc_indices = set([
+        i + arg_offset
+        for i, sig in enumerate(signature.values())
+        if isinstance(sig, str) and sig.startswith("tensordesc")
+    ])
     assert not tensordesc_meta or len(tensordesc_meta) == len(tensordesc_indices)
     if not tensordesc_meta:
         tensordesc_meta = [None] * len(tensordesc_indices)
@@ -299,10 +304,14 @@ class CudaLauncher(object):
 
         launcher = triton.runtime.driver.active.utils.launch
         expanded_signature = expand_signature(signature.values(), tensordesc_meta)
+        # flagtree tle distributed: the lite mode passes flagcx_dev_comm_ptr and
+        # flagcx_dev_mem_ptr before the user arguments.
+        num_dist_args = 2 if DistributedRtContext().is_lite_mode else 0
+        expanded_signature = ["*i64"] * num_dist_args + expanded_signature
         self.arg_annotations = annotate_arguments(expanded_signature)
         self.kernel_signature = make_kernel_signature(expanded_signature)
         self.num_ctas = getattr(metadata, "num_ctas", 1)
-        self.launch = wrap_handle_tensordesc(launcher, signature, tensordesc_meta)
+        self.launch = wrap_handle_tensordesc(launcher, signature, tensordesc_meta, arg_offset=num_dist_args)
         self.global_scratch_size = metadata.global_scratch_size
         self.global_scratch_align = metadata.global_scratch_align
         self.profile_scratch_size = metadata.profile_scratch_size
@@ -322,6 +331,20 @@ class CudaLauncher(object):
             return None
 
         global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align, _allocation._allocator)
+        # begin flagtree tle
+        # Grid distributed_barrier lowering follows CUDA cooperative_groups sync
+        # counter protocol, which assumes a well-defined initial counter state.
+        # Runtime scratch allocators may return uninitialized storage; for
+        # cooperative launches, clear scratch before kernel launch.
+        if self.launch_cooperative_grid and global_scratch is not None:
+            zero_ = getattr(global_scratch, "zero_", None)
+            if callable(zero_):
+                zero_()
+            else:
+                fill_ = getattr(global_scratch, "fill_", None)
+                if callable(fill_):
+                    fill_(0)
+        # end flagtree tle
         profile_scratch = allocate_scratch(self.profile_scratch_size, self.profile_scratch_align,
                                            _allocation._profile_allocator)
 
@@ -354,6 +377,11 @@ class CudaDriver(GPUDriver):
 
     @staticmethod
     def is_active():
+        # flagtree nvidia
+        from triton._flagtree_backend import FLAGTREE_BACKEND
+        if FLAGTREE_BACKEND and FLAGTREE_BACKEND != "tileir":
+            return False
+
         try:
             import torch
             return torch.cuda.is_available() and (torch.version.hip is None)

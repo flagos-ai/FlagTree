@@ -5,6 +5,11 @@ add_triton_library(NVWSIR
   DEPENDS
   NVWSTableGen
   NVWSAttrDefsIncGen
+  TritonGPUTableGen
+  TritonGPUAttrDefsIncGen
+  TritonGPUCGAAttrIncGen
+  TritonGPUTypeInterfacesIncGen
+  TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
   TritonIR

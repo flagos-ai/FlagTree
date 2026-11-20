@@ -156,6 +156,13 @@ int getDefUseStageDiff(Operation *op, scf::ForOp forOp,
   return useStage.value() - defStage;
 }
 
+#ifdef __TLE__
+static bool isTleTileStylePipelineLoop(scf::ForOp forOp) {
+  auto attr = forOp->getAttrOfType<IntegerAttr>("tle.tile_style_pipeline");
+  return attr && attr.getInt() != 0;
+}
+#endif
+
 void replaceAllUsesDominatedBy(Operation *domOp, Value newValue, Value oldValue,
                                DominanceInfo &domInfo) {
   if (newValue == oldValue)
@@ -298,6 +305,10 @@ struct AsyncLoad {
   Value barrier;
   Operation *waitOp;
   SharedEncodingTrait sharedEncoding;
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+  // Slots of the ring beyond the load distance (see kFlagTreeRingInsertAttr).
+  int ringSlack = 0;
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 };
 struct LoadGroupInfo {
   Value insertIdx;
@@ -462,8 +473,50 @@ bool loadRequiresAdditionalBuffer(Operation *loadOp) {
   return false;
 }
 
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+// The load feeds a wgmma shared-memory operand but is also read into registers
+// (e.g. scaled in registers and consumed transposed by the dot), so it has more
+// than one user and loadRequiresAdditionalBuffer() never sees the dot. Its
+// local_alloc is still folded into the ring buffer (replaceUsesWithLocalLoad),
+// so the wgmma needs the same extra slot or the next prefetch overwrites the
+// buffer it is reading.
+static bool loadFeedsWgmmaSharedOperand(Operation *loadOp,
+                                        Attribute bufferEncoding) {
+  if (!isa<tt::LoadOp, tt::DescriptorLoadOp, tt::DescriptorGatherOp>(loadOp))
+    return false;
+  // A non-zero "other" is applied by a select in registers, so the dot never
+  // reads the ring buffer directly.
+  if (auto load = dyn_cast<tt::LoadOp>(loadOp))
+    if (load.getOther() && !isZeroConst(load.getOther()))
+      return false;
+  for (Operation *user : loadOp->getUsers()) {
+    auto alloc = dyn_cast<ttg::LocalAllocOp>(user);
+    if (!alloc || alloc.getType().getEncoding() != bufferEncoding)
+      continue;
+    SmallVector<Operation *> worklist(alloc->getUsers().begin(),
+                                      alloc->getUsers().end());
+    llvm::SmallDenseSet<Operation *, 8> visited;
+    while (!worklist.empty()) {
+      Operation *view = worklist.pop_back_val();
+      if (!visited.insert(view).second)
+        continue;
+      if (isa<ttng::WarpGroupDotOp>(view))
+        return true;
+      if (view->hasTrait<OpTrait::MemDescViewTrait>())
+        llvm::append_range(worklist, view->getUsers());
+    }
+  }
+  return false;
+}
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
+
 scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+                      triton::ModuleAxisInfoAnalysis &axisInfoAnalysis,
+                      bool enablePipelineEnhance) {
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
                       triton::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   llvm::MapVector<Operation *, AsyncLoad> asyncLoads;
   llvm::MapVector<int, LoadGroupInfo> loadGroups;
   llvm::SmallVector<Operation *> scalarLoads;
@@ -510,16 +563,47 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
           contiguity = vec;
         }
       }
+      bool requiresAdditionalBuffer = loadRequiresAdditionalBuffer(&op);
+#ifdef __TLE__
+      bool useTileStylePipeline = isTleTileStylePipelineLoop(forOp);
+      bool keepInRegistersForTileStyle =
+          useTileStylePipeline && !requiresAdditionalBuffer;
+      if (keepInRegistersForTileStyle) {
+        canUseAsyncCp = false;
+      }
+#endif
       if (canUseAsyncCp || isTMALoad(&op)) {
-        if (loadRequiresAdditionalBuffer(&op)) {
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+        int loadDistance = stageDiff;
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
+#ifdef __TLE__
+        if (useTileStylePipeline && schedule[&op].first == 0 && stageDiff > 1 &&
+            requiresAdditionalBuffer) {
+          stageDiff -= 1;
+        }
+#endif
+        if (requiresAdditionalBuffer) {
           // Allocate additional buffer required by the wgmma pipelining.
           stageDiff += 1;
         }
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+        // Only the slot count changes; the TLE decisions above are untouched.
+        if (enablePipelineEnhance && !requiresAdditionalBuffer &&
+            loadFeedsWgmmaSharedOperand(&op, sharedEncoding))
+          stageDiff += 1;
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
         auto &asyncLoad = asyncLoads[&op];
         asyncLoad.stageDiff = stageDiff;
         asyncLoad.contiguity = contiguity;
         asyncLoad.sharedEncoding = sharedEncoding;
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+        asyncLoad.ringSlack = stageDiff - loadDistance;
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
       } else if (stageDiff > 1) {
+#ifdef __TLE__
+        if (keepInRegistersForTileStyle)
+          continue;
+#endif
         // Distance-1 loads can in most cases be pipelined in registers without
         // any performance degradation, as the schedule will usually reorder the
         // user and the producer so there is no liverange overlap, and no copy
@@ -641,6 +725,34 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
     if (loadGroup.phase)
       forYield.setOperand(argIdx++, loadGroup.phase);
   }
+
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+  // Tag the ring views so the wgmma scheduling can tell the slot written by a
+  // copy from the slot read in the same iteration (see Schedule.h).
+  if (enablePipelineEnhance) {
+    DenseMap<Value, int> ringSlack;
+    for (auto &[loadOp, asyncLoad] : asyncLoads)
+      ringSlack[asyncLoad.alloc] = asyncLoad.ringSlack;
+    for (auto view : forOp.getBody()->getOps<ttg::MemDescIndexOp>()) {
+      auto it = ringSlack.find(view.getSrc());
+      if (it == ringSlack.end())
+        continue;
+      bool isInsert = llvm::any_of(view->getUses(), [&](OpOperand &use) {
+        Operation *user = use.getOwner();
+        if (auto copy = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(user))
+          return use.get() == copy.getResult();
+        if (auto copy = dyn_cast<ttng::AsyncTMACopyGlobalToLocalOp>(user))
+          return use.get() == copy.getResult();
+        if (auto gather = dyn_cast<ttng::AsyncTMAGatherOp>(user))
+          return use.get() == gather.getResult();
+        return false;
+      });
+      view->setAttr(isInsert ? kFlagTreeRingInsertAttr
+                             : kFlagTreeRingExtractAttr,
+                    builder.getI32IntegerAttr(it->second));
+    }
+  }
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 
   // Automatically discover dependencies and schedule new insert/extract ops to
   // correct stages.
@@ -1077,27 +1189,45 @@ scf::ForOp lowerMMAs(scf::ForOp forOp, CoarseSchedule &schedule) {
 /////////////////////////////
 
 void lowerLoop(scf::ForOp forOp,
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+               triton::ModuleAxisInfoAnalysis &axisInfoAnalysis,
+               bool enablePipelineEnhance) {
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
                triton::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   CoarseSchedule schedule;
   if (failed(schedule.deSerialize(forOp))) {
     return;
   }
   scf::ForOp newForOp = lowerMMAs(forOp, schedule);
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+  newForOp =
+      lowerLoads(newForOp, schedule, axisInfoAnalysis, enablePipelineEnhance);
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
   newForOp = lowerLoads(newForOp, schedule, axisInfoAnalysis);
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   newForOp = lowerTMADescriptors(newForOp, schedule);
   schedule.serialize(newForOp);
 }
 
 } // namespace
 
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+void lowerLoops(ModuleOp moduleOp, bool enablePipelineEnhance) {
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
 void lowerLoops(ModuleOp moduleOp) {
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   triton::ModuleAxisInfoAnalysis axisInfoAnalysis(moduleOp);
   SmallVector<scf::ForOp> loops;
   moduleOp->walk([&](scf::ForOp forOp) { loops.push_back(forOp); });
   if (loops.empty())
     return;
   for (auto forOp : loops) {
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+    lowerLoop(forOp, axisInfoAnalysis, enablePipelineEnhance);
+#else  // __FLAGTREE_PIPELINE_ENHANCE__
     lowerLoop(forOp, axisInfoAnalysis);
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   }
 }
 

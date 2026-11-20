@@ -27,6 +27,13 @@ import sys
 from dataclasses import dataclass
 from typing import Type, TypeVar, Union
 from types import ModuleType
+from triton._flagtree_backend import FLAGTREE_BACKEND
+
+from triton._flagtree_spec import spec_path
+
+# flagtree backend path specialization
+spec_path(__path__)
+
 from .driver import DriverBase
 from .compiler import BaseBackend
 
@@ -59,6 +66,11 @@ class Backend:
 
 def _discover_backends() -> dict[str, Backend]:
     backends = dict()
+    # flagtree: FLAGTREE_BACKEND
+    active_backend = os.environ.get("FLAGTREE_BACKEND", "")
+    if not active_backend:
+        active_backend = FLAGTREE_BACKEND
+
     # Fast path: optionally skip entry point discovery (which can be slow) and
     # discover only in-tree backends under the `triton.backends` namespace.
     skip_entrypoints_env = os.environ.get("TRITON_BACKENDS_IN_TREE", "")
@@ -78,6 +90,14 @@ def _discover_backends() -> dict[str, Backend]:
 
     # Default path: discover via entry points for out-of-tree/downstream plugins.
     for ep in entry_points().select(group="triton.backends"):
+        # ==================== FLAGTREE XPU SYNC MARK ====================
+        # Editable XPU development environments can also have a reference
+        # `triton` package installed. Its entry points advertise amd/nvidia/xcn
+        # backends that are not present in this FlagTree checkout, so restrict
+        # discovery to the active FlagTree backend when one is selected.
+        # ==================== FLAGTREE XPU SYNC MARK ====================
+        if active_backend and ep.name != active_backend:
+            continue
         compiler = importlib.import_module(f"{ep.value}.compiler")
         driver = importlib.import_module(f"{ep.value}.driver")
         backends[ep.name] = Backend(_find_concrete_subclasses(compiler, BaseBackend),  # type: ignore
@@ -86,3 +106,75 @@ def _discover_backends() -> dict[str, Backend]:
 
 
 backends: dict[str, Backend] = _discover_backends()
+
+
+# flagtree tileir: refactor the implementation of `make_backend`
+def get_backend(target) -> Backend:
+    compatible = [backend for backend in backends.values() if backend.compiler.supports_target(target)]
+    if len(compatible) != 1:
+        raise RuntimeError(f"{len(compatible)} compatible backends for target ({target.backend}) ({compatible}). "
+                           "There should only be one.")
+    return compatible[0]
+
+
+# flagtree tileir: support routing from `GPUTarget("cuda")` to `GPUTarget("tileir")`
+def route_target(target, jit_fn):
+    routes = []
+    for name, backend in backends.items():
+        candidate = backend.compiler.route_target(target, jit_fn)
+        if candidate is not None and candidate != target:
+            routes.append((name, candidate))
+    if len(routes) > 1:
+        names = ", ".join(name for name, _ in routes)
+        raise RuntimeError(f"Multiple backends requested this kernel: {names}")
+    return routes[0][1] if routes else target
+
+
+_target_drivers = {}
+
+
+# flagtree tileir: Replace `triton.runtime.driver.driver.active`
+def get_driver(target, active_driver):
+    driver_cls = get_backend(target).driver
+    if isinstance(active_driver, driver_cls):
+        return active_driver
+    if driver_cls not in _target_drivers:
+        _target_drivers[driver_cls] = driver_cls()
+    return _target_drivers[driver_cls]
+
+
+# flagtree tileir: support language extension
+class _LanguageExtensions:
+
+    def __init__(self):
+        self._modules = None
+        self._symbols = {}
+
+    def _get_modules(self):
+        if self._modules is None:
+            self._modules = []
+            for name, backend in backends.items():
+                module = backend.compiler.get_language_extension()
+                if module is not None:
+                    self._modules.append((name, module))
+        return self._modules
+
+    def __getattr__(self, name):
+        if name in self._symbols:
+            return self._symbols[name]
+        # flagtree: dunder probes (inspect, copy, is_builtin, ...) must get AttributeError
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        providers = [(backend_name, getattr(module, name))
+                     for backend_name, module in self._get_modules()
+                     if hasattr(module, name)]
+        if not providers:
+            raise RuntimeError(f"tl.ext.{name} is not provided by an installed Triton backend")
+        if len(providers) > 1:
+            names = ", ".join(backend_name for backend_name, _ in providers)
+            raise RuntimeError(f"tl.ext.{name} is provided by multiple backends: {names}")
+        self._symbols[name] = providers[0][1]
+        return self._symbols[name]
+
+
+language_extensions = _LanguageExtensions()

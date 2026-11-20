@@ -24,6 +24,12 @@
  */
 
 #include "triton/Analysis/Membar.h"
+#ifdef __TLE__
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
+#endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
@@ -111,6 +117,578 @@ void AllocationSlice::print(raw_ostream &os) const {
   }
 }
 
+#ifdef __TLE__
+namespace {
+
+namespace tt = mlir::triton;
+namespace ttg = mlir::triton::gpu;
+
+struct StaticAccessView {
+  Value root;
+  SmallVector<int64_t> offsets;
+  SmallVector<int64_t> sizes;
+  int64_t rank = 0;
+  bool tiledSMEM = false;
+};
+
+struct StaticIndexCoverage {
+  int64_t offset = 0;
+  int64_t size = 1;
+};
+
+static Value stripConvertLayouts(Value value) {
+  Value current = value;
+  while (auto cvt = current.getDefiningOp<ttg::ConvertLayoutOp>())
+    current = cvt.getSrc();
+  return current;
+}
+
+static Value stripIndexValueWrappers(Value value) {
+  Value current = value;
+  while (true) {
+    if (auto cvt = current.getDefiningOp<ttg::ConvertLayoutOp>()) {
+      current = cvt.getSrc();
+      continue;
+    }
+    if (auto ext = current.getDefiningOp<arith::ExtSIOp>()) {
+      current = ext.getIn();
+      continue;
+    }
+    if (auto ext = current.getDefiningOp<arith::ExtUIOp>()) {
+      current = ext.getIn();
+      continue;
+    }
+    if (auto trunc = current.getDefiningOp<arith::TruncIOp>()) {
+      current = trunc.getIn();
+      continue;
+    }
+    if (auto cast = current.getDefiningOp<arith::IndexCastOp>()) {
+      current = cast.getIn();
+      continue;
+    }
+    break;
+  }
+  return current;
+}
+
+static std::optional<int64_t> getConstantIntLike(Value value) {
+  value = stripIndexValueWrappers(value);
+  if (auto splat = value.getDefiningOp<tt::SplatOp>())
+    return getConstantIntLike(splat.getSrc());
+  if (auto cst = value.getDefiningOp<arith::ConstantOp>()) {
+    if (auto dense = dyn_cast<DenseIntElementsAttr>(cst.getValue())) {
+      if (dense.isSplat())
+        return dense.getSplatValue<APInt>().getSExtValue();
+    }
+  }
+  if (auto cst = value.getDefiningOp<arith::ConstantIntOp>())
+    return cst.value();
+  if (auto cst = value.getDefiningOp<arith::ConstantIndexOp>())
+    return cst.value();
+  return std::nullopt;
+}
+
+static std::optional<StaticIndexCoverage>
+matchRangeWithStaticOffset(Value value) {
+  Value current = stripIndexValueWrappers(value);
+  if (auto range = current.getDefiningOp<tt::MakeRangeOp>())
+    return StaticIndexCoverage{range.getStart(),
+                               range.getEnd() - range.getStart()};
+
+  auto add = current.getDefiningOp<arith::AddIOp>();
+  if (!add)
+    return std::nullopt;
+
+  auto tryMatch = [&](Value lhs,
+                      Value rhs) -> std::optional<StaticIndexCoverage> {
+    Value lhsStripped = stripIndexValueWrappers(lhs);
+    auto range = lhsStripped.getDefiningOp<tt::MakeRangeOp>();
+    if (!range)
+      return std::nullopt;
+    std::optional<int64_t> cst = getConstantIntLike(rhs);
+    if (!cst)
+      return std::nullopt;
+    return StaticIndexCoverage{range.getStart() + *cst,
+                               range.getEnd() - range.getStart()};
+  };
+
+  if (auto coverage = tryMatch(add.getLhs(), add.getRhs()))
+    return coverage;
+  return tryMatch(add.getRhs(), add.getLhs());
+}
+
+static std::optional<StaticIndexCoverage>
+matchStaticIndexCoverage(Value index) {
+  if (auto cst = getConstantIntLike(index))
+    return StaticIndexCoverage{*cst, 1};
+
+  Value current = stripIndexValueWrappers(index);
+  if (auto coverage = matchRangeWithStaticOffset(current))
+    return coverage;
+
+  if (auto bcast = current.getDefiningOp<tt::BroadcastOp>())
+    current = stripIndexValueWrappers(bcast.getSrc());
+
+  while (auto expand = current.getDefiningOp<tt::ExpandDimsOp>())
+    current = stripIndexValueWrappers(expand.getSrc());
+
+  return matchRangeWithStaticOffset(current);
+}
+
+static bool isTiledSMEMStorageRoot(Value value) {
+  return static_cast<bool>(tt::tle::getExactSMEMRoot(value));
+}
+
+static std::optional<StaticAccessView> getStaticMemDescView(Value value) {
+  if (auto result = dyn_cast<OpResult>(value)) {
+    if (auto wait = dyn_cast<triton::nvidia_gpu::WarpGroupDotWaitOp>(
+            result.getOwner())) {
+      unsigned resultNo = result.getResultNumber();
+      if (resultNo < wait.getNumOperands())
+        return getStaticMemDescView(wait.getOperand(resultNo));
+    }
+  }
+  auto memDescTy = dyn_cast<ttg::MemDescType>(value.getType());
+  if (!memDescTy)
+    return std::nullopt;
+
+  if (tt::tle::ExactSMEMStage stage = tt::tle::getExactSMEMStage(value)) {
+    auto srcView = getStaticMemDescView(stage.getSrc());
+    if (!srcView || srcView->offsets.empty() ||
+        srcView->offsets.size() != srcView->sizes.size())
+      return std::nullopt;
+    int64_t tilesPerStage = stage.root.getTilesPerStage();
+    // Alias analysis uses a stage-independent residue-class representative.
+    // A full stage may alias every tile, regardless of its dynamic stage
+    // value, so represent it as tiles [0, tiles_per_stage).
+    srcView->offsets[0] = 0;
+    srcView->sizes[0] = tilesPerStage;
+    srcView->rank = memDescTy.getRank();
+    srcView->tiledSMEM = true;
+    return srcView;
+  }
+
+  if (tt::tle::ExactSMEMTile tile = tt::tle::getExactSMEMTile(value)) {
+    auto srcView = getStaticMemDescView(tile.getSrc());
+    if (!srcView || srcView->offsets.empty() ||
+        srcView->offsets.size() != srcView->sizes.size())
+      return std::nullopt;
+    // Addresses are stage*tiles_per_stage+tile in atom units. Distinct tile
+    // residues cannot alias. Map every stage to the same representative so
+    // equal tiles conservatively overlap even when stage SSA values differ.
+    srcView->offsets[0] = tile.getTile();
+    srcView->sizes[0] = tile.getSpan();
+    srcView->rank = memDescTy.getRank();
+    srcView->tiledSMEM = true;
+    return srcView;
+  }
+
+  if (auto wgmmaView = value.getDefiningOp<tt::tle::MemDescWGMMAViewOp>()) {
+    auto srcView = getStaticMemDescView(wgmmaView.getSrc());
+    if (!srcView)
+      return std::nullopt;
+    // A virtual transpose retains the tiled stage's exact active interval
+    // rather than widening it to the unallocated carrier tail.
+    srcView->rank = memDescTy.getRank();
+    return srcView;
+  }
+
+  if (auto index = value.getDefiningOp<ttg::MemDescIndexOp>()) {
+    auto srcView = getStaticMemDescView(index.getSrc());
+    if (!srcView)
+      return std::nullopt;
+    auto cstIndex = getConstantIntLike(index.getIndex());
+    if (!cstIndex)
+      return std::nullopt;
+
+    auto srcTy = index.getSrc().getType();
+    int64_t rootRank = srcView->offsets.size();
+    int64_t srcRank = srcTy.getRank();
+    int64_t axis = rootRank - srcRank;
+    if (axis < 0 || axis >= rootRank)
+      return std::nullopt;
+
+    srcView->offsets[axis] += *cstIndex;
+    srcView->sizes[axis] = 1;
+    srcView->rank = memDescTy.getRank();
+    auto dstShape = memDescTy.getShape();
+    for (auto [i, dimSize] : llvm::enumerate(dstShape))
+      srcView->sizes[axis + 1 + static_cast<int64_t>(i)] = dimSize;
+    return srcView;
+  }
+
+  if (auto subslice = value.getDefiningOp<ttg::MemDescSubsliceOp>()) {
+    auto srcView = getStaticMemDescView(subslice.getSrc());
+    if (!srcView)
+      return std::nullopt;
+
+    auto srcTy = subslice.getSrc().getType();
+    int64_t rootRank = srcView->offsets.size();
+    int64_t srcRank = srcTy.getRank();
+    int64_t firstAxis = rootRank - srcRank;
+    if (firstAxis < 0)
+      return std::nullopt;
+
+    for (auto [i, offset] : llvm::enumerate(subslice.getOffsets()))
+      srcView->offsets[firstAxis + static_cast<int64_t>(i)] += offset;
+    auto dstShape = memDescTy.getShape();
+    for (auto [i, dimSize] : llvm::enumerate(dstShape))
+      srcView->sizes[firstAxis + static_cast<int64_t>(i)] = dimSize;
+    srcView->rank = memDescTy.getRank();
+    return srcView;
+  }
+
+  SmallVector<int64_t> shape(memDescTy.getShape().begin(),
+                             memDescTy.getShape().end());
+  return StaticAccessView{value, SmallVector<int64_t>(shape.size(), 0),
+                          std::move(shape), memDescTy.getRank(),
+                          isTiledSMEMStorageRoot(value)};
+}
+
+static std::optional<StaticAccessView> getStaticLocalPointerView(Value value) {
+  Value ptr = stripConvertLayouts(value);
+  auto localPointers = ptr.getDefiningOp<tt::tle::LocalPointersOp>();
+  if (!localPointers)
+    return std::nullopt;
+
+  auto srcView = getStaticMemDescView(localPointers.getSrc());
+  if (!srcView)
+    return std::nullopt;
+  auto srcTy = localPointers.getSrc().getType();
+  if (localPointers.getIndices().empty())
+    return srcView;
+  if (localPointers.getIndices().size() != static_cast<size_t>(srcTy.getRank()))
+    return std::nullopt;
+
+  int64_t rootRank = srcView->offsets.size();
+  int64_t firstAxis = rootRank - srcTy.getRank();
+  if (firstAxis < 0)
+    return std::nullopt;
+
+  for (auto [axis, index] : llvm::enumerate(localPointers.getIndices())) {
+    auto coverage = matchStaticIndexCoverage(index);
+    if (!coverage)
+      return std::nullopt;
+    int64_t rootAxis = firstAxis + static_cast<int64_t>(axis);
+    srcView->offsets[rootAxis] += coverage->offset;
+    srcView->sizes[rootAxis] = coverage->size;
+  }
+  srcView->rank = srcTy.getRank();
+  return srcView;
+}
+
+static std::optional<StaticAccessView> getStaticAccessView(Value value) {
+  if (isa<ttg::MemDescType>(value.getType()))
+    return getStaticMemDescView(value);
+  return getStaticLocalPointerView(value);
+}
+
+static std::optional<unsigned> getElementByteWidth(Type type) {
+  if (auto intTy = dyn_cast<IntegerType>(type))
+    return llvm::divideCeil(intTy.getWidth(), 8);
+  if (auto floatTy = dyn_cast<FloatType>(type))
+    return llvm::divideCeil(floatTy.getWidth(), 8);
+  if (isa<tt::PointerType>(type))
+    return 8;
+  return std::nullopt;
+}
+
+struct SharedByteSpan {
+  Value root;
+  size_t begin;
+  size_t end;
+  bool exactBase;
+};
+
+static std::optional<size_t> getSharedDescriptorBytes(ttg::MemDescType type) {
+  // These encodings allocate a dense per-CTA footprint. Padded and other
+  // encodings require their own proof before their ranges can be narrowed.
+  if (!isa<ttg::SwizzledSharedEncodingAttr, ttg::NVMMASharedEncodingAttr>(
+          type.getEncoding()))
+    return std::nullopt;
+  if (auto mma = dyn_cast<ttg::NVMMASharedEncodingAttr>(type.getEncoding()))
+    if (mma.getFp4Padded())
+      return std::nullopt;
+  if (type.getElementTypeBitWidth() < 8)
+    return std::nullopt;
+  if (!type.getAllocShape().empty() && type.getAllocShape() != type.getShape())
+    return std::nullopt;
+  auto width = getElementByteWidth(type.getElementType());
+  if (!width)
+    return std::nullopt;
+  size_t bytes = *width;
+  for (int64_t dim : ttg::getAllocationShapePerCTA(type)) {
+    if (dim <= 0 ||
+        static_cast<size_t>(dim) > std::numeric_limits<size_t>::max() / bytes)
+      return std::nullopt;
+    bytes *= static_cast<size_t>(dim);
+  }
+  return bytes;
+}
+
+static std::optional<SharedByteSpan> getSharedByteSpan(Value value) {
+  auto type = dyn_cast<ttg::MemDescType>(value.getType());
+  if (!type || !isa<ttg::SharedMemorySpaceAttr>(type.getMemorySpace()))
+    return std::nullopt;
+  if (auto alias = value.getDefiningOp<tt::tle::MemDescAliasOp>()) {
+    auto source = getSharedByteSpan(alias.getSrc());
+    auto bytes = getSharedDescriptorBytes(type);
+    if (!source || !source->exactBase || !bytes)
+      return std::nullopt;
+    int64_t delta = alias.getOffsetBytes();
+    if (delta < 0 || static_cast<size_t>(delta) > source->end - source->begin ||
+        *bytes > source->end - source->begin - static_cast<size_t>(delta))
+      return std::nullopt;
+    size_t begin = source->begin + static_cast<size_t>(delta);
+    return SharedByteSpan{source->root, begin, begin + *bytes, true};
+  }
+  // A dynamic or sliced view stays within its source, but its base is not
+  // known here. Keep the whole source envelope and reject subsequent byte
+  // aliases that would require a precise base.
+  if (auto index = value.getDefiningOp<ttg::MemDescIndexOp>()) {
+    auto source = getSharedByteSpan(index.getSrc());
+    auto bytes = getSharedDescriptorBytes(type);
+    std::optional<int64_t> slot;
+    // Only a direct SSA integer constant supplies this proof. In particular,
+    // do not strip a truncation/cast and use its pre-conversion value.
+    if (auto constant = index.getIndex().getDefiningOp<arith::ConstantOp>())
+      if (auto integer = dyn_cast<IntegerAttr>(constant.getValue()))
+        if (integer.getValue().getBitWidth() <= 64)
+          slot = integer.getValue().getSExtValue();
+    if (source && source->exactBase && bytes && slot) {
+      if (*slot < 0 ||
+          static_cast<size_t>(*slot) > (source->end - source->begin) / *bytes)
+        return std::nullopt;
+      size_t delta = static_cast<size_t>(*slot) * *bytes;
+      if (*bytes > source->end - source->begin - delta ||
+          delta > std::numeric_limits<uint32_t>::max())
+        return std::nullopt;
+      // LLVM memdesc_index advances by the per-CTA destination footprint.
+      size_t begin = source->begin + delta;
+      return SharedByteSpan{source->root, begin, begin + *bytes, true};
+    }
+    if (source)
+      source->exactBase = false;
+    return source;
+  }
+  if (auto slice = value.getDefiningOp<ttg::MemDescSubsliceOp>()) {
+    auto source = getSharedByteSpan(slice.getSrc());
+    if (source)
+      source->exactBase = false;
+    return source;
+  }
+  // Only allocations and function parameters establish a root. Unknown
+  // producers, control-flow aliases and pointer arithmetic stay conservative.
+  bool formal = false;
+  if (auto argument = dyn_cast<BlockArgument>(value)) {
+    auto function =
+        dyn_cast<FunctionOpInterface>(argument.getOwner()->getParentOp());
+    formal = function && argument.getOwner()->isEntryBlock();
+  }
+  if (!formal && !value.getDefiningOp<ttg::LocalAllocOp>())
+    return std::nullopt;
+  auto bytes = getSharedDescriptorBytes(type);
+  if (!bytes)
+    return std::nullopt;
+  return SharedByteSpan{value, 0, *bytes, true};
+}
+
+static size_t linearizeStatic(ArrayRef<int64_t> coord, ArrayRef<unsigned> shape,
+                              ArrayRef<unsigned> order) {
+  size_t linear = 0;
+  for (unsigned dim : llvm::reverse(order))
+    linear = linear * shape[dim] + coord[dim];
+  return linear;
+}
+
+static bool containsBufferId(const Allocation::BufferIdSetT &bufferIds,
+                             Allocation::BufferId bufferId) {
+  return llvm::any_of(bufferIds,
+                      [&](Allocation::BufferId id) { return id == bufferId; });
+}
+
+static std::optional<SmallVector<Interval<size_t>>>
+getStaticAccessIntervals(const Allocation *allocation, Value value,
+                         Allocation::BufferId bufferId) {
+  auto view = getStaticAccessView(value);
+  bool usePhysicalSpan = !view;
+  if (view) {
+    auto rootTy = cast<ttg::MemDescType>(view->root.getType());
+    auto shared =
+        dyn_cast<ttg::SwizzledSharedEncodingAttr>(rootTy.getEncoding());
+    usePhysicalSpan = !shared || shared.getMaxPhase() != 1;
+  }
+  // A descriptor access covers its physical view, including an unknown slot's
+  // source envelope. Preserve the byte origin of aliases sharing an allocation.
+  // Unswizzled static views retain the existing coordinate-range precision.
+  if (usePhysicalSpan && isa<ttg::MemDescType>(value.getType())) {
+    auto span = getSharedByteSpan(value);
+    if (span &&
+        containsBufferId(allocation->getBufferIds(span->root), bufferId)) {
+      auto allocated = allocation->getAllocatedInterval(bufferId);
+      if (span->begin <= span->end && span->end <= allocated.size())
+        return SmallVector<Interval<size_t>>{Interval<size_t>(
+            allocated.start() + span->begin, allocated.start() + span->end)};
+    }
+  }
+  if (!view)
+    return std::nullopt;
+  if (!containsBufferId(allocation->getBufferIds(view->root), bufferId))
+    return std::nullopt;
+
+  auto rootTy = dyn_cast<ttg::MemDescType>(view->root.getType());
+  if (!rootTy)
+    return std::nullopt;
+  auto elemBytes = getElementByteWidth(rootTy.getElementType());
+  if (!elemBytes)
+    return std::nullopt;
+
+  SmallVector<unsigned> shape;
+  ArrayRef<int64_t> typeShape = rootTy.getAllocShape();
+  if (typeShape.empty())
+    typeShape = rootTy.getShape();
+  shape.reserve(typeShape.size());
+  for (int64_t dim : typeShape) {
+    if (dim <= 0)
+      return std::nullopt;
+    shape.push_back(static_cast<unsigned>(dim));
+  }
+  if (shape.size() != view->offsets.size() ||
+      shape.size() != view->sizes.size())
+    return std::nullopt;
+
+  for (auto [offset, size, dim] :
+       llvm::zip_equal(view->offsets, view->sizes, shape)) {
+    if (offset < 0 || size <= 0 || offset + size > static_cast<int64_t>(dim))
+      return std::nullopt;
+  }
+
+  auto order = ttg::getOrder(rootTy);
+  // A tiled backing allocation may have leading physical tile dimensions that
+  // are absent from the atom encoding reused by its aliases. Shift the atom
+  // order over those leading dimensions, then append the tile dimensions from
+  // innermost to outermost. For [tile, row, col] with atom order [col, row],
+  // this derives [col, row, tile] without assuming a fixed storage rank.
+  if (view->tiledSMEM && order.size() < shape.size()) {
+    unsigned leadingRank = shape.size() - order.size();
+    for (unsigned &dim : order)
+      dim += leadingRank;
+    for (unsigned dim = leadingRank; dim > 0; --dim)
+      order.push_back(dim - 1);
+  }
+  if (order.size() != shape.size())
+    return std::nullopt;
+
+  size_t outerCount = 1;
+  unsigned fastestDim = order.front();
+  for (unsigned dim = 0, rank = shape.size(); dim < rank; ++dim) {
+    if (dim == fastestDim)
+      continue;
+    outerCount *= static_cast<size_t>(view->sizes[dim]);
+    if (outerCount > 4096)
+      return std::nullopt;
+  }
+
+  SmallVector<unsigned> outerDims;
+  for (unsigned dim = 0, rank = shape.size(); dim < rank; ++dim)
+    if (dim != fastestDim)
+      outerDims.push_back(dim);
+
+  SmallVector<Interval<size_t>> intervals;
+  intervals.reserve(std::max<size_t>(outerCount, 1));
+  auto allocated = allocation->getAllocatedInterval(bufferId);
+  size_t base = allocated.start();
+  if (view->root.getDefiningOp<tt::tle::MemDescAliasOp>()) {
+    auto span = getSharedByteSpan(view->root);
+    if (!span || !span->exactBase || span->end > allocated.size() ||
+        !containsBufferId(allocation->getBufferIds(span->root), bufferId))
+      return std::nullopt;
+    // Logical row-major subranges cannot prove physical subranges for a
+    // swizzled alias. Its proven descriptor envelope remains conservative.
+    auto shared =
+        dyn_cast<ttg::SwizzledSharedEncodingAttr>(rootTy.getEncoding());
+    if (!shared || shared.getMaxPhase() != 1)
+      return SmallVector<Interval<size_t>>{
+          Interval<size_t>(base + span->begin, base + span->end)};
+    base += span->begin;
+  }
+  for (size_t linearOuter = 0; linearOuter < std::max<size_t>(outerCount, 1);
+       ++linearOuter) {
+    size_t residue = linearOuter;
+    SmallVector<int64_t> start(view->offsets.begin(), view->offsets.end());
+    SmallVector<int64_t> end = start;
+    for (unsigned dim : llvm::reverse(outerDims)) {
+      int64_t size = view->sizes[dim];
+      int64_t idx = residue % size;
+      residue /= size;
+      start[dim] += idx;
+      end[dim] += idx;
+    }
+    end[fastestDim] = start[fastestDim] + view->sizes[fastestDim] - 1;
+    size_t startElem = linearizeStatic(start, shape, order);
+    size_t endElem = linearizeStatic(end, shape, order) + 1;
+    if (startElem > endElem)
+      return std::nullopt;
+    intervals.emplace_back(base + startElem * *elemBytes,
+                           base + endElem * *elemBytes);
+  }
+  return intervals;
+}
+
+static bool isSharedMemoryValue(Value value) {
+  Type type = value.getType();
+  if (auto memDesc = dyn_cast<ttg::MemDescType>(type))
+    return isa<ttg::SharedMemorySpaceAttr>(memDesc.getMemorySpace());
+  if (auto tensor = dyn_cast<RankedTensorType>(type))
+    type = tensor.getElementType();
+  if (auto pointer = dyn_cast<tt::PointerType>(type))
+    return pointer.getAddressSpace() == 3;
+  return false;
+}
+
+static void addEffectIntervals(const Allocation *allocation, Value value,
+                               bool isWrite, Operation *op,
+                               BlockInfo &curBlockInfo) {
+  auto bufferIds = allocation->getBufferIds(value);
+  if (bufferIds.empty() && isSharedMemoryValue(value)) {
+    // Borrowed shared parameters and their views need not have a local
+    // allocation ID. They may alias any shared allocation, including one in
+    // the caller; preserve their effects in the existing dependency analysis.
+    AllocationSlice allShared(
+        Interval<size_t>(0, std::numeric_limits<size_t>::max()));
+    if (isWrite)
+      curBlockInfo.syncWriteSlices[allShared].insert(op);
+    else
+      curBlockInfo.syncReadSlices[allShared].insert(op);
+    return;
+  }
+  for (auto bufferId : bufferIds) {
+    if (bufferId == Allocation::InvalidBufferId)
+      continue;
+    SmallVector<AllocationSlice, 1> slices;
+    if (auto intervals =
+            getStaticAccessIntervals(allocation, value, bufferId)) {
+      for (auto interval : *intervals)
+        slices.push_back(AllocationSlice(interval));
+    } else {
+      auto interval = allocation->getAllocatedInterval(bufferId);
+      if (isa<ttg::MemDescType>(value.getType()))
+        slices.push_back(AllocationSlice(value, interval));
+      else
+        slices.push_back(AllocationSlice(interval));
+    }
+    for (auto &slice : slices) {
+      if (isWrite)
+        curBlockInfo.syncWriteSlices[slice].insert(op);
+      else
+        curBlockInfo.syncReadSlices[slice].insert(op);
+    }
+  }
+}
+
+} // namespace
+#endif
+
 void MembarOrFenceAnalysis::run(FuncBlockInfoMapT &funcBlockInfoMap) {
   FunctionOpInterface funcOp =
       dyn_cast<FunctionOpInterface>(allocation->getOperation());
@@ -142,6 +720,11 @@ void MembarOrFenceAnalysis::resolve(FunctionOpInterface funcOp,
   std::deque<VirtualBlock> blockList;
   // Start the analysis from the entry block of the function.
   blockList.emplace_back(&funcOp.getBlocks().front(), Block::iterator());
+#ifdef __TLE__
+  if (tracksEntrySync())
+    inputBlockInfoMap[{&funcOp.getBlocks().front(), Block::iterator()}]
+        .entryUnsynced = true;
+#endif
 
   // A fixed point algorithm
   while (!blockList.empty()) {
@@ -263,6 +846,68 @@ void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
                                  triton::gpu::AddrSpace::Local);
 }
 
+#ifdef __TLE__
+bool ModuleMembarAnalysis::isAtomicWithoutScratch(Operation *op) const {
+  if (!isa<triton::AtomicRMWOp, triton::AtomicCASOp>(op))
+    return false;
+  // Call summaries retain operations from the callee. Buffer IDs are scoped
+  // to a function, so an absent ID in the caller cannot prove no return
+  // scratch.
+  auto funcOp = op->getParentOfType<FunctionOpInterface>();
+  auto *ownerAllocation = moduleAllocation->getFuncData(funcOp);
+  return ownerAllocation->getBufferId(op) == Allocation::InvalidBufferId;
+}
+
+void MembarAnalysis::addToEntryPrefix(const BlockInfo &blockInfo) {
+  auto funcOp = cast<FunctionOpInterface>(allocation->getOperation());
+  BlockInfo accesses = blockInfo;
+  accesses.entryUnsynced = false;
+  (*entryPrefixMap)[funcOp].join(accesses);
+}
+
+void MembarAnalysis::updateCall(Operation *op, FunctionOpInterface callee,
+                                BlockInfo *blockInfo,
+                                FuncBlockInfoMapT *funcBlockInfoMap,
+                                MembarFilterFn filter, OpBuilder *builder) {
+  // The callee's shared memory lives in this call's virtual buffer.
+  size_t callOffset = 0;
+  auto callBufferId = allocation->getBufferId(op);
+  if (callBufferId != Allocation::InvalidBufferId)
+    callOffset = allocation->getAllocatedInterval(callBufferId).start();
+
+  auto exitIt = funcBlockInfoMap->find(callee);
+  BlockInfo calleeExit;
+  if (exitIt != funcBlockInfoMap->end())
+    calleeExit = exitIt->second.translated(callOffset);
+  else
+    calleeExit.entryUnsynced = true;
+
+  // Without entry summaries, fall back to the callee's exit state.
+  BlockInfo calleeEntry = calleeExit;
+  if (entryPrefixMap) {
+    auto entryIt = entryPrefixMap->find(callee);
+    calleeEntry = entryIt != entryPrefixMap->end()
+                      ? entryIt->second.translated(callOffset)
+                      : BlockInfo();
+  }
+
+  // Accesses pending in the caller must be ordered against what the callee
+  // touches before its first barrier.
+  if (blockInfo->isIntersected(calleeEntry, filter, allocation)) {
+    builder->setInsertionPoint(op);
+    insertBarrier(op, builder);
+    blockInfo->sync();
+  }
+  if (entryPrefixMap && blockInfo->entryUnsynced)
+    addToEntryPrefix(calleeEntry);
+  // A callee that synchronizes on every path also synchronizes the caller.
+  if (!calleeExit.entryUnsynced)
+    blockInfo->sync();
+  calleeExit.entryUnsynced = false;
+  blockInfo->join(calleeExit);
+}
+
+#endif
 void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                             FuncBlockInfoMapT *funcBlockInfoMap,
                             OpBuilder *builder) {
@@ -292,14 +937,40 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     return;
   }
 
+#ifdef __TLE__
+  // Atomicity orders the addressed memory, not the shared scratch used to
+  // broadcast returned values. Exempt only atomic chains without return
+  // scratch; overlapping broadcasts still need their write-after-read barrier.
+  auto effectiveFilter = [&](Operation *lhs, Operation *rhs,
+                             Allocation *allocation) -> bool {
+    if (auto arrive = dyn_cast<triton::nvidia_gpu::ArriveBarrierOp>(rhs)) {
+      // Participant publication proves that every payload writer performs its
+      // own release fence and arrive. A synchronous store needs no additional
+      // CTA rendezvous, even when the barrier parameter may alias its buffer.
+      if (arrive.getParticipantArrive() && arrive.getReleaseFence() &&
+          isa<triton::StoreOp, triton::gpu::LocalStoreOp>(lhs))
+        return true;
+    }
+    return filter ? filter(lhs, rhs, allocation) : false;
+  };
+
+#endif
   BlockInfo curBlockInfo;
   auto scratchBufferId = Allocation::InvalidBufferId;
   if (isa<triton::CallOp>(op)) {
     // Inter-function dependencies
     auto callOpInterface = dyn_cast<CallOpInterface>(op);
+#ifdef __TLE__
+    if (auto callee =
+            dyn_cast<FunctionOpInterface>(callOpInterface.resolveCallable()))
+      updateCall(op, callee, blockInfo, funcBlockInfoMap, effectiveFilter,
+                 builder);
+    return;
+#else
     if (auto callee =
             dyn_cast<FunctionOpInterface>(callOpInterface.resolveCallable()))
       curBlockInfo = funcBlockInfoMap->lookup(callee);
+#endif
   } else {
     // Intra-function dependencies
     if (auto memoryEffectOpInterface = dyn_cast<MemoryEffectOpInterface>(op)) {
@@ -309,6 +980,17 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
       memoryEffectOpInterface.getEffects(effectInstances);
       for (auto effectInstance : effectInstances) {
         if (auto value = effectInstance.getValue()) {
+#ifdef __TLE__
+          // TLE local_ptr and memdesc views can denote disjoint static subviews
+          // of the same shared allocation. Track those subviews as byte
+          // intervals so membar only inserts CTA barriers for real overlaps.
+          if (isa<MemoryEffects::Write>(effectInstance.getEffect()))
+            addEffectIntervals(allocation, value, /*isWrite=*/true, op,
+                               curBlockInfo);
+          else if (isa<MemoryEffects::Read>(effectInstance.getEffect()))
+            addEffectIntervals(allocation, value, /*isWrite=*/false, op,
+                               curBlockInfo);
+#else
           for (auto bufferId : allocation->getBufferIds(value)) {
             if (bufferId != Allocation::InvalidBufferId) {
               auto interval = allocation->getAllocatedInterval(bufferId);
@@ -320,19 +1002,43 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
                 curBlockInfo.syncReadSlices[slice].insert(op);
             }
           }
+#endif
         }
       }
     }
     // If this op is may be signalling other threads asynchronously, make sure
     // all shared memory transactions are complete beforehand.
+#ifdef __TLE__
+    if (auto arrive = dyn_cast<triton::nvidia_gpu::ArriveBarrierOp>(op)) {
+      // `participant_arrive` is only emitted after the pipe lowering has proven
+      // the prefix set of writer lanes. Those lanes each execute their own
+      // release fence and one-unit mbarrier arrive, so adding a CTA rendezvous
+      // here would duplicate the publication edge that the op already models.
+      // Non-participant/elected arrives still need this conservative
+      // all-shared-memory dependency because one elected lane cannot publish
+      // stores performed by other lanes without a preceding barrier.
+      if (!arrive.getParticipantArrive()) {
+        Interval<size_t> allIntervals(0, std::numeric_limits<size_t>::max());
+        auto allMemorySlice = AllocationSlice(allIntervals);
+        curBlockInfo.syncWriteSlices[allMemorySlice].insert(op);
+        curBlockInfo.syncReadSlices[allMemorySlice].insert(op);
+      }
+    }
+#else
     if (isa<triton::nvidia_gpu::ArriveBarrierOp>(op)) {
       Interval<size_t> allIntervals(0, std::numeric_limits<size_t>::max());
       auto allMemorySlice = AllocationSlice(allIntervals);
       curBlockInfo.syncWriteSlices[allMemorySlice].insert(op);
       curBlockInfo.syncReadSlices[allMemorySlice].insert(op);
     }
+#endif
     scratchBufferId = allocation->getBufferId(op);
   }
+
+#ifdef __TLE__
+  // The atomic filter is computed before call handling so it also orders
+  // scratch broadcasts described by callee entry summaries.
+#endif
 
   // Scratch buffer operations consist of a series of shared memory operations
   // starting from a shared memory write, followed by a series of shared memory
@@ -352,31 +1058,62 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
       isWarpSync = mlir::isCvtWarpSync(srcLayout, dstLayout);
     }
 
+#ifdef __TLE__
+    // Some scratch-buffer ops can also carry explicit shared-memory effects.
+    // Keep conservative dependency tracking instead of hard-failing here.
+#else
     if (!curBlockInfo.syncReadSlices.empty() ||
         !curBlockInfo.syncWriteSlices.empty()) {
       llvm::report_fatal_error(
           "scratch buffer operations should not have any shared memory "
           "dependencies");
     }
+#endif
     auto interval = allocation->getAllocatedInterval(scratchBufferId);
     auto scratchSlice = AllocationSlice(interval);
     curBlockInfo.syncWriteSlices[scratchSlice].insert(op);
+#ifdef __TLE__
+    auto insertCTABarrier =
+        blockInfo->isIntersected(curBlockInfo, effectiveFilter, allocation);
+#else
     auto insertCTABarrier =
         blockInfo->isIntersected(curBlockInfo, filter, allocation);
+#endif
     if (insertCTABarrier) {
       builder->setInsertionPoint(op);
       insertBarrier(op, builder);
+#ifdef __TLE__
+      blockInfo->sync();
+#endif
     }
+#ifdef __TLE__
+    // The write phase runs before the op's internal barrier.
+    if (entryPrefixMap && blockInfo->entryUnsynced)
+      addToEntryPrefix(curBlockInfo);
+#endif
     // Ops with a scratch buffer that don't use warp.sync internally sync
     // read/write on shared memory
+#ifdef __TLE__
+    if (!isWarpSync)
+#else
     if (insertCTABarrier || !isWarpSync)
+#endif
       blockInfo->sync();
     curBlockInfo.syncReadSlices[scratchSlice].insert(op);
+#ifdef __TLE__
+  } else if (blockInfo->isIntersected(curBlockInfo, effectiveFilter,
+                                      allocation)) {
+#else
   } else if (blockInfo->isIntersected(curBlockInfo, filter, allocation)) {
+#endif
     builder->setInsertionPoint(op);
     insertBarrier(op, builder);
     blockInfo->sync();
   }
+#ifdef __TLE__
+  if (entryPrefixMap && blockInfo->entryUnsynced)
+    addToEntryPrefix(curBlockInfo);
+#endif
   // Update the region info, even if barrier is inserted, we have to maintain
   // the current op's read/write buffers.
   blockInfo->join(curBlockInfo);

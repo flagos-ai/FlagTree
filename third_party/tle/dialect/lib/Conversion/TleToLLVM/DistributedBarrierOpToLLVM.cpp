@@ -1,0 +1,537 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
+#include "tle/dialect/include/Tools/FlagcxUtils.h"
+
+#include "mlir/Conversion/LLVMCommon/Pattern.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
+#include "third_party/nvidia/include/TritonNVIDIAGPUToLLVM/PTXAsmFormat.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "llvm/Support/MathExtras.h"
+#include <algorithm>
+#include <limits>
+#include <optional>
+
+namespace {
+
+using namespace mlir;
+using namespace mlir::triton;
+
+constexpr llvm::StringLiteral kSpaceAttr = "space";
+constexpr llvm::StringLiteral kOrderAttr = "order";
+constexpr llvm::StringLiteral kIndexAttr = "barrier_index";
+constexpr llvm::StringLiteral kContextIdAttr = "context_id";
+constexpr llvm::StringLiteral kMemoryScopeAttr = "memory_scope";
+constexpr llvm::StringLiteral kGroupKindAttr = "group_kind";
+constexpr llvm::StringLiteral kGroupShapeAttr = "group_shape";
+constexpr llvm::StringLiteral kGroupMaskAttr = "group_mask";
+constexpr llvm::StringLiteral kTTGSharedAttr = "ttg.shared";
+constexpr llvm::StringLiteral kTTGGlobalScratchSizeAttr =
+    "ttg.global_scratch_memory_size";
+constexpr llvm::StringLiteral kTTGGlobalScratchAlignAttr =
+    "ttg.global_scratch_memory_alignment";
+constexpr llvm::StringLiteral kSubmeshScratchOffsetAttr =
+    "tle.submesh_barrier_scratch_offset";
+constexpr llvm::StringLiteral kGridScratchOffsetAttr =
+    "tle.grid_barrier_scratch_offset";
+constexpr int32_t kSubmeshScratchAlignment = 16;
+constexpr int32_t kSubmeshScratchBytes = 8;
+constexpr int32_t kSubmeshCounterOffsetBytes = 0;
+constexpr int32_t kSubmeshPhaseOffsetBytes = 4;
+constexpr int32_t kGridScratchAlignment = 4;
+constexpr int32_t kGridScratchBytes = 4;
+constexpr int32_t kGridArrivedOffsetBytes = 0;
+
+Value getDistDevicePtr(tle::DistributedBarrierOp op,
+                       SmallVector<Value> &srcElems) {
+  if (!srcElems.empty())
+    return srcElems[0];
+  else {
+    auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
+    return func.getArgument(1);
+  }
+}
+
+FailureOr<int32_t> getOrCreateSubmeshScratchOffset(ModuleOp mod) {
+  if (auto existing =
+          mod->getAttrOfType<IntegerAttr>(kSubmeshScratchOffsetAttr)) {
+    int64_t value = existing.getInt();
+    if (value < 0 || value > std::numeric_limits<int32_t>::max())
+      return failure();
+    return static_cast<int32_t>(value);
+  }
+
+  auto sharedAttr = mod->getAttrOfType<IntegerAttr>(kTTGSharedAttr);
+  if (!sharedAttr)
+    return failure();
+
+  int64_t currentShared = sharedAttr.getInt();
+  if (currentShared < 0)
+    return failure();
+
+  int64_t offset =
+      llvm::alignTo(currentShared, int64_t{kSubmeshScratchAlignment});
+  int64_t newShared = offset + kSubmeshScratchBytes;
+  if (newShared > std::numeric_limits<int32_t>::max())
+    return failure();
+
+  auto i32Ty = IntegerType::get(mod.getContext(), 32);
+  mod->setAttr(kTTGSharedAttr, IntegerAttr::get(i32Ty, newShared));
+  mod->setAttr(kSubmeshScratchOffsetAttr, IntegerAttr::get(i32Ty, offset));
+  return static_cast<int32_t>(offset);
+}
+
+FailureOr<int32_t> getOrCreateGridScratchOffset(ModuleOp mod) {
+  if (auto existing = mod->getAttrOfType<IntegerAttr>(kGridScratchOffsetAttr)) {
+    int64_t value = existing.getInt();
+    if (value < 0 || value > std::numeric_limits<int32_t>::max())
+      return failure();
+    return static_cast<int32_t>(value);
+  }
+
+  auto *ctx = mod.getContext();
+  auto i32Ty = IntegerType::get(ctx, 32);
+
+  int64_t currentSize = 0;
+  if (auto sizeAttr =
+          mod->getAttrOfType<IntegerAttr>(kTTGGlobalScratchSizeAttr)) {
+    currentSize = sizeAttr.getInt();
+    if (currentSize < 0)
+      return failure();
+  } else {
+    mod->setAttr(kTTGGlobalScratchSizeAttr, IntegerAttr::get(i32Ty, 0));
+  }
+
+  int64_t currentAlign = 1;
+  if (auto alignAttr =
+          mod->getAttrOfType<IntegerAttr>(kTTGGlobalScratchAlignAttr)) {
+    currentAlign = alignAttr.getInt();
+    if (currentAlign <= 0)
+      return failure();
+  } else {
+    mod->setAttr(kTTGGlobalScratchAlignAttr, IntegerAttr::get(i32Ty, 1));
+  }
+
+  int64_t offset = llvm::alignTo(currentSize, int64_t{kGridScratchAlignment});
+  int64_t newSize = offset + kGridScratchBytes;
+  if (newSize > std::numeric_limits<int32_t>::max())
+    return failure();
+  int64_t newAlign = std::max(currentAlign, int64_t{kGridScratchAlignment});
+
+  mod->setAttr(kTTGGlobalScratchSizeAttr, IntegerAttr::get(i32Ty, newSize));
+  mod->setAttr(kTTGGlobalScratchAlignAttr, IntegerAttr::get(i32Ty, newAlign));
+  mod->setAttr(kGridScratchOffsetAttr, IntegerAttr::get(i32Ty, offset));
+  return static_cast<int32_t>(offset);
+}
+
+struct DistributedBarrierOpConversion
+    : public ConvertOpToLLVMPattern<tle::DistributedBarrierOp> {
+  using ConvertOpToLLVMPattern<
+      tle::DistributedBarrierOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult lowerClusterBarrier(tle::DistributedBarrierOp op,
+                                    ConversionPatternRewriter &rewriter) const {
+    auto *ctx = rewriter.getContext();
+    auto unit = UnitAttr::get(ctx);
+    // Cluster arrive/wait does not provide CTA-wide synchronization semantics
+    // for local shared-memory hazards. Add CTA barriers around it so
+    // distributed_barrier behaves as a full barrier for each participating CTA.
+    mlir::gpu::BarrierOp::create(rewriter, op.getLoc());
+    NVVM::ClusterArriveOp::create(rewriter, op.getLoc(), unit);
+    NVVM::ClusterWaitOp::create(rewriter, op.getLoc(), unit);
+    mlir::gpu::BarrierOp::create(rewriter, op.getLoc());
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+  LogicalResult lowerGridBarrier(tle::DistributedBarrierOp op,
+                                 ConversionPatternRewriter &rewriter) const {
+    auto loc = op.getLoc();
+    auto *ctx = rewriter.getContext();
+    TritonLLVMOpBuilder b(loc, rewriter);
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto i32Ty = IntegerType::get(ctx, 32);
+
+    auto mod = op->getParentOfType<ModuleOp>();
+    if (!mod)
+      return op.emitOpError("cannot find parent module for grid lowering");
+
+    auto scratchOffsetOr = getOrCreateGridScratchOffset(mod);
+    if (failed(scratchOffsetOr)) {
+      return op.emitOpError(
+          "failed to reserve global scratch for grid barrier");
+    }
+    int32_t scratchOffset = *scratchOffsetOr;
+
+    auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
+    if (!func) {
+      return op.emitOpError("grid lowering requires LLVM function context");
+    }
+    int32_t argIdx = static_cast<int32_t>(func.getNumArguments()) +
+                     kGlobalScratchBufferOffset;
+    if (argIdx < 0 || argIdx >= static_cast<int32_t>(func.getNumArguments())) {
+      return op.emitOpError(
+          "cannot locate global scratch argument for grid barrier lowering");
+    }
+    Value globalScratchBase = func.getArgument(static_cast<unsigned>(argIdx));
+    auto globalPtrTy =
+        dyn_cast<LLVM::LLVMPointerType>(globalScratchBase.getType());
+    if (!globalPtrTy) {
+      return op.emitOpError("global scratch argument must be an LLVM pointer");
+    }
+
+    auto globalI32PtrTy =
+        LLVM::LLVMPointerType::get(ctx, globalPtrTy.getAddressSpace());
+    Value arrivedBytePtr =
+        b.gep(globalPtrTy, i8Ty, globalScratchBase,
+              b.i32_val(scratchOffset + kGridArrivedOffsetBytes));
+    Value arrivedPtr = b.bitcast(arrivedBytePtr, globalI32PtrTy);
+
+    Value threadId = getThreadId(rewriter, loc);
+    Value isThread0 = b.icmp_eq(threadId, b.i32_val(0));
+    Value blockIdX = NVVM::BlockIdXOp::create(rewriter, loc, i32Ty);
+    Value blockIdY = NVVM::BlockIdYOp::create(rewriter, loc, i32Ty);
+    Value blockIdZ = NVVM::BlockIdZOp::create(rewriter, loc, i32Ty);
+    Value isBlock0X = b.icmp_eq(blockIdX, b.i32_val(0));
+    Value isBlock0Y = b.icmp_eq(blockIdY, b.i32_val(0));
+    Value isBlock0Z = b.icmp_eq(blockIdZ, b.i32_val(0));
+    Value isBlock0 = b.and_(b.and_(isBlock0X, isBlock0Y), isBlock0Z);
+    Value workerPred = isThread0;
+
+    Value gridDimX = NVVM::GridDimXOp::create(rewriter, loc, i32Ty);
+    Value gridDimY = NVVM::GridDimYOp::create(rewriter, loc, i32Ty);
+    Value gridDimZ = NVVM::GridDimZOp::create(rewriter, loc, i32Ty);
+    Value totalCTAs = b.mul(gridDimX, gridDimY);
+    totalCTAs = b.mul(totalCTAs, gridDimZ);
+
+    Block *curBlock = rewriter.getInsertionBlock();
+    Block *endBlock = curBlock->splitBlock(rewriter.getInsertionPoint());
+    Block *workBlock = rewriter.createBlock(endBlock);
+    Block *waitBlock = rewriter.createBlock(endBlock);
+    waitBlock->addArgument(i32Ty, loc); // old_arrive
+    Block *doneBlock = rewriter.createBlock(endBlock);
+    Block *workerDoneBlock = rewriter.createBlock(endBlock);
+
+    rewriter.setInsertionPointToEnd(curBlock);
+    mlir::gpu::BarrierOp::create(rewriter, loc);
+    LLVM::CondBrOp::create(rewriter, loc, workerPred, workBlock, ValueRange{},
+                           doneBlock, ValueRange{});
+
+    rewriter.setInsertionPointToEnd(workBlock);
+    Value expectedMinusOne = b.sub(totalCTAs, b.i32_val(1));
+    Value gpuMasterAdd = b.sub(b.i32_val(0x80000000u), expectedMinusOne);
+    Value nb = b.select(isBlock0, gpuMasterAdd, b.i32_val(1));
+
+    auto emitAtomAddReleaseGpu = [&](Value ptr, Value addVal) -> Value {
+      ::mlir::triton::PTXBuilder ptxBuilder;
+      auto &atom = *ptxBuilder.create<>("atom.add.release.gpu.u32");
+      auto *dstOpr = ptxBuilder.newOperand("=r", /*init=*/true);
+      auto *ptrOpr = ptxBuilder.newAddrOperand(ptr, "l");
+      auto *addOpr = ptxBuilder.newOperand(addVal, "r");
+      atom(dstOpr, ptrOpr, addOpr);
+      return ptxBuilder.launch(rewriter, loc, i32Ty);
+    };
+    auto emitLoadAcquireGpu = [&](Value ptr) -> Value {
+      ::mlir::triton::PTXBuilder ptxBuilder;
+      auto &ld = *ptxBuilder.create<>("ld.acquire.gpu.u32");
+      auto *dstOpr = ptxBuilder.newOperand("=r", /*init=*/true);
+      auto *ptrOpr = ptxBuilder.newAddrOperand(ptr, "l");
+      ld(dstOpr, ptrOpr);
+      return ptxBuilder.launch(rewriter, loc, i32Ty);
+    };
+
+    Value oldArrive = emitAtomAddReleaseGpu(arrivedPtr, nb);
+    LLVM::BrOp::create(rewriter, loc, ValueRange{oldArrive}, waitBlock);
+
+    rewriter.setInsertionPointToEnd(waitBlock);
+    Value oldArriveArg = waitBlock->getArgument(0);
+    Value currentArrive = emitLoadAcquireGpu(arrivedPtr);
+    Value xorVal = b.xor_(oldArriveArg, currentArrive);
+    Value flippedBit = b.and_(xorVal, b.i32_val(0x80000000u));
+    Value hasFlipped = b.icmp_ne(flippedBit, b.i32_val(0));
+    LLVM::CondBrOp::create(rewriter, loc, hasFlipped, workerDoneBlock,
+                           ValueRange{}, waitBlock, ValueRange{oldArriveArg});
+
+    rewriter.setInsertionPointToEnd(workerDoneBlock);
+    LLVM::BrOp::create(rewriter, loc, ValueRange{}, endBlock);
+
+    rewriter.setInsertionPointToEnd(doneBlock);
+    LLVM::BrOp::create(rewriter, loc, ValueRange{}, endBlock);
+
+    rewriter.setInsertionPointToStart(endBlock);
+    mlir::gpu::BarrierOp::create(rewriter, loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+  LogicalResult lowerSubmeshBarrier(tle::DistributedBarrierOp op,
+                                    ConversionPatternRewriter &rewriter) const {
+    auto maskAttr = op->getAttrOfType<DenseI32ArrayAttr>(kGroupMaskAttr);
+    if (!maskAttr) {
+      return op.emitOpError("submesh lowering requires static group_mask attr");
+    }
+
+    SmallVector<int32_t> subgroupMask(maskAttr.asArrayRef().begin(),
+                                      maskAttr.asArrayRef().end());
+    if (subgroupMask.empty()) {
+      return op.emitOpError("submesh lowering requires non-empty group_mask");
+    }
+    if (llvm::any_of(subgroupMask, [](int32_t v) { return v < 0; })) {
+      return op.emitOpError(
+          "submesh lowering requires non-negative group_mask entries");
+    }
+
+    if (auto shapeAttr =
+            op->getAttrOfType<DenseI32ArrayAttr>(kGroupShapeAttr)) {
+      int64_t subgroupFromShape = 1;
+      for (int32_t dim : shapeAttr.asArrayRef())
+        subgroupFromShape *= dim;
+      if (subgroupFromShape != static_cast<int64_t>(subgroupMask.size())) {
+        return op.emitOpError() << "group_shape product (" << subgroupFromShape
+                                << ") must match group_mask size ("
+                                << subgroupMask.size() << ")";
+      }
+    }
+
+    auto loc = op.getLoc();
+    auto *ctx = rewriter.getContext();
+    TritonLLVMOpBuilder b(loc, rewriter);
+    auto i8Ty = IntegerType::get(ctx, 8);
+    auto i32Ty = IntegerType::get(ctx, 32);
+
+    auto mod = op->getParentOfType<ModuleOp>();
+    if (!mod)
+      return op.emitOpError("cannot find parent module for submesh lowering");
+
+    auto scratchOffsetOr = getOrCreateSubmeshScratchOffset(mod);
+    if (failed(scratchOffsetOr)) {
+      return op.emitOpError(
+          "failed to reserve shared memory scratch for submesh barrier");
+    }
+    int32_t scratchOffset = *scratchOffsetOr;
+
+    auto globalSmem = mod.lookupSymbol<LLVM::GlobalOp>("global_smem");
+    if (!globalSmem) {
+      return op.emitOpError("global_smem symbol is missing; submesh barrier "
+                            "lowering requires shared memory base");
+    }
+
+    auto sharedPtrTy = LLVM::LLVMPointerType::get(
+        ctx, static_cast<unsigned>(NVVM::NVVMMemorySpace::Shared));
+    auto clusterPtrTy = LLVM::LLVMPointerType::get(
+        ctx, static_cast<unsigned>(NVVM::NVVMMemorySpace::SharedCluster));
+
+    Value sharedBase = LLVM::AddressOfOp::create(rewriter, loc, globalSmem);
+    sharedBase = b.bitcast(sharedBase, sharedPtrTy);
+
+    Value counterLocalPtr =
+        b.gep(sharedPtrTy, i8Ty, sharedBase,
+              b.i32_val(scratchOffset + kSubmeshCounterOffsetBytes));
+    Value phaseLocalPtr =
+        b.gep(sharedPtrTy, i8Ty, sharedBase,
+              b.i32_val(scratchOffset + kSubmeshPhaseOffsetBytes));
+
+    int32_t leaderCTAId = subgroupMask.front();
+    Value leaderCTA = b.i32_val(leaderCTAId);
+    Value counterPtr = NVVM::MapaOp::create(rewriter, loc, clusterPtrTy,
+                                            counterLocalPtr, leaderCTA);
+    Value phasePtr = NVVM::MapaOp::create(rewriter, loc, clusterPtrTy,
+                                          phaseLocalPtr, leaderCTA);
+
+    Value clusterCTAId = triton::nvgpu::ClusterCTAIdOp::create(rewriter, loc);
+    Value isParticipant = b.false_val();
+    for (int32_t member : subgroupMask) {
+      Value isMember = b.icmp_eq(clusterCTAId, b.i32_val(member));
+      isParticipant = b.or_(isParticipant, isMember);
+    }
+
+    Value threadId = getThreadId(rewriter, loc);
+    Value isThread0 = b.icmp_eq(threadId, b.i32_val(0));
+    Value workerPred = b.and_(isParticipant, isThread0);
+    Value isLeaderCTA = b.icmp_eq(clusterCTAId, leaderCTA);
+    Value doInit = b.and_(isLeaderCTA, isThread0);
+
+    auto unit = UnitAttr::get(ctx);
+    Block *entryBlock = rewriter.getInsertionBlock();
+    Block *postInitBlock = entryBlock->splitBlock(rewriter.getInsertionPoint());
+    Block *initBlock = rewriter.createBlock(postInitBlock);
+
+    rewriter.setInsertionPointToEnd(entryBlock);
+    // Conservative initialization fence: ensure all CTAs observe counter reset
+    // before any subgroup arrivals in this barrier instance.
+    NVVM::ClusterArriveOp::create(rewriter, loc, unit);
+    NVVM::ClusterWaitOp::create(rewriter, loc, unit);
+    LLVM::CondBrOp::create(rewriter, loc, doInit, initBlock, ValueRange{},
+                           postInitBlock, ValueRange{});
+
+    rewriter.setInsertionPointToEnd(initBlock);
+    LLVM::StoreOp::create(rewriter, loc, b.i32_val(0), counterPtr);
+    LLVM::BrOp::create(rewriter, loc, ValueRange{}, postInitBlock);
+
+    rewriter.setInsertionPointToStart(postInitBlock);
+    NVVM::ClusterArriveOp::create(rewriter, loc, unit);
+    NVVM::ClusterWaitOp::create(rewriter, loc, unit);
+
+    Block *curBlock = rewriter.getInsertionBlock();
+    Block *endBlock = curBlock->splitBlock(rewriter.getInsertionPoint());
+    Block *workBlock = rewriter.createBlock(endBlock);
+    Block *waitBlock = rewriter.createBlock(endBlock);
+    waitBlock->addArgument(i32Ty, loc);
+    Block *lastBlock = rewriter.createBlock(endBlock);
+    Block *doneBlock = rewriter.createBlock(endBlock);
+
+    rewriter.setInsertionPointToEnd(curBlock);
+    mlir::gpu::BarrierOp::create(rewriter, loc);
+    LLVM::CondBrOp::create(rewriter, loc, workerPred, workBlock, ValueRange{},
+                           doneBlock, ValueRange{});
+
+    rewriter.setInsertionPointToEnd(workBlock);
+    Value oldPhase =
+        LLVM::AtomicRMWOp::create(
+            rewriter, loc, LLVM::AtomicBinOp::add, phasePtr, b.i32_val(0),
+            LLVM::AtomicOrdering::acquire, StringRef("device"))
+            .getResult();
+    Value prevCount =
+        LLVM::AtomicRMWOp::create(
+            rewriter, loc, LLVM::AtomicBinOp::add, counterPtr, b.i32_val(1),
+            LLVM::AtomicOrdering::acq_rel, StringRef("device"))
+            .getResult();
+    Value arrived = b.add(prevCount, b.i32_val(1));
+    Value isLast = b.icmp_eq(arrived, b.i32_val(subgroupMask.size()));
+    LLVM::CondBrOp::create(rewriter, loc, isLast, lastBlock, ValueRange{},
+                           waitBlock, ValueRange{oldPhase});
+
+    rewriter.setInsertionPointToEnd(waitBlock);
+    Value expectedPhase = waitBlock->getArgument(0);
+    Value currentPhase =
+        LLVM::AtomicRMWOp::create(
+            rewriter, loc, LLVM::AtomicBinOp::add, phasePtr, b.i32_val(0),
+            LLVM::AtomicOrdering::acquire, StringRef("device"))
+            .getResult();
+    Value keepWaiting = b.icmp_eq(currentPhase, expectedPhase);
+    LLVM::CondBrOp::create(rewriter, loc, keepWaiting, waitBlock,
+                           ValueRange{expectedPhase}, doneBlock, ValueRange{});
+
+    rewriter.setInsertionPointToEnd(lastBlock);
+    LLVM::AtomicRMWOp::create(
+        rewriter, loc, LLVM::AtomicBinOp::add, counterPtr,
+        b.i32_val(-static_cast<int64_t>(subgroupMask.size())),
+        LLVM::AtomicOrdering::release, StringRef("device"));
+    LLVM::AtomicRMWOp::create(rewriter, loc, LLVM::AtomicBinOp::add, phasePtr,
+                              b.i32_val(1), LLVM::AtomicOrdering::release,
+                              StringRef("device"));
+    LLVM::BrOp::create(rewriter, loc, ValueRange{}, doneBlock);
+
+    rewriter.setInsertionPointToEnd(doneBlock);
+    LLVM::BrOp::create(rewriter, loc, ValueRange{}, endBlock);
+
+    rewriter.setInsertionPointToStart(endBlock);
+    mlir::gpu::BarrierOp::create(rewriter, loc);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+  LogicalResult
+  lowerFlagCxSpaceBarrier(tle::DistributedBarrierOp op, OpAdaptor adaptor,
+                          ConversionPatternRewriter &rewriter) const {
+    auto spaceAttr = op->getAttrOfType<StringAttr>(kSpaceAttr);
+    auto kindAttr = op->getAttrOfType<StringAttr>(kGroupKindAttr);
+    auto orderAttr = op.getOrderAttr();
+    auto indexAttr = op->getAttrOfType<IntegerAttr>(kIndexAttr);
+    auto contextIdAttr = op->getAttrOfType<IntegerAttr>(kContextIdAttr);
+    auto memoryScopeAttr = op.getMemoryScopeAttr();
+    auto loc = op.getLoc();
+    SmallVector<Value> srcElems;
+    auto getTeamKind =
+        [](StringRef space) -> std::optional<tle::FlagCXTeamKind> {
+      return llvm::StringSwitch<std::optional<tle::FlagCXTeamKind>>(space)
+          .Case("device", tle::FlagCXTeamKind::INTRA)
+          .Case("inter", tle::FlagCXTeamKind::INTER)
+          .Case("world", tle::FlagCXTeamKind::WORLD)
+          .Default(std::nullopt);
+    };
+    auto getCoopKind =
+        [](StringRef kind) -> std::optional<tle::FlagCXCoopKind> {
+      return llvm::StringSwitch<std::optional<tle::FlagCXCoopKind>>(kind)
+          .Case("thread", tle::FlagCXCoopKind::THREAD)
+          .Case("warp", tle::FlagCXCoopKind::WARP)
+          .Case("block", tle::FlagCXCoopKind::BLOCK)
+          .Default(std::nullopt);
+    };
+
+    auto teamKind = getTeamKind(spaceAttr.getValue());
+    auto coopKind = getCoopKind(kindAttr.getValue());
+    if (!teamKind)
+      return rewriter.notifyMatchFailure(op, "invalid FlagCX team space");
+    if (!coopKind)
+      return rewriter.notifyMatchFailure(op, "invalid coop_kind");
+
+    if (auto src = adaptor.getSrc())
+      srcElems = unpackLLElements(loc, src, rewriter);
+
+    auto comm = getDistDevicePtr(op, srcElems);
+    auto teamKindAttr =
+        tle::FlagCXTeamKindAttr::get(rewriter.getContext(), *teamKind);
+    auto coopKindAttr =
+        tle::FlagCXCoopKindAttr::get(rewriter.getContext(), *coopKind);
+    auto barrierTypeAttr = op.getBarrierTypeAttr();
+#ifdef FLAGCX_ENABLED
+    rewriter.replaceOpWithNewOp<tle::FlagCxBarrierOp>(
+        op, comm, barrierTypeAttr, teamKindAttr, coopKindAttr, indexAttr,
+        contextIdAttr, orderAttr, memoryScopeAttr);
+    return success();
+#else
+    return rewriter.notifyMatchFailure(
+        op, "FlagCX support is required for communicator barriers");
+#endif
+  }
+  LogicalResult
+  matchAndRewrite(tle::DistributedBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op->getAttrOfType<StringAttr>(kSpaceAttr))
+      return lowerFlagCxSpaceBarrier(op, adaptor, rewriter);
+
+    if (auto kindAttr = op->getAttrOfType<StringAttr>(kGroupKindAttr)) {
+      if (kindAttr.getValue() == "grid")
+        return lowerGridBarrier(op, rewriter);
+      if (kindAttr.getValue() == "submesh")
+        return lowerSubmeshBarrier(op, rewriter);
+      return lowerClusterBarrier(op, rewriter);
+    }
+    return lowerClusterBarrier(op, rewriter);
+  }
+};
+
+} // namespace
+
+void tle::populateDistributedBarrierOpToLLVMPatterns(
+    LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
+    PatternBenefit benefit) {
+  patterns.add<DistributedBarrierOpConversion>(typeConverter, benefit);
+}

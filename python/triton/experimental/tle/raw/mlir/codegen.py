@@ -1,0 +1,189 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+import ast
+from typing import Any, Dict, Final, List, Optional, Sequence
+from typing_extensions import override
+
+from mlir import ir
+from mlir.dialects import func
+
+from .utils import ExternalCall
+from ..utils import UnknownSymbolError
+
+
+class MLIRCodeGenerator(ast.NodeVisitor):
+
+    def __init__(
+        self,
+        absfilename: str,
+        lscope: Dict[str, Any] = None,
+        gscope: Dict[str, Any] = {},
+        context: Optional[ir.Context] = None,
+        func_name_override: Optional[str] = None,
+        *args,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.absfilename: Final[str] = absfilename
+        self.lscope: Final[Dict[str, Any]] = {**lscope}
+        self.gscope: Final[Dict[str, Any]] = {**gscope}
+        self.decls: Final[Dict[str, func.FuncOp]] = {}
+        self.constants: Final[Dict[str, Any]] = {}
+        self.context: Final[ir.Context] = ir.Context() if context is None else context
+        self.context.allow_unregistered_dialects = True
+        self.module: Optional[ir.Module] = None
+        self.func_name_override: Final[Optional[str]] = func_name_override
+
+    def call_function(self, fn, args: Sequence[Any], kwargs: Dict[str, Any]) -> Any:
+        return fn(*args, **kwargs)
+
+    def lookup(self, name: str) -> Optional[Any]:
+        for scope in self.lscope, self.gscope:
+            if ret := scope.get(name):
+                return ret
+        return None
+
+    @override
+    def visit_Assign(self, node: ast.Assign) -> Any:
+        [target] = node.targets
+        ret = self.visit(node.value)
+        if isinstance(target, ast.Name):
+            self.lscope[target.id] = ret
+        elif isinstance(target, ast.Tuple) or isinstance(target, ast.List):
+            for elt, val in zip(target.elts, ret):
+                self.lscope[elt.id] = val
+        return ret
+
+    @override
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        ret: Any = self.visit(node.value)
+        if ret is not None:
+            ret = getattr(ret, node.attr)
+        return ret
+
+    @override
+    def visit_Call(self, node: ast.Call) -> Any:
+        with ir.Location.file(self.absfilename, node.lineno, node.col_offset):
+            fn = self.visit(node.func)
+            args: List[ir.Value] = [self.visit(arg) for arg in node.args]
+            kwargs: Dict[str, ir.Value] = {keyword.arg: self.visit(keyword.value) for keyword in node.keywords}
+            ret = self.call_function(fn, args, kwargs)
+            if isinstance(ret, ExternalCall):
+                ret = ret.call(self)
+            return ret
+
+    @override
+    def visit_Constant(self, node: ast.Constant) -> Any:
+        return node.value
+
+    @override
+    def visit_For(self, node: ast.For) -> None:
+        with ir.Location.file(self.absfilename, node.lineno, node.col_offset):
+            for iters in self.visit(node.iter):
+                if isinstance(node.target, ast.Name):
+                    self.lscope[node.target.id] = iters
+                elif isinstance(node.target, ast.Tuple):
+                    assert len(node.target.elts) == len(iters)
+                    for elt, iter in zip(node.target.elts, iters):
+                        self.lscope[elt.id] = iter
+                else:
+                    raise NotImplementedError(f"unsupported for target type: {type(node.target)}")
+                for stmt in node.body:
+                    self.visit(stmt)
+
+    @override
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> func.FuncOp:
+        with self.context, ir.Location.file(self.absfilename, node.lineno, node.col_offset):
+            operand_tys: List[ir.Type] = []
+            output_tys: List[ir.Type] = []
+            for idx, arg in enumerate(node.args.args):
+                ty: ir.Type = ir.Type.parse(arg.annotation.slice.slice.value)
+                operand_tys += [ty]
+            if node.returns is not None:
+                ret_ann = node.returns
+                if isinstance(ret_ann, ast.Subscript):
+                    output_tys += [ir.Type.parse(ret_ann.slice.value)]
+                elif isinstance(ret_ann, ast.Tuple):
+                    output_tys += [ir.Type.parse(elt.slice.value) for elt in ret_ann.elts]
+            fnty: ir.FunctionType = ir.FunctionType.get(operand_tys, output_tys)
+            func_name = self.func_name_override or node.name
+            fn: func.FuncOp = func.FuncOp(func_name, fnty, visibility="public")
+            block: ir.Block = fn.add_entry_block()
+            for k, arg in zip(map(lambda arg: arg.arg, node.args.args), block.arguments):
+                self.lscope[k] = arg
+            self._return_values = None
+            with ir.InsertionPoint(block):
+                for stmt in node.body:
+                    self.visit(stmt)
+                func.return_(self._return_values or [])
+            return fn
+
+    @override
+    def visit_Return(self, node: ast.Return) -> None:
+        ret_val = node.value
+        if ret_val is None:
+            self._return_values = []
+        elif isinstance(ret_val, ast.Tuple):
+            self._return_values = [self.visit(elt) for elt in ret_val.elts]
+        else:
+            self._return_values = [self.visit(ret_val)]
+
+    @override
+    def visit_List(self, node: ast.List) -> List[Any]:
+        ret = [self.visit(elt) for elt in node.elts]
+        return ret
+
+    @override
+    def visit_Module(self, node: ast.Module) -> ir.Module:
+        [fn] = node.body
+        with self.context, ir.Location.file(self.absfilename, 0, 0):
+            self.module = ir.Module.create()
+            with ir.InsertionPoint(self.module.body):
+                self.visit(fn)
+            return self.module
+
+    @override
+    def visit_Name(self, node: ast.Name) -> Any:
+        if ret := self.lookup(node.id):
+            return ret
+        else:
+            raise UnknownSymbolError(node.id)
+
+    @override
+    def visit_Subscript(self, node: ast.Subscript) -> Any:
+        lhs = self.visit(node.value)
+        slices = self.visit(node.slice)
+        return lhs[slices]
+
+    @override
+    def visit_UnaryOp(self, node) -> Any:
+        operand = self.visit(node.operand)
+        if isinstance(node.op, ast.USub):
+            return -operand
+        else:
+            raise NotImplementedError(f"unsupported unary op: {type(node.op)}")
+
+    @override
+    def visit_With(self, node: ast.With) -> None:
+        [item] = node.items
+        with self.visit(item.context_expr):
+            for stmt in node.body:
+                self.visit(stmt)

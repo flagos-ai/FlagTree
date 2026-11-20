@@ -16,3 +16,5 @@ add_triton_library(TritonGPUIR
   TritonIR
   TritonTools
 )
+
+add_dependencies(TritonGPUIR TritonGPUCGAAttrIncGen)

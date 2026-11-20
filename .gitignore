@@ -47,6 +47,9 @@ python/triton/instrumentation
 # MLIR Plugin
 python/triton/plugins
 
+# TLE Ascend custom-op bitcode generated from custom_ops/*.cpp
+python/triton/experimental/tle/language/dsa/ascend/custom_ops/custom_ops*.bc
+
 # Python caches
 __pycache__/
 *.py[cod]
@@ -97,3 +100,11 @@ docs/sg_execution_times.rst
 
 # macOS
 .DS_Store
+
+# flagtree nvidia / tle
+third_party/nvidia/backend/flagcx*
+third_party/nvidia/backend/lib/libflagcx*
+third_party/tle/third_party
+
+# Agent
+AGENTS.md

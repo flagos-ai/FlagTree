@@ -1,0 +1,1462 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+# flagtree tle
+
+from __future__ import annotations
+
+import math
+from math import prod
+
+import triton.language.core as tl
+from typing import Optional, List, Tuple, TYPE_CHECKING
+from abc import abstractmethod
+from triton._C.libtriton import ir
+from triton._utils import TRITON_MAX_TENSOR_NUMEL, is_power_of_two
+from triton.language.semantic import TritonSemantic
+
+if TYPE_CHECKING:
+    from .. import TLESemantic
+
+
+class scope():
+    """Storage type enum, defines storage location for TLE buffers"""
+    NVIDIA = ['share_memory', 'tensor_memory']
+
+    def __init__(self, name: str):
+        self.name = name
+        assert name in scope.NVIDIA, name
+
+    def __repr__(self):
+        return self.name
+
+    def to_ir(self, builder: ir.builder) -> None:
+        raise NotImplementedError(f"{self.__class__.__name__}.to_ir() must be overridden in subclasses")
+
+
+smem = scope('share_memory')
+tmem = scope('tensor_memory')
+
+PENDING = "pending"
+READY = "ready"
+
+
+def _storage_to_memdesc_space(storage: scope) -> str:
+    if storage is smem:
+        return "smem"
+    if storage is tmem:
+        return "tmem"
+    raise ValueError(f"Unsupported TLE buffered_tensor storage: {storage}")
+
+
+def _storage_to_tile_space(storage: scope) -> str:
+    if storage is smem:
+        return "shared"
+    if storage is tmem:
+        return "local"
+    raise ValueError(f"Unsupported TLE CommonIR storage: {storage}")
+
+
+class layout:
+
+    def __init__(self):
+        pass
+
+    def __repr__(self):
+        return self.__class__.__name__
+
+    def to_ir(self, builder: ir.builder) -> None:
+        raise NotImplementedError(f"{self.__class__.__name__}.to_ir() must be overridden in subclasses")
+
+
+class distributed_encoding(layout):
+    """Base class for explicit TritonGPU distributed tensor encodings."""
+
+    @property
+    def rank(self):
+        raise NotImplementedError(f"{self.__class__.__name__}.rank must be overridden in subclasses")
+
+
+class BlockEncoding(distributed_encoding):
+    """Explicit #ttg.blocked encoding for TLE tensor values."""
+
+    def __init__(self, size_per_thread, threads_per_warp, warps_per_cta, order, cga_layout=None):
+        super().__init__()
+        self.size_per_thread = [int(tl._unwrap_if_constexpr(x)) for x in size_per_thread]
+        self.threads_per_warp = [int(tl._unwrap_if_constexpr(x)) for x in threads_per_warp]
+        self.warps_per_cta = [int(tl._unwrap_if_constexpr(x)) for x in warps_per_cta]
+        self.order = [int(tl._unwrap_if_constexpr(x)) for x in order]
+        self.cga_layout = [] if cga_layout is None else [[int(tl._unwrap_if_constexpr(x))
+                                                          for x in basis]
+                                                         for basis in cga_layout]
+
+        rank = len(self.order)
+        if not (len(self.size_per_thread) == len(self.threads_per_warp) == len(self.warps_per_cta) == rank):
+            raise ValueError("BlockEncoding fields must have the same rank")
+        if sorted(self.order) != list(range(rank)):
+            raise ValueError(f"BlockEncoding order must be a permutation of 0..{rank - 1}")
+        for basis in self.cga_layout:
+            if len(basis) != rank:
+                raise ValueError("BlockEncoding cga_layout basis rank mismatch")
+
+    @property
+    def rank(self):
+        return len(self.order)
+
+    def to_ir(self, builder: ir.builder) -> None:
+        return builder.get_blocked_encoding(
+            self.size_per_thread,
+            self.threads_per_warp,
+            self.warps_per_cta,
+            self.order,
+            self.cga_layout,
+        )
+
+    def __repr__(self):
+        return (f"BlockEncoding(size_per_thread={self.size_per_thread}, "
+                f"threads_per_warp={self.threads_per_warp}, warps_per_cta={self.warps_per_cta}, "
+                f"order={self.order}, cga_layout={self.cga_layout})")
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.size_per_thread == other.size_per_thread
+                and self.threads_per_warp == other.threads_per_warp and self.warps_per_cta == other.warps_per_cta
+                and self.order == other.order and self.cga_layout == other.cga_layout)
+
+    def __hash__(self):
+        return hash((tuple(self.size_per_thread), tuple(self.threads_per_warp), tuple(self.warps_per_cta),
+                     tuple(self.order), tuple(tuple(basis) for basis in self.cga_layout)))
+
+
+class MmaEncoding(distributed_encoding):
+    """Explicit #ttg.nvidia_mma encoding for a dot result or accumulator."""
+
+    def __init__(self, version, warps_per_cta, instr_shape, cga_layout=None):
+        super().__init__()
+        self.version = [int(tl._unwrap_if_constexpr(x)) for x in version]
+        self.warps_per_cta = [int(tl._unwrap_if_constexpr(x)) for x in warps_per_cta]
+        self.instr_shape = [int(tl._unwrap_if_constexpr(x)) for x in instr_shape]
+        self.cga_layout = [] if cga_layout is None else [[int(tl._unwrap_if_constexpr(x))
+                                                          for x in basis]
+                                                         for basis in cga_layout]
+
+        rank = len(self.warps_per_cta)
+        if len(self.version) != 2:
+            raise ValueError("MmaEncoding version must contain major and minor")
+        if len(self.instr_shape) != rank:
+            raise ValueError("MmaEncoding instr_shape rank must match warps_per_cta")
+        for basis in self.cga_layout:
+            if len(basis) != rank:
+                raise ValueError("MmaEncoding cga_layout basis rank mismatch")
+
+    @property
+    def rank(self):
+        return len(self.warps_per_cta)
+
+    def to_ir(self, builder: ir.builder) -> None:
+        return builder.get_mma_layout(
+            self.version,
+            self.warps_per_cta,
+            self.cga_layout,
+            self.instr_shape,
+        )
+
+    def __repr__(self):
+        return (f"MmaEncoding(version={self.version}, warps_per_cta={self.warps_per_cta}, "
+                f"instr_shape={self.instr_shape}, cga_layout={self.cga_layout})")
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.version == other.version
+                and self.warps_per_cta == other.warps_per_cta and self.instr_shape == other.instr_shape
+                and self.cga_layout == other.cga_layout)
+
+    def __hash__(self):
+        return hash((tuple(self.version), tuple(self.warps_per_cta), tuple(self.instr_shape),
+                     tuple(tuple(basis) for basis in self.cga_layout)))
+
+
+class DotOperandEncoding(distributed_encoding):
+    """Explicit #ttg.dot_op encoding tied to a distributed parent layout."""
+
+    def __init__(self, operand_index, parent, k_width):
+        super().__init__()
+        self.operand_index = int(tl._unwrap_if_constexpr(operand_index))
+        self.parent = tl._unwrap_if_constexpr(parent)
+        self.k_width = int(tl._unwrap_if_constexpr(k_width))
+        if self.operand_index not in (0, 1):
+            raise ValueError("DotOperandEncoding operand_index must be 0 or 1")
+        if not isinstance(self.parent, distributed_encoding):
+            raise ValueError(f"DotOperandEncoding parent must be a distributed_encoding, got {type(self.parent)}")
+        if self.k_width <= 0:
+            raise ValueError("DotOperandEncoding k_width must be positive")
+
+    @property
+    def rank(self):
+        return self.parent.rank
+
+    def to_ir(self, builder: ir.builder) -> None:
+        return builder.get_dot_operand_layout(self.operand_index, self.parent.to_ir(builder), self.k_width)
+
+    def __repr__(self):
+        return (f"DotOperandEncoding(operand_index={self.operand_index}, parent={self.parent!r}, "
+                f"k_width={self.k_width})")
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.operand_index == other.operand_index and self.parent == other.parent
+                and self.k_width == other.k_width)
+
+    def __hash__(self):
+        return hash((self.operand_index, self.parent, self.k_width))
+
+
+class SlicedEncoding(distributed_encoding):
+    """Slice of a parent distributed tensor encoding."""
+
+    def __init__(self, dim, parent):
+        super().__init__()
+        self.dim = int(tl._unwrap_if_constexpr(dim))
+        self.parent = tl._unwrap_if_constexpr(parent)
+        if not isinstance(self.parent, distributed_encoding):
+            raise ValueError(f"SlicedEncoding parent must be a distributed_encoding, got {type(self.parent)}")
+        if self.dim < 0 or self.dim >= self.parent.rank:
+            raise ValueError(f"SlicedEncoding dim {self.dim} out of range for rank {self.parent.rank}")
+
+    @property
+    def rank(self):
+        return self.parent.rank - 1
+
+    def to_ir(self, builder: ir.builder) -> None:
+        return builder.get_sliced_encoding(self.dim, self.parent.to_ir(builder))
+
+    def __repr__(self):
+        return f"SlicedEncoding(dim={self.dim}, parent={self.parent!r})"
+
+    def __eq__(self, other) -> bool:
+        return type(self) is type(other) and self.dim == other.dim and self.parent == other.parent
+
+    def __hash__(self):
+        return hash((self.dim, self.parent))
+
+
+class shared_layout(layout):
+
+    def __init__(self):
+        super().__init__()
+        pass
+
+    """
+    Create a new layout object that is a permutation of the current layout.
+    """
+
+    @abstractmethod
+    def make_permute(self, dims):
+        raise NotImplementedError(f"{self.__class__.__name__}.make_permute() must be overridden in subclasses")
+
+    def to_ir(self, builder: ir.builder) -> None:
+        raise NotImplementedError(f"{self.__class__.__name__}.to_ir() must be overridden in subclasses")
+
+
+class _shared_linear_layout(shared_layout):
+    """Internal wrapper for an inferred SharedLinearEncoding."""
+
+    def __init__(self, offset_bases, block_bases, alignment, rank):
+        super().__init__()
+        self.offset_bases = [list(basis) for basis in offset_bases]
+        self.block_bases = [list(basis) for basis in block_bases]
+        self.alignment = int(alignment)
+        self.rank = int(rank)
+
+        if self.rank <= 0:
+            raise ValueError("shared linear layout requires a positive rank")
+        if any(len(basis) != self.rank for basis in (*self.offset_bases, *self.block_bases)):
+            raise ValueError("shared linear layout bases must have a consistent rank")
+        if self.alignment <= 0 or self.alignment & (self.alignment - 1):
+            raise ValueError("shared linear layout alignment must be a positive power of two")
+
+    def make_permute(self, dims):
+        return _shared_linear_layout(
+            [[basis[dim] for dim in dims] for basis in self.offset_bases],
+            [[basis[dim] for dim in dims] for basis in self.block_bases],
+            self.alignment,
+            self.rank,
+        )
+
+    def to_ir(self, builder: ir.builder) -> None:
+        return builder.make_shared_linear_encoding_attr(
+            self.offset_bases,
+            self.block_bases,
+            self.alignment,
+            self.rank,
+        )
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.offset_bases == other.offset_bases
+                and self.block_bases == other.block_bases and self.alignment == other.alignment
+                and self.rank == other.rank)
+
+
+class swizzled_shared_layout(shared_layout):
+
+    def __init__(self, vectorSize, perPhase, maxPhase, order, numCTAs, numCTAsPerCGA, numCTASplit, numCTAOrder):
+        super().__init__()
+        self.vectorSize = vectorSize
+        self.perPhase = perPhase
+        self.maxPhase = maxPhase
+        self.order = order
+        self.numCTAs = numCTAs
+        self.numCTAsPerCGA = numCTAsPerCGA
+        self.numCTASplit = numCTASplit
+        self.numCTAOrder = numCTAOrder
+
+    def _structural_key(self):
+        return (self.vectorSize, self.perPhase, self.maxPhase, tuple(self.order), tuple(self.numCTAs),
+                tuple(self.numCTAsPerCGA), tuple(self.numCTASplit), tuple(self.numCTAOrder))
+
+    def __eq__(self, other):
+        return type(self) is type(other) and self._structural_key() == other._structural_key()
+
+    def __hash__(self):
+        return hash(self._structural_key())
+
+    """
+    Make a default non-swizzled shared layout encoding.
+    """
+
+    @classmethod
+    def make_default(cls, rank):
+        return cls(
+            vectorSize=1,
+            perPhase=1,
+            maxPhase=1,
+            order=list(reversed(range(rank))),  # e.g, [1, 0] as a row-major order
+            numCTAs=[1] * rank,
+            numCTAsPerCGA=[1] * rank,
+            numCTASplit=[1] * rank,
+            numCTAOrder=list(reversed(range(rank))),
+        )
+
+    """
+    Create a new layout that is a permutation of the given layout.
+    """
+
+    def make_permute(self, dims):
+        permuted_order = tuple(self.order[d] for d in dims)
+        return type(self)(self.vectorSize, self.perPhase, self.maxPhase, permuted_order, self.numCTAs,
+                          self.numCTAsPerCGA, self.numCTASplit, self.numCTAOrder)
+
+    def to_ir(self, builder: ir.builder) -> None:
+        return builder.make_swizzled_shared_encoding_attr(
+            self.vectorSize,
+            self.perPhase,
+            self.maxPhase,
+            self.order,
+            self.numCTAsPerCGA,
+            self.numCTASplit,
+            self.numCTAOrder,
+        )
+
+
+class tensor_memory_layout(shared_layout):
+
+    def __init__(self, blockM, blockN, colStride, CTASplitM, CTASplitN, twoCTAs=False):
+        super().__init__()
+        self.blockM = blockM
+        self.blockN = blockN
+        self.colStride = colStride
+        self.CTASplitM = CTASplitM
+        self.CTASplitN = CTASplitN
+        self.twoCTAs = twoCTAs
+
+    """
+    Make a default tensor memory layout encoding.
+    """
+
+    @classmethod
+    def make_default(cls, shape):
+        return cls(
+            blockM=shape[0],
+            blockN=shape[1],
+            colStride=2,
+            CTASplitM=1,
+            CTASplitN=1,
+            twoCTAs=False,
+        )
+
+    def to_ir(self, builder: ir.builder) -> None:
+        return builder.make_tensor_memory_encoding_attr(
+            self.blockM,
+            self.blockN,
+            self.colStride,
+            self.CTASplitM,
+            self.CTASplitN,
+            self.twoCTAs,
+        )
+
+
+class nv_mma_shared_layout(shared_layout):
+
+    def __init__(self, shape, order, elemType, numCTAsPerCGA, numCTASplit, numCTAOrder, fp4Padded, swizzled):
+        super().__init__()
+        self.shape = shape
+        self.order = order
+        self.elemType = elemType
+        self.numCTAsPerCGA = numCTAsPerCGA
+        self.numCTASplit = numCTASplit
+        self.numCTAOrder = numCTAOrder
+        self.fp4Padded = fp4Padded
+        self.swizzled = swizzled
+
+    """
+    Make a default NVMMA shared layout encoding.
+    """
+
+    @classmethod
+    def make_default(cls, shape, elemType):
+        rank = len(shape)
+        return cls(
+            shape=shape,
+            order=list(reversed(range(rank))),  # e.g, [1, 0] as a row-major order
+            elemType=elemType,
+            numCTAsPerCGA=[1] * rank,
+            numCTASplit=[1] * rank,
+            numCTAOrder=list(reversed(range(rank))),
+            fp4Padded=False,
+            swizzled=True,
+        )
+
+    """
+    Create a new layout that is a permutation of the given layout.
+    """
+
+    def make_permute(self, dims):
+        permuted_shape = [self.shape[d] for d in dims]
+        permuted_order = [self.order[d] for d in dims]
+        permuted_num_ctas_per_cga = [self.numCTAsPerCGA[d] for d in dims]
+        permuted_num_cta_split = [self.numCTASplit[d] for d in dims]
+        permuted_num_cta_order = [self.numCTAOrder[d] for d in dims]
+        return nv_mma_shared_layout(
+            permuted_shape,
+            permuted_order,
+            self.elemType,
+            permuted_num_ctas_per_cga,
+            permuted_num_cta_split,
+            permuted_num_cta_order,
+            self.fp4Padded,
+            self.swizzled,
+        )
+
+    def to_ir(self, builder: ir.builder) -> None:
+        return builder.make_nv_mma_shared_encoding_attr(
+            [int(x) for x in self.shape],
+            self.order,
+            self.elemType.to_ir(builder),
+            self.numCTAsPerCGA,
+            self.numCTASplit,
+            self.numCTAOrder,
+            self.fp4Padded,
+            self.swizzled,
+        )
+
+    def __str__(self) -> str:
+        return f"nv_mma_shared_layout<{self.shape}, {self.order}, {self.elemType}, {self.numCTAsPerCGA}, {self.numCTASplit}, {self.numCTAOrder}, {self.fp4Padded}, {self.swizzled}>"
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.shape == other.shape and self.order == other.order
+                and self.elemType == other.elemType and self.numCTAsPerCGA == other.numCTAsPerCGA
+                and self.numCTASplit == other.numCTASplit and self.numCTAOrder == other.numCTAOrder
+                and self.fp4Padded == other.fp4Padded and self.swizzled == other.swizzled)
+
+
+def _drop_leading_dim_order(order):
+    return [dim - 1 for dim in order if dim != 0]
+
+
+def _drop_leading_dim_values(values):
+    return list(values[1:])
+
+
+def _make_slot_layout(src_layout: shared_layout, slot_shape: List[int]) -> shared_layout:
+    if isinstance(src_layout, swizzled_shared_layout):
+        return type(src_layout)(
+            src_layout.vectorSize,
+            src_layout.perPhase,
+            src_layout.maxPhase,
+            _drop_leading_dim_order(src_layout.order),
+            _drop_leading_dim_values(src_layout.numCTAs),
+            _drop_leading_dim_values(src_layout.numCTAsPerCGA),
+            _drop_leading_dim_values(src_layout.numCTASplit),
+            _drop_leading_dim_order(src_layout.numCTAOrder),
+        )
+    if isinstance(src_layout, nv_mma_shared_layout):
+        return nv_mma_shared_layout(
+            list(slot_shape),
+            _drop_leading_dim_order(src_layout.order),
+            src_layout.elemType,
+            _drop_leading_dim_values(src_layout.numCTAsPerCGA),
+            _drop_leading_dim_values(src_layout.numCTASplit),
+            _drop_leading_dim_order(src_layout.numCTAOrder),
+            src_layout.fp4Padded,
+            src_layout.swizzled,
+        )
+    raise ValueError(f"buffered_tensor.slot does not support layout {type(src_layout).__name__}")
+
+
+def _layout_from_reshaped_memdesc(handle, shape, element_ty, builder) -> shared_layout:
+    """Mirror the encoding already inferred by MemDescReshapeOp."""
+    inferred = builder.get_tle_shared_layout_from_memdesc(handle)
+    kind = inferred["kind"]
+    if kind == "shared_linear":
+        return _shared_linear_layout(
+            inferred["offset_bases"],
+            inferred["block_bases"],
+            inferred["alignment"],
+            inferred["rank"],
+        )
+    if kind == "nv_mma":
+        rank = len(shape)
+        transposed = inferred["transposed"]
+        return nv_mma_shared_layout(
+            list(shape),
+            list(range(rank)) if transposed else list(reversed(range(rank))),
+            element_ty,
+            list(inferred["ctas_per_cga"]),
+            list(inferred["cta_split_num"]),
+            list(inferred["cta_order"]),
+            inferred["fp4_padded"],
+            inferred["swizzled"],
+        )
+    raise ValueError(f"unsupported inferred shared-memory reshape encoding: {kind}")
+
+
+class _logical_tensor_descriptor_type(tl.tensor_descriptor_type):
+    """Logical block metadata with the ordinary descriptor IR representation."""
+
+    def __init__(self, carrier_type, logical_shape):
+        super().__init__(carrier_type.block_type, carrier_type.shape_type, carrier_type.strides_type)
+        self.logical_shape = tuple(logical_shape)
+
+    def __eq__(self, other):
+        return super().__eq__(other) and self.logical_shape == other.logical_shape
+
+    def mangle(self):
+        return super().mangle() + "_TLE" + "_".join(map(str, self.logical_shape))
+
+    def _unflatten_ir(self, handles, cursor):
+        descriptor, cursor = super()._unflatten_ir(handles, cursor)
+        return _logical_tensor_descriptor(descriptor, self.logical_shape), cursor
+
+
+class _logical_tensor_descriptor(tl.tensor_descriptor):
+    """Python descriptor exposing a logical block over a power-of-two carrier."""
+
+    def __init__(self, descriptor, logical_shape):
+        super().__init__(descriptor.handle, descriptor.shape.values, descriptor.strides.values, descriptor.block_type)
+        self.type = _logical_tensor_descriptor_type(self.type, logical_shape)
+
+    @property
+    def block_shape(self):
+        return self.type.logical_shape
+
+
+def _make_subslice_layout(src_layout: shared_layout, subslice_shape: List[int]) -> shared_layout:
+    if isinstance(src_layout, swizzled_shared_layout):
+        return swizzled_shared_layout(
+            src_layout.vectorSize,
+            src_layout.perPhase,
+            src_layout.maxPhase,
+            list(src_layout.order),
+            list(src_layout.numCTAs),
+            list(src_layout.numCTAsPerCGA),
+            list(src_layout.numCTASplit),
+            list(src_layout.numCTAOrder),
+        )
+    if isinstance(src_layout, nv_mma_shared_layout):
+        return nv_mma_shared_layout(
+            list(subslice_shape),
+            list(src_layout.order),
+            src_layout.elemType,
+            list(src_layout.numCTAsPerCGA),
+            list(src_layout.numCTASplit),
+            list(src_layout.numCTAOrder),
+            src_layout.fp4Padded,
+            src_layout.swizzled,
+        )
+    raise ValueError(f"buffered_tensor.subslice does not support layout {type(src_layout).__name__}")
+
+
+class buffered_tensor(tl.base_value):
+    """
+    A symbolic type representing a tensor allocated in a manually managed buffer
+    such as shared memory (SMEM).
+
+    This type is to model data that is not stored in global memory or registers
+    but instead resides in hardware-close memory spaces with specialized
+    allocation, access, or swizzling patterns.
+
+    Unlike regular `tl.tensor`, which models values computed by operations,
+    `buffered_tensor` reflects a memory-backed buffer that may be explicitly
+    allocated and reused across program regions. It is primarily used with
+    low-level intrinsics such as `tlx.local_alloc()`.
+
+    Examples:
+        a = tlx.local_alloc((BLOCK_M, BLOCK_K), tl.float16, num=4)
+
+    Attributes:
+        handle: The backing IR value representing the buffer allocation.
+    """
+
+    def __init__(self, handle, element_ty: tl.dtype, shape: List, storage: scope,
+                 layout: Optional[shared_layout] = None, semantic: TritonSemantic = None, alloc_shape: List = None):
+        """Not called by user code."""
+        super().__init__()
+        # IR handle
+        self.handle = handle
+        # Block shape
+        self.shape = shape
+        self.type = buffered_tensor_type(element_ty, shape, storage, layout, semantic, alloc_shape=alloc_shape)
+        # Following the practice in pytorch, dtype is scalar type
+        self.dtype = element_ty
+
+    def _flatten_ir(self, handles) -> None:
+        handles.append(self.handle)
+
+    @tl.builtin
+    def load(self, writable: bool = True, target_shape=None, _semantic=None) -> tl.tensor:
+        """Load the full buffer into a tensor value, on either compilation path."""
+        from . import semantic as tle_semantic
+        target_shape = tl._unwrap_if_constexpr(target_shape)
+        shape = list(self.shape if target_shape is None else target_shape)
+        writable = tl._unwrap_if_constexpr(writable)
+        return tle_semantic.to_tensor(self, bool(writable), tl.block_type(self.dtype, shape), _semantic)
+
+    @tl.builtin
+    def store(self, value: tl.tensor, _semantic=None) -> None:
+        """Store a tensor value into the full buffer."""
+        from . import semantic as tle_semantic
+        tle_semantic.store_tensor(value, self, _semantic)
+
+    @tl.builtin
+    def slot(self, stage, _semantic: TLESemantic | None = None):
+        if len(self.shape) < 2:
+            raise ValueError("buffered_tensor.slot requires a rank >= 2 buffer")
+        if self.type.storage is not smem:
+            raise ValueError(f"buffered_tensor.slot currently supports only smem storage, got {self.type.storage}")
+
+        stage_tensor = _semantic.to_tensor(stage)
+        stage_ty = stage_tensor.type
+        if getattr(stage_ty, "is_block", lambda: False)():
+            raise ValueError("buffered_tensor.slot stage must be a scalar int32 value")
+        if not getattr(stage_ty, "is_int", lambda: False)():
+            raise ValueError(f"buffered_tensor.slot stage must be integer, got {stage_ty}")
+        if stage_ty != tl.int32:
+            raise ValueError(f"buffered_tensor.slot stage must be int32, got {stage_ty}")
+
+        # A slot is an ordinary carrier view. Logical extents are seeded on
+        # local_alloc and propagated through memdesc_index in TTIR.
+        slot_shape = list(self.shape[1:])
+        is_subview = self.type.alloc_shape != list(self.shape)
+        # A slot of a subview must retain the complete allocation shape.  The
+        # extra leading dimension records the ring-buffer allocation while
+        # the trailing dimensions provide the physical stride of one stage.
+        # Root allocations keep the legacy compact slot type.
+        slot_alloc_shape = list(self.type.alloc_shape if is_subview else slot_shape)
+        physical_slot_shape = list(self.type.alloc_shape[-len(slot_shape):])
+        slot_layout = _make_slot_layout(self.type.layout, physical_slot_shape)
+        slot_ty = buffered_tensor_type(self.dtype, slot_shape, self.type.storage, slot_layout, _semantic,
+                                       alloc_shape=slot_alloc_shape)
+        offsets = [stage_tensor]
+        for _ in range(len(self.shape) - 1):
+            offsets.append(_semantic.to_tensor(0))
+        from . import semantic as tle_semantic
+        slot_handle = tle_semantic.subview(
+            self,
+            offsets,
+            slot_shape,
+            [1] * len(slot_shape),
+            slot_layout,
+            _semantic,
+            alloc_shape=slot_alloc_shape,
+        )
+        return buffered_tensor(slot_handle, self.dtype, slot_shape, self.type.storage, slot_layout, _semantic,
+                               alloc_shape=slot_ty.alloc_shape)
+
+    @tl.builtin
+    def reshape(self, shape, _semantic=None):
+        """Return an aliasing shared-memory view with a different static shape."""
+        shape = [int(tl._unwrap_if_constexpr(dim)) for dim in tl._unwrap_if_constexpr(shape)]
+        if not shape or any(dim <= 0 for dim in shape):
+            raise ValueError(f"buffered_tensor.reshape dimensions must be positive, got {shape}")
+        if math.prod(shape) != math.prod(self.shape):
+            raise ValueError(f"buffered_tensor.reshape total elements mismatch: {self.shape} -> {shape}")
+        handle = _semantic.builder.create_memdesc_reshape(self.handle, shape)
+        reshaped_layout = _layout_from_reshaped_memdesc(handle, shape, self.dtype, _semantic.builder)
+        alloc_shape = self.type.alloc_shape
+        prefix_len = len(alloc_shape) - len(self.shape)
+        reshaped_alloc_shape = alloc_shape[:prefix_len] + shape
+        return buffered_tensor(
+            handle,
+            self.dtype,
+            shape,
+            self.type.storage,
+            reshaped_layout,
+            _semantic,
+            alloc_shape=reshaped_alloc_shape,
+        )
+
+    @tl.builtin
+    def subslice(self, start, length, dim=-1, _semantic: TLESemantic | None = None):
+        """Create a contiguous shared-memory subview along ``dim``.
+
+        Unlike :meth:`slot`, ``subslice`` preserves the source rank and shared
+        layout. ``start``, ``length``, and ``dim`` must be compile-time
+        integers.
+        """
+        if self.type.storage is not smem:
+            raise ValueError(f"buffered_tensor.subslice supports only smem storage, got {self.type.storage}")
+
+        start = _unwrap_pipe_constexpr(start)
+        length = _unwrap_pipe_constexpr(length)
+        if isinstance(start, (tuple, list)) and isinstance(length, (tuple, list)):
+            offsets, sub_shape = list(start), list(length)
+            if len(offsets) != len(self.shape) or len(sub_shape) != len(self.shape):
+                raise ValueError("buffered_tensor.subslice offsets and shape must match the buffer rank")
+            for offset, size, extent in zip(offsets, sub_shape, self.shape):
+                if isinstance(offset, bool) or not isinstance(offset, int):
+                    raise ValueError("buffered_tensor.subslice offsets must be compile-time integers")
+                if isinstance(size, bool) or not isinstance(size, int):
+                    raise ValueError("buffered_tensor.subslice shape must be compile-time integers")
+                if offset < 0 or size <= 0 or offset + size > extent:
+                    raise ValueError("buffered_tensor.subslice is outside extent")
+                if size != extent and (size & (size - 1) or offset % size):
+                    raise ValueError("buffered_tensor.subslice requires an aligned power-of-two tile")
+            from . import semantic as tle_semantic
+            handle = tle_semantic.subview(self, offsets, sub_shape, [1] * len(sub_shape), self.type.layout, _semantic,
+                                          alloc_shape=self.type.alloc_shape)
+            return buffered_tensor(handle, self.dtype, sub_shape, self.type.storage, self.type.layout, _semantic,
+                                   alloc_shape=self.type.alloc_shape)
+        dim = tl._unwrap_if_constexpr(dim)
+        for name, value in (("start", start), ("length", length), ("dim", dim)):
+            if not isinstance(value, int):
+                raise ValueError(f"buffered_tensor.subslice {name} must be a compile-time int")
+
+        rank = len(self.shape)
+        if dim < 0:
+            dim += rank
+        if dim < 0 or dim >= rank:
+            raise ValueError(f"buffered_tensor.subslice dim {dim} is out of range for rank {rank}")
+        if start < 0 or length <= 0 or start + length > self.shape[dim]:
+            raise ValueError(f"buffered_tensor.subslice [{start}:{start + length}] is out of range for dimension {dim} "
+                             f"with size {self.shape[dim]}")
+
+        offsets = [0] * rank
+        offsets[dim] = start
+        sub_shape = list(self.shape)
+        sub_shape[dim] = length
+        sub_ty = buffered_tensor_type(self.dtype, sub_shape, self.type.storage, self.type.layout, _semantic,
+                                      alloc_shape=self.type.alloc_shape)
+        from . import semantic as tle_semantic
+        sub_handle = tle_semantic.subview(
+            self,
+            offsets,
+            sub_shape,
+            [1] * rank,
+            self.type.layout,
+            _semantic,
+            alloc_shape=self.type.alloc_shape,
+        )
+        return buffered_tensor(sub_handle, self.dtype, sub_shape, self.type.storage, self.type.layout, _semantic,
+                               alloc_shape=sub_ty.alloc_shape)
+
+    def make_permute(self, handle, dims):
+        permuted_layout = self.type.layout.make_permute(dims)
+        alloc_shape = self.type.alloc_shape
+        prefix_len = len(alloc_shape) - len(self.shape)
+        permuted_alloc_shape = alloc_shape[:prefix_len] + [alloc_shape[prefix_len + d] for d in dims]
+        return buffered_tensor(
+            handle,
+            self.dtype,
+            [self.shape[d] for d in dims],
+            self.type.storage,
+            permuted_layout,
+            self.type.semantic,
+            alloc_shape=permuted_alloc_shape,
+        )
+
+
+class buffered_tensor_type(tl.base_type):
+    """Type of a memory-backed buffer, represented by a memdesc in IR."""
+
+    def __init__(self, element_ty: tl.dtype, shape: List, storage: scope, layout: Optional[shared_layout] = None,
+                 semantic: TritonSemantic = None, alloc_shape: List = None):
+        # MemDescType deliberately permits a non-power-of-two leading
+        # dimension (the stage/allocation dimension), while ordinary Triton
+        # register tensors require every dimension to be a power of two.  A
+        # buffered tensor is a memory descriptor, not a register tensor, so do
+        # not apply block_type's stronger rule to that leading dimension.
+        shape = tuple(shape)
+        if not shape:
+            raise TypeError("0d buffered_tensor_type is forbidden")
+        for index, extent in enumerate(shape):
+            if not isinstance(extent, int):
+                raise TypeError(f"Shape element {index} must have type `constexpr[int]`, "
+                                f"got `constexpr[{type(extent)}]`")
+            if extent <= 0:
+                raise ValueError(f"Shape element {index} must be positive")
+            if index > 0 and not is_power_of_two(extent):
+                raise ValueError(f"Shape element {index} must be a power of 2")
+        numel = prod(shape)
+        if numel > TRITON_MAX_TENSOR_NUMEL:
+            raise ValueError(f"numel ({numel}) exceeds triton maximum tensor numel "
+                             f"({TRITON_MAX_TENSOR_NUMEL})")
+        self.element_ty = element_ty
+        self.shape = shape
+        self.numel = numel
+        self.name = f"<{self.shape}, {self.element_ty}>"
+        # Storage
+        self.storage = storage
+        # layout encoding
+        self.layout = layout
+        self.alloc_shape = list(shape if alloc_shape is None else alloc_shape)
+        # Buffer number. 0 means a single buffer, 1+ means a buffer array.
+        assert semantic, "buffered_tensor array must be created with a builder"
+        self.semantic = semantic
+
+    @property
+    def scalar(self):
+        return self.element_ty
+
+    @property
+    def nbytes(self):
+        return self.numel * (self.element_ty.primitive_bitwidth // 8)
+
+    def __repr__(self):
+        return self.__str__()
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[buffered_tensor, int]:
+        value = buffered_tensor(handles[cursor], self.scalar, self.shape, self.storage, self.layout, self.semantic,
+                                alloc_shape=self.alloc_shape)
+        if hasattr(self, "_tle_remote_shard_id"):
+            shard_id = getattr(self, "_tle_remote_shard_id")
+            scope = getattr(self, "_tle_remote_scope", None)
+            setattr(value, "_tle_remote_shard_id", shard_id)
+            setattr(value, "_tle_remote_scope", scope)
+            setattr(value.type, "_tle_remote_shard_id", shard_id)
+            setattr(value.type, "_tle_remote_scope", scope)
+        return value, cursor + 1
+
+    def mangle(self) -> str:
+        elt = self.scalar.mangle()
+        shape = '_'.join(map(str, self.shape))
+        alloc_suffix = ""
+        if self.alloc_shape != list(self.shape):
+            alloc_shape = '_'.join(map(str, self.alloc_shape))
+            alloc_suffix = f"A{alloc_shape}"
+        remote_suffix = ""
+        shard_id = getattr(self, "_tle_remote_shard_id", None)
+        if shard_id is not None:
+            if isinstance(shard_id, int):
+                remote_suffix = f"_R{shard_id}"
+            else:
+                remote_suffix = "_Rdyn"
+        return f'buffered_{elt}S{shape}{alloc_suffix}{remote_suffix}'
+
+    def __str__(self) -> str:
+        return f"buffered_tensor_<{self.element_ty}, {self.shape}, {self.layout}, {self.alloc_shape}, >"
+
+    def __eq__(self, other) -> bool:
+        if not (type(self) is type(other) and self.element_ty == other.element_ty and self.storage == other.storage and
+                self.shape == other.shape and self.layout == other.layout and self.alloc_shape == other.alloc_shape):
+            return False
+        self_shard = getattr(self, "_tle_remote_shard_id", None)
+        other_shard = getattr(other, "_tle_remote_shard_id", None)
+        self_scope = getattr(self, "_tle_remote_scope", None)
+        other_scope = getattr(other, "_tle_remote_scope", None)
+        if self_shard is None and other_shard is None and self_scope is None and other_scope is None:
+            return True
+        # If either side carries remote metadata, require equivalent remote marker.
+        if (self_shard is None) != (other_shard is None):
+            return False
+        if isinstance(self_shard, int) and isinstance(other_shard, int):
+            if self_shard != other_shard:
+                return False
+        elif self_shard is not other_shard:
+            return False
+        self_scope_key = None if self_scope is None else (
+            tuple(getattr(self_scope, "shape", tuple())),
+            tuple(getattr(self_scope, "dim_names", tuple())),
+        )
+        other_scope_key = None if other_scope is None else (
+            tuple(getattr(other_scope, "shape", tuple())),
+            tuple(getattr(other_scope, "dim_names", tuple())),
+        )
+        return self_scope_key == other_scope_key
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        out.append(self.to_ir(builder))
+
+    def to_ir(self, builder: ir.builder) -> None:
+        shape = self.shape
+        builder = self.semantic.builder
+        from .semantic import COMMON_IR_ENABLED
+        if COMMON_IR_ENABLED:
+            memory_space = builder.tile_get_string_attr(_storage_to_tile_space(self.storage))
+            return builder.tile_get_buffer_type(
+                [int(tl._unwrap_if_constexpr(dim)) for dim in shape],
+                self.element_ty.to_ir(builder),
+                memory_space,
+            )
+        return self.to_memdesc_ir(builder)
+
+    def to_memdesc_ir(self, builder: ir.builder):
+        return builder.get_memdesc_type(
+            self.shape,
+            self.element_ty.to_ir(builder),
+            self.layout.to_ir(builder),
+            _storage_to_memdesc_space(self.storage),
+            self.alloc_shape,
+        )
+
+    def _flatten_ir(self, handles) -> None:
+        handles.append(self.handle)
+
+
+class barrier(tl.base_value):
+    """A TLE GPU barrier array or a single indexed barrier slot."""
+
+    def __init__(
+        self,
+        handle,
+        num_barriers: int,
+        arrive_count: int,
+        init: str,
+        expect_bytes: Optional[int],
+        layout: shared_layout,
+        semantic: TritonSemantic,
+        *,
+        shape: Optional[List[int]] = None,
+        static_index: Optional[int] = None,
+        named_base_id: int = 0,
+        allocation_key=None,
+    ):
+        super().__init__()
+        self.handle = handle
+        self.num_barriers = num_barriers
+        self.arrive_count = arrive_count
+        self.init = init
+        self.expect_bytes = expect_bytes
+        self.layout = layout
+        self.static_index = static_index
+        self.named_base_id = named_base_id
+        self.allocation_key = allocation_key
+        self.shape = list(shape if shape is not None else [num_barriers, 1])
+        self.type = barrier_type(num_barriers, arrive_count, init, expect_bytes, layout, semantic, shape=self.shape,
+                                 static_index=static_index, named_base_id=named_base_id, allocation_key=allocation_key)
+
+    @property
+    def is_slot(self) -> bool:
+        return self.shape == [1]
+
+    def _flatten_ir(self, handles) -> None:
+        handles.append(self.handle)
+
+    @tl.builtin
+    def __getitem__(self, index, _semantic: TLESemantic | None = None):
+        if self.is_slot:
+            raise ValueError("tle.gpu barrier slot cannot be indexed again")
+
+        raw_index = tl._unwrap_if_constexpr(index)
+        static_index = raw_index if isinstance(raw_index, int) else None
+        if static_index is not None and (static_index < 0 or static_index >= self.num_barriers):
+            raise ValueError(f"barrier index {static_index} out of bounds for {self.num_barriers} barriers")
+
+        index_tensor = _semantic.to_tensor(index)
+        if getattr(index_tensor.type, "is_block", lambda: False)():
+            raise ValueError("barrier index must be a scalar integer")
+        if not getattr(index_tensor.type, "is_int", lambda: False)():
+            raise ValueError(f"barrier index must be integer, got {index_tensor.type}")
+        if index_tensor.dtype != tl.int32:
+            index_tensor = index_tensor.to(tl.int32, _semantic=_semantic)
+
+        slot_layout = _make_slot_layout(self.layout, [1])
+        slot_ty = barrier_type(self.num_barriers, self.arrive_count, self.init, self.expect_bytes, slot_layout,
+                               _semantic, shape=[1], static_index=static_index, named_base_id=self.named_base_id,
+                               allocation_key=self.allocation_key)
+        slot_handle = _semantic.builder.create_memdesc_index(slot_ty.to_ir(_semantic.builder), self.handle,
+                                                             index_tensor.handle)
+        return barrier(slot_handle, self.num_barriers, self.arrive_count, self.init, self.expect_bytes, slot_layout,
+                       _semantic, shape=[1], static_index=static_index, named_base_id=self.named_base_id,
+                       allocation_key=self.allocation_key)
+
+
+class barrier_type(tl.block_type):
+
+    def __init__(
+        self,
+        num_barriers: int,
+        arrive_count: int,
+        init: str,
+        expect_bytes: Optional[int],
+        layout: shared_layout,
+        semantic: TritonSemantic,
+        *,
+        shape: Optional[List[int]] = None,
+        static_index: Optional[int] = None,
+        named_base_id: int = 0,
+        allocation_key=None,
+    ):
+        self.num_barriers = num_barriers
+        self.arrive_count = arrive_count
+        self.init = init
+        self.expect_bytes = expect_bytes
+        self.layout = layout
+        self.semantic = semantic
+        self.shape = list(shape if shape is not None else [num_barriers, 1])
+        self.static_index = static_index
+        self.named_base_id = named_base_id
+        self.allocation_key = allocation_key
+        super().__init__(tl.int64, self.shape)
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple[barrier, int]:
+        value = barrier(
+            handles[cursor],
+            self.num_barriers,
+            self.arrive_count,
+            self.init,
+            self.expect_bytes,
+            self.layout,
+            self.semantic,
+            shape=self.shape,
+            static_index=self.static_index,
+            named_base_id=self.named_base_id,
+            allocation_key=self.allocation_key,
+        )
+        return value, cursor + 1
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        out.append(self.to_ir(builder))
+
+    def to_ir(self, builder: ir.builder) -> None:
+        builder = self.semantic.builder
+        return builder.get_memdesc_type(
+            self.shape,
+            tl.int64.to_ir(builder),
+            self.layout.to_ir(builder),
+            _storage_to_memdesc_space(smem),
+            self.shape,
+        )
+
+    def mangle(self) -> str:
+        expect = "none" if self.expect_bytes is None else str(self.expect_bytes)
+        index = "array" if self.static_index is None else str(self.static_index)
+        shape = "_".join(map(str, self.shape))
+        return f"barrier_{shape}_{self.num_barriers}_{self.arrive_count}_{self.init}_{expect}_{index}_{self.named_base_id}"
+
+    def __str__(self) -> str:
+        return (f"barrier<{self.shape}, arrive_count={self.arrive_count}, init={self.init}, "
+                f"expect_bytes={self.expect_bytes}>")
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.shape == other.shape and self.num_barriers == other.num_barriers
+                and self.arrive_count == other.arrive_count and self.init == other.init
+                and self.expect_bytes == other.expect_bytes and self.layout == other.layout
+                and self.static_index == other.static_index and self.named_base_id == other.named_base_id)
+
+
+class pipe_slot_type(tl.base_type):
+
+    def __init__(self, fields):
+        self.fields = list(fields)
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple["pipe_slot", int]:
+        values = {}
+        for name, ty in self.fields:
+            value, cursor = ty._unflatten_ir(handles, cursor)
+            values[name] = value
+        return pipe_slot(values), cursor
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        for _, ty in self.fields:
+            ty._flatten_ir_types(builder, out)
+
+    def mangle(self) -> str:
+        fields = "_".join(f"{name}_{ty.mangle()}" for name, ty in self.fields)
+        return f"pipe_slot_{fields}"
+
+    def __eq__(self, other) -> bool:
+        return type(self) is type(other) and self.fields == other.fields
+
+    def __str__(self) -> str:
+        fields = ", ".join(f"{name}: {ty}" for name, ty in self.fields)
+        return f"pipe_slot<{fields}>"
+
+
+class pipe_slot(tl.base_value):
+
+    def __init__(self, fields):
+        super().__init__()
+        self.fields = dict(fields)
+        for name, value in self.fields.items():
+            setattr(self, name, value)
+
+    def _flatten_ir(self, handles) -> None:
+        for field in self.fields.values():
+            field._flatten_ir(handles)
+
+    @property
+    def type(self):
+        return pipe_slot_type([(name, value.type) for name, value in self.fields.items()])
+
+
+class pipe_wait_result_type(tl.base_type):
+
+    def __init__(self, slot_type: pipe_slot_type):
+        self.slot_type = slot_type
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple["pipe_wait_result", int]:
+        slot, cursor = self.slot_type._unflatten_ir(handles, cursor)
+        is_closed, cursor = tl.int1._unflatten_ir(handles, cursor)
+        return pipe_wait_result(slot, is_closed), cursor
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        self.slot_type._flatten_ir_types(builder, out)
+        tl.int1._flatten_ir_types(builder, out)
+
+    def mangle(self) -> str:
+        return f"pipe_wait_result_{self.slot_type.mangle()}"
+
+    def __eq__(self, other) -> bool:
+        return type(self) is type(other) and self.slot_type == other.slot_type
+
+    def __str__(self) -> str:
+        return f"pipe_wait_result<slot: {self.slot_type}, is_closed: {tl.int1}>"
+
+
+class pipe_wait_result(tl.base_value):
+
+    def __init__(self, slot: pipe_slot, is_closed: tl.tensor):
+        super().__init__()
+        self.slot = slot
+        self.is_closed = is_closed
+
+    def _flatten_ir(self, handles) -> None:
+        self.slot._flatten_ir(handles)
+        self.is_closed._flatten_ir(handles)
+
+    @property
+    def type(self):
+        return pipe_wait_result_type(self.slot.type)
+
+
+def _unwrap_pipe_constexpr(value):
+    if isinstance(value, tl.constexpr):
+        value = value.value
+    if isinstance(value, tl.tuple):
+        return tuple(_unwrap_pipe_constexpr(item) for item in value.values)
+    if isinstance(value, (tuple, list)):
+        return type(value)(_unwrap_pipe_constexpr(item) for item in value)
+    if value is None or isinstance(value, str):
+        return value
+    value = tl._unwrap_if_constexpr(value)
+    if isinstance(value, (tuple, list)):
+        return type(value)(_unwrap_pipe_constexpr(item) for item in value)
+    return value
+
+
+def _validate_pipe_reader_name(pipe, name):
+    name = _unwrap_pipe_constexpr(name)
+    if pipe.readers is None:
+        if name is not None:
+            raise ValueError("tle.pipe.reader name requires pipe readers=...")
+        return None
+    if name is None:
+        raise ValueError("tle.pipe.reader requires a reader name when pipe readers are declared")
+    if not isinstance(name, str):
+        raise ValueError(f"tle.pipe.reader name must be a string, got {type(name).__name__}")
+    if name not in pipe.readers:
+        raise ValueError(f"tle.pipe.reader name {name!r} is not declared in pipe readers={pipe.readers!r}")
+    return name
+
+
+def _validate_pipe_reader_fields(pipe, fields):
+    fields = _unwrap_pipe_constexpr(fields)
+    if fields is None:
+        return None
+    if isinstance(fields, str) or not isinstance(fields, (tuple, list)):
+        raise ValueError("tle.pipe.reader fields must be a compile-time tuple/list of field names")
+    if not fields:
+        raise ValueError("tle.pipe.reader fields must not be empty")
+
+    names = []
+    seen = set()
+    for field in fields:
+        field = _unwrap_pipe_constexpr(field)
+        if not isinstance(field, str):
+            raise ValueError(f"tle.pipe.reader field name must be a string, got {type(field).__name__}")
+        if field not in pipe.fields:
+            raise ValueError(f"tle.pipe.reader field {field!r} is not a pipe field")
+        if field in seen:
+            raise ValueError(f"tle.pipe.reader fields must be unique, got duplicate {field!r}")
+        seen.add(field)
+        names.append(field)
+    return tuple(names)
+
+
+class pipe_value_type(tl.base_type):
+
+    def __init__(self, capacity: int, scope: str, name: Optional[str], fields, readers=None, one_shot=False):
+        self.capacity = capacity
+        self.scope = scope
+        self.name = name
+        self.fields = list(fields)
+        self.readers = None if readers is None else tuple(readers)
+        self.one_shot = one_shot
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int) -> Tuple["pipe_value", int]:
+        values = {}
+        for field_name, ty in self.fields:
+            value, cursor = ty._unflatten_ir(handles, cursor)
+            values[field_name] = value
+        return pipe_value(self.capacity, self.scope, self.name, values, self.readers, one_shot=self.one_shot), cursor
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        for _, ty in self.fields:
+            ty._flatten_ir_types(builder, out)
+
+    def mangle(self) -> str:
+        name = "anon" if self.name is None else self.name
+        fields = "_".join(f"{field_name}_{ty.mangle()}" for field_name, ty in self.fields)
+        readers = "spsc" if self.readers is None else "readers_" + "_".join(self.readers)
+        mode = "oneshot" if self.one_shot else "cyclic"
+        return f"pipe_{self.scope}_{self.capacity}_{name}_{mode}_{readers}_{fields}"
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.capacity == other.capacity and self.scope == other.scope
+                and self.name == other.name and self.fields == other.fields and self.readers == other.readers
+                and self.one_shot == other.one_shot)
+
+    def __str__(self) -> str:
+        fields = ", ".join(f"{name}: {ty}" for name, ty in self.fields)
+        readers = "default" if self.readers is None else ", ".join(self.readers)
+        mode = "one_shot" if self.one_shot else "cyclic"
+        return f"pipe<{self.scope}, {self.capacity}, {mode}, readers=[{readers}], {fields}>"
+
+
+class pipe_value(tl.base_value):
+
+    def __init__(self, capacity: int, scope: str, name: Optional[str], fields, readers=None, one_shot=False):
+        super().__init__()
+        self.capacity = capacity
+        self.scope = scope
+        self.name = name
+        self.fields = dict(fields)
+        self.readers = None if readers is None else tuple(readers)
+        self.one_shot = one_shot
+
+    def _flatten_ir(self, handles) -> None:
+        for field in self.fields.values():
+            field._flatten_ir(handles)
+
+    @property
+    def type(self):
+        return pipe_value_type(self.capacity, self.scope, self.name,
+                               [(name, value.type) for name, value in self.fields.items()], self.readers,
+                               one_shot=self.one_shot)
+
+    def _field_handles(self, _semantic=None):
+        if _semantic is None:
+            return [field.handle for field in self.fields.values()]
+        from . import semantic as tle_semantic
+        return [tle_semantic.get_memdesc(field, _semantic) for field in self.fields.values()]
+
+    def _field_names(self):
+        return list(self.fields.keys())
+
+    def _ir_name(self):
+        return "" if self.name is None else self.name
+
+    def _make_slot(self, stage, _semantic: TLESemantic | None = None, field_names=None):
+        if field_names is None:
+            fields = self.fields.items()
+        else:
+            fields = ((name, self.fields[name]) for name in field_names)
+        return pipe_slot({name: field.slot(stage, _semantic=_semantic) for name, field in fields})
+
+    @tl.builtin
+    def _stage_phase(self, iter, _semantic: TLESemantic | None = None):
+        iter = tl._unwrap_if_constexpr(iter)
+        if isinstance(iter, int):
+            stage = iter % self.capacity
+            phase = ((iter // self.capacity) % 2) != 0
+            return _semantic.to_tensor(stage), _semantic.to_tensor(phase)
+        iter = _semantic.to_tensor(iter)
+        stage = iter.__mod__(self.capacity, _semantic=_semantic)
+        phase = iter.__floordiv__(self.capacity, _semantic=_semantic)
+        phase = phase.__mod__(2, _semantic=_semantic)
+        phase = phase.__ne__(0, _semantic=_semantic)
+        return _semantic.to_tensor(stage), _semantic.to_tensor(phase)
+
+    @tl.builtin
+    def writer(self, _semantic: TLESemantic | None = None):
+        return pipe_writer(self)
+
+    @tl.builtin
+    def reader(self, name=None, fields=None, _semantic: TLESemantic | None = None):
+        reader_name = _validate_pipe_reader_name(self, name)
+        field_names = _validate_pipe_reader_fields(self, fields)
+        return pipe_reader(self, reader_name=reader_name, field_names=field_names)
+
+
+class _pipe_endpoint_type(tl.base_type):
+
+    endpoint = "endpoint"
+    value_cls = None
+
+    def __init__(self, pipe_type: pipe_value_type, reader_name=None, field_names=None):
+        self.pipe_type = pipe_type
+        self.reader_name = reader_name
+        self.field_names = None if field_names is None else tuple(field_names)
+
+    def _unflatten_ir(self, handles: List[ir.value], cursor: int):
+        pipe, cursor = self.pipe_type._unflatten_ir(handles, cursor)
+        return self.value_cls(pipe, self.reader_name, self.field_names), cursor
+
+    def _flatten_ir_types(self, builder: ir.builder, out: List[ir.type]) -> None:
+        self.pipe_type._flatten_ir_types(builder, out)
+
+    def mangle(self) -> str:
+        reader = "default" if self.reader_name is None else self.reader_name
+        fields = "all" if self.field_names is None else "_".join(self.field_names)
+        return f"pipe_{self.endpoint}_{reader}_{fields}_{self.pipe_type.mangle()}"
+
+    def __eq__(self, other) -> bool:
+        return (type(self) is type(other) and self.pipe_type == other.pipe_type
+                and self.reader_name == other.reader_name and self.field_names == other.field_names)
+
+    def __str__(self) -> str:
+        return f"pipe_{self.endpoint}<{self.pipe_type}>"
+
+
+class pipe_writer_type(_pipe_endpoint_type):
+    endpoint = "writer"
+
+
+class pipe_reader_type(_pipe_endpoint_type):
+    endpoint = "reader"
+
+
+class _pipe_endpoint(tl.base_value):
+
+    type_cls = _pipe_endpoint_type
+
+    def __init__(self, pipe: pipe_value, reader_name=None, field_names=None):
+        super().__init__()
+        self.pipe = pipe
+        self.reader_name = reader_name
+        self.field_names = None if field_names is None else tuple(field_names)
+
+    @property
+    def capacity(self):
+        return self.pipe.capacity
+
+    @property
+    def scope(self):
+        return self.pipe.scope
+
+    @property
+    def name(self):
+        return self.pipe.name
+
+    @property
+    def fields(self):
+        if self.field_names is None:
+            return self.pipe.fields
+        return {name: self.pipe.fields[name] for name in self.field_names}
+
+    def _flatten_ir(self, handles) -> None:
+        self.pipe._flatten_ir(handles)
+
+    @property
+    def type(self):
+        return self.type_cls(self.pipe.type, self.reader_name, self.field_names)
+
+
+class pipe_writer(_pipe_endpoint):
+
+    type_cls = pipe_writer_type
+
+    def __init__(self, pipe: pipe_value, reader_name=None, field_names=None):
+        if reader_name is not None or field_names is not None:
+            raise ValueError("tle.pipe.writer does not accept reader endpoint metadata")
+        super().__init__(pipe)
+
+    @tl.builtin
+    def acquire(self, iter, _semantic: TLESemantic | None = None):
+        stage, phase = self.pipe._stage_phase(iter, _semantic=_semantic)
+        _semantic.builder.create_pipe_writer_acquire(self.pipe._field_handles(_semantic), stage.handle, phase.handle,
+                                                     self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
+                                                     self.pipe._field_names())
+        return self.pipe._make_slot(stage, _semantic=_semantic)
+
+    @tl.builtin
+    def commit(self, iter, _semantic: TLESemantic | None = None):
+        stage, _ = self.pipe._stage_phase(iter, _semantic=_semantic)
+        _semantic.builder.create_pipe_writer_commit(self.pipe._field_handles(_semantic), stage.handle,
+                                                    self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
+                                                    self.pipe._field_names())
+
+    @tl.builtin
+    def close(self, iter, _semantic: TLESemantic | None = None):
+        if self.pipe.one_shot:
+            raise ValueError("tle.pipe one_shot pipes do not support close")
+        stage, phase = self.pipe._stage_phase(iter, _semantic=_semantic)
+        _semantic.builder.create_pipe_writer_close(self.pipe._field_handles(_semantic), stage.handle, phase.handle,
+                                                   self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
+                                                   self.pipe._field_names())
+
+
+class pipe_reader(_pipe_endpoint):
+
+    type_cls = pipe_reader_type
+
+    def _reader_field_names(self):
+        if self.field_names is None:
+            return self.pipe._field_names()
+        return list(self.field_names)
+
+    @tl.builtin
+    def wait(self, iter, _semantic: TLESemantic | None = None):
+        stage, phase = self.pipe._stage_phase(iter, _semantic=_semantic)
+        is_closed = _semantic.builder.create_pipe_reader_wait(self.pipe._field_handles(_semantic), stage.handle,
+                                                              phase.handle, self.pipe.capacity, self.pipe.scope,
+                                                              self.pipe._ir_name(), self.pipe._field_names(),
+                                                              self.reader_name or "", self._reader_field_names())
+        slot = self.pipe._make_slot(stage, _semantic=_semantic, field_names=self.field_names)
+        return pipe_wait_result(slot, tl.tensor(is_closed, tl.int1))
+
+    @tl.builtin
+    def release(self, iter, _semantic: TLESemantic | None = None):
+        stage, _ = self.pipe._stage_phase(iter, _semantic=_semantic)
+        _semantic.builder.create_pipe_reader_release(self.pipe._field_handles(_semantic), stage.handle,
+                                                     self.pipe.capacity, self.pipe.scope, self.pipe._ir_name(),
+                                                     self.pipe._field_names(), self.reader_name or "",
+                                                     self._reader_field_names())
+
+
+pipe_writer_type.value_cls = pipe_writer
+pipe_reader_type.value_cls = pipe_reader

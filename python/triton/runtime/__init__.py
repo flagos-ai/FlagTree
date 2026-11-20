@@ -20,11 +20,17 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+from triton._flagtree_spec import spec_path
+
+# flagtree backend path specialization
+spec_path(__path__)
+
 from .autotuner import (Autotuner, Config, Heuristics, autotune, heuristics)
 from .cache import RedisRemoteCacheBackend, RemoteCacheBackend
 from .driver import driver
 from .jit import JITFunction, KernelInterface, MockTensor, TensorWrapper, reinterpret
 from .errors import OutOfResources, InterpreterError
+from ._distributed import DistributedRtContext
 
 __all__ = [
     "autotune",
@@ -42,4 +48,6 @@ __all__ = [
     "reinterpret",
     "RemoteCacheBackend",
     "TensorWrapper",
+    # flagtree tle distributed
+    "DistributedRtContext",
 ]

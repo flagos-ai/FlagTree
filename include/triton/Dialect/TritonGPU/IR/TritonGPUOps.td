@@ -544,6 +544,78 @@ def TTG_Fp4ToFpOp : TTG_Op<"fp4_to_fp", [Pure]> {
   }];
 }
 
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+def TTG_ConcatDotOperandOp : TTG_Op<"concat_dot_operand",
+                                    [Pure]> {
+  let summary = "Concatenate dot operand fragments along the contraction axis";
+
+  let hasVerifier = 1;
+  let hasCanonicalizeMethod = 1;
+
+  let description = [{
+    Concatenate N fragments along the contraction (K) axis into a single wider
+    fragment, letting one mma cover the whole K tile. Fragments are laid out in
+    operand order along `dim` and may differ in static extent there; all other
+    dimensions, the element type and the encoding must agree.
+
+    `interleaved` picks the index map. Without it, result element
+    `i * fragExtent + k` is element `k` of fragment `i`; with it, result element
+    `k * numFragments + i` is, which is what sub-byte packing produces where one
+    word holds elements `2j` and `2j + 1`. Interleaving requires equally sized
+    fragments.
+
+    This is a compiler-internal op, introduced by `tritongpu-concat-dot-operand`
+    from the `tl.join` / `tl.permute` / `tl.reshape` chain a kernel writes to
+    glue its K tile back together. It canonicalizes away when its fragments are
+    a complete, ordered cover of one value by `ttg.extract_dot_operand`.
+
+    Whether it lowers as a per-thread register relabel follows from the encoding
+    layout propagation assigns, so it is not checked by the verifier;
+    `tritongpu-expand-concat-dot-operand` rebuilds the join tree for the
+    operands where it does not hold, which always includes the interleaved
+    form.
+  }];
+
+  let arguments = (ins Variadic<TT_Tensor>:$fragments, I32Attr:$dim,
+                       UnitAttr:$interleaved);
+  let results = (outs TT_Tensor:$result);
+
+  let builders = [
+    // Keep the concatenating form spellable without naming the mode.
+    OpBuilder<(ins "::mlir::Type":$result, "::mlir::ValueRange":$fragments,
+                   "::mlir::IntegerAttr":$dim), [{
+      build($_builder, $_state, result, fragments, dim, /*interleaved=*/nullptr);
+    }]>
+  ];
+
+  let assemblyFormat = [{
+    $fragments attr-dict `:` type($fragments) `->` type($result)
+  }];
+}
+
+def TTG_ExtractDotOperandOp : TTG_Op<"extract_dot_operand", [Pure]> {
+  let summary = "Extract one contraction-axis slice of a dot operand";
+
+  let hasVerifier = 1;
+
+  let description = [{
+    Compiler-internal inverse of the concatenating form of
+    `ttg.concat_dot_operand`. It reads `[index * extent, +extent)` along the
+    contraction axis, so it does not invert an `interleaved` one, and selects
+    that slice without changing lane, warp, or block ownership. It is
+    materialized only after the register map proof has succeeded, so it always
+    lowers as a per-thread register subset.
+  }];
+
+  let arguments = (ins TT_Tensor:$src, I32Attr:$dim, I32Attr:$index);
+  let results = (outs TT_Tensor:$result);
+
+  let assemblyFormat = [{
+    $src attr-dict `:` type($src) `->` type($result)
+  }];
+}
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
+
 // Allocate global memory
 def TTG_GlobalScratchAllocOp : TTG_Op<"global_scratch_alloc"> {
   let summary = "allocate a global memory buffer";
@@ -763,5 +835,61 @@ def TTG_WarpIdOp : TTG_Op<"warp_id", [Pure]> {
 
   let assemblyFormat = "attr-dict";
 }
+
+// flagtree tle
+#ifdef __TLE__
+def TTG_TMACopyOp : TTG_Op<"tma_copy", [
+  Pure,
+  MemoryEffects<[MemWrite]>,
+  AttrSizedOperandSegments
+]> {
+  let summary = "self-defined tma_copy operation";
+  let description = [{
+    'ttg.tma_copy' triton copy op is designed to copy data between memory regions.
+    Example:
+    ```mlir
+    ttg.tma_copy %src, %dst, %shape : tensor<128xf32>
+    ```
+
+    A global-to-shared TMA load may optionally carry an explicit completion
+    barrier. In that form, lowering emits barrier_expect and async TMA copy
+    against the provided barrier, while the user controls the wait point.
+  }];
+  let arguments = (ins
+    Arg<TTG_CopyOpType, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$src,
+    Arg<TTG_CopyOpType, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$dst,
+    Variadic<I32>:$indices,
+    Optional<TTG_MemDescType>:$barrier,
+    OptionalAttr<I32Attr>:$expect_bytes,
+    DefaultValuedAttr<TT_EvictionPolicyAttr, "triton::EvictionPolicy::NORMAL">:$evict
+  );
+  //assemble
+  let assemblyFormat = [{
+    $src `,` $dst `,` `[` $indices `]`
+    (`,` `barrier` $barrier^)?
+    oilist(`evictionPolicy` `=` $evict)
+    attr-dict `:` type($src) `,` type($dst)
+    (`,` qualified(type($barrier))^)?
+  }];
+}
+#else
+def TTG_TMACopyOp : TTG_Op<"tma_copy", [Pure, MemoryEffects<[MemWrite]>]> {
+  let summary = "self-defined tma_copy operation";
+  let description = [{
+    'ttg.tma_copy' triton copy op is designed to copy data between memory regions.
+    Example:
+    ```mlir
+    ttg.tma_copy %src, %dst, %shape : tensor<128xf32>
+    ```
+  }];
+  let arguments = (ins
+    Arg<TTG_CopyOpType, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$src,
+    Arg<TTG_CopyOpType, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$dst,
+    Variadic<I32>:$indices
+  );
+  //assemble
+  let assemblyFormat = "$src `,`  $dst `,` `[` $indices `]` attr-dict `:` type($src) `,` type($dst)";
+}
+#endif
 
 #endif // TRITONGPU_OPS

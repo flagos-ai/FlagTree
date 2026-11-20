@@ -18,16 +18,32 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+add_compile_definitions(__TRITON_VERSION_MAJOR__=3)
+add_compile_definitions(__TRITON_VERSION_MINOR__=7)
+
 macro(flagtree_configure_options)
-  set(FLAGTREE_BACKEND "$ENV{FLAGTREE_BACKEND}")
   set(FLAGTREE_DEFAULT_OPTION ON)
   if(FLAGTREE_BACKEND)
     set(FLAGTREE_DEFAULT_OPTION OFF)
-    add_definitions(-DFLAGTREE_BACKEND=\"${FLAGTREE_BACKEND}\")
+  endif()
+
+  # CommonIR is an explicit opt-in for the default NVIDIA backend. Keep the
+  # build contract as a C/C++ macro without introducing a CMake cache option.
+  set(FLAGTREE_COMMON_IR_ENABLED "$ENV{FLAGTREE_COMMON_IR}")
+  if(FLAGTREE_COMMON_IR_ENABLED)
+    if(FLAGTREE_BACKEND)
+      message(FATAL_ERROR "FLAGTREE_COMMON_IR requires the default NVIDIA backend")
+    endif()
+    add_compile_definitions(__FLAGTREE_COMMON_IR__)
+  endif()
+
+  # Ascend always requires CommonIR, without a C/C++ feature gate.
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    set(FLAGTREE_COMMON_IR_ENABLED ON)
   endif()
 
   set(FLAGCX_ENABLED OFF)
-  set(FLAGCX_SUPPORT_BACKENDS nvidia)
+  set(FLAGCX_SUPPORT_BACKENDS nvidia iluvatar)
   if(NOT FLAGTREE_BACKEND OR
      "${FLAGTREE_BACKEND}" IN_LIST FLAGCX_SUPPORT_BACKENDS)
     add_compile_definitions(FLAGCX_ENABLED)
@@ -45,8 +61,14 @@ macro(flagtree_configure_options)
   if(NOT FLAGTREE_BACKEND)
     add_definitions(-D__NVIDIA__)
     add_definitions(-D__AMD__)
+    add_definitions(-D__TLE_TILED_SMEM__)
+    list(APPEND LLVM_TABLEGEN_FLAGS -D__TLE_TILED_SMEM__)
     add_definitions(-D__FLAGTREE_REORDER_LOOP_LOADS__)
     add_definitions(-D__FLAGTREE_RLC_ENHANCE__)
+    list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_RLC_ENHANCE__)
+    add_definitions(-D__FLAGTREE_PIPELINE_ENHANCE__)
+    list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_PIPELINE_ENHANCE__)
+    add_definitions(-D__FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE__)
     add_definitions(-D__FLAGTREE_CONCAT_DOT_OPERAND__)
     list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_CONCAT_DOT_OPERAND__)
   elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
@@ -67,6 +89,29 @@ macro(flagtree_configure_options)
     set(CMAKE_CXX_COMPILER clang++-16)
     add_definitions(-D__NVIDIA__)
     add_definitions(-D__AMD__)
+  elseif(FLAGTREE_BACKEND STREQUAL "ascend")
+    set(CMAKE_C_COMPILER clang)
+    set(CMAKE_CXX_COMPILER clang++)
+    # AscendNPU-IR gates its sources on the LLVM major version. cmake/llvm-hash.txt
+    # pins LLVM 22 here.
+    #
+    # Deliberately leave LLVM_MAJOR_VERSION_21_COMPATIBLE unset: LLVM 22 renamed
+    # the Mesh dialect to Shard (only libMLIRShardDialect.a ships in the pinned
+    # package), so turning it on would reference a missing target.
+    set(LLVM_MAJOR_VERSION_22_OR_HIGHER ON)
+    set(LLVM_MAJOR_VERSION_22_COMPATIBLE ON CACHE BOOL
+        "AscendNPU-IR build with llvm major version 22 or later" FORCE)
+    add_definitions(-D__LLVM_MAJOR_VERSION_22_COMPATIBLE__)
+    add_compile_options("-Wno-deprecated-declarations")
+    add_compile_options("-Wno-error=deprecated-declarations")
+    # AscendNPU-IR: build only the standalone IR, and keep it out of the
+    # backend's own CMakeLists so the subdirectory is added exactly once.
+    set(BISHENGIR_ENABLE_A5_UNPUBLISHED_FEATURES ON)
+    set(BISHENGIR_BUILD_STANDALONE_IR_ONLY ON)
+    set(ASCENDNPU_IR_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ascend/AscendNPU-IR)
+    set(ASCENDNPU_IR_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/third_party/ascend/AscendNPU-IR)
+    include_directories(${ASCENDNPU_IR_SRC_DIR}/bishengir/include)
+    include_directories(${ASCENDNPU_IR_BINARY_DIR}/bishengir/include)
   elseif(FLAGTREE_BACKEND STREQUAL "tsingmicro")
     set(CMAKE_C_COMPILER clang)
     set(CMAKE_CXX_COMPILER clang++)
@@ -78,6 +123,10 @@ macro(flagtree_configure_options)
     if(BUILD_MCTLE)
       list(APPEND TRITON_PLUGIN_NAMES "mctle")
       add_definitions(-D__MCTLE__)
+      # The .td files guard their mctle parts with #ifdef __MCTLE__ too
+      # (TritonOps.td's atomic_rmw / atomic_cas pointer constraint and
+      # shared-memory effects), and add_definitions does not reach mlir-tblgen.
+      list(APPEND LLVM_TABLEGEN_FLAGS -D__MCTLE__)
     endif()
     set(FLAGTREE_TLE OFF)
     remove_definitions(-D__TLE__)
@@ -95,8 +144,61 @@ macro(flagtree_configure_options)
 endmacro()
 
 
+# FlagPrism: configure the external profiler/debugger after base options exist.
+macro(flagtree_configure_flagprism)
+  set(_flagprism_default OFF)
+  # FlagPrism: enable the external tools for supported backends.
+  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax)$")
+    set(_flagprism_default ON)
+  endif()
+  option(TRITON_BUILD_FLAGPRISM
+         "Build the FlagPrism debugger and profiler"
+         ${_flagprism_default})
+
+  if(TRITON_BUILD_FLAGPRISM)
+    # FlagPrism: allow the default NVIDIA build and supported named backends.
+    if(FLAGTREE_BACKEND AND
+       NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax)$")
+      message(FATAL_ERROR
+        "TRITON_BUILD_FLAGPRISM is only supported when "
+        "FLAGTREE_BACKEND is ascend, iluvatar, mthreads, enflame, or metax.")
+    endif()
+    if(TRITON_BUILD_PROTON)
+      message(FATAL_ERROR
+        "TRITON_BUILD_FLAGPRISM and TRITON_BUILD_PROTON cannot both be enabled. "
+        "Select exactly one profiler implementation.")
+    endif()
+
+    # FlagPrism: permit a separate local checkout during backend development.
+    if(NOT FLAGPRISM_SOURCE_DIR)
+      set(FLAGPRISM_SOURCE_DIR
+          "${CMAKE_CURRENT_SOURCE_DIR}/third_party/FlagPrism")
+    endif()
+    # FlagPrism: resolve relative overrides against the FlagTree source root.
+    get_filename_component(FLAGPRISM_SOURCE_DIR "${FLAGPRISM_SOURCE_DIR}" ABSOLUTE
+                           BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set(FLAGPRISM_CMAKE_FILE "${FLAGPRISM_SOURCE_DIR}/cmake/FlagPrism.cmake")
+    if(EXISTS "${FLAGPRISM_CMAKE_FILE}")
+      include("${FLAGPRISM_CMAKE_FILE}")
+      add_compile_definitions(__FLAGPRISM__=1)
+    else()
+      message(FATAL_ERROR
+        "FlagPrism source is missing. Run the Python package build to download "
+        "third-party dependencies.")
+    endif()
+  endif()
+endmacro()
+
+# FlagPrism: register external profiler/debugger component targets.
+macro(flagtree_add_flagprism_components)
+  if(TRITON_BUILD_FLAGPRISM)
+    flagprism_add_components()
+  endif()
+endmacro()
+
+
 macro(flagtree_configure_codegen_backends)
-  if(FLAGTREE_BACKEND STREQUAL "metax")
+  if(FLAGTREE_BACKEND MATCHES "^(metax|spacemit)$")
     list(APPEND TRITON_CODEGEN_BACKENDS "nvidia")
     list(APPEND TRITON_CODEGEN_BACKENDS "amd")
   endif()
@@ -158,7 +260,7 @@ macro(flagtree_configure_core_source)
   endif()
 
   if(FLAGTREE_BACKEND MATCHES
-     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|tileir|ppu|spacemit)$")
+     "^(xpu|cambricon|aipu|tsingmicro|enflame|rpu|thrive|metax|tileir|ppu|spacemit|sunrise|ascend)$")
     include_directories(${PROJECT_SOURCE_DIR}/include)
     include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
     if(FLAGTREE_BACKEND STREQUAL "xpu")
@@ -193,20 +295,20 @@ macro(flagtree_configure_core_source)
       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/iluvatar)
     set(TRITON_CORE_BINARY_DIR
       ${CMAKE_CURRENT_BINARY_DIR}/third_party/iluvatar)
-    option(TRITON_BUILD_GLUON
-      "Build the Gluon IR Python bindings (gluon_ir.cc)" OFF)
+    include_directories(${PROJECT_SOURCE_DIR}/include)
+    include_directories(${PROJECT_BINARY_DIR}/include)
     include_directories(${TRITON_CORE_SOURCE_DIR}/include)
     include_directories(${TRITON_CORE_BINARY_DIR}/include)
     include_directories(${TRITON_CORE_SOURCE_DIR}/backend/include)
     include_directories(${TRITON_CORE_BINARY_DIR}/backend/include)
     if(FLAGTREE_ILUVATAR_TLE)
-      include_directories(${TRITON_CORE_SOURCE_DIR}/tle/include)
-      include_directories(${TRITON_CORE_BINARY_DIR}/tle/include)
+      include_directories(${TRITON_CORE_SOURCE_DIR}/tle/dialect/include)
+      include_directories(${TRITON_CORE_BINARY_DIR}/tle/dialect/include)
     endif()
     add_subdirectory(
-      ${TRITON_CORE_SOURCE_DIR}/include ${TRITON_CORE_BINARY_DIR}/include)
+      ${PROJECT_SOURCE_DIR}/include ${PROJECT_BINARY_DIR}/include)
     add_subdirectory(
-      ${TRITON_CORE_SOURCE_DIR}/lib ${TRITON_CORE_BINARY_DIR}/lib)
+      ${PROJECT_SOURCE_DIR}/lib ${PROJECT_BINARY_DIR}/lib)
   endif()
 endmacro()
 
@@ -245,6 +347,50 @@ macro(flagtree_python_link_libraries)
 endmacro()
 
 
+macro(flagtree_configure_flir_dependency)
+  if(FLAGTREE_COMMON_IR_ENABLED)
+    if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third_party/flir/CMakeLists.txt")
+      message(FATAL_ERROR "CommonIR support requires third_party/flir")
+    endif()
+    include_directories(${PROJECT_SOURCE_DIR}/third_party/flir/include)
+    include_directories(${PROJECT_BINARY_DIR}/third_party/flir/include)
+    add_subdirectory(third_party/flir/include/mlir-ext/Dialect/CommonIR)
+    add_subdirectory(third_party/flir/lib/Dialect/CommonIR)
+  endif()
+
+  if(FLAGTREE_BACKEND STREQUAL "tsingmicro")
+    if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third_party/flir/CMakeLists.txt")
+      message(FATAL_ERROR "The ${FLAGTREE_BACKEND} backend requires third_party/flir")
+    endif()
+
+    # TsingMicro only consumes FLIR's C++ targets; do not build its Python/CPU plugin.
+    set(TRITON_SHARED_BUILD_CPU_BACKEND OFF)
+    list(REMOVE_ITEM TRITON_CODEGEN_BACKENDS "flir")
+    if(NOT TARGET TritonSharedUtils)
+      add_subdirectory(
+        "${PROJECT_SOURCE_DIR}/third_party/flir"
+        "${PROJECT_BINARY_DIR}/third_party/flir"
+      )
+    endif()
+  endif()
+endmacro()
+
+
+# AscendNPU-IR provides the BiShengIR dialects the ascend backend links against.
+# Added from the top level (not from the backend's own CMakeLists) so the source
+# directory is only ever associated with one binary directory.
+macro(flagtree_configure_ascend_npu_ir_dependency)
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    if(NOT EXISTS "${ASCENDNPU_IR_SRC_DIR}/CMakeLists.txt")
+      message(FATAL_ERROR
+        "The ascend backend requires AscendNPU-IR at ${ASCENDNPU_IR_SRC_DIR}. "
+        "Run the Python package build to download third-party dependencies.")
+    endif()
+    add_subdirectory(${ASCENDNPU_IR_SRC_DIR} ${ASCENDNPU_IR_BINARY_DIR})
+  endif()
+endmacro()
+
+
 macro(flagtree_configure_tle_plugin append_tle_plugin)
   if(FLAGTREE_TLE)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tle/CMakeLists.txt")
@@ -262,7 +408,11 @@ macro(flagtree_configure_python_plugins)
   # We always build proton dialect because core Triton conversion libraries link
   # ProtonIR. XPU-specific Proton GPU lowering wrappers are disabled inside the
   # Proton plugin instead of skipping the whole dialect.
-  if(FLAGTREE_BACKEND STREQUAL "hcu")
+  # FlagPrism: its external component supplies ProtonIR and dialect registration.
+  # if(FLAGTREE_BACKEND STREQUAL "hcu")
+  if(TRITON_BUILD_FLAGPRISM)
+    # FlagPrism supplies the ProtonIR target and dialect registration.
+  elseif(FLAGTREE_BACKEND STREQUAL "hcu")
     list(APPEND TRITON_PLUGIN_DIRS
       "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hcu/proton")
     include_directories(
@@ -286,7 +436,9 @@ endmacro()
 
 
 macro(flagtree_configure_backend_libraries)
-  if(FLAGTREE_BACKEND STREQUAL "iluvatar")
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    list(APPEND TRITON_LIBRARIES MLIRFuncInlinerExtension)
+  elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
     set(TRITON_LIBRARIES
       ${triton_libs}
       ${triton_plugins}
@@ -336,12 +488,18 @@ macro(flagtree_configure_backend_libraries)
 
       # LLVM
       LLVMPasses
-      LLVMXPUCodeGen
-      LLVMXPUAsmParser
 
       # NVIDIA compat (PTXAsmFormat for TritonInstrumentToLLVM)
       TritonNVIDIACompat
     )
+    # XPU target libraries are private to XTDK; public LLVM lacks them. Reuse the
+    # frontend probe from the top-level CMakeLists instead of linking them unconditionally.
+    if(NOT _TRITON_PUBLIC_LLVM_FRONTEND)
+      list(APPEND TRITON_LIBRARIES
+        LLVMXPUCodeGen
+        LLVMXPUAsmParser
+      )
+    endif()
   elseif(FLAGTREE_BACKEND STREQUAL "tsingmicro")
     list(APPEND TRITON_LIBRARIES
       # riscv
@@ -464,6 +622,10 @@ macro(flagtree_configure_tools_and_tests)
       flagtree_add_tle_generated_header_dependencies()
     endif()
     add_subdirectory(test)
+  elseif(FLAGTREE_BACKEND STREQUAL "ascend")
+    if(FLAGTREE_TLE)
+      flagtree_add_tle_generated_header_dependencies()
+    endif()
   elseif(FLAGTREE_BACKEND STREQUAL "iluvatar")
     option(FLAGTREE_ILUVATAR_BUILD_BIN
       "Build third_party/iluvatar/bin tools and lit tests" OFF)
@@ -481,6 +643,30 @@ macro(flagtree_configure_tools_and_tests)
   # add_subdirectory() calls above, so unittests/triton.so/triton-llvm-opt all link cleanly.
   if(FLAGTREE_BACKEND STREQUAL "ppu" AND TARGET TritonGPUTransforms AND TARGET TritonPPUGPUIR)
     target_link_libraries(TritonGPUTransforms PUBLIC TritonPPUGPUIR)
+  endif()
+
+  # The spacemit backend consumes the generic TLE dialect (TleIR/TleTableGen
+  # from third_party/tle), but third_party/spacemit is configured before the
+  # tle plugin by the root CMakeLists.txt, so its targets cannot reference
+  # TleTableGen at configure time and spine-triton-opt's TRITON_LIBS capture
+  # misses TleIR. Wire both here, after flagtree_configure_tle_plugin (invoked
+  # earlier in the root CMakeLists.txt) has defined the targets (mirrors
+  # flagtree_add_tle_generated_header_dependencies, which documents the same
+  # race for core targets).
+  if(FLAGTREE_BACKEND STREQUAL "spacemit")
+    if(TARGET TleTableGen)
+      foreach(t SpineTriton TLEToLinalg TritonToUnstructured spine-triton-opt)
+        if(TARGET ${t})
+          add_dependencies(${t} TleTableGen)
+        endif()
+      endforeach()
+    endif()
+    if(TARGET spine-triton-opt AND TARGET TleIR)
+      # TleDialect's registration lives in TleIR; spine-triton-opt registers the
+      # dialect (RegisterSpineTritonDialects.h) and thus needs its symbols. Also
+      # provided transitively via TLEToLinalg's PUBLIC link, kept explicit here.
+      target_link_libraries(spine-triton-opt PRIVATE TleIR)
+    endif()
   endif()
 endmacro()
 
@@ -541,19 +727,19 @@ macro(flagtree_added_python_src)
     get_filename_component(_python_source_name "${_flagtree_python_source}" NAME)
     set(_python_source "${BACKEND_PYTHON_SRC_PATH}/${_python_source_name}")
     if(IS_DIRECTORY "${BACKEND_PYTHON_SRC_PATH}" AND EXISTS "${_python_source}")
-      if(FLAGTREE_BACKEND STREQUAL "iluvatar" AND "${_python_source_name}" STREQUAL "gluon_ir.cc")
-        if(TRITON_BUILD_GLUON)
-          list(APPEND _flagtree_python_sources "${_python_source}")
-          target_compile_definitions(triton PRIVATE TRITON_BUILD_GLUON)
-        endif()
-      else()
-        list(APPEND _flagtree_python_sources "${_python_source}")
-      endif()
+      list(APPEND _flagtree_python_sources "${_python_source}")
     else()
       list(APPEND _flagtree_python_sources "${_flagtree_python_source}")
     endif()
   endforeach()
   add_library(triton SHARED ${_flagtree_python_sources})
+
+  if(FLAGTREE_BACKEND STREQUAL "ascend")
+    # third_party/ascend/triton_ascend.cc registers the buffer_ir submodule, so
+    # its implementation must be part of the triton module.
+    target_sources(triton PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ascend/python/triton/extension/buffer/src/buffer_ir.cc)
+  endif()
 
   if(FLAGTREE_BACKEND STREQUAL "xpu")
     target_sources(triton PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xpu/python/src/mlir_pass_abi_shim.cc)
@@ -569,8 +755,150 @@ function(flagtree_spec_td_set output_td td_filename)
   file(RELATIVE_PATH relative_path "${PROJECT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
   get_filename_component(BACKEND_SPEC_ROOT "${BACKEND_SPEC_INCLUDE_DIR}" DIRECTORY)
   set(BACKEND_SPEC_TD ${BACKEND_SPEC_ROOT}/${relative_path}/${td_filename})
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+               "${BACKEND_SPEC_TD}")
   if(EXISTS ${BACKEND_SPEC_TD})
     set(ret ${BACKEND_SPEC_TD})
   endif()
   set(${output_td} ${ret} PARENT_SCOPE)
 endfunction()
+
+
+# ---------------------------------------------------------------------------
+# Public LLVM 22 compatibility layer (XPU only)
+# XPU builds against XTDK LLVM 22 and public LLVM 22; fork differences are not versioned.
+# Probe headers with file(READ)+MATCHES: check_cxx_source_compiles misses MLIR include paths.
+# Keep one macro per probe so changing one compatibility check cannot alter another.
+#
+# Scoped to the xpu backend: the flags below are global (CMAKE_CXX_FLAGS) and
+# would otherwise leak into every other vendor's build.  Other backends keep
+# their previous flags.
+# ---------------------------------------------------------------------------
+macro(flagtree_configure_backend_llvm_compat)
+if(NOT MSVC AND FLAGTREE_BACKEND STREQUAL "xpu")
+  # Derive the frontend from the LLVM tree in use: XTDKDLDialect.h identifies XTDK;
+  # this avoids relying on a separately maintained external switch.
+  set(_XDL_HDR "${LLVM_INCLUDE_DIRS}/mlir/Dialect/LLVMIR/XTDKDLDialect.h")
+  if(EXISTS "${_XDL_HDR}")
+    message(STATUS "[XPU] XTDKDL dialect found (XTDK tree)")
+    add_compile_definitions(TRITON_HAVE_XTDKDL)
+    set(_TRITON_PUBLIC_LLVM_FRONTEND OFF)
+  else()
+    message(STATUS "[XPU] XTDKDL dialect absent (public LLVM)")
+    set(_TRITON_PUBLIC_LLVM_FRONTEND ON)
+  endif()
+
+  if(_TRITON_PUBLIC_LLVM_FRONTEND)
+    # Public LLVM 22 deprecates mlir::OpBuilder::create<T>(); suppress the warning rather
+    # than rewriting every call site shared with XTDK LLVM 22.
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-declarations")
+    # Clang 18+ warns about temporary values bound to local ValueRange/SmallVector
+    # references; these bindings are safe. Probe the flag because GCC 11 rejects it.
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-Wno-error=dangling" CXX_SUPPORTS_WNO_ERROR_DANGLING)
+    if(CXX_SUPPORTS_WNO_ERROR_DANGLING)
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error=dangling")
+    endif()
+
+    # Public LLVM 22's v2 tarball uses a GCC 11 static libstdc++ archive that references
+    # symbols missing from the host GCC 9 archive. Link it after all LLVM archives and
+    # derive its path from the LLVM tree in use instead of relying on an external override.
+    if(EXISTS "${LLVM_SYSPATH}/lib/gcc11/libstdc++.a")
+      set(_GCC11_LIBSTDCXX "${LLVM_SYSPATH}/lib/gcc11/libstdc++.a")
+      message(STATUS "[XPU] gcc-11 static libstdc++ found: ${_GCC11_LIBSTDCXX}")
+    endif()
+  endif()
+
+  # XTDK-private pipeline tuning options such as VectorCombineXPU.
+  set(_PT_HDR "${LLVM_INCLUDE_DIRS}/llvm/Passes/PassBuilder.h")
+  if(EXISTS "${_PT_HDR}")
+    file(READ "${_PT_HDR}" _PT_SRC)
+    if(_PT_SRC MATCHES "VectorCombineXPU")
+      add_compile_definitions(TRITON_HAVE_XTDK_TUNING_OPTIONS)
+    endif()
+  endif()
+
+  # Public MLIR 22 uses terminator-based RegionBranchPoint encoding and removed
+  # getRegionOrNull; XTDK MLIR still uses the Region*-based form.
+  set(_RBP_HDR "${LLVM_INCLUDE_DIRS}/mlir/Interfaces/ControlFlowInterfaces.h")
+  if(EXISTS "${_RBP_HDR}")
+    file(READ "${_RBP_HDR}" _RBP_SRC)
+    if(_RBP_SRC MATCHES "getTerminatorPredecessorOrNull")
+      message(STATUS "[XPU] RegionBranchPoint: terminator-based (public MLIR)")
+      add_compile_definitions(TRITON_MLIR_REGIONBRANCHPOINT_TERMINATOR)
+    endif()
+  endif()
+
+  # Public MLIR 22 provides a (Operation*, result_range) RegionSuccessor constructor;
+  # XTDK 22.1.8 provides only the (result_range) form.
+  set(_RS_HDR "${LLVM_INCLUDE_DIRS}/mlir/Interfaces/ControlFlowInterfaces.h")
+  if(EXISTS "${_RS_HDR}")
+    file(READ "${_RS_HDR}" _RS_SRC)
+    if(_RS_SRC MATCHES "RegionSuccessor\\(Operation \\*successorOp")
+      message(STATUS "[XPU] RegionSuccessor: (Operation*, result_range) ctor found (public MLIR)")
+      add_compile_definitions(TRITON_MLIR_REGIONSUCCESSOR_OP_CTOR)
+    else()
+      message(STATUS "[XPU] RegionSuccessor: single-arg ctor (XTDK MLIR)")
+      add_compile_definitions(TRITON_MLIR_REGIONSUCCESSOR_SINGLE_ARG)
+    endif()
+  else()
+    add_compile_definitions(TRITON_MLIR_REGIONSUCCESSOR_OP_CTOR)
+  endif()
+
+  # XTDK's private printf/assert pass lowers device printf at LLVM O3, so MLIR must
+  # preserve `call @printf`; public LLVM lowers it in MLIR instead. This gates MLIR
+  # TargetInfo lowering only, distinct from llvm.cc's TRITON_HAVE_XPU_PRINTF_ASSERT probe.
+  set(_PRINTF_HDR "${LLVM_INCLUDE_DIRS}/llvm/Transforms/Utils/XPULowerPrintfAssert.h")
+  if(EXISTS "${_PRINTF_HDR}")
+    message(STATUS "[XPU] XPU printf/assert pass found (XTDK tree): MLIR keeps call @printf")
+  else()
+    message(STATUS "[XPU] XPU printf/assert pass absent (public LLVM): MLIR lowers printf")
+    add_compile_definitions(TRITON_XPU_PRINTF_MLIR_LOWER)
+  endif()
+
+  # Public MLIR 22 merges nvvm.cp.async.mbarrier.arrive.shared into
+  # nvvm.cp.async.mbarrier.arrive and adds reduction operands to nvvm.barrier;
+  # XTDK keeps the split op and legacy signature. Keep this probe independent.
+  set(_NVVM_HDR "${LLVM_INCLUDE_DIRS}/mlir/Dialect/LLVMIR/NVVMOps.h.inc")
+  if(EXISTS "${_NVVM_HDR}")
+    file(READ "${_NVVM_HDR}" _NVVM_SRC)
+    if(NOT _NVVM_SRC MATCHES "CpAsyncMBarrierArriveSharedOp")
+      message(STATUS "[XPU] NVVM: merged cp.async.mbarrier.arrive (public MLIR)")
+      add_compile_definitions(TRITON_MLIR_NVVM_MERGED_MBARRIER_ARRIVE)
+    else()
+      message(STATUS "[XPU] NVVM: split cp.async.mbarrier.arrive[.shared] (XTDK MLIR)")
+    endif()
+    # Public MLIR 22 adds reductionOp/reductionPredicate operands to nvvm.barrier.
+    if(_NVVM_SRC MATCHES "BarrierReductionAttr")
+      message(STATUS "[XPU] NVVM: barrier with reduction operands (public MLIR)")
+      add_compile_definitions(TRITON_MLIR_NVVM_BARRIER_REDUCTION)
+    endif()
+  endif()
+endif()
+endmacro()
+
+
+# XPU adjustments for the `triton` Python-module target, called right after it is
+# linked against TRITON_LIBRARIES: the conceal-IR definition, the GCC 11 static
+# libstdc++ archive, and the repeated public-LLVM archives.
+macro(flagtree_configure_backend_triton_target target)
+  if(FLAGTREE_BACKEND STREQUAL "xpu")
+    target_compile_definitions(${target} PRIVATE TRITON_CONCEAL_IR=1)
+  endif()
+  # Link the GCC 11 static libstdc++ archive after all LLVM archives.
+  if(DEFINED _GCC11_LIBSTDCXX AND _GCC11_LIBSTDCXX)
+    target_link_libraries(${target} PRIVATE "${_GCC11_LIBSTDCXX}")
+  endif()
+  # Public LLVM 22 needs LLVMPlugins for llvm::PassPlugin::Load, while the Arith and
+  # MemRef archives appear before their users. Repeat all three after the main link so
+  # static linking can pull the required members; repeating archives is safe.
+  # Gate on the imported target: LLVM-19-era toolchains (XTDK etc.) do not ship
+  # libLLVMPlugins.a, and an unresolved name degrades to `-lLLVMPlugins` (link error).
+  if(TARGET LLVMPlugins)
+    target_link_libraries(${target} PRIVATE
+      LLVMPlugins
+      MLIRArithDialect
+      MLIRMemRefDialect
+    )
+  endif()
+endmacro()

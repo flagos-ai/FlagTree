@@ -1,0 +1,219 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
+#include "mlir/Conversion/LLVMCommon/Pattern.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/Types.h"
+#include "llvm/Support/LogicalResult.h"
+#include <numeric>
+
+namespace {
+
+using namespace mlir;
+namespace ttg = mlir::triton::gpu;
+using namespace mlir::triton;
+
+struct ExtractAllocatedPtrOpConversion
+    : public ConvertOpToLLVMPattern<tle::ExtractAllocatedPtrOp> {
+  ExtractAllocatedPtrOpConversion(LLVMTypeConverter &typeConverter,
+                                  PatternBenefit benefit);
+  LogicalResult
+  matchAndRewrite(tle::ExtractAllocatedPtrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+struct ExtractAlignedPtrOpConversion
+    : public ConvertOpToLLVMPattern<tle::ExtractAlignedPtrOp> {
+  ExtractAlignedPtrOpConversion(LLVMTypeConverter &typeConverter,
+                                PatternBenefit benefit);
+  LogicalResult
+  matchAndRewrite(tle::ExtractAlignedPtrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+struct ExtractOffsetOpConversion
+    : public ConvertOpToLLVMPattern<tle::ExtractOffsetOp> {
+  ExtractOffsetOpConversion(LLVMTypeConverter &typeConverter,
+                            PatternBenefit benefit);
+  LogicalResult
+  matchAndRewrite(tle::ExtractOffsetOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+struct ExtractSizesOpConversion
+    : public ConvertOpToLLVMPattern<tle::ExtractSizesOp> {
+  ExtractSizesOpConversion(LLVMTypeConverter &typeConverter,
+                           PatternBenefit benefit);
+  LogicalResult
+  matchAndRewrite(tle::ExtractSizesOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+struct ExtractStridesOpConversion
+    : public ConvertOpToLLVMPattern<tle::ExtractStridesOp> {
+  ExtractStridesOpConversion(LLVMTypeConverter &typeConverter,
+                             PatternBenefit benefit);
+  LogicalResult
+  matchAndRewrite(tle::ExtractStridesOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+struct ExtractPtrOpConversion
+    : public ConvertOpToLLVMPattern<tle::ExtractPtrOp> {
+  ExtractPtrOpConversion(LLVMTypeConverter &typeConverter,
+                         PatternBenefit benefit);
+  LogicalResult
+  matchAndRewrite(tle::ExtractPtrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+} // namespace
+
+ExtractAllocatedPtrOpConversion::ExtractAllocatedPtrOpConversion(
+    LLVMTypeConverter &typeConverter, PatternBenefit benefit)
+    : ConvertOpToLLVMPattern(typeConverter, benefit) {}
+
+LogicalResult ExtractAllocatedPtrOpConversion::matchAndRewrite(
+    tle::ExtractAllocatedPtrOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  LLVM::ExtractValueOp newOp = LLVM::ExtractValueOp::create(
+      rewriter, op.getLoc(), adaptor.getInput(), SmallVector<int64_t>{0});
+  rewriter.replaceOp(op, newOp.getResult());
+  return success();
+}
+
+ExtractAlignedPtrOpConversion::ExtractAlignedPtrOpConversion(
+    LLVMTypeConverter &typeConverter, PatternBenefit benefit)
+    : ConvertOpToLLVMPattern(typeConverter, benefit) {}
+
+LogicalResult ExtractAlignedPtrOpConversion::matchAndRewrite(
+    tle::ExtractAlignedPtrOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  LLVM::ExtractValueOp newOp = LLVM::ExtractValueOp::create(
+      rewriter, op.getLoc(), adaptor.getInput(), SmallVector<int64_t>{0});
+  rewriter.replaceOp(op, newOp.getResult());
+  return success();
+}
+
+ExtractOffsetOpConversion::ExtractOffsetOpConversion(
+    LLVMTypeConverter &typeConverter, PatternBenefit benefit)
+    : ConvertOpToLLVMPattern(typeConverter, benefit) {}
+
+LogicalResult ExtractOffsetOpConversion::matchAndRewrite(
+    tle::ExtractOffsetOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<arith::ConstantOp>(op,
+                                                 rewriter.getI64IntegerAttr(0));
+  return success();
+}
+
+ExtractSizesOpConversion::ExtractSizesOpConversion(
+    LLVMTypeConverter &typeConverter, PatternBenefit benefit)
+    : ConvertOpToLLVMPattern(typeConverter, benefit) {}
+
+LogicalResult ExtractSizesOpConversion::matchAndRewrite(
+    tle::ExtractSizesOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  if (ttg::MemDescType memdesc =
+          dyn_cast<ttg::MemDescType>(op.getInput().getType())) {
+    SmallVector<Value> sizes;
+    for (int64_t size : memdesc.getShape()) {
+      auto newOp = arith::ConstantOp::create(rewriter, op.getLoc(),
+                                             rewriter.getI64IntegerAttr(size));
+      sizes.push_back(newOp);
+    }
+    rewriter.replaceOpWithMultiple(op, sizes);
+    return success();
+  } else {
+    return failure();
+  }
+}
+
+ExtractStridesOpConversion::ExtractStridesOpConversion(
+    LLVMTypeConverter &typeConverter, PatternBenefit benefit)
+    : ConvertOpToLLVMPattern(typeConverter, benefit) {}
+
+LogicalResult ExtractStridesOpConversion::matchAndRewrite(
+    tle::ExtractStridesOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  if (ttg::MemDescType memdesc =
+          dyn_cast<ttg::MemDescType>(op.getInput().getType())) {
+    ArrayRef<int64_t> shape = memdesc.getShape();
+    unsigned rank = memdesc.getShape().size();
+    SmallVector<int64_t> strides(rank, 0);
+    llvm::SmallVector<uint32_t> order = ttg::getOrder(memdesc);
+    int64_t running = 1;
+    for (auto &elem : order) {
+      unsigned axis = elem;
+      strides[axis] = running;
+      running *= shape[axis];
+    }
+    llvm::SmallVector<Value> strideValues;
+    for (unsigned i = 0; i < shape.size(); ++i) {
+      strideValues.push_back(arith::ConstantOp::create(
+          rewriter, op.getLoc(), rewriter.getI64IntegerAttr(strides[i])));
+    }
+    rewriter.replaceOpWithMultiple(op, strideValues);
+    return success();
+  } else {
+    return failure();
+  }
+}
+
+ExtractPtrOpConversion::ExtractPtrOpConversion(LLVMTypeConverter &typeConverter,
+                                               PatternBenefit benefit)
+    : ConvertOpToLLVMPattern(typeConverter, benefit) {}
+
+LogicalResult ExtractPtrOpConversion::matchAndRewrite(
+    tle::ExtractPtrOp op, OpAdaptor adaptor,
+    ConversionPatternRewriter &rewriter) const {
+  auto input = adaptor.getInput();
+  auto inPtr = dyn_cast<LLVM::LLVMPointerType>(input.getType());
+  auto outPtr = dyn_cast<LLVM::LLVMPointerType>(op.getType());
+  if (!inPtr || !outPtr)
+    return failure();
+  // Triton global pointers are address space 1. HIP and CUDA device functions
+  // often take generic pointers. A plain replace would leave an unrealized
+  // cast that cannot be translated to LLVM IR.
+  if (inPtr == outPtr) {
+    rewriter.replaceOp(op, input);
+    return success();
+  }
+  rewriter.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(op, outPtr, input);
+  return success();
+}
+
+void tle::populateExtractOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
+                                          RewritePatternSet &patterns,
+                                          PatternBenefit benefit) {
+  patterns.add<ExtractAllocatedPtrOpConversion, ExtractAlignedPtrOpConversion,
+               ExtractOffsetOpConversion, ExtractSizesOpConversion,
+               ExtractStridesOpConversion, ExtractPtrOpConversion>(
+      typeConverter, benefit);
+}

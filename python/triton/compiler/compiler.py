@@ -24,12 +24,12 @@ from __future__ import annotations
 import hashlib
 import json
 from .._C.libtriton import get_cache_invalidating_env_vars, ir
-from ..backends import backends
+from ..backends import get_backend, get_driver
 from ..backends.compiler import Language
-from ..backends.compiler import BaseBackend, GPUTarget
+from ..backends.compiler import BaseBackend, GPUTarget, ReplaceLowering  # flagtree pipeline enhance
 from .. import __version__, knobs
 from ..runtime.autotuner import OutOfResources
-from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager, get_cache_key
+from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager, get_cache_key, triton_key as triton_key
 from ..runtime.driver import driver
 from ..tools.disasm import get_sass
 from pathlib import Path
@@ -326,7 +326,7 @@ def compile(src, target=None, options=None, _env_vars=None):
     codegen_fns = backend.get_codegen_implementation(options)
     module_map = backend.get_module_map()
     try:
-        module = src.make_ir(target, options, codegen_fns, module_map, context)
+        module = backend.make_ir(src, options, codegen_fns, module_map, context)
     except Exception as e:
         filter_traceback(e)
         raise
@@ -345,33 +345,65 @@ def compile(src, target=None, options=None, _env_vars=None):
 
     if compilation_listener:
         timer.finished_ir_initialization()
-    for ext, compile_ir in list(stages.items())[first_stage:]:
-        next_module = compile_ir(module, metadata)
-        ir_filename = f"{file_name}.{ext}"
-        if fn_override_manager is None:
-            # Users can override kernels at scale by setting `ir_override` in autotune config
-            # without TRITON_KERNEL_OVERRIDE
-            if (ir_override := metadata.get("ir_override", None)) and ir_override.endswith(f".{ext}"):
-                next_module = parse(ir_override, ext, context)
-        elif full_name := fn_override_manager.get_file(ir_filename):
-            print(f"\nOverriding kernel with file {full_name}")
-            next_module = parse(full_name, ext, context)
-        # If TRITON_STORE_BINARY_ONLY is 1, only store cubin/hsaco/json
-        if (not store_only_binary) or (ext in ("cubin", "hsaco", "json")):
-            metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
-        if fn_dump_manager is not None:
-            fn_dump_manager.put(next_module, ir_filename)
-            if ext == "cubin":
-                sass = get_sass(next_module)
-                fn_dump_manager.put(sass, file_name + ".sass")
-        # use an env variable to parse ir from file
-        if use_ir_loc == ext:
-            ir_full_name = fn_cache_manager.get_file(ir_filename)
-            next_module.create_location_snapshot(ir_full_name)
-            print(f"Creating new locations for {ir_full_name}")
-        module = next_module
+    # flagtree pipeline enhance: the stage loop is a function so that it can
+    # run once more on a replaced lowering (see below)
+    def run_stages(module):
+        for ext, compile_ir in list(stages.items())[first_stage:]:
+            next_module = compile_ir(module, metadata)
+            ir_filename = f"{file_name}.{ext}"
+            if fn_override_manager is None:
+                # Users can override kernels at scale by setting `ir_override` in autotune config
+                # without TRITON_KERNEL_OVERRIDE
+                if (ir_override := metadata.get("ir_override", None)) and ir_override.endswith(f".{ext}"):
+                    next_module = parse(ir_override, ext, context)
+            elif full_name := fn_override_manager.get_file(ir_filename):
+                print(f"\nOverriding kernel with file {full_name}")
+                next_module = parse(full_name, ext, context)
+            # If TRITON_STORE_BINARY_ONLY is 1, only store cubin/hsaco/json
+            if (not store_only_binary) or (ext in ("cubin", "hsaco", "json")):
+                metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
+            if fn_dump_manager is not None:
+                fn_dump_manager.put(next_module, ir_filename)
+                if ext == "cubin":
+                    sass = get_sass(next_module)
+                    fn_dump_manager.put(sass, file_name + ".sass")
+            # use an env variable to parse ir from file
+            if use_ir_loc == ext:
+                ir_full_name = fn_cache_manager.get_file(ir_filename)
+                next_module.create_location_snapshot(ir_full_name)
+                print(f"Creating new locations for {ir_full_name}")
+            module = next_module
+            if compilation_listener:
+                timer.stage_finished(ext)
+
+    # begin flagtree pipeline enhance: a backend stage may hand back a lowering
+    # made with adjusted options (ReplaceLowering). The stages before its
+    # products run again from the stored source IR and the products are
+    # recorded in place of the stage outputs; the cache key keeps the options
+    # the user asked for and the metadata records the options used.
+    try:
+        run_stages(module)
+    except ReplaceLowering as e:
+        metadata.update(e.metadata)
+
+        def replay(product):
+            return lambda src, metadata: product
+
+        stages = {
+            ext: replay(e.products[ext]) if ext in e.products else compile_ir
+            for ext, compile_ir in stages.items()
+        }
         if compilation_listener:
-            timer.stage_finished(ext)
+            stage_count = len(timer.lowering_stage_ends)
+        run_stages(parse(metadata_group[ir_filename], src.ext, context))
+        if compilation_listener:
+            # The second run only records the products: keep the times of the
+            # first run, and the second run's entries for the stages the first
+            # run did not finish (the one that raised).
+            ends = timer.lowering_stage_ends
+            recorded = {name for name, _ in ends[:stage_count]}
+            ends[stage_count:] = [entry for entry in ends[stage_count:] if entry[0] not in recorded]
+    # end flagtree pipeline enhance
     # write-back metadata
     metadata_group[metadata_filename] = fn_cache_manager.put(json.dumps(metadata, default=vars), metadata_filename,
                                                              binary=False)
@@ -386,11 +418,7 @@ def compile(src, target=None, options=None, _env_vars=None):
 
 
 def make_backend(target: GPUTarget) -> BaseBackend:
-    actives = [x.compiler for x in backends.values() if x.compiler.supports_target(target)]
-    if len(actives) != 1:
-        raise RuntimeError(
-            f"{len(actives)} compatible backends for target ({target.backend}) ({actives}). There should only be one.")
-    return actives[0](target)
+    return get_backend(target).compiler(target)
 
 
 class LazyDict:
@@ -428,6 +456,11 @@ def _raise_error(err, *args, **kwargs):
 
 class CompiledKernel:
 
+    # flagtree: compatibility for Torch Inductor versions that still read launch hooks
+    # from CompiledKernel. Triton 3.7 owns these hooks under knobs.runtime.
+    launch_enter_hook = knobs.runtime.launch_enter_hook
+    launch_exit_hook = knobs.runtime.launch_exit_hook
+
     def __init__(self, src, metadata_group, hash):
         from collections import namedtuple
         metadata_path = next((Path(p) for c, p in metadata_group.items() if c.endswith(".json")))
@@ -435,6 +468,14 @@ class CompiledKernel:
         # JSON serialization dumps the target as a dict. Restore it to a GPUTarget.
         target = metadata['target']
         metadata['target'] = GPUTarget(target['backend'], target['arch'], target['warp_size'])
+        # Restore tuple-typed metadata fields serialized as JSON arrays.
+        # Backends that do not support cluster launches (e.g. hcu, mthreads)
+        # omit cluster_dims entirely; torch._inductor reads it unconditionally
+        # when the kernel carries metadata, so default it here rather than
+        # letting every such backend patch torch/inductor in its own adapter.
+        cluster_dims = metadata.setdefault("cluster_dims", (1, 1, 1))
+        if isinstance(cluster_dims, list):
+            metadata["cluster_dims"] = tuple(cluster_dims)
         KernelMetadata = namedtuple('KernelMetadata', sorted(list(metadata.keys())))
         self.metadata = KernelMetadata(**metadata)
         backend = make_backend(self.metadata.target)
@@ -458,6 +499,10 @@ class CompiledKernel:
         self.function = None
         self._run = None
 
+    def _get_kernel_driver(self):
+        """Return the runtime driver paired with this kernel's compile target."""
+        return get_driver(self.metadata.target, driver.active)
+
     def _init_handles(self):
         if self.module is not None:
             return
@@ -473,10 +518,11 @@ class CompiledKernel:
             raise err
 
         device = driver.active.get_current_device()
+        kernel_driver = self._get_kernel_driver()
         # create launcher
-        self._run = driver.active.launcher_cls(self.src, self.metadata)
-        # not enough shared memory to run the kernel
+        self._run = kernel_driver.launcher_cls(self.src, self.metadata)
         max_shared = max_shared_mem(device)
+        # not enough shared memory to run the kernel
         if self.metadata.shared > max_shared:
             raise_(OutOfResources(self.metadata.shared, max_shared, "shared memory"))
         if hasattr(self.metadata, "tmem_size") and self.metadata.tmem_size is not None:
@@ -487,10 +533,11 @@ class CompiledKernel:
         if knobs.runtime.kernel_load_start_hook is not None:
             knobs.runtime.kernel_load_start_hook(self.module, self.function, self.name, self.metadata_group, self.hash)
         # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
-        self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = driver.active.utils.load_binary(
+        self.module, self.function, self.n_regs, self.n_spills, self.n_max_threads = kernel_driver.utils.load_binary(
             self.name, self.kernel, self.metadata.shared, device)
-        warp_size = driver.active.get_current_target().warp_size
-        if self.metadata.num_warps * warp_size > self.n_max_threads:
+        warp_size = self.metadata.target.warp_size
+        if self.metadata.num_warps * warp_size > self.n_max_threads \
+            and self.metadata.target.backend != "maca":  # flagtree metax
             raise_(OutOfResources(self.metadata.num_warps * warp_size, self.n_max_threads, "threads"))
         if knobs.runtime.kernel_load_end_hook is not None:
             knobs.runtime.kernel_load_end_hook(self.module, self.function, self.name, self.metadata_group, self.hash)

@@ -39,14 +39,11 @@ namespace OpTrait {
 // corresponding trait classes. This avoids them being template
 // instantiated/duplicated.
 namespace impl {
-// The rationale for this trait is to prevent users from creating programs
-// that would have catastrophic register pressure and cause the compiler to
-// hang.
-// Since H100 has 256KB registers, we should allow users to create tensors
-// of size up to 256K elements. It will spill for datatypes wider than 1B,
-// but we probably should limit number of elements (rather than bytes) to
-// keep specs simple
-int constexpr maxTensorNumElements = 1048576;
+// IR construction limit, including temporary tensors used to describe node
+// transfers. NVIDIA's TLE node fusion pass separately limits surviving tensors
+// to 2^20 before GPU lowering to guard against excessive register pressure and
+// compilation cost. Other pipelines must provide their own stricter check.
+int constexpr maxTensorNumElements = 33554432;
 
 LogicalResult verifyTensorSize(Operation *op);
 LogicalResult verifyTensorLayouts(Operation *op);

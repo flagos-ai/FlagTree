@@ -173,8 +173,43 @@ void CreateTokenOp::build(::mlir::OpBuilder &builder,
                           TokenLoadType loadType) {
   auto tokenType = TokenType::get(builder.getContext());
   auto resultType = RankedTensorType::get({num}, tokenType);
-  build(builder, state, resultType, num, loadType);
+  state.addTypes(resultType);
+  state.addAttribute("numBuffers", builder.getI32IntegerAttr(num));
+  state.addAttribute("loadType",
+                     TokenLoadTypeAttr::get(builder.getContext(), loadType));
 }
+
+LogicalResult CreateTokenOp::verify() {
+  if (getNumBuffers() <= 0)
+    return emitOpError("requires positive numBuffers");
+  for (StringRef attrName : {"full_count", "empty_count"}) {
+    if (auto attr = (*this)->getAttrOfType<IntegerAttr>(attrName)) {
+      if (attr.getInt() <= 0)
+        return emitOpError("requires positive ") << attrName;
+    }
+  }
+  return success();
+}
+
+LogicalResult ConsumerReleaseOp::verify() {
+  if (auto attr = (*this)->getAttrOfType<IntegerAttr>("release_count")) {
+    if (attr.getInt() <= 0)
+      return emitOpError("requires positive release_count");
+  }
+  return success();
+}
+
+#ifdef __TLE__
+void ConsumerReleaseOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get());
+  MutableOperandRange fields = getReleasedFieldsMutable();
+  for (unsigned i = 0, e = fields.size(); i < e; ++i)
+    effects.emplace_back(MemoryEffects::Free::get(), &fields[i],
+                         gpu::SharedMemory::get());
+}
+#endif
 
 void ArefPutEnterOp::setStage(Value stage) { getStageMutable().assign(stage); }
 void ArefPutExitOp::setStage(Value stage) { getStageMutable().assign(stage); }

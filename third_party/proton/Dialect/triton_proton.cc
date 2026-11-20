@@ -1,7 +1,9 @@
 #include "Analysis/ScopeIdAllocation.h"
 #include "Conversion/ProtonGPUToLLVM/Passes.h"
+#ifndef TRITON_PROTON_NO_NVIDIA_AMD
 #include "Conversion/ProtonGPUToLLVM/ProtonAMDGPUToLLVM/Passes.h"
 #include "Conversion/ProtonGPUToLLVM/ProtonNvidiaGPUToLLVM/Passes.h"
+#endif
 #include "Conversion/ProtonToProtonGPU/Passes.h"
 #include "Dialect/Proton/IR/Dialect.h"
 #include "Dialect/ProtonGPU/IR/Dialect.h"
@@ -96,17 +98,23 @@ void init_triton_proton(py::module &&m) {
               profileScratchSize, profileScratchAlignment, clkExt));
         });
 
+  // When NVIDIA/AMD Proton lowering stacks are not built, the pass creators
+  // are unavailable; guard them to avoid unresolved symbols at import.
+#ifndef TRITON_PROTON_NO_NVIDIA_AMD
   ADD_PASS_WRAPPER_0("add_convert_proton_nvidia_gpu_to_llvm",
                      proton::gpu::createConvertProtonNvidiaGPUToLLVMPass);
   ADD_PASS_WRAPPER_1("add_convert_proton_amd_gpu_to_llvm",
                      proton::gpu::createConvertProtonAMDGPUToLLVMPass,
                      const std::string &);
+#endif
   ADD_PASS_WRAPPER_0("add_allocate_proton_shared_memory",
                      proton::gpu::createAllocateProtonSharedMemoryPass);
   ADD_PASS_WRAPPER_0("add_allocate_proton_global_scratch_buffer",
                      proton::gpu::createAllocateProtonGlobalScratchBufferPass);
   ADD_PASS_WRAPPER_0("add_schedule_buffer_store",
                      proton::gpu::createScheduleBufferStorePass);
+#ifndef TRITON_PROTON_NO_NVIDIA_AMD
   ADD_PASS_WRAPPER_0("add_sched_barriers",
                      proton::gpu::createAddSchedBarriersPass);
+#endif
 }

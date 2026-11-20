@@ -1,0 +1,68 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#ifndef TRITON_TLE_RAW_IR_DIALECT_H_
+#define TRITON_TLE_RAW_IR_DIALECT_H_
+
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+
+#include <optional>
+
+#include "tle/dialect/include/IR/Dialect.h.inc"
+#include "tle/dialect/include/IR/OpsEnums.h.inc"
+
+#define GET_ATTRDEF_CLASSES
+#include "tle/dialect/include/IR/TleAttrDefs.h.inc"
+
+#define GET_OP_CLASSES
+#include "tle/dialect/include/IR/Ops.h.inc"
+
+#ifdef FLAGCX_ENABLED
+#define GET_OP_CLASSES
+#include "tle/dialect/include/IR/FlagCxOps.h.inc"
+#endif
+
+namespace mlir::triton::tle {
+
+/// Register tiles materialized by logical-domain planning. Their pointer and
+/// mask values need precise AxisInfo and matching LLVM/scratch lowering.
+inline constexpr llvm::StringLiteral kPlannedTileAttr("tle.planned_tile");
+
+/// Return the linear tile index when an extract_tile has a compile-time
+/// constant index.
+std::optional<int64_t> getStaticExtractTileIndex(ExtractTileOp op);
+
+/// Return whether a static tile begins on a CTA tile boundary and spans an
+/// integral number of CTA tiles. Such an extract can be lowered as a register
+/// permutation and does not require shared-memory scratch space.
+bool isExtractTileCTAAligned(ExtractTileOp op, int64_t linearIndex);
+
+// Helper function that accepts both "acq_rel" and the legacy "acqrel"
+// spelling.
+std::optional<MemoryOrder> parseMemoryOrder(::llvm::StringRef str);
+} // namespace mlir::triton::tle
+
+#endif
