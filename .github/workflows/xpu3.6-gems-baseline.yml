@@ -17,12 +17,12 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-# test for baseline
+
 name: Xpu3.6-Gems-Baseline
 
 on:
   push:
-    branches: ["main", "triton_v3.6.x", "gems-vllm-xpu"]
+    branches: ["main", "triton_v3.6.x", "geme-vllm-xpu"]
 
 permissions:
   contents: read
