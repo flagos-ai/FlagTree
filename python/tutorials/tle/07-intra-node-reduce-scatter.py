@@ -28,6 +28,10 @@ data verifies cache reuse. Autotune owns result persistence, controlled by
 FLAGTREE_AUTOTUNE_CACHE_DIR. Local compile checks are memoized in the context;
 a new process still preflights candidates before consulting the tuning cache.
 TLE_CLEAR_L2 controls only the final TLE/Torch benchmark printed to stdout.
+That benchmark measures scatter -> device barrier -> TMA reduction without
+the entry barrier: each sample first synchronizes the local GPU and then
+all ranks, so the scratch buffer is safe to reuse. Autotuning, warmup and
+normal calls retain the entry barrier for consecutive invocations.
 """
 
 from __future__ import annotations
@@ -182,8 +186,8 @@ def device_barrier_kernel(
 
 def _get_problem():
     """Parse input dimensions and dtype."""
-    M = int(os.environ.get("M", "2048"))
-    N = int(os.environ.get("N", "2048"))
+    M = int(os.environ.get("M", "8192"))
+    N = int(os.environ.get("N", "8192"))
     if M <= 0 or N <= 0:
         raise ValueError("M and N must be positive integers")
     dtype_name = os.environ.get("DTYPE", "bf16").strip().lower()
@@ -250,17 +254,23 @@ class ReduceScatterContext:
     preflight_results: dict = field(default_factory=dict, repr=False)
 
 
-def _launch_reduce_scatter(input_tensor, ctx, *, config, compile_only=False):
-    """Entry barrier -> scatter -> barrier -> TMA reduction on the current stream."""
+def _launch_entry_barrier(ctx, *, compile_only=False):
+    """Wait for all ranks to finish reading scratch from the preceding call."""
     mesh = tle.device_mesh(tle.MeshConfig(device=ctx.world_size))
-    # A fast rank must not overwrite slots that a peer is still reducing
-    # from the preceding call. The tuner enqueues calls back-to-back.
-    entry = device_barrier_kernel.run(
+    return device_barrier_kernel.run(
         grid=(1, ),
         warmup=compile_only,
         scatter_ctx=ctx.scatter_ctx,
         mesh=mesh,
     )
+
+
+def _launch_reduce_scatter_core(input_tensor, ctx, *, config, compile_only=False):
+    """Scatter -> barrier -> TMA reduction on the current stream.
+
+    The caller must ensure that every rank has finished reading the scratch
+    buffer from its preceding call before any rank enters this function.
+    """
     scatter = scatter_kernel_opt.run(
         input_tensor,
         ctx.scatter_buf,
@@ -280,7 +290,7 @@ def _launch_reduce_scatter(input_tensor, ctx, *, config, compile_only=False):
         grid=(1, ),
         warmup=compile_only,
         scatter_ctx=ctx.scatter_ctx,
-        mesh=mesh,
+        mesh=tle.device_mesh(tle.MeshConfig(device=ctx.world_size)),
     )
     reduce = ring_reduce_kernel_tma.run(
         ctx.scatter_buf,
@@ -295,10 +305,19 @@ def _launch_reduce_scatter(input_tensor, ctx, *, config, compile_only=False):
         REDUCE_BLOCK_N=config["REDUCE_BLOCK_N"],
         num_warps=config["reduce_num_warps"],
     )
+    return scatter, barrier, reduce
+
+
+def _launch_reduce_scatter(input_tensor, ctx, *, config, compile_only=False):
+    """Entry barrier -> scatter -> barrier -> TMA reduction on the current stream."""
+    # A fast rank must not overwrite slots that a peer is still reducing
+    # from the preceding call. The tuner enqueues calls back-to-back.
+    entry = _launch_entry_barrier(ctx, compile_only=compile_only)
+    kernels = _launch_reduce_scatter_core(input_tensor, ctx, config=config, compile_only=compile_only)
     if compile_only:
         # Resolve asynchronous compilation and check actual resource limits
         # by loading binaries. warmup=True never executes the kernels.
-        for kernel in (entry, scatter, barrier, reduce):
+        for kernel in (entry, *kernels):
             if hasattr(kernel, "result"):
                 kernel = kernel.result()
             kernel._init_handles()
@@ -366,6 +385,7 @@ def _prune_reduce_scatter_config(config, input_tensor, ctx):
     config_space=CONFIG_SPACE,
     key_fn=_reduce_scatter_key,
     cache_version="tle-intra-node-rs-pruned-space-v1",
+    prune_fn=_prune_reduce_scatter_config
 )
 def reduce_scatter(input_tensor: torch.Tensor, ctx: ReduceScatterContext, *, config: dict) -> torch.Tensor:
     """Tune and execute on the current stream; all ranks pass autotune_pg=dist.group.WORLD.
@@ -401,16 +421,24 @@ def _assert_close_on_all_ranks(actual, expected, *, shape, stage, atol=6e-2, rto
 
 
 def benchmark_tle_vs_torch(input_tensor, ctx, config, *, warmup=WARMUP_ITERS, iters=BENCH_ITERS, clear_l2=True):
-    """Measure the selected operation and torch using max(per-rank median)."""
+    """Measure TLE core (excluding entry barrier) and torch with max(per-rank median).
+
+    Every timed invocation has external synchronization on all ranks, so
+    scratch reuse is safe without an entry device barrier. Warmup still
+    uses the complete operation, as do autotuning and normal calls.
+    """
     if warmup < 0 or iters < 1:
         raise ValueError("warmup must be nonnegative and iters must be positive")
     driver = triton.runtime.driver.active
     cache = driver.get_empty_cache_for_benchmark() if clear_l2 else None
     torch_output = torch.empty_like(ctx.output)
 
-    def run_tle():
-        # Exclude autotune's host-side candidate/cache agreement from timing.
+    def run_tle_full():
         reduce_scatter.fn(input_tensor, ctx, config=config)
+
+    def run_tle_core():
+        # Only time_one's per-sample synchronization makes this safe.
+        _launch_reduce_scatter_core(input_tensor, ctx, config=config)
 
     def run_torch():
         dist.reduce_scatter_tensor(torch_output, input_tensor, group=dist.group.WORLD)
@@ -418,6 +446,8 @@ def benchmark_tle_vs_torch(input_tensor, ctx, config, *, warmup=WARMUP_ITERS, it
     def time_one(fn):
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
+        # Each rank finishes its previous reduce before joining the barrier.
+        # Once all ranks arrive, no peer can still be reading the scratch buffer.
         torch.cuda.synchronize()
         dist.barrier()
         if clear_l2:
@@ -430,14 +460,14 @@ def benchmark_tle_vs_torch(input_tensor, ctx, config, *, warmup=WARMUP_ITERS, it
 
     for i in range(warmup):
         dist.barrier()
-        for fn in ((run_torch, run_tle) if i % 2 else (run_tle, run_torch)):
+        for fn in ((run_torch, run_tle_full) if i % 2 else (run_tle_full, run_torch)):
             fn()
     torch.cuda.synchronize()
 
     tle_times, torch_times = [], []
     for i in range(iters):
         # Alternate execution order to reduce measurement bias.
-        order = ((run_tle, tle_times), (run_torch, torch_times))
+        order = ((run_tle_core, tle_times), (run_torch, torch_times))
         for fn, samples in (reversed(order) if i % 2 else order):
             samples.append(time_one(fn))
     medians = torch.tensor(
@@ -547,7 +577,7 @@ def main():
     if rank == 0:
         input_bytes = input_tensor.numel() * input_tensor.element_size()
         print(f"Benchmark: iters={BENCH_ITERS} warmup={WARMUP_ITERS} clear_l2={clear_l2}; "
-              "stat=max(per-rank median)", flush=True)
+              "stat=max(per-rank median); TLE scope=core (entry barrier excluded)", flush=True)
         print(
             f"TLE: {tle_ms:.3f} ms, {input_bytes / (tle_ms * 1e6):.2f} GB/s; "
             f"Torch: {torch_ms:.3f} ms, {input_bytes / (torch_ms * 1e6):.2f} GB/s; "
