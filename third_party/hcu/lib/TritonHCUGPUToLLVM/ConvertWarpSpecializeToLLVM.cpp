@@ -5,6 +5,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "third_party/hcu/include/Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "third_party/hcu/include/TritonHCUGPUToLLVM/Passes.h"
@@ -12,11 +13,10 @@
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/Support/raw_ostream.h"
 #include <climits>
 #include <cstdlib>
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/ADT/SmallPtrSet.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 namespace mlir::triton {
 #define GEN_PASS_DEF_HCUGPUCONVERTWARPSPECIALIZETOLLVM
@@ -632,7 +632,8 @@ struct HCUGPUConvertWarpSpecializeToLLVM
       bool highLevel = false;
       mod.walk([&](triton::FuncOp) { highLevel = true; });
       if (highLevel) {
-        if (failed(manualws::early(mod))) return signalPassFailure();
+        if (failed(manualws::early(mod)))
+          return signalPassFailure();
         return;
       }
     }
@@ -665,11 +666,13 @@ struct HCUGPUConvertWarpSpecializeToLLVM
 
     for (LLVM::LLVMFuncOp kernel : kernels) {
       if (manual936) {
-        if (failed(manualws::late(kernel))) return signalPassFailure();
+        if (failed(manualws::late(kernel)))
+          return signalPassFailure();
       } else if (failed(lowerWarpSpecialize(
-              kernel, targetInfo, this->waspNumLoadWarps, this->waspNumMmaWarps,
-              this->wdraEnabled, this->wdraNumLoadRegs,
-              this->wdraNumMmaRegsMain, this->wdraNumMmaRegsTail)))
+                     kernel, targetInfo, this->waspNumLoadWarps,
+                     this->waspNumMmaWarps, this->wdraEnabled,
+                     this->wdraNumLoadRegs, this->wdraNumMmaRegsMain,
+                     this->wdraNumMmaRegsTail)))
         return signalPassFailure();
     }
 
@@ -686,7 +689,8 @@ struct HCUGPUConvertWarpSpecializeToLLVM
         mod.emitError("CTA LDS barrier request must be a unit attribute");
         return signalPassFailure();
       }
-      for (auto barrier : localCta) manualws::localCtaBarrier(barrier);
+      for (auto barrier : localCta)
+        manualws::localCtaBarrier(barrier);
     }
 
     // Convert GPU dialect to ROCDL dialect

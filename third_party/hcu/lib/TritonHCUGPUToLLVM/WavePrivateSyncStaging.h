@@ -1,8 +1,9 @@
-// gfx936 wave-private staging: coalesce redundant waits within proven read runs.
+// gfx936 wave-private staging: coalesce redundant waits within proven read
+// runs.
+#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
-#include "mlir/IR/Matchers.h"
 #include "triton/Analysis/PaddedSlotGeometry.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 
@@ -39,8 +40,7 @@ class WavePrivateSyncStaging {
     auto warpBases = bases.lookup(warp);
     auto warpAttr = mod->getAttrOfType<IntegerAttr>("ttg.num-warps");
     unsigned warps = warpAttr ? warpAttr.getInt() : 0;
-    if (warps <= 1 || !llvm::isPowerOf2_32(warps) ||
-        ty.getShape()[0] < warps ||
+    if (warps <= 1 || !llvm::isPowerOf2_32(warps) || ty.getShape()[0] < warps ||
         warpBases.size() != llvm::Log2_32(warps) ||
         !bases.lookup(block).empty())
       return false;
@@ -160,8 +160,8 @@ class WavePrivateSyncStaging {
       return false;
     for (auto [interval, padding] :
          llvm::zip_equal(enc.getIntervals(), enc.getPaddings()))
-      if (!llvm::isPowerOf2_32(interval) ||
-          !llvm::isPowerOf2_32(padding) || planeElements % interval)
+      if (!llvm::isPowerOf2_32(interval) || !llvm::isPowerOf2_32(padding) ||
+          planeElements % interval)
         return false;
     auto physical = [&](uint64_t n) -> std::optional<uint64_t> {
       uint64_t result = n;
@@ -191,8 +191,8 @@ class WavePrivateSyncStaging {
   // A bounded same-rank subview never changes the physical batch plane:
   // the allocation/encoding stay identical and every logical coordinate is
   // contained in its source. In particular, batch offsets and slicing decline.
-  bool boundedPaddedBatchSlice(
-      mlir::triton::gpu::MemDescSubsliceOp slice) const {
+  bool
+  boundedPaddedBatchSlice(mlir::triton::gpu::MemDescSubsliceOp slice) const {
     namespace ttg = mlir::triton::gpu;
     auto src = slice.getSrc().getType(), dst = slice.getType();
     auto offsets = slice.getOffsets();
@@ -202,8 +202,8 @@ class WavePrivateSyncStaging {
         src.getAllocShape() != dst.getAllocShape() ||
         src.getElementType() != dst.getElementType() ||
         src.getMemorySpace() != dst.getMemorySpace() ||
-        src.getMutableMemory() != dst.getMutableMemory() ||
-        offsets[0] != 0 || src.getShape()[0] != dst.getShape()[0])
+        src.getMutableMemory() != dst.getMutableMemory() || offsets[0] != 0 ||
+        src.getShape()[0] != dst.getShape()[0])
       return false;
     for (unsigned d = 0; d != 3; ++d) {
       int64_t begin = offsets[d], extent = dst.getShape()[d];
@@ -217,20 +217,20 @@ class WavePrivateSyncStaging {
 
   // Transpose changes logical axes only, including the allocation shape and
   // exact full-allocation linear map. A retained axis0 cannot change ownership.
-  bool paddedBatchViewTranspose(
-      mlir::triton::gpu::MemDescTransOp trans) const {
+  bool paddedBatchViewTranspose(mlir::triton::gpu::MemDescTransOp trans) const {
     namespace ttg = mlir::triton::gpu;
     auto src = trans.getSrc().getType(), dst = trans.getType();
     auto a = mlir::dyn_cast<ttg::PaddedSharedEncodingAttr>(src.getEncoding());
     auto b = mlir::dyn_cast<ttg::PaddedSharedEncodingAttr>(dst.getEncoding());
     auto order = trans.getOrder();
     if (!a || !b || src.getRank() != 3 || dst.getRank() != 3 ||
-        order.size() != 3 || order[0] != 0 ||
-        src.getAllocShape().size() != 3 || dst.getAllocShape().size() != 3 ||
+        order.size() != 3 || order[0] != 0 || src.getAllocShape().size() != 3 ||
+        dst.getAllocShape().size() != 3 ||
         src.getElementType() != dst.getElementType() ||
         src.getMemorySpace() != dst.getMemorySpace() ||
         src.getMutableMemory() != dst.getMutableMemory() ||
-        a.getIntervals() != b.getIntervals() || a.getPaddings() != b.getPaddings())
+        a.getIntervals() != b.getIntervals() ||
+        a.getPaddings() != b.getPaddings())
       return false;
     llvm::SmallVector<bool, 3> seen(3, false);
     llvm::SmallVector<int, 3> permutation;
@@ -243,8 +243,8 @@ class WavePrivateSyncStaging {
       seen[axis] = true;
       permutation.push_back(axis);
     }
-    return mlir::triton::transposeLinearLayout(a.getLinearComponent(), permutation) ==
-           b.getLinearComponent();
+    return mlir::triton::transposeLinearLayout(
+               a.getLinearComponent(), permutation) == b.getLinearComponent();
   }
 
   // A normalized view must lead to a unique explicit allocation. For Padded,
@@ -329,7 +329,8 @@ class WavePrivateSyncStaging {
     auto type = root ? dyn_cast<MemDesc>(root.getType()) : MemDesc{};
     if (!type || type != canonicalTypes.lookup(id) || type.getRank() != 3 ||
         type.getShape() != type.getAllocShape() ||
-        ArrayRef<int64_t>(ttg::getAllocationShapePerCTA(type)) != type.getShape() ||
+        ArrayRef<int64_t>(ttg::getAllocationShapePerCTA(type)) !=
+            type.getShape() ||
         !isa<ttg::SwizzledSharedEncodingAttr>(type.getEncoding()))
       return std::nullopt;
     uint64_t plane, elements, bytes;
@@ -352,9 +353,10 @@ class WavePrivateSyncStaging {
       return std::nullopt;
     for (auto [bit, basis] : llvm::enumerate(bases)) {
       if (basis.size() != 3 ||
-          (bit < lowBits ? basis[0] != 0
-                         : basis != std::vector<int32_t>(
-                               {int32_t(1u << (bit - lowBits)), 0, 0})))
+          (bit < lowBits
+               ? basis[0] != 0
+               : basis != std::vector<int32_t>(
+                              {int32_t(1u << (bit - lowBits)), 0, 0})))
         return std::nullopt;
     }
     uint64_t planeBytes;
@@ -370,15 +372,17 @@ class WavePrivateSyncStaging {
     auto warps = mod->getAttrOfType<mlir::IntegerAttr>("ttg.num-warps");
     uint64_t period;
     if (!warps || warps.getInt() <= 0 ||
-        !mlir::triton::gpu::paddedSlotMul(
-            left->second, uint64_t(warps.getInt()), period) || !period)
+        !mlir::triton::gpu::paddedSlotMul(left->second,
+                                          uint64_t(warps.getInt()), period) ||
+        !period)
       return false;
     return left->first % period == right->first % period;
   }
 
 public:
-  WavePrivateSyncStaging(mlir::ModuleOp mod, mlir::ModuleAllocation &moduleAlloc,
-                        const mlir::triton::HCU::TargetInfo &target)
+  WavePrivateSyncStaging(mlir::ModuleOp mod,
+                         mlir::ModuleAllocation &moduleAlloc,
+                         const mlir::triton::HCU::TargetInfo &target)
       : mod(mod), target(target) {
     using namespace mlir;
     namespace ttg = triton::gpu;
@@ -404,8 +408,8 @@ public:
     mod.walk([&](Operation *op) {
       auto name = op->getName().getStringRef();
       if (isa<CallOpInterface, triton::ExternElementwiseOp,
-              ttg::AsyncCopyGlobalToLocalOp,
-              hcu::BufferLoadToLocalOp, hcu::MatrixLoadToLocalOp>(op) ||
+              ttg::AsyncCopyGlobalToLocalOp, hcu::BufferLoadToLocalOp,
+              hcu::MatrixLoadToLocalOp>(op) ||
           name.contains("async") || name.contains("tdm") ||
           name.contains("asm") || name.contains("call"))
         unsupported = true;
@@ -444,9 +448,9 @@ public:
       }
       if (descs.empty())
         return;
-      bool allowed = isa<ttg::LocalAllocOp, ttg::LocalDeallocOp,
-                         ttg::LocalLoadOp, ttg::LocalStoreOp,
-                         BranchOpInterface>(op);
+      bool allowed =
+          isa<ttg::LocalAllocOp, ttg::LocalDeallocOp, ttg::LocalLoadOp,
+              ttg::LocalStoreOp, BranchOpInterface>(op);
       if (auto trans = dyn_cast<ttg::MemDescTransOp>(op))
         allowed = paddedBatchViewTranspose(trans);
       if (auto slice = dyn_cast<ttg::MemDescSubsliceOp>(op)) {
@@ -478,42 +482,45 @@ public:
             !isa<MemoryEffects::Read, MemoryEffects::Write>(effect.getEffect()))
           continue;
         auto ids = allocation->getBufferIds(value);
-        auto view = ids.size() == 1
-                        ? provenance(value, *ids.begin())
-                        : std::nullopt;
+        auto view =
+            ids.size() == 1 ? provenance(value, *ids.begin()) : std::nullopt;
         bool valid = view && view->root == roots.lookup(*ids.begin()) &&
                      validPlane(view->plane, *ids.begin());
         if (auto store = dyn_cast<ttg::LocalStoreOp>(op)) {
           auto source = dyn_cast<RankedTensorType>(store.getSrc().getType());
-          valid = valid && source && store.getDst() == value &&
-                  isa<MemoryEffects::Write>(effect.getEffect()) &&
-                  source.getShape() == cast<MemDesc>(value.getType()).getShape() &&
-                  ownedByBatchWave(source);
+          valid =
+              valid && source && store.getDst() == value &&
+              isa<MemoryEffects::Write>(effect.getEffect()) &&
+              source.getShape() == cast<MemDesc>(value.getType()).getShape() &&
+              ownedByBatchWave(source);
         } else if (auto alloc = dyn_cast<ttg::LocalAllocOp>(op)) {
-          auto source = alloc.getSrc()
-                            ? dyn_cast<RankedTensorType>(alloc.getSrc().getType())
-                            : RankedTensorType{};
-          valid = valid && source && alloc.getResult() == value &&
-                  isa<MemoryEffects::Write>(effect.getEffect()) &&
-                  source.getShape() == cast<MemDesc>(value.getType()).getShape() &&
-                  ownedByBatchWave(source);
+          auto source =
+              alloc.getSrc()
+                  ? dyn_cast<RankedTensorType>(alloc.getSrc().getType())
+                  : RankedTensorType{};
+          valid =
+              valid && source && alloc.getResult() == value &&
+              isa<MemoryEffects::Write>(effect.getEffect()) &&
+              source.getShape() == cast<MemDesc>(value.getType()).getShape() &&
+              ownedByBatchWave(source);
         } else if (auto load = dyn_cast<ttg::LocalLoadOp>(op)) {
           auto result = dyn_cast<RankedTensorType>(load.getType());
-          auto dot = result ? dyn_cast<ttg::DotOperandEncodingAttr>(result.getEncoding())
-                            : ttg::DotOperandEncodingAttr{};
-          valid = valid && !load.getToken() && load.getSrc() == value &&
-                  result && dot &&
-                  isa<ttg::AMDMfmaEncodingAttr>(dot.getParent()) &&
-                  isa<MemoryEffects::Read>(effect.getEffect()) &&
-                  result.getShape() == cast<MemDesc>(value.getType()).getShape() &&
-                  ownedByBatchWave(result);
+          auto dot =
+              result
+                  ? dyn_cast<ttg::DotOperandEncodingAttr>(result.getEncoding())
+                  : ttg::DotOperandEncodingAttr{};
+          valid =
+              valid && !load.getToken() && load.getSrc() == value && result &&
+              dot && isa<ttg::AMDMfmaEncodingAttr>(dot.getParent()) &&
+              isa<MemoryEffects::Read>(effect.getEffect()) &&
+              result.getShape() == cast<MemDesc>(value.getType()).getShape() &&
+              ownedByBatchWave(result);
         } else {
           valid = false;
         }
         for (Id id : ids) {
-          if (!valid ||
-              (canonicalTypes.count(id) &&
-               canonicalTypes.lookup(id) != view->plane)) {
+          if (!valid || (canonicalTypes.count(id) &&
+                         canonicalTypes.lookup(id) != view->plane)) {
             rejected.insert(id);
             continue;
           }
@@ -544,7 +551,8 @@ public:
     auto a = accesses.find(before), b = accesses.find(after);
     if (a != accesses.end() || b != accesses.end())
       return a != accesses.end() && b != accesses.end() &&
-             (a->second == b->second || sameWavePartition(a->second, b->second));
+             (a->second == b->second ||
+              sameWavePartition(a->second, b->second));
     return mlir::triton::HCU::membarFilter(before, after);
   }
 
@@ -568,10 +576,9 @@ public:
       return name == "tt.make_range" || name == "tt.splat" ||
              name == "tt.broadcast" || name == "tt.expand_dims" ||
              name == "tt.addptr" || name == "tt.get_program_id" ||
-             name == "tt.get_num_programs" ||
-             name == "ttg.memdesc_index" || name == "ttg.memdesc_trans" ||
-             name == "ttg.memdesc_subslice" || name == "ttg.memdesc_reshape" ||
-             name == "ttg.memdesc_reinterpret";
+             name == "tt.get_num_programs" || name == "ttg.memdesc_index" ||
+             name == "ttg.memdesc_trans" || name == "ttg.memdesc_subslice" ||
+             name == "ttg.memdesc_reshape" || name == "ttg.memdesc_reinterpret";
     };
     // A tensor transpose lowers to the identical LLVM aggregate (the verifier
     // propagates the permuted encoding). It may bridge writers without LDS
@@ -614,7 +621,8 @@ public:
                 resetWriters();
               } else {
                 auto current = allocatedBytes(access->second);
-                bool disjointRun = current && !writerIds.empty() &&
+                bool disjointRun =
+                    current && !writerIds.empty() &&
                     !llvm::is_contained(writerIds, access->second) &&
                     llvm::all_of(writerBytes, [&](const ByteRange &previous) {
                       return current->second <= previous.first ||
@@ -652,7 +660,8 @@ public:
       // writer transition. Every access retains the original wave fence.
       if (waitBefore.contains(op))
         triton::hcugpu::MemoryCounterWaitOp::create(
-            builder, op->getLoc(), nullptr, nullptr, builder.getI32IntegerAttr(0));
+            builder, op->getLoc(), nullptr, nullptr,
+            builder.getI32IntegerAttr(0));
       target.barrier(op->getLoc(), builder, /*isWarpSync=*/true);
       paddedAccesses += paddedIds.contains(id);
     }

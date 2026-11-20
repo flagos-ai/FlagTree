@@ -66,12 +66,15 @@ int main() {
   assert(budget->width==1 && budget->groups.size()==8);
 }
 ''')
+
     def flags(*args):
         return shlex.split(subprocess.check_output([llvm_config, *args], text=True))
+
     exe = tmp_path / "finite"
-    subprocess.run([compiler, *flags("--cxxflags"), "-std=c++17", "-O2",
-                    "-UNDEBUG", "-I", str(root / "third_party/hcu/lib/TritonHCUGPUToLLVM"),
-                    str(source), "-o", str(exe),
-                    *flags("--ldflags", "--libs", "support", "--system-libs")],
-                   check=True, capture_output=True)
+    subprocess.run([
+        compiler, *flags("--cxxflags"), "-std=c++17", "-O2", "-UNDEBUG", "-I",
+        str(root / "third_party/hcu/lib/TritonHCUGPUToLLVM"),
+        str(source), "-o",
+        str(exe), *flags("--ldflags", "--libs", "support", "--system-libs")
+    ], check=True, capture_output=True)
     subprocess.run([str(exe)], check=True, capture_output=True)

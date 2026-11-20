@@ -823,43 +823,59 @@ std::optional<CTAEncodingAttr> parseCTAAttr(AsmParser &parser, Attribute attr,
 Attribute HCUMlsSharedEncodingAttr::parse(AsmParser &parser, Type type) {
   DictionaryAttr dict;
   if (failed(parser.parseLess()) || failed(parser.parseAttribute(dict)) ||
-      failed(parser.parseGreater())) return {};
+      failed(parser.parseGreater()))
+    return {};
   auto scalar = [&](StringRef key) -> std::optional<unsigned> {
     auto a = dict.getAs<IntegerAttr>(key);
     if (!a || a.getValue().isNegative() || !a.getValue().isIntN(32)) {
-      parser.emitError(parser.getNameLoc(), "missing/invalid unsigned MLS field: ") << key;
+      parser.emitError(parser.getNameLoc(),
+                       "missing/invalid unsigned MLS field: ")
+          << key;
       return std::nullopt;
     }
     return unsigned(a.getValue().getZExtValue());
   };
-  auto opIdx=scalar("opIdx"),elem=scalar("elemBitWidth"),alt=scalar("alt2Kind"),version=scalar("version");
-  if (!opIdx || !elem || !alt || !version) return {};
-  SmallVector<unsigned> tile,order;
+  auto opIdx = scalar("opIdx"), elem = scalar("elemBitWidth"),
+       alt = scalar("alt2Kind"), version = scalar("version");
+  if (!opIdx || !elem || !alt || !version)
+    return {};
+  SmallVector<unsigned> tile, order;
   Attribute cta;
   for (NamedAttribute attr : dict) {
-    StringRef key=attr.getName().strref();
-    if (key=="mlsTile") {
-      if (failed(parseIntArrayAttr(parser,attr,tile,"MLS tile"))) return {};
-    } else if (key=="order") {
-      if (failed(parseIntArrayAttr(parser,attr,order,"MLS order"))) return {};
-    } else if (key=="CGALayout") cta=attr.getValue();
-    else if (key!="opIdx" && key!="elemBitWidth" && key!="alt2Kind" && key!="version") {
-      parser.emitError(parser.getNameLoc(),"unexpected MLS encoding key: ")<<key;return {};
+    StringRef key = attr.getName().strref();
+    if (key == "mlsTile") {
+      if (failed(parseIntArrayAttr(parser, attr, tile, "MLS tile")))
+        return {};
+    } else if (key == "order") {
+      if (failed(parseIntArrayAttr(parser, attr, order, "MLS order")))
+        return {};
+    } else if (key == "CGALayout")
+      cta = attr.getValue();
+    else if (key != "opIdx" && key != "elemBitWidth" && key != "alt2Kind" &&
+             key != "version") {
+      parser.emitError(parser.getNameLoc(), "unexpected MLS encoding key: ")
+          << key;
+      return {};
     }
   }
-  if (tile.empty() || order.size()!=tile.size()) {
-    parser.emitError(parser.getNameLoc(),"MLS tile/order rank mismatch");return {};
+  if (tile.empty() || order.size() != tile.size()) {
+    parser.emitError(parser.getNameLoc(), "MLS tile/order rank mismatch");
+    return {};
   }
-  auto layout=parseCTAAttr(parser,cta,tile.size());
-  if (!layout) return {};
-  return HCUMlsSharedEncodingAttr::get(parser.getContext(),*opIdx,tile,*elem,*alt,*version,order,*layout);
+  auto layout = parseCTAAttr(parser, cta, tile.size());
+  if (!layout)
+    return {};
+  return HCUMlsSharedEncodingAttr::get(parser.getContext(), *opIdx, tile, *elem,
+                                       *alt, *version, order, *layout);
 }
 void HCUMlsSharedEncodingAttr::print(AsmPrinter &printer) const {
-  printer<<"<{opIdx = "<<getOpIdx()<<", mlsTile = ["<<getMlsTile()
-         <<"], elemBitWidth = "<<getElemBitWidth()<<", alt2Kind = "<<getAlt2Kind()
-         <<", version = "<<getVersion()<<", order = ["<<getOrder()<<"]";
-  maybePrintCTALayout(getContext(),printer,getCTALayout(),getMlsTile().size());
-  printer<<"}>";
+  printer << "<{opIdx = " << getOpIdx() << ", mlsTile = [" << getMlsTile()
+          << "], elemBitWidth = " << getElemBitWidth()
+          << ", alt2Kind = " << getAlt2Kind() << ", version = " << getVersion()
+          << ", order = [" << getOrder() << "]";
+  maybePrintCTALayout(getContext(), printer, getCTALayout(),
+                      getMlsTile().size());
+  printer << "}>";
 }
 
 Attribute BlockedEncodingAttr::parse(AsmParser &parser, Type type) {
@@ -1407,6 +1423,13 @@ LogicalResult AMDMfmaEncodingAttr::verify(
     return emitError() << "invalid (mDim, nDim) combination: (" << mDim << ", "
                        << nDim << ")";
   }
+
+  if (mmacLayout == MmacLayout::LEGACY_PAIRED_COLUMNS &&
+      (version != 3 || !isTransposed || warpsPerCTA.size() != 2 ||
+       instrShape != ArrayRef<unsigned>({16, 16, 16}) ||
+       tilesPerWarp != ArrayRef<unsigned>({1, 2}) || elementBitWidth != 32))
+    return emitError() << "paired columns require a rank-two transposed "
+                          "16x16x16 legacy MMAC with two column fragments";
 
   if (!(elementBitWidth == 32 || elementBitWidth == 64))
     return emitError() << "elementBitWidth must be 32 or 64";
@@ -2308,8 +2331,9 @@ SwizzledSharedEncodingAttr AMDMfmaEncodingAttr::composeSharedLayoutForOperand(
   }
 
   // Dot operand order handles both [M,K]/[K,N] and batched operands.
-  unsigned kDimIndex = getOrderForDotOperand(
-      operandIdx, operandShape.size(), /*kContig=*/!needTrans).front();
+  unsigned kDimIndex = getOrderForDotOperand(operandIdx, operandShape.size(),
+                                             /*kContig=*/!needTrans)
+                           .front();
 
   bool isKContig = sharedOrder[0] == kDimIndex;
   // GFX950 supports LDS transpose load instructions, so we need swizzling even

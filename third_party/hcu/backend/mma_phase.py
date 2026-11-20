@@ -21,9 +21,9 @@ def _registers(text):
     result = set()
     for match in re.finditer(r"\b([vs])(?:\[(\d+):(\d+)\]|(\d+))(?!\w)", text):
         kind, begin, end, single = match.groups()
-        result.update((kind, index) for index in
-                      ([int(single)] if single is not None else
-                       range(int(begin), int(end) + 1)))
+        result.update((kind, index)
+                      for index in ([int(single)] if single is not None else range(int(begin),
+                                                                                   int(end) + 1)))
     return result
 
 
@@ -105,8 +105,10 @@ def check_native_readiness(assembly, name, max_states=100000):
         operation = re.match(r"([a-z][\w.]*)\s*(.*)", line)
         if operation:
             instructions.append((line_number, operation[1], operation[2].split(";")[0].strip()))
+
     def reject(reason, **details):
         return dict(accepted=False, reason=reason, **details)
+
     if not instructions or name not in labels:
         return reject("missing native kernel body")
     todo = collections.deque([(0, (), (), ())])
@@ -160,9 +162,11 @@ def check_native_readiness(assembly, name, max_states=100000):
                 if operands not in (["0"], ["1"]):
                     return reject("unsupported s_setprio operands", native_line=line_number, op=op)
                 reads, writes = set(), set()
-            elif op in ("s_waitcnt", "s_barrier", "s_nop", "s_endpgm", "s_branch") or op.startswith(("s_cbranch", "s_cmp")):
+            elif op in ("s_waitcnt", "s_barrier", "s_nop", "s_endpgm", "s_branch") or op.startswith(
+                ("s_cbranch", "s_cmp")):
                 reads, writes = all_regs, set()
-            elif not op.startswith(("s_add", "s_sub", "s_and", "s_or", "s_xor", "s_mov", "s_mul", "s_lsh", "s_ash", "s_bfe", "s_cselect", "s_min", "s_max", "s_not", "s_brev")):
+            elif not op.startswith(("s_add", "s_sub", "s_and", "s_or", "s_xor", "s_mov", "s_mul", "s_lsh", "s_ash",
+                                    "s_bfe", "s_cselect", "s_min", "s_max", "s_not", "s_brev")):
                 return reject("unsupported scalar opcode", native_line=line_number, op=op)
         elif op.startswith("v_"):
             if op in ("v_xad_u32", "v_perm_b32"):
@@ -176,7 +180,10 @@ def check_native_readiness(assembly, name, max_states=100000):
             if op.startswith("v_cmp") and not dest:
                 reads, writes = all_regs, set()
             # Opcode families below have only register/immediate side effects.
-            if op not in ("v_xad_u32", "v_perm_b32") and not op.startswith(("v_add", "v_sub", "v_mul", "v_mad", "v_fma", "v_mmac", "v_mov", "v_readfirstlane", "v_readlane_b32", "v_writelane_b32", "v_cmp", "v_cndmask", "v_cvt", "v_lsh", "v_ash", "v_and", "v_or", "v_xor", "v_bfe", "v_bfrev", "v_rcp", "v_trunc", "v_min", "v_max", "v_pack", "v_align", "v_not")):
+            if op not in ("v_xad_u32", "v_perm_b32") and not op.startswith(
+                ("v_add", "v_sub", "v_mul", "v_mad", "v_fma", "v_mmac", "v_mov", "v_readfirstlane", "v_readlane_b32",
+                 "v_writelane_b32", "v_cmp", "v_cndmask", "v_cvt", "v_lsh", "v_ash", "v_and", "v_or", "v_xor", "v_bfe",
+                 "v_bfrev", "v_rcp", "v_trunc", "v_min", "v_max", "v_pack", "v_align", "v_not")):
                 return reject("unsupported vector opcode", native_line=line_number, op=op)
             if op == "v_writelane_b32":
                 # Writelane replaces one lane and preserves the others. Its
@@ -193,8 +200,8 @@ def check_native_readiness(assembly, name, max_states=100000):
         pending_map = dict(pending)
         bad = (reads | writes) & pending_map.keys()
         if bad:
-            return reject("async register used before explicit completion", native_line=line_number,
-                          op=op, registers=sorted(bad))
+            return reject("async register used before explicit completion", native_line=line_number, op=op,
+                          registers=sorted(bad))
         queues = [list(lgkm), list(vm)]
         if op == "s_waitcnt":
             for which, field, unconstrained in [(0, "lgkmcnt", 15), (1, "vmcnt", 63)]:
@@ -206,9 +213,11 @@ def check_native_readiness(assembly, name, max_states=100000):
                     return reject("mixed DS/SMEM partial completion", native_line=line_number)
                 popped = max(0, len(queues[which]) - credit)
                 queues[which] = queues[which][popped:]
-                pending_map = {reg: (q, index - popped if q == which else index)
-                               for reg, (q, index) in pending_map.items()
-                               if q != which or index >= popped}
+                pending_map = {
+                    reg: (q, index - popped if q == which else index)
+                    for reg, (q, index) in pending_map.items()
+                    if q != which or index >= popped
+                }
         elif queue is not None:
             index = len(queues[queue])
             # Completion depends on FIFO age and event kind, never on the
@@ -237,15 +246,15 @@ def check_native_readiness(assembly, name, max_states=100000):
         # credit. LGKM is deliberately untouched: mixed SMEM/DS completion has
         # additional ordering restrictions. This check does not model LDS DMA
         # aliasing; MMA motion leaves the memory operation order unchanged.
-        oldest_vm_result = min((index for q, index in pending_map.values() if q == 1),
-                               default=len(queues[1]))
+        oldest_vm_result = min((index for q, index in pending_map.values() if q == 1), default=len(queues[1]))
         if oldest_vm_result:
             queues[1] = queues[1][oldest_vm_result:]
-            pending_map = {reg: (q, index - oldest_vm_result if q == 1 else index)
-                           for reg, (q, index) in pending_map.items()}
+            pending_map = {
+                reg: (q, index - oldest_vm_result if q == 1 else index)
+                for reg, (q, index) in pending_map.items()
+            }
         normalized = tuple(sorted(pending_map.items()))
         for successor in successors:
             todo.append((successor, tuple(queues[0]), tuple(queues[1]), normalized))
-    return dict(accepted=True, reason="all modeled native CFG paths explicitly complete operands",
-                states=len(seen), visited_instructions=len(visited), max_pending_lgkm=maximum[0],
-                max_pending_vm=maximum[1])
+    return dict(accepted=True, reason="all modeled native CFG paths explicitly complete operands", states=len(seen),
+                visited_instructions=len(visited), max_pending_lgkm=maximum[0], max_pending_vm=maximum[1])

@@ -297,9 +297,8 @@ template <typename CondT> static void check(CondT &&cond, const char *msg) {
 }
 
 void init_gluon_ir(py::module &&m) {
-  m.def("get_amd_mfma_default_mmac_layout", []() {
-    return static_cast<int>(ttg::MmacLayout::LEGACY);
-  });
+  m.def("get_amd_mfma_default_mmac_layout",
+        []() { return static_cast<int>(ttg::MmacLayout::LEGACY); });
   using ret = py::return_value_policy;
 
   py::class_<GluonOpBuilder, TritonOpBuilder>(
@@ -399,30 +398,32 @@ void init_gluon_ir(py::module &&m) {
                  ctx, version[0], version[1], warpsPerCta, ctaLayout,
                  instrShape);
            })
-      .def("get_amd_mfma_layout",
-           [](GluonOpBuilder &self, unsigned version,
-              std::vector<unsigned> &warpsPerCta,
-              std::vector<unsigned> &instrShape, bool transposed,
-              std::vector<std::vector<int32_t>> &cgaBases,
-              std::vector<unsigned> &tilesPerWarp,
-              unsigned elementBitWidth, int mmacLayout) -> Attribute {
-             auto ctx = self.getContext();
-             unsigned rank = warpsPerCta.size();
-             auto ctaLayout = buildCtaLayoutAttr(ctx, cgaBases, rank);
-             if (mmacLayout == -1)
-               return ttg::AMDMfmaEncodingAttr::get(
-                   ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,
-                   tilesPerWarp, elementBitWidth);
-             if (mmacLayout < 0 || mmacLayout > 4)
-               throw std::invalid_argument("unknown HCU MMAC layout");
-             return ttg::AMDMfmaEncodingAttr::get(
-                 ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,
-                 tilesPerWarp, elementBitWidth,
-                 static_cast<ttg::MmacLayout>(mmacLayout));
-           }, py::arg("version"), py::arg("warps_per_cta"),
-              py::arg("instr_shape"), py::arg("transposed"),
-              py::arg("cga_bases"), py::arg("tiles_per_warp"),
-              py::arg("element_bit_width"), py::arg("mmac_layout") = -1)
+      .def(
+          "get_amd_mfma_layout",
+          [](GluonOpBuilder &self, unsigned version,
+             std::vector<unsigned> &warpsPerCta,
+             std::vector<unsigned> &instrShape, bool transposed,
+             std::vector<std::vector<int32_t>> &cgaBases,
+             std::vector<unsigned> &tilesPerWarp, unsigned elementBitWidth,
+             int mmacLayout) -> Attribute {
+            auto ctx = self.getContext();
+            unsigned rank = warpsPerCta.size();
+            auto ctaLayout = buildCtaLayoutAttr(ctx, cgaBases, rank);
+            if (mmacLayout == -1)
+              return ttg::AMDMfmaEncodingAttr::get(
+                  ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,
+                  tilesPerWarp, elementBitWidth);
+            if (mmacLayout < 0 || mmacLayout > 4)
+              throw std::invalid_argument("unknown HCU MMAC layout");
+            return ttg::AMDMfmaEncodingAttr::get(
+                ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,
+                tilesPerWarp, elementBitWidth,
+                static_cast<ttg::MmacLayout>(mmacLayout));
+          },
+          py::arg("version"), py::arg("warps_per_cta"), py::arg("instr_shape"),
+          py::arg("transposed"), py::arg("cga_bases"),
+          py::arg("tiles_per_warp"), py::arg("element_bit_width"),
+          py::arg("mmac_layout") = -1)
       .def("get_amd_wmma_layout",
            [](GluonOpBuilder &self, unsigned version, bool transposed,
               std::vector<unsigned> &warpsPerCta,
@@ -570,29 +571,36 @@ void init_gluon_ir(py::module &&m) {
            [](GluonOpBuilder &self, Value smem, Value pointer, Value mask,
               Value other, tt::CacheModifier cacheModifier,
               tt::EvictionPolicy evictionPolicy, bool isVolatile) -> Value {
-             return self.create<ttg::AsyncCopyGlobalToLocalOp>(
-                 pointer, smem, mask, other, cacheModifier, evictionPolicy,
-                 isVolatile).getToken();
+             return self
+                 .create<ttg::AsyncCopyGlobalToLocalOp>(
+                     pointer, smem, mask, other, cacheModifier, evictionPolicy,
+                     isVolatile)
+                 .getToken();
            })
       .def("create_async_copy_mbarrier_arrive",
            [](GluonOpBuilder &self, Value mbarrier, bool incrementCount) {
              self.create<ttng::AsyncCopyMbarrierArriveOp>(mbarrier,
                                                           !incrementCount);
            })
-      .def("create_async_commit_group",
-           [](GluonOpBuilder &self, std::vector<Value> tokens) -> Value {
-             return self.create<ttg::AsyncCommitGroupOp>(ValueRange(tokens))
-                 .getResult();
-           }, py::arg("tokens") = std::vector<Value>{})
-      .def("get_async_token_ty", [](GluonOpBuilder &self) -> Type {
-        return ttg::AsyncTokenType::get(self.getContext());
-      })
-      .def("create_async_wait_group",
-           [](GluonOpBuilder &self, int num,
-              std::vector<Value> tokens) -> Value {
-             return self.create<ttg::AsyncWaitOp>(ValueRange(tokens), num)
-                 .getResult();
-           }, py::arg("num"), py::arg("tokens") = std::vector<Value>{})
+      .def(
+          "create_async_commit_group",
+          [](GluonOpBuilder &self, std::vector<Value> tokens) -> Value {
+            return self.create<ttg::AsyncCommitGroupOp>(ValueRange(tokens))
+                .getResult();
+          },
+          py::arg("tokens") = std::vector<Value>{})
+      .def("get_async_token_ty",
+           [](GluonOpBuilder &self) -> Type {
+             return ttg::AsyncTokenType::get(self.getContext());
+           })
+      .def(
+          "create_async_wait_group",
+          [](GluonOpBuilder &self, int num,
+             std::vector<Value> tokens) -> Value {
+            return self.create<ttg::AsyncWaitOp>(ValueRange(tokens), num)
+                .getResult();
+          },
+          py::arg("num"), py::arg("tokens") = std::vector<Value>{})
       .def("create_convert_layout",
            [](GluonOpBuilder &self, Type resultTy, Value value) -> Value {
              return self.create<ttg::ConvertLayoutOp>(resultTy, value);
@@ -842,23 +850,30 @@ void init_gluon_ir(py::module &&m) {
                  value.getType(), op, ptr, offsets, value, Value() /*stride*/,
                  sem, scope, mask);
            })
-      .def("create_matrix_load_to_shared",
-           [](GluonOpBuilder &self, Value dest, Value base,
-              std::vector<Value> &shape, std::vector<Value> &strides,
-              std::vector<Value> &indices) -> Value {
-             auto type = dyn_cast<ttg::MemDescType>(dest.getType());
-             if (!type || type.getRank() != 2 || shape.size() != 2 ||
-                 strides.size() != 2 || indices.size() != 3)
-               throw std::invalid_argument("matrix shared copy requires rank-two shape/strides/origins");
-             SmallVector<int32_t> tile;
-             for (int64_t d : type.getShape()) {
-               if (d < 1 || d > INT32_MAX) throw std::invalid_argument("invalid matrix shared tile extent");
-               tile.push_back(int32_t(d));
-             }
-             return self.create<ttag::MatrixLoadToLocalOp>(base, shape, strides,
-                 tile, indices, ArrayRef<int32_t>{}, tt::CacheModifier::NONE,
-                 tt::EvictionPolicy::NORMAL, false, dest).getToken();
-           })
+      .def(
+          "create_matrix_load_to_shared",
+          [](GluonOpBuilder &self, Value dest, Value base,
+             std::vector<Value> &shape, std::vector<Value> &strides,
+             std::vector<Value> &indices) -> Value {
+            auto type = dyn_cast<ttg::MemDescType>(dest.getType());
+            if (!type || type.getRank() != 2 || shape.size() != 2 ||
+                strides.size() != 2 || indices.size() != 3)
+              throw std::invalid_argument(
+                  "matrix shared copy requires rank-two shape/strides/origins");
+            SmallVector<int32_t> tile;
+            for (int64_t d : type.getShape()) {
+              if (d < 1 || d > INT32_MAX)
+                throw std::invalid_argument(
+                    "invalid matrix shared tile extent");
+              tile.push_back(int32_t(d));
+            }
+            return self
+                .create<ttag::MatrixLoadToLocalOp>(
+                    base, shape, strides, tile, indices, ArrayRef<int32_t>{},
+                    tt::CacheModifier::NONE, tt::EvictionPolicy::NORMAL, false,
+                    dest)
+                .getToken();
+          })
       .def("create_buffer_load_to_local",
            [](GluonOpBuilder &self, Value dest, Value ptr, Value offsets,
               Value mask, Value other, Value stride,

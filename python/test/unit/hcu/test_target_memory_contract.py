@@ -62,8 +62,7 @@ def group_query(O, SIZE: gl.constexpr):
 
 def compile_query(size):
     source = GluonASTSource(group_query, {"O": "*i32", "SIZE": "constexpr"}, {"SIZE": size})
-    return triton.compile(source, target=GPUTarget("hip", "gfx936", 64),
-                          options=dict(num_warps=4, num_stages=1))
+    return triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options=dict(num_warps=4, num_stages=1))
 
 
 @pytest.mark.parametrize("size", [1, 2, 4])

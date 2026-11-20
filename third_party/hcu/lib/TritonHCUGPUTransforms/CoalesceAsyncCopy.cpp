@@ -26,33 +26,42 @@ namespace mlir {
 namespace {
 
 // Adapter changes only which distributed tensor is permuted. BUFFER's base
-// pointer and stride stay scalar and unchanged; all other layout logic is shared.
+// pointer and stride stay scalar and unchanged; all other layout logic is
+// shared.
 template <typename CopyOp> struct CopyOperands {
-  static constexpr bool isBuffer = std::is_same_v<CopyOp, tta::BufferLoadToLocalOp>;
+  static constexpr bool isBuffer =
+      std::is_same_v<CopyOp, tta::BufferLoadToLocalOp>;
   static Value input(CopyOp op) {
-    if constexpr (isBuffer) return op.getOffsets();
-    else return op.getSrc();
+    if constexpr (isBuffer)
+      return op.getOffsets();
+    else
+      return op.getSrc();
   }
   static Value dest(CopyOp op) {
-    if constexpr (isBuffer) return op.getDest();
-    else return op.getResult();
+    if constexpr (isBuffer)
+      return op.getDest();
+    else
+      return op.getResult();
   }
   static void setInput(CopyOp op, Value value) {
-    if constexpr (isBuffer) op.getOffsetsMutable().assign(value);
-    else op.getSrcMutable().assign(value);
+    if constexpr (isBuffer)
+      op.getOffsetsMutable().assign(value);
+    else
+      op.getSrcMutable().assign(value);
   }
 };
 
 // Reuse AMD's padded-copy linear-component construction, but reserve the
 // consumer's pure batch bases for warp IDs. The remaining bases still give
 // consecutive registers/lanes in LDS, with the SAME proven vector width.
-// This pattern changes data ownership only; all waits/barriers remain untouched.
+// This pattern changes data ownership only; all waits/barriers remain
+// untouched.
 template <typename StoreOp>
 struct PreferWavePrivateSyncStores : public OpRewritePattern<StoreOp> {
-  PreferWavePrivateSyncStores(
-      const triton::HCU::TargetInfo &targetInfo,
-      MLIRContext *ctx)
-      : OpRewritePattern<StoreOp>(ctx, PatternBenefit(2)), targetInfo(targetInfo) {}
+  PreferWavePrivateSyncStores(const triton::HCU::TargetInfo &targetInfo,
+                              MLIRContext *ctx)
+      : OpRewritePattern<StoreOp>(ctx, PatternBenefit(2)),
+        targetInfo(targetInfo) {}
 
   LogicalResult matchAndRewrite(StoreOp copy,
                                 PatternRewriter &rewriter) const override {
@@ -72,7 +81,8 @@ struct PreferWavePrivateSyncStores : public OpRewritePattern<StoreOp> {
         return copy.getType();
     }();
     auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(srcTy.getEncoding());
-    auto shared = dyn_cast<ttg::SwizzledSharedEncodingAttr>(dstTy.getEncoding());
+    auto shared =
+        dyn_cast<ttg::SwizzledSharedEncodingAttr>(dstTy.getEncoding());
     ModuleOp module = copy->template getParentOfType<ModuleOp>();
     auto opt = module->getAttrOfType<IntegerAttr>("ttg.hcu.wave_private_sync");
     if (!opt || opt.getInt() != 1)
@@ -90,8 +100,7 @@ struct PreferWavePrivateSyncStores : public OpRewritePattern<StoreOp> {
     if (targetInfo.getArch() != "gfx936" || !blocked || !shared ||
         srcTy.getRank() != 3 || dstTy.getRank() != 3 ||
         !(dstTy.getElementType().isF16() || dstTy.getElementType().isBF16()) ||
-        !ctas || ctas.getInt() != 1 ||
-        shared.getOrder().back() != 0 ||
+        !ctas || ctas.getInt() != 1 || shared.getOrder().back() != 0 ||
         blocked.getOrder().front() != shared.getOrder().front())
       return failure();
     int warps = ttg::lookupNumWarps(copy);
@@ -152,22 +161,24 @@ struct PreferWavePrivateSyncStores : public OpRewritePattern<StoreOp> {
         rest.size() < regBits + laneBits)
       return failure();
     // Batch must not leak into register/lanes before all lane bits are filled.
-    for (const auto &basis : ArrayRef<std::vector<int32_t>>(rest).take_front(regBits + laneBits))
+    for (const auto &basis :
+         ArrayRef<std::vector<int32_t>>(rest).take_front(regBits + laneBits))
       if (basis[0] != 0)
         return failure();
-    std::vector<std::vector<int32_t>> regBases(
-        rest.begin(), rest.begin() + regBits);
+    std::vector<std::vector<int32_t>> regBases(rest.begin(),
+                                               rest.begin() + regBits);
     std::vector<std::vector<int32_t>> laneBases(
         rest.begin() + regBits, rest.begin() + regBits + laneBits);
-    regBases.insert(regBases.end(), rest.begin() + regBits + laneBits, rest.end());
+    regBases.insert(regBases.end(), rest.begin() + regBits + laneBits,
+                    rest.end());
     auto *ctx = copy.getContext();
     triton::LinearLayout candidate(
         {{rewriter.getStringAttr("register"), regBases},
          {rewriter.getStringAttr("lane"), laneBases},
          {rewriter.getStringAttr("warp"), warpBases}},
         triton::standardOutDimNames(ctx, 3));
-    candidate = ttg::combineCtaCgaWithShape(
-        candidate, blocked.getCTALayout(), srcTy.getShape());
+    candidate = ttg::combineCtaCgaWithShape(candidate, blocked.getCTALayout(),
+                                            srcTy.getShape());
     // Vectorize global reads only when the new register group remains
     // contiguous AND aligned on the original global-contiguous dimension.
     // A shared swizzle may otherwise XOR a lane bit into a vector's base.
@@ -183,7 +194,8 @@ struct PreferWavePrivateSyncStores : public OpRewritePattern<StoreOp> {
     for (const auto &basis : warpBases)
       if (unsigned(basis[minor]) & vectorMask)
         return failure();
-    for (const auto &basis : ArrayRef<std::vector<int32_t>>(regBases).drop_front(regBits))
+    for (const auto &basis :
+         ArrayRef<std::vector<int32_t>>(regBases).drop_front(regBits))
       if (unsigned(basis[minor]) & vectorMask)
         return failure();
     auto mapping = candidate.invertAndCompose(flatLayout);
@@ -224,9 +236,10 @@ template <typename CopyOp>
 struct CoalesceAsyncCopyWrites : public OpRewritePattern<CopyOp> {
   using Base = OpRewritePattern<CopyOp>;
   using Operands = CopyOperands<CopyOp>;
-  CoalesceAsyncCopyWrites(const triton::HCU::TargetInfo &targetInfo,
-                          const DenseMap<Operation *, unsigned> &asyncCopyContiguity,
-                          MLIRContext *ctx)
+  CoalesceAsyncCopyWrites(
+      const triton::HCU::TargetInfo &targetInfo,
+      const DenseMap<Operation *, unsigned> &asyncCopyContiguity,
+      MLIRContext *ctx)
       : Base(ctx), targetInfo{targetInfo},
         asyncCopyContiguity{std::move(asyncCopyContiguity)} {}
 
@@ -284,9 +297,8 @@ struct CoalesceAsyncCopyWrites : public OpRewritePattern<CopyOp> {
 
     // Select the largest supported load width equal or smaller than loadContig
     auto elemBitWidth = dstTy.getElementTypeBitWidth();
-    loadContig =
-        fitToValidDirectToLdsVecSize(loadContig, elemBitWidth, targetInfo,
-                                    Operands::isBuffer);
+    loadContig = fitToValidDirectToLdsVecSize(loadContig, elemBitWidth,
+                                              targetInfo, Operands::isBuffer);
 
     if (loadContig == 0) {
       return rewriter.notifyMatchFailure(
@@ -305,7 +317,7 @@ struct CoalesceAsyncCopyWrites : public OpRewritePattern<CopyOp> {
             rewriter, regToSharedLayout, threadsPerWarp, loadContig)) {
       if (copyOp.getContiguity() != loadContig) {
         rewriter.modifyOpInPlace(copyOp,
-                                [&]() { copyOp.setContiguity(loadContig); });
+                                 [&]() { copyOp.setContiguity(loadContig); });
         return success();
       }
       return rewriter.notifyMatchFailure(copyOp, "already writes coalesced");
@@ -321,17 +333,17 @@ struct CoalesceAsyncCopyWrites : public OpRewritePattern<CopyOp> {
       contigPerThread[blockedEnc.getOrder()[0]] = loadContig;
       auto copyOrder = llvm::to_vector(blockedEnc.getOrder());
       if constexpr (Operands::isBuffer) {
-        auto sharedOrder = cast<ttg::SwizzledSharedEncodingAttr>(
-            dstTy.getEncoding()).getOrder();
+        auto sharedOrder =
+            cast<ttg::SwizzledSharedEncodingAttr>(dstTy.getEncoding())
+                .getOrder();
         // BUFFER-to-LDS cannot scatter a wave across batch planes.
         if (targetInfo.getArch() == "gfx936" && srcTy.getRank() == 3 &&
             copyOrder.front() == sharedOrder.front() && sharedOrder.back() == 0)
           copyOrder.assign(sharedOrder.begin(), sharedOrder.end());
       }
       newDistEnc = BlockedEncodingAttr::get(
-          copyOp.getContext(), srcTy.getShape(), contigPerThread,
-          copyOrder, numWarps, threadsPerWarp,
-          blockedEnc.getCTALayout());
+          copyOp.getContext(), srcTy.getShape(), contigPerThread, copyOrder,
+          numWarps, threadsPerWarp, blockedEnc.getCTALayout());
     } else if (paddedEnc || linearShared) {
       // Padded and shared-linear layouts map LDS offsets to n-D tensor indices
       // through a linear component. It might reorder elements resulting in
@@ -425,8 +437,8 @@ struct CoalesceAsyncCopyWrites : public OpRewritePattern<CopyOp> {
         if (targetInfo.getArch() == "gfx936" &&
             isa<ttg::SwizzledSharedEncodingAttr>(dstTy.getEncoding()) &&
             copyOp.getContiguity() != loadContig) {
-          rewriter.modifyOpInPlace(
-              copyOp, [&]() { copyOp.setContiguity(loadContig); });
+          rewriter.modifyOpInPlace(copyOp,
+                                   [&]() { copyOp.setContiguity(loadContig); });
           return success();
         }
       }
@@ -468,8 +480,9 @@ private:
 // Check the final GLOBAL operation after source-layout rewrites. A wider
 // BUFFER opcode does not make this operation legal. Unknown shared models
 // use the ordinary register-load/store path instead.
-static void fallbackInvalidGlobalCopies(
-    ModuleOp module, const triton::HCU::TargetInfo &targetInfo) {
+static void
+fallbackInvalidGlobalCopies(ModuleOp module,
+                            const triton::HCU::TargetInfo &targetInfo) {
   if (targetInfo.getArch() != "gfx936")
     return;
   HCU::ModuleAxisInfoAnalysis axisInfo(module);
@@ -478,7 +491,8 @@ static void fallbackInvalidGlobalCopies(
   module.walk([&](ttg::AsyncCopyGlobalToLocalOp copy) {
     auto srcTy = copy.getSrc().getType();
     auto dstTy = copy.getResult().getType();
-    auto shared = dyn_cast<ttg::SwizzledSharedEncodingAttr>(dstTy.getEncoding());
+    auto shared =
+        dyn_cast<ttg::SwizzledSharedEncodingAttr>(dstTy.getEncoding());
     auto padded = dyn_cast<ttg::PaddedSharedEncodingAttr>(dstTy.getEncoding());
     // GLOBAL async lowering does not implement volatile. Keep nonzero/unknown
     // other and eviction hints on the established synchronous load path too.
@@ -498,8 +512,7 @@ static void fallbackInvalidGlobalCopies(
     // Match the lowering's effective vector width, including its hint. Do not
     // let a hint override the source/mask facts established by this pass.
     unsigned vec = std::max(contig, copy.getContiguity());
-    legal = vec && llvm::isPowerOf2_32(vec) &&
-            copy.getContiguity() <= contig &&
+    legal = vec && llvm::isPowerOf2_32(vec) && copy.getContiguity() <= contig &&
             targetInfo.supportsDirectToLdsLoadBitWidth(
                 vec * dstTy.getElementTypeBitWidth(), /*isBuffer=*/false);
     if (!legal) {
@@ -507,29 +520,30 @@ static void fallbackInvalidGlobalCopies(
       return;
     }
     auto srcLayout = ttg::toLinearLayout(srcTy);
-    auto dstLayout = padded ? padded.getLinearComponent()
-                            : ttg::toLinearLayout(dstTy);
+    auto dstLayout =
+        padded ? padded.getLinearComponent() : ttg::toLinearLayout(dstTy);
     auto mapping = srcLayout.invertAndCompose(dstLayout);
     if (!targetInfo.supportsDirectToLDSScattering()) {
       auto flatTy = dstTy;
       if (shared && shared.getMaxPhase() != 1) {
-        legal &= LLVM::HCU::doesSwizzleInsideWarp(
-            rewriter, mapping, targetInfo.getWarpSize());
+        legal &= LLVM::HCU::doesSwizzleInsideWarp(rewriter, mapping,
+                                                  targetInfo.getWarpSize());
         auto flat = ttg::SwizzledSharedEncodingAttr::get(
             module.getContext(), shared.getVec(), 1, 1, shared.getOrder(),
             shared.getCTALayout());
         flatTy = ttg::MemDescType::get(dstTy.getShape(), dstTy.getElementType(),
-                                     flat, dstTy.getMemorySpace());
+                                       flat, dstTy.getMemorySpace());
       }
-      auto flatLayout = padded ? padded.getLinearComponent()
-                               : ttg::toLinearLayout(flatTy);
+      auto flatLayout =
+          padded ? padded.getLinearComponent() : ttg::toLinearLayout(flatTy);
       auto flatMapping = srcLayout.invertAndCompose(flatLayout);
       legal &= LLVM::HCU::canCoalesceWriteIntoSharedMemory(
           rewriter, flatMapping, targetInfo.getWarpSize(), vec);
       if (padded) {
         unsigned packet = targetInfo.getWarpSize() * vec;
         legal &= padded.getMinInterval() >= packet;
-        auto regBases = mapping.getBases().lookup(rewriter.getStringAttr("register"));
+        auto regBases =
+            mapping.getBases().lookup(rewriter.getStringAttr("register"));
         for (const auto &basis : llvm::drop_begin(regBases, llvm::Log2_32(vec)))
           legal &= (basis[0] & (packet - 1)) == 0;
       }
@@ -545,18 +559,20 @@ static void fallbackInvalidGlobalCopies(
         copy.getCache(), copy.getEvict(), copy.getIsVolatile(),
         rewriter.getStringAttr(""));
     load->setAttr("tt.load.async", rewriter.getBoolAttr(false));
-    ttg::LocalStoreOp::create(rewriter, loc, load.getResult(), copy.getResult());
+    ttg::LocalStoreOp::create(rewriter, loc, load.getResult(),
+                              copy.getResult());
     // Preserve every existing commit, wait, LocalLoad token, and merged chain.
     // This dependency is completed; it does not erase other async operations.
-    auto completed = ttg::AsyncCommitGroupOp::create(rewriter, loc, ValueRange{});
+    auto completed =
+        ttg::AsyncCommitGroupOp::create(rewriter, loc, ValueRange{});
     rewriter.replaceOp(copy, completed.getResult());
   }
 }
 
 template <typename CopyOp>
-static void fallbackInvalidCopies(ModuleOp m,
-    const triton::HCU::TargetInfo &targetInfo,
-    const DenseMap<Operation *, unsigned> &contiguity) {
+static void
+fallbackInvalidCopies(ModuleOp m, const triton::HCU::TargetInfo &targetInfo,
+                      const DenseMap<Operation *, unsigned> &contiguity) {
   // A valid instruction width alone does not guarantee a legal gfx9 LDS
   // destination. In particular, a minor-dimension subslice can have holes
   // between rows that a non-scattering wave-wide load cannot write.
@@ -566,17 +582,20 @@ static void fallbackInvalidCopies(ModuleOp m,
   IRRewriter rewriter(m.getContext());
   SmallVector<CopyOp> fallbackCopies;
   m.walk([&](CopyOp copy) {
-    auto srcTy = cast<RankedTensorType>(CopyOperands<CopyOp>::input(copy).getType());
-    auto dstTy = cast<ttg::MemDescType>(CopyOperands<CopyOp>::dest(copy).getType());
-    auto shared = dyn_cast<ttg::SwizzledSharedEncodingAttr>(dstTy.getEncoding());
+    auto srcTy =
+        cast<RankedTensorType>(CopyOperands<CopyOp>::input(copy).getType());
+    auto dstTy =
+        cast<ttg::MemDescType>(CopyOperands<CopyOp>::dest(copy).getType());
+    auto shared =
+        dyn_cast<ttg::SwizzledSharedEncodingAttr>(dstTy.getEncoding());
     auto padded = dyn_cast<ttg::PaddedSharedEncodingAttr>(dstTy.getEncoding());
     bool linearShared = targetInfo.getArch() == "gfx936" &&
                         isa<ttg::SharedLinearEncodingAttr>(dstTy.getEncoding());
     if (!shared && !padded && !linearShared)
       return;
     auto srcLayout = ttg::toLinearLayout(srcTy);
-    auto dstLayout = padded ? padded.getLinearComponent()
-                            : ttg::toLinearLayout(dstTy);
+    auto dstLayout =
+        padded ? padded.getLinearComponent() : ttg::toLinearLayout(dstTy);
     auto mapping = srcLayout.invertAndCompose(dstLayout);
     unsigned vec = copy.getContiguity();
     bool swizzled = shared && shared.getMaxPhase() != 1;
@@ -584,8 +603,8 @@ static void fallbackInvalidCopies(ModuleOp m,
         vec * dstTy.getElementTypeBitWidth(), CopyOperands<CopyOp>::isBuffer);
     if (swizzled) {
       legal &= llvm::equal(dstTy.getShape(), dstTy.getAllocShape()) &&
-               LLVM::HCU::doesSwizzleInsideWarp(
-                   rewriter, mapping, targetInfo.getWarpSize());
+               LLVM::HCU::doesSwizzleInsideWarp(rewriter, mapping,
+                                                targetInfo.getWarpSize());
     } else {
       legal &= LLVM::HCU::canCoalesceWriteIntoSharedMemory(
           rewriter, mapping, targetInfo.getWarpSize(), vec);
@@ -605,20 +624,24 @@ static void fallbackInvalidCopies(ModuleOp m,
       auto offsetsTy = cast<RankedTensorType>(copy.getOffsets().getType());
       auto dstTy = copy.getDest().getType();
       auto loadTy = offsetsTy.clone(dstTy.getElementType());
-      auto load = tta::BufferLoadOp::create(rewriter, loc, loadTy, copy.getPtr(),
-          copy.getOffsets(), copy.getStride(), copy.getCache(), copy.getMask(), copy.getOther());
+      auto load = tta::BufferLoadOp::create(
+          rewriter, loc, loadTy, copy.getPtr(), copy.getOffsets(),
+          copy.getStride(), copy.getCache(), copy.getMask(), copy.getOther());
       loaded = load.getResult();
     } else {
-      auto load = triton::LoadOp::create(rewriter, loc, copy.getSrc(),
-          copy.getMask(), copy.getOther(), copy.getCache(), copy.getEvict(),
-          copy.getIsVolatile(), rewriter.getStringAttr(""));
+      auto load = triton::LoadOp::create(
+          rewriter, loc, copy.getSrc(), copy.getMask(), copy.getOther(),
+          copy.getCache(), copy.getEvict(), copy.getIsVolatile(),
+          rewriter.getStringAttr(""));
       load->setAttr("tt.load.async", rewriter.getBoolAttr(false));
       loaded = load.getResult();
     }
-    ttg::LocalStoreOp::create(rewriter, loc, loaded, CopyOperands<CopyOp>::dest(copy));
+    ttg::LocalStoreOp::create(rewriter, loc, loaded,
+                              CopyOperands<CopyOp>::dest(copy));
     // An empty group supplies a completed dependency token; existing waits
     // remain valid, including chains containing other, genuinely async copies.
-    auto completed = ttg::AsyncCommitGroupOp::create(rewriter, loc, ValueRange{});
+    auto completed =
+        ttg::AsyncCommitGroupOp::create(rewriter, loc, ValueRange{});
     rewriter.replaceOp(copy, completed.getResult());
   }
 }
@@ -663,7 +686,8 @@ public:
         unsigned contiguity = LLVM::HCU::getContiguity(
             copy.getPtr(), copy.getOffsets(), axisAnalysis);
         if (auto mask = copy.getMask())
-          contiguity = std::min<unsigned>(contiguity, axisAnalysis.getMaskAlignment(mask));
+          contiguity = std::min<unsigned>(contiguity,
+                                          axisAnalysis.getMaskAlignment(mask));
         asyncCopyContiguity.insert({copy.getOperation(), contiguity});
       });
     patterns.add<CoalesceAsyncCopyWrites<ttg::AsyncCopyGlobalToLocalOp>>(
@@ -673,7 +697,8 @@ public:
           targetInfo, asyncCopyContiguity, context);
 
     patterns.add<PreferWavePrivateSyncStores<ttg::LocalStoreOp>,
-                 PreferWavePrivateSyncStores<ttg::LocalAllocOp>>(targetInfo, context);
+                 PreferWavePrivateSyncStores<ttg::LocalAllocOp>>(targetInfo,
+                                                                 context);
 
     if (applyPatternsGreedily(m, std::move(patterns)).failed()) {
       signalPassFailure();
@@ -683,9 +708,11 @@ public:
     if (targetInfo.getArch() == "gfx936")
       fallbackInvalidGlobalCopies(m, targetInfo);
     else
-      fallbackInvalidCopies<ttg::AsyncCopyGlobalToLocalOp>(m, targetInfo, asyncCopyContiguity);
+      fallbackInvalidCopies<ttg::AsyncCopyGlobalToLocalOp>(m, targetInfo,
+                                                           asyncCopyContiguity);
     if (coalesceBuffer)
-      fallbackInvalidCopies<tta::BufferLoadToLocalOp>(m, targetInfo, asyncCopyContiguity);
+      fallbackInvalidCopies<tta::BufferLoadToLocalOp>(m, targetInfo,
+                                                      asyncCopyContiguity);
   }
 };
 

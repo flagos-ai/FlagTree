@@ -1011,7 +1011,8 @@ LogicalResult WarpSpecializeOp::verify() {
   bool explicitWave64 = target && target.getValue() == "hip:gfx936";
   if (explicitWave64 && numWarps &&
       (*numWarps <= 0 || !llvm::isPowerOf2_32(*numWarps))) {
-    return emitOpError("gfx936 default partition requires a positive power-of-two wave count");
+    return emitOpError(
+        "gfx936 default partition requires a positive power-of-two wave count");
   }
   if (!explicitWave64 && numWarps && *numWarps % 4 != 0) {
     return mlir::emitError(getLoc()) << "warp-specialized kernels requires "

@@ -961,10 +961,9 @@ void Pingponger::getDotPingponged() {
   forOp->walk([&](Operation *op) {
     llvm::TypeSwitch<Operation *>(op)
         .Case<tt::LoadOp>([&](auto gLoadOp) { gLoadOps.push_back(gLoadOp); })
-        .Case<ttg::AsyncCopyGlobalToLocalOp>(
-            [&](auto asyncCopyOp) {
-              asyncCopyOps.push_back(asyncCopyOp.getOperation());
-            })
+        .Case<ttg::AsyncCopyGlobalToLocalOp>([&](auto asyncCopyOp) {
+          asyncCopyOps.push_back(asyncCopyOp.getOperation());
+        })
         .Case<ttg::LocalLoadOp>([&](auto lLoad) {
           // This scheduling doesn't help hiding intra-warp latency. So, we only
           // collect local_load ops that are software pipelined, which means

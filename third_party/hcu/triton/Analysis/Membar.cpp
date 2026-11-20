@@ -8,8 +8,8 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include <deque>
 
 namespace mlir {
@@ -167,7 +167,6 @@ void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
   auto barrierOp = triton::gpu::LocalBarrierOp::create(*builder, op->getLoc());
 }
 
-
 namespace {
 // Use the forwarded-successor interface, as in TensorMemoryAllocation. Only
 // identical SSA values on every edge are accepted; unknown and cyclic paths
@@ -211,27 +210,28 @@ static Value resolveIdenticalIncoming(Value value) {
 
 // Narrow counterpart of common Membar's static-access intervals. The existing
 // MemDescIndex lowering advances by getAllocationShapePerCTA(result) elements.
-// A full swizzled plane stays inside this interval; arbitrary subviews or padded
-// layouts must not be linearized using their logical rectangular bounds.
+// A full swizzled plane stays inside this interval; arbitrary subviews or
+// padded layouts must not be linearized using their logical rectangular bounds.
 static Interval<size_t> getFullSlotInterval(const Allocation *allocation,
-                                           Value value,
-                                           Allocation::BufferId bufferId,
-                                           Operation *access) {
+                                            Value value,
+                                            Allocation::BufferId bufferId,
+                                            Operation *access) {
   auto whole = allocation->getAllocatedInterval(bufferId);
-  // Independent default-off stage1. The option requests extra precision, not
-  // permission to skip any geometry/alias/CFG check. Legacy path stays intact.
+  // Use the physical padded-plane footprint when geometry, aliases and the
+  // allocation prove it. Unknown accesses retain the whole allocation; the
+  // precision of this analysis is not an operator/compiler tuning option.
   auto mod = allocation->getOperation()->getParentOfType<ModuleOp>();
-  auto enabled = mod ? mod->getAttrOfType<BoolAttr>(
-                           "ttg.hcu.padded_slot_intervals") : BoolAttr{};
-  auto target = mod ? mod->getAttrOfType<StringAttr>("ttg.target") : StringAttr{};
-  auto ctas = mod ? mod->getAttrOfType<IntegerAttr>("ttg.num-ctas") : IntegerAttr{};
+  auto target =
+      mod ? mod->getAttrOfType<StringAttr>("ttg.target") : StringAttr{};
+  auto ctas =
+      mod ? mod->getAttrOfType<IntegerAttr>("ttg.num-ctas") : IntegerAttr{};
   auto localLoad = dyn_cast<triton::gpu::LocalLoadOp>(access);
   auto localStore = dyn_cast<triton::gpu::LocalStoreOp>(access);
   bool ordinaryAccess =
       (localLoad && !localLoad.getToken() && localLoad.getSrc() == value) ||
       (localStore && localStore.getDst() == value);
-  if (ordinaryAccess && enabled && enabled.getValue() && target &&
-      target.getValue() == "hip:gfx936" && ctas && ctas.getInt() == 1) {
+  if (ordinaryAccess && target && target.getValue() == "hip:gfx936" && ctas &&
+      ctas.getInt() == 1) {
     Value plane = resolveIdenticalIncoming(value);
     // Only bijective full-plane transposes may precede the index. Arbitrary
     // slices, reinterpretations and different root lifetimes stay whole.
@@ -253,7 +253,7 @@ static Interval<size_t> getFullSlotInterval(const Allocation *allocation,
     auto geometry = alloc && alloc.isSharedMemoryAlloc() &&
                             allocation->getBufferId(root) == bufferId
                         ? triton::gpu::getPaddedSlotGeometry(alloc.getType(),
-                                                            index.getType())
+                                                             index.getType())
                         : std::nullopt;
     llvm::APInt slot;
     if (geometry && matchPattern(index.getIndex(), m_ConstantInt(&slot)) &&
@@ -363,15 +363,12 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
         if (auto value = effectInstance.getValue()) {
           for (auto bufferId : allocation->getBufferIds(value)) {
             if (bufferId != Allocation::InvalidBufferId) {
-              auto interval = getFullSlotInterval(allocation, value, bufferId, op);
+              auto interval =
+                  getFullSlotInterval(allocation, value, bufferId, op);
               if (isa<MemoryEffects::Write>(effectInstance.getEffect()))
-                curBlockInfo
-                    .syncWriteIntervals[interval]
-                    .insert(op);
+                curBlockInfo.syncWriteIntervals[interval].insert(op);
               else if (isa<MemoryEffects::Read>(effectInstance.getEffect()))
-                curBlockInfo
-                    .syncReadIntervals[interval]
-                    .insert(op);
+                curBlockInfo.syncReadIntervals[interval].insert(op);
             }
           }
         }

@@ -1,6 +1,6 @@
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
-#include "Utility.h"
 #include "MatrixDescriptorLayout.h"
+#include "Utility.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Dominance.h"
@@ -52,9 +52,11 @@ public:
     auto matrixTy = cast<RankedTensorType>(matrixOp.getType());
     auto mlsAttr = matrixOp->getAttrOfType<tta::MlsEncodingAttr>(
         tta::MlsEncodingAttr::getMnemonic());
-    auto descriptorShared = triton::HCU::getMatrixDescriptorSharedLayout(matrixOp);
+    auto descriptorShared =
+        triton::HCU::getMatrixDescriptorSharedLayout(matrixOp);
     if (!mlsAttr && !descriptorShared)
-      return rewriter.notifyMatchFailure(matrixOp, "no supported matrix shared chart");
+      return rewriter.notifyMatchFailure(matrixOp,
+                                         "no supported matrix shared chart");
 
     // 1. create a local alloc op
     auto loc = matrixOp.getLoc();
@@ -66,8 +68,8 @@ public:
     if (!sharedEncoding)
       sharedEncoding = ttg::HCUMlsSharedEncodingAttr::get(
           matrixOp.getContext(), mlsAttr.getOpIdx(), mlsAttr.getMlsTile(),
-          mlsAttr.getElemBitWidth(), mlsAttr.getAlt2Kind(), mlsAttr.getVersion(),
-          mlsAttr.getOrder(), ctaLayout);
+          mlsAttr.getElemBitWidth(), mlsAttr.getAlt2Kind(),
+          mlsAttr.getVersion(), mlsAttr.getOrder(), ctaLayout);
     auto sharedMemDescType =
         ttg::MemDescType::get(matrixTy.getShape(), matrixTy.getElementType(),
                               sharedEncoding, sharedMemorySpace,
@@ -85,11 +87,11 @@ public:
     }
     auto matrixLoadToLocalOp = rewriter.create<tta::MatrixLoadToLocalOp>(
         loc, matrixOp.getBase(), matrixOp.getShape(), matrixOp.getStrides(),
-        matrixOp.getTensorShape(), indices,
-        boundary, matrixOp.getCache(), matrixOp.getEvict(),
-        matrixOp.getIsVolatile(), destination);
+        matrixOp.getTensorShape(), indices, boundary, matrixOp.getCache(),
+        matrixOp.getEvict(), matrixOp.getIsVolatile(), destination);
     if (mlsAttr)
-      matrixLoadToLocalOp->setAttr(tta::MlsEncodingAttr::getMnemonic(), mlsAttr);
+      matrixLoadToLocalOp->setAttr(tta::MlsEncodingAttr::getMnemonic(),
+                                   mlsAttr);
 
     auto commitOp = rewriter.create<ttg::AsyncCommitGroupOp>(
         loc, matrixLoadToLocalOp->getResult(0));
@@ -180,8 +182,9 @@ static void orderPrefetchedLocalReads(ModuleOp module) {
 // Fold a single-user chain of pure tensor views into its shared read. The
 // existing layout inference proves each inverse view; the original memory
 // operation and its completion token stay at the same program point. This is
-// also needed for pipeline-carried tail values, where a view conversion can otherwise
-// allocate an extra shared-memory transpose that the steady loop avoids.
+// also needed for pipeline-carried tail values, where a view conversion can
+// otherwise allocate an extra shared-memory transpose that the steady loop
+// avoids.
 class FoldLocalLoadViewConversion
     : public OpRewritePattern<ttg::ConvertLayoutOp> {
 public:
@@ -237,16 +240,19 @@ public:
     } else {
       return failure();
     }
-    auto type = cast<RankedTensorType>(value.getType()).cloneWithEncoding(encoding);
+    auto type =
+        cast<RankedTensorType>(value.getType()).cloneWithEncoding(encoding);
     for (Value read : reads)
-      rewriter.modifyOpInPlace(read.getDefiningOp(), [&] { read.setType(type); });
+      rewriter.modifyOpInPlace(read.getDefiningOp(),
+                               [&] { read.setType(type); });
     if (loop)
       rewriter.modifyOpInPlace(loop, [&] {
         loop.getRegionIterArgs()[resultIndex].setType(type);
         loop.getResult(resultIndex).setType(type);
       });
     for (auto &[view, resultType] : llvm::reverse(views))
-      rewriter.modifyOpInPlace(view, [&] { view->getResult(0).setType(resultType); });
+      rewriter.modifyOpInPlace(view,
+                               [&] { view->getResult(0).setType(resultType); });
     rewriter.replaceOp(convert, convert.getSrc());
     return success();
   }
@@ -337,7 +343,8 @@ public:
     ModuleOp mod = getOperation();
     mlir::RewritePatternSet patterns(context);
     patterns.add<MlsMatrixLoadLowering, MlsConvertOpCanonicalization,
-                 MlsPrintOpCanonicalization, FoldLocalLoadViewConversion>(context);
+                 MlsPrintOpCanonicalization, FoldLocalLoadViewConversion>(
+        context);
     if (applyPatternsGreedily(mod, std::move(patterns)).failed()) {
       signalPassFailure();
       return;

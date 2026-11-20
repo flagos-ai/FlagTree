@@ -14,8 +14,9 @@ namespace flagtree::hcu {
 // Arbitrary asm and nonidentity constraints remain opaque memory events.
 inline bool isRegisterIdentityFence(const llvm::Instruction *inst) {
   auto *call = llvm::dyn_cast<llvm::CallInst>(inst);
-  auto *assembly = call ? llvm::dyn_cast<llvm::InlineAsm>(call->getCalledOperand())
-                        : nullptr;
+  auto *assembly =
+      call ? llvm::dyn_cast<llvm::InlineAsm>(call->getCalledOperand())
+           : nullptr;
   if (!assembly || !assembly->hasSideEffects() || assembly->isAlignStack() ||
       assembly->canThrow() || call->hasOperandBundles() ||
       call->isMustTailCall() || call->getAttributes().hasRetAttrs())
@@ -37,9 +38,8 @@ inline bool isRegisterIdentityFence(const llvm::Instruction *inst) {
   for (unsigned i = 0; i < results.size(); ++i) {
     auto *type = results[i];
     auto *vector = llvm::dyn_cast<llvm::FixedVectorType>(type);
-    if (!(type->isFloatTy() ||
-          (vector && vector->getNumElements() == 4 &&
-           vector->getElementType()->isFloatTy())) ||
+    if (!(type->isFloatTy() || (vector && vector->getNumElements() == 4 &&
+                                vector->getElementType()->isFloatTy())) ||
         call->getArgOperand(i)->getType() != type ||
         call->getAttributes().hasParamAttrs(i))
       return false;

@@ -19,8 +19,8 @@ from triton.compiler import ASTSource
 @triton.jit
 def frontend_alloc(C, MODE: tl.constexpr):
     if MODE == 2:
-        chart: tl.constexpr = tle.gpu.swizzled_shared_layout(
-            8, 1, 8, [1, 2, 0], [1, 1, 1], [1, 1, 1], [1, 1, 1], [2, 1, 0])
+        chart: tl.constexpr = tle.gpu.swizzled_shared_layout(8, 1, 8, [1, 2, 0], [1, 1, 1], [1, 1, 1], [1, 1, 1],
+                                                             [2, 1, 0])
         owner = tle.gpu.alloc([2, 64, 64], tl.bfloat16, layout=chart)
     elif MODE == 1:
         owner = tle.gpu.alloc([2, 64, 64], tl.bfloat16, nv_mma_shared_layout=False)
@@ -53,7 +53,8 @@ def test_allocator_policy_does_not_require_runtime_device_discovery(monkeypatch,
     backend.load_dialects(context)
     options = backend.parse_options({"num_warps": 4})
     source = ASTSource(frontend_alloc, {"C": "*bf16", "MODE": "constexpr"}, {"MODE": mode})
-    module = source.make_ir(target, options, backend.get_codegen_implementation(options), backend.get_module_map(), context)
+    module = source.make_ir(target, options, backend.get_codegen_implementation(options), backend.get_module_map(),
+                            context)
     text = str(module)
     assert ("hcu.auto_shared_layout" in text) == (backend_name == "hcu" and mode == 0)
     assert ("nvmma_shared" in text) == (backend_name != "hcu" and mode == 0)
@@ -150,5 +151,5 @@ def test_unproven_or_explicit_chart_keeps_original_types(tmp_path, negative, ran
     assert "vec = 8" not in after
     assert ("hcu.auto_shared_layout" in after) == (negative != "explicit")
     # The ordinary canonicalizer can renumber SSA and location aliases.
-    assert re.findall(r"ttg.local_load .*? : (.*?) loc\(", before) == re.findall(
-        r"ttg.local_load .*? : (.*?) loc\(", after)
+    assert re.findall(r"ttg.local_load .*? : (.*?) loc\(", before) == re.findall(r"ttg.local_load .*? : (.*?) loc\(",
+                                                                                 after)

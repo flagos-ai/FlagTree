@@ -731,21 +731,20 @@ struct TritonHCUGPUConvertToBufferOpsPass
     // not entered through the enclosing operation's RegionBranch interface.
     // Follow ModuleAxisInfoAnalysis's pre-order initialization so outer facts
     // are available before analyzing each nested isolated operation.
-    WalkResult result =
-        mod.walk<mlir::WalkOrder::PreOrder>([&](Operation *op) {
-          if (op->hasTrait<OpTrait::IsIsolatedFromAbove>() &&
-              failed(solver->initializeAndRun(op)))
-            return WalkResult::interrupt();
-          return WalkResult::advance();
-        });
+    WalkResult result = mod.walk<mlir::WalkOrder::PreOrder>([&](Operation *op) {
+      if (op->hasTrait<OpTrait::IsIsolatedFromAbove>() &&
+          failed(solver->initializeAndRun(op)))
+        return WalkResult::interrupt();
+      return WalkResult::advance();
+    });
     if (result.wasInterrupted())
       return signalPassFailure();
 
     HCU::ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
     if (!this->asyncOnly)
       patterns.add<ConvertTritonLoadToBufferLoad<tt::LoadOp>,
-                   ConvertTritonStoreToBufferStore>(context, assumptions, solver,
-                                                    this->analyzeSmallTensorOfst);
+                   ConvertTritonStoreToBufferStore>(
+          context, assumptions, solver, this->analyzeSmallTensorOfst);
     // BufferLoadToLds is only supported on CDNA3 and CDNA4
     if (llvm::is_contained({ISAFamily::CDNA3, ISAFamily::CDNA4},
                            targetInfo.getISAFamily())) {

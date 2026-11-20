@@ -23,6 +23,7 @@ exit:
 }
 '''
 
+
 def test_fence_before_cta_barrier_preserves_memory_operations(tmp_path):
     module, keep = load_fixture(tmp_path, BASE)
     before = str(module)
@@ -34,12 +35,14 @@ def test_fence_before_cta_barrier_preserves_memory_operations(tmp_path):
     assert after.count('call void @llvm.amdgcn.wave.barrier') == 1
     assert before.count('call void @llvm.amdgcn.s.barrier') == after.count('call void @llvm.amdgcn.s.barrier') == 1
 
+
 @pytest.mark.parametrize('arch', ['gfx928', 'gfx942', 'gfx950', 'gfx1250'])
 def test_other_architectures_unchanged(tmp_path, arch):
     module, keep = load_fixture(tmp_path, BASE)
     before = str(module)
     assert hcu.preserve_lds_barrier_order(module, arch) == 0
     assert str(module) == before
+
 
 def test_wave_barrier_only_unchanged(tmp_path):
     module, keep = load_fixture(tmp_path, BASE.replace('  call void @llvm.amdgcn.s.barrier()\n', ''))

@@ -1,9 +1,9 @@
 #ifndef TRITON_HCU_EXPLICIT_WARP_SPECIALIZE_H
 #define TRITON_HCU_EXPLICIT_WARP_SPECIALIZE_H
 
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/Support/MathExtras.h"
@@ -35,9 +35,9 @@ public:
       uniform = arg.getOwner() == &entry &&
                 (!supportedArg || supportedArg(arg.getType()));
     } else if (Operation *op = value.getDefiningOp()) {
-      uniform = supported(op) && llvm::all_of(op->getOperands(), [&](Value input) {
-        return (*this)(input);
-      });
+      uniform = supported(op) &&
+                llvm::all_of(op->getOperands(),
+                             [&](Value input) { return (*this)(input); });
     }
     proven.try_emplace(value, uniform);
     return uniform;
@@ -51,7 +51,7 @@ private:
 };
 
 inline bool hasUniformTritonWarpCaptures(gpu::WarpSpecializeOp ws,
-                                        triton::FuncOp fn) {
+                                         triton::FuncOp fn) {
   auto isScalar = [](Type type) {
     return isa<IntegerType, IndexType, FloatType, triton::PointerType>(type);
   };
@@ -89,14 +89,17 @@ terminalWarpDomain(gpu::WarpSpecializeOp ws, unsigned maxWaves) {
     return std::nullopt;
   unsigned count = 0;
   mod.walk([&](gpu::WarpSpecializeOp) { ++count; });
-  if (count != 1) return std::nullopt;
+  if (count != 1)
+    return std::nullopt;
   for (Operation &op : fn.getBody().front()) {
     if (&op == ws.getOperation() ||
         isa<gpu::LocalAllocOp, gpu::LocalDeallocOp, triton::ReturnOp>(&op) ||
-        isPure(&op)) continue;
+        isPure(&op))
+      continue;
     return std::nullopt;
   }
-  ExplicitWarpDomain domain{fn, unsigned(base.getInt()), unsigned(base.getInt()), {}};
+  ExplicitWarpDomain domain{
+      fn, unsigned(base.getInt()), unsigned(base.getInt()), {}};
   for (int32_t waves : ws.getPartitionNumWarps()) {
     if (waves < 1 || !llvm::isPowerOf2_32(waves) ||
         unsigned(waves) > maxWaves - domain.total)

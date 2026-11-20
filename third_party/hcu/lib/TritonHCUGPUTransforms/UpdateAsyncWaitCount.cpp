@@ -55,8 +55,19 @@ namespace {
 // alignment, and the layout mapping from global to shared memory addresses.
 int getNumberOfLoadInstructions(RankedTensorType srcTy, ttg::MemDescType dstTy,
                                 Value mask, int contig,
-                                ModuleAxisInfoAnalysis &axisInfo) {
+                                ModuleAxisInfoAnalysis &axisInfo,
+                                bool countOnlyWaveUniformIssues) {
   LinearLayout srcLayout = tt::gpu::toLinearLayout(srcTy);
+  if (countOnlyWaveUniformIssues) {
+    // Direct-to-LDS lowering predicates out redundant threads. A free warp
+    // or CTA bit can make an entire wave skip the instruction. A free lane bit
+    // alone leaves at least one active lane in every otherwise active wave.
+    auto freeMasks = srcLayout.getFreeVariableMasks();
+    auto *ctx = srcTy.getContext();
+    if (freeMasks.lookup(StringAttr::get(ctx, "warp")) ||
+        freeMasks.lookup(StringAttr::get(ctx, "block")))
+      return 0;
+  }
   LinearLayout sharedLayout;
   if (auto paddedEnc = dyn_cast<triton::gpu::PaddedSharedEncodingAttr>(
           dstTy.getEncoding())) {
@@ -93,23 +104,25 @@ int getOpNumberOfAsyncLoadInstructions(Operation *op,
       uint64_t elements = uint64_t(type.getShape()[0]) * type.getShape()[1];
       // Lowering independently validates complete wave payloads and emits this
       // many 16B intrinsics in every wave. Unsupported charts fail compilation.
-      if (waves && elements <= (uint64_t(1) << 20) && elements % (512 * waves) == 0)
+      if (waves && elements <= (uint64_t(1) << 20) &&
+          elements % (512 * waves) == 0)
         return elements / (512 * waves);
       return 0; // Never overestimate an unproven per-wave instruction count.
     }
   }
   if (auto copyOp = dyn_cast<ttg::AsyncCopyGlobalToLocalOp>(op)) {
     int contig = LLVM::HCU::getVectorSize(copyOp.getSrc(), axisInfo);
-    return getNumberOfLoadInstructions(copyOp.getSrc().getType(),
-                                       copyOp.getResult().getType(),
-                                       copyOp.getMask(), contig, axisInfo);
+    return getNumberOfLoadInstructions(
+        copyOp.getSrc().getType(), copyOp.getResult().getType(),
+        copyOp.getMask(), contig, axisInfo, targetInfo.getArch() == "gfx936");
   } else if (auto bufferOp = dyn_cast<hcugpu::BufferLoadToLocalOp>(op)) {
     auto ptrType = cast<RankedTensorType>(LLVM::HCU::getPointerTypeWithShape(
         bufferOp.getPtr(), bufferOp.getOffsets()));
     int contig = LLVM::HCU::getVectorSize(bufferOp.getPtr(),
                                           bufferOp.getOffsets(), axisInfo);
     return getNumberOfLoadInstructions(ptrType, bufferOp.getDest().getType(),
-                                       bufferOp.getMask(), contig, axisInfo);
+                                       bufferOp.getMask(), contig, axisInfo,
+                                       targetInfo.getArch() == "gfx936");
   } else if (emitRemarkOnNonAsyncOp) {
     SmallVector<mlir::MemoryEffects::EffectInstance> effects;
     if (auto memEffectIface = dyn_cast<MemoryEffectOpInterface>(op))

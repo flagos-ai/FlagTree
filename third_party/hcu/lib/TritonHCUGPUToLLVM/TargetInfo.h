@@ -104,7 +104,7 @@ public:
   // Default queries describe generic GLOBAL-to-LDS. Buffer lowering must
   // explicitly request BUFFER-to-LDS widths.
   bool supportsDirectToLdsLoadBitWidth(int bitWidth,
-                                     bool isBuffer = false) const;
+                                       bool isBuffer = false) const;
 
   bool supportsMultiCTALaunch() const;
   bool supportsClusterLoadBitWidth(int biwWidth) const;

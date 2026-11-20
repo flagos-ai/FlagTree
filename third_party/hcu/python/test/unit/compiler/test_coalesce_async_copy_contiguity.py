@@ -61,9 +61,10 @@ def fixture(kind, dtype):
     elif kind == 'uniform_mask':
         text = text.replace('%stride: i32 {tt.divisibility = 16 : i32})',
                             '%stride: i32 {tt.divisibility = 16 : i32}, %take: i1)')
-        text = text.replace('    %t = hcug.buffer_load_to_local',
-                            '    %uniform_mask = tt.splat %take : i1 -> tensor<128x32xi1, #blocked>\n'
-                            '    %t = hcug.buffer_load_to_local')
+        text = text.replace(
+            '    %t = hcug.buffer_load_to_local',
+            '    %uniform_mask = tt.splat %take : i1 -> tensor<128x32xi1, #blocked>\n'
+            '    %t = hcug.buffer_load_to_local')
         text = text.replace('%A[%sum] into', '%A[%sum] mask = %uniform_mask into')
     elif kind == 'unknown_offset':
         text = text.replace('%U: i32 {tt.divisibility = 8 : i32}', '%U: i32')
@@ -98,8 +99,9 @@ def run_pass(tmp_path, text):
 
 
 @pytest.mark.parametrize('dtype', ['bf16', 'f16'])
-@pytest.mark.parametrize('kind', ['default', 'width8', 'width16', 'uniform_mask', 'mask_coarse',
-                                 'mask_fine', 'unknown_offset', 'unknown_stride'])
+@pytest.mark.parametrize(
+    'kind',
+    ['default', 'width8', 'width16', 'uniform_mask', 'mask_coarse', 'mask_fine', 'unknown_offset', 'unknown_stride'])
 def test_existing_layout_width_and_legality(tmp_path, kind, dtype):
     text = fixture(kind, dtype)
     out = run_pass(tmp_path, text)

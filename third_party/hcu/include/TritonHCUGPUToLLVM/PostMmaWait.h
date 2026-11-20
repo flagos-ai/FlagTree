@@ -1,7 +1,9 @@
 #ifndef TRITON_HCU_POST_MMA_WAIT_H
 #define TRITON_HCU_POST_MMA_WAIT_H
 #include <string>
-namespace llvm { class Module; }
+namespace llvm {
+class Module;
+}
 namespace flagtree::hcu {
 struct PostMmaWaitOptions {
   // Exact launch ABI supplied by metadata/host contract, never inferred from
@@ -17,5 +19,5 @@ struct PostMmaWaitStats {
 };
 PostMmaWaitStats placePostMmaWaits(llvm::Module &, const std::string &arch,
                                    const PostMmaWaitOptions &);
-}
+} // namespace flagtree::hcu
 #endif

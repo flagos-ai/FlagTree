@@ -1,6 +1,8 @@
 import pytest
 from triton._C.libtriton import llvm
-
+from triton.backends.compiler import GPUTarget
+from triton.backends.hcu import compiler_hcu
+from triton.runtime.errors import HSACOError
 
 INTRINSIC = "@llvm.amdgcn.make.buffer.rsrc.p8.p1"
 
@@ -30,3 +32,15 @@ def test_clang18_buffer_resource_count_is_narrowed_when_proved(count):
 def test_clang18_buffer_resource_count_cannot_drop_nonzero_bits():
     with pytest.raises(ValueError, match="32-bit buffer resource count"):
         llvm.adapt_hcu_buffer_resources_for_clang18(resource_module("4294967296"))
+
+
+def test_clang18_buffer_resource_rejection_is_backend_compile_failure(monkeypatch):
+    monkeypatch.setattr(compiler_hcu, "_hcu_clang_version", lambda: "clang version 18.0.0")
+    backend = compiler_hcu.HIPBackend(GPUTarget("hip", "gfx936", 64))
+    source = resource_module("4294967296") + """
+define amdgpu_kernel void @kernel() {
+  ret void
+}
+"""
+    with pytest.raises(HSACOError, match="32-bit buffer resource count"):
+        backend.make_amdgcn(source, {}, backend.parse_options({}), _skip_schedules=True)

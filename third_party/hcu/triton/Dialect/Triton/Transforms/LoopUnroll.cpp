@@ -51,11 +51,12 @@ public:
       // Pipelining can produce an empty loop with upper < lower. Preserve its
       // zero iterations before the utility builds the remainder loop.
       OpBuilder builder(loop);
-      Value upper = loop.getUnsignedCmp()
-                        ? builder.createOrFold<arith::MaxUIOp>(
-                              loop.getLoc(), loop.getUpperBound(), loop.getLowerBound())
-                        : builder.createOrFold<arith::MaxSIOp>(
-                              loop.getLoc(), loop.getUpperBound(), loop.getLowerBound());
+      Value upper =
+          loop.getUnsignedCmp()
+              ? builder.createOrFold<arith::MaxUIOp>(
+                    loop.getLoc(), loop.getUpperBound(), loop.getLowerBound())
+              : builder.createOrFold<arith::MaxSIOp>(
+                    loop.getLoc(), loop.getUpperBound(), loop.getLowerBound());
       loop.getUpperBoundMutable().assign(upper);
       auto resultLoops = loopUnrollByFactor(loop, unrollFactor);
       // Do not pipeline the epilog loop.

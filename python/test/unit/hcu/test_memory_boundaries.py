@@ -32,10 +32,8 @@ def _multiwave_local_barrier(O, WORKER: gl.constexpr):
 
 def _compile(fn, constants, warps):
     signature = dict(O="*i32", **{k: "constexpr" for k in constants})
-    return triton.compile(GluonASTSource(fn, signature, constants),
-                          target=GPUTarget("hip", "gfx936", 64),
-                          options=dict(num_warps=warps, num_stages=1,
-                                       terminal_readonly_publication=False))
+    return triton.compile(GluonASTSource(fn, signature, constants), target=GPUTarget("hip", "gfx936", 64),
+                          options=dict(num_warps=warps, num_stages=1, terminal_readonly_publication=False))
 
 
 def test_single_wave_partition_barrier_uses_wave_ordering():
@@ -66,8 +64,7 @@ def test_unsupported_resultless_asm_diagnosed_before_result_index(capfd):
 
 @g.jit
 def _ordinary_asm(O):
-    value = gl.inline_asm_elementwise("v_mov_b32 $0, $1", "=v,v", [7],
-                                     dtype=gl.int32, is_pure=False, pack=1)
+    value = gl.inline_asm_elementwise("v_mov_b32 $0, $1", "=v,v", [7], dtype=gl.int32, is_pure=False, pack=1)
     gl.store(O, value)
 
 
@@ -83,16 +80,13 @@ def test_single_wave_partition_barrier_changed_replay():
     target = triton.runtime.driver.active.get_current_target()
     if target.arch != "gfx936":
         pytest.skip("gfx936 GPU required")
-    storage = torch.full((512,), -17, device="cuda", dtype=torch.int32)
+    storage = torch.full((512, ), -17, device="cuda", dtype=torch.int32)
     out = storage[128:384]
-    _local_barrier[(1,)](out, num_warps=1, num_stages=1,
-                        terminal_readonly_publication=False)
+    _local_barrier[(1, )](out, num_warps=1, num_stages=1, terminal_readonly_publication=False)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        _local_barrier[(1,)](out, num_warps=1, num_stages=1,
-                            terminal_readonly_publication=False)
-    expected = torch.cat([torch.arange(128, device="cuda"),
-                          torch.arange(128, device="cuda") + 1]).int()
+        _local_barrier[(1, )](out, num_warps=1, num_stages=1, terminal_readonly_publication=False)
+    expected = torch.cat([torch.arange(128, device="cuda"), torch.arange(128, device="cuda") + 1]).int()
     for sentinel in [-1, -7, -123]:
         out.fill_(sentinel)
         graph.replay()
@@ -117,11 +111,9 @@ def _partition_shared(A, O, owner, INDEX: gl.constexpr):
 
 @g.jit
 def _shared_local_barrier(A, O):
-    layout: gl.constexpr = gl.SharedLinearLayout(
-        [[1], [2], [4], [8], [16], [32], [64]], alignment=512)
+    layout: gl.constexpr = gl.SharedLinearLayout([[1], [2], [4], [8], [16], [32], [64]], alignment=512)
     owner = gl.allocate_shared_memory(gl.int32, [2, 128], layout)
-    gl.warp_specialize([(_partition_shared, (A, O, owner, 0)),
-                        (_partition_shared, (A, O, owner, 1))], [1], [32])
+    gl.warp_specialize([(_partition_shared, (A, O, owner, 0)), (_partition_shared, (A, O, owner, 1))], [1], [32])
     owner._keep_alive()
 
 
@@ -132,17 +124,17 @@ def test_single_wave_partition_actual_lds_changed_replay():
     target = triton.runtime.driver.active.get_current_target()
     if target.arch != "gfx936":
         pytest.skip("gfx936 GPU required")
-    a = torch.empty((256,), device="cuda", dtype=torch.int32)
-    storage = torch.full((512,), -17, device="cuda", dtype=torch.int32)
+    a = torch.empty((256, ), device="cuda", dtype=torch.int32)
+    storage = torch.full((512, ), -17, device="cuda", dtype=torch.int32)
     out = storage[128:384]
     options = dict(num_warps=1, num_stages=1, terminal_readonly_publication=False)
-    kernel = _shared_local_barrier[(1,)](a, out, **options)
+    kernel = _shared_local_barrier[(1, )](a, out, **options)
     assert "llvm.amdgcn.wave.barrier" in kernel.asm["llir"]
     assert "ds_write" in kernel.asm["amdgcn"] and "ds_read" in kernel.asm["amdgcn"]
     assert "s_ebarrier_sync" not in kernel.asm["amdgcn"]
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        _shared_local_barrier[(1,)](a, out, **options)
+        _shared_local_barrier[(1, )](a, out, **options)
     for seed in [3, 17, 101]:
         a.copy_(torch.arange(256, device="cuda", dtype=torch.int32) * seed - 71)
         before = a.clone()

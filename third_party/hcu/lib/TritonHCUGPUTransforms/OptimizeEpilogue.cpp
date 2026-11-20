@@ -22,8 +22,8 @@
  */
 
 #include "TritonHCUGPUTransforms/Passes.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -33,8 +33,8 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
-#include <limits>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -70,10 +70,10 @@ bool isOneOperandElementwiseOp(Operation *op) {
 
 // A batch reduction can retain its accumulator slice for the final store.
 // Prove that lane/register owners cover the complete result exactly once after
-// suppressing zero-basis duplicates, and that every warp holds that same result.
-// The normal store lowering already emits the corresponding owner predicate.
-static bool isBatchMmacReductionOwnerSlice(Value value,
-                                          triton::StoreOp store) {
+// suppressing zero-basis duplicates, and that every warp holds that same
+// result. The normal store lowering already emits the corresponding owner
+// predicate.
+static bool isBatchMmacReductionOwnerSlice(Value value, triton::StoreOp store) {
   auto type = dyn_cast<RankedTensorType>(value.getType());
   if (!type || type.getRank() != 2 ||
       (!type.getElementType().isF16() && !type.getElementType().isBF16()))
@@ -109,8 +109,7 @@ static bool isBatchMmacReductionOwnerSlice(Value value,
       !isLinearDim(type.getShape()[0]) || !isLinearDim(type.getShape()[1]) ||
       type.getShape()[0] >
           std::numeric_limits<int32_t>::max() / type.getShape()[1] ||
-      type.getShape()[0] % instr[0] != 0 ||
-      type.getShape()[1] % instr[1] != 0)
+      type.getShape()[0] % instr[0] != 0 || type.getShape()[1] % instr[1] != 0)
     return false;
 
   while (auto *op = value.getDefiningOp()) {
@@ -171,8 +170,7 @@ static bool isBatchMmacReductionOwnerSlice(Value value,
   // Surjectivity proves coverage. Exactly rank-many nonzero basis vectors
   // proves independence, so only zero bits alias. This is the alias class
   // suppressed by the existing FreeVariableMasks-based store predicate.
-  return owners.isSurjective() &&
-         ownerBits == owners.getTotalOutDimSizeLog2();
+  return owners.isSurjective() && ownerBits == owners.getTotalOutDimSizeLog2();
 }
 
 // A complete type/layout plan is checked before creating any operation.  The
@@ -201,8 +199,8 @@ planSharedVectorOwnerBases(RankedTensorType srcType, int64_t warps) {
   if (!source.isInvertible() || source.getNumOutDims() != 3 ||
       !source.hasInDim(reg) || !source.hasInDim(lane) ||
       !source.hasInDim(warp) || !source.hasInDim(block) ||
-      source.getInDimSize(lane) != 64 ||
-      source.getInDimSize(warp) != warps || source.getInDimSize(block) != 1)
+      source.getInDimSize(lane) != 64 || source.getInDimSize(warp) != warps ||
+      source.getInDimSize(block) != 1)
     return std::nullopt;
   for (auto [i, dim] : llvm::enumerate(source.getOutDimNames()))
     if (dim != StringAttr::get(ctx, "dim" + std::to_string(i)) ||
@@ -318,7 +316,7 @@ planRegisterBatchOwner(RankedTensorType srcType, int64_t warps, Location loc,
       {StringAttr::get(ctx, "dim1"), static_cast<int32_t>(rows)},
       {StringAttr::get(ctx, "dim2"), static_cast<int32_t>(cols)}};
   triton::LinearLayout ll(std::move(bases), outDims,
-                         /*requireSurjective=*/true);
+                          /*requireSurjective=*/true);
   if (!ll.isInvertible() || ll.getInDimSize(lane) != 64 ||
       ll.getInDimSize(warp) != warps || ll.getInDimSize(block) != 1)
     return std::nullopt;
@@ -329,11 +327,11 @@ planRegisterBatchOwner(RankedTensorType srcType, int64_t warps, Location loc,
   plan.input = srcType.cloneWithEncoding(encoding);
   auto *infer =
       cast<triton::DialectInferLayoutInterface>(&encoding.getDialect());
-  auto inferTrans = [&](RankedTensorType type, ArrayRef<int32_t> order)
-      -> RankedTensorType {
+  auto inferTrans = [&](RankedTensorType type,
+                        ArrayRef<int32_t> order) -> RankedTensorType {
     Attribute resultEncoding;
     if (failed(infer->inferTransOpEncoding(type.getEncoding(), type.getShape(),
-                                          order, resultEncoding, loc)))
+                                           order, resultEncoding, loc)))
       return {};
     SmallVector<int64_t> resultShape;
     for (int32_t dim : order)
@@ -348,12 +346,12 @@ planRegisterBatchOwner(RankedTensorType srcType, int64_t warps, Location loc,
   for (int64_t n = batch; n > 1; n /= 2)
     binaryShape.push_back(2);
   Attribute binaryEncoding;
-  if (failed(infer->inferReshapeOpEncoding(
-          plan.transposed.getShape(), plan.transposed.getEncoding(),
-          binaryShape, binaryEncoding, loc)))
+  if (failed(infer->inferReshapeOpEncoding(plan.transposed.getShape(),
+                                           plan.transposed.getEncoding(),
+                                           binaryShape, binaryEncoding, loc)))
     return std::nullopt;
   plan.binary = RankedTensorType::get(binaryShape, srcType.getElementType(),
-                                     binaryEncoding);
+                                      binaryEncoding);
   if (triton::gpu::isExpensiveView(plan.transposed, plan.binary))
     return std::nullopt;
   plan.binaryOrder = {0, 1};
@@ -389,15 +387,14 @@ planRegisterBatchOwner(RankedTensorType srcType, int64_t warps, Location loc,
       return std::nullopt;
     Attribute nextEncoding;
     if (failed(infer->inferSplitOpEncoding(type.getEncoding(), nextEncoding,
-                                          type.getShape(), loc)))
+                                           type.getShape(), loc)))
       return std::nullopt;
     auto next = RankedTensorType::get(type.getShape().drop_back(),
-                                     type.getElementType(), nextEncoding);
+                                      type.getElementType(), nextEncoding);
     auto nextLL = triton::gpu::toLinearLayout(next);
     if (!nextLL.isInvertible() ||
         nextLL.getInDimSize(reg) * 2 != splitLL.getInDimSize(reg) ||
-        nextLL.getInDimSize(lane) != 64 ||
-        nextLL.getInDimSize(warp) != warps ||
+        nextLL.getInDimSize(lane) != 64 || nextLL.getInDimSize(warp) != warps ||
         nextLL.getInDimSize(block) != 1)
       return std::nullopt;
     plan.splitResults.push_back(next);
@@ -412,8 +409,7 @@ planRegisterBatchOwner(RankedTensorType srcType, int64_t warps, Location loc,
 // Move a single all-warp batch reduction to a proved owner chart.  The opt-in
 // branch reifies the exact tree in registers; the original lane-subgroup
 // ConvertLayout/Reduce path remains the fallback. No wait/barrier is erased.
-class WarpSynchronousOwnerReduction
-    : public OpRewritePattern<triton::StoreOp> {
+class WarpSynchronousOwnerReduction : public OpRewritePattern<triton::StoreOp> {
 public:
   explicit WarpSynchronousOwnerReduction(MLIRContext *ctx)
       : OpRewritePattern(ctx, PatternBenefit(2)) {}
@@ -448,8 +444,7 @@ public:
         return failure();
       auto inType = dyn_cast<RankedTensorType>(op->getOperand(0).getType());
       auto outType = dyn_cast<RankedTensorType>(op->getResult(0).getType());
-      if (!inType || !outType ||
-          inType.getShape() != resultType.getShape() ||
+      if (!inType || !outType || inType.getShape() != resultType.getShape() ||
           outType.getShape() != resultType.getShape())
         return failure();
       chain.push_back(op);
@@ -480,7 +475,8 @@ public:
         !srcType.getElementType().isF32() ||
         srcType.getShape().drop_front() != resultType.getShape())
       return failure();
-    auto mma = dyn_cast<triton::gpu::AMDMfmaEncodingAttr>(srcType.getEncoding());
+    auto mma =
+        dyn_cast<triton::gpu::AMDMfmaEncodingAttr>(srcType.getEncoding());
     auto module = store->getParentOfType<ModuleOp>();
     if (!mma || !module || reduce->getBlock() != store->getBlock())
       return failure();
@@ -503,8 +499,7 @@ public:
     if (!isRepresentable(batch) || !isRepresentable(rows) ||
         !isRepresentable(cols) || !isRepresentable(warps) ||
         warps != moduleWarps.getInt() || warps <= 1 || warps > 64 ||
-        batch != warps ||
-        rows > std::numeric_limits<int32_t>::max() / cols ||
+        batch != warps || rows > std::numeric_limits<int32_t>::max() / cols ||
         rows * cols > std::numeric_limits<int32_t>::max() / batch)
       return failure();
     auto wpc = mma.getWarpsPerCTA();
@@ -512,7 +507,8 @@ public:
     auto instr = mma.getInstrShape();
     if (wpc.size() != 3 || wpc[0] != warps || wpc[1] != 1 || wpc[2] != 1 ||
         !llvm::all_of(cta.getCTAsPerCGA(), [](unsigned v) { return v == 1; }) ||
-        !llvm::all_of(cta.getCTASplitNum(), [](unsigned v) { return v == 1; }) ||
+        !llvm::all_of(cta.getCTASplitNum(),
+                      [](unsigned v) { return v == 1; }) ||
         instr.size() != 3 || !instr[0] || !instr[1] || !instr[2] ||
         rows % instr[0] || cols % instr[1])
       return failure();
@@ -532,8 +528,7 @@ public:
     if (!oldLL.hasInDim(kReg) || !oldLL.hasInDim(kLane) ||
         !oldLL.hasInDim(kWarp) || !oldLL.hasInDim(kBlock) ||
         !oldLL.isInvertible() || oldLL.getInDimSize(kLane) != 64 ||
-        oldLL.getInDimSize(kWarp) != warps ||
-        oldLL.getInDimSize(kBlock) != 1)
+        oldLL.getInDimSize(kWarp) != warps || oldLL.getInDimSize(kBlock) != 1)
       return failure();
     for (const auto &[dim, bases] : oldLL.getBases()) {
       if (dim != kReg && dim != kLane && dim != kWarp && dim != kBlock)
@@ -553,8 +548,8 @@ public:
     // The option only requests the alternative; all source/tree/layout gates
     // above and the complete register-only type plan below are independent.
     std::optional<RegisterBatchOwnerPlan> registerPlan;
-    auto requested = module->getAttrOfType<BoolAttr>(
-        "ttg.hcu.register_batch_owner");
+    auto requested =
+        module->getAttrOfType<BoolAttr>("ttg.hcu.register_batch_owner");
     if (requested && requested.getValue() &&
         add.getLhs() == combine.getArgument(0) &&
         add.getRhs() == combine.getArgument(1)) {
@@ -562,7 +557,7 @@ public:
           "ttg.hcu.register_batch_owner_shared_vector");
       if (sharedRequested && sharedRequested.getValue())
         registerPlan = planRegisterBatchOwner(srcType, warps, reduce.getLoc(),
-                                               /*sharedVector=*/true);
+                                              /*sharedVector=*/true);
       // Failed source-basis/type/split proof falls back to the unchanged v1
       // register-owner plan before any operation is created.
       if (!registerPlan)
@@ -577,13 +572,13 @@ public:
       const auto &plan = *registerPlan;
       Value tree = triton::gpu::ConvertLayoutOp::create(
           rewriter, reduce.getLoc(), plan.input, reduce->getOperand(0));
-      tree = triton::TransOp::create(
-          rewriter, reduce.getLoc(), tree, SmallVector<int32_t>{1, 2, 0});
-      tree = triton::ReshapeOp::create(
-          rewriter, reduce.getLoc(), plan.binary.getShape(), tree,
-          /*allowReorder=*/false);
       tree = triton::TransOp::create(rewriter, reduce.getLoc(), tree,
-                                    plan.binaryOrder);
+                                     SmallVector<int32_t>{1, 2, 0});
+      tree = triton::ReshapeOp::create(rewriter, reduce.getLoc(),
+                                       plan.binary.getShape(), tree,
+                                       /*allowReorder=*/false);
+      tree = triton::TransOp::create(rewriter, reduce.getLoc(), tree,
+                                     plan.binaryOrder);
       // Original batch bits are split from high to low. For B=4 the first
       // tensor add is [x0+x2, x1+x3], and the second is their ordered sum.
       // Existing Trans/Reshape/Split lowerings just repack this proved
@@ -604,20 +599,24 @@ public:
           "ttg.hcu.register_batch_owner_count");
       int64_t countValue =
           count && count.getType().isSignlessInteger(32) ? count.getInt() : 0;
-      int64_t nextCount = countValue >= 0 &&
-                                  countValue < std::numeric_limits<int32_t>::max()
-                              ? countValue + 1
-                              : 1;
+      int64_t nextCount =
+          countValue >= 0 && countValue < std::numeric_limits<int32_t>::max()
+              ? countValue + 1
+              : 1;
       rewriter.modifyOpInPlace(module, [&] {
         module->setAttr("ttg.hcu.register_batch_owner_count",
                         rewriter.getI32IntegerAttr(nextCount));
         if (plan.sharedVector) {
           auto sharedCount = module->getAttrOfType<IntegerAttr>(
               "ttg.hcu.register_batch_owner_shared_vector_count");
-          int64_t value = sharedCount && sharedCount.getType().isSignlessInteger(32)
-                              ? sharedCount.getInt() : 0;
-          int64_t next = value >= 0 && value < std::numeric_limits<int32_t>::max()
-                             ? value + 1 : 1;
+          int64_t value =
+              sharedCount && sharedCount.getType().isSignlessInteger(32)
+                  ? sharedCount.getInt()
+                  : 0;
+          int64_t next =
+              value >= 0 && value < std::numeric_limits<int32_t>::max()
+                  ? value + 1
+                  : 1;
           module->setAttr("ttg.hcu.register_batch_owner_shared_vector_count",
                           rewriter.getI32IntegerAttr(next));
         }
@@ -653,9 +652,11 @@ public:
       triton::LinearLayout newLL(std::move(bases), outDims,
                                  /*requireSurjective=*/true);
       auto linear = triton::gpu::LinearEncodingAttr::get(ctx, newLL);
-      // A second explicit check keeps the lowering contract local to the pattern.
+      // A second explicit check keeps the lowering contract local to the
+      // pattern.
       if (triton::gpu::getWarpsPerCTA(linear, srcType.getShape())[0] != 1 ||
-          triton::gpu::getThreadsPerWarp(linear, srcType.getShape())[0] != batch)
+          triton::gpu::getThreadsPerWarp(linear, srcType.getShape())[0] !=
+              batch)
         return failure();
 
       auto converted = triton::gpu::ConvertLayoutOp::create(
@@ -664,7 +665,8 @@ public:
       auto newReduce = triton::ReduceOp::create(
           rewriter, reduce.getLoc(), ValueRange{converted.getResult()}, 0);
       newReduce->setAttrs(reduce->getAttrs());
-      rewriter.cloneRegionBefore(reduce.getCombineOp(), newReduce.getCombineOp(),
+      rewriter.cloneRegionBefore(reduce.getCombineOp(),
+                                 newReduce.getCombineOp(),
                                  newReduce.getCombineOp().end());
       newValue = newReduce->getResult(0);
       newEncoding = cast<RankedTensorType>(newValue.getType()).getEncoding();
@@ -697,7 +699,8 @@ public:
           store.getMask());
       storeMapping.map(store.getMask(), newMask.getResult());
     }
-    rewriter.clone(*store.getOperation(), storeMapping); // Keep all store attrs.
+    rewriter.clone(*store.getOperation(),
+                   storeMapping); // Keep all store attrs.
     rewriter.eraseOp(store);
     for (auto *op : chain)
       rewriter.eraseOp(op); // All trace nodes were single-use; now dead.
@@ -706,18 +709,42 @@ public:
   }
 };
 
-// Tries to optimize oldStoreOp with v_permlane*_swap instruction when possible.
-// Returns null store op if not suitable.
-static triton::StoreOp
-usePermlaneSwapToOptimizeStore(PatternRewriter &rewriter, Value ptr, Value val,
-                               Value mask, triton::StoreOp oldStoreOp) {
+// Move the adjacent-column bit to the first register basis so the standard
+// store vectorizer sees a pair. Lane, wave and CTA ownership are unchanged.
+static std::optional<triton::LinearLayout>
+choosePairedMmacStoreLayout(RankedTensorType type) {
+  auto mma = dyn_cast<triton::gpu::AMDMfmaEncodingAttr>(type.getEncoding());
+  if (!mma ||
+      mma.getMmacLayout() != triton::gpu::MmacLayout::LEGACY_PAIRED_COLUMNS ||
+      type.getRank() != 2 ||
+      !(type.getElementType().isBF16() || type.getElementType().isF16()))
+    return std::nullopt;
+  auto layout = triton::gpu::toLinearLayout(type);
+  auto bases = layout.getBases();
+  auto entry = bases.find(StringAttr::get(type.getContext(), "register"));
+  if (entry == bases.end())
+    return std::nullopt;
+  auto &registers = entry->second;
+  auto adjacent = llvm::find_if(registers, [](const auto &basis) {
+    return ArrayRef<int32_t>(basis) == ArrayRef<int32_t>({0, 1});
+  });
+  if (adjacent == registers.end() || adjacent == registers.begin())
+    return std::nullopt;
+  std::rotate(registers.begin(), adjacent, std::next(adjacent));
+  return triton::LinearLayout(std::move(bases), layout.getOutDims(),
+                              layout.isSurjective());
+}
+
+// Pick a vectorizable store layout and materialize its exact ownership map.
+static triton::StoreOp useVectorStoreLayout(PatternRewriter &rewriter,
+                                            Value ptr, Value val, Value mask,
+                                            triton::StoreOp oldStoreOp) {
   auto ptrType = cast<RankedTensorType>(ptr.getType());
   auto valType = cast<RankedTensorType>(val.getType());
 
-  // Create a new layout where each thread holds 8 consecutive elements, in
-  // order to enable wide 128-bit global stores.
-  std::optional<triton::LinearLayout> storeLL =
-      triton::gpu::chooseMfmaLikeStoreLayout(valType);
+  auto storeLL = choosePairedMmacStoreLayout(valType);
+  if (!storeLL)
+    storeLL = triton::gpu::chooseMfmaLikeStoreLayout(valType);
   if (!storeLL)
     return nullptr;
 
@@ -835,7 +862,7 @@ public:
                                                      newMaskType, mask);
     }
     triton::StoreOp newStoreOp =
-        usePermlaneSwapToOptimizeStore(rewriter, newPtr, newVal, newMask, stOp);
+        useVectorStoreLayout(rewriter, newPtr, newVal, newMask, stOp);
     if (!newStoreOp) {
       newStoreOp =
           triton::StoreOp::create(rewriter, stOp.getLoc(), newPtr, newVal,

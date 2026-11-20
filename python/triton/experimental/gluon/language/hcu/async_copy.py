@@ -38,8 +38,7 @@ def warp_group_id(group_size=1, _semantic=None):
     size = _unwrap_if_constexpr(group_size)
     assert type(size) is int and size > 0 and size & (size - 1) == 0
     builder = _semantic.builder
-    return core.tensor(hcu.create_warp_group_id(
-        builder.get_op_builder(), builder.get_loc(), size), core.int32)
+    return core.tensor(hcu.create_warp_group_id(builder.get_op_builder(), builder.get_loc(), size), core.int32)
 
 
 @builtin
@@ -75,12 +74,15 @@ def matrix_load_to_shared(dest, base, shape, strides, offsets, enable=True, _sem
     base = _semantic.to_tensor(base)
     assert base.type.is_ptr() and base.type.scalar.element_ty == dest.dtype
     assert dest.dtype in (core.float16, core.bfloat16)
+
     def integer(value, dtype):
         value = _semantic.to_tensor(_unwrap_if_constexpr(value))
         assert value.type.is_int() and not value.type.is_block(), "matrix copy operands must be scalar integers"
         return _semantic.cast(value, dtype).handle
+
     token = _semantic.builder.create_matrix_load_to_shared(dest.handle, base.handle,
-        [integer(v, core.int32) for v in shape],
-        [integer(v, core.int64) for v in strides],
-        [integer(v, core.int32) for v in offsets] + [integer(enable, core.int32)])
+                                                           [integer(v, core.int32)
+                                                            for v in shape], [integer(v, core.int64) for v in strides],
+                                                           [integer(v, core.int32)
+                                                            for v in offsets] + [integer(enable, core.int32)])
     return core.async_token(token)

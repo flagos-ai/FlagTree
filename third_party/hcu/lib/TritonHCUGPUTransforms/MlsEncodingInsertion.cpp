@@ -1,13 +1,13 @@
-#include "Dialect/TritonHCUGPU/IR/Dialect.h"
-#include "TritonHCUGPUToLLVM/TargetUtils.h"
-#include "TritonHCUGPUTransforms/MfmaGroup.h"
-#include "TritonHCUGPUTransforms/MlsGroup.h"
-#include "Utility.h"
-#include "MatrixDescriptorLayout.h"
 #include "../TritonHCUGPUToLLVM/ScalarMemoryAnalysis.h"
 #include "../TritonHCUGPUToLLVM/WarpSpecializeUtils.h"
 #include "Analysis/AxisInfoExt.h"
 #include "Analysis/MatrixCopyGeometry.h"
+#include "Dialect/TritonHCUGPU/IR/Dialect.h"
+#include "MatrixDescriptorLayout.h"
+#include "TritonHCUGPUToLLVM/TargetUtils.h"
+#include "TritonHCUGPUTransforms/MfmaGroup.h"
+#include "TritonHCUGPUTransforms/MlsGroup.h"
+#include "Utility.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -48,9 +48,8 @@ static bool registerDescriptorUniform(Value value, DenseSet<Value> &seen,
     if (auto fn = dyn_cast<tt::FuncOp>(arg.getOwner()->getParentOp()))
       return arg.getOwner() == &fn.getBody().front();
     if (auto loop = dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp())) {
-      if (arg.getOwner() != loop.getBody() ||
-          !uniform(loop.getLowerBound()) || !uniform(loop.getUpperBound()) ||
-          !uniform(loop.getStep()))
+      if (arg.getOwner() != loop.getBody() || !uniform(loop.getLowerBound()) ||
+          !uniform(loop.getUpperBound()) || !uniform(loop.getStep()))
         return false;
       unsigned n = arg.getArgNumber();
       return n == 0 ||
@@ -72,8 +71,7 @@ static bool registerDescriptorUniform(Value value, DenseSet<Value> &seen,
            uniform(branch.elseYield().getOperand(n));
   }
   return op->getName().getStringRef().starts_with("arith.") &&
-         op->getNumRegions() == 0 &&
-         llvm::all_of(op->getOperands(), uniform);
+         op->getNumRegions() == 0 && llvm::all_of(op->getOperands(), uniform);
 }
 
 static bool registerDescriptorUniform(Value value) {
@@ -82,8 +80,9 @@ static bool registerDescriptorUniform(Value value) {
   return registerDescriptorUniform(value, seen, budget);
 }
 
-static bool supportsRegisterDescriptor(tt::MatrixLoadOp op,
-                                     triton::HCU::ModuleAxisInfoAnalysis &axis) {
+static bool
+supportsRegisterDescriptor(tt::MatrixLoadOp op,
+                           triton::HCU::ModuleAxisInfoAnalysis &axis) {
   auto type = op.getType();
   auto mod = op->getParentOfType<ModuleOp>();
   auto target = mod->getAttrOfType<StringAttr>("ttg.target");
@@ -100,10 +99,12 @@ static bool supportsRegisterDescriptor(tt::MatrixLoadOp op,
       ttg::TritonGPUDialect::getThreadsPerWarp(mod) != 64)
     return false;
   APInt k, rowStride, columnStride;
-  if (!matchPattern(op.getShape()[1], m_ConstantInt(&k)) || !k.isSignedIntN(32) ||
-      k.getSExtValue() <= 0 || k.getSExtValue() >= 0x2000 ||
+  if (!matchPattern(op.getShape()[1], m_ConstantInt(&k)) ||
+      !k.isSignedIntN(32) || k.getSExtValue() <= 0 ||
       !matchPattern(op.getStrides()[0], m_ConstantInt(&rowStride)) ||
-      rowStride.getSExtValue() != k.getSExtValue() ||
+      !rowStride.isSignedIntN(32) ||
+      rowStride.getSExtValue() < k.getSExtValue() ||
+      rowStride.getSExtValue() >= 0x2000 ||
       !matchPattern(op.getStrides()[1], m_ConstantInt(&columnStride)) ||
       !columnStride.isOne() || type.getShape()[1] > k.getSExtValue() ||
       !llvm::isPowerOf2_64(type.getShape()[1]) ||
@@ -153,7 +154,8 @@ static bool supportsRegisterDescriptor(tt::MatrixLoadOp op,
   auto *ctx = op.getContext();
   return control && ll.getInDimSize(StringAttr::get(ctx, "block")) == 1 &&
          uint64_t(ll.getInDimSize(StringAttr::get(ctx, "register"))) * 64 *
-                 ll.getInDimSize(StringAttr::get(ctx, "warp")) <= (1u << 20);
+                 ll.getInDimSize(StringAttr::get(ctx, "warp")) <=
+             (1u << 20);
 }
 
 // The matrix-copy instruction handles complete 16B vectors of a statically
@@ -196,7 +198,7 @@ bool supportsDescriptorCopy(triton::MatrixLoadOp op) {
   auto fn = op->getParentOfType<tt::FuncOp>();
   auto alignment = arg && fn && arg.getOwner() == &fn.getBody().front()
                        ? fn.getArgAttrOfType<IntegerAttr>(arg.getArgNumber(),
-                                                         "tt.divisibility")
+                                                          "tt.divisibility")
                        : IntegerAttr{};
   if (!alignment || alignment.getInt() < 16 || alignment.getInt() % 16)
     return false;
@@ -206,8 +208,8 @@ bool supportsDescriptorCopy(triton::MatrixLoadOp op) {
   auto offset = StringAttr::get(op.getContext(), "offset");
   auto dims = triton::standardOutDimNames(op.getContext(), 2);
   auto layout = shared.getLinearLayout().sublayout({offset}, dims);
-  return triton::HCU::isMatrixCopyVectorLayout(
-      layout, offset, geometry->row, geometry->column);
+  return triton::HCU::isMatrixCopyVectorLayout(layout, offset, geometry->row,
+                                               geometry->column);
 }
 
 Value expandDescriptorLoad(triton::MatrixLoadOp op, PatternRewriter &rw) {
@@ -215,31 +217,40 @@ Value expandDescriptorLoad(triton::MatrixLoadOp op, PatternRewriter &rw) {
   auto loc = op.getLoc();
   auto context = op.getContext();
   auto encoding = cast<ttg::DistributedEncodingTrait>(type.getEncoding());
-  auto integer = RankedTensorType::get(type.getShape(), rw.getI64Type(), encoding);
-  auto boolean = RankedTensorType::get(type.getShape(), rw.getI1Type(), encoding);
+  auto integer =
+      RankedTensorType::get(type.getShape(), rw.getI64Type(), encoding);
+  auto boolean =
+      RankedTensorType::get(type.getShape(), rw.getI1Type(), encoding);
   Value mask, offset;
   for (unsigned axis = 0; axis < 2; ++axis) {
     auto slice = ttg::SliceEncodingAttr::get(context, 1 - axis, encoding);
-    auto rangeType = RankedTensorType::get({type.getShape()[axis]}, rw.getI32Type(), slice);
+    auto rangeType =
+        RankedTensorType::get({type.getShape()[axis]}, rw.getI32Type(), slice);
     auto vectorType = rangeType.clone(rw.getI64Type());
-    Value range = rw.create<tt::MakeRangeOp>(loc, rangeType, 0, type.getShape()[axis]);
+    Value range =
+        rw.create<tt::MakeRangeOp>(loc, rangeType, 0, type.getShape()[axis]);
     range = rw.create<arith::ExtSIOp>(loc, vectorType, range);
-    Value origin = rw.create<arith::ExtSIOp>(loc, rw.getI64Type(), op.getIndices()[axis]);
+    Value origin =
+        rw.create<arith::ExtSIOp>(loc, rw.getI64Type(), op.getIndices()[axis]);
     origin = rw.create<tt::SplatOp>(loc, vectorType, origin);
     Value index = rw.create<arith::AddIOp>(loc, range, origin);
     if (llvm::is_contained(op.getBoundaryCheck(), axis)) {
-      Value size = rw.create<arith::ExtSIOp>(loc, rw.getI64Type(), op.getShape()[axis]);
+      Value size =
+          rw.create<arith::ExtSIOp>(loc, rw.getI64Type(), op.getShape()[axis]);
       size = rw.create<tt::SplatOp>(loc, vectorType, size);
       Value zero = rw.create<arith::ConstantIntOp>(loc, 0, 64);
       zero = rw.create<tt::SplatOp>(loc, vectorType, zero);
-      Value lower = rw.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge, index, zero);
-      Value upper = rw.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, index, size);
+      Value lower =
+          rw.create<arith::CmpIOp>(loc, arith::CmpIPredicate::sge, index, zero);
+      Value upper =
+          rw.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, index, size);
       Value valid = rw.create<arith::AndIOp>(loc, lower, upper);
       valid = rw.create<tt::ExpandDimsOp>(loc, valid, 1 - axis);
       valid = rw.create<tt::BroadcastOp>(loc, boolean, valid);
       mask = mask ? Value(rw.create<arith::AndIOp>(loc, mask, valid)) : valid;
     }
-    Value stride = rw.create<tt::SplatOp>(loc, vectorType, op.getStrides()[axis]);
+    Value stride =
+        rw.create<tt::SplatOp>(loc, vectorType, op.getStrides()[axis]);
     Value term = rw.create<arith::MulIOp>(loc, index, stride);
     term = rw.create<tt::ExpandDimsOp>(loc, term, 1 - axis);
     term = rw.create<tt::BroadcastOp>(loc, integer, term);
@@ -250,11 +261,13 @@ Value expandDescriptorLoad(triton::MatrixLoadOp op, PatternRewriter &rw) {
   Value ptr = rw.create<tt::AddPtrOp>(loc, pointers, base, offset);
   Value other;
   if (mask) {
-    Value zero = rw.create<arith::ConstantOp>(loc, rw.getZeroAttr(type.getElementType()));
+    Value zero = rw.create<arith::ConstantOp>(
+        loc, rw.getZeroAttr(type.getElementType()));
     other = rw.create<tt::SplatOp>(loc, type, zero);
   }
-  auto load = rw.create<tt::LoadOp>(loc, ptr, mask, other, op.getCache(),
-                                  op.getEvict(), op.getIsVolatile(), StringAttr{});
+  auto load =
+      rw.create<tt::LoadOp>(loc, ptr, mask, other, op.getCache(), op.getEvict(),
+                            op.getIsVolatile(), StringAttr{});
   load->setAttr("tt.load.async", op->getAttr("tt.load.async"));
   return load.getResult();
 }
@@ -384,8 +397,8 @@ public:
         rewriter.replaceOp(matrixOp, expandDescriptorLoad(matrixOp, rewriter));
         return success();
       }
-      Value enabled = rewriter.create<arith::ConstantIntOp>(
-          matrixOp.getLoc(), 1, 32);
+      Value enabled =
+          rewriter.create<arith::ConstantIntOp>(matrixOp.getLoc(), 1, 32);
       rewriter.modifyOpInPlace(matrixOp, [&] {
         matrixOp.getIndicesMutable().append(enabled);
         matrixOp.setBoundaryCheckAttr(rewriter.getDenseI32ArrayAttr({}));
@@ -394,8 +407,10 @@ public:
       return success();
     }
     if (triton::HCU::isAsyncMatrixDescriptor(matrixOp)) {
-      if (matrixOp.getType().getRank() != 2 || matrixOp.getShape().size() != 2 ||
-          matrixOp.getStrides().size() != 2 || matrixOp.getIndices().size() != 2)
+      if (matrixOp.getType().getRank() != 2 ||
+          matrixOp.getShape().size() != 2 ||
+          matrixOp.getStrides().size() != 2 ||
+          matrixOp.getIndices().size() != 2)
         return failure();
       if (supportsDescriptorCopy(matrixOp))
         return failure();

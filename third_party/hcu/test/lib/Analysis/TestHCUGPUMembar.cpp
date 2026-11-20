@@ -1,19 +1,19 @@
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/Verifier.h"
-#include "triton/Dialect/TritonGPU/Transforms/PipelineExpander.h"
-#include <algorithm>
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "TritonHCUGPUToLLVM/MembarUtility.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/AsyncUtility.h"
 #include "mlir/AsmParser/AsmParser.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Pass/Pass.h"
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "llvm/Support/raw_ostream.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/Membar.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/Transforms/PipelineExpander.h"
+#include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 
 using namespace mlir;
 
@@ -40,15 +40,17 @@ struct TestHCUGPUMembarPass
   }
 };
 
-
 // Test-only entry directly exercises the private, read-only proof. In
 // particular, do not insert a publication barrier here: missing/misplaced
 // barriers must be rejected by the helper rather than repaired beforehand.
 struct TestHCUAsyncSlotWARProofPass
-    : public PassWrapper<TestHCUAsyncSlotWARProofPass, OperationPass<ModuleOp>> {
+    : public PassWrapper<TestHCUAsyncSlotWARProofPass,
+                         OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TestHCUAsyncSlotWARProofPass);
 
-  StringRef getArgument() const final { return "test-hcu-async-slot-war-proof"; }
+  StringRef getArgument() const final {
+    return "test-hcu-async-slot-war-proof";
+  }
   StringRef getDescription() const final {
     return "record exact async-slot WAR pairs without mutating the input CFG";
   }
@@ -56,12 +58,11 @@ struct TestHCUAsyncSlotWARProofPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
     auto pairs = triton::HCU::prepareAsyncSlotPrefetchWAR(module);
-    module->setAttr("test.hcu.async_slot_war_pairs",
-                    IntegerAttr::get(IntegerType::get(&getContext(), 32),
-                                     pairs.size()));
+    module->setAttr(
+        "test.hcu.async_slot_war_pairs",
+        IntegerAttr::get(IntegerType::get(&getContext(), 32), pairs.size()));
   }
 };
-
 
 // Direct entry for the opaque-B/ordinary-A prefix2 proof. In particular, do
 // not repair missing publication barriers or run membar before this probe.
@@ -72,7 +73,9 @@ struct TestHCUMfmaParserRoundTripPass
                          OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TestHCUMfmaParserRoundTripPass);
 
-  StringRef getArgument() const final { return "test-hcu-mfma-parser-roundtrip"; }
+  StringRef getArgument() const final {
+    return "test-hcu-mfma-parser-roundtrip";
+  }
   StringRef getDescription() const final {
     return "check five MFMA attribute identity roundtrips without codegen";
   }
@@ -98,10 +101,11 @@ struct TestHCUMfmaParserRoundTripPass
       if (!equal) {
         ++failures;
         getOperation().emitRemark()
-            << "MFMA roundtrip case " << checked << ": rank="
-            << original.getRank() << ", instrComponents="
-            << original.getInstrShape().size() << ", expectedTPWSize="
-            << original.getTilesPerWarp().size() << ", actualTPWSize="
+            << "MFMA roundtrip case " << checked
+            << ": rank=" << original.getRank()
+            << ", instrComponents=" << original.getInstrShape().size()
+            << ", expectedTPWSize=" << original.getTilesPerWarp().size()
+            << ", actualTPWSize="
             << (parsed ? parsed.getTilesPerWarp().size() : 0);
       }
     };
@@ -110,21 +114,21 @@ struct TestHCUMfmaParserRoundTripPass
       for (const auto &instr :
            SmallVector<SmallVector<unsigned>>{{16, 16}, {16, 16, 16}}) {
         auto cta = triton::gpu::CTAEncodingAttr::getDefault(ctx, warps.size());
-        check(triton::gpu::AMDMfmaEncodingAttr::get(
-            ctx, 3, warps, instr, false, cta));
+        check(triton::gpu::AMDMfmaEncodingAttr::get(ctx, 3, warps, instr, false,
+                                                    cta));
       }
     }
     auto cta = triton::gpu::CTAEncodingAttr::getDefault(ctx, 2);
-    check(triton::gpu::AMDMfmaEncodingAttr::get(
-        ctx, 3, {2, 2}, {16, 16, 16}, false, cta, {2, 1}));
+    check(triton::gpu::AMDMfmaEncodingAttr::get(ctx, 3, {2, 2}, {16, 16, 16},
+                                                false, cta, {2, 1}));
     auto i32 = IntegerType::get(ctx, 32);
     getOperation()->setAttr("test.hcu.mfma_roundtrip_checked",
                             IntegerAttr::get(i32, checked));
     getOperation()->setAttr("test.hcu.mfma_roundtrip_failures",
                             IntegerAttr::get(i32, failures));
     if (failures) {
-      getOperation().emitError() << failures << "/" << checked
-                                << " MFMA identity roundtrips failed";
+      getOperation().emitError()
+          << failures << "/" << checked << " MFMA identity roundtrips failed";
       signalPassFailure();
     }
   }
@@ -135,7 +139,8 @@ struct TestHCUMfmaParserRoundTripPass
 struct TestHCUPipelineConstantProbePass
     : public PassWrapper<TestHCUPipelineConstantProbePass,
                          OperationPass<ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TestHCUPipelineConstantProbePass);
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(
+      TestHCUPipelineConstantProbePass);
 
   StringRef getArgument() const final {
     return "test-hcu-pipeline-constant-probe";
@@ -174,7 +179,8 @@ struct TestHCUPipelineConstantProbePass
           loop->getAttrOfType<BoolAttr>("test.hcu.support_dynamic");
       if (!name || !expectSuccess || !expectPredicated || !supportDynamic ||
           loop.getNumResults() != 1 || loop.getRegionIterArgs().size() != 1) {
-        loop.emitError("pipeline-probe fixture needs expectations and one carry");
+        loop.emitError(
+            "pipeline-probe fixture needs expectations and one carry");
         return signalPassFailure();
       }
       std::vector<std::pair<Operation *, unsigned>> schedule;
@@ -208,9 +214,8 @@ struct TestHCUPipelineConstantProbePass
         ++predicateCalls;
         // The whitelist above admits only total, memory-free integer addi.
         // Keep the cloned operation; real pipeline live-out selects still run.
-        return isa<arith::AddIOp>(op) && pred.getType().isInteger(1)
-                   ? op
-                   : nullptr;
+        return isa<arith::AddIOp>(op) && pred.getType().isInteger(1) ? op
+                                                                     : nullptr;
       };
       bool changed = false;
       IRRewriter rewriter(loop);
@@ -232,14 +237,15 @@ struct TestHCUPipelineConstantProbePass
       modified.push_back(changed);
       maxStages.push_back(maxStage);
       carried.push_back(success ? (*result).getRegionIterArgs().size() : 1);
-      module.emitRemark()
-          << "pipeline-probe " << name.getValue() << ": success=" << success
-          << " expectedSuccess=" << expectSuccess.getValue()
-          << " predicateCalls=" << predicateCalls
-          << " expectedPredicated=" << expectPredicated.getValue()
-          << " expectedCalls=" << expectedCalls
-          << " maxStage=" << maxStage << " modified=" << changed
-          << " ssa=" << ssaValid << " matches=" << matches;
+      module.emitRemark() << "pipeline-probe " << name.getValue()
+                          << ": success=" << success
+                          << " expectedSuccess=" << expectSuccess.getValue()
+                          << " predicateCalls=" << predicateCalls
+                          << " expectedPredicated="
+                          << expectPredicated.getValue()
+                          << " expectedCalls=" << expectedCalls
+                          << " maxStage=" << maxStage << " modified=" << changed
+                          << " ssa=" << ssaValid << " matches=" << matches;
     }
     auto *ctx = &getContext();
     auto i32 = IntegerType::get(ctx, 32);
@@ -247,7 +253,8 @@ struct TestHCUPipelineConstantProbePass
                     IntegerAttr::get(i32, loops.size()));
     module->setAttr("test.hcu.pipeline_probe_failures",
                     IntegerAttr::get(i32, failures));
-    module->setAttr("test.hcu.pipeline_probe_names", ArrayAttr::get(ctx, names));
+    module->setAttr("test.hcu.pipeline_probe_names",
+                    ArrayAttr::get(ctx, names));
     module->setAttr("test.hcu.pipeline_probe_calls",
                     DenseI64ArrayAttr::get(ctx, callCounts));
     module->setAttr("test.hcu.pipeline_probe_accepted",
@@ -260,7 +267,7 @@ struct TestHCUPipelineConstantProbePass
                     DenseI32ArrayAttr::get(ctx, carried));
     if (failures) {
       module.emitError() << failures << "/" << loops.size()
-                        << " pipeline-probe expectation mismatches";
+                         << " pipeline-probe expectation mismatches";
       signalPassFailure();
     }
   }

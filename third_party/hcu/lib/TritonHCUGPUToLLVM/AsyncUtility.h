@@ -54,8 +54,10 @@ fitToValidDirectToLdsVecSize(unsigned maxVecSize, unsigned elemBitwidth,
                              const triton::HCU::TargetInfo &targetInfo);
 
 // Typed opcode overload; retain the existing3-argument entry and ABI.
-unsigned fitToValidDirectToLdsVecSize(unsigned maxVecSize, unsigned elemBitwidth,
-    const triton::HCU::TargetInfo &targetInfo, bool isBuffer);
+unsigned fitToValidDirectToLdsVecSize(unsigned maxVecSize,
+                                      unsigned elemBitwidth,
+                                      const triton::HCU::TargetInfo &targetInfo,
+                                      bool isBuffer);
 
 } // namespace mlir::triton::HCU
 

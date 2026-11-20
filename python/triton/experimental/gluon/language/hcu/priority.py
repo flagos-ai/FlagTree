@@ -20,6 +20,5 @@ def accumulator_fence(acc, priority=0, _semantic=None):
     if not acc.type.is_block() or acc.dtype not in (core.float32, core.int32):
         raise ValueError("accumulator fence requires an f32 or i32 tensor")
     builder = _semantic.builder
-    handle = hcu.create_accumulator_fence(
-        builder.get_op_builder(), builder.get_loc(), acc.handle, priority)
+    handle = hcu.create_accumulator_fence(builder.get_op_builder(), builder.get_loc(), acc.handle, priority)
     return core.tensor(handle, acc.type)

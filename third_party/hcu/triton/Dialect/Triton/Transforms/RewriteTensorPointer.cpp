@@ -3,8 +3,8 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -231,8 +231,8 @@ private:
     APInt constant;
     if (matchPattern(value, m_ConstantInt(&constant)) &&
         constant.isSignedIntN(32))
-      return arith::ConstantIntOp::create(builder, loc,
-                                         constant.getSExtValue(), 32);
+      return arith::ConstantIntOp::create(builder, loc, constant.getSExtValue(),
+                                          32);
     return {};
   }
 
@@ -242,8 +242,8 @@ private:
         "ttg.hcu.prefer_wide_async_copy");
     auto async = load->getAttrOfType<BoolAttr>("tt.load.async");
     auto type = cast<RankedTensorType>(load.getType());
-    if (!enabled || !enabled.getInt() ||
-        info.length() != 2 || load.getIsVolatile() ||
+    if (!enabled || !enabled.getInt() || info.length() != 2 ||
+        load.getIsVolatile() ||
         (!type.getElementType().isF16() && !type.getElementType().isBF16()) ||
         (load.getPadding() &&
          *load.getPadding() != triton::PaddingOption::PAD_ZERO) ||
@@ -271,9 +271,10 @@ private:
     }
     auto matrix = triton::MatrixLoadOp::create(
         builder, load.getLoc(), type, info.getBase(), shape, info.getStrides(),
-        tile, indices, load.getBoundaryCheck(),
-        load.getCache(), load.getEvict(), false);
-    matrix->setAttr("tt.load.async", async ? async : builder.getBoolAttr(false));
+        tile, indices, load.getBoundaryCheck(), load.getCache(),
+        load.getEvict(), false);
+    matrix->setAttr("tt.load.async",
+                    async ? async : builder.getBoolAttr(false));
     load.getResult().replaceAllUsesWith(matrix.getResult());
     return true;
   }
@@ -393,7 +394,9 @@ public:
     auto newPtr = info.generatePtr(builder, op->getLoc());
     auto newMask = info.generateMask(builder, op->getLoc(), boundaryCheck);
     Value newOther;
-    if (auto loadOp = dyn_cast<triton::LoadOp>(op))
+    // Padding only supplies values for masked-out lanes. With no boundary
+    // checks, the expanded load has no mask and must not carry an `other`.
+    if (auto loadOp = dyn_cast<triton::LoadOp>(op); loadOp && newMask)
       newOther = info.generateOther(builder, op->getLoc(), loadOp.getPadding());
 
     // Create a new operation
@@ -522,7 +525,8 @@ public:
         auto info = rewritedInfo[oldIterOperands[oldI]];
         mapping.map(oldRegionIterArg, oldRegionIterArg);
         auto yield = cast<scf::YieldOp>(op.getBody()->getTerminator());
-        auto advance = yield.getOperand(oldI).getDefiningOp<triton::AdvanceOp>();
+        auto advance =
+            yield.getOperand(oldI).getDefiningOp<triton::AdvanceOp>();
         for (unsigned j = 0; j < info.length(); ++j) {
           Value initial = getExactI32(builder, op.getLoc(), info.getOffset(j));
           if (advance && advance.getPtr() == oldRegionIterArg && initial) {

@@ -7,20 +7,23 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include <optional>
 
-// Intrinsic declarations and scalar constants shared by ordinary memory lowering.
-// Coordinate proofs here do not authorize memory motion or barrier removal.
+// Intrinsic declarations and scalar constants shared by ordinary memory
+// lowering. Coordinate proofs here do not authorize memory motion or barrier
+// removal.
 namespace mlir::triton::HCU::memory_lowering {
-inline LLVM::LLVMFuncOp getOrInsertHCUIntrinsic(ModuleOp module, Location loc,
-    ConversionPatternRewriter &rewriter, StringRef name, Type result,
-    ArrayRef<Type> args) {
+inline LLVM::LLVMFuncOp
+getOrInsertHCUIntrinsic(ModuleOp module, Location loc,
+                        ConversionPatternRewriter &rewriter, StringRef name,
+                        Type result, ArrayRef<Type> args) {
   if (auto fn = module.lookupSymbol<LLVM::LLVMFuncOp>(name))
     return fn;
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPointToStart(module.getBody());
-  auto fn = LLVM::LLVMFuncOp::create(rewriter, loc, name,
-      LLVM::LLVMFunctionType::get(result, args, false));
+  auto fn = LLVM::LLVMFuncOp::create(
+      rewriter, loc, name, LLVM::LLVMFunctionType::get(result, args, false));
   fn.setConvergent(true);
-  fn.setPassthroughAttr(rewriter.getArrayAttr({rewriter.getStringAttr("nounwind")}));
+  fn.setPassthroughAttr(
+      rewriter.getArrayAttr({rewriter.getStringAttr("nounwind")}));
   return fn;
 }
 

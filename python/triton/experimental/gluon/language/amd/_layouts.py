@@ -90,9 +90,8 @@ class AMDMFMALayout(DistributedLayout):
         self.verify()
 
     def _to_ir(self, builder):
-        args = (self.version, self.warps_per_cta, self.instr_shape,
-                self.transposed, self.cga_layout, self.tiles_per_warp,
-                self.element_bitwidth)
+        args = (self.version, self.warps_per_cta, self.instr_shape, self.transposed, self.cga_layout,
+                self.tiles_per_warp, self.element_bitwidth)
         if self.mmac_layout == _default_mmac_layout():
             return builder.get_amd_mfma_layout(*args)
         return builder.get_amd_mfma_layout(*args, self.mmac_layout)
@@ -129,7 +128,7 @@ class AMDMFMALayout(DistributedLayout):
             tuple(self.tiles_per_warp) if self.tiles_per_warp else None,
             tuple(tuple(vec) for vec in self.cga_layout),
         )
-        return hash(values if self.mmac_layout == _default_mmac_layout() else values + (self.mmac_layout,))
+        return hash(values if self.mmac_layout == _default_mmac_layout() else values + (self.mmac_layout, ))
 
     @property
     def rank(self):

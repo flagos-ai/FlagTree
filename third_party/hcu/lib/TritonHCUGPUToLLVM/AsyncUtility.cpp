@@ -2,11 +2,11 @@
 
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "TargetInfo.h"
-#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/IR/Dominance.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir::triton::HCU {
@@ -181,11 +181,14 @@ void addLocalLoadNoAliasScope(LLVM::AliasAnalysisOpInterface llLoadOp) {
 unsigned
 fitToValidDirectToLdsVecSize(unsigned maxVecSize, unsigned elemBitwidth,
                              const triton::HCU::TargetInfo &targetInfo) {
-  return fitToValidDirectToLdsVecSize(maxVecSize, elemBitwidth, targetInfo, false);
+  return fitToValidDirectToLdsVecSize(maxVecSize, elemBitwidth, targetInfo,
+                                      false);
 }
 
-unsigned fitToValidDirectToLdsVecSize(unsigned maxVecSize, unsigned elemBitwidth,
-    const triton::HCU::TargetInfo &targetInfo, bool isBuffer) {
+unsigned fitToValidDirectToLdsVecSize(unsigned maxVecSize,
+                                      unsigned elemBitwidth,
+                                      const triton::HCU::TargetInfo &targetInfo,
+                                      bool isBuffer) {
   while (maxVecSize > 0 && !targetInfo.supportsDirectToLdsLoadBitWidth(
                                maxVecSize * elemBitwidth, isBuffer)) {
     maxVecSize /= 2;

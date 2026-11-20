@@ -505,19 +505,12 @@ def _parse_config_sets(
     for index, raw_space in enumerate(raw_config_sets):
         space = _parse_params(raw_space, f"{location}[{index}]")
         if space.all_field_names != expected_names:
-            raise FlagTuneConfigError(
-                f"{location}[{index}] fields must exactly match params in declaration order"
-            )
+            raise FlagTuneConfigError(f"{location}[{index}] fields must exactly match params in declaration order")
         for field in space.fields:
-            unexpected = [
-                value for value in field.legal_values
-                if value not in legal_values[field.name]
-            ]
+            unexpected = [value for value in field.legal_values if value not in legal_values[field.name]]
             if unexpected:
-                raise FlagTuneConfigError(
-                    f"{location}[{index}].{field.name}.values contains values "
-                    f"outside params: {unexpected!r}"
-                )
+                raise FlagTuneConfigError(f"{location}[{index}].{field.name}.values contains values "
+                                          f"outside params: {unexpected!r}")
         spaces.append(space)
     return tuple(spaces)
 
@@ -543,9 +536,7 @@ def _parse_explicit_configs(
         config = {name: config[name] for name in names}
         for name, value in config.items():
             if value not in legal_values[name]:
-                raise FlagTuneConfigError(
-                    f"{location}[{index}].{name}={value!r} is outside params"
-                )
+                raise FlagTuneConfigError(f"{location}[{index}].{name}={value!r} is outside params")
         key = param_space.config_key(config)
         if key not in seen:
             seen.add(key)
@@ -657,7 +648,8 @@ def parse_operator_config(config: Mapping[str, Any]) -> OperatorInfo:
         location = f"config.variants.{variant_name}"
         spec = _require_mapping(raw_variant, location)
         unknown = set(spec) - {
-            "inputs", "when", "params", "config_sets", "configs", "config_space", "features", "stage", "dtype_roles", "route_binding"
+            "inputs", "when", "params", "config_sets", "configs", "config_space", "features", "stage", "dtype_roles",
+            "route_binding"
         }
         if unknown:
             raise FlagTuneConfigError(f"{location} has unknown keys: {sorted(unknown)}")
@@ -665,37 +657,22 @@ def parse_operator_config(config: Mapping[str, Any]) -> OperatorInfo:
         inputs = _parse_inputs(spec.get("inputs"), operations, f"{location}.inputs")
         if "config_space" in spec and any(key in spec for key in ("config_sets", "configs")):
             raise FlagTuneConfigError(
-                f"{location}.config_space cannot be combined with config_sets or configs (cannot define both)"
-            )
+                f"{location}.config_space cannot be combined with config_sets or configs (cannot define both)")
         if "config_space" in spec:
             param_space = _parse_config_space(spec["config_space"], f"{location}.config_space")
         else:
             param_space = _parse_params(spec.get("params"), f"{location}.params")
-        config_spaces = _parse_config_sets(
-            spec.get("config_sets"), param_space, f"{location}.config_sets"
-        )
-        explicit_configs = _parse_explicit_configs(
-            spec.get("configs"), param_space, f"{location}.configs"
-        )
+        config_spaces = _parse_config_sets(spec.get("config_sets"), param_space, f"{location}.config_sets")
+        explicit_configs = _parse_explicit_configs(spec.get("configs"), param_space, f"{location}.configs")
         if config_spaces and explicit_configs:
-            raise FlagTuneConfigError(
-                f"{location} cannot define both config_sets and configs"
-            )
+            raise FlagTuneConfigError(f"{location} cannot define both config_sets and configs")
         if explicit_configs:
-            legal_keys = {
-                param_space.config_key(config) for config in explicit_configs
-            }
-            param_space.constraints.append(
-                lambda config, keys=legal_keys, space=param_space: (
-                    space.config_key(config) in keys
-                )
-            )
+            legal_keys = {param_space.config_key(config) for config in explicit_configs}
+            param_space.constraints.append(lambda config, keys=legal_keys, space=param_space:
+                                           (space.config_key(config) in keys))
         elif config_spaces:
             param_space.constraints.append(
-                lambda config, spaces=config_spaces: any(
-                    space.validate(config) for space in spaces
-                )
-            )
+                lambda config, spaces=config_spaces: any(space.validate(config) for space in spaces))
         variables = {field.name for field in inputs} | {"inputs"}
         when = spec.get("when", True)
         _validate_expression(when, operations, variables, f"{location}.when")
@@ -800,13 +777,9 @@ def variant_to_model_config(
             spec["max"] = field.maximum
         inputs[field.name] = spec
     params = {field.name: {"values": list(field.legal_values)} for field in variant.param_space.fields}
-    config_sets = [
-        {
-            field.name: {"values": list(field.legal_values)}
-            for field in space.fields
-        }
-        for space in variant.config_spaces
-    ]
+    config_sets = [{field.name: {"values": list(field.legal_values)}
+                    for field in space.fields}
+                   for space in variant.config_spaces]
     explicit_configs = [dict(config) for config in variant.explicit_configs]
     features: List[Any] = []
     for feature in variant.features:
@@ -926,7 +899,8 @@ def parse_model_config(config: Mapping[str, Any]) -> VariantInfo:
                 "inputs": root.get("inputs"),
                 "when": root.get("when", True),
                 "params": root.get("params"),
-                **{key: root[key] for key in ("config_sets", "configs") if key in root},
+                **{key: root[key]
+                   for key in ("config_sets", "configs") if key in root},
                 "features": root.get("features"),
             }
         },

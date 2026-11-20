@@ -34,29 +34,31 @@ def pipelined_mm(A, B, C):
 @pytest.fixture(autouse=True)
 def cpu_driver(monkeypatch):
     target = GPUTarget("hip", "gfx936", 64)
-    monkeypatch.setattr(triton.runtime.driver, "_active", SimpleNamespace(
-        get_current_device=lambda: 0, get_current_stream=lambda _: 0,
-        get_current_target=lambda: target))
+    monkeypatch.setattr(
+        triton.runtime.driver, "_active",
+        SimpleNamespace(get_current_device=lambda: 0, get_current_stream=lambda _: 0,
+                        get_current_target=lambda: target))
     monkeypatch.setenv("FLAGTREE_AABS", "0")
     monkeypatch.setenv("AMDGCN_USE_BUFFER_OPS", "1")
 
 
 def compile_mm(dtype, post=False, phase=False):
-    source = ASTSource(pipelined_mm, {name: "*" + dtype for name in ["A", "B", "C"]}, {},
-                       attrs={(i,): [("tt.divisibility", 16), ("tt.pointer_range", 32)] for i in range(3)})
-    return triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options=dict(
-        num_warps=8, num_stages=5, loop_unroll_stage="post-pipeline",
-        schedule_hint="local-prefetch", lds_dma_alias_workaround=True,
-        prefer_wide_async_copy=True, kpack=2, mmac_warps_m=4,
-        mmac_transposed=True, optimize_epilogue=True,
-        coalesce_lgkm_waits=True, mma_phase_schedule=phase, post_mma_wait=post))
+    source = ASTSource(pipelined_mm, {name: "*" + dtype
+                                      for name in ["A", "B", "C"]}, {}, attrs={(i, ): [("tt.divisibility", 16),
+                                                                                       ("tt.pointer_range", 32)]
+                                                                               for i in range(3)})
+    return triton.compile(
+        source, target=GPUTarget("hip", "gfx936", 64),
+        options=dict(num_warps=8, num_stages=5, loop_unroll_stage="post-pipeline", schedule_hint="local-prefetch",
+                     lds_dma_alias_workaround=True, prefer_wide_async_copy=True, kpack=2, mmac_warps_m=4,
+                     mmac_transposed=True, optimize_epilogue=True, coalesce_lgkm_waits=True, mma_phase_schedule=phase,
+                     post_mma_wait=post))
 
 
 @pytest.mark.parametrize("dtype", ["bf16", "fp16"])
 def test_storage_assumptions_preserved_and_unknown_effects_rejected(dtype):
     src = compile_mm(dtype).asm["llir"]
-    line = next(line for line in src.splitlines(keepends=True)
-                if "call void @llvm.assume(i1 true)" in line)
+    line = next(line for line in src.splitlines(keepends=True) if "call void @llvm.assume(i1 true)" in line)
     header = next(line for line in src.splitlines() if line.startswith("define "))
     pointers = re.findall(r"ptr addrspace\(1\)[^,%]*\s(%[\w.]+)", header)
     assert len(pointers) >= 3
@@ -64,13 +66,12 @@ def test_storage_assumptions_preserved_and_unknown_effects_rejected(dtype):
                    "  call void @llvm.assume(i1 %conditional.assume.test)\n")
     # LLVM requires true conditions on assumptions carrying operand bundles.
     # The conditional/false negatives are valid ordinary assumptions without bundles.
-    cases = [("true_storage_facts", src, 1),
-             ("conditional", src.replace(line, conditional, 1), 0),
+    cases = [("true_storage_facts", src, 1), ("conditional", src.replace(line, conditional, 1), 0),
              ("false", src.replace(line, "  call void @llvm.assume(i1 false)\n", 1), 0),
-             ("unknown_call", src.replace(line, line + "  call void @unknown_effect()\n", 1)
-              + "\ndeclare void @unknown_effect()\n", 0),
-             ("volatile_store", src.replace(line, line +
-              f"  store volatile i32 0, ptr addrspace(1) {pointers[2]}\n", 1), 0)]
+             ("unknown_call",
+              src.replace(line, line + "  call void @unknown_effect()\n", 1) + "\ndeclare void @unknown_effect()\n", 0),
+             ("volatile_store", src.replace(line, line + f"  store volatile i32 0, ptr addrspace(1) {pointers[2]}\n",
+                                            1), 0)]
     for name, ir, expected in cases:
         changed, loops, reason = libtriton.llvm.prepare_hcu_post_mma_wait(ir, "gfx936", 512, 65536)
         assert loops == expected, (dtype, name, reason)

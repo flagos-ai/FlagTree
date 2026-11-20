@@ -533,8 +533,8 @@ TEST_F(AMDLayoutTest, MfmaUnitTilesPerWarpParseRoundTrip) {
       ASSERT_EQ(original.getTilesPerWarp().size(), warps.size());
       auto printed = stringifyLLVMType(original);
       EXPECT_EQ(printed.find("tilesPerWarp"), std::string::npos);
-      auto parsed = dyn_cast_or_null<AMDMfmaEncodingAttr>(
-          parseAttribute(printed, &ctx));
+      auto parsed =
+          dyn_cast_or_null<AMDMfmaEncodingAttr>(parseAttribute(printed, &ctx));
       ASSERT_TRUE(parsed);
       EXPECT_EQ(parsed.getTilesPerWarp(), original.getTilesPerWarp());
       EXPECT_EQ(parsed, original);
@@ -551,8 +551,8 @@ TEST_F(AMDLayoutTest, MfmaExplicitTilesPerWarpParseRoundTrip) {
       /*tilesPerWarp=*/{2, 1});
   auto printed = stringifyLLVMType(original);
   EXPECT_NE(printed.find("tilesPerWarp"), std::string::npos);
-  auto parsed = dyn_cast_or_null<AMDMfmaEncodingAttr>(
-      parseAttribute(printed, &ctx));
+  auto parsed =
+      dyn_cast_or_null<AMDMfmaEncodingAttr>(parseAttribute(printed, &ctx));
   ASSERT_TRUE(parsed);
   EXPECT_EQ(parsed, original);
 }

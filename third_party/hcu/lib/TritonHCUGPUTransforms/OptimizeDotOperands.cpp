@@ -1,9 +1,9 @@
-#include "TritonHCUGPUToLLVM/TargetUtils.h"
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
-#include "TritonHCUGPUTransforms/Passes.h"
 #include "MatrixDescriptorLayout.h"
-#include "mlir/IR/TypeUtilities.h"
+#include "TritonHCUGPUToLLVM/TargetUtils.h"
+#include "TritonHCUGPUTransforms/Passes.h"
 #include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/TypeUtilities.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LogicalResult.h"
@@ -41,9 +41,9 @@ public:
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(ttg::ConvertLayoutOp convert,
-                               PatternRewriter &rewriter) const override {
-    auto layout = dyn_cast<ttg::DotOperandEncodingAttr>(
-        convert.getType().getEncoding());
+                                PatternRewriter &rewriter) const override {
+    auto layout =
+        dyn_cast<ttg::DotOperandEncodingAttr>(convert.getType().getEncoding());
     auto arg = dyn_cast<BlockArgument>(convert.getSrc());
     auto loop = arg ? dyn_cast<scf::ForOp>(arg.getOwner()->getParentOp())
                     : scf::ForOp();
@@ -71,7 +71,8 @@ public:
     Value next = yield.getOperand(index);
     if (next != arg) {
       rewriter.setInsertionPoint(yield);
-      next = rewriter.create<ttg::ConvertLayoutOp>(yield.getLoc(), newType, next);
+      next =
+          rewriter.create<ttg::ConvertLayoutOp>(yield.getLoc(), newType, next);
     }
     rewriter.modifyOpInPlace(loop, [&] {
       loop.getInitArgsMutable()[index].assign(initial);
@@ -82,8 +83,8 @@ public:
     Value result = loop.getResult(index);
     if (!result.use_empty()) {
       rewriter.setInsertionPointAfter(loop);
-      auto restore = rewriter.create<ttg::ConvertLayoutOp>(
-          loop.getLoc(), oldType, result);
+      auto restore =
+          rewriter.create<ttg::ConvertLayoutOp>(loop.getLoc(), oldType, result);
       result.replaceAllUsesExcept(restore.getResult(), restore);
     }
     for (ttg::ConvertLayoutOp user : users)
@@ -95,13 +96,12 @@ public:
 // Re-encode an effectful identity once, at its original position. Unlike
 // rematerialization this never duplicates the fence or moves its scheduling
 // effects past another operation. All users must request the same layout.
-class RetargetAccumulatorFence
-    : public OpRewritePattern<ttg::ConvertLayoutOp> {
+class RetargetAccumulatorFence : public OpRewritePattern<ttg::ConvertLayoutOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(ttg::ConvertLayoutOp convert,
-                               PatternRewriter &rewriter) const override {
+                                PatternRewriter &rewriter) const override {
     auto fence = convert.getSrc().getDefiningOp<AccumulatorFenceOp>();
     if (!fence)
       return failure();
@@ -116,8 +116,8 @@ public:
     rewriter.setInsertionPoint(fence);
     Value input = fence.getAcc();
     if (input.getType() != convert.getType())
-      input = rewriter.create<ttg::ConvertLayoutOp>(
-          fence.getLoc(), convert.getType(), input);
+      input = rewriter.create<ttg::ConvertLayoutOp>(fence.getLoc(),
+                                                    convert.getType(), input);
     OperationState state(fence.getLoc(), fence->getName(), {input},
                          {convert.getType()}, fence->getAttrs());
     Operation *retargeted = rewriter.create(state);
@@ -137,15 +137,16 @@ public:
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(ttg::ConvertLayoutOp convert,
-                               PatternRewriter &rewriter) const override {
+                                PatternRewriter &rewriter) const override {
     Attribute layout = convert.getType().getEncoding();
     auto dotLayout = dyn_cast<ttg::DotOperandEncodingAttr>(layout);
     Operation *load = convert.getSrc().getDefiningOp();
     auto ordinary = dyn_cast_or_null<tt::LoadOp>(load);
     auto matrix = dyn_cast_or_null<tt::MatrixLoadOp>(load);
     bool descriptor = matrix && triton::HCU::isSyncMatrixDescriptor(matrix);
-    if ((!descriptor && (!ordinary || ordinary.getIsVolatile() || !dotLayout ||
-                         !isa<ttg::AMDMfmaEncodingAttr>(dotLayout.getParent()))) ||
+    if ((!descriptor &&
+         (!ordinary || ordinary.getIsVolatile() || !dotLayout ||
+          !isa<ttg::AMDMfmaEncodingAttr>(dotLayout.getParent()))) ||
         (descriptor && (!isa<ttg::DistributedEncodingTrait>(layout) ||
                         matrix.getIsVolatile())) ||
         !load ||
@@ -170,8 +171,8 @@ public:
         continue;
       SetVector<Value> slice;
       DenseMap<Value, Attribute> encodings;
-      if (failed(mlir::getConvertBackwardSlice(operand, slice, layout,
-                                             encodings)))
+      if (failed(
+              mlir::getConvertBackwardSlice(operand, slice, layout, encodings)))
         return failure();
       for (Value value : slice)
         if (Operation *op = value.getDefiningOp();
@@ -197,7 +198,6 @@ public:
   }
 };
 
-
 // Infer a closed pure-view tree from the consumers, then change only the SSA
 // encodings at the original read. Conflicting fanout or non-view use retains
 // the existing path.
@@ -206,7 +206,7 @@ public:
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(ttg::ConvertLayoutOp convert,
-                               PatternRewriter &rewriter) const override {
+                                PatternRewriter &rewriter) const override {
     auto isView = [](Operation *op) {
       return isa_and_nonnull<tt::ReshapeOp, tt::TransOp, tt::SplitOp>(op);
     };
@@ -297,8 +297,8 @@ public:
     DenseMap<Value, Attribute> forward;
     forward[root] = encoding;
     for (Operation *view : ordered) {
-      Attribute output = mlir::inferDstEncoding(
-          view, forward.lookup(view->getOperand(0)));
+      Attribute output =
+          mlir::inferDstEncoding(view, forward.lookup(view->getOperand(0)));
       if (!output)
         return failure();
       for (Value result : view->getResults()) {
@@ -310,8 +310,8 @@ public:
         forward[result] = output;
       }
     }
-    rewriter.modifyOpInPlace(read,
-                             [&] { root.setType(type.cloneWithEncoding(encoding)); });
+    rewriter.modifyOpInPlace(
+        read, [&] { root.setType(type.cloneWithEncoding(encoding)); });
     for (Operation *view : ordered)
       rewriter.modifyOpInPlace(view, [&] {
         for (Value result : view->getResults())

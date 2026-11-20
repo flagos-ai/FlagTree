@@ -3,8 +3,8 @@
 
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Tools/LayoutUtils.h"
-#include "llvm/Support/MathExtras.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MathExtras.h"
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -42,8 +42,10 @@ getPaddedSlotGeometry(MemDescType rootTy, MemDescType planeTy) {
       rootTy.getElementType() != planeTy.getElementType() ||
       rootTy.getMemorySpace() != planeTy.getMemorySpace() ||
       rootTy.getMutableMemory() != planeTy.getMutableMemory() ||
-      ArrayRef<int64_t>(getAllocationShapePerCTA(rootTy)) != rootTy.getShape() ||
-      ArrayRef<int64_t>(getAllocationShapePerCTA(planeTy)) != planeTy.getShape())
+      ArrayRef<int64_t>(getAllocationShapePerCTA(rootTy)) !=
+          rootTy.getShape() ||
+      ArrayRef<int64_t>(getAllocationShapePerCTA(planeTy)) !=
+          planeTy.getShape())
     return std::nullopt;
   Type elem = planeTy.getElementType();
   if (!elem.isIntOrFloat())
@@ -93,8 +95,8 @@ getPaddedSlotGeometry(MemDescType rootTy, MemDescType planeTy) {
   // Otherwise a shifted plane needs a different local padding map; reject.
   for (auto [interval, padding] :
        llvm::zip_equal(enc.getIntervals(), enc.getPaddings()))
-    if (!llvm::isPowerOf2_32(interval) ||
-        !llvm::isPowerOf2_32(padding) || elements % interval)
+    if (!llvm::isPowerOf2_32(interval) || !llvm::isPowerOf2_32(padding) ||
+        elements % interval)
       return std::nullopt;
   auto physical = [&](uint64_t n) -> std::optional<uint64_t> {
     uint64_t result = n;
@@ -111,8 +113,7 @@ getPaddedSlotGeometry(MemDescType rootTy, MemDescType planeTy) {
   auto last = physical(elements - 1);
   auto rootLast = physical(rootElements - 1);
   uint64_t footprint, rootSize, strideBytes, footprintBytes, rootBytes;
-  if (!stride || !last || !rootLast ||
-      !paddedSlotAdd(*last, 1, footprint) ||
+  if (!stride || !last || !rootLast || !paddedSlotAdd(*last, 1, footprint) ||
       !paddedSlotAdd(*rootLast, 1, rootSize) || footprint > *stride ||
       !paddedSlotMul(*stride, bytes, strideBytes) ||
       !paddedSlotMul(footprint, bytes, footprintBytes) ||
@@ -136,7 +137,8 @@ inline bool isFullPaddedSlotTranspose(MemDescTransOp trans) {
       src.getElementType() != dst.getElementType() ||
       src.getMemorySpace() != dst.getMemorySpace() ||
       src.getMutableMemory() != dst.getMutableMemory() ||
-      a.getIntervals() != b.getIntervals() || a.getPaddings() != b.getPaddings())
+      a.getIntervals() != b.getIntervals() ||
+      a.getPaddings() != b.getPaddings())
     return false;
   SmallVector<bool> seen(src.getRank(), false);
   SmallVector<int> permutation;

@@ -26,8 +26,8 @@ def prepare_memory_schedule(source, metadata, policy, llvm, arch, num_warps):
     """
     prepared = False
     if policy.post_mma:
-        candidate, loops, reason = llvm.prepare_hcu_post_mma_wait(
-            source, arch, num_warps * 64, int(metadata.get("shared", 0)))
+        candidate, loops, reason = llvm.prepare_hcu_post_mma_wait(source, arch, num_warps * 64,
+                                                                  int(metadata.get("shared", 0)))
         metadata["hcu_post_mma_wait_preparation_result"] = reason
         metadata["hcu_post_mma_wait_result"] = reason
         metadata["hcu_post_mma_wait_loops"] = loops

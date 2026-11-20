@@ -8,6 +8,8 @@ from triton.experimental.gluon._runtime import GluonASTSource
 
 if not hasattr(libtriton, "hcu") or not hasattr(libtriton.hcu, "create_cta_barrier"):
     pytest.skip("explicit HCU warp domains required", allow_module_level=True)
+
+from triton.experimental.gluon.language.hcu import wait_local_memory
 from triton.experimental import gluon as g
 from triton.experimental.gluon import language as gl
 from triton.experimental.gluon.language.hcu import (
@@ -28,9 +30,7 @@ def owner_layout():
 
 @g.constexpr_function
 def matrix_layout():
-    return gl.SharedLinearLayout(
-        [[0, 1 << i] for i in range(5)] + [[1 << i, 0] for i in range(5)], alignment=16
-    )
+    return gl.SharedLinearLayout([[0, 1 << i] for i in range(5)] + [[1 << i, 0] for i in range(5)], alignment=16)
 
 
 @g.jit
@@ -101,7 +101,8 @@ def compile_probe(base, worker, alignment=16, outside=False, divergent=False):
             BAD_CONTROL="constexpr",
         ),
         dict(FIRST_WORKER=worker, BAD_OUTSIDE=outside, BAD_CONTROL=divergent),
-        attrs={(i,): [("tt.divisibility", alignment)] for i in range(3)},
+        attrs={(i, ): [("tt.divisibility", alignment)]
+               for i in range(3)},
     )
     return triton.compile(
         source,
@@ -148,26 +149,22 @@ def test_partition_captures_and_changed_input_replay(base, worker, total, dtype_
     if target.backend != "hip" or target.arch != "gfx936":
         pytest.skip("gfx936 required")
     dtype = torch.bfloat16 if dtype_name == "bf16" else torch.float16
-    a = torch.empty((1024,), device="cuda", dtype=dtype)
+    a = torch.empty((1024, ), device="cuda", dtype=dtype)
     b = torch.empty_like(a)
-    storage = torch.empty((1536,), device="cuda", dtype=dtype)
+    storage = torch.empty((1536, ), device="cuda", dtype=dtype)
     out = storage[256:-256]
     options = dict(num_warps=base, num_stages=1, terminal_readonly_publication=False)
-    kernel = probe[(1,)](a, b, out, worker, False, False, **options)
+    kernel = probe[(1, )](a, b, out, worker, False, False, **options)
     assert kernel.metadata.num_warps == total
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        probe[(1,)](a, b, out, worker, False, False, **options)
+        probe[(1, )](a, b, out, worker, False, False, **options)
     index = torch.arange(1024, device="cuda", dtype=torch.int32)
     for seed in range(3):
         a.view(torch.uint16).copy_(((index * 127 + seed * 13) & 65535).to(torch.uint16))
-        b.view(torch.uint16).copy_(
-            ((index * 33 + seed * 19 + 123) & 65535).to(torch.uint16)
-        )
+        b.view(torch.uint16).copy_(((index * 33 + seed * 19 + 123) & 65535).to(torch.uint16))
         before_a, before_b = a.view(torch.int16).clone(), b.view(torch.int16).clone()
-        expected = (before_a.to(torch.int32) & 65535) ^ (
-            before_b.to(torch.int32) & 65535
-        )
+        expected = (before_a.to(torch.int32) & 65535) ^ (before_b.to(torch.int32) & 65535)
         mask = torch.where(index < 512, 0x10, 0x20) if base == 2 else 0x10
         expected = (expected ^ mask).to(torch.int16)
         for _ in range(3):
@@ -179,9 +176,6 @@ def test_partition_captures_and_changed_input_replay(base, worker, total, dtype_
             assert torch.equal(b.view(torch.int16), before_b)
             assert torch.all(storage[:256].view(torch.int16) == 0x3333)
             assert torch.all(storage[-256:].view(torch.int16) == 0x3333)
-
-
-from triton.experimental.gluon.language.hcu import wait_local_memory
 
 
 @g.jit
@@ -205,7 +199,7 @@ def test_local_memory_wait_uses_existing_target_counter(arch, dtype):
         _local_wait_probe,
         dict(A="*" + dtype, O="*" + dtype),
         {},
-        attrs={(0,): [("tt.divisibility", 16)], (1,): [("tt.divisibility", 16)]},
+        attrs={(0, ): [("tt.divisibility", 16)], (1, ): [("tt.divisibility", 16)]},
     )
     kernel = triton.compile(
         source,
@@ -234,11 +228,11 @@ def test_local_wait_gfx946_llvm_before_unavailable_device_codegen(monkeypatch, d
 
     monkeypatch.setattr(HIPBackend, "make_amdgcn", staticmethod(capture))
     source = GluonASTSource(
-        _local_wait_probe, dict(A="*" + dtype, O="*" + dtype), {},
-        attrs={(0,): [("tt.divisibility", 16)],
-               (1,): [("tt.divisibility", 16)]},
+        _local_wait_probe,
+        dict(A="*" + dtype, O="*" + dtype),
+        {},
+        attrs={(0, ): [("tt.divisibility", 16)], (1, ): [("tt.divisibility", 16)]},
     )
     with pytest.raises(BeforeDeviceLink):
-        triton.compile(source, target=GPUTarget("hip", "gfx946", 64),
-                       options=dict(num_warps=4, num_stages=1))
+        triton.compile(source, target=GPUTarget("hip", "gfx946", 64), options=dict(num_warps=4, num_stages=1))
     assert len(assembly) == 1 and "@llvm.amdgcn.s.waitcnt(i32 49279)" in assembly[0]

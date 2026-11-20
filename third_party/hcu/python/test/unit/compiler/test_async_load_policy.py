@@ -15,8 +15,7 @@ from triton.backends.hcu.compiler_hcu import HIPBackend
 
 
 @triton.jit
-def _matmul(A, B, C, ASYNC_A: tl.constexpr, ASYNC_B: tl.constexpr,
-            BLOCK_PTR: tl.constexpr, STAGES: tl.constexpr):
+def _matmul(A, B, C, ASYNC_A: tl.constexpr, ASYNC_B: tl.constexpr, BLOCK_PTR: tl.constexpr, STAGES: tl.constexpr):
     m = tl.arange(0, 64)
     n = tl.arange(0, 64)
     k = tl.arange(0, 64)
@@ -80,10 +79,13 @@ def _ttgir(monkeypatch, async_a, async_b, block_ptr, **options):
 
     monkeypatch.setattr(HIPBackend, "make_llir", staticmethod(capture))
     source = ASTSource(
-        _matmul, signature={"A": "*bf16", "B": "*bf16", "C": "*bf16"},
-        constexprs={"ASYNC_A": async_a, "ASYNC_B": async_b, "BLOCK_PTR": block_ptr,
-                    "STAGES": options.get("num_stages", 2)},
-        attrs={(i,): [("tt.divisibility", 16), ("tt.pointer_range", 32)] for i in range(3)},
+        _matmul,
+        signature={"A": "*bf16", "B": "*bf16", "C": "*bf16"},
+        constexprs={
+            "ASYNC_A": async_a, "ASYNC_B": async_b, "BLOCK_PTR": block_ptr, "STAGES": options.get("num_stages", 2)
+        },
+        attrs={(i, ): [("tt.divisibility", 16), ("tt.pointer_range", 32)]
+               for i in range(3)},
     )
     with pytest.raises(_LoweringFinished):
         triton.compile(source, target=GPUTarget("hip", options.pop("arch", "gfx936"), 64),
@@ -132,9 +134,11 @@ def test_global_to_local_store_policy(monkeypatch, copy, policy):
 
     monkeypatch.setattr(HIPBackend, "make_llir", staticmethod(capture))
     source = ASTSource(
-        _local_copy, signature={"A": "*bf16", "C": "*bf16"},
+        _local_copy,
+        signature={"A": "*bf16", "C": "*bf16"},
         constexprs={"POLICY": policy, "COPY": copy},
-        attrs={(i,): [("tt.divisibility", 16), ("tt.pointer_range", 32)] for i in range(2)},
+        attrs={(i, ): [("tt.divisibility", 16), ("tt.pointer_range", 32)]
+               for i in range(2)},
     )
     with pytest.raises(_LoweringFinished):
         triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options={"num_stages": 1})
@@ -162,19 +166,18 @@ def test_legacy_matrix_read_selection(monkeypatch, arch, policy):
 
     monkeypatch.setattr(HIPBackend, "make_amdgcn", staticmethod(capture))
     source = ASTSource(
-        _matmul, signature={"A": "*bf16", "B": "*bf16", "C": "*bf16"},
-        constexprs={"ASYNC_A": policy, "ASYNC_B": policy, "BLOCK_PTR": False,
-                    "STAGES": 2},
-        attrs={(i,): [("tt.divisibility", 16), ("tt.pointer_range", 32)] for i in range(3)},
+        _matmul,
+        signature={"A": "*bf16", "B": "*bf16", "C": "*bf16"},
+        constexprs={"ASYNC_A": policy, "ASYNC_B": policy, "BLOCK_PTR": False, "STAGES": 2},
+        attrs={(i, ): [("tt.divisibility", 16), ("tt.pointer_range", 32)]
+               for i in range(3)},
     )
     with pytest.raises(_LoweringFinished):
         triton.compile(source, target=GPUTarget("hip", arch, 64),
-                       options={"num_warps": 4, "num_stages": 2,
-                                "optimize_epilogue": False})
+                       options={"num_warps": 4, "num_stages": 2, "optimize_epilogue": False})
     assert ("llvm.hcu.ds.read.m32x16.b16" in captured[0]) == (arch == "gfx936")
     if arch == "gfx936" and policy:
-        calls = [line for line in captured[0].splitlines()
-                 if "call " in line and "llvm.hcu.ds.read.m32x16.b16" in line]
+        calls = [line for line in captured[0].splitlines() if "call " in line and "llvm.hcu.ds.read.m32x16.b16" in line]
         assert any("!noalias" in line for line in calls)
 
 
@@ -205,15 +208,10 @@ def _pingpong_matmul(A, B, C, STAGES: tl.constexpr):
     acc = tl.zeros((128, 128), tl.float32)
     for i in tl.range(0, 32, num_stages=STAGES):
         rk = i * 32 + k
-        a = tle.load(A + m[:, None] * 1024 + rk[None, :],
-                     (m[:, None] < 1024) & (rk[None, :] < 1024),
-                     0, is_async=True)
-        b = tle.load(B + rk[:, None] * 1024 + n[None, :],
-                     (rk[:, None] < 1024) & (n[None, :] < 1024),
-                     0, is_async=True)
+        a = tle.load(A + m[:, None] * 1024 + rk[None, :], (m[:, None] < 1024) & (rk[None, :] < 1024), 0, is_async=True)
+        b = tle.load(B + rk[:, None] * 1024 + n[None, :], (rk[:, None] < 1024) & (n[None, :] < 1024), 0, is_async=True)
         acc = tl.dot(a, b, acc)
-    tl.store(C + m[:, None] * 1024 + n[None, :], acc,
-             (m[:, None] < 1024) & (n[None, :] < 1024))
+    tl.store(C + m[:, None] * 1024 + n[None, :], acc, (m[:, None] < 1024) & (n[None, :] < 1024))
 
 
 @pytest.mark.parametrize("stages", [3, 4])
@@ -232,15 +230,14 @@ def test_async_pingpong_requires_tail_wait(monkeypatch, stages, global_async):
         _pingpong_matmul,
         signature={"A": "*bf16", "B": "*bf16", "C": "*bf16"},
         constexprs={"STAGES": stages},
-        attrs={(i,): [("tt.divisibility", 16), ("tt.pointer_range", 32)]
+        attrs={(i, ): [("tt.divisibility", 16), ("tt.pointer_range", 32)]
                for i in range(3)},
     )
     # TTGIR verification must succeed without initializing a GPU. In the
     # four-stage case the old transform moved local_load above its wait token.
     with pytest.raises(_LoweringFinished):
         triton.compile(source, target=GPUTarget("hip", "gfx936", 64),
-                       options={"num_warps": 8, "num_stages": stages,
-                                "optimize_epilogue": False})
+                       options={"num_warps": 8, "num_stages": stages, "optimize_epilogue": False})
     ir = captured[0]
     assert "buffer_load_to_local" in ir or "async_copy_global_to_local" in ir
     # Preserve the supported three-stage optimization; four stages retain
@@ -264,8 +261,7 @@ def test_local_prefetch_carries_dot_operands(monkeypatch, global_async, block_pt
     monkeypatch.setattr(knobs.hcu, "use_block_pingpong", False)
     # Explicit synchronous policies must override even a global async default.
     baseline = _ttgir(monkeypatch, False, False, block_ptr)
-    prefetched = _ttgir(monkeypatch, False, False, block_ptr,
-                        schedule_hint="local-prefetch")
+    prefetched = _ttgir(monkeypatch, False, False, block_ptr, schedule_hint="local-prefetch")
     assert not _dot_inputs_are_loop_carried(baseline)
     assert _dot_inputs_are_loop_carried(prefetched)
     # Both paths use one LDS tile per operand. The opt-in adds VGPR prefetch,
@@ -286,19 +282,15 @@ def test_local_prefetch_preserves_unsupported_paths(monkeypatch, arch, stages, p
     monkeypatch.setattr(knobs.hcu, "use_async_copy", False)
     monkeypatch.setattr(knobs.hcu, "use_block_pingpong", False)
     baseline = _ttgir(monkeypatch, *policies, False, arch=arch, num_stages=stages)
-    prefetched = _ttgir(monkeypatch, *policies, False, arch=arch, num_stages=stages,
-                        schedule_hint="local-prefetch")
+    prefetched = _ttgir(monkeypatch, *policies, False, arch=arch, num_stages=stages, schedule_hint="local-prefetch")
     # Compare generated operations, not merely the presence of the opt-in attr.
-    prefetched = re.sub(r'"?ttg\.hcu\.local_prefetch"?\s*=\s*1\s*:\s*i32,?\s*',
-                        "", prefetched)
+    prefetched = re.sub(r'"?ttg\.hcu\.local_prefetch"?\s*=\s*1\s*:\s*i32,?\s*', "", prefetched)
     assert prefetched == baseline
 
 
 @pytest.mark.parametrize("num_warps,stages", [(4, 2), (4, 3), (4, 4), (8, 2)])
 @pytest.mark.parametrize("global_async", [False, True])
-def test_async_pingpong_copy_supply_outside_transform_domain(
-    monkeypatch, num_warps, stages, global_async
-):
+def test_async_pingpong_copy_supply_outside_transform_domain(monkeypatch, num_warps, stages, global_async):
     captured = []
 
     def capture(mod, metadata, options):
@@ -313,7 +305,8 @@ def test_async_pingpong_copy_supply_outside_transform_domain(
         _pingpong_matmul,
         signature={"A": "*bf16", "B": "*bf16", "C": "*bf16"},
         constexprs={"STAGES": stages},
-        attrs={(i,): [("tt.divisibility", 16), ("tt.pointer_range", 32)] for i in range(3)},
+        attrs={(i, ): [("tt.divisibility", 16), ("tt.pointer_range", 32)]
+               for i in range(3)},
     )
     with pytest.raises(_LoweringFinished):
         triton.compile(

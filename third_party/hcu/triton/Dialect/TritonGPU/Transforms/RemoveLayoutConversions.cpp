@@ -1,3 +1,4 @@
+#include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -16,7 +17,6 @@
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "triton/Analysis/Utility.h"
-#include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #ifdef __TLE__
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #endif

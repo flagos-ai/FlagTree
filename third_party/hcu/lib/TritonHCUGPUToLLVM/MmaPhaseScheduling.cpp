@@ -1,9 +1,9 @@
 #include "TritonHCUGPUToLLVM/MmaPhaseScheduling.h"
 #include "RegisterIdentityFence.h"
+#include "llvm/ADT/STLExtras.h"
 #include <cstdint>
 #include <functional>
 #include <optional>
-#include "llvm/ADT/STLExtras.h"
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -16,8 +16,8 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Transforms/Utils/Cloning.h"
-#include "llvm/Transforms/Utils/ValueMapper.h"
 #include "llvm/Transforms/Utils/SSAUpdater.h"
+#include "llvm/Transforms/Utils/ValueMapper.h"
 
 // This scheduling preparation only moves register computations. A caller must
 // additionally validate the final target's explicit VM/LGKM operand readiness:
@@ -40,10 +40,11 @@ inline bool isMma(const llvm::Instruction *inst) {
 }
 inline bool isBarrier(const llvm::Instruction *inst) {
   auto *call = llvm::dyn_cast<llvm::CallInst>(inst);
-  auto *assembly = call ? llvm::dyn_cast<llvm::InlineAsm>(call->getCalledOperand())
-                        : nullptr;
-  return assembly && llvm::StringRef(assembly->getAsmString()).trim() ==
-                         "s_barrier" &&
+  auto *assembly =
+      call ? llvm::dyn_cast<llvm::InlineAsm>(call->getCalledOperand())
+           : nullptr;
+  return assembly &&
+         llvm::StringRef(assembly->getAsmString()).trim() == "s_barrier" &&
          !call->hasOperandBundles() && call->getType()->isVoidTy() &&
          assembly->hasSideEffects();
 }
@@ -62,13 +63,13 @@ inline std::optional<uint32_t> waitEncoding(const llvm::Instruction *inst) {
 // unconstrained opposite queue and expcnt; never weaken either original wait.
 inline bool isVmWait(const llvm::Instruction *inst) {
   auto value = waitEncoding(inst);
-  return value && (*value & 0x3f00) == 0x3f00 &&
-         (*value & 0x70) == 0x70 && (*value & 0xc00f) != 0xc00f;
+  return value && (*value & 0x3f00) == 0x3f00 && (*value & 0x70) == 0x70 &&
+         (*value & 0xc00f) != 0xc00f;
 }
 inline bool isLgkmWait(const llvm::Instruction *inst) {
   auto value = waitEncoding(inst);
-  return value && (*value & 0xc00f) == 0xc00f &&
-         (*value & 0x70) == 0x70 && (*value & 0x3f00) != 0x3f00;
+  return value && (*value & 0xc00f) == 0xc00f && (*value & 0x70) == 0x70 &&
+         (*value & 0x3f00) != 0x3f00;
 }
 
 // A CTA barrier requires equal trip counts across all waves. Wave-uniform
@@ -80,7 +81,8 @@ inline bool isCtaUniform(llvm::Value *value,
   if (!budget--)
     return false;
   if (llvm::isa<llvm::ConstantInt, llvm::ConstantFP, llvm::ConstantPointerNull,
-                llvm::GlobalValue, llvm::Argument>(value) || proven.contains(value))
+                llvm::GlobalValue, llvm::Argument>(value) ||
+      proven.contains(value))
     return true;
   if (active.contains(value))
     return true; // Inductive PHI: every external seed is still checked below.
@@ -150,8 +152,9 @@ inline bool version(llvm::BasicBlock &block, unsigned numWarps,
     entry = pred;
     ++predecessors;
   }
-  auto *entryBranch = entry ? llvm::dyn_cast<llvm::BranchInst>(entry->getTerminator())
-                            : nullptr;
+  auto *entryBranch =
+      entry ? llvm::dyn_cast<llvm::BranchInst>(entry->getTerminator())
+            : nullptr;
   if (predecessors != 1 || !entryBranch || !entryBranch->isUnconditional() ||
       entryBranch->getSuccessor(0) != &block)
     return false;
@@ -204,33 +207,35 @@ inline bool version(llvm::BasicBlock &block, unsigned numWarps,
     }
     if (!barrier || mmas.empty())
       return false;
-    llvm::SmallPtrSet<llvm::Instruction *, 32> allowed(mmas.begin(), mmas.end());
+    llvm::SmallPtrSet<llvm::Instruction *, 32> allowed(mmas.begin(),
+                                                       mmas.end());
     llvm::SmallPtrSet<llvm::Instruction *, 32> scheduled, visiting;
     Cluster cluster{vm, lgkm, {}};
-    std::function<bool(llvm::Instruction *)> append = [&](llvm::Instruction *inst) {
-      if (inst->getParent() != &block || inst->comesBefore(vm))
-        return true;
-      if (scheduled.contains(inst))
-        return true;
-      if (!visiting.insert(inst).second || llvm::isa<llvm::PHINode>(inst))
-        return false;
-      if (isMma(inst)) {
-        if (!allowed.contains(inst))
-          return false;
-      } else if (!isRegisterIdentityFence(inst) &&
-                 (inst->mayReadOrWriteMemory() ||
-                  !llvm::isSafeToSpeculativelyExecute(inst))) {
-        return false;
-      }
-      for (llvm::Value *operand : inst->operands())
-        if (auto *dependency = llvm::dyn_cast<llvm::Instruction>(operand))
-          if (!append(dependency))
+    std::function<bool(llvm::Instruction *)> append =
+        [&](llvm::Instruction *inst) {
+          if (inst->getParent() != &block || inst->comesBefore(vm))
+            return true;
+          if (scheduled.contains(inst))
+            return true;
+          if (!visiting.insert(inst).second || llvm::isa<llvm::PHINode>(inst))
             return false;
-      visiting.erase(inst);
-      scheduled.insert(inst);
-      cluster.move.push_back(inst);
-      return true;
-    };
+          if (isMma(inst)) {
+            if (!allowed.contains(inst))
+              return false;
+          } else if (!isRegisterIdentityFence(inst) &&
+                     (inst->mayReadOrWriteMemory() ||
+                      !llvm::isSafeToSpeculativelyExecute(inst))) {
+            return false;
+          }
+          for (llvm::Value *operand : inst->operands())
+            if (auto *dependency = llvm::dyn_cast<llvm::Instruction>(operand))
+              if (!append(dependency))
+                return false;
+          visiting.erase(inst);
+          scheduled.insert(inst);
+          cluster.move.push_back(inst);
+          return true;
+        };
     // Visit roots in source order, including closing tied fences with no later
     // MMA user. Every priority reset stays with the complete register group.
     for (auto at = begin + 1; at != end; ++at)
@@ -250,8 +255,9 @@ inline bool version(llvm::BasicBlock &block, unsigned numWarps,
   llvm::BasicBlock *high = llvm::CloneBasicBlock(&block, map, ".mma_high", fn);
   map[&block] = high;
   for (auto &inst : *high)
-    llvm::RemapInstruction(&inst, map, llvm::RF_IgnoreMissingLocals |
-                                           llvm::RF_NoModuleLevelChanges);
+    llvm::RemapInstruction(&inst, map,
+                           llvm::RF_IgnoreMissingLocals |
+                               llvm::RF_NoModuleLevelChanges);
   for (const Cluster &cluster : clusters) {
     auto *vm = llvm::cast<llvm::Instruction>(map[cluster.vm]);
     if (cluster.lgkm) {
@@ -259,13 +265,15 @@ inline bool version(llvm::BasicBlock &block, unsigned numWarps,
       lgkm->moveBefore(*high, vm->getIterator());
     }
     for (auto *inst : cluster.move)
-      llvm::cast<llvm::Instruction>(map[inst])->moveBefore(*high, vm->getIterator());
+      llvm::cast<llvm::Instruction>(map[inst])->moveBefore(*high,
+                                                           vm->getIterator());
     // Preserve this register-only group through target instruction scheduling.
     // This is a scheduling pseudo and emits no hardware instruction.
     llvm::IRBuilder<> boundary(vm);
     auto fence = fn->getParent()->getOrInsertFunction(
         "llvm.amdgcn.sched.barrier",
-        llvm::FunctionType::get(boundary.getVoidTy(), {boundary.getInt32Ty()}, false));
+        llvm::FunctionType::get(boundary.getVoidTy(), {boundary.getInt32Ty()},
+                                false));
     boundary.CreateCall(fence, {boundary.getInt32(0)});
   }
   llvm::LLVMContext &ctx = fn->getContext();
@@ -275,11 +283,12 @@ inline bool version(llvm::BasicBlock &block, unsigned numWarps,
   auto workitem = fn->getParent()->getOrInsertFunction(
       "llvm.amdgcn.workitem.id.x", llvm::FunctionType::get(i32, false));
   auto firstlane = fn->getParent()->getOrInsertFunction(
-      "llvm.amdgcn.readfirstlane.i32", llvm::FunctionType::get(i32, {i32}, false));
+      "llvm.amdgcn.readfirstlane.i32",
+      llvm::FunctionType::get(i32, {i32}, false));
   llvm::Value *tid = builder.CreateCall(workitem, {});
   llvm::Value *waveFirst = builder.CreateCall(firstlane, {tid});
-  llvm::Value *low = builder.CreateICmpULT(
-      waveFirst, builder.getInt32(64 * (numWarps / 2)));
+  llvm::Value *low =
+      builder.CreateICmpULT(waveFirst, builder.getInt32(64 * (numWarps / 2)));
   builder.CreateCondBr(low, &block, high);
   entryBranch->setSuccessor(0, selector);
   for (auto &phi : block.phis())
@@ -312,7 +321,8 @@ inline bool version(llvm::BasicBlock &block, unsigned numWarps,
     int index = phi.getBasicBlockIndex(&block);
     if (index >= 0 && phi.getBasicBlockIndex(high) < 0)
       phi.addIncoming(llvm::MapValue(phi.getIncomingValue(index), map,
-                                    llvm::RF_IgnoreMissingLocals), high);
+                                     llvm::RF_IgnoreMissingLocals),
+                      high);
   }
   // Loop IDs are identities, not just scheduling hints. Each cloned natural
   // loop must own its self-referential ID while retaining the original hints.
@@ -335,9 +345,8 @@ inline bool version(llvm::BasicBlock &block, unsigned numWarps,
 }
 } // namespace mma_phase_detail
 
-MmaPhaseStats prepareMmaPhaseLoops(llvm::Module &module,
-                                          llvm::StringRef arch,
-                                          unsigned numWarps) {
+MmaPhaseStats prepareMmaPhaseLoops(llvm::Module &module, llvm::StringRef arch,
+                                   unsigned numWarps) {
   MmaPhaseStats stats;
   if (arch != "gfx936" || numWarps < 2 || numWarps > 32)
     return stats;

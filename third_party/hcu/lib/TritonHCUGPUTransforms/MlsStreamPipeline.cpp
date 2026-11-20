@@ -1,6 +1,6 @@
+#include "MatrixDescriptorLayout.h"
 #include "TritonHCUGPUTransforms/Passes.h"
 #include "Utility.h"
-#include "MatrixDescriptorLayout.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/AsyncUtility.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/TargetInfo.h"
 #include "third_party/hcu/include/Analysis/AxisInfoExt.h"
@@ -15,8 +15,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
-#include <variant>
 #include <cstdint>
+#include <variant>
 
 //===----------------------------------------------------------------------===//
 // This file will create a schedule that will be handed over to the pipeline
@@ -60,17 +60,20 @@ Operation *streamPredication(RewriterBase &rewriter, Operation *op,
     return ifOp;
   }
   if (auto copy = dyn_cast<tta::MatrixLoadToLocalOp>(op)) {
-    if (isa<ttg::SharedLinearEncodingAttr>(copy.getDest().getType().getEncoding())) {
+    if (isa<ttg::SharedLinearEncodingAttr>(
+            copy.getDest().getType().getEncoding())) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(copy);
       SmallVector<Value> indices(copy.getIndices());
-      assert(indices.size() == 3 && "matrix descriptor requires an enable SSA operand");
+      assert(indices.size() == 3 &&
+             "matrix descriptor requires an enable SSA operand");
       auto loc = copy.getLoc();
       Value enabled = rewriter.create<arith::CmpIOp>(
           loc, arith::CmpIPredicate::ne, indices[2],
           rewriter.create<arith::ConstantIntOp>(loc, 0, 32));
       enabled = rewriter.create<arith::AndIOp>(loc, enabled, pred);
-      indices[2] = rewriter.create<arith::ExtUIOp>(loc, rewriter.getI32Type(), enabled);
+      indices[2] =
+          rewriter.create<arith::ExtUIOp>(loc, rewriter.getI32Type(), enabled);
       copy.getIndicesMutable().assign(indices);
       return copy;
     }
@@ -187,8 +190,8 @@ AsyncCopyChainOps createAsyncCopy(tt::MatrixLoadOp loadOp, Value alloc,
   }
   auto copyOp = builder.create<tta::MatrixLoadToLocalOp>(
       loc, loadOp.getBase(), loadOp.getShape(), loadOp.getStrides(),
-      loadOp.getTensorShape(), indices, boundary,
-      loadOp.getCache(), loadOp.getEvict(), loadOp.getIsVolatile(), viewLoad);
+      loadOp.getTensorShape(), indices, boundary, loadOp.getCache(),
+      loadOp.getEvict(), loadOp.getIsVolatile(), viewLoad);
 
   auto mlsAttr = loadOp->getAttrOfType<tta::MlsEncodingAttr>(
       tta::MlsEncodingAttr::getMnemonic());
@@ -352,9 +355,8 @@ getMlsEncIfAllUsersAreDotEnc(Value val) {
 
 // Convert load ops into shared memory allocation loads and apply
 // multi-buffering based on the required number of buffers.
-LoadToStreamOpMap
-createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
-                const int &numBuffers) {
+LoadToStreamOpMap createStreamOps(const LoadToInfoMap &loadToInfo,
+                                  scf::ForOp &forOp, const int &numBuffers) {
   IRRewriter builder(forOp);
   Location loc = forOp.getLoc();
   Value minusOne = builder.create<arith::ConstantIntOp>(loc, -1, 32);
@@ -407,12 +409,14 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
     if (isLoadOp) {
       auto ty = cast<RankedTensorType>(loadOp->getResultTypes()[0]);
       ttg::SharedEncodingTrait shared = info.sharedEncoding;
-      alloc = triton::createAlloc(forOp, ty, loadOp->getLoc(), shared, numBuffers);
+      alloc =
+          triton::createAlloc(forOp, ty, loadOp->getLoc(), shared, numBuffers);
     } else if (matrixLoadOp) {
       auto ty = cast<RankedTensorType>(matrixLoadOp->getResultTypes()[0]);
-      ttg::SharedEncodingTrait shared = info.sharedEncoding
-                                          ? info.sharedEncoding
-                                          : cast<ttg::SharedEncodingTrait>(info.mlsEncoding);
+      ttg::SharedEncodingTrait shared =
+          info.sharedEncoding
+              ? info.sharedEncoding
+              : cast<ttg::SharedEncodingTrait>(info.mlsEncoding);
       alloc = triton::createAlloc(forOp, ty, matrixLoadOp->getLoc(), shared,
                                   numBuffers);
     }
@@ -557,7 +561,8 @@ preprocessLoop(triton::HCU::ModuleAxisInfoAnalysis &axisInfoAnalysis,
       if (triton::HCU::isAsyncMatrixDescriptor(matrix)) {
         auto shared = triton::HCU::getMatrixDescriptorSharedLayout(matrix);
         if (shared) {
-          loadToInfo[load] = {cast<ttg::SharedEncodingTrait>(shared), distance, use};
+          loadToInfo[load] = {cast<ttg::SharedEncodingTrait>(shared), distance,
+                              use};
           loadToInfo[load].isMatrixLoad = true;
         }
         continue;
@@ -898,10 +903,9 @@ LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
 //   }
 // }
 
-void scheduleAsyncCopy(const AsyncCopyChainOps &asyncOps,
-                       Operation *loadOp, tt::CoarseSchedule &schedule,
-                       const Stages &stages, const Clusters &clusters,
-                       bool forceSchedLocalLoad) {
+void scheduleAsyncCopy(const AsyncCopyChainOps &asyncOps, Operation *loadOp,
+                       tt::CoarseSchedule &schedule, const Stages &stages,
+                       const Clusters &clusters, bool forceSchedLocalLoad) {
   auto [copyOp, commitOp, waitOp, maybeLocalLoadOp] = asyncOps;
   auto [loadStage, loadCluster] = schedule[loadOp];
   schedule.insert(copyOp, loadStage, loadCluster);
@@ -918,9 +922,8 @@ void scheduleAsyncCopy(const AsyncCopyChainOps &asyncOps,
     schedule.insert(waitOp, stages[SCHED_ASYNC_WAIT],
                     clusters[SCHED_ASYNC_WAIT]);
 
-  if (maybeLocalLoadOp &&
-      (stages[SCHED_LOCAL_LOAD] != stages[SCHED_COMPUTE] ||
-       forceSchedLocalLoad)) {
+  if (maybeLocalLoadOp && (stages[SCHED_LOCAL_LOAD] != stages[SCHED_COMPUTE] ||
+                           forceSchedLocalLoad)) {
     scheduleLocalLoad(maybeLocalLoadOp, schedule, stages[SCHED_LOCAL_LOAD],
                       clusters[SCHED_LOCAL_LOAD]);
   }
@@ -938,9 +941,8 @@ void scheduleStreamCopy(const StreamCopyChainOps &streamOps,
                   clusters[SCHED_LOCAL_STORE]);
   schedule.insert(localStoreOp, stages[SCHED_LOCAL_STORE],
                   clusters[SCHED_LOCAL_STORE]);
-  if (maybeLocalLoadOp &&
-      (stages[SCHED_LOCAL_LOAD] != stages[SCHED_COMPUTE] ||
-       forceSchedLocalLoad)) {
+  if (maybeLocalLoadOp && (stages[SCHED_LOCAL_LOAD] != stages[SCHED_COMPUTE] ||
+                           forceSchedLocalLoad)) {
     scheduleLocalLoad(maybeLocalLoadOp, schedule, stages[SCHED_LOCAL_LOAD],
                       clusters[SCHED_LOCAL_LOAD]);
   }
@@ -1032,19 +1034,33 @@ buildSchedule(scf::ForOp &forOp, int numStages, const LoadToInfoMap &loadToInfo,
                           forceSchedLocalLoad, clusters, schedule)))
     return {};
 
-  // Ordinary XOR charts use power-of-two extents. Round the required lifetime
-  // capacity upward, preserving the schedule's reuse distance; never reduce
-  // the number of slots inferred from producer/consumer stages.
-  if (llvm::any_of(loadToInfo, [](const auto &entry) {
-        auto matrix = dyn_cast<tt::MatrixLoadOp>(entry.first);
-        return matrix && triton::HCU::isAsyncMatrixDescriptor(matrix);
-      }))
-    numBuffers = llvm::PowerOf2Ceil(unsigned(numBuffers));
-
   if (failed(scheduleLoads(loadToInfo, maxDist, maxDistLoad, numStages, stages,
                            clusters, schedule)))
     return {};
   dumpSchedule("Coarse schedule loads only:");
+
+  // A matrix copy writes LDS in its load stage, which can precede the
+  // staged local store used to size the ring in initSchedule. Include the
+  // producer endpoint unless the local read is explicitly ordered first.
+  bool ordinaryDescriptors = false;
+  bool localReadScheduled =
+      stages[SCHED_LOCAL_LOAD] != stages[SCHED_COMPUTE] || forceSchedLocalLoad;
+  for (auto &[op, info] : loadToInfo) {
+    auto matrix = dyn_cast<tt::MatrixLoadOp>(op);
+    if (!matrix || !triton::HCU::isAsyncMatrixDescriptor(matrix) ||
+        !info.sharedEncoding)
+      continue;
+    ordinaryDescriptors = true;
+    auto [loadStage, loadCluster] = schedule[op];
+    bool readFirst =
+        localReadScheduled &&
+        schedule.clusters.isBefore(clusters[SCHED_LOCAL_LOAD], loadCluster);
+    int distance = stages[SCHED_LOCAL_LOAD] - loadStage;
+    numBuffers = std::max(numBuffers, distance + !readFirst);
+  }
+  // The ordinary XOR chart requires a power-of-two stage extent.
+  if (ordinaryDescriptors)
+    numBuffers = llvm::PowerOf2Ceil(unsigned(numBuffers));
 
   // Convert the loads into shared memory allocations and loads from them.
   auto loadToStreamOp = createStreamOps(loadToInfo, forOp, numBuffers);
@@ -1145,11 +1161,9 @@ FailureOr<scf::ForOp> pipelineLoop(scf::ForOp forOp, int numStages,
 // HCU: Skip loop without matrix_load ops and leave it handled by
 // StreamPipelinePass
 bool skipLoopWithOutMatrixLoadOp(scf::ForOp forOp) {
-  return llvm::all_of(forOp.getBody()->without_terminator(),
-                      [](Operation &op) {
-                        return !isa<tt::MatrixLoadOp>(op) ||
-                               op.hasAttr("hcu.structured_register");
-                      });
+  return llvm::all_of(forOp.getBody()->without_terminator(), [](Operation &op) {
+    return !isa<tt::MatrixLoadOp>(op) || op.hasAttr("hcu.structured_register");
+  });
 }
 
 } // namespace
@@ -1235,8 +1249,8 @@ struct MlsPipelinePass
       OpBuilder builder(view);
       auto mask = builder.create<arith::ConstantIntOp>(
           view.getLoc(), type.getShape()[0] - 1, 32);
-      view.getIndexMutable().assign(builder.create<arith::AndIOp>(
-          view.getLoc(), view.getIndex(), mask));
+      view.getIndexMutable().assign(
+          builder.create<arith::AndIOp>(view.getLoc(), view.getIndex(), mask));
     });
 
     // NOTE: Leave empty for now, until we utilize customEpiloguePeeling

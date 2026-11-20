@@ -32,7 +32,8 @@ class ProvedWaveUniformInteger {
     // All operands are recursively proved defined/uniform before this call.
     // Still retain poison-generating flags: do not drop nsw/nuw/exact/nneg or
     // same-sign promises and do not treat freeze as evidence of uniformity.
-    return !llvm::canCreateUndefOrPoison(llvm::cast<llvm::Operator>(inst), true) ||
+    return !llvm::canCreateUndefOrPoison(llvm::cast<llvm::Operator>(inst),
+                                         true) ||
            llvm::isGuaranteedNotToBeUndefOrPoison(
                inst, /*AC=*/nullptr, /*CtxI=*/context, /*DT=*/nullptr,
                /*Depth=*/0);
@@ -61,13 +62,12 @@ class ProvedWaveUniformInteger {
                 argument->hasAttribute(llvm::Attribute::NoUndef);
     } else if (auto *call = llvm::dyn_cast<llvm::CallInst>(value)) {
       auto *callee = call->getCalledFunction();
-      if (callee && callee->isIntrinsic() &&
-          !call->getNumOperandBundles() && call->getType()->isIntegerTy(32)) {
+      if (callee && callee->isIntrinsic() && !call->getNumOperandBundles() &&
+          call->getType()->isIntegerTy(32)) {
         auto name = callee->getName();
-        if (call->arg_empty() &&
-            (name == "llvm.amdgcn.workgroup.id.x" ||
-             name == "llvm.amdgcn.workgroup.id.y" ||
-             name == "llvm.amdgcn.workgroup.id.z")) {
+        if (call->arg_empty() && (name == "llvm.amdgcn.workgroup.id.x" ||
+                                  name == "llvm.amdgcn.workgroup.id.y" ||
+                                  name == "llvm.amdgcn.workgroup.id.z")) {
           // A workgroup ID is defined and common to the active wave on gfx936.
           uniform = true;
         } else if ((name == "llvm.amdgcn.readfirstlane" ||
@@ -97,8 +97,8 @@ class ProvedWaveUniformInteger {
       case llvm::Instruction::AShr:
         if (auto *amount =
                 llvm::dyn_cast<llvm::ConstantInt>(binary->getOperand(1)))
-          allowed = amount->getValue().ult(
-              binary->getType()->getIntegerBitWidth());
+          allowed =
+              amount->getValue().ult(binary->getType()->getIntegerBitWidth());
         break;
       default:
         // In particular, div/rem are not admitted by a poison-only query:
@@ -151,8 +151,8 @@ struct ShiftedDisjointOrStats {
 // Late instruction selection only: (A | B) << K == (A + B) << K modulo
 // i32 when A and B cannot have a set bit in common. Never infer disjointness
 // from a tensor shape, a launch bound, a name, or an unchecked OR spelling.
-inline ShiftedDisjointOrStats
-combineShiftedDisjointOr(llvm::Module &module, llvm::StringRef arch) {
+inline ShiftedDisjointOrStats combineShiftedDisjointOr(llvm::Module &module,
+                                                       llvm::StringRef arch) {
   ShiftedDisjointOrStats stats;
   if (arch != "gfx936") {
     stats.reason = "unsupported architecture (requires gfx936)";
@@ -173,10 +173,9 @@ combineShiftedDisjointOr(llvm::Module &module, llvm::StringRef arch) {
   for (auto *shift : shifts) {
     auto *amount = llvm::dyn_cast<llvm::ConstantInt>(shift->getOperand(1));
     auto *bits = llvm::dyn_cast<llvm::BinaryOperator>(shift->getOperand(0));
-    if (!amount || amount->getZExtValue() < 1 ||
-        amount->getZExtValue() > 31 || !bits ||
-        bits->getOpcode() != llvm::Instruction::Or || !bits->hasOneUse() ||
-        !bits->getType()->isIntegerTy(32))
+    if (!amount || amount->getZExtValue() < 1 || amount->getZExtValue() > 31 ||
+        !bits || bits->getOpcode() != llvm::Instruction::Or ||
+        !bits->hasOneUse() || !bits->getType()->isIntegerTy(32))
       continue;
 
     // The actual use instruction and this module's DataLayout are passed to
@@ -204,8 +203,8 @@ combineShiftedDisjointOr(llvm::Module &module, llvm::StringRef arch) {
 
     auto *i32 = llvm::Type::getInt32Ty(module.getContext());
     auto *functionType = llvm::FunctionType::get(i32, {i32, i32}, false);
-    const std::string code = "v_add_lshl_u32 $0, $1, $2, " +
-                             std::to_string(amount->getZExtValue());
+    const std::string code =
+        "v_add_lshl_u32 $0, $1, $2, " + std::to_string(amount->getZExtValue());
     auto *assembly = llvm::InlineAsm::get(
         functionType, code, "=v,v,v", /*hasSideEffects=*/false,
         /*isAlignStack=*/false, llvm::InlineAsm::AD_ATT, /*canThrow=*/false);

@@ -10,9 +10,10 @@ compiler = pytest.importorskip("triton.backends.hcu.compiler")
 
 
 def module_source(second_offset=64, index="bounded", select_load=False):
-    index_op = {"bounded": "%index = arith.andi %idx, %one : i32",
-                "unknown": "%index = arith.addi %idx, %zero : i32",
-                "constant": "%index = arith.constant 0 : i32"}[index]
+    index_op = {
+        "bounded": "%index = arith.andi %idx, %one : i32", "unknown": "%index = arith.addi %idx, %zero : i32",
+        "constant": "%index = arith.constant 0 : i32"
+    }[index]
     types = "tensor<8x8xbf16, #blocked>"
     md = "!ttg.memdesc<8x8xbf16, #xor, #smem, mutable>"
     # A legal smaller tile partially overlaps A at [32,64); a 64-element
@@ -101,7 +102,8 @@ def test_unmodeled_multibuffer_reinterpret_falls_back(tmp_path):
     old = "%frame = ttg.memdesc_index %root[%index] : !ttg.memdesc<2x128xbf16, #flat, #smem, mutable> -> !ttg.memdesc<128xbf16, #flat, #smem, mutable>"
     new = "%frame = ttg.memdesc_reinterpret %root : !ttg.memdesc<2x128xbf16, #flat, #smem, mutable> -> !ttg.memdesc<256xbf16, #flat, #smem, mutable>"
     assert old in text
-    text = text.replace(old, new).replace("!ttg.memdesc<128xbf16, #flat", "!ttg.memdesc<256xbf16, #flat").replace("mutable, 128>", "mutable, 256>")
+    text = text.replace(old, new).replace("!ttg.memdesc<128xbf16, #flat",
+                                          "!ttg.memdesc<256xbf16, #flat").replace("mutable, 128>", "mutable, 256>")
     # SharedLinear conversion helpers assert if handed a whole buffer stack
     # with a lower-rank encoding. This legal reinterpret must compile safely
     # and keep generic barriers until its physical chart is modeled.

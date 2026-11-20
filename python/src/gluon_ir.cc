@@ -436,27 +436,28 @@ void init_gluon_ir(py::module &&m) {
                  ctx, version[0], version[1], warpsPerCta, ctaLayout,
                  instrShape);
            })
-      .def("get_amd_mfma_layout",
-           [](GluonOpBuilder &self, unsigned version,
-              std::vector<unsigned> &warpsPerCta,
-              std::vector<unsigned> &instrShape, bool transposed,
-              std::vector<std::vector<int32_t>> &cgaBases,
-              std::vector<unsigned> &tilesPerWarp,
-              unsigned elementBitWidth, int mmacLayout) -> Attribute {
-             auto ctx = self.getContext();
-             unsigned rank = warpsPerCta.size();
-             auto ctaLayout = buildCtaLayoutAttr(ctx, cgaBases, rank);
+      .def(
+          "get_amd_mfma_layout",
+          [](GluonOpBuilder &self, unsigned version,
+             std::vector<unsigned> &warpsPerCta,
+             std::vector<unsigned> &instrShape, bool transposed,
+             std::vector<std::vector<int32_t>> &cgaBases,
+             std::vector<unsigned> &tilesPerWarp, unsigned elementBitWidth,
+             int mmacLayout) -> Attribute {
+            auto ctx = self.getContext();
+            unsigned rank = warpsPerCta.size();
+            auto ctaLayout = buildCtaLayoutAttr(ctx, cgaBases, rank);
 #ifdef __HCU__
-             if (mmacLayout == -1)
-               return ttg::AMDMfmaEncodingAttr::get(
-                   ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,
-                   tilesPerWarp, elementBitWidth);
-             if (mmacLayout < 0 || mmacLayout > 4)
-               throw std::invalid_argument("unknown HCU MMAC layout");
-             return ttg::AMDMfmaEncodingAttr::get(
-                 ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,
-                 tilesPerWarp, elementBitWidth,
-                 static_cast<ttg::MmacLayout>(mmacLayout));
+            if (mmacLayout == -1)
+              return ttg::AMDMfmaEncodingAttr::get(
+                  ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,
+                  tilesPerWarp, elementBitWidth);
+            if (mmacLayout < 0 || mmacLayout > 4)
+              throw std::invalid_argument("unknown HCU MMAC layout");
+            return ttg::AMDMfmaEncodingAttr::get(
+                ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,
+                tilesPerWarp, elementBitWidth,
+                static_cast<ttg::MmacLayout>(mmacLayout));
 #else
              if (mmacLayout != -1 && mmacLayout != 0)
                throw std::invalid_argument("nonzero MMAC layout requires the HCU backend");
@@ -464,10 +465,11 @@ void init_gluon_ir(py::module &&m) {
                  ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,
                  tilesPerWarp, elementBitWidth);
 #endif
-           }, py::arg("version"), py::arg("warps_per_cta"),
-              py::arg("instr_shape"), py::arg("transposed"),
-              py::arg("cga_bases"), py::arg("tiles_per_warp"),
-              py::arg("element_bit_width"), py::arg("mmac_layout") = -1)
+          },
+          py::arg("version"), py::arg("warps_per_cta"), py::arg("instr_shape"),
+          py::arg("transposed"), py::arg("cga_bases"),
+          py::arg("tiles_per_warp"), py::arg("element_bit_width"),
+          py::arg("mmac_layout") = -1)
       .def("get_amd_wmma_layout",
            [](GluonOpBuilder &self, unsigned version, bool transposed,
               std::vector<unsigned> &warpsPerCta,
@@ -627,9 +629,10 @@ void init_gluon_ir(py::module &&m) {
              ValueRange tokens;
              self.create<ttg::AsyncCommitGroupOp>(tokens);
            })
-      .def("get_async_token_ty", [](GluonOpBuilder &self) -> Type {
-        return ttg::AsyncTokenType::get(self.getContext());
-      })
+      .def("get_async_token_ty",
+           [](GluonOpBuilder &self) -> Type {
+             return ttg::AsyncTokenType::get(self.getContext());
+           })
       .def("create_async_wait_group",
            [](GluonOpBuilder &self, int num) -> Value {
              ValueRange tokens;

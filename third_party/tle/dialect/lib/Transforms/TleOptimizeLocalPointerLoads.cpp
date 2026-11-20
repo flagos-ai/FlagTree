@@ -393,9 +393,9 @@ static std::optional<RematerializedValue> rematerializeExpandDims(
   return RematerializedValue{newExpand, input->usesLocalPointerLoad};
 }
 
-static std::optional<RematerializedValue> rematerializeLocalPointerLoad(
-    triton::LoadOp load, RankedTensorType targetTy, OpBuilder &builder,
-    unsigned depth) {
+static std::optional<RematerializedValue>
+rematerializeLocalPointerLoad(triton::LoadOp load, RankedTensorType targetTy,
+                              OpBuilder &builder, unsigned depth) {
   if (load.getMask() || load.getOther())
     return std::nullopt;
   if (!load.getBoundaryCheck().empty() || load.getPadding())
@@ -437,9 +437,8 @@ static std::optional<RematerializedValue> rematerializeLocalPointerLoad(
 
     auto targetIndexTy = RankedTensorType::get(
         targetTy.getShape(), indexTy.getElementType(), targetTy.getEncoding());
-    auto rematerializedIndex =
-        rematerializeForLayout(index, targetIndexTy, builder, indexCache,
-                               depth + 1);
+    auto rematerializedIndex = rematerializeForLayout(
+        index, targetIndexTy, builder, indexCache, depth + 1);
     if (!rematerializedIndex || rematerializedIndex->usesLocalPointerLoad)
       return std::nullopt;
     indices.push_back(rematerializedIndex->value);

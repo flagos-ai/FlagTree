@@ -11,25 +11,24 @@ def load_checker(path):
     return module.check_native_readiness
 
 
-check = load_checker(Path(__file__).resolve().parents[4] /
-                     "third_party/hcu/backend/mma_phase.py")
+check = load_checker(Path(__file__).resolve().parents[4] / "third_party/hcu/backend/mma_phase.py")
 
 
 def audit(*instructions):
-    return check("kernel:\n  " + "\n  ".join(instructions) +
-                 "\n  s_endpgm\n.Lfunc_end0:\n", "kernel")
+    return check("kernel:\n  " + "\n  ".join(instructions) + "\n  s_endpgm\n.Lfunc_end0:\n", "kernel")
 
 
 class TestXadNativeReadiness(unittest.TestCase):
+
     def test_explicit_sources_and_destination_alias(self):
         for instruction in (
-            "v_xad_u32 v83, v4, 32, s4",  # Observed gfx936 instruction.
-            "v_xad_u32 v0, v1, v2, v3",
-            "v_xad_u32 v0, s1, s2, s3",
-            "v_xad_u32 v0, -2147483648, 4294967295, 0xffffffff",
-            "v_xad_u32 v0, v0, 1, s4",
-            "v_xad_u32 v0, 1, v0, s4",
-            "v_xad_u32 v0, 1, s4, v0",
+                "v_xad_u32 v83, v4, 32, s4",  # Observed gfx936 instruction.
+                "v_xad_u32 v0, v1, v2, v3",
+                "v_xad_u32 v0, s1, s2, s3",
+                "v_xad_u32 v0, -2147483648, 4294967295, 0xffffffff",
+                "v_xad_u32 v0, v0, 1, s4",
+                "v_xad_u32 v0, 1, v0, s4",
+                "v_xad_u32 v0, 1, s4, v0",
         ):
             with self.subTest(instruction=instruction):
                 self.assertTrue(audit(instruction)["accepted"])
@@ -73,13 +72,26 @@ class TestXadNativeReadiness(unittest.TestCase):
 
     def test_malformed_xad_is_rejected(self):
         for args in (
-            "", "v0, v1, 2", "v0, v1, 2, s1, v3", "s0, v1, 2, s1",
-            "v[0:1], v1, 2, s1", "v0, v[1:2], 2, s1", "v0, v1, s[2:3], s1",
-            "v0, v1, 1.0, s1", "v0, v1, -v2, s1", "v0, v1, abs(v2), s1",
-            "v0, v1, 2, vcc", "v0, v1, 2, exec", "v0, v1, 2, s1 clamp",
-            "v0, v1, 2, s1 junk", "v0, v1, 4294967296, s1",
-            "v0, v1, -2147483649, s1", "v0, v1, 0x100000000, s1",
-            "v0, v1, 0x, s1", "v0, v1, , s1", "v0, v1, 2, s1,",
+                "",
+                "v0, v1, 2",
+                "v0, v1, 2, s1, v3",
+                "s0, v1, 2, s1",
+                "v[0:1], v1, 2, s1",
+                "v0, v[1:2], 2, s1",
+                "v0, v1, s[2:3], s1",
+                "v0, v1, 1.0, s1",
+                "v0, v1, -v2, s1",
+                "v0, v1, abs(v2), s1",
+                "v0, v1, 2, vcc",
+                "v0, v1, 2, exec",
+                "v0, v1, 2, s1 clamp",
+                "v0, v1, 2, s1 junk",
+                "v0, v1, 4294967296, s1",
+                "v0, v1, -2147483649, s1",
+                "v0, v1, 0x100000000, s1",
+                "v0, v1, 0x, s1",
+                "v0, v1, , s1",
+                "v0, v1, 2, s1,",
         ):
             with self.subTest(args=args):
                 result = audit("v_xad_u32 " + args)
@@ -94,13 +106,14 @@ class TestXadNativeReadiness(unittest.TestCase):
                 self.assertEqual(result["reason"], "unsupported vector opcode")
 
     def test_cfg_path_with_incomplete_source_is_not_hidden(self):
-        result = audit("ds_read_b32 v4, v10", "s_cbranch_scc1 .Ljoin",
-                       "s_waitcnt lgkmcnt(0)", ".Ljoin:", "v_xad_u32 v83, v4, 32, s1")
+        result = audit("ds_read_b32 v4, v10", "s_cbranch_scc1 .Ljoin", "s_waitcnt lgkmcnt(0)", ".Ljoin:",
+                       "v_xad_u32 v83, v4, 32, s1")
         self.assertFalse(result["accepted"])
         self.assertEqual(result["reason"], "async register used before explicit completion")
 
 
 class TestPriorityNativeReadiness(unittest.TestCase):
+
     def test_priority_keeps_pending_responses(self):
         self.assertTrue(audit("s_setprio 1", "s_setprio 0")["accepted"])
         for load, use, wait in (
@@ -112,8 +125,7 @@ class TestPriorityNativeReadiness(unittest.TestCase):
                 result = audit(load, "s_setprio 1", "s_setprio 0", use)
                 self.assertFalse(result["accepted"])
                 self.assertEqual(result["reason"], "async register used before explicit completion")
-                self.assertTrue(audit(load, "s_setprio 1", wait,
-                                      "s_setprio 0", use)["accepted"])
+                self.assertTrue(audit(load, "s_setprio 1", wait, "s_setprio 0", use)["accepted"])
 
     def test_unknown_priority_operands_and_opcodes_are_rejected(self):
         for operands in ("", "2", "3", "-1", "0x1", "s0", "v0", "0, 1", "1 junk"):

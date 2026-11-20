@@ -20,13 +20,13 @@ def _read_slice(A, Out, START: gl.constexpr):
     fragment: gl.constexpr = gl.DistributedLinearLayout(
         [[1, 0], [2, 0], [4, 0], [0, 1], [0, 32], [0, 64]],
         [[0, 2], [0, 4], [0, 8], [0, 16], [8, 0], [16, 0]],
-        [[0, 0], [0, 0]], [], [32, 128],
+        [[0, 0], [0, 0]],
+        [],
+        [32, 128],
     )
     rows = gl.arange(0, 64, layout=gl.SliceLayout(1, blocked))
     cols = gl.arange(0, 128, layout=gl.SliceLayout(0, blocked))
-    owner = gl.allocate_shared_memory(
-        gl.bfloat16, [64, 128], shared, gl.load(A + rows[:, None] * 128 + cols[None, :])
-    )
+    owner = gl.allocate_shared_memory(gl.bfloat16, [64, 128], shared, gl.load(A + rows[:, None] * 128 + cols[None, :]))
     values = owner.slice(START, 32).load(fragment)
     rows = gl.arange(0, 32, layout=gl.SliceLayout(1, fragment))
     cols = gl.arange(0, 128, layout=gl.SliceLayout(0, fragment))
@@ -36,15 +36,17 @@ def _read_slice(A, Out, START: gl.constexpr):
 @pytest.mark.parametrize("start", [0, 32])
 def test_alt_matrix_read_reuses_base_for_aligned_subslice(start):
     source = GluonASTSource(
-        _read_slice, {"A": "*bf16", "Out": "*bf16", "START": "constexpr"},
+        _read_slice,
+        {"A": "*bf16", "Out": "*bf16", "START": "constexpr"},
         {"START": start},
-        attrs={(i,): [("tt.divisibility", 16)] for i in range(2)},
+        attrs={(i, ): [("tt.divisibility", 16)]
+               for i in range(2)},
     )
-    kernel = triton.compile(source, target=GPUTarget("hip", "gfx936", 64),
-                            options={"num_warps": 4})
+    kernel = triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4})
     reads = re.findall(
         r"^\s*ds_read_m32x16_b16_alt\s+v\[\d+:\d+\],\s+(v\d+)(?:\s+offset:(\d+))?",
-        kernel.asm["amdgcn"], re.M,
+        kernel.asm["amdgcn"],
+        re.M,
     )
     by_base = {}
     for base, offset in reads:

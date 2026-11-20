@@ -19,9 +19,10 @@ LAYOUTS = r"""
 
 
 @pytest.mark.parametrize("dtype", ["bf16", "f16"])
-@pytest.mark.parametrize("case", ["eligible", "one_side", "chain", "noncarried",
-                                  "nohint", "wrong_target", "early_use", "barrier",
-                                  "wait", "unknown_call"])
+@pytest.mark.parametrize("case", [
+    "eligible", "one_side", "chain", "noncarried", "nohint", "wrong_target", "early_use", "barrier", "wait",
+    "unknown_call"
+])
 def test_prefetched_reads_precede_math_without_moving_memory(tmp_path, dtype, case):
     a = f"tensor<64x32x{dtype}, #ttg.dot_op<{{opIdx = 0, parent = #mma, kWidth = 8}}>>"
     b = f"tensor<32x128x{dtype}, #ttg.dot_op<{{opIdx = 1, parent = #mma, kWidth = 8}}>>"

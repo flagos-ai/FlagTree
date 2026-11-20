@@ -20,8 +20,8 @@
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-#include "../PatternTritonGPUOpToLLVM.h"
 #include "../AccumulatorFence.h"
+#include "../PatternTritonGPUOpToLLVM.h"
 #include "TritonHCUGPUTransforms/MfmaGroup.h"
 #include "Utility.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
@@ -378,7 +378,8 @@ struct DotOpMFMAConversionHelper {
                   int index = linearize({b, m, n, v}, fcStrides);
                   fc[index] = tb.extract_element(dstElemTy, acc, tb.i32_val(v));
                 }
-                fc = HCU::emitAccumulatorFence(loc, fc, "s_setprio 1", rewriter);
+                fc =
+                    HCU::emitAccumulatorFence(loc, fc, "s_setprio 1", rewriter);
                 acc = tb.undef(vecTy);
                 for (int v = 0; v < elemsPerVec; ++v) {
                   int index = linearize({b, m, n, v}, fcStrides);

@@ -10,10 +10,8 @@ from triton.backends.hcu.compiler import HIPBackend
 
 
 def lower(tmp_path, dtype, alignment, divergent=False):
-    extra = (
-        '%offset = "hcug.warp_group_id"() {groupSize = 1 : i32} : () -> i32\n'
-        "    %derived = tt.addptr %p, %offset : !tt.ptr<DT>, i32"
-    ).replace("DT", dtype) if divergent else ""
+    extra = ('%offset = "hcug.warp_group_id"() {groupSize = 1 : i32} : () -> i32\n'
+             "    %derived = tt.addptr %p, %offset : !tt.ptr<DT>, i32").replace("DT", dtype) if divergent else ""
     base = "%derived" if divergent else "%p"
     text = f'''#mma = #ttg.amd_mfma<{{version = 3, warpsPerCTA = [4, 1], instrShape = [16, 16, 16], isTransposed = true, mmacLayout = 1}}>
 module attributes {{"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32,
@@ -52,18 +50,14 @@ module attributes {{"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32,
 
 @pytest.mark.parametrize("dtype", ["bf16", "f16"])
 @pytest.mark.parametrize("alignment,width", [(16, "v4i32"), (2, "i16")])
-def test_descriptor_capture_uses_abi_base_and_alignment(
-    tmp_path, dtype, alignment, width
-):
+def test_descriptor_capture_uses_abi_base_and_alignment(tmp_path, dtype, alignment, width):
     result = lower(tmp_path, dtype, alignment)
     assert "llvm.amdgcn.struct.ptr.buffer.load." + width in result
 
 
 @pytest.mark.parametrize("dtype", ["bf16", "f16"])
 @pytest.mark.parametrize("alignment", [2, 16])
-def test_capture_does_not_make_wave_varying_pointer_uniform(
-    tmp_path, capfd, dtype, alignment
-):
+def test_capture_does_not_make_wave_varying_pointer_uniform(tmp_path, capfd, dtype, alignment):
     with pytest.raises(RuntimeError):
         lower(tmp_path, dtype, alignment, True)
     diagnostic = capfd.readouterr().err

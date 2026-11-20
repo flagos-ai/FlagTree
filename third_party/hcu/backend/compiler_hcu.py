@@ -15,15 +15,11 @@ import warnings
 import os
 from pathlib import Path
 
-
 _REGISTER_OWNER_DEFAULT_POLICY = "gfx936_optimize_epilogue_register_owner_shared_vector_v1"
 
 
 def _schedule_hints(value):
-    return tuple(dict.fromkeys(
-        hint for part in value.split(",")
-        if (hint := part.strip().lower()) and hint != "none"
-    ))
+    return tuple(dict.fromkeys(hint for part in value.split(",") if (hint := part.strip().lower()) and hint != "none"))
 
 
 @functools.lru_cache(maxsize=16)
@@ -69,6 +65,8 @@ def _retarget_clang_args(clang_args, asm_text):
 class HIPOptions:
     num_warps: int = 4
     waves_per_eu: int = 1
+    # Explicit launch resource budget; zero preserves the inferred LDS demand.
+    min_shared_memory: int = 0
     num_stages: int = 2
     num_ctas: int = 1
     extern_libs: dict = None
@@ -87,13 +85,16 @@ class HIPOptions:
     disable_llvm_loop_unroll: bool = False
     # Keep wave-private synchronous staging in the operator tuning space.
     wave_private_sync: bool = False
-    # Coalesce proved terminal read-only LDS publication; diagnostic opt-in.
+    # Coalesce a proved terminal read-only LDS publication suffix.
     terminal_readonly_publication: bool = False
     combine_shifted_disjoint_or: bool = False
-    # Experimental wave-group MMA motion; native completion check is required.
+    pack_bf16_rounds: bool = False
+    # Wave-group MMA motion, guarded by the native completion check.
     mma_phase_schedule: bool = False
     coalesce_lgkm_waits: bool = False
-    # Experimental full LDS wait after compute; proves cross-wave WAR release.
+    # Consume proved local-read MMAC operands before waiting for younger reads.
+    mmac_operand_reuse: bool = False
+    # Complete local reads after compute before cross-wave buffer reuse.
     post_mma_wait: bool = False
     # Preserve proved LDS-DMA alias metadata through native lowering.
     lds_dma_alias_workaround: bool = False
@@ -101,8 +102,8 @@ class HIPOptions:
     rebase_buffer_store: bool = False
     # Extract proved nonnegative constant byte displacements to raw store SOFFSET.
     buffer_store_scalar_offset: bool = False
-    # Exact full padded MemDescIndex plane intervals, retaining CFG barriers.
-    padded_slot_intervals: bool = False
+    # Factor proved common VOFFSET expressions within a store block.
+    buffer_store_factor_offsets: bool = False
     # Split proved constant bytes between MUBUF immediate and uniform SOFFSET.
     buffer_store_split_immediate: bool = False
     # Preserve the proved masked base with an exact tied i32 register identity.
@@ -136,12 +137,17 @@ class HIPOptions:
     mmac_warps_m: int = 0
     # Permit native accumulator-tile transpose on eligible gfx936 dots.
     mmac_transposed: bool = False
+    # Allow paired columns in eligible transposed legacy MMAC layouts.
+    mmac_pair_columns: bool = False
 
     async_copy_use_single_buffer: bool = True
 
     # None preserves the existing environment/architecture policy.
     use_block_pingpong: Optional[bool] = None
     prefer_wide_async_copy: bool = False
+    # Factor eligible buffer records without changing addresses or bounds.
+    # Keep the physical representation available for cache-policy tuning.
+    normalize_buffer_record_pitch: bool = True
 
     # The following option provides hints to the HCUGPU backend regarding instruction scheduling
     # for all `tt.dot` operations in a kernel. The "none" variant preserves the default
@@ -194,6 +200,8 @@ class HIPOptions:
     wdra_num_mma_regs_tail: int = None
 
     def __post_init__(self):
+        if type(self.min_shared_memory) is not int or self.min_shared_memory < 0:
+            raise ValueError("min_shared_memory must be a nonnegative integer")
         object.__setattr__(self, "schedule_hint", ",".join(_schedule_hints(self.schedule_hint)) or "none")
         if type(self.register_batch_owner) is not bool:
             raise ValueError("register_batch_owner must be boolean")
@@ -205,6 +213,12 @@ class HIPOptions:
             raise ValueError("register_batch_owner_shared_vector must be boolean")
         if self.register_batch_owner_shared_vector and not self.register_batch_owner:
             raise ValueError("register_batch_owner_shared_vector requires register_batch_owner")
+        if type(self.mmac_pair_columns) is not bool:
+            raise ValueError("mmac_pair_columns must be a bool")
+        if self.mmac_pair_columns and (self.arch != "gfx936" or not self.mmac_transposed):
+            raise ValueError("mmac_pair_columns requires transposed legacy MMAC on gfx936")
+        if type(self.normalize_buffer_record_pitch) is not bool:
+            raise ValueError("normalize_buffer_record_pitch must be boolean")
         if type(self.prefer_wide_async_copy) is not bool:
             raise ValueError("prefer_wide_async_copy must be boolean")
         if self.use_block_pingpong is not None and type(self.use_block_pingpong) is not bool:
@@ -220,12 +234,18 @@ class HIPOptions:
             raise ValueError("structured_register_unclamped_column requires gfx936")
         if type(self.priority_after_first_mmac) is not bool:
             raise ValueError("priority_after_first_mmac must be boolean")
+        if type(self.mmac_operand_reuse) is not bool:
+            raise ValueError("mmac_operand_reuse must be boolean")
+        if self.mmac_operand_reuse and self.arch != "gfx936":
+            raise ValueError("mmac_operand_reuse requires the gfx936 completion model")
         if self.priority_after_first_mmac and self.arch != "gfx936":
             raise ValueError("priority_after_first_mmac requires gfx936")
         if type(self.combine_shifted_disjoint_or) is not bool:
             raise ValueError("combine_shifted_disjoint_or must be boolean")
         if self.combine_shifted_disjoint_or and self.arch != "gfx936":
             raise ValueError("combine_shifted_disjoint_or requires gfx936")
+        if type(self.pack_bf16_rounds) is not bool:
+            raise ValueError("pack_bf16_rounds must be boolean")
         if type(self.terminal_readonly_publication) is not bool:
             raise ValueError("terminal_readonly_publication must be boolean")
         if self.terminal_readonly_publication and self.arch != "gfx936":
@@ -234,10 +254,10 @@ class HIPOptions:
             raise ValueError("wave_private_sync must be boolean")
         if self.wave_private_sync and self.arch != "gfx936":
             raise ValueError("wave_private_sync requires gfx936")
-        if type(self.padded_slot_intervals) is not bool:
-            raise ValueError("padded_slot_intervals must be boolean")
-        if self.padded_slot_intervals and self.arch != "gfx936":
-            raise ValueError("padded_slot_intervals requires gfx936")
+        if type(self.buffer_store_factor_offsets) is not bool:
+            raise ValueError("buffer_store_factor_offsets must be boolean")
+        if self.buffer_store_factor_offsets and self.arch != "gfx936":
+            raise ValueError("buffer_store_factor_offsets requires gfx936")
         if type(self.buffer_store_scalar_offset) is not bool:
             raise ValueError("buffer_store_scalar_offset must be boolean")
         if self.buffer_store_scalar_offset and self.arch != "gfx936":
@@ -284,8 +304,7 @@ class HIPOptions:
 
         if self.mmac_warps_m:
             m = self.mmac_warps_m
-            if (self.arch != "gfx936" or m < 1 or m & (m - 1)
-                    or m > self.num_warps or self.num_warps % m):
+            if (self.arch != "gfx936" or m < 1 or m & (m - 1) or m > self.num_warps or self.num_warps % m):
                 raise ValueError("mmac_warps_m requires gfx936 and a power-of-two divisor of num_warps")
 
         if (self.arch == 'gfx950') and (self.kpack != 1):
@@ -370,8 +389,7 @@ class HIPBackend(BaseBackend):
         # for other integers/types and keep compiler hashes stable on reload.
         for name, field in HIPOptions.__dataclass_fields__.items():
             value = args.get(name)
-            if (field.type in (bool, Optional[bool]) and type(value) is int
-                    and value in (0, 1)):
+            if (field.type in (bool, Optional[bool]) and type(value) is int and value in (0, 1)):
                 args[name] = bool(value)
 
         # Resolve defaults after effective arch/epilogue and bool normalization.
@@ -381,8 +399,8 @@ class HIPBackend(BaseBackend):
         if "register_batch_owner" not in args:
             args["register_batch_owner"] = register_owner_default
         if "register_batch_owner_shared_vector" not in args:
-            args["register_batch_owner_shared_vector"] = (
-                register_owner_default and args["register_batch_owner"] is True)
+            args["register_batch_owner_shared_vector"] = (register_owner_default
+                                                          and args["register_batch_owner"] is True)
 
         # Consume the legacy `instruction_sched_variant` option and map it to
         # `schedule_hint`. If both are present, keep the explicit schedule_hint.
@@ -396,8 +414,7 @@ class HIPBackend(BaseBackend):
         # Explicit options preserve independent manual experiments and off.
         if "post_mma_wait" not in args and "mma_phase_schedule" not in args:
             waves = args.get("num_warps", HIPOptions.num_warps)
-            paired = (args["arch"] == "gfx936"
-                      and type(waves) is int and waves >= 8 and waves % 8 == 0
+            paired = (args["arch"] == "gfx936" and type(waves) is int and waves >= 8 and waves % 8 == 0
                       and args.get("prefer_wide_async_copy", False) is True
                       and "local-prefetch" in _schedule_hints(args.get("schedule_hint", "none")))
             args.update(post_mma_wait=paired, mma_phase_schedule=paired)
@@ -604,8 +621,7 @@ class HIPBackend(BaseBackend):
     def make_ttir(mod, metadata, options):
         if options.arch == "gfx936" and options.prefer_wide_async_copy:
             # Preserve block-pointer descriptors before scalar pointer expansion.
-            mod.set_attr("ttg.hcu.prefer_wide_async_copy",
-                         ir.builder(mod.context).get_int32_attr(1))
+            mod.set_attr("ttg.hcu.prefer_wide_async_copy", ir.builder(mod.context).get_int32_attr(1))
         # flagtree tle raw: dushmemx_cumodule_init runs after the hsaco is loaded.
         kernel_init_hooks = mod.get_operation().get_str_attr("tle.raw.kernel_init_hooks")
         metadata["kernel_init_hooks"] = kernel_init_hooks.split(",") if kernel_init_hooks else []
@@ -638,8 +654,7 @@ class HIPBackend(BaseBackend):
             mod.set_attr("ttg.hcu.register_batch_owner_shared_vector", builder.get_bool_attr(True))
             mod.set_attr("ttg.hcu.register_batch_owner_shared_vector_count", builder.get_int32_attr(0))
         if options.prefer_wide_async_copy:
-            mod.set_attr("ttg.hcu.prefer_wide_async_copy",
-                         ir.builder(mod.context).get_int32_attr(1))
+            mod.set_attr("ttg.hcu.prefer_wide_async_copy", ir.builder(mod.context).get_int32_attr(1))
         if options.wave_private_sync:
             if options.arch != "gfx936":
                 raise ValueError("wave_private_sync requires gfx936")
@@ -649,11 +664,11 @@ class HIPBackend(BaseBackend):
         if options.sync_lds_buffers == 2:
             mod.set_attr("ttg.hcu.sync_lds_buffers", ir.builder(mod.context).get_int32_attr(2))
         if options.mmac_transposed:
-            mod.set_attr("ttg.hcu.mmac_transposed",
-                         ir.builder(mod.context).get_int32_attr(1))
+            mod.set_attr("ttg.hcu.mmac_transposed", ir.builder(mod.context).get_int32_attr(1))
         if options.mmac_warps_m:
-            mod.set_attr("ttg.hcu.mmac_warps_m",
-                         ir.builder(mod.context).get_int32_attr(options.mmac_warps_m))
+            mod.set_attr("ttg.hcu.mmac_warps_m", ir.builder(mod.context).get_int32_attr(options.mmac_warps_m))
+        if options.mmac_pair_columns:
+            mod.set_attr("ttg.hcu.mmac_pair_columns", ir.builder(mod.context).get_bool_attr(True))
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.ttir.add_convert_to_ttgpuir(pm, f"hip:{options.arch}", options.num_warps, options.warp_size,
@@ -737,20 +752,16 @@ class HIPBackend(BaseBackend):
         tle.passes.add_lower_async_load(pm)
         # Form actual BUFFER copies before GLOBAL-only width contraction.
         # Failed conversions remain GLOBAL and retain their original limits.
-        early_buffer = (
-            options.arch == "gfx936"
-            and knobs.hcu.use_buffer_ops
-            and not options.wasp_enabled
-            and not is_in_thread_transpose_enabled(options.arch)
-        )
+        early_buffer = (options.arch == "gfx936" and knobs.hcu.use_buffer_ops and not options.wasp_enabled
+                        and not is_in_thread_transpose_enabled(options.arch))
         # Ping-pong must still see synchronous tt.loads, including explicit
         # per-operation False overrides of the global async policy.
         if early_buffer:
             hcu.passes.ttgpuir.add_canonicalize_pointers(pm)
             passes.common.add_canonicalizer(pm)
-            hcu.passes.ttgpuir.add_convert_to_buffer_ops(pm, options.arch,
-                knobs.hcu.use_buffer_atomics, knobs.hcu.buffer_ops_analyze_small_tensor_range,
-                async_only=use_block_pingpong)
+            hcu.passes.ttgpuir.add_convert_to_buffer_ops(pm, options.arch, knobs.hcu.use_buffer_atomics,
+                                                         knobs.hcu.buffer_ops_analyze_small_tensor_range,
+                                                         async_only=use_block_pingpong)
         hcu.passes.ttgpuir.add_coalesce_async_copy(pm, options.arch)
         tle.passes.add_downgrade_invalid_async_copy(pm)
         passes.common.add_canonicalizer(pm)
@@ -836,44 +847,34 @@ class HIPBackend(BaseBackend):
     @staticmethod
     def make_llir(src, metadata, options):
         mod = src
+        # Apply to TL and Gluon, including TTGIR FileSource recompilation.
+        mod.set_attr("ttg.hcu.normalize_buffer_record_pitch",
+                     ir.builder(mod.context).get_bool_attr(options.normalize_buffer_record_pitch))
         if options.priority_after_first_mmac:
             # Typed fences and the MMAC lowering own the SSA scheduling
             # boundary. Never move final assembly instructions as text.
-            mod.set_attr("ttg.hcu.priority_after_first_mmac",
-                         ir.builder(mod.context).get_bool_attr(True))
+            mod.set_attr("ttg.hcu.priority_after_first_mmac", ir.builder(mod.context).get_bool_attr(True))
         if options.terminal_readonly_publication:
-            mod.set_attr("ttg.hcu.terminal_readonly_publication",
-                         ir.builder(mod.context).get_bool_attr(True))
+            mod.set_attr("ttg.hcu.terminal_readonly_publication", ir.builder(mod.context).get_bool_attr(True))
         # Gluon skips make_ttgir; apply this existing opt-in for both frontends.
         if options.wave_private_sync:
-            mod.set_attr("ttg.hcu.wave_private_sync",
-                         ir.builder(mod.context).get_int32_attr(1))
-        manual_ws = (options.arch == "gfx936" and
-                     not options.wasp_enabled and not options.wdra_enabled and
-                     (hcu.has_warp_specialize(mod) or hcu.has_cta_barrier(mod)))
+            mod.set_attr("ttg.hcu.wave_private_sync", ir.builder(mod.context).get_int32_attr(1))
+        manual_ws = (options.arch == "gfx936" and not options.wasp_enabled and not options.wdra_enabled
+                     and (hcu.has_warp_specialize(mod) or hcu.has_cta_barrier(mod)))
         explicit_ws = manual_ws
         base_warps = mod.get_int_attr("ttg.num-warps") if explicit_ws else 0
         if options.structured_register_prepack_address:
-            mod.set_attr("ttg.hcu.structured_register_prepack_address",
-                         ir.builder(mod.context).get_bool_attr(True))
+            mod.set_attr("ttg.hcu.structured_register_prepack_address", ir.builder(mod.context).get_bool_attr(True))
         if options.structured_register_unclamped_column:
-            mod.set_attr("ttg.hcu.structured_register_unclamped_column",
-                         ir.builder(mod.context).get_bool_attr(True))
+            mod.set_attr("ttg.hcu.structured_register_unclamped_column", ir.builder(mod.context).get_bool_attr(True))
         if options.rebase_buffer_store:
-            mod.set_attr("ttg.hcu.rebase_buffer_store",
-                         ir.builder(mod.context).get_bool_attr(True))
-        if options.padded_slot_intervals:
-            mod.set_attr("ttg.hcu.padded_slot_intervals",
-                         ir.builder(mod.context).get_bool_attr(True))
+            mod.set_attr("ttg.hcu.rebase_buffer_store", ir.builder(mod.context).get_bool_attr(True))
         if options.buffer_store_scalar_offset:
-            mod.set_attr("ttg.hcu.buffer_store_scalar_offset",
-                         ir.builder(mod.context).get_bool_attr(True))
+            mod.set_attr("ttg.hcu.buffer_store_scalar_offset", ir.builder(mod.context).get_bool_attr(True))
         if options.buffer_store_split_immediate:
-            mod.set_attr("ttg.hcu.buffer_store_split_immediate",
-                         ir.builder(mod.context).get_bool_attr(True))
+            mod.set_attr("ttg.hcu.buffer_store_split_immediate", ir.builder(mod.context).get_bool_attr(True))
         if options.buffer_store_preserve_masked_base:
-            mod.set_attr("ttg.hcu.buffer_store_preserve_masked_base",
-                         ir.builder(mod.context).get_bool_attr(True))
+            mod.set_attr("ttg.hcu.buffer_store_preserve_masked_base", ir.builder(mod.context).get_bool_attr(True))
         if options.loop_unroll_stage == "post-pipeline":
             late_pm = ir.pass_manager(mod.context)
             late_pm.enable_debug()
@@ -896,12 +897,9 @@ class HIPBackend(BaseBackend):
         hcu.passes.ttgpuir.add_optimize_lds_usage(pm, options.arch, custom_lds_size)
         if explicit_ws:
             # Fresh SCF trace and producer start IDs precede type/thread lowering.
-            hcu.passes.ttgpuir.add_warp_specialize_to_llvm(
-                pm, options.arch, 4, base_warps, False, 0, 0, 0)
+            hcu.passes.ttgpuir.add_warp_specialize_to_llvm(pm, options.arch, 4, base_warps, False, 0, 0, 0)
         passes.convert.add_scf_to_cf(pm)
-        if options.arch == "gfx936" and (
-            options.loop_unroll_stage == "post-pipeline" or options.wave_private_sync
-        ):
+        if options.arch == "gfx936" and (options.loop_unroll_stage == "post-pipeline" or options.wave_private_sync):
             # Normalize constant ring-buffer paths before allocation and the
             # wave-private provenance proof, independently of unroll placement.
             passes.common.add_sccp(pm)
@@ -944,8 +942,7 @@ class HIPBackend(BaseBackend):
 
         if explicit_ws:
             # Consume the same-process pre-CF proof and flatten verified regions.
-            hcu.passes.ttgpuir.add_warp_specialize_to_llvm(
-                pm, options.arch, 4, base_warps, False, 0, 0, 0)
+            hcu.passes.ttgpuir.add_warp_specialize_to_llvm(pm, options.arch, 4, base_warps, False, 0, 0, 0)
             passes.convert.add_arith_to_llvmir(pm)
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
@@ -975,8 +972,7 @@ class HIPBackend(BaseBackend):
         distributed.passes.ttgpuir.hcu.add_lib_device_to_llvmir(pm, __HIP_FTZ)
         pm.run(mod, 'make_llir')
         if options.register_batch_owner:
-            metadata["hcu_register_batch_owner_count"] = (
-                mod.get_int_attr("ttg.hcu.register_batch_owner_count") or 0)
+            metadata["hcu_register_batch_owner_count"] = (mod.get_int_attr("ttg.hcu.register_batch_owner_count") or 0)
         if options.register_batch_owner_shared_vector:
             metadata["hcu_register_batch_owner_shared_vector_count"] = (
                 mod.get_int_attr("ttg.hcu.register_batch_owner_shared_vector_count") or 0)
@@ -1117,6 +1113,10 @@ class HIPBackend(BaseBackend):
 
         # Get some metadata
         metadata["shared"] = src.get_int_attr("ttg.shared")
+        if options.min_shared_memory:
+            # Keep the actual allocation for audit; only launch reservation grows.
+            metadata["hcu_allocated_shared"] = metadata["shared"] or 0
+            metadata["shared"] = max(metadata["hcu_allocated_shared"], options.min_shared_memory)
         metadata["profile_scratch_size"] = src.get_int_attr("ttg.profile_scratch_memory_size") or 0
         metadata["profile_scratch_align"] = src.get_int_attr("ttg.profile_scratch_memory_alignment") or 1
 
@@ -1127,6 +1127,7 @@ class HIPBackend(BaseBackend):
         if options.arch == "gfx936" and "local-prefetch" in _schedule_hints(options.schedule_hint):
             hcu.prefer_ready_shared_loads(llvm_mod, options.arch)
         hcu.preserve_buffer_load_byte_offsets(llvm_mod, options.arch)
+        metadata["hcu_uniform_resource_index_sites"] = hcu.preserve_uniform_resource_indices(llvm_mod, options.arch)
         if options.arch == "gfx936":
             native_version = _hcu_clang_version()
             if re.search(r"\bversion\s+18\.", native_version):
@@ -1137,8 +1138,8 @@ class HIPBackend(BaseBackend):
         if options.lds_dma_alias_workaround:
             hcu.preserve_lds_dma_alias_scopes(llvm_mod, options.arch)
         if options.interleave_global_lds_reads:
-            interleave = hcu.interleave_global_lds_reads(
-                llvm_mod, options.arch, options.interleave_global_lds_reads_fences)
+            interleave = hcu.interleave_global_lds_reads(llvm_mod, options.arch,
+                                                         options.interleave_global_lds_reads_fences)
             for key, value in interleave.items():
                 metadata["hcu_global_lds_read_interleave_" + key] = int(value)
         if options.tupled_register_fences:
@@ -1150,7 +1151,7 @@ class HIPBackend(BaseBackend):
     ## TODO: [HCU] integrate with rocshmem
     @staticmethod
     def make_amdgcn(src, metadata, options, _skip_schedules=False):
-        amdgcn=HIPBackend._make_amdgcn_with_schedules(src,metadata,options,_skip_schedules)
+        amdgcn = HIPBackend._make_amdgcn_with_schedules(src, metadata, options, _skip_schedules)
         if options.coalesce_lgkm_waits:
             original = amdgcn
             try:
@@ -1174,6 +1175,18 @@ class HIPBackend(BaseBackend):
                 metadata["hcu_lgkm_wait_coalesce_deleted"] = 0
                 metadata["hcu_lgkm_wait_coalesce_strengthened"] = 0
                 metadata["hcu_lgkm_wait_coalesce_result"] = "fallback: " + str(error)
+        if options.mmac_operand_reuse and not _skip_schedules:
+            from .mmac_operand_reuse import schedule_mmac_operand_reuse
+            candidate, report = schedule_mmac_operand_reuse(amdgcn, metadata["name"])
+            metadata["hcu_mmac_operand_reuse_result"] = report["reason"]
+            metadata["hcu_mmac_operand_reuse_sites"] = len(report["sites"])
+            if report["accepted"] and report["changed"]:
+                amdgcn = candidate
+        if (options.mmac_operand_reuse and not _skip_schedules and metadata.get("hcu_manual_warp_specialize")):
+            from .ready_lds_issue import schedule_ready_lds_issue
+            amdgcn, issue_report = schedule_ready_lds_issue(amdgcn, metadata["name"])
+            metadata["hcu_ready_lds_issue_sites"] = len(issue_report["sites"])
+            metadata["hcu_ready_lds_issue_result"] = issue_report["result"]
         return amdgcn
 
     @staticmethod
@@ -1185,12 +1198,10 @@ class HIPBackend(BaseBackend):
         # Retired experiment IR cannot recover its pre-schedule source and
         # operand-overlap did not prove cross-wave WAR. Do not silently accept
         # those old private attributes under a different scheduling policy.
-        if any(marker in src for marker in (
-                "hcu.packet.wait.rotation", "hcu.packet.post_mma_wait",
-                "hcu.packet.operand_overlap.experimental")):
+        if any(marker in src for marker in ("hcu.packet.wait.rotation", "hcu.packet.post_mma_wait",
+                                            "hcu.packet.operand_overlap.experimental")):
             raise HSACOError("Retired experimental schedule IR; recompile the unscheduled source")
-        imported_schedule = any(marker in src for marker in
-                                ("hcu.mma.phase.loop", "hcu.memory.post_mma_wait"))
+        imported_schedule = any(marker in src for marker in ("hcu.mma.phase.loop", "hcu.memory.post_mma_wait"))
         validate_imported_schedule = imported_schedule
 
         def fallback_schedules(reason):
@@ -1200,8 +1211,7 @@ class HIPBackend(BaseBackend):
             if options.mma_phase_schedule:
                 metadata["hcu_mma_phase_result"] = "fallback: " + reason
                 metadata["hcu_mma_phase_loops"] = 0
-            result = HIPBackend._make_amdgcn_with_schedules(stage_original, metadata, options,
-                                           _skip_schedules=True)
+            result = HIPBackend._make_amdgcn_with_schedules(stage_original, metadata, options, _skip_schedules=True)
             # An imported already-scheduled FileSource has no earlier source
             # to recover. Never let recursive fallback bypass its native guard.
             if imported_schedule:
@@ -1213,15 +1223,20 @@ class HIPBackend(BaseBackend):
 
         if options.arch == "gfx936" and not _skip_schedules:
             try:
-                src, prepared = prepare_memory_schedule(
-                    src, metadata, MemorySchedulePolicy.from_options(options),
-                    llvm, options.arch, options.num_warps)
+                src, prepared = prepare_memory_schedule(src, metadata, MemorySchedulePolicy.from_options(options), llvm,
+                                                        options.arch, options.num_warps)
                 if prepared:
                     schedule_original = stage_original
             except (RuntimeError, ValueError) as error:
                 return fallback_schedules("preparation: " + str(error))
         # Run after all late LLVM scheduling transforms, before native selection.
         # Explicit off does not call the binding or alter the LLVM string.
+        if options.buffer_store_factor_offsets:
+            src, sites = llvm.factor_hcu_buffer_store_offsets(src, options.arch)
+            metadata["hcu_factored_buffer_store_offsets"] = sites
+        if options.pack_bf16_rounds:
+            src, sites = llvm.pack_hcu_bf16_rounds(src)
+            metadata["hcu_packed_bf16_round_sites"] = sites
         if options.combine_shifted_disjoint_or:
             src, sites, reason = llvm.combine_hcu_shifted_disjoint_or(src, options.arch)
             metadata["hcu_shifted_disjoint_or_sites"] = sites
@@ -1252,7 +1267,12 @@ class HIPBackend(BaseBackend):
         metadata["hcu_raw_dcc"] = use_dcc
         if (not use_dcc and "llvm.amdgcn.make.buffer.rsrc." in kernel_ir
                 and re.search(r"\bversion\s+18\.", _hcu_clang_version())):
-            kernel_ir = llvm.adapt_hcu_buffer_resources_for_clang18(kernel_ir)
+            try:
+                kernel_ir = llvm.adapt_hcu_buffer_resources_for_clang18(kernel_ir)
+            except ValueError as error:
+                if schedule_original is not None:
+                    return fallback_schedules("target buffer-resource ABI: " + str(error))
+                raise HSACOError(str(error)) from error
         llir_file = asm_file = linked_file = None
         try:
             with tempfile.NamedTemporaryFile(mode='w', suffix=".ll", delete=False) as f:

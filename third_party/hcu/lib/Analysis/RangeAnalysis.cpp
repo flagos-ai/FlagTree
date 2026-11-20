@@ -274,14 +274,15 @@ TritonIntegerRangeAnalysis::maybeGetTripCount(LoopLikeOpInterface loop) {
         const dataflow::IntegerValueRangeLattice *lattice =
             getLatticeElementFor(getProgramPointBefore(block), value);
         if (lattice != nullptr && !lattice->getValue().isUninitialized())
-          return getUpper.value_or(false) ? lattice->getValue().getValue().smax()
-                          : lattice->getValue().getValue().smin();
+          return getUpper.value_or(false)
+                     ? lattice->getValue().getValue().smax()
+                     : lattice->getValue().getValue().smin();
       }
     }
     if (defaultVal)
       return *defaultVal;
     return getUpper.value_or(false) ? APInt::getSignedMaxValue(width)
-                    : APInt::getSignedMinValue(width);
+                                    : APInt::getSignedMinValue(width);
   };
 
   Block *block = iv->getParentBlock();
@@ -803,9 +804,8 @@ struct FoldTrueCmpIOp : OpRewritePattern<arith::CmpIOp> {
     // This predicate may be the assumption used to prove itself true. Keep
     // the fact available to subsequent passes and LLVM, rather than replacing
     // the assumption with `assume true`.
-    if (llvm::any_of(cmpOp->getUsers(), [](Operation *user) {
-          return isa<LLVM::AssumeOp>(user);
-        }))
+    if (llvm::any_of(cmpOp->getUsers(),
+                     [](Operation *user) { return isa<LLVM::AssumeOp>(user); }))
       return failure();
     if (llvm::isa<IntegerType, IndexType>(cmpOp.getType()) &&
         cmpIIsStaticallyTrue(*solver, cmpOp)) {

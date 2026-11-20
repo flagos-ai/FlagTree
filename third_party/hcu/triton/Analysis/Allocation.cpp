@@ -26,8 +26,8 @@
 
 #include "triton/Analysis/Allocation.h"
 
-#include <algorithm>
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include <algorithm>
 #include <limits>
 
 #include "mlir/Analysis/Liveness.h"
@@ -224,7 +224,8 @@ private:
     if (auto ws = dyn_cast<gpu::WarpSpecializeOp>(op)) {
       // This verified lowering rematerializes all captures and never exchanges
       // them through LDS. Its existing late guard rejects incomplete elision.
-      if (hasNoGenericWSScratch(ws)) return;
+      if (hasNoGenericWSScratch(ws))
+        return;
       // `ttg.warp_specialize` needs memory to pass its explicit captures. Pack
       // the captures like a struct.
       auto [captureSize, captureAlign] = ws.getCaptureSizeAlign();
@@ -239,7 +240,8 @@ private:
       func.walk([&](gpu::WarpSpecializeOp op) {
         // The direct CTA branch/JOIN protocol has no generic worker-state loop.
         if (!hasNoGenericWSScratch(op))
-          numWarpIndices = std::max(numWarpIndices, op.getTotalPartitionWarps());
+          numWarpIndices =
+              std::max(numWarpIndices, op.getTotalPartitionWarps());
       });
       maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, numWarpIndices);
       return;

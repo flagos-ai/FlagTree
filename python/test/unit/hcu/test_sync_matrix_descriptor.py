@@ -12,10 +12,8 @@ if not hasattr(libtriton, "hcu"):
 
 
 @triton.jit
-def descriptor_copy(A, C, origin, runtime_stride,
-                    M: tl.constexpr, K: tl.constexpr, BM: tl.constexpr,
-                    BK: tl.constexpr, ROW: tl.constexpr, COLUMN: tl.constexpr,
-                    ROW_STRIDE: tl.constexpr, COLUMN_STRIDE: tl.constexpr,
+def descriptor_copy(A, C, origin, runtime_stride, M: tl.constexpr, K: tl.constexpr, BM: tl.constexpr, BK: tl.constexpr,
+                    ROW: tl.constexpr, COLUMN: tl.constexpr, ROW_STRIDE: tl.constexpr, COLUMN_STRIDE: tl.constexpr,
                     DYNAMIC_COLUMN: tl.constexpr):
     row = tl.program_id(0) * BM + ROW
     if ROW_STRIDE == -1:
@@ -28,8 +26,7 @@ def descriptor_copy(A, C, origin, runtime_stride,
         column = origin
     else:
         column = tl.program_id(1) * BK + COLUMN
-    pointer = tl.make_block_ptr(A, (M, K), (stride, COLUMN_STRIDE),
-                                (row, column), (BM, BK), (1, 0))
+    pointer = tl.make_block_ptr(A, (M, K), (stride, COLUMN_STRIDE), (row, column), (BM, BK), (1, 0))
     value = tl.load(pointer, boundary_check=(0, 1), padding_option="zero")
     m = tl.arange(0, BM)
     n = tl.arange(0, BK)
@@ -42,15 +39,20 @@ def idle():
 
 
 @triton.jit
-def descriptor_copy_roles(A, C, origin, runtime_stride,
-                          M: tl.constexpr, K: tl.constexpr, BM: tl.constexpr,
-                          BK: tl.constexpr, ROW: tl.constexpr, COLUMN: tl.constexpr,
-                          ROW_STRIDE: tl.constexpr, COLUMN_STRIDE: tl.constexpr,
-                          DYNAMIC_COLUMN: tl.constexpr, DEFAULT_ROLE: tl.constexpr):
+def descriptor_copy_roles(A, C, origin, runtime_stride, M: tl.constexpr, K: tl.constexpr, BM: tl.constexpr,
+                          BK: tl.constexpr, ROW: tl.constexpr, COLUMN: tl.constexpr, ROW_STRIDE: tl.constexpr,
+                          COLUMN_STRIDE: tl.constexpr, DYNAMIC_COLUMN: tl.constexpr, DEFAULT_ROLE: tl.constexpr):
     if DEFAULT_ROLE:
-        tle.gpu.warp_specialize([(descriptor_copy, (A, C, origin, runtime_stride, M, K, BM, BK, ROW, COLUMN, ROW_STRIDE, COLUMN_STRIDE, DYNAMIC_COLUMN)), (idle, ())], [4], [32])
+        tle.gpu.warp_specialize(
+            [(descriptor_copy,
+              (A, C, origin, runtime_stride, M, K, BM, BK, ROW, COLUMN, ROW_STRIDE, COLUMN_STRIDE, DYNAMIC_COLUMN)),
+             (idle, ())], [4], [32])
     else:
-        tle.gpu.warp_specialize([(idle, ()), (descriptor_copy, (A, C, origin, runtime_stride, M, K, BM, BK, ROW, COLUMN, ROW_STRIDE, COLUMN_STRIDE, DYNAMIC_COLUMN))], [4], [32])
+        tle.gpu.warp_specialize(
+            [(idle, ()),
+             (descriptor_copy,
+              (A, C, origin, runtime_stride, M, K, BM, BK, ROW, COLUMN, ROW_STRIDE, COLUMN_STRIDE, DYNAMIC_COLUMN))],
+            [4], [32])
 
 
 # Legality boundaries, not a tuning table. Each excluded case exercises a
@@ -72,22 +74,21 @@ CASES = [
 
 def compile_copy(dtype, roles, case):
     name, k, bk, column, row_stride, column_stride, dynamic, expected = case
-    constants = dict(M=73, K=k, BM=128, BK=bk, ROW=-3, COLUMN=column,
-                     ROW_STRIDE=row_stride, COLUMN_STRIDE=column_stride,
-                     DYNAMIC_COLUMN=dynamic)
+    constants = dict(M=73, K=k, BM=128, BK=bk, ROW=-3, COLUMN=column, ROW_STRIDE=row_stride,
+                     COLUMN_STRIDE=column_stride, DYNAMIC_COLUMN=dynamic)
     fn = descriptor_copy_roles if roles else descriptor_copy
     if roles:
         constants["DEFAULT_ROLE"] = roles != "worker"
-    signature = {name: "constexpr" if name in constants else
-                 "*" + dtype if name in ["A", "C"] else
-                 "i64" if name == "runtime_stride" else "i32"
-                 for name in fn.arg_names}
-    source = ASTSource(fn, signature, constants,
-                       attrs={(i,): [("tt.divisibility", 16),
-                                      ("tt.pointer_range", 32)] for i in [0, 1]})
+    signature = {
+        name:
+        "constexpr" if name in constants else "*" +
+        dtype if name in ["A", "C"] else "i64" if name == "runtime_stride" else "i32"
+        for name in fn.arg_names
+    }
+    source = ASTSource(fn, signature, constants, attrs={(i, ): [("tt.divisibility", 16), ("tt.pointer_range", 32)]
+                                                        for i in [0, 1]})
     return triton.compile(source, target=GPUTarget("hip", "gfx936", 64),
-                           options=dict(prefer_wide_async_copy=True,
-                                        num_warps=4, num_stages=1))
+                          options=dict(prefer_wide_async_copy=True, num_warps=4, num_stages=1))
 
 
 @pytest.mark.parametrize("dtype", ["bf16", "fp16"])
@@ -97,8 +98,7 @@ def test_sync_descriptor_or_masked_fallback(tmp_path, dtype, roles, case):
     kernel = compile_copy(dtype, roles, case)
     for key, value in kernel.asm.items():
         if isinstance(value, (str, bytes)):
-            (tmp_path / ("kernel." + key)).write_bytes(
-                value.encode() if isinstance(value, str) else value)
+            (tmp_path / ("kernel." + key)).write_bytes(value.encode() if isinstance(value, str) else value)
     assert ("hcu.structured_register" in kernel.asm["ttgir"]) == case[-1]
     assert ("llvm.amdgcn.struct.ptr.buffer.load." in kernel.asm["llir"]) == case[-1]
     assert "hcug.matrix_load_to_local" not in kernel.asm["ttgir"]

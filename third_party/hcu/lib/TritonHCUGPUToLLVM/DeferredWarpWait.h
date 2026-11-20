@@ -66,28 +66,38 @@ class WindowTrace {
       return lhs->trunc(cast<IntegerType>(value.getType()).getWidth());
     if (auto select = dyn_cast<arith::SelectOp>(op))
       return integer(lhs->isZero() ? select.getFalseValue()
-                                  : select.getTrueValue(), depth + 1);
+                                   : select.getTrueValue(),
+                     depth + 1);
     if (op->getNumOperands() != 2)
       return std::nullopt;
     auto rhs = integer(op->getOperand(1), depth + 1);
     if (!rhs || lhs->getBitWidth() != rhs->getBitWidth())
       return std::nullopt;
-    if (isa<arith::AddIOp>(op)) return *lhs + *rhs;
-    if (isa<arith::SubIOp>(op)) return *lhs - *rhs;
-    if (isa<arith::MulIOp>(op)) return *lhs * *rhs;
-    if (isa<arith::AndIOp>(op)) return *lhs & *rhs;
-    if (isa<arith::OrIOp>(op)) return *lhs | *rhs;
-    if (isa<arith::XOrIOp>(op)) return *lhs ^ *rhs;
-    if (isa<arith::RemUIOp>(op) && !rhs->isZero()) return lhs->urem(*rhs);
-    if (isa<arith::DivUIOp>(op) && !rhs->isZero()) return lhs->udiv(*rhs);
+    if (isa<arith::AddIOp>(op))
+      return *lhs + *rhs;
+    if (isa<arith::SubIOp>(op))
+      return *lhs - *rhs;
+    if (isa<arith::MulIOp>(op))
+      return *lhs * *rhs;
+    if (isa<arith::AndIOp>(op))
+      return *lhs & *rhs;
+    if (isa<arith::OrIOp>(op))
+      return *lhs | *rhs;
+    if (isa<arith::XOrIOp>(op))
+      return *lhs ^ *rhs;
+    if (isa<arith::RemUIOp>(op) && !rhs->isZero())
+      return lhs->urem(*rhs);
+    if (isa<arith::DivUIOp>(op) && !rhs->isZero())
+      return lhs->udiv(*rhs);
     if (isa<arith::RemSIOp, arith::DivSIOp>(op) && !rhs->isZero() &&
         !(lhs->isMinSignedValue() && rhs->isAllOnes()))
       return isa<arith::RemSIOp>(op) ? lhs->srem(*rhs) : lhs->sdiv(*rhs);
     if (isa<arith::ShLIOp, arith::ShRUIOp, arith::ShRSIOp>(op) &&
         rhs->ult(lhs->getBitWidth())) {
       unsigned n = rhs->getZExtValue();
-      return isa<arith::ShLIOp>(op) ? lhs->shl(n) :
-             isa<arith::ShRUIOp>(op) ? lhs->lshr(n) : lhs->ashr(n);
+      return isa<arith::ShLIOp>(op)    ? lhs->shl(n)
+             : isa<arith::ShRUIOp>(op) ? lhs->lshr(n)
+                                       : lhs->ashr(n);
     }
     return std::nullopt;
   }
@@ -114,7 +124,8 @@ class WindowTrace {
       }
       Window out{value, {}, {}, {}};
       for (auto [axis, extent] : llvm::enumerate(type.getShape())) {
-        if (extent <= 0) return std::nullopt;
+        if (extent <= 0)
+          return std::nullopt;
         out.begin.push_back(0);
         out.end.push_back(extent);
         out.axes.push_back(axis);
@@ -126,7 +137,8 @@ class WindowTrace {
     if (!index && !slice)
       return std::nullopt;
     auto source = window(index ? index.getSrc() : slice.getSrc(), depth + 1);
-    if (!source) return std::nullopt;
+    if (!source)
+      return std::nullopt;
     if (index) {
       auto n = integer(index.getIndex());
       if (!n || !n->isSignedIntN(64) || source->axes.empty())
@@ -140,7 +152,8 @@ class WindowTrace {
       source->axes.erase(source->axes.begin());
     } else {
       auto shape = slice.getType().getShape();
-      if (source->axes.size() != shape.size()) return std::nullopt;
+      if (source->axes.size() != shape.size())
+        return std::nullopt;
       for (auto [i, offset] : llvm::enumerate(slice.getOffsets())) {
         unsigned axis = source->axes[i];
         if (offset < 0 || shape[i] <= 0 ||
@@ -156,19 +169,24 @@ class WindowTrace {
   // Reject descriptor escape/alias anywhere, including before the WS entry.
   // Being type-correct or having a pure view trait is not an alias proof.
   bool close(Value value) {
-    if (!spend()) return false;
-    if (!closed.insert(value).second) return true;
+    if (!spend())
+      return false;
+    if (!closed.insert(value).second)
+      return true;
     for (OpOperand &use : value.getUses()) {
       Operation *op = use.getOwner();
       if (op == ws.getOperation()) {
         for (Region *region : ws.getPartitionRegions())
-          if (!close(region->getArgument(use.getOperandNumber()))) return false;
+          if (!close(region->getArgument(use.getOperandNumber())))
+            return false;
       } else if (isa<gpu::MemDescIndexOp, gpu::MemDescSubsliceOp>(op)) {
-        if (!close(op->getResult(0))) return false;
+        if (!close(op->getResult(0)))
+          return false;
       } else if (isa<gpu::LocalLoadOp, gpu::LocalStoreOp,
                      gpu::AsyncCopyGlobalToLocalOp,
                      hcugpu::BufferLoadToLocalOp>(op)) {
-        if (!ws->isAncestor(op)) return false;
+        if (!ws->isAncestor(op))
+          return false;
       } else if (isa<gpu::LocalDeallocOp>(op)) {
         if (op->getBlock() != ws->getBlock() || !ws->isBeforeInBlock(op))
           return false;
@@ -182,42 +200,52 @@ class WindowTrace {
   bool block(Block &body, unsigned &phase, SmallVector<Window> &pending,
              bool &globalWrite) {
     for (Operation &op : body.without_terminator()) {
-      if (!spend()) return false;
+      if (!spend())
+        return false;
       if (auto loop = dyn_cast<scf::ForOp>(&op)) {
-        auto lb = integer(loop.getLowerBound()), ub = integer(loop.getUpperBound()),
-             step = integer(loop.getStep());
+        auto lb = integer(loop.getLowerBound()),
+             ub = integer(loop.getUpperBound()), step = integer(loop.getStep());
         if (!lb || !ub || !step || !lb->isSignedIntN(64) ||
             !ub->isSignedIntN(64) || !step->isSignedIntN(64) ||
             step->getSExtValue() <= 0)
           return false;
         SmallVector<std::optional<APInt>> carried;
-        for (Value init : loop.getInitArgs()) carried.push_back(integer(init));
+        for (Value init : loop.getInitArgs())
+          carried.push_back(integer(init));
         int64_t i = lb->getSExtValue();
         while (i < ub->getSExtValue()) {
-          environment[loop.getInductionVar()] = APInt(lb->getBitWidth(), i, true);
-          for (auto [arg, number] : llvm::zip(loop.getRegionIterArgs(), carried)) {
+          environment[loop.getInductionVar()] =
+              APInt(lb->getBitWidth(), i, true);
+          for (auto [arg, number] :
+               llvm::zip(loop.getRegionIterArgs(), carried)) {
             environment.erase(arg);
-            if (number) environment[arg] = *number;
+            if (number)
+              environment[arg] = *number;
           }
-          if (!block(*loop.getBody(), phase, pending, globalWrite)) return false;
+          if (!block(*loop.getBody(), phase, pending, globalWrite))
+            return false;
           auto yield = cast<scf::YieldOp>(loop.getBody()->getTerminator());
           carried.clear();
-          for (Value next : yield.getOperands()) carried.push_back(integer(next));
+          for (Value next : yield.getOperands())
+            carried.push_back(integer(next));
           if (llvm::AddOverflow(i, step->getSExtValue(), i) ||
               !APInt(64, i, true).isSignedIntN(lb->getBitWidth()))
             return false;
         }
         for (auto [result, number] : llvm::zip(loop.getResults(), carried)) {
           environment.erase(result);
-          if (number) environment[result] = *number;
+          if (number)
+            environment[result] = *number;
         }
         environment.erase(loop.getInductionVar());
-        for (Value arg : loop.getRegionIterArgs()) environment.erase(arg);
+        for (Value arg : loop.getRegionIterArgs())
+          environment.erase(arg);
         continue;
       }
       if (auto bar = dyn_cast<gpu::LocalBarrierOp>(&op)) {
         if (bar->hasAttr("hcu.cta_scope")) {
-          if (!isa<UnitAttr>(bar->getAttr("hcu.cta_scope"))) return false;
+          if (!isa<UnitAttr>(bar->getAttr("hcu.cta_scope")))
+            return false;
           ++phase;
         }
         continue;
@@ -240,22 +268,30 @@ class WindowTrace {
       }
       Value memory;
       bool asynchronous = false;
-      if (auto read = dyn_cast<gpu::LocalLoadOp>(&op)) memory = read.getSrc();
-      else if (auto store = dyn_cast<gpu::LocalStoreOp>(&op)) memory = store.getDst();
+      if (auto read = dyn_cast<gpu::LocalLoadOp>(&op))
+        memory = read.getSrc();
+      else if (auto store = dyn_cast<gpu::LocalStoreOp>(&op))
+        memory = store.getDst();
       else if (auto copy = dyn_cast<gpu::AsyncCopyGlobalToLocalOp>(&op)) {
-        auto pointer = dyn_cast<PointerType>(getElementTypeOrSelf(copy.getSrc()));
-        if (!pointer || pointer.getAddressSpace() != 1) return false;
-        memory = copy.getResult(); asynchronous = true;
+        auto pointer =
+            dyn_cast<PointerType>(getElementTypeOrSelf(copy.getSrc()));
+        if (!pointer || pointer.getAddressSpace() != 1)
+          return false;
+        memory = copy.getResult();
+        asynchronous = true;
       } else if (auto copy = dyn_cast<hcugpu::BufferLoadToLocalOp>(&op)) {
         if (cast<PointerType>(copy.getPtr().getType()).getAddressSpace() != 1)
           return false;
-        memory = copy.getDest(); asynchronous = true;
+        memory = copy.getDest();
+        asynchronous = true;
       }
       if (memory) {
         auto region = window(memory);
-        if (!region || !close(region->root)) return false;
+        if (!region || !close(region->root))
+          return false;
         events.push_back({phase, *region});
-        if (asynchronous) pending.push_back(*region);
+        if (asynchronous)
+          pending.push_back(*region);
         continue;
       }
       // These views are resolved at each access under its current loop SSA
@@ -265,12 +301,16 @@ class WindowTrace {
         continue;
       // Pure tensor arithmetic may contain pure control flow, but cannot
       // hide a descriptor alias or a shared access from this trace.
-      if (llvm::any_of(op.getOperandTypes(), [](Type t) { return isa<gpu::MemDescType>(t); }) ||
-          llvm::any_of(op.getResultTypes(), [](Type t) { return isa<gpu::MemDescType>(t); }))
+      if (llvm::any_of(op.getOperandTypes(),
+                       [](Type t) { return isa<gpu::MemDescType>(t); }) ||
+          llvm::any_of(op.getResultTypes(),
+                       [](Type t) { return isa<gpu::MemDescType>(t); }))
         return false;
-      if (isPure(&op)) continue;
+      if (isPure(&op))
+        continue;
       auto effects = dyn_cast<MemoryEffectOpInterface>(&op);
-      if (!effects || op.getNumRegions()) return false;
+      if (!effects || op.getNumRegions())
+        return false;
       // tt.load's effect interface labels reads GlobalMemory even for raw
       // shared/generic pointers. Such accesses lack a closed memdesc alias
       // proof, so do not mistake them for disjoint AS1 global accesses.
@@ -281,7 +321,8 @@ class WindowTrace {
       SmallVector<MemoryEffects::EffectInstance> instances;
       effects.getEffects(instances);
       for (auto &effect : instances) {
-        if (effect.getResource() != GlobalMemory::get()) return false;
+        if (effect.getResource() != GlobalMemory::get())
+          return false;
         if (!isa<MemoryEffects::Read>(effect.getEffect())) {
           globalWrite = true;
           globalWritePhases.insert(phase);
@@ -292,9 +333,11 @@ class WindowTrace {
   }
 
   static bool overlaps(const Window &a, const Window &b) {
-    if (a.root != b.root) return false;
+    if (a.root != b.root)
+      return false;
     for (unsigned i = 0; i < a.begin.size(); ++i)
-      if (a.end[i] <= b.begin[i] || b.end[i] <= a.begin[i]) return false;
+      if (a.end[i] <= b.begin[i] || b.end[i] <= a.begin[i])
+        return false;
     return true;
   }
 
@@ -304,15 +347,18 @@ public:
     SmallVector<Region *> roles{&ws.getDefaultRegion()};
     llvm::append_range(roles, ws.getPartitionRegions());
     for (Region *role : roles) {
-      if (!llvm::hasSingleElement(*role)) return;
+      if (!llvm::hasSingleElement(*role))
+        return;
       unsigned phase = 0;
       SmallVector<Window> pending;
       bool writes = false;
-      if (!block(role->front(), phase, pending, writes)) return;
+      if (!block(role->front(), phase, pending, writes))
+        return;
       phaseCounts.push_back(phase);
       environment.clear();
     }
-    if (!llvm::all_equal(phaseCounts)) return;
+    if (!llvm::all_equal(phaseCounts))
+      return;
     DenseMap<Operation *, bool> safe;
     for (const Wait &wait : waits) {
       auto [it, inserted] = safe.try_emplace(wait.op, true);
@@ -322,15 +368,19 @@ public:
       // preserve completion before every global write in the crossed phase.
       it->second &= !globalWritePhases.contains(wait.phase + 1);
       for (const Event &event : events) {
-        if (!spend()) return;
-        if (event.phase != wait.phase + 1) continue;
+        if (!spend())
+          return;
+        if (event.phase != wait.phase + 1)
+          continue;
         if (llvm::any_of(wait.pending, [&](const Window &pending) {
               return overlaps(event.window, pending);
-            })) it->second = false;
+            }))
+          it->second = false;
       }
     }
     for (auto [wait, legal] : safe)
-      if (legal) wait->moveAfter(wait->getNextNode());
+      if (legal)
+        wait->moveAfter(wait->getNextNode());
   }
 };
 } // namespace deferred_wait

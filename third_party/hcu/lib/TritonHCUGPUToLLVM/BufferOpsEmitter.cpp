@@ -38,15 +38,18 @@ Value BufferEmitter::emitUniformUnsignedSaturatingSub(Value lhs, Value rhs) {
   // Keep uniform descriptor arithmetic in SGPRs. Early-clobber is required:
   // the compare still reads both inputs after the subtract writes its result.
   return LLVM::InlineAsmOp::create(
-      rewriter, loc, lhs.getType(), ValueRange{lhs, rhs},
-      "s_sub_u32 $0, $1, $2\n\ts_cmp_ge_u32 $1, $2\n\t"
-      "s_cselect_b32 $0, $0, 0",
-      "=&s,s,s,~{scc}", false, false, LLVM::TailCallKind::None,
-      LLVM::AsmDialectAttr::get(rewriter.getContext(), LLVM::AsmDialect::AD_ATT),
-      ArrayAttr::get(rewriter.getContext(), {})).getRes();
+             rewriter, loc, lhs.getType(), ValueRange{lhs, rhs},
+             "s_sub_u32 $0, $1, $2\n\ts_cmp_ge_u32 $1, $2\n\t"
+             "s_cselect_b32 $0, $0, 0",
+             "=&s,s,s,~{scc}", false, false, LLVM::TailCallKind::None,
+             LLVM::AsmDialectAttr::get(rewriter.getContext(),
+                                       LLVM::AsmDialect::AD_ATT),
+             ArrayAttr::get(rewriter.getContext(), {}))
+      .getRes();
 }
 
-Value BufferEmitter::createResourceDescriptor(Value basePtr, Value blockStride) {
+Value BufferEmitter::createResourceDescriptor(Value basePtr,
+                                              Value blockStride) {
   return createResourceDescriptor(basePtr, blockStride, Value{});
 }
 
@@ -111,12 +114,13 @@ Value BufferEmitter::createResourceDescriptor(Value basePtr, Value blockStride,
     // Structured/indexed resources have different NUM_RECORDS semantics.
     assert(!blockStride && "only raw descriptors can be rebased in bytes");
     assert(uniformByteOffset.getType().isInteger(32));
-    Value remaining =
-        emitUniformUnsignedSaturatingSub(b.i32_val(maxRecords), uniformByteOffset);
+    Value remaining = emitUniformUnsignedSaturatingSub(b.i32_val(maxRecords),
+                                                       uniformByteOffset);
     numRecordsByte = b.zext(i64_ty, remaining);
     // No inbounds flag: masks can suppress accesses beyond the object.
     Value byteOffset64 = b.zext(i64_ty, uniformByteOffset);
-    basePtr = b.gep(basePtr.getType(), i8_ty, basePtr, ValueRange{byteOffset64});
+    basePtr =
+        b.gep(basePtr.getType(), i8_ty, basePtr, ValueRange{byteOffset64});
   }
 
   Value resource = rewriter.createOrFold<ROCDL::MakeBufferRsrcOp>(

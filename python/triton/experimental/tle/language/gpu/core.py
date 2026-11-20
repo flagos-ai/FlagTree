@@ -452,8 +452,8 @@ def alloc(
     mthreads_auto_sqmma_shared_layout = (mthreads_common.enabled() and storage == tle.smem
                                          and mthreads_wgmma.use_auto_shared_layout(layout, nv_mma_shared_layout))
     from triton._flagtree_backend import FLAGTREE_BACKEND
-    hcu_auto_shared_layout = (FLAGTREE_BACKEND == "hcu" and storage == tle.smem
-                              and layout is None and nv_mma_shared_layout)
+    hcu_auto_shared_layout = (FLAGTREE_BACKEND == "hcu" and storage == tle.smem and layout is None
+                              and nv_mma_shared_layout)
 
     try:
         unwrapped_shape = [tl._unwrap_if_constexpr(dim) for dim in shape]

@@ -260,7 +260,8 @@ def test_config_sets_preserve_linked_candidates():
     ]
     variant = parse_operator_config(config).get_variant("general")
     assert list(variant.iter_configs()) == [
-        {"BLOCK_M": 16, "num_warps": 4}, {"BLOCK_M": 32, "num_warps": 8},
+        {"BLOCK_M": 16, "num_warps": 4},
+        {"BLOCK_M": 32, "num_warps": 8},
     ]
     assert not variant.param_space.validate({"BLOCK_M": 16, "num_warps": 8})
     exported = variant_to_model_config(variant, _identity(), DTYPES, GPU, MODEL_VERSION)

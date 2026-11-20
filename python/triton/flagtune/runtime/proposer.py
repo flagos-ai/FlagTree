@@ -233,16 +233,10 @@ def make_config_proposer(
 
         with flagtune_error_boundary(ContractExecutionError):
             candidates = _candidate_domain(variant_info, initial_configs)
-            candidate_pruner = (
-                _meta.get("candidate_pruner")
-                if identity.platform_key.startswith("thead-") else None
-            )
+            candidate_pruner = (_meta.get("candidate_pruner") if identity.platform_key.startswith("thead-") else None)
             if candidate_pruner is not None:
-                allowed_keys = {
-                    _config_key(config, fields) for config in candidate_pruner(candidates)
-                }
-                candidates = [config for config in candidates
-                              if _config_key(config, fields) in allowed_keys]
+                allowed_keys = {_config_key(config, fields) for config in candidate_pruner(candidates)}
+                candidates = [config for config in candidates if _config_key(config, fields) in allowed_keys]
         if not candidates:
             return []
         predicted = _predict_config_dicts(variant_info, model, inputs, top_k, candidates)

@@ -56,8 +56,7 @@ module attributes {{"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32,
   }}
 }}'''
     # The real typed CTA barrier is retained as an ordering witness.
-    text = text.replace('"hcug.cta_barrier"() : () -> ()',
-                        'ttg.local_barrier {hcu.cta_scope}')
+    text = text.replace('"hcug.cta_barrier"() : () -> ()', 'ttg.local_barrier {hcu.cta_scope}')
     if pre_split:
         chart = "#target = #ttg.linear<{register = [[0, 0, 1], [0, 1, 0], [0, 2, 0], [0, 4, 0], [64, 0, 0]], lane = [[1, 0, 0], [2, 0, 0], [4, 0, 0], [8, 0, 0], [0, 8, 0], [0, 16, 0]], warp = [[16, 0, 0], [32, 0, 0]], block = []}>\n"
         text = chart + text

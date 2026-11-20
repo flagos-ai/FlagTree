@@ -102,8 +102,6 @@ def do_bench_musa_graph(
     return _summarize_statistics(times, quantiles, "mean")
 
 
-
-
 _HCU_MAX_GRAPH_CALLS = 32768
 _HCU_FALLBACK_GRAPH_CALLS = 1000
 

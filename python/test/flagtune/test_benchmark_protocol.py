@@ -1,5 +1,4 @@
 import contextlib
-from contextlib import nullcontext
 import inspect
 import sys
 from types import SimpleNamespace
@@ -392,6 +391,7 @@ def test_replay_rejects_invalid_retry_count(monkeypatch, n_retries):
 
 
 class _HcuModelStream:
+
     def __init__(self, api, name):
         self.api, self.name = api, name
         self.dependencies = set()
@@ -402,6 +402,7 @@ class _HcuModelStream:
 
 
 class _HcuTimingModel:
+
     def __init__(self, gpu_ms, host_ms, *, use_default_stream=True):
         self.gpu_ms, self.host_ms = gpu_ms, host_ms
         self.time, self.capture, self.calls, self.lengths = 0., None, 0, []
@@ -448,20 +449,27 @@ class _HcuTimingModel:
 
     def Event(self, **kwargs):
         api = self
+
         class E:
+
             def record(self):
                 self.time = api.time
+
             def elapsed_time(self, other):
                 return other.time - self.time
+
         return E()
 
     def CUDAGraph(self):
         api = self
+
         class G:
             n = 0
+
             def replay(self):
                 api._assert_incoming_dependency()
                 api.time += self.n * api.gpu_ms + .008
+
         return G()
 
     @contextlib.contextmanager
@@ -479,7 +487,11 @@ class _HcuTimingModel:
 def test_hcu_graph_calibration_excludes_python_submission_gaps(device_ms, host_ms):
     api = _HcuTimingModel(device_ms, host_ms)
     result = graph_benchmark_module.do_bench_hcu_graph(
-        api.fn, rep=1., quantiles=(0.5, 0.2, 0.8), n_retries=2, device_interface=api,
+        api.fn,
+        rep=1.,
+        quantiles=(0.5, 0.2, 0.8),
+        n_retries=2,
+        device_interface=api,
     )[0]
     assert abs(result / device_ms - 1.) < 0.025
     if device_ms < 0.01:
@@ -490,9 +502,14 @@ def test_hcu_graph_ranking_survives_tenfold_difference_in_host_overhead():
     measured = []
     for device_ms, host_ms in [(0.006, 0.3), (0.0072, 0.03)]:
         api = _HcuTimingModel(device_ms, host_ms)
-        measured.append(graph_benchmark_module.do_bench_hcu_graph(
-            api.fn, rep=1., quantiles=(0.5, 0.2, 0.8), n_retries=2, device_interface=api,
-        )[0])
+        measured.append(
+            graph_benchmark_module.do_bench_hcu_graph(
+                api.fn,
+                rep=1.,
+                quantiles=(0.5, 0.2, 0.8),
+                n_retries=2,
+                device_interface=api,
+            )[0])
     assert measured[0] < measured[1]
 
 
@@ -508,7 +525,10 @@ def test_hcu_graph_calibration_bounds_finite_near_zero_timings(monkeypatch):
 
     monkeypatch.setattr(graph_benchmark_module, "_capture_hcu_graph_duration", near_zero_pilot)
     result = graph_benchmark_module.do_bench_hcu_graph(
-        api.fn, rep=1., n_retries=2, device_interface=api,
+        api.fn,
+        rep=1.,
+        n_retries=2,
+        device_interface=api,
     )
     assert result > 0
     assert api.lengths[-1] == 64
@@ -519,7 +539,10 @@ def test_hcu_graph_preserves_incoming_work_on_current_caller(use_default_stream)
     api = _HcuTimingModel(0.006, 0.03, use_default_stream=use_default_stream)
     caller = api.current_stream()
     result = graph_benchmark_module.do_bench_hcu_graph(
-        api.fn, rep=1., n_retries=2, device_interface=api,
+        api.fn,
+        rep=1.,
+        n_retries=2,
+        device_interface=api,
     )
     assert result > 0
     assert api.incoming_observations == api.calls > 0
@@ -548,7 +571,10 @@ def test_hcu_graph_repeated_calls_reuse_current_stream(use_default_stream):
     caller, initial = api.current_stream(), api.stream_constructions
     for _ in range(6):
         graph_benchmark_module.do_bench_hcu_graph(
-            api.fn, rep=1., n_retries=2, device_interface=api,
+            api.fn,
+            rep=1.,
+            n_retries=2,
+            device_interface=api,
         )
     assert api.stream_constructions == initial
     assert all(stream is caller for stream in api.callback_streams)
@@ -565,7 +591,10 @@ def test_hcu_currentstream_protocol_isolates_legacy_selection_and_timing_cache(m
     monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
     monkeypatch.setattr(graph_benchmark_module, "do_bench_hcu_graph", active.replay_benchmark)
     resolved = benchmark_module.resolve_benchmarker(
-        "replay", warmup_ms=5, measurement_ms=measurement_ms, n_retries=10,
+        "replay",
+        warmup_ms=5,
+        measurement_ms=measurement_ms,
+        n_retries=10,
     )
     protocol = resolved.protocol
     current = protocol.cache_key()
@@ -591,5 +620,5 @@ def test_hcu_currentstream_protocol_isolates_legacy_selection_and_timing_cache(m
     calls = []
     resolved.benchmark(lambda: calls.append(True), (0.5, 0.2, 0.8))
     assert calls == [True]
-    assert active.observed == dict(rep=measurement_ms / 10.0, quantiles=(0.5, 0.2, 0.8),
-                                   n_retries=10, warmup_ms=5, device_interface=active.device_interface)
+    assert active.observed == dict(rep=measurement_ms / 10.0, quantiles=(0.5, 0.2, 0.8), n_retries=10, warmup_ms=5,
+                                   device_interface=active.device_interface)

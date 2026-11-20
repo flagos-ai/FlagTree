@@ -10,8 +10,7 @@ from triton.compiler import ASTSource
 
 
 @triton.jit
-def _mm(A, B, C, STAGES: tl.constexpr, AA: tl.constexpr, AB: tl.constexpr,
-        VOLATILE: tl.constexpr):
+def _mm(A, B, C, STAGES: tl.constexpr, AA: tl.constexpr, AB: tl.constexpr, VOLATILE: tl.constexpr):
     m = tl.program_id(0) * 64 + tl.arange(0, 64)
     n = tl.program_id(1) * 64 + tl.arange(0, 64)
     k = tl.arange(0, 64)
@@ -49,8 +48,7 @@ class _Captured(Exception):
     (3, 'local-prefetch', False, True, False, 0, 0, 1),
     (3, 'local-prefetch', False, False, True, 0, 0, 1),
 ])
-def test_public_sync_prefetch(dtype, stages, hint, aa, ab, volatile, local,
-                              global_, kpack, monkeypatch, tmp_path):
+def test_public_sync_prefetch(dtype, stages, hint, aa, ab, volatile, local, global_, kpack, monkeypatch, tmp_path):
     pytest.importorskip('triton.backends.hcu.compiler_hcu')
     from triton.compiler.compiler import make_backend
     instance = make_backend(GPUTarget('hip', 'gfx936', 64))
@@ -67,15 +65,18 @@ def test_public_sync_prefetch(dtype, stages, hint, aa, ab, volatile, local,
     monkeypatch.setattr(knobs.hcu, 'use_in_thread_transpose', False)
     monkeypatch.setattr(type(instance), 'make_llir', staticmethod(capture))
     source = ASTSource(
-        _mm, signature={p: '*' + dtype for p in ['A', 'B', 'C']},
+        _mm,
+        signature={p: '*' + dtype
+                   for p in ['A', 'B', 'C']},
         constexprs={'STAGES': stages, 'AA': aa, 'AB': ab, 'VOLATILE': volatile},
-        attrs={(i,): [('tt.divisibility', 16), ('tt.pointer_range', 32)]
+        attrs={(i, ): [('tt.divisibility', 16), ('tt.pointer_range', 32)]
                for i in range(3)},
     )
     with pytest.raises(_Captured):
-        triton.compile(source, target=GPUTarget('hip', 'gfx936', 64),
-                       options={'num_warps': 4, 'num_stages': stages,
-                                'mmac_transposed': True, 'schedule_hint': hint, 'kpack': kpack})
+        triton.compile(
+            source, target=GPUTarget('hip', 'gfx936', 64), options={
+                'num_warps': 4, 'num_stages': stages, 'mmac_transposed': True, 'schedule_hint': hint, 'kpack': kpack
+            })
     assert len(captured) == 1
     text = captured[0]
     aliases = dict(re.findall(r'^(#\w+)\s*=\s*([^\n]+)', text, re.M))

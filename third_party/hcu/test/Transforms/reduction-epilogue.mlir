@@ -1,7 +1,7 @@
 // RUN: triton-opt %s --split-input-file --tritonhcugpu-optimize-epilogue --verify-each | FileCheck %s
 
 // Reduced batch-axis MMAC values may retain their slice layout at writeback.
-// Other targets, axes, output sizes/types and warp distributions keep the
+// Other targets, axes, output types and warp distributions keep the
 // existing conversion. The FP32 reduction remains intact in every case.
 
 // CHECK-LABEL: @bf16_S4W4(
@@ -111,7 +111,7 @@ module attributes {ttg.target = "hip:gfx928", "ttg.num-warps" = 4 : i32, "ttg.nu
 
 // CHECK-LABEL: @other_shape(
 // CHECK: "tt.reduce"
-// CHECK: tt.store {{.*}}#blocked
+// CHECK: tt.store {{.*}}#ttg.slice
 #input = #ttg.amd_mfma<{version = 3, warpsPerCTA = [4, 1, 1], instrShape = [16, 16, 16], isTransposed = false, mmacLayout = 1}>
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [4, 16], warpsPerCTA = [4, 1], order = [1, 0]}>
 module attributes {ttg.target = "hip:gfx936", "ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, "ttg.threads-per-warp" = 64 : i32} {

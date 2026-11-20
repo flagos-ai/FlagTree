@@ -51,39 +51,34 @@ def test_global_to_lds_uses_supported_width(dtype, width, monkeypatch, tmp_path)
     monkeypatch.setattr(knobs.hcu, "use_buffer_ops", False)
     monkeypatch.setattr(backend.HIPBackend, "make_amdgcn", staticmethod(capture))
     source = ASTSource(
-        _copy, signature={"A": "*" + dtype, "C": "*" + dtype},
+        _copy,
+        signature={"A": "*" + dtype, "C": "*" + dtype},
         constexprs={"WIDTH": width},
-        attrs={(i,): [("tt.divisibility", 16), ("tt.pointer_range", 32)]
+        attrs={(i, ): [("tt.divisibility", 16), ("tt.pointer_range", 32)]
                for i in range(2)},
     )
     with pytest.raises(_LLIRCaptured):
-        triton.compile(source, target=GPUTarget("hip", "gfx936", 64),
-                       options={"num_warps": 4, "num_stages": 1})
+        triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4, "num_stages": 1})
     assert len(captured) == 1
-    calls = [line for line in captured[0].splitlines()
-             if "call " in line and "@llvm.amdgcn.global.load.lds" in line]
+    calls = [line for line in captured[0].splitlines() if "call " in line and "@llvm.amdgcn.global.load.lds" in line]
     assert calls
     assert all(re.search(r", i32 4, i32 \d+, i32 \d+\)", line) for line in calls)
     assert "@llvm.amdgcn.raw.ptr.buffer.load.lds" not in captured[0]
 
 
 @triton.jit
-def _mm(A, B, C, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr,
-        AS0: tl.constexpr, AS1: tl.constexpr, BS0: tl.constexpr, BS1: tl.constexpr,
-        AA: tl.constexpr, AB: tl.constexpr, BK: tl.constexpr = 32):
+def _mm(A, B, C, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr, AS0: tl.constexpr, AS1: tl.constexpr,
+        BS0: tl.constexpr, BS1: tl.constexpr, AA: tl.constexpr, AB: tl.constexpr, BK: tl.constexpr = 32):
     m = tl.program_id(0) * 64 + tl.arange(0, 64)
     n = tl.program_id(1) * 64 + tl.arange(0, 64)
     k = tl.arange(0, BK)
     acc = tl.zeros((64, 64), tl.float32)
     for i in tl.range(0, tl.cdiv(K, BK), num_stages=2):
         rk = i * BK + k
-        a = tle.load(A + m[:, None] * AS0 + rk[None, :] * AS1,
-                     (m[:, None] < M) & (rk[None, :] < K), 0, is_async=AA)
-        b = tle.load(B + rk[:, None] * BS0 + n[None, :] * BS1,
-                     (rk[:, None] < K) & (n[None, :] < N), 0, is_async=AB)
+        a = tle.load(A + m[:, None] * AS0 + rk[None, :] * AS1, (m[:, None] < M) & (rk[None, :] < K), 0, is_async=AA)
+        b = tle.load(B + rk[:, None] * BS0 + n[None, :] * BS1, (rk[:, None] < K) & (n[None, :] < N), 0, is_async=AB)
         acc = tl.dot(a, b, acc)
-    tl.store(C + m[:, None] * N + n[None, :], acc,
-             (m[:, None] < M) & (n[None, :] < N))
+    tl.store(C + m[:, None] * N + n[None, :], acc, (m[:, None] < M) & (n[None, :] < N))
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
@@ -100,9 +95,8 @@ def test_legacy_mmac_layout(dtype, shape, layout, policies):
     if layout == "transposed_b":
         b = b.T.contiguous().T
     c = torch.empty((m, n), device="cuda", dtype=dtype)
-    kernel = _mm[(triton.cdiv(m, 64), triton.cdiv(n, 64))](
-        a, b, c, m, n, k, *a.stride(), *b.stride(), *policies,
-        num_warps=4, num_stages=2, optimize_epilogue=False)
+    kernel = _mm[(triton.cdiv(m, 64), triton.cdiv(n, 64))](a, b, c, m, n, k, *a.stride(), *b.stride(), *policies,
+                                                           num_warps=4, num_stages=2, optimize_epilogue=False)
     torch.testing.assert_close(c.float(), (a @ b).float(), rtol=0.02, atol=0.125)
     has_matrix_read = "llvm.hcu.ds.read.m32x16.b16" in kernel.asm["llir"]
     assert has_matrix_read == (layout != "transposed_b")
@@ -117,9 +111,8 @@ def test_kpack_exceeds_logical_k_tile(dtype, k, asynchronous):
     a = torch.randn((m, k), device="cuda", dtype=dtype)
     b = torch.randn((k, n), device="cuda", dtype=dtype)
     c = torch.empty((m, n), device="cuda", dtype=dtype)
-    _mm[(1, 1)](a, b, c, m, n, k, *a.stride(), *b.stride(),
-                 asynchronous, asynchronous, 16, kpack=2,
-                 num_warps=4, num_stages=2, optimize_epilogue=False)
+    _mm[(1, 1)](a, b, c, m, n, k, *a.stride(), *b.stride(), asynchronous, asynchronous, 16, kpack=2, num_warps=4,
+                num_stages=2, optimize_epilogue=False)
     torch.testing.assert_close(c.float(), (a @ b).float(), rtol=0.02, atol=0.125)
 
 
@@ -130,9 +123,8 @@ def test_mmac_wave_partition_runtime(dtype):
     a = torch.randn((m, k), device="cuda", dtype=dtype)
     b = torch.randn((k, n), device="cuda", dtype=dtype)
     c = torch.empty((m, n), device="cuda", dtype=dtype)
-    kernel = _mm[(2, 2)](a, b, c, m, n, k, *a.stride(), *b.stride(), False, False,
-                          num_warps=8, num_stages=2, mmac_warps_m=4,
-                          optimize_epilogue=False)
+    kernel = _mm[(2, 2)](a, b, c, m, n, k, *a.stride(), *b.stride(), False, False, num_warps=8, num_stages=2,
+                         mmac_warps_m=4, optimize_epilogue=False)
     torch.testing.assert_close(c.float(), (a @ b).float(), rtol=0.02, atol=0.125)
     assert '#mma = #ttg.amd_mfma<{version = 3, warpsPerCTA = [4, 2]' in kernel.asm['ttgir']
 
@@ -149,12 +141,11 @@ def test_local_prefetch_runtime(dtype, shape, warps, warp_m):
     a = torch.randn((m, k), device="cuda", dtype=dtype)
     b = torch.randn((k, n), device="cuda", dtype=dtype)
     c = torch.empty((m, n), device="cuda", dtype=dtype)
-    options = {"num_warps": warps, "num_stages": 2,
-               "optimize_epilogue": False, "schedule_hint": "local-prefetch"}
+    options = {"num_warps": warps, "num_stages": 2, "optimize_epilogue": False, "schedule_hint": "local-prefetch"}
     if warp_m is not None:
         options["mmac_warps_m"] = warp_m
-    kernel = _mm[(triton.cdiv(m, 64), triton.cdiv(n, 64))](
-        a, b, c, m, n, k, *a.stride(), *b.stride(), False, False, **options)
+    kernel = _mm[(triton.cdiv(m, 64), triton.cdiv(n, 64))](a, b, c, m, n, k, *a.stride(), *b.stride(), False, False,
+                                                           **options)
     torch.testing.assert_close(c.float(), (a @ b).float(), rtol=0.02, atol=0.125)
     if warp_m is not None:
         assert f"warpsPerCTA = [{warp_m}, {warps // warp_m}]" in kernel.asm["ttgir"]

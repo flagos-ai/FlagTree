@@ -3,11 +3,13 @@
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Value.h"
-#include <optional>
 #include "llvm/ADT/SmallVector.h"
+#include <optional>
 #include <utility>
 
-namespace mlir { class ModuleAllocation; }
+namespace mlir {
+class ModuleAllocation;
+}
 
 namespace mlir::triton::HCU {
 

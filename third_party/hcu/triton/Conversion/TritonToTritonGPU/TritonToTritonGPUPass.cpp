@@ -1,10 +1,10 @@
+#include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
 #include "llvm/ADT/MapVector.h"
@@ -1203,9 +1203,9 @@ void populateTleRawPatterns(TritonGPUTypeConverter &typeConverter,
 
 // Reuse the same conversion policy for the main and worker partitions.
 static void populateConversionPatterns(TritonGPUTypeConverter &typeConverter,
-                                      RewritePatternSet &patterns,
-                                      TritonGPUConversionTarget &target,
-                                      int numCTAs) {
+                                       RewritePatternSet &patterns,
+                                       TritonGPUConversionTarget &target,
+                                       int numCTAs) {
   MLIRContext *context = patterns.getContext();
 
   // add rules
@@ -1219,7 +1219,7 @@ static void populateConversionPatterns(TritonGPUTypeConverter &typeConverter,
   // The fence preserves values and tensor layout, but its memory/wave-state
   // effects must survive the ordinary TL -> TTG type conversion.
   patterns.add<GenericOpPattern<hcugpu::AccumulatorFenceOp>>(typeConverter,
-                                                           context);
+                                                             context);
   target.addDynamicallyLegalOp<hcugpu::AccumulatorFenceOp>(
       [&](Operation *op) { return typeConverter.isLegal(op); });
 #ifdef __TLE__
@@ -1266,9 +1266,8 @@ public:
     // using its declared warp count before the module's default partition.
     // Already encoded Gluon values retain their existing encodings.
     SmallVector<WarpSpecializeOp> specializations;
-    mod.walk<WalkOrder::PostOrder>([&](WarpSpecializeOp op) {
-      specializations.push_back(op);
-    });
+    mod.walk<WalkOrder::PostOrder>(
+        [&](WarpSpecializeOp op) { specializations.push_back(op); });
     for (WarpSpecializeOp op : specializations) {
       for (auto [region, warps] :
            llvm::zip(op.getPartitionRegions(), op.getPartitionNumWarps())) {

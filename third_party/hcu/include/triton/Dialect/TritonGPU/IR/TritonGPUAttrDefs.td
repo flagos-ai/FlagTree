@@ -921,7 +921,8 @@ def TTG_MmacLayoutEnum : I32EnumAttr<
         I32EnumAttrCase<"LEGACY", 1, "legacy">, // no interleaving, no transpose
         I32EnumAttrCase<"INTERLEAVE", 2, "interleave">,
         I32EnumAttrCase<"TRANSPOSE", 3, "transpose">,
-        I32EnumAttrCase<"INTERLEAVE_TRANSPOSE", 4, "interleave_transpose">
+        I32EnumAttrCase<"INTERLEAVE_TRANSPOSE", 4, "interleave_transpose">,
+        I32EnumAttrCase<"LEGACY_PAIRED_COLUMNS", 5, "legacy_paired_columns">
     ]> {
     let cppNamespace = "::mlir::triton::gpu";
 }

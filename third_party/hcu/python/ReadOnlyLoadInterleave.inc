@@ -16,6 +16,28 @@ static bool interleaveOrdinaryRead(llvm::Instruction *i, unsigned as) {
          !load->isVolatile() && !load->isAtomic();
 }
 
+static bool interleaveSharedRead(llvm::Instruction *i) {
+  if (interleaveOrdinaryRead(i, 3)) return true;
+  auto *call = llvm::dyn_cast<llvm::CallInst>(i);
+  auto *fn = call ? call->getCalledFunction() : nullptr;
+  if (!fn || !fn->isDeclaration() || call->getNumOperandBundles() ||
+      call->isMustTailCall() || !call->doesNotThrow() ||
+      call->mayWriteToMemory() || call->arg_size() != 2)
+    return false;
+  if (fn->getName() != "llvm.hcu.ds.read.m32x16.b16.v4i32.p3" &&
+      fn->getName() != "llvm.hcu.ds.read.m32x16.b16.alt.v4i32.p3")
+    return false;
+  auto *ptr = llvm::dyn_cast<llvm::PointerType>(call->getArgOperand(0)->getType());
+  auto *result = llvm::dyn_cast<llvm::FixedVectorType>(call->getType());
+  // The normal and ALT forms only read LDS. Their constant byte offset
+  // need not be zero: no LDS write or synchronization is crossed here.
+  return ptr && ptr->getAddressSpace() == 3 && result &&
+         result->getNumElements() == 4 &&
+         result->getElementType()->isIntegerTy(32) &&
+         call->getArgOperand(1)->getType()->isIntegerTy(32) &&
+         llvm::isa<llvm::ConstantInt>(call->getArgOperand(1));
+}
+
 static bool interleaveGlobalRead(llvm::Instruction *i) {
   if (i->getMetadata("hcu.readonly.interleave.done"))
     return false; // Importing a marker can only disable work, never authorize it.
@@ -97,11 +119,11 @@ interleaveGlobalLdsReads(llvm::Module *module, const std::string &arch,
     llvm::DenseSet<llvm::Instruction *> seenLds, claimedGlobal;
     for (auto &bb : fn) {
       for (auto &inst : bb) {
-        if (!interleaveOrdinaryRead(&inst, 3) || seenLds.contains(&inst))
+        if (!interleaveSharedRead(&inst) || seenLds.contains(&inst))
           continue;
         ReadOnlyInterleavePlan plan;
         for (auto *i = &inst; i; i = i->getNextNode()) {
-          if (interleaveOrdinaryRead(i, 3)) {
+          if (interleaveSharedRead(i)) {
             plan.lds.push_back(i); seenLds.insert(i);
           } else if (!interleavePure(i))
             break;

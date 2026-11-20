@@ -14,8 +14,7 @@ compiler = import_module(compiler.HIPBackend.__module__)
 
 
 def options(**overrides):
-    values = dict(arch="gfx936", mma_phase_schedule=False,
-                  post_mma_wait=False, coalesce_lgkm_waits=False)
+    values = dict(arch="gfx936", mma_phase_schedule=False, post_mma_wait=False, coalesce_lgkm_waits=False)
     values.update(overrides)
     return SimpleNamespace(**values)
 
@@ -33,12 +32,10 @@ def test_order_zero_loop_and_exact_off_source(post, phase, loops):
         return source + ":phase", loops
 
     metadata = {"shared": 32768}
-    policy = schedule.MemorySchedulePolicy.from_options(
-        options(post_mma_wait=post, mma_phase_schedule=phase))
+    policy = schedule.MemorySchedulePolicy.from_options(options(post_mma_wait=post, mma_phase_schedule=phase))
     source, prepared = schedule.prepare_memory_schedule(
-        "original", metadata, policy,
-        SimpleNamespace(prepare_hcu_post_mma_wait=wait, prepare_hcu_mma_phase_loops=group),
-        "gfx936", 4)
+        "original", metadata, policy, SimpleNamespace(prepare_hcu_post_mma_wait=wait,
+                                                      prepare_hcu_mma_phase_loops=group), "gfx936", 4)
     expected = "original" + (":wait" if post and loops else "")
     if post:
         assert calls[0] == ("post", "original", "gfx936", 256, 32768)
@@ -106,8 +103,8 @@ def test_imported_schedule_native_guard_cannot_be_bypassed(monkeypatch, marker, 
     monkeypatch.setattr(native, "check_native_readiness", lambda *_: dict(accepted=False, reason="incomplete operand"))
     source = 'define amdgpu_kernel void @kernel() { ret void }\n; ' + marker
     with pytest.raises(compiler.HSACOError, match="Imported schedule IR failed native completion"):
-        compiler.HIPBackend._make_amdgcn_with_schedules(
-            source, {}, compiler.HIPOptions(arch="gfx936"), _skip_schedules=skip)
+        compiler.HIPBackend._make_amdgcn_with_schedules(source, {}, compiler.HIPOptions(arch="gfx936"),
+                                                        _skip_schedules=skip)
     assert len(calls) == 1
 
 
@@ -131,14 +128,13 @@ def test_failed_fresh_schedule_recovers_exact_original_source(monkeypatch):
     assert metadata["hcu_post_mma_wait_result"].startswith("fallback: native completion")
 
 
-@pytest.mark.parametrize("marker", ["hcu.packet.wait.rotation", "hcu.packet.post_mma_wait",
-                                  "hcu.packet.operand_overlap.experimental"])
+@pytest.mark.parametrize(
+    "marker", ["hcu.packet.wait.rotation", "hcu.packet.post_mma_wait", "hcu.packet.operand_overlap.experimental"])
 def test_retired_unsafe_imported_schedule_is_rejected(monkeypatch, marker):
     calls = fake_codegen(monkeypatch)
     with pytest.raises(compiler.HSACOError, match="Retired experimental schedule IR"):
-        compiler.HIPBackend._make_amdgcn_with_schedules(
-            'define amdgpu_kernel void @kernel() { ret void }\n; ' + marker,
-            {}, compiler.HIPOptions(arch="gfx936"))
+        compiler.HIPBackend._make_amdgcn_with_schedules('define amdgpu_kernel void @kernel() { ret void }\n; ' + marker,
+                                                        {}, compiler.HIPOptions(arch="gfx936"))
     assert calls == []
 
 
@@ -172,8 +168,10 @@ def test_schedule_hint_normalization_and_explicit_none():
 
 
 @pytest.mark.parametrize("manual", [
-    {"post_mma_wait": False}, {"mma_phase_schedule": False},
-    {"post_mma_wait": True}, {"mma_phase_schedule": True},
+    {"post_mma_wait": False},
+    {"mma_phase_schedule": False},
+    {"post_mma_wait": True},
+    {"mma_phase_schedule": True},
     {"post_mma_wait": False, "mma_phase_schedule": True},
     {"post_mma_wait": True, "mma_phase_schedule": False},
     {"post_mma_wait": 0, "mma_phase_schedule": 0},
@@ -181,15 +179,17 @@ def test_schedule_hint_normalization_and_explicit_none():
 def test_explicit_schedule_options_disable_automatic_pair_resolution(manual):
     from triton.backends.compiler import GPUTarget
     backend = compiler.HIPBackend(GPUTarget("hip", "gfx936", 64))
-    parsed = backend.parse_options(dict(num_warps=8, prefer_wide_async_copy=True,
-                                        schedule_hint="local-prefetch", **manual))
+    parsed = backend.parse_options(
+        dict(num_warps=8, prefer_wide_async_copy=True, schedule_hint="local-prefetch", **manual))
     assert parsed.post_mma_wait is bool(manual.get("post_mma_wait", False))
     assert parsed.mma_phase_schedule is bool(manual.get("mma_phase_schedule", False))
 
 
 def test_declined_post_proof_never_runs_phase_alone_for_a_pair():
+
     def forbidden(*args):
         raise AssertionError("phase-only fallback must not run")
+
     llvm = SimpleNamespace(prepare_hcu_post_mma_wait=lambda *args: ("unusable", 0, "declined"),
                            prepare_hcu_mma_phase_loops=forbidden)
     policy = schedule.MemorySchedulePolicy(True, True)

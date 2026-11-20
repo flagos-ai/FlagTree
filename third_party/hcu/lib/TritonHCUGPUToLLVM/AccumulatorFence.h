@@ -24,16 +24,18 @@ inline SmallVector<Value> emitAccumulatorFence(Location loc,
   for (unsigned i = 0; i < values.size(); ++i)
     constraints += ',' + std::to_string(i);
   constraints += ",~{memory}";
-  Type resultType = types.size() == 1
-                        ? types.front()
-                        : LLVM::LLVMStructType::getLiteral(rewriter.getContext(),
-                                                          types);
+  Type resultType =
+      types.size() == 1
+          ? types.front()
+          : LLVM::LLVMStructType::getLiteral(rewriter.getContext(), types);
   Value result = LLVM::InlineAsmOp::create(
-      rewriter, loc, resultType, values, assembly, constraints,
-      /*has_side_effects=*/true, /*is_align_stack=*/false,
-      LLVM::TailCallKind::None,
-      LLVM::AsmDialectAttr::get(rewriter.getContext(), LLVM::AsmDialect::AD_ATT),
-      ArrayAttr())->getResult(0);
+                     rewriter, loc, resultType, values, assembly, constraints,
+                     /*has_side_effects=*/true, /*is_align_stack=*/false,
+                     LLVM::TailCallKind::None,
+                     LLVM::AsmDialectAttr::get(rewriter.getContext(),
+                                               LLVM::AsmDialect::AD_ATT),
+                     ArrayAttr())
+                     ->getResult(0);
   return unpackLLElements(loc, result, rewriter);
 }
 

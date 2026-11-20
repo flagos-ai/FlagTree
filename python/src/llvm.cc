@@ -24,7 +24,9 @@
  */
 
 #ifdef __HCU__
+#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/FactorBufferStoreOffsets.h"
 #include "../../third_party/hcu/include/TritonHCUGPUToLLVM/MmaPhaseScheduling.h"
+#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/PackBf16Rounds.h"
 #include "../../third_party/hcu/include/TritonHCUGPUToLLVM/PostMmaWait.h"
 #include "../../third_party/hcu/include/TritonHCUGPUToLLVM/ShiftedDisjointOr.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -416,7 +418,8 @@ std::string translateLLVMIRToASM(llvm::Module &module,
 // LLVM 22 models NUM_RECORDS as i64. DTK clang 18 still declares the same
 // intrinsic with i32. Keep LLVM 22 IR valid through scheduling and adapt the
 // final input to clang only when the upper bits are proved zero.
-static std::string adaptHcuBufferResourcesForClang18(const std::string &source) {
+static std::string
+adaptHcuBufferResourcesForClang18(const std::string &source) {
   llvm::LLVMContext context;
   llvm::SMDiagnostic diagnostic;
   auto module = llvm::parseIR(llvm::MemoryBufferRef(source, "hcu-native-abi"),
@@ -436,19 +439,21 @@ static std::string adaptHcuBufferResourcesForClang18(const std::string &source) 
     for (llvm::User *user : descriptor->users()) {
       auto *call = llvm::dyn_cast<llvm::CallBase>(user);
       if (!call || call->getCalledFunction() != descriptor)
-        throw std::invalid_argument("Unexpected use of HCU buffer resource intrinsic");
-      llvm::KnownBits records = llvm::computeKnownBits(
-          call->getArgOperand(2), module->getDataLayout());
+        throw std::invalid_argument(
+            "Unexpected use of HCU buffer resource intrinsic");
+      llvm::KnownBits records = llvm::computeKnownBits(call->getArgOperand(2),
+                                                       module->getDataLayout());
       if (records.Zero.countLeadingOnes() < 32)
-        throw std::invalid_argument("HCU clang 18 requires a 32-bit buffer resource count");
+        throw std::invalid_argument(
+            "HCU clang 18 requires a 32-bit buffer resource count");
       calls.push_back(call);
     }
 
     auto *originalType = descriptor->getFunctionType();
     llvm::SmallVector<llvm::Type *> args(originalType->params());
     args[2] = llvm::Type::getInt32Ty(context);
-    auto *legacyType = llvm::FunctionType::get(originalType->getReturnType(),
-                                                args, false);
+    auto *legacyType =
+        llvm::FunctionType::get(originalType->getReturnType(), args, false);
     std::string name = descriptor->getName().str();
     descriptor->setName(name + ".llvm22");
     auto *legacy = llvm::Function::Create(legacyType, descriptor->getLinkage(),
@@ -458,7 +463,8 @@ static std::string adaptHcuBufferResourcesForClang18(const std::string &source) 
     legacy->setCallingConv(descriptor->getCallingConv());
     for (llvm::CallBase *call : calls) {
       llvm::IRBuilder<> builder(call);
-      call->setArgOperand(2, builder.CreateTrunc(call->getArgOperand(2), args[2]));
+      call->setArgOperand(2,
+                          builder.CreateTrunc(call->getArgOperand(2), args[2]));
       call->setCalledFunction(legacy);
     }
     descriptor->eraseFromParent();
@@ -478,6 +484,49 @@ void init_triton_llvm(py::module &&m) {
 #ifdef __HCU__
   m.def("adapt_hcu_buffer_resources_for_clang18",
         &adaptHcuBufferResourcesForClang18);
+  m.def("pack_hcu_bf16_rounds", [](const std::string &source) -> py::tuple {
+    llvm::LLVMContext context;
+    llvm::SMDiagnostic diagnostic;
+    auto module = llvm::parseIR(
+        llvm::MemoryBufferRef(source, "hcu_bf16_rounds"), diagnostic, context);
+    if (!module)
+      throw std::invalid_argument("Invalid LLVM IR for packed BF16 rounding");
+    unsigned sites = flagtree::hcu::packBf16Rounds(*module);
+    if (!sites)
+      return py::make_tuple(source, 0u);
+    std::string result;
+    llvm::raw_string_ostream stream(result);
+    module->print(stream, nullptr);
+    return py::make_tuple(result, sites);
+  });
+  m.def(
+      "factor_hcu_buffer_store_offsets",
+      [](const std::string &source, const std::string &arch) -> py::tuple {
+        if (arch != "gfx936")
+          return py::make_tuple(source, 0u);
+        llvm::LLVMContext context;
+        llvm::SMDiagnostic diagnostic;
+        auto module = llvm::parseIR(
+            llvm::MemoryBufferRef(source, "hcu_buffer_store_offsets"),
+            diagnostic, context);
+        if (!module)
+          throw std::invalid_argument("Invalid LLVM IR for HCU store offsets");
+        std::string errors;
+        llvm::raw_string_ostream errorStream(errors);
+        if (llvm::verifyModule(*module, &errorStream))
+          throw std::invalid_argument("Input LLVM verification failed: " +
+                                      errors);
+        unsigned sites = flagtree::hcu::factorBufferStoreOffsets(*module, arch);
+        if (!sites)
+          return py::make_tuple(source, 0u);
+        if (llvm::verifyModule(*module, &errorStream))
+          throw std::runtime_error("Factored store LLVM verification failed: " +
+                                   errors);
+        std::string result;
+        llvm::raw_string_ostream stream(result);
+        module->print(stream, nullptr);
+        return py::make_tuple(result, sites);
+      });
   m.def("combine_hcu_shifted_disjoint_or",
         [](const std::string &source, const std::string &arch) -> py::tuple {
           llvm::LLVMContext context;
@@ -486,30 +535,33 @@ void init_triton_llvm(py::module &&m) {
               llvm::MemoryBufferRef(source, "hcu_shifted_disjoint_or"),
               diagnostic, context);
           if (!module)
-            throw std::invalid_argument("Invalid LLVM IR for shifted disjoint OR");
+            throw std::invalid_argument(
+                "Invalid LLVM IR for shifted disjoint OR");
           std::string errors;
           llvm::raw_string_ostream errorStream(errors);
           if (llvm::verifyModule(*module, &errorStream))
-            throw std::invalid_argument("Input LLVM verification failed: " + errors);
+            throw std::invalid_argument("Input LLVM verification failed: " +
+                                        errors);
           auto stats = flagtree::hcu::combineShiftedDisjointOr(*module, arch);
           if (!stats.combined)
             return py::make_tuple(source, 0u, stats.reason);
           errors.clear();
           if (llvm::verifyModule(*module, &errorStream))
-            throw std::runtime_error("Shifted disjoint OR verification failed: " + errors);
+            throw std::runtime_error(
+                "Shifted disjoint OR verification failed: " + errors);
           std::string result;
           llvm::raw_string_ostream stream(result);
           module->print(stream, nullptr);
           return py::make_tuple(result, stats.combined, stats.reason);
         });
   m.def("prepare_hcu_post_mma_wait",
-        [](const std::string &source, const std::string &arch,
-           unsigned threads, unsigned sharedBytes) -> py::tuple {
+        [](const std::string &source, const std::string &arch, unsigned threads,
+           unsigned sharedBytes) -> py::tuple {
           llvm::LLVMContext context;
           llvm::SMDiagnostic diagnostic;
-          auto module = llvm::parseIR(
-              llvm::MemoryBufferRef(source, "post_mma_wait"),
-              diagnostic, context);
+          auto module =
+              llvm::parseIR(llvm::MemoryBufferRef(source, "post_mma_wait"),
+                            diagnostic, context);
           if (!module)
             throw std::invalid_argument("Invalid LLVM IR for post-MMA wait");
           flagtree::hcu::PostMmaWaitOptions options;
@@ -521,7 +573,8 @@ void init_triton_llvm(py::module &&m) {
           std::string errors;
           llvm::raw_string_ostream errorStream(errors);
           if (llvm::verifyModule(*module, &errorStream))
-            throw std::runtime_error("Post-MMA wait SSA verification failed: " + errors);
+            throw std::runtime_error("Post-MMA wait SSA verification failed: " +
+                                     errors);
           std::string result;
           llvm::raw_string_ostream stream(result);
           module->print(stream, nullptr);
@@ -532,17 +585,20 @@ void init_triton_llvm(py::module &&m) {
            unsigned numWarps) -> py::tuple {
           llvm::LLVMContext context;
           llvm::SMDiagnostic diagnostic;
-          auto module = llvm::parseIR(llvm::MemoryBufferRef(source, "mma_phase"),
-                                      diagnostic, context);
+          auto module = llvm::parseIR(
+              llvm::MemoryBufferRef(source, "mma_phase"), diagnostic, context);
           if (!module)
-            throw std::invalid_argument("Invalid LLVM IR for MMA phase preparation");
-          auto stats = flagtree::hcu::prepareMmaPhaseLoops(*module, arch, numWarps);
+            throw std::invalid_argument(
+                "Invalid LLVM IR for MMA phase preparation");
+          auto stats =
+              flagtree::hcu::prepareMmaPhaseLoops(*module, arch, numWarps);
           if (!stats.versioned)
             return py::make_tuple(source, 0u);
           std::string errors;
           llvm::raw_string_ostream errorStream(errors);
           if (llvm::verifyModule(*module, &errorStream))
-            throw std::runtime_error("MMA phase SSA verification failed: " + errors);
+            throw std::runtime_error("MMA phase SSA verification failed: " +
+                                     errors);
           std::string result;
           llvm::raw_string_ostream stream(result);
           module->print(stream, nullptr);

@@ -54,7 +54,8 @@ LogicalResult SharedMemoryAliasAnalysis::visitOperation(
              isa<triton::gpu::MemDescType>(result.getType())) {
     // A descriptor select can refer to either source allocation. Retain both
     // in the alias set so allocation and barrier analysis keep them live.
-    aliasInfo = AliasInfo::join(operands[1]->getValue(), operands[2]->getValue());
+    aliasInfo =
+        AliasInfo::join(operands[1]->getValue(), operands[2]->getValue());
     pessimistic = false;
   } else if (op->hasTrait<OpTrait::MemDescViewTrait>()) {
     aliasInfo = AliasInfo(operands[0]->getValue());

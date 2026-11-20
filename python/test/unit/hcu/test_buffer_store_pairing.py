@@ -17,9 +17,7 @@ if not hasattr(libtriton, "hcu"):
 
 @g.jit
 def _store(C, BOUND: gl.constexpr, START: gl.constexpr, STRIDE: gl.constexpr):
-    layout: gl.constexpr = gl.DistributedLinearLayout(
-        [[2], [1]], [[4], [8], [16], [32], [64], [128]], [], [], [256]
-    )
+    layout: gl.constexpr = gl.DistributedLinearLayout([[2], [1]], [[4], [8], [16], [32], [64], [128]], [], [], [256])
     i = gl.arange(0, 256, layout=layout)
     offset = START + i * STRIDE
     buffer_store((i + 19).to(gl.int16), C, offset, i < BOUND)
@@ -38,19 +36,15 @@ def _store(C, BOUND: gl.constexpr, START: gl.constexpr, STRIDE: gl.constexpr):
         (256, 0x3FFFFF00, 1, 16, "mixed"),
     ],
 )
-def test_buffer_store_pairs_preserve_mask_alignment_and_bounds(
-    bound, start, stride, alignment, expected
-):
+def test_buffer_store_pairs_preserve_mask_alignment_and_bounds(bound, start, stride, alignment, expected):
     constants = {"BOUND": bound, "START": start, "STRIDE": stride}
     source = GluonASTSource(
         _store,
         {"C": "*i16", **dict.fromkeys(constants, "constexpr")},
         constants,
-        attrs={(0,): [("tt.divisibility", alignment)]},
+        attrs={(0, ): [("tt.divisibility", alignment)]},
     )
-    kernel = triton.compile(
-        source, target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 1}
-    )
+    kernel = triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 1})
     stores = re.findall(r"^\s*buffer_store_(\w+)\s", kernel.asm["amdgcn"], re.M)
     expected_stores = {
         "dword": ["dword"] * 2,
@@ -62,9 +56,7 @@ def test_buffer_store_pairs_preserve_mask_alignment_and_bounds(
 
 @g.jit
 def _store_from_origin(C):
-    layout: gl.constexpr = gl.DistributedLinearLayout(
-        [[2], [1]], [[4], [8], [16], [32], [64], [128]], [], [], [256]
-    )
+    layout: gl.constexpr = gl.DistributedLinearLayout([[2], [1]], [[4], [8], [16], [32], [64], [128]], [], [], [256])
     i = gl.arange(0, 256, layout=layout)
     origin = gl.program_id(0) * 256
     buffer_store(i.to(gl.int16), C, origin + i, i < 254)
@@ -74,10 +66,8 @@ def test_buffer_store_pairs_skip_possible_descriptor_boundary():
     source = GluonASTSource(
         _store_from_origin,
         {"C": "*i16"},
-        attrs={(0,): [("tt.divisibility", 16)]},
+        attrs={(0, ): [("tt.divisibility", 16)]},
     )
-    kernel = triton.compile(
-        source, target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 1}
-    )
+    kernel = triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 1})
     stores = re.findall(r"^\s*buffer_store_(\w+)\s", kernel.asm["amdgcn"], re.M)
     assert sorted(stores) == ["dword", "short", "short"]

@@ -43,21 +43,21 @@ def test_llvm_loop_unroll_metadata(dtype, disable, licm, monkeypatch, tmp_path):
     monkeypatch.setattr(knobs.hcu, 'use_buffer_ops', True)
     monkeypatch.setattr(type(instance), 'make_amdgcn', staticmethod(capture))
     source = ASTSource(
-        _mm, signature={p: '*' + dtype for p in ['A', 'B', 'C']},
+        _mm,
+        signature={p: '*' + dtype
+                   for p in ['A', 'B', 'C']},
         constexprs={'LICM': licm},
-        attrs={(i,): [('tt.divisibility', 16), ('tt.pointer_range', 32)]
+        attrs={(i, ): [('tt.divisibility', 16), ('tt.pointer_range', 32)]
                for i in range(3)},
     )
     with pytest.raises(_Captured):
         triton.compile(source, target=GPUTarget('hip', 'gfx936', 64),
-                       options={'num_warps': 4, 'num_stages': 2,
-                                'disable_llvm_loop_unroll': disable})
+                       options={'num_warps': 4, 'num_stages': 2, 'disable_llvm_loop_unroll': disable})
     assert len(captured) == 1
     assert ('"llvm.loop.unroll.disable"' in captured[0]) == disable
     assert ('"llvm.licm.disable"' in captured[0]) == licm
     assert instance.parse_options({}).disable_llvm_loop_unroll is False
-    assert instance.parse_options({}).hash() != instance.parse_options(
-        {'disable_llvm_loop_unroll': True}).hash()
+    assert instance.parse_options({}).hash() != instance.parse_options({'disable_llvm_loop_unroll': True}).hash()
 
 
 def test_explicit_llvm_unroll_hint_takes_precedence(tmp_path):

@@ -1,7 +1,7 @@
 #include "TritonHCUGPUToLLVM/Passes.h"
 
-#include "AsyncUtility.h"
 #include "Analysis/HCUGPUAllocation.h"
+#include "AsyncUtility.h"
 #include "PatternTritonGPUOpToLLVM.h"
 #include "TargetInfo.h"
 #include "TritonHCUGPUToLLVM/MembarUtility.h"
@@ -30,8 +30,8 @@
 #include "third_party/hcu/include/Analysis/AxisInfoExt.h"
 #include "third_party/hcu/include/Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "triton/Analysis/Allocation.h"
-#include "triton/Conversion/TritonGPUToLLVM/AllocateSharedMemoryUtility.h"
 #include "triton/Analysis/Membar.h"
+#include "triton/Conversion/TritonGPUToLLVM/AllocateSharedMemoryUtility.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -50,10 +50,10 @@ namespace mlir::triton {
 
 using namespace mlir;
 
-#include "WavePrivateSyncStaging.h"
-#include "PhysicalSharedRegions.h"
 #include "MatrixSharedCopy.h"
+#include "PhysicalSharedRegions.h"
 #include "TerminalReadonlyPublication.h"
+#include "WavePrivateSyncStaging.h"
 
 namespace {
 
@@ -100,9 +100,10 @@ public:
     addLegalOp<triton::gpu::WarpYieldOp>();
     addLegalOp<triton::gpu::WarpSpecializePartitionsOp>();
     addLegalOp<triton::gpu::WarpReturnOp>();
-    addDynamicallyLegalOp<triton::gpu::LocalBarrierOp>([](triton::gpu::LocalBarrierOp op) {
-      return bool(op->getAttrOfType<UnitAttr>("hcu.cta_scope"));
-    });
+    addDynamicallyLegalOp<triton::gpu::LocalBarrierOp>(
+        [](triton::gpu::LocalBarrierOp op) {
+          return bool(op->getAttrOfType<UnitAttr>("hcu.cta_scope"));
+        });
   }
 };
 
@@ -173,7 +174,8 @@ struct ConvertTritonHCUGPUToLLVM
       return signalPassFailure();
     }
 
-    if (failed(triton::HCU::verifyTargetMemoryOperations(mod, targetInfo.getArch())))
+    if (failed(triton::HCU::verifyTargetMemoryOperations(mod,
+                                                         targetInfo.getArch())))
       return signalPassFailure();
 
     mlir::LowerToLLVMOptions option(context);
@@ -185,7 +187,8 @@ struct ConvertTritonHCUGPUToLLVM
     int numCTAs = triton::gpu::TritonGPUDialect::getNumCTAs(mod);
     int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
 
-    ModuleAllocation allocation(mod, triton::defaultAllocationAnalysisScratchSizeFn);
+    ModuleAllocation allocation(mod,
+                                triton::defaultAllocationAnalysisScratchSizeFn);
     if (targetInfo.requiresAliasInfoForAsyncOps())
       HCU::annotateLocalLoadsSyncedViaAsyncWait(mod);
 
@@ -199,8 +202,10 @@ struct ConvertTritonHCUGPUToLLVM
       asyncSlotWAR = HCU::prepareAsyncSlotPrefetchWAR(mod);
     }
     HCU::PhysicalSharedRegions sharedRegions(mod, allocation);
-    HCU::MatrixSharedCopies sharedCopies(mod, sharedRegions, targetInfo.getArch());
-    if (!sharedCopies.isValid()) return signalPassFailure();
+    HCU::MatrixSharedCopies sharedCopies(mod, sharedRegions,
+                                         targetInfo.getArch());
+    if (!sharedCopies.isValid())
+      return signalPassFailure();
     auto membarFilter = [&](Operation *before, Operation *after) {
       if (sharedRegions.disjoint(before, after))
         return true;
@@ -332,7 +337,8 @@ struct ConvertTritonHCUGPUToLLVM
                                             HCUBenefit);
     HCUBenefit += 1;
     HCU::populateMLSOpToLLVMPatterns(typeConverter, targetInfo, patterns,
-                                     axisInfoAnalysis, HCUBenefit, sharedCopies);
+                                     axisInfoAnalysis, HCUBenefit,
+                                     sharedCopies);
 
     populatePatterns7(mlir::triton::populateReduceOpToLLVMPatterns,
                       commonBenefit);

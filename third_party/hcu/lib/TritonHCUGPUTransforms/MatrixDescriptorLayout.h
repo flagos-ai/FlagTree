@@ -1,11 +1,11 @@
 #ifndef TRITON_HCU_MATRIX_DESCRIPTOR_LAYOUT_H
 #define TRITON_HCU_MATRIX_DESCRIPTOR_LAYOUT_H
 
-#include "Utility.h"
 #include "../TritonHCUGPUToLLVM/FiniteSharedReadPlan.h"
-#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "Utility.h"
 #include "mlir/IR/Matchers.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 namespace mlir::triton::HCU {
 
@@ -44,10 +44,12 @@ getDescriptorReadBankCost(RankedTensorType readType,
   for (unsigned r = 0; r < registers; ++r)
     for (unsigned w = 0; w < waves; ++w)
       for (unsigned l = 0; l < 64; ++l)
-        physical.push_back(cvt.apply({{reg, int32_t(r)}, {lane, int32_t(l)},
-                                     {warp, int32_t(w)}})[0].second);
+        physical.push_back(cvt.apply({{reg, int32_t(r)},
+                                      {lane, int32_t(l)},
+                                      {warp, int32_t(w)}})[0]
+                               .second);
   auto plan = planFiniteSharedReads(registers, waves, cvt.getOutDimSize(offset),
-                                   physical, true, true, true);
+                                    physical, true, true, true);
   if (!plan || !plan->matrix || plan->optimizationBudgetExceeded)
     return std::nullopt;
   uint64_t excess = 0;
@@ -57,10 +59,11 @@ getDescriptorReadBankCost(RankedTensorType readType,
       for (unsigned first = 0; first < 64; first += 8) {
         std::array<SmallVector<unsigned, 4>, 32> banks;
         for (unsigned l = first; l < first + 8; ++l) {
-          unsigned sr = plan->matrixAlt ? ((l >> 2) & 3)
-                                       : ((l >> 2) & 3) | (((l >> 1) & 1) << 2);
-          unsigned sl = (l & 48) | (plan->matrixAlt ? ((l & 3) << 2)
-                                                        : ((l & 1) << 3));
+          unsigned sr = plan->matrixAlt
+                            ? ((l >> 2) & 3)
+                            : ((l >> 2) & 3) | (((l >> 1) & 1) << 2);
+          unsigned sl =
+              (l & 48) | (plan->matrixAlt ? ((l & 3) << 2) : ((l & 1) << 3));
           unsigned r = plan->repartition ? plan->matrixByAnchor[anchor][sr]
                                          : anchor + sr;
           unsigned word = physical[(r * waves + w) * 64 + sl] / 2;
@@ -95,8 +98,8 @@ getMatrixDescriptorSharedLayout(triton::MatrixLoadOp op) {
   if (!encoding)
     return {};
   APInt first, second;
-  bool firstUnit = matchPattern(op.getStrides()[0], m_ConstantInt(&first)) &&
-                   first.isOne();
+  bool firstUnit =
+      matchPattern(op.getStrides()[0], m_ConstantInt(&first)) && first.isOne();
   bool secondUnit = matchPattern(op.getStrides()[1], m_ConstantInt(&second)) &&
                     second.isOne();
   if (!firstUnit && !secondUnit)
@@ -111,7 +114,7 @@ getMatrixDescriptorSharedLayout(triton::MatrixLoadOp op) {
       op.getContext(), encoding, type.getShape(), order, cta,
       type.getElementTypeBitWidth(), false);
   unsigned phases = std::min<unsigned>(consumerShared.getMaxPhase(),
-                                      type.getShape()[column] / 8);
+                                       type.getShape()[column] / 8);
   auto shared = gpu::SwizzledSharedEncodingAttr::get(
       op.getContext(), 8, consumerShared.getPerPhase(), phases, order, cta);
   auto result = gpu::SharedLinearEncodingAttr::get(
@@ -126,6 +129,7 @@ getMatrixDescriptorSharedLayout(triton::MatrixLoadOp op) {
   // a reshape/transpose as a new memory protocol or trusting an operand tag.
   Attribute readEncoding = gpu::LinearEncodingAttr::get(
       op.getContext(), gpu::toLinearLayout(dotType));
+  bool directCoordinates = true;
   Value value = dot->getOperand(operand);
   while (value != op.getResult()) {
     auto *view = value.getDefiningOp();
@@ -134,6 +138,7 @@ getMatrixDescriptorSharedLayout(triton::MatrixLoadOp op) {
     if (!isa<gpu::ConvertLayoutOp>(view)) {
       if (!isa<triton::ReshapeOp, triton::TransOp>(view))
         return result;
+      directCoordinates = false;
       readEncoding = mlir::inferSrcEncoding(view, readEncoding);
       if (!readEncoding)
         return result;
@@ -142,8 +147,33 @@ getMatrixDescriptorSharedLayout(triton::MatrixLoadOp op) {
   }
   auto readType = type.cloneWithEncoding(readEncoding);
   auto baselineCost = getDescriptorReadBankCost(readType, result);
-  if (!baselineCost)
+  if (!baselineCost) {
+    // When B is K-contiguous, reindex its LDS columns by the same logical
+    // permutation as the paired dot fragment. Every lane/register then gets
+    // the same address it would have with the ordinary (unpaired) fragment.
+    // A dimension-mixing view above needs its own composition proof.
+    auto mma = dyn_cast<gpu::AMDMfmaEncodingAttr>(encoding.getParent());
+    if (!directCoordinates || operand != 1 || column != 0 || !mma ||
+        mma.getMmacLayout() != gpu::MmacLayout::LEGACY_PAIRED_COLUMNS)
+      return result;
+    auto legacyMma = gpu::AMDMfmaEncodingAttr::get(
+        op.getContext(), mma.getVersion(), mma.getWarpsPerCTA(),
+        mma.getInstrShape(), mma.getIsTransposed(), mma.getCTALayout(),
+        mma.getTilesPerWarp(), mma.getElementBitWidth(),
+        gpu::MmacLayout::LEGACY);
+    auto legacyEncoding = gpu::DotOperandEncodingAttr::get(
+        op.getContext(), encoding.getOpIdx(), legacyMma, encoding.getKWidth());
+    auto legacy = gpu::toLinearLayout(type.getShape(), legacyEncoding);
+    auto paired = gpu::toLinearLayout(readType);
+    auto permutation = legacy.pseudoinvert().compose(paired);
+    auto dims = llvm::to_vector(paired.getOutDimNames());
+    if (permutation.isInvertible() && permutation.isTrivialOver({dims[0]}) &&
+        legacy.compose(permutation) == paired) {
+      auto physical = result.getLinearLayout().compose(permutation);
+      return gpu::SharedLinearEncodingAttr::get(op.getContext(), physical, 16);
+    }
     return result;
+  }
   auto bestCost = *baselineCost;
   unsigned bestPhases = 0;
   // All candidates retain the actual16B G2L vectors. Explore only ordinary
@@ -151,9 +181,9 @@ getMatrixDescriptorSharedLayout(triton::MatrixLoadOp op) {
   // layout on ties and prefer fewer XORs among strict bank improvements.
   unsigned bankElements = 32 * 4 / 2;
   for (unsigned vec = 8; vec < bankElements; vec *= 2) {
-    unsigned maxPhase = std::min<unsigned>(bankElements / vec,
-        std::min<int64_t>(type.getShape()[column] / vec,
-                          type.getShape()[1 - column]));
+    unsigned maxPhase = std::min<unsigned>(
+        bankElements / vec, std::min<int64_t>(type.getShape()[column] / vec,
+                                              type.getShape()[1 - column]));
     if (!maxPhase)
       continue;
     auto candidate = gpu::SwizzledSharedEncodingAttr::get(
@@ -161,9 +191,9 @@ getMatrixDescriptorSharedLayout(triton::MatrixLoadOp op) {
     auto linear = gpu::SharedLinearEncodingAttr::get(
         op.getContext(), gpu::toLinearLayout(type.getShape(), candidate), 16);
     auto cost = getDescriptorReadBankCost(readType, linear);
-    if (cost && (*cost < bestCost ||
-        (*cost == bestCost && bestCost < *baselineCost &&
-         maxPhase < bestPhases))) {
+    if (cost &&
+        (*cost < bestCost || (*cost == bestCost && bestCost < *baselineCost &&
+                              maxPhase < bestPhases))) {
       result = linear;
       bestCost = *cost;
       bestPhases = maxPhase;

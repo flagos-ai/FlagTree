@@ -48,6 +48,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32, ttg.targ
 }
 """
 
+
 def budget_fixture():
     # Keep the existing 64-value rematerialization budget effective even when
     # the address also contains an allowed kernel argument. All row values
@@ -70,6 +71,7 @@ def budget_fixture():
     return BASE.replace("    %m1 = tt.expand_dims %m {",
                         "\n".join(lines) + "\n    %m1 = tt.expand_dims " + previous + " {")
 
+
 def fixture(kind):
     text = BASE
     if kind == 'budget': return budget_fixture()
@@ -83,8 +85,8 @@ def fixture(kind):
     extra = '' if public else ', %shared: !llvm.ptr<3>, %scratch: !llvm.ptr<1>, %profile: !llvm.ptr<1>'
     header = ('llvm.func @fixture(%Araw: !llvm.ptr<1> {tt.divisibility = 16 : i32}, '
               '%Oraw: !llvm.ptr<1> {tt.divisibility = 16 : i32}, '
-              '%U: i32 {tt.divisibility = 8 : i32}, %stride: i32 {tt.divisibility = 16 : i32}'
-              + extra + ') attributes {sym_visibility = "' + ('public' if public else 'private') + '"' + marker + '} {')
+              '%U: i32 {tt.divisibility = 8 : i32}, %stride: i32 {tt.divisibility = 16 : i32}' + extra +
+              ') attributes {sym_visibility = "' + ('public' if public else 'private') + '"' + marker + '} {')
     line = next(l for l in text.splitlines() if 'tt.func public' in l)
     casts = '''
     %A = builtin.unrealized_conversion_cast %Araw : !llvm.ptr<1> to !tt.ptr<bf16>
@@ -110,9 +112,13 @@ def fixture(kind):
         text = text.replace('  llvm.func @fixture', '  llvm.func @opaque() -> i32\n  llvm.func @fixture')
     return text
 
+
 def lower(tmp_path, text):
-    src = tmp_path / 'fixture.mlir'; src.write_text(text)
-    ctx = ir.context(); ir.load_dialects(ctx); hcu.load_dialects(ctx)
+    src = tmp_path / 'fixture.mlir'
+    src.write_text(text)
+    ctx = ir.context()
+    ir.load_dialects(ctx)
+    hcu.load_dialects(ctx)
     mod = ir.parse_mlir_module(str(src), ctx)
     pm = ir.pass_manager(ctx)
     hcu.passes.ttgpuir.add_update_async_wait_count(pm, 'gfx936')
@@ -124,18 +130,26 @@ def lower(tmp_path, text):
     passes.common.add_canonicalizer(pm)
     passes.common.add_cse(pm)
     pm.run(mod, 'kernelarg_remat_fixture')
-    out = str(mod); (tmp_path / 'lowered.mlir').write_text(out)
+    out = str(mod)
+    (tmp_path / 'lowered.mlir').write_text(out)
     # Count actual instructions, not declarations of the intrinsic.
-    count = sum('bpermute' in line and ('llvm.call' in line or 'rocdl.ds' in line)
-                for line in out.splitlines())
+    count = sum('bpermute' in line and ('llvm.call' in line or 'rocdl.ds' in line) for line in out.splitlines())
     assert 'raw.ptr.buffer.load.lds' in out or 'raw_ptr_buffer_load_lds' in out
     return count
 
+
 @pytest.mark.parametrize('kind,expected', [
-    ('original_kernel', 0), ('marked', 0), ('unmarked', 1),
-    ('marker_zero', 1), ('private_marked', 1), ('nonentry_block', 1),
-    ('scalar_load', 1), ('scalar_call', 1), ('marked_i64', 0),
-    ('unsupported_i16', 1), ('budget', 1),
+    ('original_kernel', 0),
+    ('marked', 0),
+    ('unmarked', 1),
+    ('marker_zero', 1),
+    ('private_marked', 1),
+    ('nonentry_block', 1),
+    ('scalar_load', 1),
+    ('scalar_call', 1),
+    ('marked_i64', 0),
+    ('unsupported_i16', 1),
+    ('budget', 1),
 ])
 def test_kernel_entry_guard(tmp_path, kind, expected):
     assert lower(tmp_path, fixture(kind)) == expected

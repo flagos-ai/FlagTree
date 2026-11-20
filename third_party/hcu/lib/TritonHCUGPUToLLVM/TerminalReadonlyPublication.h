@@ -2,8 +2,8 @@
 #define TRITON_HCU_TERMINAL_READONLY_PUBLICATION_H
 
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -54,11 +54,15 @@ inline bool isRegisterOnly(Operation *op) {
     auto result = dyn_cast<RankedTensorType>(dot.getResult().getType());
     if (!a || !b || !result)
       return false;
-    auto encoding = dyn_cast_or_null<ttg::AMDMfmaEncodingAttr>(result.getEncoding());
-    auto aEncoding = dyn_cast_or_null<ttg::DotOperandEncodingAttr>(a.getEncoding());
-    auto bEncoding = dyn_cast_or_null<ttg::DotOperandEncodingAttr>(b.getEncoding());
+    auto encoding =
+        dyn_cast_or_null<ttg::AMDMfmaEncodingAttr>(result.getEncoding());
+    auto aEncoding =
+        dyn_cast_or_null<ttg::DotOperandEncodingAttr>(a.getEncoding());
+    auto bEncoding =
+        dyn_cast_or_null<ttg::DotOperandEncodingAttr>(b.getEncoding());
     return encoding && aEncoding && bEncoding &&
-           aEncoding.getParent() == encoding && bEncoding.getParent() == encoding;
+           aEncoding.getParent() == encoding &&
+           bEncoding.getParent() == encoding;
   }
   return false;
 }
@@ -89,7 +93,8 @@ struct Pair {
 inline bool proveSuffix(hcug::AsyncWaitOp anchor, ttg::LocalBarrierOp first,
                         llvm::SmallVectorImpl<Pair> &redundant) {
   Block *block = anchor->getBlock();
-  if (anchor.getNumInst() != 0 || anchor->getNextNode() != first.getOperation() ||
+  if (anchor.getNumInst() != 0 ||
+      anchor->getNextNode() != first.getOperation() ||
       !isa<triton::ReturnOp>(block->getTerminator()))
     return false;
   bool afterDealloc = false;
@@ -102,8 +107,8 @@ inline bool proveSuffix(hcug::AsyncWaitOp anchor, ttg::LocalBarrierOp first,
       return false; // No SCF, warp-specialized region, call/branch speculation.
     if (auto wait = dyn_cast<hcug::AsyncWaitOp>(op)) {
       auto barrier = dyn_cast_or_null<ttg::LocalBarrierOp>(op->getNextNode());
-      if (wait.getNumInst() != 0 || !wait.getResult().use_empty() ||
-          !barrier || afterDealloc || outputStoresStarted)
+      if (wait.getNumInst() != 0 || !wait.getResult().use_empty() || !barrier ||
+          afterDealloc || outputStoresStarted)
         return false;
       redundant.push_back({wait, barrier});
       op = barrier->getNextNode();
@@ -111,7 +116,8 @@ inline bool proveSuffix(hcug::AsyncWaitOp anchor, ttg::LocalBarrierOp first,
     }
     if (auto read = dyn_cast<ttg::LocalLoadOp>(op)) {
       if (afterDealloc || outputStoresStarted ||
-          !isa<ttg::SharedMemorySpaceAttr>(read.getSrc().getType().getMemorySpace()))
+          !isa<ttg::SharedMemorySpaceAttr>(
+              read.getSrc().getType().getMemorySpace()))
         return false;
       // Reads remain in place. Their SSA data dependencies still force DS
       // completion at the original consumers; we never delete DS-only waits.
@@ -141,8 +147,8 @@ inline bool proveSuffix(hcug::AsyncWaitOp anchor, ttg::LocalBarrierOp first,
 inline unsigned coalesceTerminalReadonlyPublication(ModuleOp mod,
                                                     llvm::StringRef arch) {
   using namespace terminal_readonly_publication;
-  auto enabled = mod->getAttrOfType<BoolAttr>(
-      "ttg.hcu.terminal_readonly_publication");
+  auto enabled =
+      mod->getAttrOfType<BoolAttr>("ttg.hcu.terminal_readonly_publication");
   auto ctas = mod->getAttrOfType<IntegerAttr>("ttg.num-ctas");
   if (!enabled || !enabled.getValue() || arch != "gfx936" || !ctas ||
       ctas.getInt() != 1)
@@ -174,8 +180,9 @@ inline unsigned coalesceTerminalReadonlyPublication(ModuleOp mod,
       }
     }
   });
-  mod->setAttr("ttg.hcu.terminal_readonly_publication_pairs",
-               IntegerAttr::get(IntegerType::get(mod.getContext(), 32), removedPairs));
+  mod->setAttr(
+      "ttg.hcu.terminal_readonly_publication_pairs",
+      IntegerAttr::get(IntegerType::get(mod.getContext(), 32), removedPairs));
   return removedPairs;
 }
 } // namespace mlir::triton::HCU

@@ -80,9 +80,8 @@ def lower(tmp_path, dtype, layout, alignment, column):
     ("permuted", 16, 1, "i16", 32),
     ("lane_split", 16, 0, "i16", 32),
 ])
-def test_address_grouping_respects_thread_alignment_and_column(
-    tmp_path, dtype, layout, alignment, column, width, calls
-):
+def test_address_grouping_respects_thread_alignment_and_column(tmp_path, dtype, layout, alignment, column, width,
+                                                               calls):
     result = lower(tmp_path, dtype, layout, alignment, column)
     name = "llvm.amdgcn.struct.ptr.buffer.load." + width
     assert len(re.findall(r"llvm.call @" + re.escape(name) + r"\(", result)) == calls

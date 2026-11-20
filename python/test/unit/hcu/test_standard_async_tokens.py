@@ -9,11 +9,15 @@ from triton.experimental import gluon as g
 from triton.experimental.gluon import language as gl
 from triton.experimental.gluon._runtime import GluonASTSource
 from triton.experimental.gluon.language.amd.cdna4.async_copy import (
-    buffer_load_to_shared, commit_group, wait_group,
+    buffer_load_to_shared,
+    commit_group,
+    wait_group,
 )
 
 if not hasattr(libtriton, "hcu"):
     pytest.skip("HCU compiler bindings are required", allow_module_level=True)
+
+from triton.experimental.gluon.language.hcu import sched_barrier
 
 
 @g.jit
@@ -35,12 +39,11 @@ def _copy(A, O, WITH_TOKEN: gl.constexpr, BAD_TOKEN: gl.constexpr = False):
 
 def compile_copy(dtype, with_token, bad_token=False):
     source = GluonASTSource(_copy,
-        {"A": "*" + dtype, "O": "*" + dtype,
-         "WITH_TOKEN": "constexpr", "BAD_TOKEN": "constexpr"},
-        {"WITH_TOKEN": with_token, "BAD_TOKEN": bad_token},
-        attrs={(0,): [("tt.divisibility", 16)], (1,): [("tt.divisibility", 16)]})
-    return triton.compile(source, target=GPUTarget("hip", "gfx936", 64),
-                          options=dict(num_warps=4, num_stages=1))
+                            {"A": "*" + dtype, "O": "*" + dtype, "WITH_TOKEN": "constexpr", "BAD_TOKEN": "constexpr"},
+                            {"WITH_TOKEN": with_token, "BAD_TOKEN": bad_token}, attrs={(0, ): [("tt.divisibility", 16)],
+                                                                                       (1, ):
+                                                                                       [("tt.divisibility", 16)]})
+    return triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options=dict(num_warps=4, num_stages=1))
 
 
 @pytest.mark.parametrize("dtype", ["bf16", "fp16"])
@@ -70,22 +73,19 @@ def test_wait_token_preserves_read_before_overwrite(tmp_path):
     assert lower_source(tmp_path, text, update_async_wait=True).count("rocdl.s.barrier") == 2
 
 
-from triton.experimental.gluon.language.hcu import sched_barrier
-
-
 @g.jit
 def _schedule_boundary(MASK: gl.constexpr):
     sched_barrier(MASK)
 
 
-@pytest.mark.parametrize("mask",[0,1,-1,1<<31])
+@pytest.mark.parametrize("mask", [0, 1, -1, 1 << 31])
 def test_target_schedule_boundary_has_no_packet_or_thread_sync(mask):
-    source=GluonASTSource(_schedule_boundary,{"MASK":"constexpr"},{"MASK":mask})
-    if mask<0 or mask>0x7fffffff:
+    source = GluonASTSource(_schedule_boundary, {"MASK": "constexpr"}, {"MASK": mask})
+    if mask < 0 or mask > 0x7fffffff:
         with pytest.raises(triton.CompilationError):
-            triton.compile(source,target=GPUTarget("hip","gfx936",64),options=dict(num_warps=4))
+            triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options=dict(num_warps=4))
         return
-    kernel=triton.compile(source,target=GPUTarget("hip","gfx936",64),options=dict(num_warps=4))
+    kernel = triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options=dict(num_warps=4))
     assert f"@llvm.amdgcn.sched.barrier(i32 {mask})" in kernel.asm["llir"]
     assert "rocdl.s.barrier" not in kernel.asm["ttgir"]
     assert "whole_packet" not in kernel.asm["ttgir"]

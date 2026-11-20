@@ -4,9 +4,9 @@
 #include "Analysis/MatrixCopyGeometry.h"
 #include "PhysicalSharedRegions.h"
 #include "ScalarMemoryAnalysis.h"
+#include "triton/Tools/LayoutUtils.h"
 #include "llvm/ADT/DenseMap.h"
 #include <array>
-#include "triton/Tools/LayoutUtils.h"
 
 namespace mlir::triton::HCU {
 
@@ -16,7 +16,9 @@ namespace mlir::triton::HCU {
 struct MatrixSharedCopyPlan {
   unsigned rowAxis, columnAxis, waves, copies;
   int64_t rows, columns, pitch;
-  bool structured, wholeColumns, fullRows, columnInBounds, wholeRows, cacheSwizzle;
+  bool structured, wholeColumns, fullRows, columnInBounds, wholeRows,
+      cacheSwizzle;
+  bool affinePartialColumns;
   uint64_t sourceBytes, tileSpanBytes;
   SmallVector<std::array<int32_t, 2>> bases;
 };
@@ -24,13 +26,15 @@ struct MatrixSharedCopyPlan {
 class MatrixSharedCopies {
   llvm::DenseMap<Operation *, MatrixSharedCopyPlan> plans;
   bool valid = true;
+
 public:
   MatrixSharedCopies(ModuleOp mod, PhysicalSharedRegions &regions,
-                         StringRef arch) {
+                     StringRef arch) {
     mod.walk([&](hcugpu::MatrixLoadToLocalOp op) {
       auto type = op.getDest().getType();
       auto shared = dyn_cast<gpu::SharedLinearEncodingAttr>(type.getEncoding());
-      if (!shared) return; // Preserve unrelated legacy MLS lowering.
+      if (!shared)
+        return; // Preserve unrelated legacy MLS lowering.
       auto fail = [&](StringRef why) {
         op.emitError("matrix shared copy: ") << why;
         valid = false;
@@ -43,21 +47,26 @@ public:
           op.getIndices().size() != 3 ||
           !llvm::equal(op.getTensorShape(), type.getShape()) ||
           op.getCache() != triton::CacheModifier::NONE ||
-          op.getEvict() != triton::EvictionPolicy::NORMAL || op.getIsVolatile() ||
-          !op.getBoundaryCheck().empty()) {
-        fail("requires rank-two f16/bf16 SharedLinear, wave64 single CTA and default cache policy");
+          op.getEvict() != triton::EvictionPolicy::NORMAL ||
+          op.getIsVolatile() || !op.getBoundaryCheck().empty()) {
+        fail("requires rank-two f16/bf16 SharedLinear, wave64 single CTA and "
+             "default cache policy");
         return;
       }
       auto pointer = dyn_cast<triton::PointerType>(op.getBase().getType());
-      auto arg = dyn_cast<BlockArgument>(resolveWarpSpecializeCapture(op.getBase()));
+      auto arg =
+          dyn_cast<BlockArgument>(resolveWarpSpecializeCapture(op.getBase()));
       auto fn = op->getParentOfType<triton::FuncOp>();
-      auto alignment = arg && fn ? fn.getArgAttrOfType<IntegerAttr>(arg.getArgNumber(), "tt.divisibility") : IntegerAttr{};
+      auto alignment = arg && fn ? fn.getArgAttrOfType<IntegerAttr>(
+                                       arg.getArgNumber(), "tt.divisibility")
+                                 : IntegerAttr{};
       if (!pointer || pointer.getAddressSpace() != 1 ||
           pointer.getPointeeType() != type.getElementType() || !arg || !fn ||
           arg.getOwner() != &fn.getBody().front() || !alignment ||
           alignment.getInt() < 16 || alignment.getInt() % 16 ||
           !regions.contiguousAligned(op.getDest(), 16)) {
-        fail("requires actual aligned source argument and contiguous aligned allocation-backed destination views");
+        fail("requires actual aligned source argument and contiguous aligned "
+             "allocation-backed destination views");
         return;
       }
       SmallVector<int64_t, 2> sizes, strides;
@@ -80,8 +89,11 @@ public:
       }
       auto [row, col, rows, cols, pitch, count, tileSpan] = *geometry;
       if (!memory_analysis::multipleOf(op.getIndices()[col], 8) ||
-          !llvm::all_of(op.getIndices(), [&](Value v) { return memory_analysis::uniform(v,op); })) {
-        fail("unproven uniform origins, vector-aligned columns or representable aligned row pitch");
+          !llvm::all_of(op.getIndices(), [&](Value v) {
+            return memory_analysis::uniform(v, op);
+          })) {
+        fail("unproven uniform origins, vector-aligned columns or "
+             "representable aligned row pitch");
         return;
       }
       auto ll = shared.getLinearLayout();
@@ -90,13 +102,15 @@ public:
       if (ll.getNumOutDims() != 2 ||
           !llvm::equal(ll.getOutDimSizes(), type.getShape()) ||
           ll.getInDimSize(StringAttr::get(mod.getContext(), "block")) != 1) {
-        fail("unsupported chart or incomplete wave payload; use ordinary buffer copy");
+        fail("unsupported chart or incomplete wave payload; use ordinary "
+             "buffer copy");
         return;
       }
       ll = ll.sublayout({offset}, dims);
       if (!ll.isSurjective() || ll.getTotalInDimSize() != count ||
           ll.getTotalOutDimSize() != count) {
-        fail("shared chart must biject the complete active tile"); return;
+        fail("shared chart must biject the complete active tile");
+        return;
       }
       if (!isMatrixCopyVectorLayout(ll, offset, row, col)) {
         fail("physical vectors are not consecutive aligned global elements");
@@ -125,12 +139,14 @@ public:
       uint64_t sourceBytes = 2 * (uint64_t(rows - 1) * pitch + cols);
       auto rowRange = memory_analysis::indexBounds(op.getIndices()[row], op);
       bool fullRows = rowRange && rowRange->lo >= 0 &&
-          __int128(rowRange->hi) + type.getShape()[row] <= rows;
+                      __int128(rowRange->hi) + type.getShape()[row] <= rows;
       auto colRange = memory_analysis::indexBounds(op.getIndices()[col], op);
-      bool columnInBounds = colRange && colRange->lo >= 0 &&
+      bool columnInBounds =
+          colRange && colRange->lo >= 0 &&
           __int128(colRange->hi) + type.getShape()[col] <= cols;
       bool wholeColumns = cols % type.getShape()[col] == 0 &&
-          memory_analysis::multipleOf(op.getIndices()[col], type.getShape()[col]);
+                          memory_analysis::multipleOf(op.getIndices()[col],
+                                                      type.getShape()[col]);
       // A proved complete rectangle needs no descriptor row-index clamp or
       // hardware pitch. Prefer the affine byte-bounded resource when its local
       // span fits; retain structured zero-fill for unproved row/column bounds.
@@ -138,30 +154,52 @@ public:
       // valid or entirely invalid. A uniform NR0 predicate preserves zero-fill
       // without a launch bound or per-vector row-index descriptor.
       bool wholeRows = rows % type.getShape()[row] == 0 &&
-          memory_analysis::multipleOf(op.getIndices()[row], type.getShape()[row]);
-      bool completeRectangle = (fullRows || wholeRows) &&
-          (wholeColumns || columnInBounds);
+                       memory_analysis::multipleOf(op.getIndices()[row],
+                                                   type.getShape()[row]);
+      bool completeRows = fullRows || wholeRows;
+      bool completeColumns = wholeColumns || columnInBounds;
+      bool fitsRawOffset = tileSpan < (uint64_t(1) << 31);
+      // A whole-row copy only needs a per-vector column predicate. Keep
+      // partitioned producers on their existing descriptor selection.
+      bool affinePartialColumns = pitch < 0x2000 && fitsRawOffset &&
+                                  completeRows && !completeColumns &&
+                                  !op->getParentOfType<gpu::WarpSpecializeOp>();
       bool structured = pitch < 0x2000 &&
-          !(completeRectangle && tileSpan < (uint64_t(1) << 31));
+                        !(completeRows && completeColumns && fitsRawOffset) &&
+                        !affinePartialColumns;
       if (!hasAddressableMatrixCopyTile(*geometry)) {
         fail("raw local span exceeds the proven signed31-bit zero-fill domain");
         return;
       }
-      MatrixSharedCopyPlan plan{row,col,waves,unsigned(count/(512*waves)),
-          rows,cols,pitch,structured,wholeColumns,
-          fullRows,columnInBounds,wholeRows,
-          pitch < 0x2000 && (structured || narrowSourceRows),
-          sourceBytes,tileSpan,{}};
+      MatrixSharedCopyPlan plan{row,
+                                col,
+                                waves,
+                                unsigned(count / (512 * waves)),
+                                rows,
+                                cols,
+                                pitch,
+                                structured,
+                                wholeColumns,
+                                fullRows,
+                                columnInBounds,
+                                wholeRows,
+                                pitch < 0x2000 &&
+                                    (structured || narrowSourceRows),
+                                affinePartialColumns,
+                                sourceBytes,
+                                tileSpan,
+                                {}};
       for (unsigned bit = 0; bit < ll.getInDimSizeLog2(offset); ++bit) {
-        auto xy = ll.getBasis(offset,bit);
-        plan.bases.push_back({xy[0],xy[1]});
+        auto xy = ll.getBasis(offset, bit);
+        plan.bases.push_back({xy[0], xy[1]});
       }
       plans[op] = std::move(plan);
     });
   }
   bool isValid() const { return valid; }
   const MatrixSharedCopyPlan *get(Operation *op) const {
-    auto it=plans.find(op);return it==plans.end()?nullptr:&it->second;
+    auto it = plans.find(op);
+    return it == plans.end() ? nullptr : &it->second;
   }
 };
 } // namespace mlir::triton::HCU

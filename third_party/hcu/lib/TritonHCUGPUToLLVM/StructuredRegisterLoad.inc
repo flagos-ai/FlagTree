@@ -162,9 +162,10 @@ static LogicalResult verifyStructuredRegisterLoads(ModuleOp mod,StringRef arch) 
     for(Value v:op.getStrides())if(!structuredRegisterDataUniform(v))return fail("strides must be CTA-uniform");
     for(Value v:op.getIndices())if(!structuredRegisterDataUniform(v))return fail("origins/enable must be CTA-uniform");
     auto K=getSignedI64Constant(op.getShape()[1]);
-    if(!K || *K<=0 || 2*uint64_t(*K)>=0x4000 ||
-       getSignedI64Constant(op.getStrides()[0])!=K || getSignedI64Constant(op.getStrides()[1])!=1)
-      return fail("requires proved positive K, rowstride=K, colstride=1 and 2*K<0x4000");
+    auto rowStride=getSignedI64Constant(op.getStrides()[0]);
+    if(!K || *K<=0 || !rowStride || *rowStride<*K ||
+       uint64_t(*rowStride)>=0x2000 || getSignedI64Constant(op.getStrides()[1])!=1)
+      return fail("requires proved 0<K<=rowstride<0x2000 and colstride=1");
     if(t.getShape()[0]<1 || t.getShape()[0]>INT32_MAX || t.getShape()[1]<1 || t.getShape()[1]>*K)
       return fail("requires positive i32 tile and complete K window");
     auto *ctx=mod.getContext();auto reg=StringAttr::get(ctx,"register"),lane=StringAttr::get(ctx,"lane"),warp=StringAttr::get(ctx,"warp"),block=StringAttr::get(ctx,"block");
@@ -183,7 +184,8 @@ static LogicalResult verifyStructuredRegisterLoads(ModuleOp mod,StringRef arch) 
     }
     SmallVector<int32_t> order;
     auto legal=[&](unsigned width) {
-      if(ll.getInDimSize(reg)%width || *K%width || structuredRegisterAlignment(op.getBase())<2*width)return false;
+      if(ll.getInDimSize(reg)%width || *K%width || *rowStride%width ||
+         structuredRegisterAlignment(op.getBase())<2*width)return false;
       llvm::SmallPtrSet<void *,32> seen;
       if(!mlir::triton::HCU::memory_analysis::multipleOf(op.getIndices()[1],width,seen))return false;
       order=structuredRegisterOrder(t,width);
@@ -213,6 +215,13 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
     if(kAttr)K=cast<IntegerAttr>(kAttr.getValue()).getInt();
     else if(auto c=a.getShape()[1].getDefiningOp<LLVM::ConstantOp>())K=cast<IntegerAttr>(c.getValue()).getInt();
     else return op.emitError("structured-register: proved K constant was lost");
+    // Bounds use the logical K, while record addressing uses the physical
+    // row stride. Padding is not part of the descriptor's valid K window.
+    auto rowStride=getSignedI64Constant(op.getStrides()[0]);
+    if(!rowStride)
+      if(auto c=a.getStrides()[0].getDefiningOp<LLVM::ConstantOp>())
+        rowStride=cast<IntegerAttr>(c.getValue()).getInt();
+    if(!rowStride)return op.emitError("structured-register: proved row stride constant was lost");
     auto &rewriter=rw;auto loc=op.getLoc();auto b=TritonLLVMOpBuilder(loc,rw);auto *ctx=rw.getContext();
     auto elem=getTypeConverter()->convertType(op.getType().getElementType());
     Value M=a.getShape()[0],R=a.getIndices()[0],C=a.getIndices()[1];
@@ -226,16 +235,20 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
     // column. The descriptor base then has no effective memory access.
     // No inbounds/nowrap promises are added to its integer/pointer math.
     Value colBase=unclampedAttr&&unclampedAttr.getValue()?C:b.select(validK,C,b.i32_val(0));
-    Value remaining=mlir::triton::HCU::memory_analysis::uniformSaturatingSub(loc,rw,safeM,rowBase);
+    // rowBase is clamped to [0, safeM], so this subtraction cannot underflow.
+    // Keep the clamp for negative/OOB rows; no saturating inline asm is needed.
+    Value remaining=b.sub(safeM,rowBase);
     Value enabled=b.and_(validK,b.icmp_ne(a.getIndices()[2],b.i32_val(0)));
     Value records=b.select(enabled,remaining,b.i32_val(0));
-    Value baseOffset=b.sub(b.add(b.mul(b.zext(i64_ty,rowBase),b.i64_val(K)),b.zext(i64_ty,colBase)),b.i64_val(8));
+    Value baseOffset=b.sub(b.add(b.mul(b.zext(i64_ty,rowBase),b.i64_val(*rowStride)),b.zext(i64_ty,colBase)),b.i64_val(8));
     Value base=b.gep(ptr_ty(ctx,1),elem,a.getBase(),baseOffset);
     auto prepackAttr=op->getParentOfType<ModuleOp>()->getAttrOfType<BoolAttr>(
         "ttg.hcu.structured_register_prepack_address");
     bool prepack = prepackAttr && prepackAttr.getValue();
+    int64_t recordPitch = cacheDistributedRecordPitch(
+        op, *rowStride, op.getType().getShape()[0], op.getType().getShape()[1]);
     Value resource = rw.createOrFold<ROCDL::MakeBufferRsrcOp>(
-        loc, ptr_ty(ctx, 8), base, b.int_val(16, 2 * K | 0x4000),
+        loc, ptr_ty(ctx, 8), base, b.int_val(16, 2 * recordPitch | 0x4000),
         b.zext(i64_ty, records), b.i32_val(131072));
     Type payload;
     if(width==1)payload=i16_ty;else if(width==2)payload=i32_ty;else payload=vec_ty(i32_ty,width/2);
@@ -256,6 +269,8 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
       // All meaningful sums fit signed32; disabled records never dereference.
       Value index=b.add(xy[0].second,b.sub(R,rowBase));
       Value offset=b.add(b.shl(xy[1].second,b.i32_val(1)),b.i32_val(16));
+      if (recordPitch != *rowStride)
+        offset = b.add(offset, b.mul(index,b.i32_val(2*(*rowStride-recordPitch))));
       if(prepack) {
         // Bind the two halves as one live VReg64 address value before the
         // structured intrinsic extracts them again. This is a pure exact

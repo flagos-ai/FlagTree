@@ -146,7 +146,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, "ttg.thr
 // CHECK-NOT: ttg.async_copy_global_to_local
 // CHECK-NOT: ttg.local_alloc
 // CHECK: tt.load {{.*}}isVolatile = true
-// CHECK-NOT: = tt.load 
+// CHECK-NOT: = tt.load
 // CHECK-NOT: ttg.async_copy_global_to_local
 // CHECK: tt.store
 // CHECK: tt.return

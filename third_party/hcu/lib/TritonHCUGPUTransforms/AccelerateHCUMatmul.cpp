@@ -80,12 +80,12 @@ std::optional<MatrixLoadInfo> getDotOperandMatrixLoadInfo(DotOp dotOp,
     // the legacy MLS instruction's fragment width or tile geometry.
     // Let normal dot selection honor kpack and its existing legality checks.
     // Native MLS keeps its instruction-specific requirements unchanged.
-    auto ordinaryCopy = mod->getAttrOfType<IntegerAttr>(
-        "ttg.hcu.prefer_wide_async_copy");
+    auto ordinaryCopy =
+        mod->getAttrOfType<IntegerAttr>("ttg.hcu.prefer_wide_async_copy");
     auto async = mOp->getAttrOfType<BoolAttr>("tt.load.async");
     auto target = mod->getAttrOfType<StringAttr>("ttg.target");
-    if (ordinaryCopy && ordinaryCopy.getInt() == 1 && async &&
-        target && target.getValue() == "hip:gfx936")
+    if (ordinaryCopy && ordinaryCopy.getInt() == 1 && async && target &&
+        target.getValue() == "hip:gfx936")
       continue;
     auto maybeDotOpIdxPair = getDotOpIdxFromMatrixLoad(mOp);
     if (succeeded(maybeDotOpIdxPair) &&
@@ -996,11 +996,11 @@ public:
     bool rank3BatchTranspose =
         transposeHint && transposeHint.getInt() == 1 && target &&
         target.getValue() == "hip:gfx936" && rank == 3 && !useMatrixLoad &&
-        mfmaVersion == 3 &&
-        oldAType.getRank() == 3 && oldBType.getRank() == 3 &&
-        oldRetType.getElementType().isF32() && moduleWarps &&
-        isLinearDim(numWarps) && moduleWarps.getInt() == numWarps &&
-        ttg::lookupNumCTAs(dotOp) == 1 && llvm::all_of(CTALayout.getCTAsPerCGA(),
+        mfmaVersion == 3 && oldAType.getRank() == 3 &&
+        oldBType.getRank() == 3 && oldRetType.getElementType().isF32() &&
+        moduleWarps && isLinearDim(numWarps) &&
+        moduleWarps.getInt() == numWarps && ttg::lookupNumCTAs(dotOp) == 1 &&
+        llvm::all_of(CTALayout.getCTAsPerCGA(),
                      [](unsigned n) { return n == 1; }) &&
         llvm::all_of(CTALayout.getCTASplitNum(),
                      [](unsigned n) { return n == 1; }) &&
@@ -1014,29 +1014,47 @@ public:
       rank3BatchTranspose =
           llvm::all_of(retShape, isLinearDim) &&
           llvm::all_of(aShape, isLinearDim) &&
-          llvm::all_of(bShape, isLinearDim) &&
-          retShape[0] >= numWarps && retShape[0] % numWarps == 0 &&
-          retShape[1] % 16 == 0 && retShape[2] % 16 == 0 &&
-          aShape[0] == retShape[0] && bShape[0] == retShape[0] &&
-          aShape[1] == retShape[1] && bShape[2] == retShape[2] &&
-          aShape[2] == bShape[1] && aShape[2] % 16 == 0 &&
-          retShape[1] <=
-              std::numeric_limits<int32_t>::max() / retShape[2];
+          llvm::all_of(bShape, isLinearDim) && retShape[0] >= numWarps &&
+          retShape[0] % numWarps == 0 && retShape[1] % 16 == 0 &&
+          retShape[2] % 16 == 0 && aShape[0] == retShape[0] &&
+          bShape[0] == retShape[0] && aShape[1] == retShape[1] &&
+          bShape[2] == retShape[2] && aShape[2] == bShape[1] &&
+          aShape[2] % 16 == 0 &&
+          retShape[1] <= std::numeric_limits<int32_t>::max() / retShape[2];
     }
     // Private gfx936 diagnostic: compute C^T = B^T A^T with the same legacy
-    // opcode. The matching accumulator lane layout is defined in toLinearLayout.
+    // opcode. The matching accumulator lane layout is defined in
+    // toLinearLayout.
     if (transposeHint && transposeHint.getInt() == 1 && target &&
         target.getValue() == "hip:gfx936" && mmacLayout == MmacLayout::LEGACY &&
         (rank == 2 || rank3BatchTranspose) && mDim == 16 && nDim == 16 &&
-        kDim == 16 &&
-        oldAType.getElementType() == oldBType.getElementType() &&
+        kDim == 16 && oldAType.getElementType() == oldBType.getElementType() &&
         (oldAType.getElementType().isF16() ||
          oldAType.getElementType().isBF16()))
       isTransposed = true;
+    auto pairColumns =
+        module->getAttrOfType<BoolAttr>("ttg.hcu.mmac_pair_columns");
+    auto resultLayout = mmacLayout;
+    if (pairColumns && pairColumns.getValue() && target &&
+        target.getValue() == "hip:gfx936" && isTransposed &&
+        mmacLayout == MmacLayout::LEGACY && rank == 2 && !useMatrixLoad &&
+        mfmaVersion == 3 && mDim == 16 && nDim == 16 && kDim == 16 &&
+        oldAType.getElementType() == oldBType.getElementType() &&
+        (oldAType.getElementType().isF16() ||
+         oldAType.getElementType().isBF16()) &&
+        mfmaAccType.getIntOrFloatBitWidth() == 32 && tilesPerWarp.size() == 2 &&
+        tilesPerWarp[0] == 1 && warpsPerTile.size() == 2 &&
+        retShape[0] >= 16 * warpsPerTile[0] &&
+        retShape[1] >= 32 * warpsPerTile[1] &&
+        llvm::all_of(retShape, isLinearDim) && ttg::lookupNumCTAs(dotOp) == 1 &&
+        ttg::TritonGPUDialect::getThreadsPerWarp(module) == 64) {
+      tilesPerWarp[1] = 2;
+      resultLayout = MmacLayout::LEGACY_PAIRED_COLUMNS;
+    }
     ttg::AMDMfmaEncodingAttr mfmaEnc = ttg::AMDMfmaEncodingAttr::get(
         oldRetType.getContext(), /*verison=*/mfmaVersion, warpsPerTile,
         {mDim, nDim, kDim}, /*isTransposed=*/isTransposed, CTALayout,
-        tilesPerWarp, mfmaAccType.getIntOrFloatBitWidth(), mmacLayout);
+        tilesPerWarp, mfmaAccType.getIntOrFloatBitWidth(), resultLayout);
 
     // convert accumulator
     auto oldAcc = dotOp.getC();
@@ -1081,13 +1099,14 @@ public:
     // A packed operand tile must contain every K group consumed by MMAC.
     // Otherwise the layout aliases K groups and lowering emits extra MMACs
     // on an invalid operand layout (e.g. K16 with kpack=2).
-    auto kPackTarget = dotOp->getParentOfType<ModuleOp>()
-                           ->getAttrOfType<StringAttr>("ttg.target");
-    if (kPackTarget && kPackTarget.getValue() == "hip:gfx936" && !useMatrixLoad &&
-        mmacLayout == MmacLayout::LEGACY && is16BitElemTy && mDim == 16 &&
-        nDim == 16 && kDim == 16)
-      kWidth = std::min<unsigned>(
-          kWidth, oldAType.getShape().back() / kDim * kBase);
+    auto kPackTarget =
+        dotOp->getParentOfType<ModuleOp>()->getAttrOfType<StringAttr>(
+            "ttg.target");
+    if (kPackTarget && kPackTarget.getValue() == "hip:gfx936" &&
+        !useMatrixLoad && mmacLayout == MmacLayout::LEGACY && is16BitElemTy &&
+        mDim == 16 && nDim == 16 && kDim == 16)
+      kWidth =
+          std::min<unsigned>(kWidth, oldAType.getShape().back() / kDim * kBase);
 
     // For FA fwd kernel with f16 elementTy, we limit the 2nd dot to have
     // kWidth = 4 so that the coversion from #mma (result of 1st dot)
@@ -2031,11 +2050,10 @@ struct TritonHCUGPUAccelerateMatmulPass
       m.emitError("mmac-layout-force must be -1 or a layout in [0, 4]");
       return signalPassFailure();
     }
-    if (mmacLayoutForce >= 2 &&
-        !(features & HCUISAFeature::MMAC_LAYOUT)) {
+    if (mmacLayoutForce >= 2 && !(features & HCUISAFeature::MMAC_LAYOUT)) {
       m.emitError() << "MMAC layouts 2, 3 and 4 require lit/lts support, which "
-                      "is unavailable on "
-                   << archGenerationName;
+                       "is unavailable on "
+                    << archGenerationName;
       return signalPassFailure();
     }
     auto mmacLayout = mmacLayoutForce != -1
@@ -2044,10 +2062,10 @@ struct TritonHCUGPUAccelerateMatmulPass
     if (auto hint = m->getAttrOfType<IntegerAttr>("ttg.hcu.mmac_warps_m");
         hint && hint.getInt() != 0) {
       int64_t warpM = hint.getInt();
-      if (archGenerationName != "gfx936" ||
-          mmacLayout != MmacLayout::LEGACY || warpM < 1 ||
-          !llvm::isPowerOf2_64(warpM)) {
-        m.emitError("mmac_warps_m requires gfx936 legacy MMAC and a positive power of two");
+      if (archGenerationName != "gfx936" || mmacLayout != MmacLayout::LEGACY ||
+          warpM < 1 || !llvm::isPowerOf2_64(warpM)) {
+        m.emitError("mmac_warps_m requires gfx936 legacy MMAC and a positive "
+                    "power of two");
         return signalPassFailure();
       }
       bool invalid = false;

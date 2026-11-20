@@ -11,8 +11,8 @@ if not hasattr(libtriton, "hcu"):
 from triton.backends.hcu.compiler import HIPBackend
 
 
-def source(dtype="bf16", slots=2, trips=3, start=0, step=1,
-           consumers=1, producer_default=False, carried=False, negative=None, producer_wide=False, tail_store=False):
+def source(dtype="bf16", slots=2, trips=3, start=0, step=1, consumers=1, producer_default=False, carried=False,
+           negative=None, producer_wide=False, tail_store=False):
     root = f"!ttg.memdesc<{slots}x8x8x{dtype}, #shared, #smem, mutable>"
     plane = f"!ttg.memdesc<8x8x{dtype}, #plane, #smem, mutable>"
     half = f"!ttg.memdesc<4x8x{dtype}, #plane, #smem, mutable, 8x8>"
@@ -22,7 +22,6 @@ def source(dtype="bf16", slots=2, trips=3, start=0, step=1,
     bar = "ttg.local_barrier {hcu.cta_scope}"
 
     def role(producer, ptr, owner, dynamic, terminator):
-        kind = "i128" if producer and producer_wide else "i32"
         origin = -3 if producer and producer_wide else start
         begin = f'''%zero = arith.constant 0 : i32
         %one = arith.constant 1 : i32
@@ -151,13 +150,11 @@ def lower(tmp_path, **kwargs):
     module = libtriton.ir.parse_mlir_module(str(path), context)
     before = str(module)
     pm = libtriton.ir.pass_manager(context)
-    libtriton.hcu.passes.ttgpuir.add_warp_specialize_to_llvm(
-        pm, "gfx936", 4, 4, False, 0, 0, 0)
+    libtriton.hcu.passes.ttgpuir.add_warp_specialize_to_llvm(pm, "gfx936", 4, 4, False, 0, 0, 0)
     pm.run(module, "publication_window_proof")
     after = str(module)
     assert before.count("hcug.async_wait") == after.count("hcug.async_wait") == 1
-    for name in ("ttg.local_barrier", "ttg.local_load", "ttg.local_store",
-                 "ttg.async_copy_global_to_local"):
+    for name in ("ttg.local_barrier", "ttg.local_load", "ttg.local_store", "ttg.async_copy_global_to_local"):
         assert before.count(name) == after.count(name)
     return before, after
 
@@ -175,19 +172,18 @@ def deferred(text):
     (4, 5, 0, 2, 1, False, True),
     (2, 6, 3, 2, 2, True, True),
 ])
-def test_defer_only_across_unobserved_window(
-        tmp_path, dtype, slots, trips, start, step, consumers, producer_default, carried):
-    before, after = lower(tmp_path, dtype=dtype, slots=slots, trips=trips,
-                          start=start, step=step, consumers=consumers,
+def test_defer_only_across_unobserved_window(tmp_path, dtype, slots, trips, start, step, consumers, producer_default,
+                                             carried):
+    before, after = lower(tmp_path, dtype=dtype, slots=slots, trips=trips, start=start, step=step, consumers=consumers,
                           producer_default=producer_default, carried=carried)
     assert not deferred(before)
     assert deferred(after)
 
 
-@pytest.mark.parametrize("negative", ["same_slot", "overlap", "shared_write", "alias",
-                                    "external_root", "token_used", "partial_wait",
-                                    "unknown_slot", "dynamic_loop", "phase_count",
-                                    "unknown_control", "global_write"])
+@pytest.mark.parametrize("negative", [
+    "same_slot", "overlap", "shared_write", "alias", "external_root", "token_used", "partial_wait", "unknown_slot",
+    "dynamic_loop", "phase_count", "unknown_control", "global_write"
+])
 def test_unknown_or_observed_window_keeps_wait(tmp_path, negative):
     before, after = lower(tmp_path, negative=negative)
     assert not deferred(before)

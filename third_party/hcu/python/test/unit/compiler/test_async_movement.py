@@ -12,14 +12,11 @@ def _move(A, C, MODE: tl.constexpr, VIEW: tl.constexpr, TAIL: tl.constexpr):
     r = tl.broadcast_to(tl.arange(0, 16)[:, None], (16, 64))
     c = tl.broadcast_to(tl.arange(0, 64)[None, :], (16, 64))
     if VIEW == 1:
-        storage = tle.gpu.alloc((2, 16, 64), dtype=A.dtype.element_ty,
-                                nv_mma_shared_layout=False)
+        storage = tle.gpu.alloc((2, 16, 64), dtype=A.dtype.element_ty, nv_mma_shared_layout=False)
     elif VIEW == 2:
-        storage = tle.gpu.alloc((16, 128), dtype=A.dtype.element_ty,
-                                nv_mma_shared_layout=False)
+        storage = tle.gpu.alloc((16, 128), dtype=A.dtype.element_ty, nv_mma_shared_layout=False)
     else:
-        storage = tle.gpu.alloc((16, 64), dtype=A.dtype.element_ty,
-                                nv_mma_shared_layout=False)
+        storage = tle.gpu.alloc((16, 64), dtype=A.dtype.element_ty, nv_mma_shared_layout=False)
     for i in range(3):
         if VIEW == 1:
             buf = storage.slot(i % 2)
@@ -50,7 +47,7 @@ def test_shared_movement(dtype, mode, view, tail):
         pytest.skip("gfx936 direct-to-LDS regression")
     a = torch.randn((16, 64), dtype=dtype, device="cuda")
     c = torch.full_like(a, -99)
-    _move[(1,)](a, c, mode, view, tail, num_warps=4, num_stages=1)
+    _move[(1, )](a, c, mode, view, tail, num_warps=4, num_stages=1)
     expected = torch.full_like(a, -99)
     expected[:, :tail] = a[:, :tail] + (0 if mode == 3 else 2)
     torch.testing.assert_close(c, expected)

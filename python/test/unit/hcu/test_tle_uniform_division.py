@@ -10,11 +10,7 @@ from triton.backends.hcu.compiler import HIPBackend
 
 
 def lower(tmp_path, divisor, varying=False, dynamic=False):
-    leaf = (
-        "%source = rocdl.workitem.id.x : i32"
-        if varying
-        else "%source = tt.get_program_id x : i32"
-    )
+    leaf = ("%source = rocdl.workitem.id.x : i32" if varying else "%source = tt.get_program_id x : i32")
     divisor_value = "%dynamic" if dynamic else "%divisor"
     text = f'''#blocked = #ttg.blocked<{{sizePerThread = [8, 1], threadsPerWarp = [8, 8], warpsPerCTA = [1, 4], order = [0, 1]}}>
 #shared = #ttg.swizzled_shared<{{vec = 8, perPhase = 1, maxPhase = 8, order = [0, 1]}}>
@@ -77,9 +73,9 @@ def test_uniform_nonzero_constant_division_needs_no_lane_shuffle(tmp_path, divis
 
 
 @pytest.mark.parametrize("divisor,varying,dynamic", [
-    (12, True, False), (192, True, False), (12, False, True),
+    (12, True, False),
+    (192, True, False),
+    (12, False, True),
 ])
-def test_lane_varying_and_unproved_divisors_keep_original_shuffle(
-    tmp_path, divisor, varying, dynamic
-):
+def test_lane_varying_and_unproved_divisors_keep_original_shuffle(tmp_path, divisor, varying, dynamic):
     assert "bpermute" in lower(tmp_path, divisor, varying, dynamic)

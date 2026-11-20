@@ -20,9 +20,7 @@ from triton.experimental.gluon.language.hcu import accumulator_fence
 @g.jit
 def _priority_dot(A, B, C, SIDE, M: gl.constexpr, EXTRA_USE: gl.constexpr):
     load: gl.constexpr = gl.BlockedLayout([1, 4], [4, 16], [2, 2], [1, 0])
-    mma: gl.constexpr = AMDMFMALayout(
-        3, [16, 16, 16], True, [2, 2], tiles_per_warp=[1, 1], mmac_layout=1
-    )
+    mma: gl.constexpr = AMDMFMALayout(3, [16, 16, 16], True, [2, 2], tiles_per_warp=[1, 1], mmac_layout=1)
     x = gl.arange(0, M, layout=gl.SliceLayout(1, load))
     k = gl.arange(0, 32, layout=gl.SliceLayout(0, load))
     a = gl.load(A + x[:, None] * 32 + k[None, :])
@@ -47,12 +45,12 @@ def _priority_dot(A, B, C, SIDE, M: gl.constexpr, EXTRA_USE: gl.constexpr):
 def test_first_mmac_priority_has_actual_ssa_cohort(dtype, tile, defer, extra_use):
     source = GluonASTSource(
         _priority_dot,
-        {"A": "*" + dtype, "B": "*" + dtype, "C": "*fp32", "SIDE": "*fp32",
-         "M": "constexpr", "EXTRA_USE": "constexpr"},
+        {"A": "*" + dtype, "B": "*" + dtype, "C": "*fp32", "SIDE": "*fp32", "M": "constexpr", "EXTRA_USE": "constexpr"},
         {"M": tile, "EXTRA_USE": extra_use},
     )
     kernel = triton.compile(
-        source, target=GPUTarget("hip", "gfx936", 64),
+        source,
+        target=GPUTarget("hip", "gfx936", 64),
         options=dict(num_warps=4, num_stages=1, priority_after_first_mmac=defer),
     )
     assembly = kernel.asm["amdgcn"]

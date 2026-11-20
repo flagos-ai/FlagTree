@@ -10,6 +10,10 @@ from triton.experimental.gluon._runtime import GluonASTSource
 if not hasattr(libtriton, "hcu"):
     pytest.skip("HCU compiler required", allow_module_level=True)
 
+import triton.language as tl
+from triton.compiler import ASTSource
+from triton.language.extra.hip import accumulator_fence as tl_accumulator_fence
+
 from triton.backends.hcu.compiler import HIPBackend
 from triton.experimental.gluon.language.hcu import accumulator_fence
 
@@ -30,12 +34,10 @@ def _fenced_copy(A, O, COHORT: gl.constexpr, UNUSED: gl.constexpr):
 def compile_copy(cohort, dtype="fp32", unused=False):
     source = GluonASTSource(
         _fenced_copy,
-        {"A": "*" + dtype, "O": "*" + dtype,
-         "COHORT": "constexpr", "UNUSED": "constexpr"},
+        {"A": "*" + dtype, "O": "*" + dtype, "COHORT": "constexpr", "UNUSED": "constexpr"},
         {"COHORT": cohort, "UNUSED": unused},
     )
-    return triton.compile(source, target=GPUTarget("hip", "gfx936", 64),
-                          options=dict(num_warps=4, num_stages=1))
+    return triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options=dict(num_warps=4, num_stages=1))
 
 
 @pytest.mark.parametrize("cohort", [1, 4, 16, 128])
@@ -63,8 +65,7 @@ def test_unused_result_cannot_eliminate_or_merge_priority_state():
     ("f32", 2, "priority must be 0"),
     ("i32", -1, "priority must be 0"),
 ])
-def test_imported_invalid_fence_is_rejected(dtype, priority, message,
-                                             tmp_path, capfd):
+def test_imported_invalid_fence_is_rejected(dtype, priority, message, tmp_path, capfd):
     text = f'''module {{
   tt.func public @invalid(%x: tensor<8x{dtype}>) {{
     %y = "hcug.accumulator_fence"(%x) {{priority = {priority} : i32}}
@@ -84,9 +85,6 @@ def test_imported_invalid_fence_is_rejected(dtype, priority, message,
 
 # Ordinary TL must convert the target operation's tensor type and propagate
 # encodings through it without treating the effectful fence as a pure op.
-import triton.language as tl
-from triton.compiler import ASTSource
-from triton.language.extra.hip import accumulator_fence as tl_accumulator_fence
 
 
 @triton.jit
@@ -107,12 +105,10 @@ def _tl_fenced_copy(A, O, COHORT: tl.constexpr, UNUSED: tl.constexpr):
 def test_ordinary_tl_fence_effects(cohort, dtype, unused):
     source = ASTSource(
         _tl_fenced_copy,
-        {"A": "*" + dtype, "O": "*" + dtype,
-         "COHORT": "constexpr", "UNUSED": "constexpr"},
+        {"A": "*" + dtype, "O": "*" + dtype, "COHORT": "constexpr", "UNUSED": "constexpr"},
         {"COHORT": cohort, "UNUSED": unused},
     )
-    kernel = triton.compile(source, target=GPUTarget("hip", "gfx936", 64),
-                            options=dict(num_warps=4, num_stages=1))
+    kernel = triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options=dict(num_warps=4, num_stages=1))
     assert kernel.asm["ttgir"].count("hcug.accumulator_fence") == 2
     assert "elementwise_inline_asm" not in kernel.asm["ttgir"]
     assert "s_setprio 1" in kernel.asm["amdgcn"]
@@ -121,8 +117,7 @@ def test_ordinary_tl_fence_effects(cohort, dtype, unused):
 
 
 @triton.jit
-def _tl_fenced_dot(A, B, C, BM: tl.constexpr, BN: tl.constexpr,
-                   FENCED: tl.constexpr):
+def _tl_fenced_dot(A, B, C, BM: tl.constexpr, BN: tl.constexpr, FENCED: tl.constexpr):
     mi = tl.arange(0, BM)
     ni = tl.arange(0, BN)
     ki = tl.arange(0, 32)
@@ -142,25 +137,26 @@ def _tl_fenced_dot(A, B, C, BM: tl.constexpr, BN: tl.constexpr,
 @pytest.mark.parametrize("dtype", ["bf16", "fp16"])
 @pytest.mark.parametrize("bm,bn,warps", [(32, 32, 4), (64, 32, 4), (256, 256, 8)])
 @pytest.mark.parametrize("delayed_priority", [False, True])
-def test_ordinary_tl_dot_fence_keeps_mmac_layout(dtype, bm, bn, warps,
-                                                delayed_priority):
+def test_ordinary_tl_dot_fence_keeps_mmac_layout(dtype, bm, bn, warps, delayed_priority):
     kernels = []
     for fenced in (False, True):
         source = ASTSource(
             _tl_fenced_dot,
-            {"A": "*" + dtype, "B": "*" + dtype, "C": "*" + dtype,
-             "BM": "constexpr", "BN": "constexpr", "FENCED": "constexpr"},
+            {
+                "A": "*" + dtype, "B": "*" + dtype, "C": "*" + dtype, "BM": "constexpr", "BN": "constexpr", "FENCED":
+                "constexpr"
+            },
             {"BM": bm, "BN": bn, "FENCED": fenced},
         )
-        kernels.append(triton.compile(
-            source, target=GPUTarget("hip", "gfx936", 64),
-            options=dict(num_warps=warps, num_stages=1, kpack=8,
-                         mmac_transposed=True, disable_llvm_loop_unroll=True,
-                         priority_after_first_mmac=delayed_priority),
-        ))
+        kernels.append(
+            triton.compile(
+                source,
+                target=GPUTarget("hip", "gfx936", 64),
+                options=dict(num_warps=warps, num_stages=1, kpack=8, mmac_transposed=True,
+                             disable_llvm_loop_unroll=True, priority_after_first_mmac=delayed_priority),
+            ))
     plain, fenced = kernels
-    lines = [line for line in fenced.asm["ttgir"].splitlines()
-             if "hcug.accumulator_fence" in line]
+    lines = [line for line in fenced.asm["ttgir"].splitlines() if "hcug.accumulator_fence" in line]
     assert len(lines) == 2
     assert all("#mma" in line for line in lines), lines
     assert fenced.metadata.shared == plain.metadata.shared
@@ -186,11 +182,10 @@ def _tl_multiple_fence_users(A, B, D, O, P):
 def test_ordinary_tl_multiple_users_do_not_duplicate_priority_effect():
     source = ASTSource(
         _tl_multiple_fence_users,
-        {"A": "*bf16", "B": "*bf16", "D": "*bf16",
-         "O": "*fp32", "P": "*fp32"}, {},
+        {"A": "*bf16", "B": "*bf16", "D": "*bf16", "O": "*fp32", "P": "*fp32"},
+        {},
     )
-    kernel = triton.compile(source, target=GPUTarget("hip", "gfx936", 64),
-                            options=dict(num_warps=4, num_stages=1))
+    kernel = triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options=dict(num_warps=4, num_stages=1))
     assert kernel.asm["ttgir"].count("hcug.accumulator_fence") == 2
     assert kernel.asm["amdgcn"].count("s_setprio 1") == 1
     assert kernel.asm["amdgcn"].count("s_setprio 0") == 1

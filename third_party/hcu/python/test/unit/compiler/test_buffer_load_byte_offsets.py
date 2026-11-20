@@ -34,19 +34,25 @@ def test_preserve_scale_and_idempotence(tmp_path, case):
     elif case == 'unmasked':
         text = text.replace('i32 %masked, i32 0, i32 0)', 'i32 %bytes, i32 0, i32 0)')
     elif case == 'shared_scale':
-        text = text.replace('  store i32 %value,', '  %other = call i32 @llvm.amdgcn.raw.ptr.buffer.load.i32(ptr addrspace(8) poison, i32 %bytes, i32 0, i32 0)\n  store i32 %value,')
+        text = text.replace(
+            '  store i32 %value,',
+            '  %other = call i32 @llvm.amdgcn.raw.ptr.buffer.load.i32(ptr addrspace(8) poison, i32 %bytes, i32 0, i32 0)\n  store i32 %value,'
+        )
     module, keep = load_fixture(tmp_path, text)
     before = str(module)
     assert hcu.preserve_buffer_load_byte_offsets(module, 'gfx936') == 1
     after = str(module)
     assert len(re.findall(r'freeze i32', after)) == 1
     assert re.search(r'(%[^ ]+) = freeze i32 %off\n  %bytes = shl i32 \1, 1', after)
-    assert before.count('call i32 @llvm.amdgcn.raw.ptr.buffer.load') == after.count('call i32 @llvm.amdgcn.raw.ptr.buffer.load')
+    assert before.count('call i32 @llvm.amdgcn.raw.ptr.buffer.load') == after.count(
+        'call i32 @llvm.amdgcn.raw.ptr.buffer.load')
     assert hcu.preserve_buffer_load_byte_offsets(module, 'gfx936') == 0
     assert str(module) == after
 
 
-@pytest.mark.parametrize('case', ['other_arch', 'other_scale', 'add_offset', 'already_frozen', 'non_kernel', 'to_lds', 'user_call', 'buffer_store'])
+@pytest.mark.parametrize(
+    'case',
+    ['other_arch', 'other_scale', 'add_offset', 'already_frozen', 'non_kernel', 'to_lds', 'user_call', 'buffer_store'])
 def test_unrelated_operations_unchanged(tmp_path, case):
     text = BASE
     if case == 'other_scale':
@@ -56,12 +62,21 @@ def test_unrelated_operations_unchanged(tmp_path, case):
     elif case == 'already_frozen':
         text = text.replace('  %bytes = shl i32 %off, 1', '  %ready = freeze i32 %off\n  %bytes = shl i32 %ready, 1')
     elif case == 'to_lds':
-        text = text.replace('  %value = call i32 @llvm.amdgcn.raw.ptr.buffer.load.i32(ptr addrspace(8) poison, i32 %masked, i32 0, i32 0)\n  store i32 %value, ptr addrspace(1) poison', '  call void @llvm.amdgcn.raw.ptr.buffer.load.lds(ptr addrspace(8) poison, ptr addrspace(3) poison, i32 4, i32 %masked, i32 0, i32 0, i32 0)')
+        text = text.replace(
+            '  %value = call i32 @llvm.amdgcn.raw.ptr.buffer.load.i32(ptr addrspace(8) poison, i32 %masked, i32 0, i32 0)\n  store i32 %value, ptr addrspace(1) poison',
+            '  call void @llvm.amdgcn.raw.ptr.buffer.load.lds(ptr addrspace(8) poison, ptr addrspace(3) poison, i32 4, i32 %masked, i32 0, i32 0, i32 0)'
+        )
     elif case == 'user_call':
         text = text.replace('@llvm.amdgcn.raw.ptr.buffer.load.i32', '@user_load')
     elif case == 'buffer_store':
-        text = text.replace('define void @fixture()', 'declare void @llvm.amdgcn.raw.ptr.buffer.store.i32(i32, ptr addrspace(8), i32, i32, i32 immarg)\ndefine void @fixture()')
-        text = text.replace('  %value = call i32 @llvm.amdgcn.raw.ptr.buffer.load.i32(ptr addrspace(8) poison, i32 %masked, i32 0, i32 0)\n  store i32 %value, ptr addrspace(1) poison', '  call void @llvm.amdgcn.raw.ptr.buffer.store.i32(i32 1, ptr addrspace(8) poison, i32 %masked, i32 0, i32 0)')
+        text = text.replace(
+            'define void @fixture()',
+            'declare void @llvm.amdgcn.raw.ptr.buffer.store.i32(i32, ptr addrspace(8), i32, i32, i32 immarg)\ndefine void @fixture()'
+        )
+        text = text.replace(
+            '  %value = call i32 @llvm.amdgcn.raw.ptr.buffer.load.i32(ptr addrspace(8) poison, i32 %masked, i32 0, i32 0)\n  store i32 %value, ptr addrspace(1) poison',
+            '  call void @llvm.amdgcn.raw.ptr.buffer.store.i32(i32 1, ptr addrspace(8) poison, i32 %masked, i32 0, i32 0)'
+        )
     module, keep = load_fixture(tmp_path, text)
     if case == 'non_kernel':
         next(fn for fn in module.get_functions() if fn.name == 'fixture').set_calling_conv(0)
