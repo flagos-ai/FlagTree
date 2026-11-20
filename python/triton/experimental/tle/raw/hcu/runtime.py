@@ -15,10 +15,13 @@ from triton.backends.hcu.compiler import HIPBackend
 from triton.experimental.tle.raw.runtime import RawJITFunction
 from triton.experimental.tle.raw.source_store import register_source
 
-from triton.experimental.tle.raw.cuda.runtime import register_kernel_init_hook
 from triton.experimental.tle.raw.hcu.dushmem import (
     DUSHMEM_CUMODULE_INIT_HOOK,
     initialize_dushmem_cumodule,
+)
+from triton.experimental.tle.raw.kernel_hooks import (
+    KERNEL_INIT_HOOK_ATTR as _KERNEL_INIT_HOOK_ATTR,
+    register_kernel_init_hook,
 )
 
 from triton.experimental.tle.raw.hcu.utils import _offload_arch
@@ -419,13 +422,12 @@ class HCUJITFunction(RawJITFunction):
 
     def mark_kernel_init_hook(self, semantic, generator) -> None:
         if self.library == "dushmem":
-            from triton.experimental.tle.raw.hcu.dushmem import DUSHMEM_CUMODULE_INIT_HOOK
             operation = generator.module.get_operation()
-            hooks = operation.get_str_attr("tle.raw.kernel_init_hooks")
+            hooks = operation.get_str_attr(_KERNEL_INIT_HOOK_ATTR)
             hook_names = set(hooks.split(",")) if hooks else set()
             hook_names.add(DUSHMEM_CUMODULE_INIT_HOOK)
             generator.module.set_attr(
-                "tle.raw.kernel_init_hooks",
+                _KERNEL_INIT_HOOK_ATTR,
                 semantic.builder.get_string_attr(",".join(sorted(hook_names))),
             )
 

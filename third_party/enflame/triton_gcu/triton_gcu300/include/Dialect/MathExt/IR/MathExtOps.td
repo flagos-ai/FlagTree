@@ -46,26 +46,73 @@ def MathExt_UmulhiOp : MathExt_Op<"umulhi", [SameOperandsAndResultType, Pure] #
 //
 // Histogram Op
 //
-def MathExt_HistogramOp : MathExt_Op<"histogram", [MemoryEffectsOpInterface]> {
+// One op for every histogram form the GCU backend supports.  The counted value
+// ("digit") for one key element is always produced by the scalar `body` region;
+// the region is mandatory so there is a single op definition:
+//
+//   math_ext.histogram %result, %key, %num_bins, %size_in, %mask {
+//   ^bb(%e: <key elem>):
+//     ...                     // arith on %e, may capture enclosing scalars
+//     math_ext.yield %digit   // i32 digit for every non-identity region
+//   }
+//
+//   - Counting raw bin indices is the identity region `math_ext.yield %e`.
+//     The backend lowers it either to the generic scalar builtin (common
+//     scene) or, when `use_mradix` is set, to the raw-value MRADIX builtin.
+//   - A radix digit is `(e >> shift) & (num_bins - 1)`; the backend recognises
+//     that exact region and extracts the shift from the region and lowers it
+//     to the tuned MRADIX digit-shift builtin (MRADIX + shift scene).
+//   - Any other region is vectorised onto one MRADIX vector and inlined into
+//     the count loop (MRADIX + region scene), so no digit tile is ever
+//     materialised.  A 32-bit floating-point key is accepted as long as the
+//     region bitcasts it to i32 before the digit arithmetic.
+//
+// `result` is the count *buffer*, not the bin vector: it may be padded up to
+// one OACC line (128 i32) so the tuned builtin can drain the whole MRADIX
+// count vector with a single 512B store; only the first `num_bins` entries are
+// meaningful.  `num_bins` is the number of logical bins; the digit shift is
+// part of the region.
+//
+// `size_in` is the number of leading keys that are counted (a prefix
+// `lane < N` mask folded by the fusion pass); the whole key buffer is counted
+// when it equals the buffer length.  `mask`, when present, is a byte-per-lane
+// i8 (or i1) buffer that masks individual lanes.
+//
+// Optional attributes:
+// - `use_mradix`: Use the MRADIX hardware unit for the identity region.  It is
+//   only meaningful there: a non-identity region is always counted by MRADIX.
+//   Requires an i32 key, an i32 result and num_bins in (0, 32].
+def MathExt_HistogramOp : MathExt_Op<"histogram", [
+    MemoryEffectsOpInterface, SingleBlock]> {
   let summary = "Histogram";
   let description = [{
-    Return the histogram of the input tensor. The number of bins is equal to
-    the dimension of the output tensor. Each bins has a width of 1 and bins
-    start at 0.
-
-    Optional attributes:
-    - `use_mradix`: Use mradix hardware acceleration for radix sort.
-      Requires operand element type to be i32 with shape in (0, 32].
+    Counts the value produced by `body` for every valid key element and writes
+    the per-bin counts to `result`.  See the comment above for the exact
+    semantics of `num_bins`, `size_in`, `mask` and `use_mradix`.
   }];
-  let arguments = (ins AnyMemRef:$result, AnyMemRef:$operand, OptionalAttr<UnitAttr>:$use_mradix);
+  let arguments = (ins
+    AnyMemRef:$result,
+    AnyMemRef:$key,
+    I32:$num_bins,
+    I32:$size_in,
+    Optional<AnyMemRef>:$mask,
+    OptionalAttr<UnitAttr>:$use_mradix
+  );
+  let regions = (region SizedRegion<1>:$body);
   let extraClassDeclaration = [{
     void getEffects(
         SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
         effects) {
-      effects.emplace_back(MemoryEffects::Read::get(), &getOperation()->getOpOperand(1),
+      effects.emplace_back(MemoryEffects::Write::get(),
+                           &getOperation()->getOpOperand(0),
                            SideEffects::DefaultResource::get());
-      effects.emplace_back(MemoryEffects::Write::get(), &getOperation()->getOpOperand(0),
+      effects.emplace_back(MemoryEffects::Read::get(),
+                           &getOperation()->getOpOperand(1),
                            SideEffects::DefaultResource::get());
+      if (getMask())
+        effects.emplace_back(MemoryEffects::Read::get(),
+                             &getOperation()->getOpOperand(4),
+                             SideEffects::DefaultResource::get());
     }
   }];
   let hasVerifier = 1;
@@ -103,5 +150,14 @@ def MathExt_InclusiveScanOp : MathExt_Op<"inclusive_scan", [MemoryEffectsOpInter
     }
   }];
   let hasVerifier = 1;
+}
+
+//
+// Yield Op
+//
+def MathExt_YieldOp : MathExt_Op<"yield", [
+    ParentOneOf<["HistogramOp"]>, Pure, Terminator]> {
+  let summary = "terminator for a MathExt region";
+  let arguments = (ins Variadic<AnyType>:$operands);
 }
 #endif // MATH_EXT_OPS
