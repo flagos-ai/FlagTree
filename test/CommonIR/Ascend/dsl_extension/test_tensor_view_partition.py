@@ -152,9 +152,8 @@ def test_tensor_view_partition_store_computed_value():
 
 
 def test_partition_view_tail_load():
-    # cols = 5 * BLOCK_N + 16: the last column block is a boundary tile whose
-    # valid prefix is a whole number of 32-byte units, so it is filled with
-    # padding and DMAed as a prefix instead of an element-wise fill.
+    # cols = 5 * BLOCK_N + 16: the last column block is a boundary tile, so it
+    # is filled with the padding value and its in-bounds prefix is copied in.
     rows = 128
     cols = 5136
     block_m = 4

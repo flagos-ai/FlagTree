@@ -520,10 +520,9 @@ static Value emitAllInBounds(OpBuilder &b, Location loc,
 // fill the same UB buffer, which keeps the scf.if result-free and gives the
 // tile a single definition regardless of which one ran. A boundary tile's
 // in-bounds region is a rectangle, so the whole UB tile is filled with the
-// padding value once and the prefix moves as one DMA when its rows are whole
-// 32-byte units, or as a gather bounded by the valid lengths otherwise; only
-// a tile with no in-bounds element on some dimension takes the unbounded
-// per-element gather.
+// padding value once and the prefix is copied in as one strided subview; only
+// a tile with no in-bounds element on some dimension takes the per-element
+// gather, because there is no prefix to copy.
 static Value emitDenseTileLoad(OpBuilder &b, Location loc,
                                const TensorViewAccessInfo &info,
                                ValueRange indices, Value offset,
@@ -543,11 +542,9 @@ static Value emitDenseTileLoad(OpBuilder &b, Location loc,
       },
       [&](OpBuilder &nested, Location nestedLoc) {
         // Boundary tile: fill the whole UB tile with the padding value, then
-        // move the in-bounds prefix. When the innermost valid run is a whole
-        // number of 32-byte units the prefix is one DMA; otherwise it is an
-        // element-wise gather bounded by the valid lengths, which keeps the
-        // padding exact without a bound test per element. Only a tile with no
-        // in-bounds element on some dimension takes the unbounded gather.
+        // copy the in-bounds prefix out of the base view. The copy carries the
+        // strided prefix subviews, so the backend picks a legal transfer for
+        // any alignment without a per-element scatter.
         Value nonEmpty =
             nested.create<arith::ConstantIntOp>(nestedLoc, 1, /*width=*/1);
         for (unsigned d = 0; d < info.rank(); ++d) {
@@ -561,40 +558,11 @@ static Value emitDenseTileLoad(OpBuilder &b, Location loc,
             nestedLoc, nonEmpty,
             [&](OpBuilder &inner, Location innerLoc) {
               inner.create<hivm::VBrcOp>(innerLoc, TypeRange{}, pad, ub);
-              int64_t elemBits = info.elementType.getIntOrFloatBitWidth();
-              int64_t elemBytes = elemBits >= 8 ? (elemBits + 7) / 8 : 0;
-              if (elemBytes == 0) {
-                emitBoundedElementwiseFill(inner, innerLoc, info, indices, ub,
-                                           validLengths);
-                inner.create<scf::YieldOp>(innerLoc);
-                return;
-              }
-              Value c0 = inner.create<arith::ConstantIndexOp>(innerLoc, 0);
-              Value c32 = inner.create<arith::ConstantIndexOp>(innerLoc, 32);
-              Value bytes =
-                  inner.create<arith::ConstantIndexOp>(innerLoc, elemBytes);
-              Value lastValid = validLengths.back();
-              Value rowBytes =
-                  inner.create<arith::MulIOp>(innerLoc, lastValid, bytes);
-              Value rem = inner.create<arith::RemUIOp>(innerLoc, rowBytes, c32);
-              Value aligned = inner.create<arith::CmpIOp>(
-                  innerLoc, arith::CmpIPredicate::eq, rem, c0);
-              inner.create<scf::IfOp>(
-                  innerLoc, aligned,
-                  [&](OpBuilder &leaf, Location leafLoc) {
-                    Value gmPrefix =
-                        emitPrefixSubview(leaf, leafLoc, gm, validLengths);
-                    Value ubPrefix =
-                        emitPrefixSubview(leaf, leafLoc, ub, validLengths);
-                    leaf.create<hivm::LoadOp>(leafLoc, TypeRange{}, gmPrefix,
-                                              ubPrefix);
-                    leaf.create<scf::YieldOp>(leafLoc);
-                  },
-                  [&](OpBuilder &leaf, Location leafLoc) {
-                    emitBoundedElementwiseFill(leaf, leafLoc, info, indices, ub,
-                                               validLengths);
-                    leaf.create<scf::YieldOp>(leafLoc);
-                  });
+              Value gmPrefix =
+                  emitPrefixSubview(inner, innerLoc, gm, validLengths);
+              Value ubPrefix =
+                  emitPrefixSubview(inner, innerLoc, ub, validLengths);
+              inner.create<memref::CopyOp>(innerLoc, gmPrefix, ubPrefix);
               inner.create<scf::YieldOp>(innerLoc);
             },
             [&](OpBuilder &inner, Location innerLoc) {
@@ -623,19 +591,13 @@ static bool viewIndicesWellTyped(const TensorViewAccessInfo &info,
 }
 
 // lowerViewLoad/lowerViewStore below call emitGatherLoad/emitScatterStore from
-// TensorViewLowering.cpp; nothing reaches the emitters in the .inc any more
-// (verified: zero references to emitPerIndexPayloadGather,
-// emitSingleAffineGatherDMA or emitDensePayloadInBounds from this file).
-// Including it only compiled a second, divergent copy of helpers that share
-// names with the live ones -- edits to one silently did not affect the other.
-//
-// The file is kept rather than deleted because it holds the only working
-// implementation of the affine fast path: emitAffineGmTile (which folds the
-// index step into the sparse dim's stride) and emitAffineRunInBounds (which
-// range-checks both ends of a run once per tile). Those are what
-// emitSingleAffineGather/Scatter in TensorViewLowering.cpp need when the stubs
-// there are filled in. See documents/commonir/tensorview_known_issues.md,
-// Issues 1 and 3.
+// TensorViewLowering.cpp. The generated .inc is not included here: it defines a
+// second copy of helpers under the same names, so an edit to one copy would not
+// reach the other. It stays in the tree because it also carries the affine
+// helpers emitAffineGmTile, which folds the index step into the sparse dim's
+// stride, and emitAffineRunInBounds, which range-checks both ends of a run once
+// per tile; emitSingleAffineGather/Scatter will build on them once that
+// strategy is selected.
 
 // Lower a `tile.load` off a TensorView. Dense views use emitDenseTileLoad;
 // gather_scatter views use emitGatherLoad to select payload DMA or scalar

@@ -94,9 +94,9 @@ def partition_padding_3d_kernel(src, dst, sd, sh, sw, dd, dh, dw, BLOCK_D: tl.co
     # sd (depth), sh (rows) or sw (cols) is out of bounds and must be padded with
     # -inf. dst is [dd, dh, dw] = the full 2x2x2 tile grid, so every window is
     # in-bounds on the store side and the padded tile is written out verbatim
-    # (observable). Boundary windows move their in-bounds prefix with one DMA
-    # and keep the padding from the whole-tile fill, so the only thing that
-    # changes vs the 1-D/2-D cases is the rank of the tile.
+    # (observable). Boundary windows copy their in-bounds prefix into the
+    # whole-tile fill, so the only thing that changes vs the 1-D/2-D cases is
+    # the rank of the tile.
     d_block = tl.program_id(0)
     row_block = tl.program_id(1)
     col_block = tl.program_id(2)
@@ -133,9 +133,8 @@ def test_partition_dst_space_padding_3d():
 def test_partition_dst_space_padding_2d():
     # Valid src region 6x6; tile 4x4; 2x2 window grid covers [0,8)x[0,8), so the
     # L-shaped tail (rows >= 6 or cols >= 6) is padding. dst 8x8 is fully
-    # in-bounds so the padded tail is observable. This exercises the multi-dim
-    # element-wise gather (emitPaddedGatherLoad), where the pad value is the
-    # scf.if else-yield and cannot be dead-code-eliminated by the backend.
+    # in-bounds so the padded tail is observable. The corner window keeps a 2x2
+    # in-bounds prefix, so this exercises a multi-dimensional prefix copy.
     sh, sw = 6, 6
     block_m, block_n = 4, 4
     dh, dw = 8, 8
@@ -190,9 +189,8 @@ def test_partition_dst_space_mixed_grid():
 def test_partition_dst_space_tile_past_extent():
     # Three windows of 8 over 10 valid elements: window 0 is whole-tile, window 1
     # keeps a 2-element in-bounds prefix, and window 2 starts at 16 with nothing
-    # in bounds at all. One launch covers both boundary branches: the padded
-    # prefix DMA and the element-wise gather for a tile with no in-bounds
-    # element.
+    # in bounds at all. One launch covers both boundary branches: the prefix
+    # copy and the element-wise fill used when a tile has no in-bounds element.
     src_elements = 10
     block_size = 8
     dst_elements = 24

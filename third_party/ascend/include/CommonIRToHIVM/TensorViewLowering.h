@@ -52,14 +52,6 @@ void emitElementwiseFill(OpBuilder &b, Location loc,
                          const TensorViewAccessInfo &info, ValueRange indices,
                          Value buffer, Value pad);
 
-/// Same element-wise gather as emitElementwiseFill, restricted to the in-bounds
-/// prefix `[0, valid[d])` of every dim, so it emits no per-element bound test.
-/// The caller fills the rest of `buffer` with the padding value first.
-void emitBoundedElementwiseFill(OpBuilder &b, Location loc,
-                                const TensorViewAccessInfo &info,
-                                ValueRange indices, Value buffer,
-                                ValueRange validLengths);
-
 /// Unsupported views return failure(). Runtime bounds are handled in the
 /// selected strategy: ScalarTransfer checks each element; PerIndexPayloadDMA
 /// clips dense leading loop bounds and payload sizes, and masks sparse tuples.
