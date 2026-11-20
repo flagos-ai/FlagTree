@@ -6,7 +6,6 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
-#include "triton/Tools/LinearLayout.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 #include <memory>
@@ -128,188 +127,6 @@ static bool preferWideAsyncCopies(scf::ForOp forOp, LoadToInfoMap &loads,
     changed = true;
   }
   return changed;
-}
-
-// Private linear-copy experiment. These are the GPU-verified, zero-control
-// canonical charts of two gfx936 matrix-read producer families. They do not
-// model the vendor's non-linear circular lane rotation.
-static void
-selectCanonicalMatrixSharedLayout(scf::ForOp forOp, LoadToInfoMap &loads,
-                                  int numStages,
-                                  const tt::HCU::TargetInfo &targetInfo) {
-  auto module = forOp->getParentOfType<ModuleOp>();
-  auto hint = module->getAttrOfType<IntegerAttr>("ttg.hcu.canonical_matrix");
-  auto alt = module->getAttrOfType<IntegerAttr>("ttg.hcu.alt_matrix");
-  auto ctas = module->getAttrOfType<IntegerAttr>("ttg.num-ctas");
-  auto warps = module->getAttrOfType<IntegerAttr>("ttg.num-warps");
-  auto lanes = module->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
-  if (!hint || (hint.getInt() != 1 && hint.getInt() != 2) ||
-      (alt && alt.getInt() != 0) || targetInfo.getArch() != "gfx936" || !ctas ||
-      ctas.getInt() != 1 || !warps ||
-      (warps.getInt() != 4 && warps.getInt() != 8) || !lanes ||
-      lanes.getInt() != 64 || loads.size() != 2 ||
-      (numStages != 2 && numStages != 3))
-    return;
-  auto dots = llvm::to_vector(forOp.getBody()->getOps<tt::DotOp>());
-  if (dots.size() != 1 ||
-      llvm::to_vector(forOp.getBody()->getOps<tt::LoadOp>()).size() != 2 ||
-      llvm::any_of(loads, [&](const auto &entry) {
-        return !isa<tt::LoadOp>(entry.first) || !entry.second.sharedEncoding ||
-               entry.second.distToUse != 0 ||
-               entry.second.use != dots.front().getOperation();
-      }))
-    return;
-  auto dot = dots.front();
-  auto aCvt = dot.getA().getDefiningOp<ttg::ConvertLayoutOp>();
-  auto bCvt = dot.getB().getDefiningOp<ttg::ConvertLayoutOp>();
-  auto aLoad = aCvt ? aCvt.getSrc().getDefiningOp<tt::LoadOp>() : tt::LoadOp{};
-  auto bLoad = bCvt ? bCvt.getSrc().getDefiningOp<tt::LoadOp>() : tt::LoadOp{};
-  if (!aLoad || !bLoad || aLoad == bLoad || !aLoad.getResult().hasOneUse() ||
-      !bLoad.getResult().hasOneUse() || !aCvt.getResult().hasOneUse() ||
-      !bCvt.getResult().hasOneUse() || !loads.count(aLoad.getOperation()) ||
-      !loads.count(bLoad.getOperation()) ||
-      !isa<RankedTensorType>(aLoad.getPtr().getType()) ||
-      !isa<RankedTensorType>(bLoad.getPtr().getType()))
-    return;
-  auto ty = cast<RankedTensorType>(dot.getB().getType());
-  auto enc = dyn_cast<ttg::DotOperandEncodingAttr>(ty.getEncoding());
-  auto mma = enc ? dyn_cast<ttg::AMDMfmaEncodingAttr>(enc.getParent())
-                 : ttg::AMDMfmaEncodingAttr{};
-  if (!mma || enc.getOpIdx() != 1 || ty.getRank() != 2 ||
-      mma.getMmacLayout() != ttg::MmacLayout::LEGACY ||
-      mma.getInstrShape() != ArrayRef<unsigned>({16, 16, 16}) ||
-      !(ty.getElementType().isF16() || ty.getElementType().isBF16()) ||
-      (enc.getKWidth() != 4 && enc.getKWidth() != 8) ||
-      ttg::getOrderForMemory(cast<RankedTensorType>(bLoad.getType())).front() !=
-          1)
-    return;
-  auto shape = ty.getShape();
-  SmallVector<unsigned> kBases;
-  if (shape[0] == 32 && shape[1] == 128)
-    kBases = {2, 8, 1, 16, 4};
-  else if (shape[0] == 16 && shape[1] == 256)
-    kBases = {2, 1, 4, 8};
-  else
-    return;
-  std::vector<std::vector<int32_t>> bases;
-  for (int64_t n = 1; n < shape[1]; n *= 2)
-    bases.push_back({0, int32_t(n)});
-  for (unsigned k : kBases)
-    bases.push_back({int32_t(k), 0});
-  auto *ctx = forOp.getContext();
-  tt::LinearLayout canonical(
-      {{StringAttr::get(ctx, "offset"), bases},
-       {StringAttr::get(ctx, "block"), {}}},
-      {StringAttr::get(ctx, "dim0"), StringAttr::get(ctx, "dim1")});
-  loads[bLoad.getOperation()].sharedEncoding =
-      ttg::SharedLinearEncodingAttr::get(ctx, canonical, 16);
-
-  // The separate private mode also tests the true linear chart of A. Keep
-  // mode 1's B-only experiment unchanged. Ordinary raw G2L copies use the
-  // chart's actual source distribution; no indexed descriptor or m0 rotation.
-  if (hint.getInt() != 2)
-    return;
-  auto aTy = cast<RankedTensorType>(dot.getA().getType());
-  auto aEnc = dyn_cast<ttg::DotOperandEncodingAttr>(aTy.getEncoding());
-  if (!aEnc || aEnc.getOpIdx() != 0 || aEnc.getParent() != mma ||
-      aTy.getRank() != 2 || aTy.getElementType() != ty.getElementType() ||
-      (aEnc.getKWidth() != 4 && aEnc.getKWidth() != 8) ||
-      ttg::getOrderForMemory(cast<RankedTensorType>(aLoad.getType())).front() !=
-          1)
-    return;
-  if (auto canonical = getHCUCanonicalASharedEncoding(ctx, aTy.getShape()))
-    loads[aLoad.getOperation()].sharedEncoding = canonical;
-}
-
-// Private ALT experiment. Keep the ordinary synchronous two-load GEMM path
-// and its existing producer lowering; only replace B's shared encoding.
-static void selectLegacyAltSharedLayout(scf::ForOp forOp, LoadToInfoMap &loads,
-                                        bool useAsyncCopy, int numStages,
-                                        const tt::HCU::TargetInfo &targetInfo) {
-  auto module = forOp->getParentOfType<ModuleOp>();
-  auto attr = module->getAttrOfType<IntegerAttr>("ttg.hcu.alt_matrix");
-  auto canonical =
-      module->getAttrOfType<IntegerAttr>("ttg.hcu.canonical_matrix");
-  if ((canonical && (canonical.getInt() == 1 || canonical.getInt() == 2)) ||
-      !attr || (attr.getInt() != 2 && attr.getInt() != 3) ||
-      targetInfo.getArch() != "gfx936" || loads.size() != 2 ||
-      (numStages != 2 && numStages != 3) || hasAsyncLoad(loads, useAsyncCopy))
-    return;
-  auto numCTAs = module->getAttrOfType<IntegerAttr>("ttg.num-ctas");
-  auto numWarps = module->getAttrOfType<IntegerAttr>("ttg.num-warps");
-  auto prefetch = module->getAttrOfType<IntegerAttr>("ttg.hcu.local_prefetch");
-  // The verified-WAR experiment currently proves SwizzledShared only.
-  if (!numCTAs || numCTAs.getInt() != 1 || !numWarps ||
-      (numWarps.getInt() != 4 && numWarps.getInt() != 8) ||
-      (prefetch && prefetch.getInt() != 0 && prefetch.getInt() != 2))
-    return;
-  auto dots = llvm::to_vector(forOp.getBody()->getOps<tt::DotOp>());
-  if (dots.size() != 1 ||
-      llvm::to_vector(forOp.getBody()->getOps<tt::LoadOp>()).size() != 2 ||
-      llvm::any_of(loads, [&](const auto &entry) {
-        return !isa<tt::LoadOp>(entry.first) || !entry.second.sharedEncoding ||
-               entry.second.distToUse != 0 ||
-               entry.second.use != dots.front().getOperation();
-      }))
-    return;
-  auto dot = dots.front();
-  auto aCvt = dot.getA().getDefiningOp<ttg::ConvertLayoutOp>();
-  auto bCvt = dot.getB().getDefiningOp<ttg::ConvertLayoutOp>();
-  auto aLoad = aCvt ? aCvt.getSrc().getDefiningOp<tt::LoadOp>() : tt::LoadOp{};
-  auto bLoad = bCvt ? bCvt.getSrc().getDefiningOp<tt::LoadOp>() : tt::LoadOp{};
-  if (!aLoad || !bLoad || aLoad == bLoad || !aLoad.getResult().hasOneUse() ||
-      !bLoad.getResult().hasOneUse() || !aCvt.getResult().hasOneUse() ||
-      !bCvt.getResult().hasOneUse() || !loads.count(aLoad.getOperation()) ||
-      !loads.count(bLoad.getOperation()) ||
-      !isa<RankedTensorType>(aLoad.getPtr().getType()) ||
-      !isa<RankedTensorType>(bLoad.getPtr().getType()))
-    return;
-  auto bTy = cast<RankedTensorType>(dot.getB().getType());
-  auto enc = dyn_cast<ttg::DotOperandEncodingAttr>(bTy.getEncoding());
-  auto mma = enc ? dyn_cast<ttg::AMDMfmaEncodingAttr>(enc.getParent())
-                 : ttg::AMDMfmaEncodingAttr{};
-  if (!mma || mma.getMmacLayout() != ttg::MmacLayout::LEGACY ||
-      mma.getIsTransposed() || enc.getOpIdx() != 1 || bTy.getRank() != 2 ||
-      !(bTy.getElementType().isF16() || bTy.getElementType().isBF16()) ||
-      (enc.getKWidth() != 4 && enc.getKWidth() != 8) ||
-      mma.getInstrShape() != ArrayRef<unsigned>({16, 16, 16}) ||
-      llvm::any_of(mma.getTilesPerWarp(), [](unsigned n) { return n != 1; }))
-    return;
-  auto shape = bTy.getShape();
-  if (shape[0] < 16 || shape[0] > 64 || shape[1] < 64 || shape[1] > 256 ||
-      !llvm::isPowerOf2_64(shape[0]) || !llvm::isPowerOf2_64(shape[1]) ||
-      (enc.getKWidth() == 8 && shape[0] < 32))
-    return;
-
-  auto *ctx = forOp.getContext();
-  auto reg = StringAttr::get(ctx, "register");
-  auto dotLL = ttg::toLinearLayout(bTy);
-  unsigned chosen = attr.getInt();
-  if (chosen >= dotLL.getInDimSizeLog2(reg))
-    return;
-  auto basis = dotLL.getBasis(reg, chosen);
-  unsigned flatBasis = basis[0] * shape[1] + basis[1];
-  if (!llvm::isPowerOf2_32(flatBasis))
-    return;
-  unsigned pivot = llvm::Log2_32(flatBasis);
-  if (pivot < 3)
-    return;
-  // SharedLinear is physical offset -> logical [K,N]. Move the chosen
-  // row-major bit to physical bit0; this is the inverse permutation.
-  std::vector<std::vector<int32_t>> bases;
-  unsigned elements = shape[0] * shape[1];
-  for (unsigned bit = 0; bit < llvm::Log2_32(elements); ++bit) {
-    unsigned originalBit = bit == 0 ? pivot : (bit <= pivot ? bit - 1 : bit);
-    unsigned logical = 1u << originalBit;
-    bases.push_back({int32_t(logical / shape[1]), int32_t(logical % shape[1])});
-  }
-  auto offset = StringAttr::get(ctx, "offset");
-  auto block = StringAttr::get(ctx, "block");
-  tt::LinearLayout sharedLL(
-      {{offset, bases}, {block, {}}},
-      {StringAttr::get(ctx, "dim0"), StringAttr::get(ctx, "dim1")});
-  loads[bLoad.getOperation()].sharedEncoding =
-      ttg::SharedLinearEncodingAttr::get(ctx, sharedLL, 16);
 }
 
 bool canBeConvertedToAsyncLoad(unsigned numBuffers, tt::LoadOp loadOp,
@@ -1181,9 +998,6 @@ void lowerLoop(scf::ForOp forOp,
     }
   }
 
-  selectCanonicalMatrixSharedLayout(forOp, loadToInfo, numStages, targetInfo);
-  selectLegacyAltSharedLayout(forOp, loadToInfo, useAsyncCopy, numStages,
-                              targetInfo);
   // New ownership conversions introduce pointer/mask SSA values. Recompute
   // facts before asking whether those new values can use direct-to-LDS copy.
   std::unique_ptr<triton::HCU::ModuleAxisInfoAnalysis> refreshedAxisInfo;

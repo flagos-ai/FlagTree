@@ -30,8 +30,4 @@ composePaddedLayout(const triton::HCU::TargetInfo &targetInfo,
                     triton::gpu::TensorOrMemDesc srcTy,
                     ArrayRef<unsigned> sharedOrder, bool useAsyncCopy);
 
-// Existing private canonical A chart; null outside its two proved shapes.
-triton::gpu::SharedLinearEncodingAttr
-getHCUCanonicalASharedEncoding(MLIRContext *ctx, ArrayRef<int64_t> aShape);
-
 #endif

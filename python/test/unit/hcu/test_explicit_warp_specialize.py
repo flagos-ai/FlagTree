@@ -125,6 +125,24 @@ def test_explicit_domain_and_two_cta_phases(base, worker, total):
     assert "hcu.raw_window" not in kernel.asm["ttgir"]
 
 
+@pytest.mark.parametrize("base,worker", [(1, 1), (1, 2), (2, 1)])
+def test_private_function_does_not_inherit_kernel_capture_abi(tmp_path, capfd, base, worker):
+    text = compile_probe(base, worker).asm["ttgir"]
+    assert "tt.func public" in text
+    path = tmp_path / "private-warp.ttgir"
+    path.write_text(text.replace("tt.func public", "tt.func private", 1))
+    context = libtriton.ir.context()
+    libtriton.ir.load_dialects(context)
+    from triton.backends.hcu.compiler import HIPBackend
+    HIPBackend(GPUTarget("hip", "gfx936", 64)).load_dialects(context)
+    module = libtriton.ir.parse_mlir_module(str(path), context)
+    manager = libtriton.ir.pass_manager(context)
+    libtriton.hcu.passes.ttgpuir.add_warp_specialize_to_llvm(manager, "gfx936", 0, 0, False, 0, 0, 0)
+    with pytest.raises(RuntimeError, match="PassManager::run failed"):
+        manager.run(module, "private_warp_domain")
+    assert "requires a void terminal kernel" in capfd.readouterr().err
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

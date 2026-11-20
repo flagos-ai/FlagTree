@@ -89,7 +89,7 @@ def fake_codegen(monkeypatch):
         calls.append(source)
         body = " s_nop 1\n" if "; prepared" in source else " s_nop 0\n"
         Path(argv[-1]).write_text("kernel:\n" + body + " s_endpgm\n")
-        return SimpleNamespace(stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(compiler.subprocess, "run", run)
     return calls

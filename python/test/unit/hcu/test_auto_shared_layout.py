@@ -45,7 +45,7 @@ def test_allocator_policy_does_not_require_runtime_device_discovery(monkeypatch,
     # capability lookup separately; only the allocator policy is under test.
     monkeypatch.setattr(CodeGenerator, "_get_tle_backend_name", lambda self: "hcu")
     monkeypatch.setattr(configured, "FLAGTREE_BACKEND", backend_name)
-    monkeypatch.setattr(configured, "get_active_backend_name", unexpected_device_discovery)
+    monkeypatch.setattr(configured, "get_active_backend_name", unexpected_device_discovery, raising=False)
     context = libtriton.ir.context()
     libtriton.ir.load_dialects(context)
     target = GPUTarget("hip", "gfx936", 64)

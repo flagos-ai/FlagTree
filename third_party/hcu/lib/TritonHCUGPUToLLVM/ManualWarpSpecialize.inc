@@ -16,7 +16,7 @@ static LogicalResult early(ModuleOp mod) {
   auto ws = ops.front();
   auto domain = HCU::terminalWarpDomain(ws, 16);
   if (!domain || ws.getPartitionRegions().size() + 1 > kNumBarriers)
-    return reject("requires a void terminal wave64 single-CTA specialization within hardware wave/barrier limits");
+    return reject("requires a void terminal kernel wave64 single-CTA specialization within hardware wave/barrier limits");
   ws.setWarpGroupStartIds(domain->starts);
   mod->setAttr("ttg.total-num-warps", IntegerAttr::get(IntegerType::get(mod.getContext(), 32), domain->total));
   HCU::deferred_wait::WindowTrace(ws).run();

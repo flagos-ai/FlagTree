@@ -563,4 +563,4 @@ def test_private_function_scalar_is_not_a_kernel_abi_argument(dtype, transpose, 
     with pytest.raises(RuntimeError, match="PassManager::run failed"):
         triton.compile(str(path), target=GPUTarget("hip", "gfx936", 64),
                        options=dict(num_warps=4, num_stages=1, use_block_pingpong=False))
-    assert "matrix shared copy: unproven uniform origins" in capfd.readouterr().err
+    assert "requires actual aligned source argument" in capfd.readouterr().err

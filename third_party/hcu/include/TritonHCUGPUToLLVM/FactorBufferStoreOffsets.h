@@ -2,12 +2,13 @@
 #define TRITON_HCU_FACTOR_BUFFER_STORE_OFFSETS_H
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicsAMDGPU.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/ValueHandle.h"
@@ -48,8 +49,10 @@ class DecomposeAddress {
   unsigned remaining = 256;
 
   bool disjoint(llvm::BinaryOperator *op) const {
-    auto a = llvm::computeKnownBits(op->getOperand(0), layout, nullptr, context);
-    auto b = llvm::computeKnownBits(op->getOperand(1), layout, nullptr, context);
+    auto a =
+        llvm::computeKnownBits(op->getOperand(0), layout, nullptr, context);
+    auto b =
+        llvm::computeKnownBits(op->getOperand(1), layout, nullptr, context);
     return (~a.Zero & ~b.Zero).isZero();
   }
 
@@ -74,7 +77,8 @@ class DecomposeAddress {
         return collect(op->getOperand(0), scale, out, depth + 1) &&
                collect(op->getOperand(1), scale, out, depth + 1);
       case llvm::Instruction::Shl:
-        if (auto *shift = llvm::dyn_cast<llvm::ConstantInt>(op->getOperand(1))) {
+        if (auto *shift =
+                llvm::dyn_cast<llvm::ConstantInt>(op->getOperand(1))) {
           uint64_t amount = shift->getZExtValue();
           if (amount < 32)
             return collect(op->getOperand(0), scale << amount, out, depth + 1);
@@ -119,10 +123,9 @@ inline bool isCandidate(llvm::CallInst *call) {
   auto *callee = call ? call->getCalledFunction() : nullptr;
   return callee && callee->isIntrinsic() && call->arg_size() == 5 &&
          !call->getNumOperandBundles() &&
-         callee->getName() == "llvm.amdgcn.raw.ptr.buffer.store.i32" &&
-         call->getArgOperand(2)->getType()->isIntegerTy(32) &&
-         llvm::PatternMatch::match(call->getArgOperand(3), llvm::PatternMatch::m_Zero()) &&
-         llvm::PatternMatch::match(call->getArgOperand(4), llvm::PatternMatch::m_Zero());
+         callee->getIntrinsicID() ==
+             llvm::Intrinsic::amdgcn_raw_ptr_buffer_store &&
+         call->getArgOperand(2)->getType()->isIntegerTy(32);
 }
 
 } // namespace buffer_store_offsets
@@ -187,14 +190,40 @@ inline unsigned factorBufferStoreOffsets(llvm::Module &module,
       llvm::SmallVector<llvm::WeakTrackingVH, 16> dead;
       for (const auto &group : groups) {
         if (group.stores.size() < 2 ||
-            std::none_of(group.stores.begin(), group.stores.end(),
-                         [](const Store &store) { return store.constant != 0; }))
+            std::none_of(
+                group.stores.begin(), group.stores.end(),
+                [](const Store &store) { return store.constant != 0; }))
           continue;
         auto *first = group.stores.front().call;
         if (llvm::any_of(group.terms, [&](const auto &term) {
               return !dom.dominates(term.first, first);
             }))
           continue;
+
+        // A second pass must not rebuild an already shared common expression.
+        // Compare SSA identity after removing only the preserved mask and the
+        // exact constant this analysis found; no algebraic/nowrap assumption.
+        auto existingCommon = [](const Store &store) -> llvm::Value * {
+          llvm::Value *offset = store.call->getArgOperand(2);
+          if (store.mask)
+            offset = llvm::cast<llvm::SelectInst>(offset)->getTrueValue();
+          if (!store.constant)
+            return offset;
+          auto *add = llvm::dyn_cast<llvm::BinaryOperator>(offset);
+          if (!add || add->getOpcode() != llvm::Instruction::Add)
+            return nullptr;
+          for (unsigned i = 0; i < 2; ++i)
+            if (auto *constant =
+                    llvm::dyn_cast<llvm::ConstantInt>(add->getOperand(i)))
+              if (constant->getZExtValue() == store.constant)
+                return add->getOperand(1 - i);
+          return nullptr;
+        };
+        if (auto *common = existingCommon(group.stores.front()))
+          if (llvm::all_of(group.stores, [&](const Store &store) {
+                return existingCommon(store) == common;
+              }))
+            continue;
 
         llvm::IRBuilder<> builder(first);
         builder.SetCurrentDebugLocation(first->getDebugLoc());
@@ -210,7 +239,8 @@ inline unsigned factorBufferStoreOffsets(llvm::Module &module,
           builder.SetCurrentDebugLocation(store.call->getDebugLoc());
           llvm::Value *offset = common;
           if (store.constant)
-            offset = builder.CreateAdd(offset, builder.getInt32(store.constant));
+            offset =
+                builder.CreateAdd(offset, builder.getInt32(store.constant));
           if (store.mask)
             offset = builder.CreateSelect(store.mask, offset, store.sentinel);
           dead.emplace_back(store.call->getArgOperand(2));

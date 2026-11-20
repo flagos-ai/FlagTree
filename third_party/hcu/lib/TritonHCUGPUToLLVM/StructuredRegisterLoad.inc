@@ -67,7 +67,7 @@ static bool structuredRegisterWaveControl(Value v,llvm::SmallPtrSetImpl<void *>&
   if(auto arg=dyn_cast<BlockArgument>(v)) {
     Block* dest=arg.getOwner();unsigned n=arg.getArgNumber();
     if(auto f=dyn_cast<triton::FuncOp>(dest->getParentOp()))
-      if(dest==&f.getBody().front())return true;
+      if(dest==&f.getBody().front())return triton::isKernel(f);
     if(dest->hasNoPredecessors())return false;
     for(Block* pred:dest->getPredecessors()) {
       Operation* term=pred->getTerminator();bool edge=false;
@@ -117,7 +117,7 @@ static bool structuredRegisterBaseUniform(Value v) {
   v = mlir::triton::HCU::resolveWarpSpecializeCapture(v);
   if(auto arg=dyn_cast<BlockArgument>(v))
     if(auto f=dyn_cast<triton::FuncOp>(arg.getOwner()->getParentOp()))
-      return arg.getOwner()==&f.getBody().front();
+      return arg.getOwner()==&f.getBody().front() && triton::isKernel(f);
   if(auto add=v.getDefiningOp<triton::AddPtrOp>())
     return structuredRegisterBaseUniform(add.getPtr()) && structuredRegisterDataUniform(add.getOffset());
   return false;

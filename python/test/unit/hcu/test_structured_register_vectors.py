@@ -56,9 +56,12 @@ module attributes {{"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32,
 }}'''
 
 
-def lower(tmp_path, dtype, layout, alignment, column):
+def lower(tmp_path, dtype, layout, alignment, column, private=False):
     path = tmp_path / "vectors.ttgir"
-    path.write_text(source(dtype, layout, alignment, column))
+    text = source(dtype, layout, alignment, column)
+    if private:
+        text = text.replace("tt.func public @vectors", "tt.func private @vectors")
+    path.write_text(text)
     context = libtriton.ir.context()
     libtriton.ir.load_dialects(context)
     HIPBackend(GPUTarget("hip", "gfx936", 64)).load_dialects(context)
@@ -86,3 +89,12 @@ def test_address_grouping_respects_thread_alignment_and_column(tmp_path, dtype, 
     name = "llvm.amdgcn.struct.ptr.buffer.load." + width
     assert len(re.findall(r"llvm.call @" + re.escape(name) + r"\(", result)) == calls
     assert "bpermute" not in result and "llvm.alloca" not in result
+
+
+@pytest.mark.parametrize("dtype", ["f16", "bf16"])
+def test_private_pointer_argument_requires_uniform_base_proof(tmp_path, capfd, dtype):
+    # A private function's scalar-typed pointer may vary by lane. Its alignment
+    # attribute cannot establish CTA uniformity for a scalar buffer descriptor.
+    with pytest.raises(RuntimeError, match="PassManager::run failed"):
+        lower(tmp_path, dtype, "ordered", 16, 0, private=True)
+    assert "structured-register: requires uniform AS1 base" in capfd.readouterr().err

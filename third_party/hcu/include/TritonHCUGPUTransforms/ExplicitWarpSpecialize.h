@@ -81,7 +81,7 @@ terminalWarpDomain(gpu::WarpSpecializeOp ws, unsigned maxWaves) {
   auto base = mod->getAttrOfType<IntegerAttr>("ttg.num-warps");
   auto fn = dyn_cast<triton::FuncOp>(ws->getParentOp());
   if (!base || base.getInt() < 1 || uint64_t(base.getInt()) > maxWaves ||
-      !llvm::isPowerOf2_64(base.getInt()) || !fn ||
+      !llvm::isPowerOf2_64(base.getInt()) || !fn || !fn.isPublic() ||
       !llvm::hasSingleElement(fn.getBody()) || ws.getNumResults() ||
       ws.getPartitionRegions().empty() ||
       gpu::TritonGPUDialect::getNumCTAs(mod) != 1 ||

@@ -11,9 +11,7 @@ from triton.experimental.gluon import language as gl
 from triton.experimental.gluon._runtime import GluonASTSource
 from triton.experimental.gluon.language.amd.cdna3 import buffer_store
 
-pytestmark = pytest.mark.skipif(
-    not hasattr(llvm, "pack_hcu_bf16_rounds"), reason="HCU compiler required"
-)
+pytestmark = pytest.mark.skipif(not hasattr(llvm, "pack_hcu_bf16_rounds"), reason="HCU compiler required")
 
 
 def _rounding(prefix):
@@ -81,9 +79,7 @@ def test_keeps_conversion_with_another_user():
 
 @g.jit
 def _cast_store(src, dst):
-    layout: gl.constexpr = gl.DistributedLinearLayout(
-        [[1]], [[2], [4], [8], [16], [32], [64]], [], [], [128]
-    )
+    layout: gl.constexpr = gl.DistributedLinearLayout([[1]], [[2], [4], [8], [16], [32], [64]], [], [], [128])
     index = gl.arange(0, 128, layout=layout)
     x = gl.load(src + index)
     buffer_store(x.to(gl.bfloat16), dst, index)
@@ -94,13 +90,11 @@ def test_packs_elementwise_conversion_without_matrix_layout():
         _cast_store,
         {"src": "*fp32", "dst": "*bf16"},
         {},
-        attrs={(0,): [("tt.divisibility", 16)], (1,): [("tt.divisibility", 16)]},
+        attrs={(0, ): [("tt.divisibility", 16)], (1, ): [("tt.divisibility", 16)]},
     )
     target = GPUTarget("hip", "gfx936", 64)
     before = triton.compile(source, target=target, options={"num_warps": 1})
-    after = triton.compile(
-        source, target=target, options={"num_warps": 1, "pack_bf16_rounds": True}
-    )
+    after = triton.compile(source, target=target, options={"num_warps": 1, "pack_bf16_rounds": True})
     assert after.metadata.hcu_packed_bf16_round_sites == 1
     shifts = r"^\s*v_lshrrev_b32(?:_e32|_e64)?\s"
     assert len(re.findall(shifts, before.asm["amdgcn"], re.M)) == 2

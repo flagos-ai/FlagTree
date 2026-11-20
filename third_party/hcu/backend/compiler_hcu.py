@@ -1286,7 +1286,7 @@ class HIPBackend(BaseBackend):
                         if use_dcc else HIPBackend._get_clang_args(metadata, options) + flags)
 
             # Fixme: link it before run llvm.optimize_module()
-            if metadata['use_dushmem']:
+            if metadata.get('use_dushmem', False):
                 from triton.experimental.tle.raw.hcu.dushmem import resolve_dushmem_device_bitcode
                 linked_file = tempfile.mktemp(suffix="_linked.bc")
                 bitcode = resolve_dushmem_device_bitcode(arch=options.arch)

@@ -295,14 +295,29 @@ static bool hasAlignedMatrixReadAllocation(Value source,
                                            ArrayRef<int64_t> offsetAlignment) {
   llvm::DenseSet<Value> seen;
   llvm::DenseMap<Value, SmallVector<Value>> dependents;
+  llvm::DenseMap<Value, SmallVector<int64_t>> alignments;
+  alignments[source] = llvm::to_vector(offsetAlignment);
   SmallVector<Value> worklist{source}, anchors;
   while (!worklist.empty()) {
     Value value = worklist.pop_back_val();
     if (!seen.insert(value).second)
       continue;
-    auto follow = [&](Value incoming) {
+    auto alignment = alignments.lookup(value);
+    bool compatible = true;
+    auto followWithAlignment = [&](Value incoming, ArrayRef<int64_t> required) {
+      auto [entry, inserted] =
+          alignments.try_emplace(incoming, llvm::to_vector(required));
+      if (!inserted && !llvm::equal(entry->second, required)) {
+        // Different view paths need a joint per-axis proof. Keep the generic
+        // read rather than treating a visited value as an alignment witness.
+        compatible = false;
+        return;
+      }
       dependents[incoming].push_back(value);
       worklist.push_back(incoming);
+    };
+    auto follow = [&](Value incoming) {
+      followWithAlignment(incoming, alignment);
     };
     if (auto alloc = value.getDefiningOp<triton::gpu::LocalAllocOp>()) {
       auto alignment = alloc.getAlignmentOrDefault();
@@ -332,16 +347,31 @@ static bool hasAlignedMatrixReadAllocation(Value source,
           srcTy.getAllocShape() != dstTy.getAllocShape() ||
           srcTy.getMemorySpace() != dstTy.getMemorySpace())
         return false;
-      if (!offsetAlignment.empty()) {
+      if (!alignment.empty()) {
         ArrayRef<int32_t> offsets = slice.getOffsets();
-        if (offsets.size() < offsetAlignment.size())
+        if (offsets.size() < alignment.size())
           return false;
-        for (auto [offset, alignment] : llvm::zip(
-                 offsets.take_back(offsetAlignment.size()), offsetAlignment))
-          if (offset < 0 || offset % alignment)
+        for (auto [offset, requiredAlignment] :
+             llvm::zip(offsets.take_back(alignment.size()), alignment))
+          if (offset < 0 || offset % requiredAlignment)
             return false;
       }
       follow(slice.getSrc());
+    } else if (auto trans =
+                   value.getDefiningOp<triton::gpu::MemDescTransOp>()) {
+      // A descriptor transpose permutes logical offsets and allocation axes;
+      // it preserves the physical base. Carry the tile-alignment requirements
+      // back through that same permutation instead of rejecting one axis order.
+      SmallVector<int64_t> required;
+      if (!alignment.empty()) {
+        auto order = trans.getOrder();
+        if (order.size() != alignment.size())
+          return false;
+        required.resize(alignment.size());
+        for (auto [i, axis] : llvm::enumerate(order))
+          required[axis] = alignment[i];
+      }
+      followWithAlignment(trans.getSrc(), required);
     } else if (auto view =
                    value.getDefiningOp<triton::gpu::MemDescReinterpretOp>()) {
       // Reinterpret materializes the source's affine base, then resets logical
@@ -350,8 +380,7 @@ static bool hasAlignedMatrixReadAllocation(Value source,
       // either view's rank or logical tensor shape.
       auto from = view.getSrc().getType();
       auto to = view.getType();
-      if (!offsetAlignment.empty() ||
-          from.getElementType() != to.getElementType() ||
+      if (!alignment.empty() || from.getElementType() != to.getElementType() ||
           from.getMemorySpace() != to.getMemorySpace() ||
           from.getElementTypeBitWidth() != 16 ||
           (SharedMemoryObject::getMaskSpanOffsets(from) & 7))
@@ -391,9 +420,7 @@ static bool hasAlignedMatrixReadAllocation(Value source,
       for (Block *pred : block->getPredecessors()) {
         auto terminator = pred->getTerminator();
         auto branch = dyn_cast<BranchOpInterface>(terminator);
-        if (!branch ||
-            !isa<cf::BranchOp, cf::CondBranchOp, LLVM::BrOp, LLVM::CondBrOp>(
-                terminator))
+        if (!branch)
           return false;
         for (unsigned i = 0; i < branch->getNumSuccessors(); ++i) {
           if (branch->getSuccessor(i) != block)
@@ -413,6 +440,8 @@ static bool hasAlignedMatrixReadAllocation(Value source,
     } else {
       return false;
     }
+    if (!compatible)
+      return false;
   }
   // Visiting a cycle is not evidence of alignment. Every visited value must
   // reach an actual aligned allocation; an unanchored SCC remains rejected.
@@ -557,22 +586,21 @@ private:
   const HCU::TargetInfo &targetInfo;
 };
 
-// Private, default-off ALT experiment. Its continuous hardware tile is
+// ALT instruction selection from the proved physical value map. Its tile is
 // reg[chosen] -> offset1, lane[0:2] -> offset[2,4]. All remaining coordinates
 // select aligned eight-element producer rows, checked before emitting IR.
-class LegacyAltMatrixLocalLoadOpConversion
+class AltMatrixLocalLoadOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::LocalLoadOp> {
 public:
-  LegacyAltMatrixLocalLoadOpConversion(const LLVMTypeConverter &converter,
-                                       const HCU::TargetInfo &targetInfo,
-                                       PatternBenefit benefit)
+  AltMatrixLocalLoadOpConversion(const LLVMTypeConverter &converter,
+                                 const HCU::TargetInfo &targetInfo,
+                                 PatternBenefit benefit)
       : ConvertOpToLLVMPattern(converter, benefit), targetInfo(targetInfo) {}
 
   LogicalResult
   matchAndRewrite(triton::gpu::LocalLoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto module = op->getParentOfType<ModuleOp>();
-    auto attr = module->getAttrOfType<IntegerAttr>("ttg.hcu.alt_matrix");
     if (targetInfo.getArch() != "gfx936")
       return failure();
     auto srcTy = op.getSrc().getType();
@@ -588,7 +616,6 @@ public:
     // low-bit composition, allocation alignment and affine guards below pass.
     bool explicitLinear =
         swizzled && isa<triton::gpu::LinearEncodingAttr>(dstTy.getEncoding()) &&
-        swizzled.getOrder() == ArrayRef<unsigned>({1, 0}) &&
         llvm::all_of(swizzled.getCTALayout().getCTAsPerCGA(),
                      [](unsigned n) { return n == 1; }) &&
         llvm::all_of(swizzled.getCTALayout().getCTASplitNum(),
@@ -600,7 +627,7 @@ public:
             ? dyn_cast<triton::gpu::AMDMfmaEncodingAttr>(pairDot.getParent())
             : triton::gpu::AMDMfmaEncodingAttr{};
     bool pairedDot =
-        pairMma && pairDot.getOpIdx() == 1 &&
+        pairMma &&
         pairMma.getMmacLayout() ==
             triton::gpu::MmacLayout::LEGACY_PAIRED_COLUMNS &&
         isa<triton::gpu::SwizzledSharedEncodingAttr,
@@ -611,40 +638,18 @@ public:
         srcTy.getElementType() == dstTy.getElementType() &&
         (dstTy.getElementType().isF16() || dstTy.getElementType().isBF16()) &&
         (!op.getToken() || HCU::isSyncedViaAsyncWait(op));
-    if (!natural && (!attr || (attr.getInt() != 2 && attr.getInt() != 3)))
+    if (!natural)
       return failure();
     auto numCTAs = module->getAttrOfType<IntegerAttr>("ttg.num-ctas");
     auto numWarps = module->getAttrOfType<IntegerAttr>("ttg.num-warps");
     auto threadsPerWarp =
         module->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
-    auto prefetch =
-        module->getAttrOfType<IntegerAttr>("ttg.hcu.local_prefetch");
     if (natural && (!numCTAs || !numCTAs.getType().isInteger(32) || !numWarps ||
                     !numWarps.getType().isInteger(32) || !threadsPerWarp ||
                     !threadsPerWarp.getType().isInteger(32)))
       return failure();
     if (!numCTAs || numCTAs.getInt() != 1 || !numWarps || !threadsPerWarp ||
-        threadsPerWarp.getInt() != 64 ||
-        (numWarps.getInt() != 4 && numWarps.getInt() != 8) ||
-        (!natural && prefetch && prefetch.getInt() != 0 &&
-         prefetch.getInt() != 2))
-      return failure();
-    auto shared =
-        dyn_cast<triton::gpu::SharedLinearEncodingAttr>(srcTy.getEncoding());
-    auto dot =
-        dyn_cast<triton::gpu::DotOperandEncodingAttr>(dstTy.getEncoding());
-    auto mma = dot ? dyn_cast<triton::gpu::AMDMfmaEncodingAttr>(dot.getParent())
-                   : triton::gpu::AMDMfmaEncodingAttr{};
-    if (!natural &&
-        (!shared || shared.getAlignment() < 16 || !mma ||
-         mma.getMmacLayout() != triton::gpu::MmacLayout::LEGACY ||
-         mma.getIsTransposed() || dot.getOpIdx() != 1 || dstTy.getRank() != 2 ||
-         srcTy.getRank() != 2 ||
-         !(dstTy.getElementType().isF16() || dstTy.getElementType().isBF16()) ||
-         (dot.getKWidth() != 4 && dot.getKWidth() != 8) ||
-         mma.getInstrShape() != ArrayRef<unsigned>({16, 16, 16}) ||
-         llvm::any_of(mma.getTilesPerWarp(),
-                      [](unsigned n) { return n != 1; })))
+        threadsPerWarp.getInt() != 64 || numWarps.getInt() < 1)
       return failure();
     // Encoding alignment can be overridden by LocalAlloc's explicit alignment.
     if (!hasAlignedMatrixReadAllocation(op.getSrc(), *getTypeConverter()))
@@ -661,8 +666,8 @@ public:
     if (!cvt.isTrivialOver({block}))
       return failure();
     cvt = cvt.sublayout({reg, lane, warp}, {offset});
-    unsigned chosen = natural ? cvt.getInDimSizeLog2(reg) : attr.getInt();
-    if (natural) {
+    unsigned chosen = cvt.getInDimSizeLog2(reg);
+    {
       // Register bits 0/1 supply producerReg; select only the third ALT bit.
       for (unsigned bit = 2; bit < cvt.getInDimSizeLog2(reg); ++bit) {
         if (cvt.getBasis(reg, bit)[0] == 1) {
@@ -722,9 +727,8 @@ public:
     // including identity subslices, instead of assuming this from the type.
     uint32_t dynamicBits = SharedMemoryObject::getMaskSpanOffsets(srcTy);
     bool foldImmediate =
-        natural && (!dynamicBits ||
-                    hasAlignedMatrixReadAllocation(
-                        op.getSrc(), *getTypeConverter(), srcTy.getShape()));
+        !dynamicBits || hasAlignedMatrixReadAllocation(
+                            op.getSrc(), *getTypeConverter(), srcTy.getShape());
     // producerReg uses bits 0–1 and producerLane uses bits 2–5.
     if (foldImmediate)
       dynamicBits |= matrixReadAddressBits(cvt, reg, 3) |
@@ -1415,8 +1419,8 @@ void mlir::triton::HCU::populateMemoryOpToLLVMPatterns(
                                            transBenefit);
   patterns.add<LegacyMatrixLocalLoadOpConversion>(typeConverter, targetInfo,
                                                   transBenefit);
-  patterns.add<LegacyAltMatrixLocalLoadOpConversion>(typeConverter, targetInfo,
-                                                     transBenefit);
+  patterns.add<AltMatrixLocalLoadOpConversion>(typeConverter, targetInfo,
+                                               transBenefit);
   patterns.add<LocalLoadPackedTransposedOpConversion>(typeConverter, targetInfo,
                                                       benefit);
   patterns.add<LocalBarrierOpConversion, MemoryCounterWaitOpConversion>(

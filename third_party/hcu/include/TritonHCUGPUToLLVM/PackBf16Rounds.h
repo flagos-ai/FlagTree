@@ -41,9 +41,8 @@ inline std::optional<Bf16Round> matchBf16Round(llvm::Value *value) {
     return std::nullopt;
 
   Value *biased, *parity, *bits, *parityShift, *input;
-  if (!match(rounded,
-             m_c_Add(m_Value(biased),
-                     m_c_And(m_Value(parityShift), m_SpecificInt(1)))) ||
+  if (!match(rounded, m_c_Add(m_Value(biased), m_c_And(m_Value(parityShift),
+                                                       m_SpecificInt(1)))) ||
       !match(biased, m_c_Add(m_Value(bits), m_SpecificInt(0x7fff))) ||
       !match(parityShift, m_LShr(m_Value(parity), m_SpecificInt(16))) ||
       parity != bits || !match(bits, m_BitCast(m_Value(input))) ||
@@ -113,8 +112,8 @@ inline unsigned packBf16Rounds(llvm::Module &module) {
     // result element takes bytes 2 and 3 of hiWord.
     Function *perm =
         Intrinsic::getOrInsertDeclaration(&module, Intrinsic::amdgcn_perm);
-    Value *result =
-        builder.CreateCall(perm, {hiWord, loWord, builder.getInt32(0x07060302)});
+    Value *result = builder.CreateCall(
+        perm, {hiWord, loWord, builder.getInt32(0x07060302)});
     pack->replaceAllUsesWith(result);
     dead.push_back(pack);
     ++sites;

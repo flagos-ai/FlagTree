@@ -62,8 +62,8 @@ public:
                                  : IntegerAttr{};
       if (!pointer || pointer.getAddressSpace() != 1 ||
           pointer.getPointeeType() != type.getElementType() || !arg || !fn ||
-          arg.getOwner() != &fn.getBody().front() || !alignment ||
-          alignment.getInt() < 16 || alignment.getInt() % 16 ||
+          !triton::isKernel(fn) || arg.getOwner() != &fn.getBody().front() ||
+          !alignment || alignment.getInt() < 16 || alignment.getInt() % 16 ||
           !regions.contiguousAligned(op.getDest(), 16)) {
         fail("requires actual aligned source argument and contiguous aligned "
              "allocation-backed destination views");
