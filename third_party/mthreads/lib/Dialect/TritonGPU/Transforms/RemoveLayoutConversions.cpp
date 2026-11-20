@@ -5114,6 +5114,204 @@ static bool hasDistinctWritebackRoots(ArrayRef<LoadOp> loads,
   return true;
 }
 
+// A single varying axis lets us compare the load and store predicate groups
+// without extrapolating an AxisInfo fact across a tile boundary.
+static std::optional<unsigned> getSingleVaryingAxis(RankedTensorType type) {
+  if (!type || !type.hasStaticShape() ||
+      !isa<BlockedEncodingAttr>(type.getEncoding()))
+    return std::nullopt;
+  std::optional<unsigned> axis;
+  for (auto [dim, extent] : llvm::enumerate(type.getShape())) {
+    if (extent == 1)
+      continue;
+    if (axis || extent < 2)
+      return std::nullopt;
+    axis = dim;
+  }
+  return axis;
+}
+
+// Limit the alternative to straight-line pointwise kernels. In particular,
+// do not change which threads execute a loop, reduction or explicit layout.
+static bool collectPointwiseWritebacks(FuncOp func,
+                                       SmallVectorImpl<LoadOp> &loads,
+                                       SmallVectorImpl<StoreOp> &stores) {
+  if (!llvm::hasSingleElement(func.getBody()))
+    return false;
+  for (Operation &op : func.getBody().front()) {
+    if (auto load = dyn_cast<LoadOp>(op)) {
+      if (!stores.empty() || load.getIsVolatile() || !load.getMask())
+        return false;
+      loads.push_back(load);
+    } else if (auto store = dyn_cast<StoreOp>(op)) {
+      if (!store.getMask() || stores.size() == 2)
+        return false;
+      stores.push_back(store);
+    } else if (!isa<triton::ReturnOp>(op) &&
+               (op.getNumRegions() != 0 || !isMemoryEffectFree(&op) ||
+                isExplicitLayoutConversion(&op) ||
+                !(isRegionFreeElementwise(&op) ||
+                  isa<arith::ConstantOp, SplatOp, MakeRangeOp, ExpandDimsOp,
+                      ConvertLayoutOp, GetProgramIdOp, GetNumProgramsOp>(op))))
+      return false;
+  }
+  return loads.size() >= 2 && stores.size() == 2;
+}
+
+// Compare address and mask computations in different layouts. Layout-only
+// conversions preserve coordinates. Only inspect the pure index operations in
+// these slices and require identical scalar SSA inputs.
+static bool samePointwiseIndex(Value a, Value b, unsigned depth = 12) {
+  auto strip = [](Value v) {
+    while (auto cvt = v.getDefiningOp<ConvertLayoutOp>())
+      v = cvt.getSrc();
+    return v;
+  };
+  a = strip(a);
+  b = strip(b);
+  if (a == b)
+    return true;
+  if (!depth)
+    return false;
+  auto aType = dyn_cast<RankedTensorType>(a.getType());
+  auto bType = dyn_cast<RankedTensorType>(b.getType());
+  Operation *lhs = a.getDefiningOp(), *rhs = b.getDefiningOp();
+  if (!aType || !bType || aType.getShape() != bType.getShape() ||
+      aType.getElementType() != bType.getElementType() || !lhs || !rhs ||
+      lhs->getName() != rhs->getName() ||
+      lhs->getNumOperands() != rhs->getNumOperands())
+    return false;
+  if (auto c = dyn_cast<arith::ConstantOp>(lhs)) {
+    auto first = dyn_cast<DenseElementsAttr>(c.getValue());
+    auto second =
+        dyn_cast<DenseElementsAttr>(cast<arith::ConstantOp>(rhs).getValue());
+    return first && second && first.reshape(second.getType()) == second;
+  }
+  if (!isa<SplatOp, MakeRangeOp, ExpandDimsOp, arith::AddIOp, arith::MulIOp,
+           arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp, arith::CmpIOp,
+           arith::AndIOp>(lhs) ||
+      lhs->getAttrDictionary() != rhs->getAttrDictionary())
+    return false;
+  for (auto [x, y] : llvm::zip(lhs->getOperands(), rhs->getOperands()))
+    if (!samePointwiseIndex(x, y, depth - 1))
+      return false;
+  return true;
+}
+
+// Require a unique address per logical coordinate. A scalar tile origin
+// plus a unit-step range, multiplied by a positive fixed stride, cannot
+// collide inside the tile when its maximum byte span fits in the offset.
+static bool hasInjectiveWritebackOffset(Value offset, unsigned axis,
+                                        RankedTensorType type) {
+  auto mul = offset.getDefiningOp<arith::MulIOp>();
+  if (!mul || !type.getElementType().isIntOrFloat())
+    return false;
+  auto strideOp = mul.getRhs().getDefiningOp<arith::ConstantOp>();
+  auto strideAttr = strideOp
+                        ? dyn_cast<DenseIntElementsAttr>(strideOp.getValue())
+                        : DenseIntElementsAttr();
+  if (!strideAttr || !strideAttr.isSplat())
+    return false;
+  APInt factor = strideAttr.getSplatValue<APInt>();
+  auto extent = type.getDimSize(axis);
+  unsigned bytes = llvm::divideCeil(type.getElementTypeBitWidth(), 8);
+  if (!factor.isStrictlyPositive() ||
+      factor.getLimitedValue() > INT64_MAX / bytes / extent ||
+      factor.getBitWidth() != 64)
+    return false;
+
+  Value coord = mul.getLhs();
+  // Strip dimensions of extent one, retaining the varying range.
+  while (auto expand = coord.getDefiningOp<ExpandDimsOp>())
+    coord = expand.getSrc();
+  auto add = coord.getDefiningOp<arith::AddIOp>();
+  if (!add || !add.getLhs().getDefiningOp<SplatOp>())
+    return false;
+  Value range = add.getRhs();
+  if (auto ext = range.getDefiningOp<arith::ExtSIOp>())
+    range = ext.getIn();
+  auto iota = range.getDefiningOp<MakeRangeOp>();
+  return iota && int64_t(iota.getEnd()) - iota.getStart() == extent;
+}
+
+// Consume one of two terminal conversions. Reuse the actual load mask and
+// coordinate expression so the producer cone and its memory accesses stay in
+// their original encoding. The remaining store still uses its own encoding.
+static bool retagFirstPointwiseWriteback(ModuleOp module, FuncOp func) {
+  SmallVector<LoadOp> loads;
+  SmallVector<StoreOp> stores;
+  if (!collectPointwiseWritebacks(func, loads, stores) ||
+      !hasDistinctWritebackRoots(loads, stores))
+    return false;
+
+  StoreOp first = stores[0], second = stores[1];
+  auto cvt = first.getValue().getDefiningOp<ConvertLayoutOp>();
+  auto peer = second.getValue().getDefiningOp<ConvertLayoutOp>();
+  if (!cvt || !peer || !cvt.getResult().hasOneUse() ||
+      !peer.getResult().hasOneUse() || cvt == peer)
+    return false;
+  auto source = dyn_cast<RankedTensorType>(cvt.getSrc().getType());
+  auto dest = dyn_cast<RankedTensorType>(cvt.getType());
+  std::optional<unsigned> axis = getSingleVaryingAxis(source);
+  if (!axis || !dest || !getSingleVaryingAxis(dest) ||
+      source.getEncoding() != getTensorEncoding(peer.getSrc()) ||
+      dest.getEncoding() != getTensorEncoding(peer.getResult()) ||
+      !cvtNeedsSharedMemory(source, dest))
+    return false;
+  unsigned group = getContigPerThread(source)[*axis];
+  if (group <= getContigPerThread(dest)[*axis] ||
+      !toLinearLayout(source).isInjective() ||
+      !toLinearLayout(dest).isInjective())
+    return false;
+
+  auto ptr = first.getPtr().getDefiningOp<AddPtrOp>();
+  auto peerPtr = second.getPtr().getDefiningOp<AddPtrOp>();
+  auto base = ptr ? ptr.getPtr().getDefiningOp<SplatOp>() : SplatOp();
+  if (!base || !peerPtr || ptr.getOffset() != peerPtr.getOffset() ||
+      !hasInjectiveWritebackOffset(ptr.getOffset(), *axis, source) ||
+      first.getMask() != second.getMask())
+    return false;
+
+  ModuleAxisInfoAnalysis axisInfo(module);
+  AxisInfo *storeInfo = axisInfo.getAxisInfo(first.getPtr());
+  if (!storeInfo || storeInfo->getContiguity(*axis) != 1)
+    return false;
+
+  Value offset, mask;
+  for (LoadOp load : loads) {
+    auto loadType = dyn_cast<RankedTensorType>(load.getType());
+    if (!loadType || loadType.getShape() != source.getShape() ||
+        loadType.getEncoding() != source.getEncoding() ||
+        !samePointwiseIndex(first.getMask(), load.getMask()) ||
+        axisInfo.getMaskAlignment(load.getMask()) < group)
+      return false;
+    auto loadPtr = load.getPtr().getDefiningOp<AddPtrOp>();
+    if (loadPtr && samePointwiseIndex(ptr.getOffset(), loadPtr.getOffset())) {
+      offset = loadPtr.getOffset();
+      mask = load.getMask();
+    }
+  }
+  if (!offset)
+    return false;
+
+  // Different pointer arguments may share storage. Keep CTA-wide ordering
+  // from the reads to the first store and from the first store to its peer.
+  OpBuilder b(first);
+  auto ptrType = cast<RankedTensorType>(first.getPtr().getType());
+  auto newPtrType = ptrType.cloneWithEncoding(source.getEncoding());
+  Value splat = SplatOp::create(b, base.getLoc(), newPtrType, base.getSrc());
+  Value address = AddPtrOp::create(b, ptr.getLoc(), newPtrType, splat, offset);
+  auto before = BarrierOp::create(b, first.getLoc(), AddrSpace::GlobalRead);
+  before->setAttr("musa.rlc.single_writeback", b.getUnitAttr());
+  first.getPtrMutable().assign(address);
+  first.getValueMutable().assign(cvt.getSrc());
+  first.getMaskMutable().assign(mask);
+  cvt.erase();
+  b.setInsertionPointAfter(first);
+  BarrierOp::create(b, first.getLoc(), AddrSpace::GlobalWrite);
+  return true;
+}
+
 // Retag a closed two-output reduction and its writeback together to group rows
 // per thread. Keep the column layout and warp decomposition unchanged; reject
 // mixed or explicit TLE layouts.
@@ -5537,6 +5735,81 @@ static void specializeBoundedDualWriteback(FuncOp funcOp) {
   blocks.erase();
   numerator.erase();
 }
+
+// Express a contiguous register group's address once, ahead of store lowering.
+// For each iota element, keep the group base and add its register-local offset.
+static void factorContiguousStoreAddresses(ModuleOp module) {
+  auto target = module->getAttrOfType<StringAttr>(AttrTargetName);
+  if (!target || target.getValue() != "musa:31")
+    return;
+
+  std::optional<ModuleAxisInfoAnalysis> analysis;
+  module.walk([&](StoreOp store) {
+    auto addr = store.getPtr().getDefiningOp<AddPtrOp>();
+    if (!addr || !addr.getPtr().getDefiningOp<SplatOp>())
+      return;
+    auto type = dyn_cast<RankedTensorType>(addr.getType());
+    if (!type || type.getRank() != 1 ||
+        !isBlockedOrBlockedSliceEncoding(type.getEncoding()) ||
+        cast<PointerType>(type.getElementType()).getAddressSpace() != 1)
+      return;
+
+    // Split the iota before widening it. Splitting the final sum obscures
+    // the common base. Restrict the sum to the target's pointer index width.
+    auto add = addr.getOffset().getDefiningOp<arith::AddIOp>();
+    if (!add || !getElementTypeOrSelf(add.getType()).isInteger(64))
+      return;
+    Value origin = add.getLhs(), varying = add.getRhs();
+    if (!origin.getDefiningOp<SplatOp>())
+      std::swap(origin, varying);
+    auto ext = varying.getDefiningOp<arith::ExtSIOp>();
+    auto range = ext ? ext.getIn().getDefiningOp<MakeRangeOp>() : MakeRangeOp();
+    if (!origin.getDefiningOp<SplatOp>() || !range || range.getStart() != 0 ||
+        range.getEnd() > INT32_MAX)
+      return;
+
+    unsigned group = getTotalElemsPerThread(type);
+    if (group < 2 || !llvm::isPowerOf2_32(group) || group > range.getEnd() ||
+        toLinearEncoding(type).getContigPerThread()[0] < group)
+      return;
+    if (!analysis)
+      analysis.emplace(module);
+    auto *facts = analysis->getAxisInfo(store.getPtr());
+    if (!facts || facts->getContiguity(0) < group)
+      return;
+    unsigned bits = triton::getPointeeBitWidth(type);
+    if (!bits)
+      return;
+    unsigned vec =
+        std::min(128u / bits, analysis->getContiguity(store.getPtr()));
+    if (store.getMask())
+      vec = std::min(vec, analysis->getMaskAlignment(store.getMask()));
+    if (vec <= 1 || vec >= group)
+      return;
+
+    OpBuilder b(addr);
+    Location loc = addr.getLoc();
+    auto maskBits = [&](int32_t mask) {
+      auto attr =
+          DenseElementsAttr::get(range.getType(), b.getI32IntegerAttr(mask));
+      Value c = arith::ConstantOp::create(b, loc, attr);
+      return arith::AndIOp::create(b, loc, range, c).getResult();
+    };
+    Value high = maskBits(-static_cast<int32_t>(group));
+    Value low = maskBits(static_cast<int32_t>(group - 1));
+    Value wide = arith::ExtSIOp::create(b, loc, varying.getType(), high);
+    Value start = arith::AddIOp::create(b, loc, origin, wide);
+    Value base = AddPtrOp::create(b, loc, type, addr.getPtr(), start);
+    auto ptr = AddPtrOp::create(b, loc, type, base, low);
+    // Both expressions denote the same pointer for every logical element.
+    // Preserve the proved vector width across the factored pointer arithmetic.
+    ptr->setAttr("tt.contiguity", b.getI64IntegerAttr(facts->getContiguity(0)));
+    ptr->setAttr("tt.divisibility",
+                 b.getI64IntegerAttr(facts->getDivisibility(0)));
+    store.getPtrMutable().assign(ptr);
+  });
+}
+
 } // namespace
 
 class TritonGPURemoveLayoutConversionsPass
@@ -5547,27 +5820,74 @@ public:
       TritonGPURemoveLayoutConversionsPass>::
       TritonGPURemoveLayoutConversionsBase;
   // Cleanup convert ops.
-  void cleanupConvertOps() {
+  LogicalResult cleanupConvertOps(ModuleOp m) {
     MLIRContext *context = &getContext();
-    ModuleOp m = getOperation();
     RewritePatternSet cleanUpPatterns(context);
     ConvertLayoutOp::getCanonicalizationPatterns(cleanUpPatterns, context);
-    if (applyPatternsGreedily(m, std::move(cleanUpPatterns)).failed()) {
-      signalPassFailure();
-    }
+    if (failed(applyPatternsGreedily(m, std::move(cleanUpPatterns))))
+      return failure();
 
     LLVM_DEBUG({
       DBGS() << "Module after canonicalizing:\n";
       m.dump();
     });
+    return success();
   }
 
   void runOnOperation() override {
-    MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
+    if (!(enableRlcEnhance && trySingleWriteback(m)) &&
+        failed(runRlc(m, enableRlcEnhance))) {
+      signalPassFailure();
+      return;
+    }
+    // Address reuse also applied to layouts selected by baseline RLC.
+    factorContiguousStoreAddresses(m);
+  }
 
-    // One production switch controls the complete enhancement pipeline.
-    const bool enhance = enableRlcEnhance;
+  bool trySingleWriteback(ModuleOp module) {
+    auto target = module->getAttrOfType<StringAttr>(AttrTargetName);
+    if (!target || target.getValue() != "musa:31" ||
+        TritonGPUDialect::getNumCTAs(module) != 1 ||
+        !llvm::hasSingleElement(module.getBody()->getOperations()))
+      return false;
+    auto func = dyn_cast<FuncOp>(module.getBody()->front());
+    if (!func)
+      return false;
+    // The MUSA pipeline invokes RLC more than once. Keep the already selected
+    // pair intact on later invocations of this pass.
+    if (func.walk([](BarrierOp op) {
+              return op->hasAttr("musa.rlc.single_writeback")
+                         ? WalkResult::interrupt()
+                         : WalkResult::advance();
+            })
+            .wasInterrupted())
+      return true;
+    SmallVector<LoadOp> loads;
+    SmallVector<StoreOp> stores;
+    if (!collectPointwiseWritebacks(func, loads, stores))
+      return false;
+    auto loadType = dyn_cast<RankedTensorType>(loads[0].getType());
+    if (!getSingleVaryingAxis(loadType) ||
+        getTensorEncoding(loads[0].getResult()) ==
+            getTensorEncoding(stores[0].getValue()))
+      return false;
+
+    // Resolve the pointwise computation from the existing load anchors on a
+    // clone. If either store fails its proof, leave the usual RLC path intact.
+    OwningOpRef<ModuleOp> candidate(cast<ModuleOp>(module->clone()));
+    if (failed(runRlc(*candidate, /*enhance=*/false)))
+      return false;
+    auto candidateFunc = cast<FuncOp>(candidate->getBody()->front());
+    if (!retagFirstPointwiseWriteback(*candidate, candidateFunc) ||
+        failed(cleanupConvertOps(*candidate)) || failed(verify(*candidate)))
+      return false;
+    func.getBody().takeBody(candidateFunc.getBody());
+    return true;
+  }
+
+  LogicalResult runRlc(ModuleOp m, bool enhance) {
+    MLIRContext *context = &getContext();
     // The phase extensions consult the real address pattern of loads (see
     // isOrderIndifferentAccess); the analysis is only built when they
     // are enabled.
@@ -5593,7 +5913,8 @@ public:
       m.dump();
     });
 
-    cleanupConvertOps();
+    if (failed(cleanupConvertOps(m)))
+      return failure();
 
     bool changed = false;
     do {
@@ -5609,7 +5930,8 @@ public:
       });
 
       // Cleanup dummy converts created during backward remat.
-      cleanupConvertOps();
+      if (failed(cleanupConvertOps(m)))
+        return failure();
       // 3. Phase 3: drop store writeback conversions by rematerializing the
       // address/mask chains in the stored value's layout (e.g. MMA matmul
       // writeback). Run inside the fixed-point loop so the new layouts feed
@@ -5618,7 +5940,8 @@ public:
         bool storeChanged = rematerializeStoreLayout(m);
         if (storeChanged) {
           changed = true;
-          cleanupConvertOps();
+          if (failed(cleanupConvertOps(m)))
+            return failure();
         }
         LLVM_DEBUG({
           DBGS() << "Module after store layout remat:\n";
@@ -5628,7 +5951,8 @@ public:
 #ifdef __TLE__
       if (m->hasAttr("tle.enable_encoding_rematerialization")) {
         changed |= retargetTleSqmmaStores(m);
-        cleanupConvertOps();
+        if (failed(cleanupConvertOps(m)))
+          return failure();
       }
 #endif
     } while (changed);
@@ -5647,9 +5971,8 @@ public:
     scf::ForOp::getCanonicalizationPatterns(cleanUpPatterns2, context);
     scf::IfOp::getCanonicalizationPatterns(cleanUpPatterns2, context);
     ConvertLayoutOp::getCanonicalizationPatterns(cleanUpPatterns2, context);
-    if (applyPatternsGreedily(m, std::move(cleanUpPatterns2)).failed()) {
-      signalPassFailure();
-    }
+    if (failed(applyPatternsGreedily(m, std::move(cleanUpPatterns2))))
+      return failure();
     if (enhance)
       m.walk([](FuncOp funcOp) {
         packReductionWritebackRows(funcOp);
@@ -5659,6 +5982,7 @@ public:
       DBGS() << "Module after final cleanups:\n";
       m.dump();
     });
+    return success();
   }
 };
 
