@@ -232,6 +232,24 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
 
 bool TritonGPUConversionTarget::isDynamicallyLegal(
     Operation *op, const TypeConverter &typeConverter) {
+#ifdef __TLE__
+  // Having an encoding is not enough after explicit-layout propagation: a
+  // shared producer can serve consumers requiring different operand layouts.
+  if (auto expand = dyn_cast<triton::ExpandDimsOp>(op)) {
+    auto sourceEncoding = dyn_cast_or_null<SliceEncodingAttr>(
+        expand.getSrc().getType().getEncoding());
+    if (!sourceEncoding || sourceEncoding.getDim() != expand.getAxis() ||
+        sourceEncoding.getParent() != expand.getType().getEncoding())
+      return false;
+  }
+  if (Attribute encoding = getTleExplicitMemoryEncoding(op)) {
+    for (Value operand : op->getOperands()) {
+      auto type = dyn_cast<RankedTensorType>(operand.getType());
+      if (type && type.getEncoding() != encoding)
+        return false;
+    }
+  }
+#endif
   bool hasLegalRegions = true;
   for (auto &region : op->getRegions()) {
     hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
