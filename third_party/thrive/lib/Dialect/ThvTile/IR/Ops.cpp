@@ -128,6 +128,23 @@ LogicalResult MakeTensorStructureOp::verify() {
     }
   }
 
+  // dst_offsets: destination write positions for boundary masks.
+  // Must be empty for non-boundary masks; empty or rank-matching for boundary.
+  int64_t dstOffsetsRank = getDstOffsets().size();
+  if (maskKind == MaskKind::BOUNDARY) {
+    if (dstOffsetsRank != 0 && dstOffsetsRank != rank) {
+      return emitOpError() << "number of dst_offsets operands ("
+                           << dstOffsetsRank
+                           << ") must be empty or match tensor rank (" << rank
+                           << ") for boundary masks.";
+    }
+  } else {
+    if (dstOffsetsRank != 0) {
+      return emitOpError()
+             << "dst_offsets must be empty when mask_kind is not 'boundary'.";
+    }
+  }
+
   return success();
 }
 
@@ -177,6 +194,121 @@ LogicalResult StoreOp::verify() {
            << ").\n"
            << "hint: the stored tensor shape and element type must exactly "
               "match the tensor_structure's block type.";
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// IterativeLoadOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult GatherLoadOp::verify() {
+  auto resultType = dyn_cast<RankedTensorType>(getResult().getType());
+  auto indicesType = dyn_cast<RankedTensorType>(getIndices().getType());
+
+  if (!resultType) {
+    return emitOpError() << "result must be a tensor.";
+  }
+
+  if (!indicesType || indicesType.getRank() != 1) {
+    return emitOpError() << "indices must be a 1D tensor.";
+  }
+
+  // Result must be 1D or 2D for gather load
+  if (resultType.getRank() != 1 && resultType.getRank() != 2) {
+    return emitOpError() << "result must be a 1D or 2D tensor, got rank "
+                         << resultType.getRank();
+  }
+
+  // Indices size must match one dimension of the result
+  int64_t indicesSize = indicesType.getShape()[0];
+  if (resultType.getRank() == 1) {
+    if (indicesSize != resultType.getShape()[0]) {
+      return emitOpError() << "indices size (" << indicesSize
+                           << ") does not match result size ("
+                           << resultType.getShape()[0] << ").";
+    }
+  } else {
+    // 2D: indices must match either dim 0 (row gather) or dim 1 (col gather)
+    if (indicesSize != resultType.getShape()[0] &&
+        indicesSize != resultType.getShape()[1]) {
+      return emitOpError() << "indices size (" << indicesSize
+                           << ") does not match result shape[0] ("
+                           << resultType.getShape()[0] << ") or shape[1] ("
+                           << resultType.getShape()[1] << ").";
+    }
+  }
+
+  // Mask shape must match result shape if present
+  if (getMask()) {
+    auto maskType = cast<RankedTensorType>(getMask().getType());
+    if (maskType.getShape() != resultType.getShape()) {
+      return emitOpError() << "mask shape (" << maskType.getShape()
+                           << ") does not match result shape ("
+                           << resultType.getShape() << ").";
+    }
+  }
+
+  // Other type must match result element type if present
+  if (getOther() && getOther().getType() != resultType.getElementType()) {
+    return emitOpError() << "other type (" << getOther().getType()
+                         << ") must match result element type ("
+                         << resultType.getElementType() << ").";
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// ScatterStoreOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult ScatterStoreOp::verify() {
+  auto valueType = dyn_cast<RankedTensorType>(getValue().getType());
+  auto indicesType = dyn_cast<RankedTensorType>(getIndices().getType());
+
+  if (!valueType) {
+    return emitOpError() << "value must be a tensor.";
+  }
+
+  if (!indicesType || indicesType.getRank() != 1) {
+    return emitOpError() << "indices must be a 1D tensor.";
+  }
+
+  // Value must be 1D or 2D for scatter store
+  if (valueType.getRank() != 1 && valueType.getRank() != 2) {
+    return emitOpError() << "value must be a 1D or 2D tensor, got rank "
+                         << valueType.getRank();
+  }
+
+  // Indices size must match one dimension of the value
+  int64_t indicesSize = indicesType.getShape()[0];
+  if (valueType.getRank() == 1) {
+    if (indicesSize != valueType.getShape()[0]) {
+      return emitOpError() << "indices size (" << indicesSize
+                           << ") does not match value size ("
+                           << valueType.getShape()[0] << ").";
+    }
+  } else {
+    // 2D: indices must match either dim 0 (row scatter) or dim 1 (col scatter)
+    if (indicesSize != valueType.getShape()[0] &&
+        indicesSize != valueType.getShape()[1]) {
+      return emitOpError() << "indices size (" << indicesSize
+                           << ") does not match value shape[0] ("
+                           << valueType.getShape()[0] << ") or shape[1] ("
+                           << valueType.getShape()[1] << ").";
+    }
+  }
+
+  // Mask shape must match value shape if present
+  if (getMask()) {
+    auto maskType = cast<RankedTensorType>(getMask().getType());
+    if (maskType.getShape() != valueType.getShape()) {
+      return emitOpError() << "mask shape (" << maskType.getShape()
+                           << ") does not match value shape ("
+                           << valueType.getShape() << ").";
+    }
   }
 
   return success();
@@ -387,6 +519,62 @@ LogicalResult PermuteOp::verify() {
 // FlipOp
 //===----------------------------------------------------------------------===//
 
+LogicalResult SortOp::verify() {
+  auto srcType = cast<RankedTensorType>(getSrc().getType());
+  auto resType = cast<RankedTensorType>(getResult().getType());
+
+  if (srcType.getRank() < 1) {
+    return emitOpError() << "src must have at least 1 dimension.\n";
+  }
+
+  if (srcType.getShape() != resType.getShape()) {
+    return emitOpError() << "result shape " << resType.getShape()
+                         << " must match src shape " << srcType.getShape()
+                         << ".\n";
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+
+LogicalResult TopkOp::verify() {
+  auto srcType = cast<RankedTensorType>(getSrc().getType());
+  auto resType = cast<RankedTensorType>(getResult().getType());
+
+  if (srcType.getRank() < 1) {
+    return emitOpError() << "src must have at least 1 dimension.\n";
+  }
+
+  int64_t k = getK();
+  if (k <= 0) {
+    return emitOpError() << "k=" << k << " must be positive.\n";
+  }
+
+  if (resType.getRank() != srcType.getRank()) {
+    return emitOpError() << "result rank (" << resType.getRank()
+                         << ") must match src rank (" << srcType.getRank()
+                         << ").\n";
+  }
+
+  if (resType.getShape().back() != k) {
+    return emitOpError() << "last dim of result (" << resType.getShape().back()
+                         << ") must match k (" << k << ").\n";
+  }
+
+  for (int64_t i = 0; i < srcType.getRank() - 1; ++i) {
+    if (srcType.getShape()[i] != resType.getShape()[i]) {
+      return emitOpError() << "result shape " << resType.getShape()
+                           << " must match src shape " << srcType.getShape()
+                           << " in all dims except the last.\n";
+    }
+  }
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+
 LogicalResult FlipOp::verify() {
   auto srcType = cast<RankedTensorType>(getSrc().getType());
   int64_t rank = srcType.getRank();
@@ -529,19 +717,23 @@ static LogicalResult verifySliceAccessPattern(Operation *op,
     }
   }
 
-  // Allow full-tile, scalar-like, or regular strided access patterns.
+  // Allow full-tile, scalar-like, contiguous, or regular strided access
+  // patterns.
   bool isFullTileAccess =
       allEqual(strides, 1) && allSizesMatchShape(sizes, fullTileShape);
   bool isScalarLikeAccess = allEqual(sizes, 1) && allEqual(strides, 1);
+  bool isContiguousAccess = allEqual(strides, 1);
   bool isGatherScatterLikeAccess = hasUniqueNonUnitStride;
 
-  if (isFullTileAccess || isScalarLikeAccess || isGatherScatterLikeAccess)
+  if (isFullTileAccess || isScalarLikeAccess || isContiguousAccess ||
+      isGatherScatterLikeAccess)
     return success();
 
   return op->emitOpError()
          << "unsupported slice access pattern: expected full-tile access "
          << "(sizes match tile shape and strides are all 1), scalar-like "
-         << "access (sizes and strides are all 1), or " << accessKind
+         << "access (sizes and strides are all 1), contiguous sub-tile access "
+         << "(strides are all 1), or " << accessKind
          << "-like access with a regular strided pattern and one uniform "
          << "non-unit gap.";
 }
@@ -552,21 +744,14 @@ static LogicalResult verifySliceAccessPattern(Operation *op,
 
 LogicalResult ExtractSliceOp::verify() {
   auto srcType = cast<RankedTensorType>(getSource().getType());
-  auto destType = cast<RankedTensorType>(getDest().getType());
   auto resultType = cast<RankedTensorType>(getResult().getType());
   int64_t rank = srcType.getRank();
 
-  if (destType != resultType) {
-    return emitOpError() << "result type must match dest type.\n"
-                         << "note: result=" << resultType
-                         << ", dest=" << destType;
-  }
-
-  // Source and destination element types must match.
-  if (srcType.getElementType() != destType.getElementType()) {
+  // Source and result element types must match.
+  if (srcType.getElementType() != resultType.getElementType()) {
     return emitOpError() << "source element type (" << srcType.getElementType()
-                         << ") does not match dest element type ("
-                         << destType.getElementType() << ").";
+                         << ") does not match result element type ("
+                         << resultType.getElementType() << ").";
   }
 
   // Offsets, sizes, and strides are specified per source dimension.
@@ -583,20 +768,20 @@ LogicalResult ExtractSliceOp::verify() {
                                       "gather")))
     return failure();
 
-  // Rank-0 dest/result is allowed only for scalar-like extracts.
-  if (destType.getRank() == 0) {
+  // Rank-0 result is allowed only for scalar-like extracts.
+  if (resultType.getRank() == 0) {
     for (int64_t size : getStaticSizes()) {
       if (size != 1) {
         return emitOpError()
-               << "rank-0 DPS extract requires all static_sizes to be 1.";
+               << "rank-0 extract requires all static_sizes to be 1.";
       }
     }
     return success();
   }
 
-  if (destType.getRank() != rank) {
+  if (resultType.getRank() != rank) {
     return emitOpError()
-           << "dest/result rank (" << destType.getRank()
+           << "result rank (" << resultType.getRank()
            << ") must match source rank (" << rank
            << "), unless using rank-0 tensor for scalar-like extract.";
   }
@@ -604,9 +789,9 @@ LogicalResult ExtractSliceOp::verify() {
   // Non-scalar extract result shape must match static_sizes.
   for (int64_t i = 0; i < rank; ++i) {
     int64_t expectedDim = getStaticSizes()[i];
-    if (destType.getDimSize(i) != expectedDim) {
-      return emitOpError() << "dest/result dimension " << i << " is "
-                           << destType.getDimSize(i)
+    if (resultType.getDimSize(i) != expectedDim) {
+      return emitOpError() << "result dimension " << i << " is "
+                           << resultType.getDimSize(i)
                            << " but static_sizes specifies " << expectedDim
                            << ".";
     }
@@ -990,6 +1175,18 @@ void IterativeLoadOp::getEffects(
 }
 
 void IterativeStoreOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get());
+}
+
+void GatherLoadOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Read::get());
+}
+
+void ScatterStoreOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
   effects.emplace_back(MemoryEffects::Write::get());

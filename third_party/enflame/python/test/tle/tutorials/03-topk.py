@@ -115,8 +115,7 @@ def topk_kernel_naive(
                 matches = (x_key & desired_mask) == desired
                 digit = ((x_key >> digit_pos) & RADIX_MASK).to(tl.int32)
                 valid = mask_n & matches
-                safe_digit = tl.where(valid, digit, RADIX_SIZE)
-                hist = tl.histogram(safe_digit, RADIX_SIZE)
+                hist = tl.histogram(digit, RADIX_SIZE, mask=valid)
                 counts += hist
 
             cumsum_desc = tl.cumsum(counts, axis=0, reverse=True)
@@ -124,8 +123,8 @@ def topk_kernel_naive(
             selected = tl.max(tl.where(cond, bins, 0), axis=0).to(tl.int32)
             counts_gt = tl.max(tl.where(bins == (selected + 1), cumsum_desc, 0), axis=0)
             selected_u = selected.to(x_utype)
-            desired = desired | (selected_u << digit_pos)
-            desired_mask = desired_mask | (tl.full((), RADIX_MASK, dtype=x_utype) << digit_pos)
+            desired = desired | (selected_u << digit_pos).to(x_utype)
+            desired_mask = desired_mask | (tl.full((), RADIX_MASK, dtype=x_utype) << digit_pos).to(x_utype)
             k_to_find = k_to_find - counts_gt
 
         thr_key = desired
@@ -221,21 +220,20 @@ def topk_kernel_tle(
         k_to_find = tl.full((), K, dtype=tl.int32)
         k_limit = tl.full((), K, dtype=tl.int32)
 
-        for digit_pos in tl.static_range(START_POS, -1, -RADIX_BITS):
-            cached_key = tl.load(smem_key_ptrs, mask=mask_n, other=0).to(x_utype)
+        cached_key = tl.load(smem_key_ptrs, mask=mask_n, other=0).to(x_utype)
+        for digit_pos in tl.range(START_POS, -1, -RADIX_BITS):
             matches = (cached_key & desired_mask) == desired
             digit = ((cached_key >> digit_pos) & RADIX_MASK).to(tl.int32)
             valid = mask_n & matches
-            safe_digit = tl.where(valid, digit, RADIX_SIZE)
-            counts = tl.histogram(safe_digit, RADIX_SIZE)
+            counts = tl.histogram(digit, RADIX_SIZE, mask=valid)
 
             cumsum_desc = tl.cumsum(counts, axis=0, reverse=True)
             cond = cumsum_desc >= k_to_find
             selected = tl.max(tl.where(cond, bins, 0), axis=0).to(tl.int32)
             counts_gt = tl.max(tl.where(bins == (selected + 1), cumsum_desc, 0), axis=0)
             selected_u = selected.to(x_utype)
-            desired = desired | (selected_u << digit_pos)
-            desired_mask = desired_mask | (tl.full((), RADIX_MASK, dtype=x_utype) << digit_pos)
+            desired = desired | (selected_u << digit_pos).to(x_utype)
+            desired_mask = desired_mask | (tl.full((), RADIX_MASK, dtype=x_utype) << digit_pos).to(x_utype)
             k_to_find = k_to_find - counts_gt
 
         thr_key = desired
@@ -485,6 +483,7 @@ def main(argv=None):
             baseline_csv=str(data_dir / "baseline_topk-naive-vs-tle-vs-torch.csv"),
             dimension_fields=["M", "N", "K"],
             regression_threshold=0.10,
+            exclude_cols=["Torch-TopK"],
         )
         if not result:
             raise Exception('Benchmark validation failed!')

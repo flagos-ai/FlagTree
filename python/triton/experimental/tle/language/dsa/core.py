@@ -15,6 +15,25 @@ from triton.language.core import (
 SHARED_MEMORY_ADDRESS_SPACE = 3
 
 
+def _ascend_cann_extension():
+    """Return the Ascend language extension when compiling for Ascend.
+
+    The 3.5 DSA slice primitives lowered directly to ``tensor`` dialect ops.
+    The Ascend language extension still provides those builders, while the
+    generic 3.6 DSA implementation emits ``dsa`` dialect ops that Ascend does
+    not lower. Prefer the extension on Ascend and keep the generic path for
+    the other DSA backends.
+    """
+    try:
+        from triton._flagtree_backend import FLAGTREE_BACKEND
+        if FLAGTREE_BACKEND != "ascend":
+            return None
+        from triton.language.extra.cann import extension
+        return extension
+    except Exception:
+        return None
+
+
 class pipeline(range):
     """
     Iterator that counts upward forever, with parallel execution semantics.
@@ -521,7 +540,7 @@ def _check_static_slice_bounds(fn, src_shape, static_offsets, sizes, strides):
 
 @tl._tensor_member_fn
 @tl.builtin
-def extract_slice(x: tl.tensor, offsets, sizes, strides, _semantic=None) -> tl.tensor:
+def extract_slice(x: tl.tensor, offsets, sizes, strides=None, _semantic=None) -> tl.tensor:
     """Extract a strided slice from ``x``.
 
     Args:
@@ -530,7 +549,7 @@ def extract_slice(x: tl.tensor, offsets, sizes, strides, _semantic=None) -> tl.t
             a scalar ``tl.tensor`` (dynamic).
         sizes:   Per-dim slice sizes (compile-time constants); this is the
             result shape (``tensor.extract_slice`` semantics).
-        strides: Per-dim strides (compile-time constants).
+        strides: Per-dim strides (compile-time constants); defaults to all ones.
 
     Returns a tensor whose shape is ``sizes``.
     """
@@ -543,7 +562,7 @@ def extract_slice(x: tl.tensor, offsets, sizes, strides, _semantic=None) -> tl.t
 
     src_shape = _static_dims(x.type.shape, "extract_slice")
     sizes = _static_dims(sizes, "extract_slice")
-    strides = _static_dims(strides, "extract_slice")
+    strides = [1] * len(src_shape) if strides is None else _static_dims(strides, "extract_slice")
     offsets = tl._unwrap_if_constexpr(offsets)
     if len(offsets) != len(src_shape) or len(sizes) != len(src_shape) \
             or len(strides) != len(src_shape):
@@ -552,12 +571,32 @@ def extract_slice(x: tl.tensor, offsets, sizes, strides, _semantic=None) -> tl.t
     static_offsets, dyn_offsets = _split_offsets(offsets, "extract_slice")
     _check_static_slice_bounds("extract_slice", src_shape, static_offsets, sizes, strides)
 
+    ext = _ascend_cann_extension()
+    if ext is not None:
+        offsets = [constexpr(offset) if isinstance(offset, int) else offset for offset in offsets]
+        return ext.extract_slice(x, offsets, sizes, strides, _semantic=_semantic)
+
     # tensor.extract_slice semantics: sizes is the result shape.
     result_ty = tl.block_type(x.type.element_ty, sizes)
     result_ir = result_ty.to_ir(builder)
 
     handle = builder.create_dsa_extract_slice(result_ir, x.handle, static_offsets, dyn_offsets, sizes, strides)
     return tl.tensor(handle, result_ty)
+
+
+@tl.builtin
+def extract_element(src, indices, _semantic=None, _generator=None):
+    """Read one element from a ranked tensor.
+
+    This is the 3.5 ``tle.dsa.extract_element`` primitive. On Ascend it uses
+    the language extension's ``tensor.extract`` builder; the generic 3.6 DSA
+    backend has no equivalent primitive.
+    """
+    ext = _ascend_cann_extension()
+    if ext is None:
+        raise NotImplementedError("tle.dsa.extract_element is only supported on the Ascend backend")
+    indices = [constexpr(index) if isinstance(index, int) else index for index in indices]
+    return ext.get_element(src, indices, _semantic=_semantic, _generator=_generator)
 
 
 @tl._tensor_member_fn
@@ -601,6 +640,25 @@ def insert_slice(x: tl.tensor, tile: tl.tensor, offsets, sizes=None, strides=Non
     static_offsets, dyn_offsets = _split_offsets(offsets, "insert_slice")
     _check_static_slice_bounds("insert_slice", src_shape, static_offsets, sizes, strides)
 
+    ext = _ascend_cann_extension()
+    if ext is not None:
+        offsets = [constexpr(offset) if isinstance(offset, int) else offset for offset in offsets]
+        return ext.insert_slice(x, tile, offsets, sizes, strides, _semantic=_semantic)
+
     handle = builder.create_dsa_insert_slice(x.type.to_ir(builder), x.handle, tile.handle, static_offsets, dyn_offsets,
                                              sizes, strides)
     return tl.tensor(handle, x.type)
+
+
+@tl.builtin
+def tile_load(src, index=None, dst_space=None, _semantic=None, _generator=None) -> tensor:
+    """Load a tile from an encoded tensor_view via tile.load."""
+    from . import semantic as tle_semantic
+    return tle_semantic.tile_load(src, index, dst_space, _semantic.builder)
+
+
+@tl.builtin
+def tile_store(src, value=None, index=None, dst=None, src_space=None, _semantic=None, _generator=None):
+    """Store a tile into an encoded tensor_view via tile.store."""
+    from . import semantic as tle_semantic
+    tle_semantic.tile_store(src, dst, value, index, _semantic.builder, src_space)

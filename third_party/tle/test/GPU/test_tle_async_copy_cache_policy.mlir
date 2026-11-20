@@ -19,7 +19,12 @@
 // TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 // SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-// RUN: triton-opt %s -split-input-file --allocate-shared-memory-nv='compute-capability=90 ptx-version=81' --convert-triton-gpu-to-llvm='compute-capability=90 ptx-version=81' -reconcile-unrealized-casts | FileCheck %s
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory-nv='compute-capability=90 ptx-version=81' --convert-triton-gpu-to-llvm='compute-capability=90 ptx-version=81' -reconcile-unrealized-casts | FileCheck %s --check-prefixes=CHECK,PTX81
+// RUN: triton-opt %s -split-input-file --allocate-shared-memory-nv='compute-capability=90 ptx-version=94' --convert-triton-gpu-to-llvm='compute-capability=90 ptx-version=94' -reconcile-unrealized-casts | FileCheck %s --check-prefixes=CHECK,PTX94
+
+// The explicit zero fill stays asynchronous. NVIDIA's pipeline enhancement
+// emits the eviction hint only with PTX 9.4 or newer and selects ca for this
+// four-byte copy, even when the source requests cg (which requires 16 bytes).
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [1, 32], warpsPerCTA = [4, 1], order = [1, 0]}>
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
@@ -27,8 +32,12 @@
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
   // CHECK-LABEL: llvm.func @async_copy_eviction_policy
-  // CHECK: createpolicy.fractional.L2::evict_last.b64
-  // CHECK: cp.async.cg.shared.global.L2::cache_hint
+  // PTX81-NOT: createpolicy
+  // PTX81: cp.async.ca.shared.global [ $0 + 0 ], [ $1 + 0 ], 0x4,
+  // PTX81-NOT: L2::cache_hint
+  // PTX94: createpolicy.fractional.L2::evict_last.b64
+  // PTX94: cp.async.ca.shared.global.L2::cache_hint [ $0 + 0 ], [ $1 + 0 ], 0x4,
+  // CHECK-NOT: st.shared
   // CHECK-NOT: L2::256B
   tt.func @async_copy_eviction_policy(%gptr: tensor<1x4x!tt.ptr<f32>, #blocked>) {
     %c0 = arith.constant dense<0.000000e+00> : tensor<1x4xf32, #blocked>
