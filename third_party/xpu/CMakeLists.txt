@@ -176,6 +176,7 @@ target_link_libraries(TritonShareForXPU INTERFACE
 if(TRITON_BUILD_PYTHON_MODULE)
     add_triton_plugin(TritonXPU
       ${CMAKE_CURRENT_SOURCE_DIR}/triton_xpu.cc
+      ${CMAKE_CURRENT_SOURCE_DIR}/lib/Target/LLVMXPU/GroupedExp/KL3GroupedExp.cpp
 
       DEPENDS
       MLIRXPUConversionsIncGen        # triton/Dialect/LLVMXPU/IR/*.h.inc
