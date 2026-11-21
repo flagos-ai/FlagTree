@@ -673,6 +673,18 @@ static bool tryFoldPointerConvertLayout(triton::gpu::ConvertLayoutOp convert,
     if (!isa<triton::LoadOp, triton::StoreOp, triton::AtomicRMWOp,
              triton::AtomicCASOp>(owner))
       return false;
+    // Folding the pointer conversion also retargets the memory operation.
+    // A non-explicit pointer bridge may nevertheless feed a hard result or
+    // memory contract. Respect that contract before mutating any use; leaving
+    // the bridge intact preserves the requested representation and metadata.
+    if (Attribute memoryEncoding = getTleExplicitMemoryEncoding(owner))
+      if (memoryEncoding != srcEncoding)
+        return false;
+    for (auto result : owner->getResults())
+      if (Attribute resultEncoding = getTleExplicitResultEncoding(
+              owner, cast<OpResult>(result).getResultNumber()))
+        if (resultEncoding != srcEncoding)
+          return false;
     uses.push_back(&use);
   }
 
