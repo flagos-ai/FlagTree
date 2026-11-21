@@ -42,18 +42,6 @@ def coalesce_lgkm_waits(assembly, kernel_name):
         report["classifier_sha256"] = hashlib.sha256(Path(model.__file__).read_bytes()).hexdigest()
         parsed = model.parse_kernel(assembly, kernel_name)
         lines, insts = parsed['lines'], parsed['instructions']
-        # Do not let ignored assembler macros/directives hide events or edges.
-        # Only zero-code debug/CFI directives are transparent here.
-        for n in range(parsed['begin'], insts[-1]['line'] + 1):
-            text = lines[n].strip()
-            if re.match(r'[\w.$]+:', text):
-                continue
-            if text.startswith('.') and not re.match(r'\.(?:loc|file|cfi_[A-Za-z0-9_]+)(?:\s|$)', text):
-                raise ValueError('unsupported in-kernel assembler directive at line ' + str(n + 1))
-        if any(x['op'] in model.BRANCH_OPCODES and not re.fullmatch(r'[A-Za-z_.$][\w.$]*', x['args']) for x in insts):
-            raise ValueError('numeric or non-symbolic branch target')
-        if any(x['op'] in ('s_join', 's_fork') for x in insts):
-            raise ValueError('unsupported implicit control flow')
         leaders = {0} | {parsed['labels'][name] for name in parsed['leaders']}
         for i, inst in enumerate(insts[:-1]):
             if model.classify_instruction(inst) == 'CONTROL':

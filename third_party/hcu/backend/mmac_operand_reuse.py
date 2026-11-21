@@ -8,7 +8,8 @@ before and after scheduling; unsupported input always keeps its original text.
 import re
 
 from . import native_isa_model as isa
-from .mma_phase import _registers, check_native_readiness
+from .native_isa_model import _registers
+from .mma_phase import check_native_readiness
 
 
 def _mmac(inst):

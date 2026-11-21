@@ -27,6 +27,46 @@ def _native_isa_model_kernel(body, name='kernel'):
 
 class TestNativeISAModel(unittest.TestCase):
 
+    def test_analysis_workspace_reuses_exact_text_and_expires(self):
+        model = _native_isa_model_model
+        source = _native_isa_model_kernel(" s_nop 0")
+        with patch.object(model, "_decode_kernel", wraps=model._decode_kernel) as decode:
+            with model.analysis_scope():
+                first = model.parse_kernel(source, "kernel")
+                with model.analysis_scope():
+                    self.assertIs(first, model.parse_kernel(source, "kernel"))
+                model.parse_kernel(source.replace("s_nop 0", "s_nop 1"), "kernel")
+                self.assertEqual(decode.call_count, 2)
+            self.assertIsNot(first, model.parse_kernel(source, "kernel"))
+            self.assertEqual(decode.call_count, 3)
+
+    def test_shared_analysis_does_not_change_scheduler_composition(self):
+
+        def run():
+            source = _mmac_operand_reuse_program()
+            source, _ = _native_isa_model_coalesce(source, "kernel")
+            source, _ = _mmac_operand_reuse_reuse.schedule_mmac_operand_reuse(source, "kernel")
+            source, _ = _ready_lds_issue_ready.schedule_ready_lds_issue(source, "kernel")
+            return source, _native_isa_model_native.check_native_readiness(source, "kernel")
+
+        expected = run()
+        with _native_isa_model_model.analysis_scope():
+            self.assertEqual(run(), expected)
+            self.assertEqual(run(), expected)
+            with self.assertRaises(ValueError):
+                _native_isa_model_model.parse_kernel([], "kernel")
+
+    def test_descriptor_envelope_does_not_hide_executable_effects(self):
+        body = _native_isa_model_kernel(" s_nop 0")
+        for alignment, count in (("6, 0x0", "32"), ("6", "0x20")):
+            descriptor = (' .section .rodata,"a",@progbits\n .p2align ' + alignment +
+                          '\n .amdhsa_kernel kernel\n .amdhsa_next_free_vgpr ' + count +
+                          '\n .end_amdhsa_kernel\n .text\n')
+            source = body.replace(".Lfunc_end0:", descriptor + ".Lfunc_end0:")
+            self.assertTrue(_native_isa_model_native.check_native_readiness(source, "kernel")["accepted"])
+            injected = source.replace(" .end_amdhsa_kernel", " ds_read_b32 v0, v1\n .end_amdhsa_kernel")
+            self.assertFalse(_native_isa_model_native.check_native_readiness(injected, "kernel")["accepted"])
+
     def test_wait_fields_and_hardware_limits(self):
         for lgkm in range(16):
             for vm in range(64):
@@ -111,6 +151,14 @@ class TestNativeISAModel(unittest.TestCase):
         source = _native_isa_model_kernel(' s_waitcnt lgkmcnt(9)\n s_waitcnt lgkmcnt(6)', 'other')
         self.assertFalse(_native_isa_model_coalesce(source, 'kernel')[1]['accepted'])
 
+    def test_completion_and_parser_share_strict_input_domain(self):
+        for body in ('.long 0xbe800000', '.Linline: s_nop 0', 'UNKNOWN_MACRO v0', '.macro hidden',
+                     's_waitcnt lgkmcnt(16)'):
+            source = _native_isa_model_kernel(body)
+            self.assertFalse(_native_isa_model_native.check_native_readiness(source, 'kernel')['accepted'], body)
+        self.assertTrue(
+            _native_isa_model_native.check_native_readiness(_native_isa_model_kernel('s_nop 0'), 'kernel')['accepted'])
+
     def test_api_mismatch_returns_input_with_reason(self):
         source = _native_isa_model_kernel(' s_waitcnt lgkmcnt(9)\n s_waitcnt lgkmcnt(6)')
         with patch.object(_native_isa_model_model, 'MODEL_API_VERSION', 2):
@@ -138,12 +186,15 @@ class TestNativeISAModel(unittest.TestCase):
                 regs = {('s', 4)} if width == 32 else {('s', 4), ('s', 5)}
                 self.assertEqual(_native_isa_model_model.classify_instruction(dict(op=op, args=dst + ', 31')), 'PURE')
                 for index in ('0', '31', '63', '-1', '0xffffffff'):
-                    self.assertEqual(_native_isa_model_native._bitset_effects(op, [dst, index]), (regs, regs))
-                self.assertEqual(_native_isa_model_native._bitset_effects(op, [dst, 's8']), (regs | {('s', 8)}, regs))
-                self.assertEqual(_native_isa_model_native._bitset_effects(op, [dst, 's4']), (regs, regs))
+                    self.assertEqual(
+                        _native_isa_model_model.instruction_effects(op, dst + ", " + index)[:2], (regs, regs))
+                self.assertEqual(
+                    _native_isa_model_model.instruction_effects(op, dst + ", s8")[:2], (regs | {('s', 8)}, regs))
+                self.assertEqual(_native_isa_model_model.instruction_effects(op, dst + ", s4")[:2], (regs, regs))
         for op in ('s_bitset2_b32', 's_bitset1_b16', 's_bitset1_b32_fake'):
             self.assertEqual(_native_isa_model_model.classify_instruction(dict(op=op, args='s4, 1')), 'UNKNOWN')
-            self.assertIsNone(_native_isa_model_native._bitset_effects(op, ['s4', '1']))
+            with self.assertRaises(ValueError):
+                _native_isa_model_model.instruction_effects(op, "s4, 1")
 
     def test_scalar_bitset_malformed_and_special_operands_stay_rejected(self):
         cases = [('s_bitset1_b32', ['v0', '1']), ('s_bitset1_b32', ['m0', '1']), ('s_bitset1_b32', ['s0', 'v1']),
@@ -152,7 +203,6 @@ class TestNativeISAModel(unittest.TestCase):
                  ('s_bitset1_b32', ['s0', '1', '2']), ('s_bitset0_b64', ['s[3:4]', '1']),
                  ('s_bitset0_b64', ['s[2:4]', '1']), ('s_bitset0_b64', ['s2', '1'])]
         for op, args in cases:
-            self.assertIsNone(_native_isa_model_native._bitset_effects(op, args), (op, args))
             self.assertFalse(
                 _native_isa_model_native.check_native_readiness(
                     _native_isa_model_kernel(' ' + op + ' ' + ', '.join(args)), 'kernel')['accepted'])
@@ -194,16 +244,7 @@ if __name__ == '__main__':
 # mma phase native
 import importlib.util
 
-
-def _mma_phase_native_load_checker(path):
-    spec = importlib.util.spec_from_file_location("mma_phase_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.check_native_readiness
-
-
-_mma_phase_native_check = _mma_phase_native_load_checker(
-    Path(__file__).resolve().parents[6] / "third_party/hcu/backend/mma_phase.py")
+_mma_phase_native_check = _native_isa_model_native.check_native_readiness
 
 
 def _mma_phase_native_audit(*instructions):
@@ -330,21 +371,11 @@ class TestPriorityNativeReadiness(unittest.TestCase):
         self.assertFalse(_mma_phase_native_audit("s_setprio_fake 1")["accepted"])
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 # mmac operand reuse
 from collections import defaultdict
-from types import ModuleType
 
-_mmac_operand_reuse_backend = Path(__file__).resolve().parents[6] / "third_party/hcu/backend"
-_mmac_operand_reuse_package = "hcu_mmac_operand_reuse_test_backend"
-if _mmac_operand_reuse_package not in sys.modules:
-    module = ModuleType(_mmac_operand_reuse_package)
-    module.__path__ = [str(_mmac_operand_reuse_backend)]
-    sys.modules[_mmac_operand_reuse_package] = module
-_mmac_operand_reuse_reuse = importlib.import_module(_mmac_operand_reuse_package + ".mmac_operand_reuse")
-_mmac_operand_reuse_isa = importlib.import_module(_mmac_operand_reuse_package + ".native_isa_model")
+_mmac_operand_reuse_reuse = importlib.import_module(_native_isa_model_PACKAGE + ".mmac_operand_reuse")
+_mmac_operand_reuse_isa = _native_isa_model_model
 
 
 def _mmac_operand_reuse_dot(dst, b, a, dtype="bf16"):
@@ -467,18 +498,9 @@ class TestMmacOperandReuse(unittest.TestCase):
             self.assertEqual(changed, original)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 # ready lds issue
 
-_ready_lds_issue_backend = Path(__file__).resolve().parents[6] / "third_party/hcu/backend"
-_ready_lds_issue_package = "hcu_ready_lds_issue_test_backend"
-if _ready_lds_issue_package not in sys.modules:
-    module = ModuleType(_ready_lds_issue_package)
-    module.__path__ = [str(_ready_lds_issue_backend)]
-    sys.modules[_ready_lds_issue_package] = module
-_ready_lds_issue_ready = importlib.import_module(_ready_lds_issue_package + ".ready_lds_issue")
+_ready_lds_issue_ready = importlib.import_module(_native_isa_model_PACKAGE + ".ready_lds_issue")
 
 _ready_lds_issue_LOADS = [
     "buffer_load_dwordx4 v[0:3], v[8:9], s[4:7], 0 idxen offen",
@@ -617,3 +639,7 @@ int main() {
         str(exe), *flags("--ldflags", "--libs", "support", "--system-libs")
     ], check=True, capture_output=True)
     subprocess.run([str(exe)], check=True, capture_output=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

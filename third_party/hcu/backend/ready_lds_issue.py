@@ -4,7 +4,8 @@ import re
 from itertools import takewhile
 
 from . import native_isa_model as isa
-from .mma_phase import _registers, check_native_readiness
+from .native_isa_model import _registers
+from .mma_phase import check_native_readiness
 
 _VM_LOAD = re.compile(r"buffer_load_dword(?:x[24])?$")
 _DS_LOAD = re.compile(r"ds_read(?:_b(?:32|64|96|128)|2(?:st64)?_b(?:32|64)|_m32x16_b16(?:_alt)?)$")
