@@ -86,4 +86,5 @@ jobs:
         run: |
           set -x
           source ~/env.sh
+          _FLAGTREE_TEST_DEVICE_AUTOTUNE=1 python3 -m pytest -s python/test/unit/test_function_autotune.py
           python3 -m pytest third_party/ppu/python/test/unit/language/test_core.py
