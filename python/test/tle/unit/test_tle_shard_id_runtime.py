@@ -13,6 +13,7 @@ def _coordinates(output, mesh: tl.constexpr, rank: tl.constexpr):
         tl.store(output + pid * rank + axis, tle.shard_id(mesh, axis))
 
 
+@pytest.mark.skip_if_tle_unsupported("shard_id")
 @pytest.mark.parametrize("shape", [(2, 1), (2, 1, 2), (1, 4), (2, 3)])
 def test_shard_id_unit_axes_are_zero(shape):
     torch = pytest.importorskip("torch")
