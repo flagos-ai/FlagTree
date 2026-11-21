@@ -1,0 +1,16 @@
+{
+  "status": "PASS_MACHINE_IDENTICAL_DEBUG_PATH_ONLY",
+  "original_functions": 1109,
+  "fresh_functions": 1109,
+  "frozen_reference": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/048-r004_v6_model_integration/source-loaded-chain.json",
+  "fresh_load": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/ab-p3/synthetic32/round-0/r004/loaded-identity.json",
+  "all_40_executable_constant_launch_sections_equal": true,
+  "full_ELF_sha256_equal": false,
+  "only_changed_sections": [
+    ".debug_line",
+    ".nv.merc.debug_line",
+    ".nv.merc.rela.debug_line",
+    ".rela.debug_line"
+  ],
+  "machine_evidence": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/fallback-machine-audit.json"
+}

@@ -1,0 +1,1460 @@
+{
+  "status": "PASS",
+  "versioned_contract": {
+    "schema": "r031.gdn.native-model/v1",
+    "implementation": "tir.gdn_recurrent.r017_split4lut",
+    "plan_body_sha256": "392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+    "numerical_subject_sha256": "b7ee29ef5c4f5bc308e2f36ee73fd7c466da90598307769c4421bbcf70b17d58",
+    "text_layers": 64,
+    "recurrent_calls": 48,
+    "readonly_rows": 48,
+    "parameter_binding": "typed-caller-fields-per-invocation",
+    "state_binding": "selected-layer-view-once",
+    "arena_binding": "planned-chip-function-workspace",
+    "arena": {
+      "nbytes": 56832,
+      "scope": "chip",
+      "pool_scope_stride_bytes": 0,
+      "views": [
+        {
+          "name": "qn",
+          "dtype": "float32",
+          "shape": [
+            16,
+            128
+          ],
+          "byte_offset": 0,
+          "nbytes": 8192,
+          "writer": "prep",
+          "last_reader": "core"
+        },
+        {
+          "name": "kn",
+          "dtype": "float32",
+          "shape": [
+            16,
+            128
+          ],
+          "byte_offset": 8192,
+          "nbytes": 8192,
+          "writer": "prep",
+          "last_reader": "core"
+        },
+        {
+          "name": "beta",
+          "dtype": "float32",
+          "shape": [
+            48
+          ],
+          "byte_offset": 16384,
+          "nbytes": 192,
+          "writer": "prep",
+          "last_reader": "core"
+        },
+        {
+          "name": "decay_log",
+          "dtype": "float32",
+          "shape": [
+            48
+          ],
+          "byte_offset": 16640,
+          "nbytes": 192,
+          "writer": "prep",
+          "last_reader": "core"
+        },
+        {
+          "name": "core",
+          "dtype": "float32",
+          "shape": [
+            48,
+            128
+          ],
+          "byte_offset": 16896,
+          "nbytes": 24576,
+          "writer": "core",
+          "last_reader": "y"
+        },
+        {
+          "name": "partials",
+          "dtype": "float32",
+          "shape": [
+            2,
+            48,
+            40
+          ],
+          "byte_offset": 41472,
+          "nbytes": 15360,
+          "writer": "partials",
+          "last_reader": "prep"
+        }
+      ]
+    },
+    "arena_formal": "phase_pool",
+    "native_state_shape": [
+      48,
+      128,
+      128
+    ],
+    "native_state_nbytes": 3145728,
+    "native_layer": 0,
+    "entry_order": [
+      "partials",
+      "prep",
+      "core",
+      "y"
+    ],
+    "completion": "serial-caller-stream-all-ctas",
+    "constructor": "ordinary-model-runtime-binding",
+    "norm_primitive": "r004.norm128.comparator-faithful/v6",
+    "phase_module": "r017_T_full_p5_split4lut"
+  },
+  "unchanged_frozen_bodies": [
+    "rules/ntt/r004_model_policy_v6.py",
+    "codegen/triton/kernels/gdn_recurrent/r004_model_v2.py.jinja",
+    "codegen/triton/kernels/gdn_recurrent/r004_column_v6.py.jinja",
+    "codegen/triton/kernels/gdn_recurrent/r004_norm_v6.py.jinja",
+    "codegen/triton/kernels/gdn_recurrent/r004_reference_v4.py.jinja",
+    "codegen/triton/kernels/gdn_recurrent/r004_helpers_v4.py.jinja"
+  ],
+  "negative_checks": [
+    {
+      "case": "grid",
+      "rejected": true,
+      "error": "H004 phase plan differs from its complete standalone recipe."
+    },
+    {
+      "case": "pool",
+      "rejected": true,
+      "error": "H004 phase plan differs from its complete standalone recipe."
+    },
+    {
+      "case": "identity",
+      "rejected": true,
+      "error": "H004 phase plan differs from its complete standalone recipe."
+    },
+    {
+      "case": "stale_model_arena",
+      "rejected": true,
+      "error": "Invalid R031 phase contract."
+    }
+  ],
+  "selection_deltas": [
+    {
+      "point": "distribution.decode_attention_1.output_norm_stats",
+      "old": {
+        "candidate_id": "distribution.decode_attention_1.output_norm_stats.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1.output_norm_stats",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-stats-additive-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_attention_1.output_norm_stats.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1.output_norm_stats",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-stats-additive-sbp"
+      }
+    },
+    {
+      "point": "distribution.n47.vectorized.pack0",
+      "old": {
+        "candidate_id": "distribution.n47.vectorized.pack0.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n47.vectorized.pack0",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n47.vectorized.pack0.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n47.vectorized.pack0",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.n56",
+      "old": {
+        "candidate_id": "distribution.n56.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_b.out_d_b_s_c_h0_g6_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n56",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n56.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_b.out_d_b_s_c_h0_g6_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n56",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_attention_1_output.vectorized.compute",
+      "old": {
+        "candidate_id": "distribution.decode_attention_1_output.vectorized.compute.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_s_c_h0_1_g160.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_output.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_attention_1_output.vectorized.compute.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_s_c_h0_1_g160.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_output.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.n49",
+      "old": {
+        "candidate_id": "distribution.n49.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_b__d_b_b_b__d_b_b_b.out_d_b_s_c_h0_g6_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n49",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n49.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_b__d_b_b_b__d_b_b_b.out_d_b_s_c_h0_g6_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n49",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.n59",
+      "old": {
+        "candidate_id": "distribution.n59.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g192.out_d_b_s_c_h0_g1536",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n59",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n59.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g192.out_d_b_s_c_h0_g1536",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n59",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_linear_0_hidden.boundary_restore",
+      "old": {
+        "candidate_id": "distribution.decode_linear_0_hidden.boundary_restore.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_hidden.boundary_restore",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_linear_0_hidden.boundary_restore.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_hidden.boundary_restore",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_attention_1_k_norm.vectorized.compute",
+      "old": {
+        "candidate_id": "distribution.decode_attention_1_k_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_b_s_c_h0_g8__d_b_b_b_b__d_s_c_h0_g8__d_s_c_h0_g8.out_d_b_b_s_c_h0_g8",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_k_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-apply-compatible-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_attention_1_k_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_b_s_c_h0_g8__d_b_b_b_b__d_s_c_h0_g8__d_s_c_h0_g8.out_d_b_b_s_c_h0_g8",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_k_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-apply-compatible-sbp"
+      }
+    },
+    {
+      "point": "distribution.final_norm.vectorized.compute",
+      "old": {
+        "candidate_id": "distribution.final_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_b_b__d_s_c_h0_1_g20__d_s_c_h0_1_g20.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.final_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-apply-compatible-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.final_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_b_b__d_s_c_h0_1_g20__d_s_c_h0_1_g20.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.final_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-apply-compatible-sbp"
+      }
+    },
+    {
+      "point": "distribution.final_norm",
+      "old": {
+        "candidate_id": "distribution.final_norm.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20.out_d_b_s_c_h0_1_g160",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.final_norm",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.final_norm.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20.out_d_b_s_c_h0_1_g160",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.final_norm",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.n54",
+      "old": {
+        "candidate_id": "distribution.n54.operation_type_inference_sbp.mesh_yx_1x1_bb.in_d_b_b_b__ref_paged_attention_kv_cache__tensor__tensor.out_ref_paged_attention_kv_cache",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n54",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n54.operation_type_inference_sbp.mesh_yx_1x1_bb.in_d_b_b_b__ref_paged_attention_kv_cache__tensor__tensor.out_ref_paged_attention_kv_cache",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n54",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_attention_1_post_norm.vectorized.compute",
+      "old": {
+        "candidate_id": "distribution.decode_attention_1_post_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_b_b__d_s_c_h0_1_g20__d_s_c_h0_1_g20.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_post_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-apply-compatible-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_attention_1_post_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_b_b__d_s_c_h0_1_g20__d_s_c_h0_1_g20.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_post_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-apply-compatible-sbp"
+      }
+    },
+    {
+      "point": "distribution.n50",
+      "old": {
+        "candidate_id": "distribution.n50.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_bc_h1_b1_s_c_h0_g8__d_b_b_b__d_b_b_b.out_d_b_s_bc_h1_b1_s_c_h0_g8",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n50",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n50.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_bc_h1_b1_s_c_h0_g8__d_b_b_b__d_b_b_b.out_d_b_s_bc_h1_b1_s_c_h0_g8",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n50",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_linear_0_convolution",
+      "old": {
+        "candidate_id": "distribution.decode_linear_0_convolution.gdn_convolution_channel_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_gauto__ref_qwen3_5_gated_delta_net_state__d_s_c_h0_1_gauto_b_b.out_tuple_d_b_s_c_h0_1_gauto__ref_qwen3_5_gated_delta_net_state",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "candidate-reason:gdn-convolution-channel-sbp"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_convolution",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "gdn-convolution-channel-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_linear_0_convolution.gdn_convolution_channel_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_gauto__ref_qwen3_5_gated_delta_net_state__d_s_c_h0_1_gauto_b_b.out_tuple_d_b_s_c_h0_1_gauto__ref_qwen3_5_gated_delta_net_state",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "candidate-reason:gdn-convolution-channel-sbp"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_convolution",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "gdn-convolution-channel-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_attention_1_q_norm.vectorized.compute",
+      "old": {
+        "candidate_id": "distribution.decode_attention_1_q_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_b__d_b_b_s_c_h0_g6_b__d_b__d_b.out_d_b_s_c_h0_g6_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_q_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-apply-compatible-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_attention_1_q_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_b__d_b_b_s_c_h0_g6_b__d_b__d_b.out_d_b_s_c_h0_g6_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_q_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-apply-compatible-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_linear_0_input_norm",
+      "old": {
+        "candidate_id": "distribution.decode_linear_0_input_norm.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20.out_d_b_s_c_h0_1_g160",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_input_norm",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_linear_0_input_norm.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20.out_d_b_s_c_h0_1_g160",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_input_norm",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_attention_1_input_norm.vectorized.compute",
+      "old": {
+        "candidate_id": "distribution.decode_attention_1_input_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_b_b__d_s_c_h0_1_g20__d_s_c_h0_1_g20.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_input_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-apply-compatible-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_attention_1_input_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_b_b__d_s_c_h0_1_g20__d_s_c_h0_1_g20.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_input_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-apply-compatible-sbp"
+      }
+    },
+    {
+      "point": "tir.decode_linear_0_mlp_gate_up",
+      "old": {
+        "candidate_id": "tir.iq4_q8_glu.q8_r003_v2",
+        "evidence": [],
+        "origin": "default-policy",
+        "point_id": "tir.decode_linear_0_mlp_gate_up",
+        "policy": "pyntt-nvidia-sm120/v1",
+        "rationale": "Prefer resource-feasible Triton kernel variants supported by the active target."
+      },
+      "new": {
+        "candidate_id": "tir.iq4_q8_glu.r006_glu_transport_t3",
+        "evidence": [],
+        "origin": "default-policy",
+        "point_id": "tir.decode_linear_0_mlp_gate_up",
+        "policy": "pyntt-nvidia-sm120/v1",
+        "rationale": "Prefer resource-feasible Triton kernel variants supported by the active target."
+      }
+    },
+    {
+      "point": "distribution.decode_linear_0_attention_residual.vectorized.compute",
+      "old": {
+        "candidate_id": "distribution.decode_linear_0_attention_residual.vectorized.compute.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g160__d_b_s_c_h0_1_g160.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_attention_residual.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_linear_0_attention_residual.vectorized.compute.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g160__d_b_s_c_h0_1_g160.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_attention_residual.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "tir.decode_linear_0_recurrent",
+      "old": {
+        "candidate_id": "tir.gdn_recurrent.r004_column_v6",
+        "evidence": [],
+        "origin": "default-policy",
+        "point_id": "tir.decode_linear_0_recurrent",
+        "policy": "pyntt-nvidia-sm120/v1",
+        "rationale": "Prefer resource-feasible Triton kernel variants supported by the active target."
+      },
+      "new": {
+        "candidate_id": "tir.gdn_recurrent.r017_split4lut",
+        "evidence": [],
+        "origin": "default-policy",
+        "point_id": "tir.decode_linear_0_recurrent",
+        "policy": "pyntt-nvidia-sm120/v1",
+        "rationale": "Prefer resource-feasible Triton kernel variants supported by the active target."
+      }
+    },
+    {
+      "point": "distribution.n41",
+      "old": {
+        "candidate_id": "distribution.n41.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_b.out_d_b_b_s_c_h0_g6_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n41",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-stats-additive-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n41.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_b.out_d_b_b_s_c_h0_g6_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n41",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-stats-additive-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_attention_1_input_norm",
+      "old": {
+        "candidate_id": "distribution.decode_attention_1_input_norm.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20.out_d_b_s_c_h0_1_g160",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_input_norm",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_attention_1_input_norm.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20.out_d_b_s_c_h0_1_g160",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_input_norm",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.n55.partial",
+      "old": {
+        "candidate_id": "distribution.n55.partial.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_b__ref_paged_attention_kv_cache__tensor.out_tuple_d_b_s_c_h0_g6_b_partial_p_max_h1__d_b_s_c_h0_g6_b_partial_p_sum_h1__d_b_s_c_h0_g6_b_partial_p_sum_h1",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n55.partial",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n55.partial.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_b__ref_paged_attention_kv_cache__tensor.out_tuple_d_b_s_c_h0_g6_b_partial_p_max_h1__d_b_s_c_h0_g6_b_partial_p_sum_h1__d_b_s_c_h0_g6_b_partial_p_sum_h1",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n55.partial",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.next_token",
+      "old": {
+        "candidate_id": "distribution.next_token.local_argmax_and_global_index_merge.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g7760.out_d_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "op-definition-cost-factors",
+          "target-owned-input-split",
+          "materialized-argmax"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.next_token",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "local-argmax-and-global-index-merge"
+      },
+      "new": {
+        "candidate_id": "distribution.next_token.local_argmax_and_global_index_merge.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g7760.out_d_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "op-definition-cost-factors",
+          "target-owned-input-split",
+          "materialized-argmax"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.next_token",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "local-argmax-and-global-index-merge"
+      }
+    },
+    {
+      "point": "distribution.decode_linear_0_input_norm.vectorized.compute",
+      "old": {
+        "candidate_id": "distribution.decode_linear_0_input_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_b_b__d_s_c_h0_1_g20__d_s_c_h0_1_g20.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_input_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-apply-compatible-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_linear_0_input_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_b_b__d_s_c_h0_1_g20__d_s_c_h0_1_g20.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_input_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-apply-compatible-sbp"
+      }
+    },
+    {
+      "point": "distribution.n47",
+      "old": {
+        "candidate_id": "distribution.n47.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_b_b.out_d_b_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n47",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-stats-additive-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n47.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_b_b.out_d_b_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n47",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-stats-additive-sbp"
+      }
+    },
+    {
+      "point": "tir.decode_attention_1_mlp_gate_up",
+      "old": {
+        "candidate_id": "tir.iq4_q8_glu.q8_r003_v2",
+        "evidence": [],
+        "origin": "default-policy",
+        "point_id": "tir.decode_attention_1_mlp_gate_up",
+        "policy": "pyntt-nvidia-sm120/v1",
+        "rationale": "Prefer resource-feasible Triton kernel variants supported by the active target."
+      },
+      "new": {
+        "candidate_id": "tir.iq4_q8_glu.r006_glu_transport_t3",
+        "evidence": [],
+        "origin": "default-policy",
+        "point_id": "tir.decode_attention_1_mlp_gate_up",
+        "policy": "pyntt-nvidia-sm120/v1",
+        "rationale": "Prefer resource-feasible Triton kernel variants supported by the active target."
+      }
+    },
+    {
+      "point": "distribution.decode_linear_0_output.vectorized.compute",
+      "old": {
+        "candidate_id": "distribution.decode_linear_0_output.vectorized.compute.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_s_c_h0_1_g160.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_output.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_linear_0_output.vectorized.compute.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_s_c_h0_1_g160.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_output.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.n55",
+      "old": {
+        "candidate_id": "distribution.n55.paged_attention_combine_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_b_partial_p_max_h1__d_b_s_c_h0_g6_b_partial_p_sum_h1__d_b_s_c_h0_g6_b_partial_p_sum_h1.out_d_b_s_c_h0_g6_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "matching-p-max-p-sum-p-sum-states",
+          "output-type-rebuild"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n55",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "paged-attention-combine-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n55.paged_attention_combine_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_b_partial_p_max_h1__d_b_s_c_h0_g6_b_partial_p_sum_h1__d_b_s_c_h0_g6_b_partial_p_sum_h1.out_d_b_s_c_h0_g6_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "matching-p-max-p-sum-p-sum-states",
+          "output-type-rebuild"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n55",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "paged-attention-combine-sbp"
+      }
+    },
+    {
+      "point": "distribution.n51",
+      "old": {
+        "candidate_id": "distribution.n51.operation_type_inference_sbp.mesh_yx_1x1_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n51",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n51.operation_type_inference_sbp.mesh_yx_1x1_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n51",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.layer_0_call.norm_stats",
+      "old": {
+        "candidate_id": "distribution.layer_0_call.norm_stats.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.layer_0_call.norm_stats",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-stats-additive-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.layer_0_call.norm_stats.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.layer_0_call.norm_stats",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-stats-additive-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_attention_1_attention_residual.vectorized.compute",
+      "old": {
+        "candidate_id": "distribution.decode_attention_1_attention_residual.vectorized.compute.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g160__d_b_s_c_h0_1_g160.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_attention_residual.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_attention_1_attention_residual.vectorized.compute.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g160__d_b_s_c_h0_1_g160.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_attention_residual.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.n65",
+      "old": {
+        "candidate_id": "distribution.n65.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n65",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-stats-additive-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n65.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n65",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-stats-additive-sbp"
+      }
+    },
+    {
+      "point": "distribution.n14",
+      "old": {
+        "candidate_id": "distribution.n14.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n14",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-stats-additive-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n14.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n14",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-stats-additive-sbp"
+      }
+    },
+    {
+      "point": "distribution.n58.vectorized.compute",
+      "old": {
+        "candidate_id": "distribution.n58.vectorized.compute.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_s_c_h1_g32__d_b_s_c_h0_g6_s_c_h1_g4.out_d_b_s_c_h0_g6_s_c_h1_g4",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n58.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n58.vectorized.compute.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_g6_s_c_h1_g32__d_b_s_c_h0_g6_s_c_h1_g4.out_d_b_s_c_h0_g6_s_c_h1_g4",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n58.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_attention_1_post_norm",
+      "old": {
+        "candidate_id": "distribution.decode_attention_1_post_norm.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20.out_d_b_s_c_h0_1_g160",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_post_norm",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_attention_1_post_norm.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20.out_d_b_s_c_h0_1_g160",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_post_norm",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_linear_0_post_norm",
+      "old": {
+        "candidate_id": "distribution.decode_linear_0_post_norm.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20.out_d_b_s_c_h0_1_g160",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_post_norm",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_linear_0_post_norm.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20.out_d_b_s_c_h0_1_g160",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_post_norm",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_linear_0_post_norm.vectorized.compute",
+      "old": {
+        "candidate_id": "distribution.decode_linear_0_post_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_b_b__d_s_c_h0_1_g20__d_s_c_h0_1_g20.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_post_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-apply-compatible-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_linear_0_post_norm.vectorized.compute.norm_apply_compatible_sbp.mesh_yx_4x8_bb.in_d_b_s_c_h0_1_g20__d_b_b_b__d_s_c_h0_1_g20__d_s_c_h0_1_g20.out_d_b_s_c_h0_1_g20",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "materialized-statistics",
+          "suffix-parameter-policy",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0_post_norm.vectorized.compute",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-apply-compatible-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_linear_0.output_norm_stats",
+      "old": {
+        "candidate_id": "distribution.decode_linear_0.output_norm_stats.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0.output_norm_stats",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "norm-stats-additive-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_linear_0.output_norm_stats.norm_stats_additive_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "additive-statistics",
+          "partial-on-reduced-split",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_linear_0.output_norm_stats",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "norm-stats-additive-sbp"
+      }
+    },
+    {
+      "point": "distribution.n53",
+      "old": {
+        "candidate_id": "distribution.n53.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_bc_h1_b1_s_c_h0_g8__ref_paged_attention_kv_cache__tensor__tensor.out_ref_paged_attention_kv_cache",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n53",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n53.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_s_bc_h1_b1_s_c_h0_g8__ref_paged_attention_kv_cache__tensor__tensor.out_ref_paged_attention_kv_cache",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n53",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.n59.propagated.reshape",
+      "old": {
+        "candidate_id": "distribution.n59.propagated.reshape.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_b_b.out_d_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n59.propagated.reshape",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.n59.propagated.reshape.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_b_b.out_d_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.n59.propagated.reshape",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    },
+    {
+      "point": "distribution.decode_attention_1_hidden.boundary_restore",
+      "old": {
+        "candidate_id": "distribution.decode_attention_1_hidden.boundary_restore.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_hidden.boundary_restore",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r004-column:22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148",
+        "rationale": "operation-type-inference-sbp"
+      },
+      "new": {
+        "candidate_id": "distribution.decode_attention_1_hidden.boundary_restore.operation_type_inference_sbp.mesh_yx_4x8_bb.in_d_b_b.out_d_b_b",
+        "evidence": [
+          "AutoDistributed/Costs/Pick.txt",
+          "producer-candidate-layout",
+          "operation-owned-distributed-type-inference",
+          "op-definition-cost-factors",
+          "hierarchical-target-latency"
+        ],
+        "origin": "ortools-cp-sat",
+        "point_id": "distribution.decode_attention_1_hidden.boundary_restore",
+        "policy": "ntt-auto-distributed/v11(placements=yx=4x8/bb,split=pyntt-block-cyclic/v1(block_bytes=128))+q8-r003:eaa88d099e7d4c9cb33b24793abbaa6e1b42159900c032c40b958ffd1d8bebc4+r031-r017:392ac05de2a912993e3e13bd0b7362649aeabd89a2d448bf6ac8761cd26b6ea8",
+        "rationale": "operation-type-inference-sbp"
+      }
+    }
+  ],
+  "accepted_fallback": "048-r004_v6_model_integration/package-attempt1 + r004.gdn.native-model/v2",
+  "no_generated_source_ptx_cubin_patch": true,
+  "no_new_grid_arrival_counter": true,
+  "algorithm_selection_deltas": [
+    {
+      "point": "tir.decode_linear_0_mlp_gate_up",
+      "old": {
+        "candidate_id": "tir.iq4_q8_glu.q8_r003_v2",
+        "evidence": [],
+        "origin": "default-policy",
+        "point_id": "tir.decode_linear_0_mlp_gate_up",
+        "policy": "pyntt-nvidia-sm120/v1",
+        "rationale": "Prefer resource-feasible Triton kernel variants supported by the active target."
+      },
+      "new": {
+        "candidate_id": "tir.iq4_q8_glu.r006_glu_transport_t3",
+        "evidence": [],
+        "origin": "default-policy",
+        "point_id": "tir.decode_linear_0_mlp_gate_up",
+        "policy": "pyntt-nvidia-sm120/v1",
+        "rationale": "Prefer resource-feasible Triton kernel variants supported by the active target."
+      }
+    },
+    {
+      "point": "tir.decode_linear_0_recurrent",
+      "old": {
+        "candidate_id": "tir.gdn_recurrent.r004_column_v6",
+        "evidence": [],
+        "origin": "default-policy",
+        "point_id": "tir.decode_linear_0_recurrent",
+        "policy": "pyntt-nvidia-sm120/v1",
+        "rationale": "Prefer resource-feasible Triton kernel variants supported by the active target."
+      },
+      "new": {
+        "candidate_id": "tir.gdn_recurrent.r017_split4lut",
+        "evidence": [],
+        "origin": "default-policy",
+        "point_id": "tir.decode_linear_0_recurrent",
+        "policy": "pyntt-nvidia-sm120/v1",
+        "rationale": "Prefer resource-feasible Triton kernel variants supported by the active target."
+      }
+    },
+    {
+      "point": "tir.decode_attention_1_mlp_gate_up",
+      "old": {
+        "candidate_id": "tir.iq4_q8_glu.q8_r003_v2",
+        "evidence": [],
+        "origin": "default-policy",
+        "point_id": "tir.decode_attention_1_mlp_gate_up",
+        "policy": "pyntt-nvidia-sm120/v1",
+        "rationale": "Prefer resource-feasible Triton kernel variants supported by the active target."
+      },
+      "new": {
+        "candidate_id": "tir.iq4_q8_glu.r006_glu_transport_t3",
+        "evidence": [],
+        "origin": "default-policy",
+        "point_id": "tir.decode_attention_1_mlp_gate_up",
+        "policy": "pyntt-nvidia-sm120/v1",
+        "rationale": "Prefer resource-feasible Triton kernel variants supported by the active target."
+      }
+    }
+  ],
+  "all_other_candidate_ids_unchanged": true
+}

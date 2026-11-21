@@ -1,0 +1,224 @@
+{
+  "status": "PASS",
+  "pid": 3969340,
+  "samples": [
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "r004",
+      "mean_ms": 36.94163434375,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "r031",
+      "mean_ms": 35.31228253125,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "llama",
+      "mean_ms": 35.9985674375,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "r031",
+      "mean_ms": 35.3096310625,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "llama",
+      "mean_ms": 36.03101328125,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "r004",
+      "mean_ms": 36.96551328125,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "llama",
+      "mean_ms": 36.00061109375,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "r004",
+      "mean_ms": 36.9464996875,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "r031",
+      "mean_ms": 35.3024293125,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 0,
+      "arm": "r004",
+      "mean_ms": 36.95801971875,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 0,
+      "arm": "r031",
+      "mean_ms": 35.35917196875,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 0,
+      "arm": "llama",
+      "mean_ms": 35.926911625,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 1,
+      "arm": "r031",
+      "mean_ms": 35.399107734375,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 1,
+      "arm": "llama",
+      "mean_ms": 35.972274203125,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 1,
+      "arm": "r004",
+      "mean_ms": 36.9734355,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 2,
+      "arm": "llama",
+      "mean_ms": 36.00479165625,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 2,
+      "arm": "r004",
+      "mean_ms": 36.959242734375,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 2,
+      "arm": "r031",
+      "mean_ms": 35.334062796875,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    }
+  ],
+  "exclusions": [],
+  "model_claim": null
+}

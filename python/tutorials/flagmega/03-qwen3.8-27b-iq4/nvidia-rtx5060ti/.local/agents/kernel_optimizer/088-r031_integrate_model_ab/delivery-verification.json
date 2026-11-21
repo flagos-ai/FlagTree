@@ -1,0 +1,41 @@
+{
+  "status": "PASS",
+  "raw_timing_recomputed": true,
+  "Student_t_df2_recomputed": true,
+  "all_claimed_thresholds_pass": true,
+  "row_counts_per_seed": {
+    "20261120": {
+      "qn": 768,
+      "kn": 768,
+      "beta": 2304,
+      "decay_log": 2304,
+      "core": 2304,
+      "state": 294912,
+      "y": 2304,
+      "glu": 1114112
+    },
+    "1": {
+      "qn": 768,
+      "kn": 768,
+      "beta": 2304,
+      "decay_log": 2304,
+      "core": 2304,
+      "state": 294912,
+      "y": 2304,
+      "glu": 1114112
+    },
+    "37": {
+      "qn": 768,
+      "kn": 768,
+      "beta": 2304,
+      "decay_log": 2304,
+      "core": 2304,
+      "state": 294912,
+      "y": 2304,
+      "glu": 1114112
+    }
+  },
+  "all_stored_rows_rechecked": true,
+  "full_32_64_token_trajectories_and_external_endpoints_match_frozen_r004": true,
+  "exclusions": []
+}

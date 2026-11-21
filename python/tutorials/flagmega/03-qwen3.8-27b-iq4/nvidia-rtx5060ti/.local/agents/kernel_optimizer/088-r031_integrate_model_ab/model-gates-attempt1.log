@@ -1,0 +1,16 @@
+Traceback (most recent call last):
+  File "qualify_model.py", line 24, in <module>
+    c=ModelContext(A/'build-attempt2/artifact')
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/048-r004_v6_model_integration/qualify.py", line 50, in __init__
+    self.runtime.prepare(*self.arguments);self.stream.synchronize()
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/runtime/module.py", line 582, in prepare
+    self._prepare_external(tuple(external_arguments))
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/runtime/module.py", line 914, in _prepare_external
+    instance = prepare_jit_kernel(
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/runtime/prepared.py", line 360, in prepare_jit_kernel
+    _validate_resources(compiled, contract, normalized_grid)
+  File "qualify_model.py", line 14, in audit
+    row=dict(name=k.name,grid=list(grid),hash=k.hash,cubin_sha256=hashlib.sha256(k.asm['cubin']).hexdigest(),metadata=k.metadata._asdict(),n_regs=k.n_regs)
+AttributeError: 'CompiledKernel' object has no attribute 'n_regs'
+
+FAILED

@@ -1,0 +1,42 @@
+{
+  "schema": "flagmega.r031.integrated-subject/v1",
+  "name": "R17",
+  "implementation": "tir.gdn_recurrent.r017_split4lut",
+  "body_sources": [
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/codegen/triton/kernels/gdn_recurrent/r017_split4lut.py.jinja",
+      "nbytes": 5110,
+      "sha256": "d25f2af4ee9777f4cbbf3b7f43d81f6959cdaf4ebe994532a46710b9a1d7b0a6"
+    }
+  ],
+  "upstream_qualification": {
+    "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_profiler/012-r019_full_p5_industry_boundary/full-p5-k9-receipt.json",
+    "nbytes": 15209216,
+    "sha256": "1538d9ebfd5d3c8d396d965675743ab1feeaaff37061bbb61cc0adf8f562cdad"
+  },
+  "model_resource_evidence": {
+    "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/model-gates-attempt2/affected-resources.json",
+    "nbytes": 591075,
+    "sha256": "ca8d8ac1ca52b5b289b1938f4eed73c5812539656339eb0ba5b6d914b003ca17"
+  },
+  "MODEL_TOKEN10": {
+    "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/model-gates-attempt2/status.json",
+    "nbytes": 11579,
+    "sha256": "4ff8e1523b8744ddab48685ee7bd38a1f363f4cadf451a46800e85e2329fbf3a"
+  },
+  "integrated_row_verification": {
+    "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/integrated-row-verification-attempt2/status.json",
+    "nbytes": 11759,
+    "sha256": "e2a54c1a4f6e5388358c389c0a5c8fe700d28c843f9b5794fbca8e1706baa5a6"
+  },
+  "fallback": "r004 frozen package-attempt1",
+  "standalone_qualification_transferred_as_model_qualification": false,
+  "native_model_schema": "r031.gdn.native-model/v1",
+  "phase_order": [
+    "partials",
+    "prep",
+    "core",
+    "y"
+  ],
+  "arena_bytes": 56832
+}

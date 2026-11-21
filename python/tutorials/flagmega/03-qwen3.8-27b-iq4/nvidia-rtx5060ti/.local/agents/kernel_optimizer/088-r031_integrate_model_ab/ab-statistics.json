@@ -1,0 +1,2355 @@
+{
+  "status": "PASS",
+  "processes": [
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/ab-p1",
+      "pid": 3962272,
+      "status": "FAILED",
+      "samples": [
+        {
+          "pid": 3962272,
+          "scenario": "synthetic32",
+          "round": 0,
+          "arm": "r004",
+          "mean_ms": 36.95611725,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3962272,
+          "scenario": "synthetic32",
+          "round": 0,
+          "arm": "r031",
+          "mean_ms": 35.3112098125,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3962272,
+          "scenario": "synthetic32",
+          "round": 0,
+          "arm": "llama",
+          "mean_ms": 36.024570875,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3962272,
+          "scenario": "synthetic32",
+          "round": 1,
+          "arm": "r031",
+          "mean_ms": 35.3051553125,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3962272,
+          "scenario": "synthetic32",
+          "round": 1,
+          "arm": "llama",
+          "mean_ms": 36.00800290625,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3962272,
+          "scenario": "synthetic32",
+          "round": 1,
+          "arm": "r004",
+          "mean_ms": 36.976309,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3962272,
+          "scenario": "synthetic32",
+          "round": 2,
+          "arm": "llama",
+          "mean_ms": 36.0013699375,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3962272,
+          "scenario": "synthetic32",
+          "round": 2,
+          "arm": "r004",
+          "mean_ms": 36.9517128125,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        }
+      ],
+      "error": "Traceback (most recent call last):\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 192, in resolve_artifact_path\n    path.relative_to(artifact)\n  File \"/home/sunnycase/miniconda3/envs/flagtree/lib/python3.10/pathlib.py\", line 818, in relative_to\n    raise ValueError(\"{!r} is not in the subpath of {!r}\"\nValueError: '/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/048-r004_v6_model_integration/package-attempt1/assets/rdata.bin' is not in the subpath of '/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/build-attempt2/artifact' OR one path is relative and the other is absolute.\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"ab_worker.py\", line 78, in <module>\n    vals[arm]=model_round(arm,scenario,r)\n  File \"ab_worker.py\", line 29, in model_round\n    c=ModelContext(paths[arm]);steps=32 if scenario=='synthetic32' else 64\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/048-r004_v6_model_integration/qualify.py\", line 28, in __init__\n    self.runtime=load(artifact,device=self.device);self.values={};self.guards={}\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/runtime/loader.py\", line 68, in load\n    manifest, module = load_artifact(artifact, verify_rdata_payload=False)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/module.py\", line 406, in load_artifact\n    verify_sections(artifact, sections, defer_hashes=deferred_hashes)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 145, in verify_sections\n    path = resolve_artifact_path(root, section.path)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 194, in resolve_artifact_path\n    raise ArtifactError(f\"Artifact path {relative!r} escapes {artifact}.\") from error\ntriton.flagmega.errors.ArtifactError: Artifact path 'assets/rdata.bin' escapes /mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/build-attempt2/artifact.\n"
+    },
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/ab-p2",
+      "pid": 3964262,
+      "status": "FAILED",
+      "samples": [],
+      "error": "Traceback (most recent call last):\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 192, in resolve_artifact_path\n    path.relative_to(artifact)\n  File \"/home/sunnycase/miniconda3/envs/flagtree/lib/python3.10/pathlib.py\", line 818, in relative_to\n    raise ValueError(\"{!r} is not in the subpath of {!r}\"\nValueError: '/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/048-r004_v6_model_integration/package-attempt1/assets/rdata.bin' is not in the subpath of '/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/build-attempt2/artifact' OR one path is relative and the other is absolute.\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"ab_worker.py\", line 78, in <module>\n    vals[arm]=model_round(arm,scenario,r)\n  File \"ab_worker.py\", line 29, in model_round\n    c=ModelContext(paths[arm]);steps=32 if scenario=='synthetic32' else 64\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/048-r004_v6_model_integration/qualify.py\", line 28, in __init__\n    self.runtime=load(artifact,device=self.device);self.values={};self.guards={}\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/runtime/loader.py\", line 68, in load\n    manifest, module = load_artifact(artifact, verify_rdata_payload=False)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/module.py\", line 406, in load_artifact\n    verify_sections(artifact, sections, defer_hashes=deferred_hashes)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 145, in verify_sections\n    path = resolve_artifact_path(root, section.path)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 194, in resolve_artifact_path\n    raise ArtifactError(f\"Artifact path {relative!r} escapes {artifact}.\") from error\ntriton.flagmega.errors.ArtifactError: Artifact path 'assets/rdata.bin' escapes /mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/build-attempt2/artifact.\n"
+    },
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/ab-p3",
+      "pid": 3964348,
+      "status": "PASS",
+      "samples": [
+        {
+          "pid": 3964348,
+          "scenario": "synthetic32",
+          "round": 0,
+          "arm": "llama",
+          "mean_ms": 35.97903815625,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "synthetic32",
+          "round": 0,
+          "arm": "r004",
+          "mean_ms": 36.9498373125,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "synthetic32",
+          "round": 0,
+          "arm": "r031",
+          "mean_ms": 35.31795796875,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "synthetic32",
+          "round": 1,
+          "arm": "r004",
+          "mean_ms": 36.9608203125,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "synthetic32",
+          "round": 1,
+          "arm": "r031",
+          "mean_ms": 35.32714678125,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "synthetic32",
+          "round": 1,
+          "arm": "llama",
+          "mean_ms": 35.99481296875,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "synthetic32",
+          "round": 2,
+          "arm": "r031",
+          "mean_ms": 35.35474990625,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "synthetic32",
+          "round": 2,
+          "arm": "llama",
+          "mean_ms": 35.98220496875,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "synthetic32",
+          "round": 2,
+          "arm": "r004",
+          "mean_ms": 36.9462263125,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "chinese64",
+          "round": 0,
+          "arm": "llama",
+          "mean_ms": 35.91803534375,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "chinese64",
+          "round": 0,
+          "arm": "r004",
+          "mean_ms": 36.963498375,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "chinese64",
+          "round": 0,
+          "arm": "r031",
+          "mean_ms": 35.33798821875,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "chinese64",
+          "round": 1,
+          "arm": "r004",
+          "mean_ms": 36.959497078125,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "chinese64",
+          "round": 1,
+          "arm": "r031",
+          "mean_ms": 35.33959775,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "chinese64",
+          "round": 1,
+          "arm": "llama",
+          "mean_ms": 35.92994703125,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "chinese64",
+          "round": 2,
+          "arm": "r031",
+          "mean_ms": 35.33695721875,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "chinese64",
+          "round": 2,
+          "arm": "llama",
+          "mean_ms": 35.96262146875,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3964348,
+          "scenario": "chinese64",
+          "round": 2,
+          "arm": "r004",
+          "mean_ms": 36.957994921875,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        }
+      ],
+      "error": null
+    },
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/ab-p4",
+      "pid": 3969340,
+      "status": "PASS",
+      "samples": [
+        {
+          "pid": 3969340,
+          "scenario": "synthetic32",
+          "round": 0,
+          "arm": "r004",
+          "mean_ms": 36.94163434375,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "synthetic32",
+          "round": 0,
+          "arm": "r031",
+          "mean_ms": 35.31228253125,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "synthetic32",
+          "round": 0,
+          "arm": "llama",
+          "mean_ms": 35.9985674375,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "synthetic32",
+          "round": 1,
+          "arm": "r031",
+          "mean_ms": 35.3096310625,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "synthetic32",
+          "round": 1,
+          "arm": "llama",
+          "mean_ms": 36.03101328125,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "synthetic32",
+          "round": 1,
+          "arm": "r004",
+          "mean_ms": 36.96551328125,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "synthetic32",
+          "round": 2,
+          "arm": "llama",
+          "mean_ms": 36.00061109375,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "synthetic32",
+          "round": 2,
+          "arm": "r004",
+          "mean_ms": 36.9464996875,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "synthetic32",
+          "round": 2,
+          "arm": "r031",
+          "mean_ms": 35.3024293125,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "chinese64",
+          "round": 0,
+          "arm": "r004",
+          "mean_ms": 36.95801971875,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "chinese64",
+          "round": 0,
+          "arm": "r031",
+          "mean_ms": 35.35917196875,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "chinese64",
+          "round": 0,
+          "arm": "llama",
+          "mean_ms": 35.926911625,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "chinese64",
+          "round": 1,
+          "arm": "r031",
+          "mean_ms": 35.399107734375,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "chinese64",
+          "round": 1,
+          "arm": "llama",
+          "mean_ms": 35.972274203125,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "chinese64",
+          "round": 1,
+          "arm": "r004",
+          "mean_ms": 36.9734355,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "chinese64",
+          "round": 2,
+          "arm": "llama",
+          "mean_ms": 36.00479165625,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "chinese64",
+          "round": 2,
+          "arm": "r004",
+          "mean_ms": 36.959242734375,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3969340,
+          "scenario": "chinese64",
+          "round": 2,
+          "arm": "r031",
+          "mean_ms": 35.334062796875,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        }
+      ],
+      "error": null
+    },
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/ab-p5",
+      "pid": 3973366,
+      "status": "PASS",
+      "samples": [
+        {
+          "pid": 3973366,
+          "scenario": "synthetic32",
+          "round": 0,
+          "arm": "r031",
+          "mean_ms": 35.308966625,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "synthetic32",
+          "round": 0,
+          "arm": "llama",
+          "mean_ms": 36.06440996875,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "synthetic32",
+          "round": 0,
+          "arm": "r004",
+          "mean_ms": 36.9502144375,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "synthetic32",
+          "round": 1,
+          "arm": "llama",
+          "mean_ms": 35.98017975,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "synthetic32",
+          "round": 1,
+          "arm": "r004",
+          "mean_ms": 36.971532125,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "synthetic32",
+          "round": 1,
+          "arm": "r031",
+          "mean_ms": 35.3037110625,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "synthetic32",
+          "round": 2,
+          "arm": "r004",
+          "mean_ms": 36.96682140625,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "synthetic32",
+          "round": 2,
+          "arm": "r031",
+          "mean_ms": 35.30278353125,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "synthetic32",
+          "round": 2,
+          "arm": "llama",
+          "mean_ms": 35.976228625,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "chinese64",
+          "round": 0,
+          "arm": "r031",
+          "mean_ms": 35.32620725,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "chinese64",
+          "round": 0,
+          "arm": "llama",
+          "mean_ms": 35.916881859375,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "chinese64",
+          "round": 0,
+          "arm": "r004",
+          "mean_ms": 36.957331375,
+          "order": [
+            "r031",
+            "llama",
+            "r004"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "chinese64",
+          "round": 1,
+          "arm": "llama",
+          "mean_ms": 35.90541034375,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "chinese64",
+          "round": 1,
+          "arm": "r004",
+          "mean_ms": 36.956693109375,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "chinese64",
+          "round": 1,
+          "arm": "r031",
+          "mean_ms": 35.326849828125,
+          "order": [
+            "llama",
+            "r004",
+            "r031"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "chinese64",
+          "round": 2,
+          "arm": "r004",
+          "mean_ms": 36.950113140625,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "chinese64",
+          "round": 2,
+          "arm": "r031",
+          "mean_ms": 35.33888309375,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        },
+        {
+          "pid": 3973366,
+          "scenario": "chinese64",
+          "round": 2,
+          "arm": "llama",
+          "mean_ms": 35.909577078125,
+          "order": [
+            "r004",
+            "r031",
+            "llama"
+          ]
+        }
+      ],
+      "error": null
+    }
+  ],
+  "all_retained_samples": [
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "r004",
+      "mean_ms": 36.95611725,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "r031",
+      "mean_ms": 35.3112098125,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "llama",
+      "mean_ms": 36.024570875,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "r031",
+      "mean_ms": 35.3051553125,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "llama",
+      "mean_ms": 36.00800290625,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "r004",
+      "mean_ms": 36.976309,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "llama",
+      "mean_ms": 36.0013699375,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "r004",
+      "mean_ms": 36.9517128125,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "llama",
+      "mean_ms": 35.97903815625,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "r004",
+      "mean_ms": 36.9498373125,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "r031",
+      "mean_ms": 35.31795796875,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "r004",
+      "mean_ms": 36.9608203125,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "r031",
+      "mean_ms": 35.32714678125,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "llama",
+      "mean_ms": 35.99481296875,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "r031",
+      "mean_ms": 35.35474990625,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "llama",
+      "mean_ms": 35.98220496875,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "r004",
+      "mean_ms": 36.9462263125,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "chinese64",
+      "round": 0,
+      "arm": "llama",
+      "mean_ms": 35.91803534375,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "chinese64",
+      "round": 0,
+      "arm": "r004",
+      "mean_ms": 36.963498375,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "chinese64",
+      "round": 0,
+      "arm": "r031",
+      "mean_ms": 35.33798821875,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "chinese64",
+      "round": 1,
+      "arm": "r004",
+      "mean_ms": 36.959497078125,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "chinese64",
+      "round": 1,
+      "arm": "r031",
+      "mean_ms": 35.33959775,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "chinese64",
+      "round": 1,
+      "arm": "llama",
+      "mean_ms": 35.92994703125,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "chinese64",
+      "round": 2,
+      "arm": "r031",
+      "mean_ms": 35.33695721875,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "chinese64",
+      "round": 2,
+      "arm": "llama",
+      "mean_ms": 35.96262146875,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3964348,
+      "scenario": "chinese64",
+      "round": 2,
+      "arm": "r004",
+      "mean_ms": 36.957994921875,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "r004",
+      "mean_ms": 36.94163434375,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "r031",
+      "mean_ms": 35.31228253125,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "llama",
+      "mean_ms": 35.9985674375,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "r031",
+      "mean_ms": 35.3096310625,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "llama",
+      "mean_ms": 36.03101328125,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "r004",
+      "mean_ms": 36.96551328125,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "llama",
+      "mean_ms": 36.00061109375,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "r004",
+      "mean_ms": 36.9464996875,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "r031",
+      "mean_ms": 35.3024293125,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 0,
+      "arm": "r004",
+      "mean_ms": 36.95801971875,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 0,
+      "arm": "r031",
+      "mean_ms": 35.35917196875,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 0,
+      "arm": "llama",
+      "mean_ms": 35.926911625,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 1,
+      "arm": "r031",
+      "mean_ms": 35.399107734375,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 1,
+      "arm": "llama",
+      "mean_ms": 35.972274203125,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 1,
+      "arm": "r004",
+      "mean_ms": 36.9734355,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 2,
+      "arm": "llama",
+      "mean_ms": 36.00479165625,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 2,
+      "arm": "r004",
+      "mean_ms": 36.959242734375,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "scenario": "chinese64",
+      "round": 2,
+      "arm": "r031",
+      "mean_ms": 35.334062796875,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "r031",
+      "mean_ms": 35.308966625,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "llama",
+      "mean_ms": 36.06440996875,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "r004",
+      "mean_ms": 36.9502144375,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "llama",
+      "mean_ms": 35.98017975,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "r004",
+      "mean_ms": 36.971532125,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "r031",
+      "mean_ms": 35.3037110625,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "r004",
+      "mean_ms": 36.96682140625,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "r031",
+      "mean_ms": 35.30278353125,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "llama",
+      "mean_ms": 35.976228625,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "chinese64",
+      "round": 0,
+      "arm": "r031",
+      "mean_ms": 35.32620725,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "chinese64",
+      "round": 0,
+      "arm": "llama",
+      "mean_ms": 35.916881859375,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "chinese64",
+      "round": 0,
+      "arm": "r004",
+      "mean_ms": 36.957331375,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "chinese64",
+      "round": 1,
+      "arm": "llama",
+      "mean_ms": 35.90541034375,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "chinese64",
+      "round": 1,
+      "arm": "r004",
+      "mean_ms": 36.956693109375,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "chinese64",
+      "round": 1,
+      "arm": "r031",
+      "mean_ms": 35.326849828125,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "chinese64",
+      "round": 2,
+      "arm": "r004",
+      "mean_ms": 36.950113140625,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "chinese64",
+      "round": 2,
+      "arm": "r031",
+      "mean_ms": 35.33888309375,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3973366,
+      "scenario": "chinese64",
+      "round": 2,
+      "arm": "llama",
+      "mean_ms": 35.909577078125,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    }
+  ],
+  "failed_processes": [
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/ab-p1",
+      "pid": 3962272,
+      "error": "Traceback (most recent call last):\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 192, in resolve_artifact_path\n    path.relative_to(artifact)\n  File \"/home/sunnycase/miniconda3/envs/flagtree/lib/python3.10/pathlib.py\", line 818, in relative_to\n    raise ValueError(\"{!r} is not in the subpath of {!r}\"\nValueError: '/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/048-r004_v6_model_integration/package-attempt1/assets/rdata.bin' is not in the subpath of '/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/build-attempt2/artifact' OR one path is relative and the other is absolute.\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"ab_worker.py\", line 78, in <module>\n    vals[arm]=model_round(arm,scenario,r)\n  File \"ab_worker.py\", line 29, in model_round\n    c=ModelContext(paths[arm]);steps=32 if scenario=='synthetic32' else 64\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/048-r004_v6_model_integration/qualify.py\", line 28, in __init__\n    self.runtime=load(artifact,device=self.device);self.values={};self.guards={}\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/runtime/loader.py\", line 68, in load\n    manifest, module = load_artifact(artifact, verify_rdata_payload=False)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/module.py\", line 406, in load_artifact\n    verify_sections(artifact, sections, defer_hashes=deferred_hashes)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 145, in verify_sections\n    path = resolve_artifact_path(root, section.path)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 194, in resolve_artifact_path\n    raise ArtifactError(f\"Artifact path {relative!r} escapes {artifact}.\") from error\ntriton.flagmega.errors.ArtifactError: Artifact path 'assets/rdata.bin' escapes /mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/build-attempt2/artifact.\n",
+      "retained_samples": 8
+    },
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/ab-p2",
+      "pid": 3964262,
+      "error": "Traceback (most recent call last):\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 192, in resolve_artifact_path\n    path.relative_to(artifact)\n  File \"/home/sunnycase/miniconda3/envs/flagtree/lib/python3.10/pathlib.py\", line 818, in relative_to\n    raise ValueError(\"{!r} is not in the subpath of {!r}\"\nValueError: '/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/048-r004_v6_model_integration/package-attempt1/assets/rdata.bin' is not in the subpath of '/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/build-attempt2/artifact' OR one path is relative and the other is absolute.\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"ab_worker.py\", line 78, in <module>\n    vals[arm]=model_round(arm,scenario,r)\n  File \"ab_worker.py\", line 29, in model_round\n    c=ModelContext(paths[arm]);steps=32 if scenario=='synthetic32' else 64\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/048-r004_v6_model_integration/qualify.py\", line 28, in __init__\n    self.runtime=load(artifact,device=self.device);self.values={};self.guards={}\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/runtime/loader.py\", line 68, in load\n    manifest, module = load_artifact(artifact, verify_rdata_payload=False)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/module.py\", line 406, in load_artifact\n    verify_sections(artifact, sections, defer_hashes=deferred_hashes)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 145, in verify_sections\n    path = resolve_artifact_path(root, section.path)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 194, in resolve_artifact_path\n    raise ArtifactError(f\"Artifact path {relative!r} escapes {artifact}.\") from error\ntriton.flagmega.errors.ArtifactError: Artifact path 'assets/rdata.bin' escapes /mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/build-attempt2/artifact.\n",
+      "retained_samples": 0
+    }
+  ],
+  "excluded_samples": [],
+  "excluded_processes": [],
+  "full_paired_processes": 3,
+  "model_claim": {
+    "synthetic32": {
+      "ms_per_token": 35.31551764236111,
+      "ci95_ms": [
+        35.27711802940055,
+        35.35391725532167
+      ],
+      "paired_llama_delta_ms": {
+        "values": [
+          -0.6520671458333283,
+          -0.7019496354166677,
+          -0.7017857083333325
+        ],
+        "n": 3,
+        "df": 2,
+        "mean": -0.6852674965277762,
+        "sd": 0.028752463941337406,
+        "low95": -0.7566925765093089,
+        "high95": -0.6138424165462435,
+        "t975": 4.302652729696142,
+        "unit": "independent process mean"
+      },
+      "paired_r004_delta_ms": {
+        "values": [
+          -1.6190097604166667,
+          -1.6431014687500038,
+          -1.6577022499999998
+        ],
+        "n": 3,
+        "df": 2,
+        "mean": -1.6399378263888902,
+        "sd": 0.019539285101580896,
+        "low95": -1.6884761013697671,
+        "high95": -1.5913995514080133,
+        "t975": 4.302652729696142,
+        "unit": "independent process mean"
+      },
+      "percent_of_448": 86.10040519196922,
+      "percent_of_428_165": 90.08905801735827
+    },
+    "chinese64": {
+      "ms_per_token": 35.344313984375,
+      "ci95_ms": [
+        35.30070148338337,
+        35.38792648536663
+      ],
+      "paired_llama_delta_ms": {
+        "values": [
+          -0.5986868854166687,
+          -0.6038783281249991,
+          -0.579976369791666
+        ],
+        "n": 3,
+        "df": 2,
+        "mean": -0.594180527777778,
+        "sd": 0.01257204627016977,
+        "low95": -0.6254112220309898,
+        "high95": -0.5629498335245662,
+        "t975": 4.302652729696142,
+        "unit": "independent process mean"
+      },
+      "paired_r004_delta_ms": {
+        "values": [
+          -1.6221490625000001,
+          -1.599451817708335,
+          -1.6240658177083347
+        ],
+        "n": 3,
+        "df": 2,
+        "mean": -1.6152222326388899,
+        "sd": 0.013691164228931447,
+        "low95": -1.649232970017324,
+        "high95": -1.5812114952604557,
+        "t975": 4.302652729696142,
+        "unit": "independent process mean"
+      },
+      "percent_of_448": 86.03025595335227,
+      "percent_of_428_165": 90.0156590732587
+    }
+  },
+  "scenarios": {
+    "synthetic32": {
+      "pid_pairs": [
+        {
+          "pid": 3964348,
+          "means_ms": {
+            "r004": 36.952294645833334,
+            "r031": 35.33328488541667,
+            "llama": 35.985352031249995
+          },
+          "round_means_ms": {
+            "r004": [
+              36.9498373125,
+              36.9608203125,
+              36.9462263125
+            ],
+            "r031": [
+              35.31795796875,
+              35.32714678125,
+              35.35474990625
+            ],
+            "llama": [
+              35.97903815625,
+              35.99481296875,
+              35.98220496875
+            ]
+          }
+        },
+        {
+          "pid": 3969340,
+          "means_ms": {
+            "r004": 36.951215770833336,
+            "r031": 35.30811430208333,
+            "llama": 36.0100639375
+          },
+          "round_means_ms": {
+            "r004": [
+              36.94163434375,
+              36.96551328125,
+              36.9464996875
+            ],
+            "r031": [
+              35.31228253125,
+              35.3096310625,
+              35.3024293125
+            ],
+            "llama": [
+              35.9985674375,
+              36.03101328125,
+              36.00061109375
+            ]
+          }
+        },
+        {
+          "pid": 3973366,
+          "means_ms": {
+            "r004": 36.96285598958333,
+            "r031": 35.30515373958333,
+            "llama": 36.006939447916665
+          },
+          "round_means_ms": {
+            "r004": [
+              36.9502144375,
+              36.971532125,
+              36.96682140625
+            ],
+            "r031": [
+              35.308966625,
+              35.3037110625,
+              35.30278353125
+            ],
+            "llama": [
+              36.06440996875,
+              35.98017975,
+              35.976228625
+            ]
+          }
+        }
+      ],
+      "arms": {
+        "r004": {
+          "values": [
+            36.952294645833334,
+            36.951215770833336,
+            36.96285598958333
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": 36.95545546875,
+          "sd": 0.006431700729187686,
+          "low95": 36.93947823841813,
+          "high95": 36.97143269908187,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        },
+        "r031": {
+          "values": [
+            35.33328488541667,
+            35.30811430208333,
+            35.30515373958333
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": 35.31551764236111,
+          "sd": 0.015457924405479464,
+          "low95": 35.27711802940055,
+          "high95": 35.35391725532167,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        },
+        "llama": {
+          "values": [
+            35.985352031249995,
+            36.0100639375,
+            36.006939447916665
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": 36.00078513888889,
+          "sd": 0.013456456343863287,
+          "low95": 35.96735744821899,
+          "high95": 36.03421282955878,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        }
+      },
+      "paired_differences_ms": {
+        "r004": {
+          "values": [
+            -1.6190097604166667,
+            -1.6431014687500038,
+            -1.6577022499999998
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": -1.6399378263888902,
+          "sd": 0.019539285101580896,
+          "low95": -1.6884761013697671,
+          "high95": -1.5913995514080133,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        },
+        "llama": {
+          "values": [
+            -0.6520671458333283,
+            -0.7019496354166677,
+            -0.7017857083333325
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": -0.6852674965277762,
+          "sd": 0.028752463941337406,
+          "low95": -0.7566925765093089,
+          "high95": -0.6138424165462435,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        }
+      },
+      "fixed_historical_reference_differences_ms": {
+        "r004": {
+          "values": [
+            -1.6260181145833315,
+            -1.6511886979166661,
+            -1.6541492604166663
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": -1.643785357638888,
+          "sd": 0.015457924405479464,
+          "low95": -1.6821849705994494,
+          "high95": -1.6053857446783264,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        },
+        "llama": {
+          "values": [
+            -0.5948631145833332,
+            -0.6200336979166678,
+            -0.622994260416668
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": -0.6126303576388897,
+          "sd": 0.015457924405479464,
+          "low95": -0.6510299705994512,
+          "high95": -0.5742307446783282,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        }
+      },
+      "weight_bytes": 13622248096,
+      "achieved_weight_GB_s": 385.72981526002206,
+      "percent_of_448": 86.10040519196922,
+      "percent_of_428_165": 90.08905801735827,
+      "strictly_faster_than_fresh_llama": true,
+      "strictly_faster_than_fixed_llama": true,
+      "strictly_faster_than_r004": true,
+      "conditional_prediction_ms": 34.729385,
+      "measured_minus_conditional_prediction_ms": 0.5861326423611075,
+      "all_attempts_zero_exclusion_audit": [
+        {
+          "pid": 3962272,
+          "status": "FAILED",
+          "retained_round_counts": {
+            "r004": 3,
+            "r031": 2,
+            "llama": 3
+          },
+          "all_available_arm_means_ms": {
+            "r004": 36.9613796875,
+            "r031": 35.3081825625,
+            "llama": 36.01131457291667
+          },
+          "paired_rounds": [
+            0,
+            1
+          ]
+        },
+        {
+          "pid": 3964348,
+          "status": "PASS",
+          "retained_round_counts": {
+            "r004": 3,
+            "r031": 3,
+            "llama": 3
+          },
+          "all_available_arm_means_ms": {
+            "r004": 36.952294645833334,
+            "r031": 35.33328488541667,
+            "llama": 35.985352031249995
+          },
+          "paired_rounds": [
+            0,
+            1,
+            2
+          ]
+        },
+        {
+          "pid": 3969340,
+          "status": "PASS",
+          "retained_round_counts": {
+            "r004": 3,
+            "r031": 3,
+            "llama": 3
+          },
+          "all_available_arm_means_ms": {
+            "r004": 36.951215770833336,
+            "r031": 35.30811430208333,
+            "llama": 36.0100639375
+          },
+          "paired_rounds": [
+            0,
+            1,
+            2
+          ]
+        },
+        {
+          "pid": 3973366,
+          "status": "PASS",
+          "retained_round_counts": {
+            "r004": 3,
+            "r031": 3,
+            "llama": 3
+          },
+          "all_available_arm_means_ms": {
+            "r004": 36.96285598958333,
+            "r031": 35.30515373958333,
+            "llama": 36.006939447916665
+          },
+          "paired_rounds": [
+            0,
+            1,
+            2
+          ]
+        }
+      ],
+      "all_available_process_mean_statistics": {
+        "arms": {
+          "r004": {
+            "values": [
+              36.9613796875,
+              36.952294645833334,
+              36.951215770833336,
+              36.96285598958333
+            ],
+            "n": 4,
+            "df": 3,
+            "mean": 36.9569365234375,
+            "sd": 0.00602925712361654,
+            "low95": 36.943965623627015,
+            "high95": 36.96990742324798,
+            "t975": 4.302652729696142,
+            "unit": "independent process mean"
+          },
+          "r031": {
+            "values": [
+              35.3081825625,
+              35.33328488541667,
+              35.30811430208333,
+              35.30515373958333
+            ],
+            "n": 4,
+            "df": 3,
+            "mean": 35.313683872395835,
+            "sd": 0.013143406474701533,
+            "low95": 35.28540811552289,
+            "high95": 35.34195962926878,
+            "t975": 4.302652729696142,
+            "unit": "independent process mean"
+          },
+          "llama": {
+            "values": [
+              36.01131457291667,
+              35.985352031249995,
+              36.0100639375,
+              36.006939447916665
+            ],
+            "n": 4,
+            "df": 3,
+            "mean": 36.00341749739583,
+            "sd": 0.012183378983648702,
+            "low95": 35.97720707297537,
+            "high95": 36.02962792181629,
+            "t975": 4.302652729696142,
+            "unit": "independent process mean"
+          }
+        },
+        "paired_process_mean_differences": {
+          "r004": {
+            "values": [
+              -1.6531971249999984,
+              -1.6190097604166667,
+              -1.6431014687500038,
+              -1.6577022499999998
+            ],
+            "n": 4,
+            "df": 3,
+            "mean": -1.6432526510416672,
+            "sd": 0.017276420098944357,
+            "low95": -1.6804198690907173,
+            "high95": -1.606085432992617,
+            "t975": 4.302652729696142,
+            "unit": "independent process mean"
+          },
+          "llama": {
+            "values": [
+              -0.7031320104166667,
+              -0.6520671458333283,
+              -0.7019496354166677,
+              -0.7017857083333325
+            ],
+            "n": 4,
+            "df": 3,
+            "mean": -0.6897336249999988,
+            "sd": 0.025118147541572336,
+            "low95": -0.7437709580423271,
+            "high95": -0.6356962919576705,
+            "t975": 4.302652729696142,
+            "unit": "independent process mean"
+          }
+        },
+        "pids": [
+          3962272,
+          3964348,
+          3969340,
+          3973366
+        ],
+        "t_reference_df": 2,
+        "conservative_when_n_gt_3": true,
+        "complete_balanced_primary": false,
+        "missing_arms_not_imputed": true,
+        "all_valid_timing_samples_retained": true
+      }
+    },
+    "chinese64": {
+      "pid_pairs": [
+        {
+          "pid": 3964348,
+          "means_ms": {
+            "r004": 36.960330125,
+            "r031": 35.3381810625,
+            "llama": 35.93686794791667
+          },
+          "round_means_ms": {
+            "r004": [
+              36.963498375,
+              36.959497078125,
+              36.957994921875
+            ],
+            "r031": [
+              35.33798821875,
+              35.33959775,
+              35.33695721875
+            ],
+            "llama": [
+              35.91803534375,
+              35.92994703125,
+              35.96262146875
+            ]
+          }
+        },
+        {
+          "pid": 3969340,
+          "means_ms": {
+            "r004": 36.963565984375,
+            "r031": 35.36411416666667,
+            "llama": 35.967992494791666
+          },
+          "round_means_ms": {
+            "r004": [
+              36.95801971875,
+              36.9734355,
+              36.959242734375
+            ],
+            "r031": [
+              35.35917196875,
+              35.399107734375,
+              35.334062796875
+            ],
+            "llama": [
+              35.926911625,
+              35.972274203125,
+              36.00479165625
+            ]
+          }
+        },
+        {
+          "pid": 3973366,
+          "means_ms": {
+            "r004": 36.954712541666666,
+            "r031": 35.33064672395833,
+            "llama": 35.91062309375
+          },
+          "round_means_ms": {
+            "r004": [
+              36.957331375,
+              36.956693109375,
+              36.950113140625
+            ],
+            "r031": [
+              35.32620725,
+              35.326849828125,
+              35.33888309375
+            ],
+            "llama": [
+              35.916881859375,
+              35.90541034375,
+              35.909577078125
+            ]
+          }
+        }
+      ],
+      "arms": {
+        "r004": {
+          "values": [
+            36.960330125,
+            36.963565984375,
+            36.954712541666666
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": 36.95953621701389,
+          "sd": 0.004479796799549467,
+          "low95": 36.94840778484329,
+          "high95": 36.97066464918449,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        },
+        "r031": {
+          "values": [
+            35.3381810625,
+            35.36411416666667,
+            35.33064672395833
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": 35.344313984375,
+          "sd": 0.017556394231235988,
+          "low95": 35.30070148338337,
+          "high95": 35.38792648536663,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        },
+        "llama": {
+          "values": [
+            35.93686794791667,
+            35.967992494791666,
+            35.91062309375
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": 35.93849451215278,
+          "sd": 0.028719267528622652,
+          "low95": 35.86715189663197,
+          "high95": 36.00983712767359,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        }
+      },
+      "paired_differences_ms": {
+        "r004": {
+          "values": [
+            -1.6221490625000001,
+            -1.599451817708335,
+            -1.6240658177083347
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": -1.6152222326388899,
+          "sd": 0.013691164228931447,
+          "low95": -1.649232970017324,
+          "high95": -1.5812114952604557,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        },
+        "llama": {
+          "values": [
+            -0.5986868854166687,
+            -0.6038783281249991,
+            -0.579976369791666
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": -0.594180527777778,
+          "sd": 0.01257204627016977,
+          "low95": -0.6254112220309898,
+          "high95": -0.5629498335245662,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        }
+      },
+      "fixed_historical_reference_differences_ms": {
+        "r004": {
+          "values": [
+            -1.6964439374999998,
+            -1.6705108333333314,
+            -1.703978276041667
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": -1.6903110156249994,
+          "sd": 0.017556394231235988,
+          "low95": -1.7339235166166282,
+          "high95": -1.6466985146333706,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        },
+        "llama": {
+          "values": [
+            -0.5166099375000002,
+            -0.4906768333333318,
+            -0.5241442760416675
+          ],
+          "n": 3,
+          "df": 2,
+          "mean": -0.5104770156249998,
+          "sd": 0.017556394231235988,
+          "low95": -0.5540895166166286,
+          "high95": -0.46686451463337103,
+          "t975": 4.302652729696142,
+          "unit": "independent process mean"
+        }
+      },
+      "weight_bytes": 13622248096,
+      "achieved_weight_GB_s": 385.41554667101815,
+      "percent_of_448": 86.03025595335227,
+      "percent_of_428_165": 90.0156590732587,
+      "strictly_faster_than_fresh_llama": true,
+      "strictly_faster_than_fixed_llama": true,
+      "strictly_faster_than_r004": true,
+      "conditional_prediction_ms": 34.804708,
+      "measured_minus_conditional_prediction_ms": 0.539605984375001,
+      "all_attempts_zero_exclusion_audit": [
+        {
+          "pid": 3964348,
+          "status": "PASS",
+          "retained_round_counts": {
+            "r004": 3,
+            "r031": 3,
+            "llama": 3
+          },
+          "all_available_arm_means_ms": {
+            "r004": 36.960330125,
+            "r031": 35.3381810625,
+            "llama": 35.93686794791667
+          },
+          "paired_rounds": [
+            0,
+            1,
+            2
+          ]
+        },
+        {
+          "pid": 3969340,
+          "status": "PASS",
+          "retained_round_counts": {
+            "r004": 3,
+            "r031": 3,
+            "llama": 3
+          },
+          "all_available_arm_means_ms": {
+            "r004": 36.963565984375,
+            "r031": 35.36411416666667,
+            "llama": 35.967992494791666
+          },
+          "paired_rounds": [
+            0,
+            1,
+            2
+          ]
+        },
+        {
+          "pid": 3973366,
+          "status": "PASS",
+          "retained_round_counts": {
+            "r004": 3,
+            "r031": 3,
+            "llama": 3
+          },
+          "all_available_arm_means_ms": {
+            "r004": 36.954712541666666,
+            "r031": 35.33064672395833,
+            "llama": 35.91062309375
+          },
+          "paired_rounds": [
+            0,
+            1,
+            2
+          ]
+        }
+      ],
+      "all_available_process_mean_statistics": {
+        "arms": {
+          "r004": {
+            "values": [
+              36.960330125,
+              36.963565984375,
+              36.954712541666666
+            ],
+            "n": 3,
+            "df": 2,
+            "mean": 36.95953621701389,
+            "sd": 0.004479796799549467,
+            "low95": 36.94840778484329,
+            "high95": 36.97066464918449,
+            "t975": 4.302652729696142,
+            "unit": "independent process mean"
+          },
+          "r031": {
+            "values": [
+              35.3381810625,
+              35.36411416666667,
+              35.33064672395833
+            ],
+            "n": 3,
+            "df": 2,
+            "mean": 35.344313984375,
+            "sd": 0.017556394231235988,
+            "low95": 35.30070148338337,
+            "high95": 35.38792648536663,
+            "t975": 4.302652729696142,
+            "unit": "independent process mean"
+          },
+          "llama": {
+            "values": [
+              35.93686794791667,
+              35.967992494791666,
+              35.91062309375
+            ],
+            "n": 3,
+            "df": 2,
+            "mean": 35.93849451215278,
+            "sd": 0.028719267528622652,
+            "low95": 35.86715189663197,
+            "high95": 36.00983712767359,
+            "t975": 4.302652729696142,
+            "unit": "independent process mean"
+          }
+        },
+        "paired_process_mean_differences": {
+          "r004": {
+            "values": [
+              -1.6221490625000001,
+              -1.599451817708335,
+              -1.6240658177083347
+            ],
+            "n": 3,
+            "df": 2,
+            "mean": -1.6152222326388899,
+            "sd": 0.013691164228931447,
+            "low95": -1.649232970017324,
+            "high95": -1.5812114952604557,
+            "t975": 4.302652729696142,
+            "unit": "independent process mean"
+          },
+          "llama": {
+            "values": [
+              -0.5986868854166687,
+              -0.6038783281249991,
+              -0.579976369791666
+            ],
+            "n": 3,
+            "df": 2,
+            "mean": -0.594180527777778,
+            "sd": 0.01257204627016977,
+            "low95": -0.6254112220309898,
+            "high95": -0.5629498335245662,
+            "t975": 4.302652729696142,
+            "unit": "independent process mean"
+          }
+        },
+        "pids": [
+          3964348,
+          3969340,
+          3973366
+        ],
+        "t_reference_df": 2,
+        "conservative_when_n_gt_3": true,
+        "complete_balanced_primary": false,
+        "missing_arms_not_imputed": true,
+        "all_valid_timing_samples_retained": true
+      }
+    }
+  }
+}

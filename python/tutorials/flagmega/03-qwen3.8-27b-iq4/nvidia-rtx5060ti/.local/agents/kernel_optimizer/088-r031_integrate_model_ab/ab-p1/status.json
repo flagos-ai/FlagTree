@@ -1,0 +1,105 @@
+{
+  "status": "FAILED",
+  "pid": 3962272,
+  "samples": [
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "r004",
+      "mean_ms": 36.95611725,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "r031",
+      "mean_ms": 35.3112098125,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 0,
+      "arm": "llama",
+      "mean_ms": 36.024570875,
+      "order": [
+        "r004",
+        "r031",
+        "llama"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "r031",
+      "mean_ms": 35.3051553125,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "llama",
+      "mean_ms": 36.00800290625,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 1,
+      "arm": "r004",
+      "mean_ms": 36.976309,
+      "order": [
+        "r031",
+        "llama",
+        "r004"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "llama",
+      "mean_ms": 36.0013699375,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    },
+    {
+      "pid": 3962272,
+      "scenario": "synthetic32",
+      "round": 2,
+      "arm": "r004",
+      "mean_ms": 36.9517128125,
+      "order": [
+        "llama",
+        "r004",
+        "r031"
+      ]
+    }
+  ],
+  "exclusions": [],
+  "model_claim": null,
+  "error": "Traceback (most recent call last):\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 192, in resolve_artifact_path\n    path.relative_to(artifact)\n  File \"/home/sunnycase/miniconda3/envs/flagtree/lib/python3.10/pathlib.py\", line 818, in relative_to\n    raise ValueError(\"{!r} is not in the subpath of {!r}\"\nValueError: '/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/048-r004_v6_model_integration/package-attempt1/assets/rdata.bin' is not in the subpath of '/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/build-attempt2/artifact' OR one path is relative and the other is absolute.\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"ab_worker.py\", line 78, in <module>\n    vals[arm]=model_round(arm,scenario,r)\n  File \"ab_worker.py\", line 29, in model_round\n    c=ModelContext(paths[arm]);steps=32 if scenario=='synthetic32' else 64\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/048-r004_v6_model_integration/qualify.py\", line 28, in __init__\n    self.runtime=load(artifact,device=self.device);self.values={};self.guards={}\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/runtime/loader.py\", line 68, in load\n    manifest, module = load_artifact(artifact, verify_rdata_payload=False)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/module.py\", line 406, in load_artifact\n    verify_sections(artifact, sections, defer_hashes=deferred_hashes)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 145, in verify_sections\n    path = resolve_artifact_path(root, section.path)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/artifacts/manifest.py\", line 194, in resolve_artifact_path\n    raise ArtifactError(f\"Artifact path {relative!r} escapes {artifact}.\") from error\ntriton.flagmega.errors.ArtifactError: Artifact path 'assets/rdata.bin' escapes /mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/build-attempt2/artifact.\n"
+}

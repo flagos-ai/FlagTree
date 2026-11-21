@@ -1,0 +1,923 @@
+--- a/python/triton/flagmega/codegen/triton/kernel_call_renderers.py
++++ b/python/triton/flagmega/codegen/triton/kernel_call_renderers.py
+@@ -159,7 +159,7 @@
+             "execution_kind": str(raw.get("execution_kind", "")),
+             "internal_grid_barriers": internal_grid_barriers,
+             "arguments": (list(raw["arguments"])
+-                          if raw.get("variant") in ("r004_reference_v4", "r004_column_v4", "r004_column_v6")
++                          if raw.get("variant") in ("r004_reference_v4", "r004_column_v4", "r004_column_v6", "r017_split4lut")
+                           and not raw.get('parameters', {}).get('native_model_contract')
+                           else _call_runtime_arguments(raw)),
+         }
+@@ -195,7 +195,7 @@
+         call.update(encoder(encoder_raw))
+         _bind_explicit_task_recipe(call, raw)
+         call["participation_active"] = (
+-            "True" if call["variant"] in ("r004_reference_v4", "r004_column_v4", "r004_column_v6")
++            "True" if call["variant"] in ("r004_reference_v4", "r004_column_v4", "r004_column_v6", "r017_split4lut")
+             else _exclusive_participation_active(raw)
+         )
+         norm_owner = _canonical_norm_stats_execution_active(raw, call)
+@@ -2334,7 +2334,7 @@
+ 
+ 
+ def _gdn_recurrent_call(raw) -> dict[str, object]:
+-    if raw.get("variant") in ("r004_reference_v4", "r004_column_v4", "r004_column_v6"):
++    if raw.get("variant") in ("r004_reference_v4", "r004_column_v4", "r004_column_v6", "r017_split4lut"):
+         return _r004_gdn_phase_call(raw)
+     state = _buffer(raw, "inputs", "state", 1)
+     qkv = _buffer(raw, "inputs", "qkv")
+--- a/python/triton/flagmega/codegen/triton/kernels/gdn_recurrent/r004_contract_v4.py
++++ b/python/triton/flagmega/codegen/triton/kernels/gdn_recurrent/r004_contract_v4.py
+@@ -13,7 +13,11 @@
+ 
+ 
+ def native_arguments(plan):
+-    if plan['module'] not in ('r004_T_full_p5_v4', 'r004_T_full_p5_v6'):
++    if plan['module'] in ('r017_T_full_p5_split', 'r017_T_full_p5_split4', 'r017_T_full_p5_split8', 'r017_T_full_p5_split4lut'):
++        args=native_arguments({'module':'r004_T_full_p5_v6'})
++        return {**args,'partials':('X','BW','AW','Partials'),
++                'prep':(*args['prep'],'Partials')}
++    if plan['module'] not in ('r004_T_full_p5_v4', 'r004_T_full_p5_v6', 'r017_T_full_p5_w1', 'r017_T_full_p5_w2', 'r017_T_full_p5_w4', 'r017_T_full_p5_w8', 'r017_T_full_p5_w16', 'r017_T_full_p5_w32', 'r017_T_full_p5_w64', 'r017_T_full_p5_split', 'r017_T_full_p5_split4', 'r017_T_full_p5_split8', 'r017_T_full_p5_split4lut'):
+         return NATIVE_ARGUMENTS
+     return {'prep': ('QKV','X','BW','AW','ALog','DT','QN','KN','Beta','G'),
+             'core': ('QN','KN','QKV','Beta','G','StateParent','Layer','Core'),
+--- a/python/triton/flagmega/codegen/triton/kernels/gdn_recurrent/r017_split4lut.py.jinja
++++ b/python/triton/flagmega/codegen/triton/kernels/gdn_recurrent/r017_split4lut.py.jinja
+@@ -0,0 +1,119 @@
++# flagmega-kernel: gdn_recurrent/r017_split4lut
++# Copyright 2026 FlagOS Contributors
++# SPDX-License-Identifier: MIT
++# H004 standalone: gate/qk -> 384 column CTAs -> head publication.
++# Reuse the faithfully pinned register core including fused libdevice.exp(g).
++{% include "kernels/gdn_recurrent/r004_reference_v4.py.jinja" %}
++{% include "kernels/gdn_recurrent/r004_norm_v6.py.jinja" %}
++
++@triton.jit
++def _r017_signed_lut(code):
++    lo = (tl.where(code < 8, 0xbfad9881, 0x26190d01).to(tl.uint32))
++    hi = (tl.where(code < 8, 0xf6eaddcf, 0x71594535).to(tl.uint32))
++    return (tl.inline_asm_elementwise(
++        "{ .reg .b32 v; prmt.b32 v, $1, $2, $3; shl.b32 v, v, 24; shr.s32 v, v, 24; cvt.rn.f32.s32 $0, v; }",
++        constraints="=f,r,r,r", args=[lo, hi, code & 7], dtype=tl.float32, is_pure=True, pack=1))
++
++@triton.jit
++def _r017_projection_tile(X, BW):
++    h = tl.program_id(0)
++    layout:tl.constexpr=tle.gpu.BlockEncoding([1,1],[1,32],[1,4],[1,0])
++    k0 = tle.gpu.set_layout(tl.arange(0,4)[:,None]*128+tl.arange(0,128)[None,:],layout)
++    start = tl.program_id(2)*512
++    k = start + k0
++    group = (k % 256) // 32
++    lane = k % 32
++    base = h*2720 + (k//256)*136
++    d = tl.load(BW.to(tl.pointer_type(tl.float16))+base//2).to(tl.float32)
++    sl = tl.load(BW+base+4+group//2)
++    sh = tl.load(BW.to(tl.pointer_type(tl.uint16))+(base+2)//2)
++    sc = ((sl >> ((group%2)*4)) & 15) | (((sh >> (group*2)) & 3)*16)
++    packed = tl.load(BW+base+8+group*16+lane%16)
++    code = tl.where(lane//16==0,packed & 15,packed >> 4)
++    cv = _r017_signed_lut(code)
++    decoded = d * (sc.to(tl.float32)-32.0) * cv
++    value = tl.load(X+k).to(tl.float32)
++    return tl.sum(decoded*value,1)
++
++@triton.jit
++def _r017_partials(X,BW,AW,Partials):
++    bank=tl.program_id(1)
++    weights=tl.where(bank==0,BW,AW)
++    partial=_r017_projection_tile(X,weights)
++    tile=tle.gpu.set_layout(tl.arange(0,4),tle.gpu.SlicedEncoding(1,tle.gpu.BlockEncoding([1,1],[1,32],[1,4],[1,0])))
++    tl.store(Partials+(bank*48+tl.program_id(0))*40+tl.program_id(2)*4+tile,partial)
++
++
++@triton.jit
++def _r017_ordered_projection(Partials,bank:tl.constexpr):
++    # Read all original 40 tile sums before the scalar accumulator dependency.
++    i=tle.gpu.set_layout(tl.arange(0,64),tle.gpu.BlockEncoding([2],[32],[4],[0]))
++    sums=tl.load(Partials+(bank*48+tl.program_id(0))*40+i,i<40,0)
++    acc=tl.full((),0.0,tl.float32)
++    for j in tl.static_range(40):
++        term=tl.sum(tl.gather(sums,tl.full((1,),j,tl.int32),0),0)
++        acc+=term
++    return acc.to(tl.bfloat16).to(tl.float32)
++
++
++
++@triton.jit
++def _r017_prep_split4lut(QKV,X,BW,AW,ALog,DT,QN,KN,Beta,G,Partials):
++    h = tl.program_id(0)
++    # Two unchanged, independent IQ4_XS tiny projection arithmetic streams.
++    b = _r017_ordered_projection(Partials,0)
++    a = _r017_ordered_projection(Partials,1)
++    beta = tl.sigmoid(b).to(tl.bfloat16).to(tl.float32)
++    biased = a + tl.load(DT+h)
++    softplus = tl.where(biased>20.0,biased,libdevice.log1p(libdevice.exp(biased)))
++    decay_log = -libdevice.exp(tl.load(ALog+h))*softplus
++    tl.store(Beta+h,beta)
++    tl.store(G+h,decay_log)
++    # Independent complete norm replicas; no warp partial enters the tiny-dot D domain.
++    if h < 16:
++        i = tle.gpu.set_layout(tl.arange(0,128),V_T)
++        q = tl.load(QKV+h*128+i).to(tl.float32)
++        k = tl.load(QKV+2048+h*128+i).to(tl.float32)
++        qinv = 1.0/tl.maximum(tl.sqrt(norm128_v6(q)),1.e-12)
++        kinv = 1.0/tl.maximum(tl.sqrt(norm128_v6(k)),1.e-12)
++        qinv = norm_broadcast_v6(qinv)
++        kinv = norm_broadcast_v6(kinv)
++        elected = norm_warp0_v6()
++        tl.store(QN+h*128+i,q*qinv,elected)
++        tl.store(KN+h*128+i,k*kinv,elected)
++
++
++@triton.jit
++def _r017_y_split4lut(Core,Z,Norm,Y):
++    h = tl.program_id(0)
++    i = tle.gpu.set_layout(tl.arange(0,128),V_T)
++    core = tl.load(Core+h*128+i)
++    sumsq = norm128_v6(core)
++    arg = tl.inline_asm_elementwise("fma.rn.f32 $0,$1,0f3c000000,0f358637bd;",
++        constraints="=f,f", args=[sumsq], dtype=tl.float32, is_pure=True, pack=1)
++    inv = norm_broadcast_v6(tl.rsqrt(arg))
++    weight = tl.load(Norm+i)
++    z = tl.load(Z+h*128+i).to(tl.float32)
++    weighted = norm_mul_v6(norm_mul_v6(core,inv),weight)
++    pre = norm_mul_v6(weighted,z*tl.sigmoid(z))
++    tl.store(Y+h*128+i,pre.to(tl.bfloat16),norm_warp0_v6())
++
++@triton.jit
++def _r017_core_split4lut(QN,KN,QKV,Beta,G,StateParent,Layer,Core):
++    # Direct selected-parent source; no gather/clear or additional state staging.
++    selected = StateParent + Layer.to(tl.int64)*786432
++    _r004_reference_core_v4(QN,KN,QKV,Beta,G,selected,StateParent,Layer,Core)
++
++{% if render_calls is defined %}
++{% for call in render_calls if call.family == "gdn_recurrent" and call.variant == "r017_split4lut" %}
++@triton.jit
++def {{ call.symbol }}({{ call.signature }}):
++{% if call.phase == "partials" %}
++    _r017_partials({{ call.native_arguments | join(", ") }})
++{% elif call.phase == "core" %}
++    _r017_core_split4lut({{ call.native_arguments | join(", ") }})
++{% else %}
++    _r017_{{ call.phase }}_split4lut({{ call.native_arguments | join(", ") }})
++{% endif %}
++{% endfor %}
++{% endif %}
+--- a/python/triton/flagmega/codegen/triton/kernels/gdn_recurrent/r031_model_r017.py.jinja
++++ b/python/triton/flagmega/codegen/triton/kernels/gdn_recurrent/r031_model_r017.py.jinja
+@@ -0,0 +1,14 @@
++# Copyright 2026 FlagOS Contributors
++# SPDX-License-Identifier: MIT
++{% with render_calls=() %}
++{% include "kernels/gdn_recurrent/r017_split4lut.py.jinja" %}
++{% endwith %}
++{% for call in render_calls if call.family == "gdn_recurrent" and call.variant == "r017_split4lut" %}
++@triton.jit
++def {{ call.symbol }}({{ call.signature }}):
++{% if call.phase == "partials" %}
++    _r017_partials({{ call.model_native_arguments | join(", ") }})
++{% else %}
++    _r017_{{ call.phase }}_split4lut({{ call.model_native_arguments | join(", ") }})
++{% endif %}
++{% endfor %}
+--- a/python/triton/flagmega/codegen/triton/r004_native_model.py
++++ b/python/triton/flagmega/codegen/triton/r004_native_model.py
+@@ -18,6 +18,8 @@
+ from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import _same_contract
+ from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import phase_writer_proof
+ 
++PROGRAM_SCHEMA_R031 = "flagmega.kernel-programs/v11-native-model-r031"
++
+ PROGRAM_SCHEMA_V6 = "flagmega.kernel-programs/v10-native-model-v6"
+ PROGRAM_SCHEMA = 'flagmega.kernel-programs/v9-native-model'
+ 
+@@ -28,12 +30,12 @@
+     from .kernels.gdn_recurrent.r004_contract_v4 import native_arguments
+     parameters = raw.get('parameters', {})
+     request = parameters.get('native_model_contract')
+-    versions = {'r004.gdn.native-model/v1': 4, 'r004.gdn.native-model/v2': 6}
++    versions = {'r004.gdn.native-model/v1': 4, 'r004.gdn.native-model/v2': 6, 'r031.gdn.native-model/v1':31}
+     if not isinstance(request, Mapping) or request.get('schema') not in versions:
+         raise CodegenError('Invalid native model coarse GDN contract identity.')
+     contract = native_model_contract(versions[request['schema']])
+     from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import phase_plan_for
+-    plan = phase_plan_for("r004_T_full_p5_v6" if contract["schema"] == "r004.gdn.native-model/v2" else "r004_T_full_p5_v4")
++    plan = phase_plan_for(contract.get("phase_module", "r004_T_full_p5_v6" if contract["schema"] == "r004.gdn.native-model/v2" else "r004_T_full_p5_v4"))
+     if (not _same_contract(parameters.get('native_model_contract'), contract)
+             or not _same_contract(parameters.get('phase_plan'), plan)
+             or raw.get('implementation') != plan['implementation']
+@@ -45,7 +47,7 @@
+     # presenting the model itself as a standalone module or constructor.
+     _r004_gdn_phase_call({**raw, 'arguments':list(native_arguments(plan)['prep']),
+                          'parameters':{**{k:v for k,v in parameters.items() if k != 'native_model_contract'},
+-                                       'r004_phase':'prep', 'program_grid':[48,1,1],
++                                       'r004_phase':'prep', 'program_grid':next(e['grid'] for e in plan['entries'] if e['phase']=='prep'),
+                                        'program_owner_mapping':'x-fast'}})
+     roots = {}
+     for name, formal, index in (
+@@ -78,12 +80,12 @@
+     roots['Y'] = _pointer(y)
+     arena = _buffer(raw, 'workspaces', 'phase_pool')
+     abi = arena['abi']
+-    if (abi['scalar_dtype'] != 'uint8' or list(abi['logical_shape']) != [41472]
++    if (abi['scalar_dtype'] != 'uint8' or list(abi['logical_shape']) != [plan["pool"]["nbytes"]]
+             or abi['storage'] != 'workspace' or int(abi.get('pool_scope_stride_bytes', 0))
+             or int(abi.get('pool_byte_offset', 0)) % 256):
+         raise CodegenError('Native model arena must be a 256-aligned planned CHIP workspace.')
+     pool = _pointer(arena)
+-    aliases = {'qn':'QN', 'kn':'KN', 'beta':'Beta', 'decay_log':'G', 'core':'Core'}
++    aliases = {'qn':'QN', 'kn':'KN', 'beta':'Beta', 'decay_log':'G', 'core':'Core', 'partials':'Partials'}
+     for view in plan['pool']['views']:
+         roots[aliases[view['name']]] = f'(({pool}) + {view["byte_offset"]}).to(tl.pointer_type(tl.float32))'
+     return dict(native_model_coarse=True, native_model_contract=contract,
+@@ -108,7 +110,7 @@
+         raise CodegenError('Native model requires closed structured caller bindings.')
+     is_v6 = contract["schema"] == "r004.gdn.native-model/v2"
+     from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import phase_plan_for
+-    plan = phase_plan_for("r004_T_full_p5_v6" if is_v6 else "r004_T_full_p5_v4")
++    plan = phase_plan_for(contract.get("phase_module", "r004_T_full_p5_v6" if is_v6 else "r004_T_full_p5_v4"))
+     from triton.flagmega.passes.tir.materialize_kernel_definitions import r004_phase_definitions
+     coarse = [d for d in module.kernel_callable_map.values()
+               if d.dispatch.parameters.get('native_model_contract') is not None
+@@ -186,9 +188,10 @@
+     if len(calls) != 48:
+         raise CodegenError('Native model package must bind exactly 48 coarse calls / 144 phase launches.')
+     return {**descriptor, 'programs':programs, 'kernels':launches,
+-            'kernel_program_schema':PROGRAM_SCHEMA_V6 if is_v6 else PROGRAM_SCHEMA,
++            'kernel_program_schema':PROGRAM_SCHEMA_R031 if contract['schema']=='r031.gdn.native-model/v1' else PROGRAM_SCHEMA_V6 if is_v6 else PROGRAM_SCHEMA,
+             'native_model_binding':dict(contract=plain_package_value(contract), calls=calls,
+                                         native_definitions=[model_phase_symbol(e['phase'], contract) for e in plan['entries']]),
+-            'kernel_templates':[(('kernels/gdn_recurrent/r004_model_v2.py.jinja' if is_v6 else 'kernels/gdn_recurrent/r004_model_v1.py.jinja')
+-                                 if p.endswith('/r004_column_v6.py.jinja' if is_v6 else '/r004_column_v4.py.jinja') else p)
++            'kernel_templates':[(('kernels/gdn_recurrent/r031_model_r017.py.jinja' if contract['schema']=='r031.gdn.native-model/v1' else 'kernels/gdn_recurrent/r004_model_v2.py.jinja' if is_v6 else 'kernels/gdn_recurrent/r004_model_v1.py.jinja')
++                                 if p.endswith('/r017_split4lut.py.jinja' if contract['schema']=='r031.gdn.native-model/v1' else '/r004_column_v6.py.jinja' if is_v6 else '/r004_column_v4.py.jinja') else p)
+                                 for p in descriptor['kernel_templates']]}
++
+--- a/python/triton/flagmega/codegen/triton/tir_package.py
++++ b/python/triton/flagmega/codegen/triton/tir_package.py
+@@ -1401,6 +1401,12 @@
+                   root/'kernels/gdn_recurrent/r004_norm_v6.py.jinja',
+                   root.parent.parent/'rules/ntt/r004_column_phase_bindings_v6.py',
+                   root.parent.parent/'runtime/r004_phase_pool.py']
++    if plan is not None and plan['module']=='r017_T_full_p5_split4lut':
++        paths += [root/'kernels/gdn_recurrent/r017_split4lut.py.jinja',
++                  root/'kernels/gdn_recurrent/r004_norm_v6.py.jinja',
++                  root/'kernels/gdn_recurrent/r004_column_v6.py.jinja',
++                  root/'kernels/_iq4_streaming.py.jinja',
++                  root.parent.parent/'rules/ntt/r017_split4lut_bindings.py']
+     return {str(p.relative_to(root.parent.parent)):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths if p.is_file()}
+ 
+ 
+@@ -1516,10 +1522,10 @@
+             tensor=parameter.type
+             write_positions={'clear':{0},'gather':{3},'core':{6,8},'pb':{2},'pa':{2},
+                              'beta':{1},'bias':{2},'gate':{2},'q':{1},'k':{1},'rms':{2},'y':{2}}
+-            if plan['module'] in ('r004_T_full_p5_v4', 'r004_T_full_p5_v6'):
++            if plan['module'] in ('r004_T_full_p5_v4', 'r004_T_full_p5_v6', 'r017_T_full_p5_split4lut'):
+                 write_positions.update(prep={6,7,8,9}, core={5,7}, y={3})
+             role=PrimParameterRole.OUTPUT if i in write_positions[entry['phase']] else PrimParameterRole.INPUT
+-            mode=(MemoryAccessMode.READ_WRITE if (entry['phase']=='clear' and i==0 or plan['module'] in ('r004_T_full_p5_v4', 'r004_T_full_p5_v6') and entry['phase']=='core' and i==5) else
++            mode=(MemoryAccessMode.READ_WRITE if (entry['phase']=='clear' and i==0 or plan['module'] in ('r004_T_full_p5_v4', 'r004_T_full_p5_v6', 'r017_T_full_p5_split4lut') and entry['phase']=='core' and i==5) else
+                   (MemoryAccessMode.WRITE if role is PrimParameterRole.OUTPUT else MemoryAccessMode.READ))
+             if (not isinstance(tensor,TensorType) or tensor.dtype.value!=value['dtype']
+                     or tuple(d.fixed_value for d in tensor.shape)!=tuple(value['shape'])
+--- a/python/triton/flagmega/passes/tir/materialize_kernel_definitions.py
++++ b/python/triton/flagmega/passes/tir/materialize_kernel_definitions.py
+@@ -65,7 +65,7 @@
+             nodes.append(node)
+             continue
+         function, identity = _kernel_definition(node, module, module_kind=module_kind)
+-        if function.dispatch.parameters.get("variant") in ("r004_reference_v4", "r004_column_v4", "r004_column_v6"):
++        if function.dispatch.parameters.get("variant") in ("r004_reference_v4", "r004_column_v4", "r004_column_v6", 'r017_w1', 'r017_w2', 'r017_w4', 'r017_w8', 'r017_w16', 'r017_w32', 'r017_w64', 'r017_split', 'r017_split4', 'r017_split8', 'r017_split4lut'):
+             # One coarse call retains the tuple/state effect. Named native
+             # definitions are contracts; the package projects the 12-entry conditional registry.
+             for phase_definition in r004_phase_definitions(function):
+@@ -194,14 +194,14 @@
+     kernel_parameters = dict(node.attrs.get("parameters", {}))
+     raw_workspaces = tuple(kernel_parameters.pop("workspaces", ()))
+     workspaces = tuple(_workspace_requirement(value) for value in raw_workspaces)
+-    if kernel_parameters.get("variant") in ("r004_reference_v4", "r004_column_v4", "r004_column_v6"):
++    if kernel_parameters.get("variant") in ("r004_reference_v4", "r004_column_v4", "r004_column_v6", 'r017_w1', 'r017_w2', 'r017_w4', 'r017_w8', 'r017_w16', 'r017_w32', 'r017_w64', 'r017_split', 'r017_split4', 'r017_split8', 'r017_split4lut'):
+         from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import (
+             standalone_request, validate_phase_plan,
+         )
+         from triton.flagmega.rules.ntt.r004_native_model import native_model_request
+         model_contract = native_model_request(module)
+         if model_contract is not None:
+-            if module_kind != "triton" or kernel_parameters.get("variant") != ("r004_column_v6" if model_contract["schema"] == "r004.gdn.native-model/v2" else "r004_column_v4"):
++            if module_kind != "triton" or kernel_parameters.get("variant") != model_contract["implementation"].rsplit(".",1)[-1]:
+                 raise IRVerificationError("Native model GDN only supports the qualified Triton column path.")
+             kernel_parameters["native_model_contract"] = model_contract
+         elif module_kind != "triton" or standalone_request(module) is None:
+@@ -355,7 +355,7 @@
+             is_write = (descriptor.get("writer") == phase
+                         or (phase in ("core", "clear") and binding["source"] == 3)
+                         or (phase == "y" and binding["source"] == 5))
+-            is_read = not is_write or (binding['source']==3 and (phase=='clear' or plan['module'] in ('r004_T_full_p5_v4', 'r004_T_full_p5_v6') and phase=='core'))
++            is_read = not is_write or (binding['source']==3 and (phase=='clear' or plan['module'] in ('r004_T_full_p5_v4', 'r004_T_full_p5_v6', 'r017_T_full_p5_w1', 'r017_T_full_p5_w2', 'r017_T_full_p5_w4', 'r017_T_full_p5_w8', 'r017_T_full_p5_w16', 'r017_T_full_p5_w32', 'r017_T_full_p5_w64', 'r017_T_full_p5_split', 'r017_T_full_p5_split4', 'r017_T_full_p5_split8', 'r017_T_full_p5_split4lut') and phase=='core'))
+             # ParameterRole describes the canonical logical TIR ABI;
+             # memory_effects separately describe physical reads/writes.
+             # The explicit native_parameter_order below restores the frozen
+--- a/python/triton/flagmega/rules/ntt/r004_gdn_phase_bindings.py
++++ b/python/triton/flagmega/rules/ntt/r004_gdn_phase_bindings.py
+@@ -115,6 +115,21 @@
+ 
+ 
+ def validate_phase_plan(plan):
++    if isinstance(plan,Mapping) and plan.get('module') == 'r017_T_full_p5_split4lut':
++        from .r017_split4lut_bindings import validate_plan
++        return validate_plan(plan)
++    if isinstance(plan,Mapping) and plan.get('module') == 'r017_T_full_p5_split4':
++        from .r017_split4_bindings import validate_plan
++        return validate_plan(plan)
++    if isinstance(plan,Mapping) and plan.get('module') == 'r017_T_full_p5_split8':
++        from .r017_split8_bindings import validate_plan
++        return validate_plan(plan)
++    if isinstance(plan, Mapping) and plan.get('module') == 'r017_T_full_p5_split':
++        from .r017_split_bindings import validate_plan
++        return validate_plan(plan)
++    if isinstance(plan, Mapping) and str(plan.get('module','')).startswith('r017_T_full_p5_w'):
++        from .r017_gdn_bindings import validate_plan
++        return validate_plan(plan)
+     if isinstance(plan, Mapping) and plan.get('module') == 'r004_T_full_p5_v6':
+         from .r004_column_phase_bindings_v6 import validate_column_plan
+         return validate_column_plan(plan)
+@@ -155,7 +170,7 @@
+     if request is None:
+         return None
+     if (not isinstance(request,Mapping) or set(request) != {'schema','module','readonly_layer'}
+-            or request.get('schema') != REQUEST_SCHEMA or request.get('module') not in (MODULE, 'r004_T_full_p5_v4', 'r004_T_full_p5_v6')
++            or request.get('schema') != REQUEST_SCHEMA or request.get('module') not in (MODULE, 'r004_T_full_p5_v4', 'r004_T_full_p5_v6', 'r017_T_full_p5_w1', 'r017_T_full_p5_w2', 'r017_T_full_p5_w4', 'r017_T_full_p5_w8', 'r017_T_full_p5_w16', 'r017_T_full_p5_w32', 'r017_T_full_p5_w64', 'r017_T_full_p5_split', 'r017_T_full_p5_split4', 'r017_T_full_p5_split8', 'r017_T_full_p5_split4lut')
+             or type(request.get('readonly_layer')) is not int or not 0 <= request['readonly_layer'] < 48):
+         raise IRVerificationError('Invalid standalone GDN request/readonly row.',stage=module.stage)
+     return request
+@@ -259,6 +274,21 @@
+ 
+ 
+ def phase_writer_proof(phase, plan=None):
++    if plan is not None and plan.get('module') == 'r017_T_full_p5_split4lut':
++        from .r017_split4lut_bindings import column_writer_proof
++        return column_writer_proof(phase)
++    if plan is not None and plan.get('module') == 'r017_T_full_p5_split4':
++        from .r017_split4_bindings import column_writer_proof
++        return column_writer_proof(phase)
++    if plan is not None and plan.get('module') == 'r017_T_full_p5_split8':
++        from .r017_split8_bindings import column_writer_proof
++        return column_writer_proof(phase)
++    if plan is not None and plan.get('module') == 'r017_T_full_p5_split':
++        from .r017_split_bindings import column_writer_proof
++        return column_writer_proof(phase)
++    if plan is not None and str(plan.get('module','')).startswith('r017_T_full_p5_w'):
++        from .r017_gdn_bindings import column_writer_proof
++        return column_writer_proof(phase, int(plan['module'].rsplit('w',1)[1]))
+     if plan is not None and plan.get('module') == 'r004_T_full_p5_v6':
+         from .r004_column_phase_bindings_v6 import column_writer_proof
+         return column_writer_proof(phase)
+@@ -416,6 +446,21 @@
+ 
+ 
+ def phase_tensor_effects(phase, plan=None):
++    if plan is not None and plan.get('module') == 'r017_T_full_p5_split4lut':
++        from .r017_split4lut_bindings import column_tensor_effects
++        return column_tensor_effects(phase)
++    if plan is not None and plan.get('module') == 'r017_T_full_p5_split4':
++        from .r017_split4_bindings import column_tensor_effects
++        return column_tensor_effects(phase)
++    if plan is not None and plan.get('module') == 'r017_T_full_p5_split8':
++        from .r017_split8_bindings import column_tensor_effects
++        return column_tensor_effects(phase)
++    if plan is not None and plan.get('module') == 'r017_T_full_p5_split':
++        from .r017_split_bindings import column_tensor_effects
++        return column_tensor_effects(phase)
++    if plan is not None and str(plan.get('module','')).startswith('r017_T_full_p5_w'):
++        from .r017_gdn_bindings import column_tensor_effects
++        return column_tensor_effects(phase, int(plan['module'].rsplit('w',1)[1]))
+     if plan is not None and plan.get('module') == 'r004_T_full_p5_v6':
+         from .r004_column_phase_bindings_v6 import column_tensor_effects
+         return column_tensor_effects(phase)
+@@ -524,6 +569,21 @@
+ 
+ 
+ def phase_plan_for(module_name):
++    if module_name == 'r017_T_full_p5_split4lut':
++        from .r017_split4lut_bindings import column_phase_plan
++        return column_phase_plan()
++    if module_name == 'r017_T_full_p5_split4':
++        from .r017_split4_bindings import column_phase_plan
++        return column_phase_plan()
++    if module_name == 'r017_T_full_p5_split8':
++        from .r017_split8_bindings import column_phase_plan
++        return column_phase_plan()
++    if module_name == 'r017_T_full_p5_split':
++        from .r017_split_bindings import column_phase_plan
++        return column_phase_plan()
++    if module_name.startswith('r017_T_full_p5_w'):
++        from .r017_gdn_bindings import column_phase_plan
++        return column_phase_plan(int(module_name.rsplit('w',1)[1]))
+     if module_name == 'r004_T_full_p5_v6':
+         from .r004_column_phase_bindings_v6 import column_phase_plan
+         return column_phase_plan()
+--- a/python/triton/flagmega/rules/ntt/r004_model_policy.py
++++ b/python/triton/flagmega/rules/ntt/r004_model_policy.py
+@@ -31,6 +31,9 @@
+ 
+ 
+ def model_request(module):
++    if isinstance(module.metadata.get(REQUEST_KEY), Mapping) and module.metadata[REQUEST_KEY].get("schema") == "flagmega.r031-model-policy/v1":
++        from .r031_model_policy import model_request as r031_route
++        return r031_route(module)
+     if isinstance(module.metadata.get(REQUEST_KEY), Mapping) and module.metadata[REQUEST_KEY].get("schema") == "flagmega.r004-model-policy/v2":
+         from .r004_model_policy_v6 import model_request as v6_model_request
+         return v6_model_request(module)
+@@ -63,6 +66,9 @@
+ 
+ 
+ def configure_model_phases(module):
++    if isinstance(module.metadata.get(REQUEST_KEY), Mapping) and module.metadata[REQUEST_KEY].get("schema") == "flagmega.r031-model-policy/v1":
++        from .r031_model_policy import configure_model_phases as r031_route
++        return r031_route(module)
+     """Keep the original inputs, tuple, effects and all neighboring nodes."""
+     if isinstance(module.metadata.get(REQUEST_KEY), Mapping) and module.metadata[REQUEST_KEY].get("schema") == "flagmega.r004-model-policy/v2":
+         from .r004_model_policy_v6 import configure_model_phases as v6_configure_model_phases
+@@ -155,6 +161,9 @@
+ 
+ 
+ def model_distribution_target(target, module):
++    if isinstance(module.metadata.get(REQUEST_KEY), Mapping) and module.metadata[REQUEST_KEY].get("schema") == "flagmega.r031-model-policy/v1":
++        from .r031_model_policy import model_distribution_target as r031_route
++        return r031_route(target, module)
+     """Public compiler hook also reconstructs the policy after IR reload."""
+     if isinstance(module.metadata.get(REQUEST_KEY), Mapping) and module.metadata[REQUEST_KEY].get("schema") == "flagmega.r004-model-policy/v2":
+         from .r004_model_policy_v6 import model_distribution_target as v6_model_distribution_target
+@@ -191,6 +200,9 @@
+ 
+ 
+ def propose_model_tir(module, target):
++    if isinstance(module.metadata.get(REQUEST_KEY), Mapping) and module.metadata[REQUEST_KEY].get("schema") == "flagmega.r031-model-policy/v1":
++        from .r031_model_policy import propose_model_tir as r031_route
++        return r031_route(module, target)
+     """Select the existing tuned native algorithm; never fall back to P5-U."""
+     if isinstance(module.metadata.get(REQUEST_KEY), Mapping) and module.metadata[REQUEST_KEY].get("schema") == "flagmega.r004-model-policy/v2":
+         from .r004_model_policy_v6 import propose_model_tir as v6_propose_model_tir
+--- a/python/triton/flagmega/rules/ntt/r004_native_model.py
++++ b/python/triton/flagmega/rules/ntt/r004_native_model.py
+@@ -18,6 +18,13 @@
+ 
+ 
+ def native_model_contract(version=4):
++    if version == 31:
++        from .r017_split4lut_bindings import column_phase_plan as r17_plan
++        plan = r17_plan()
++        return {**native_model_contract(6), "schema":"r031.gdn.native-model/v1",
++                "implementation":plan["implementation"], "plan_body_sha256":plan["plan_body_sha256"],
++                "arena":{k:v for k,v in plan["pool"].items() if k != "root"},
++                "entry_order":[e["phase"] for e in plan["entries"]], "phase_module":plan["module"]}
+     if version == 6:
+         from .r004_column_phase_bindings_v6 import column_phase_plan as v6_plan
+         from .r004_model_policy_v6 import SUBJECT_SHA256 as v6_subject
+@@ -51,7 +58,7 @@
+         return None
+     if (standalone_request(module) is not None or model_request(module) is None
+             or not _same_contract(request, native_model_contract(
+-                6 if model_request(module)["schema"] == "flagmega.r004-model-policy/v2" else 4))):
++                31 if model_request(module)["schema"] == "flagmega.r031-model-policy/v1" else 6 if model_request(module)["schema"] == "flagmega.r004-model-policy/v2" else 4))):
+         raise IRVerificationError("Invalid native model GDN contract; standalone is a separate ABI.",
+                                   stage=module.stage)
+     if (module.metadata.get("num_hidden_layers") != 64
+@@ -68,10 +75,14 @@
+     if native_model_request(module) is not None:
+         return module
+     return replace(module, metadata={**module.metadata, REQUEST_KEY: native_model_contract(
+-        6 if model_request(module)["schema"] == "flagmega.r004-model-policy/v2" else 4)})
++        31 if model_request(module)["schema"] == "flagmega.r031-model-policy/v1" else 6 if model_request(module)["schema"] == "flagmega.r004-model-policy/v2" else 4)})
+ 
+ 
+ def model_phase_symbol(phase, contract=None):
++    if contract is not None and contract.get("schema") == "r031.gdn.native-model/v1":
++        if not _same_contract(contract, native_model_contract(31)) or phase not in contract["entry_order"]:
++            raise IRVerificationError("Invalid R031 phase contract.")
++        return "r031_model_T_" + phase + "_r017"
+     if phase not in ("prep", "core", "y"):
+         raise IRVerificationError("Unsupported native model GDN phase.")
+     if contract is None or _same_contract(contract, native_model_contract()):
+--- a/python/triton/flagmega/rules/ntt/r017_split4lut_bindings.py
++++ b/python/triton/flagmega/rules/ntt/r017_split4lut_bindings.py
+@@ -0,0 +1,120 @@
++# Copyright 2026 FlagOS Contributors
++# SPDX-License-Identifier: MIT
++"""H004 standalone policy. No model request or default selection is enabled."""
++from copy import deepcopy
++from math import prod
++
++from triton.flagmega.errors import IRSchemaError
++from triton.flagmega.ir.execution_mesh import ExecutionMesh
++from .r004_gdn_phase_bindings import reference_phase_plan, _same_contract, reference_writer_census
++
++MODULE = 'r017_T_full_p5_split4lut'
++IMPLEMENTATION = 'tir.gdn_recurrent.r017_split4lut'
++PLAN_BODY_SHA256 = '22e4b0546539150a21f61215ee5a01df8e1df5f63f6110d2d0d9182da9a93148'
++POOL_BYTES = 56832
++
++
++def column_phase_plan():
++    plan = reference_phase_plan()
++    plan.update(schema="r017.gdn.split-ordered/v1", module=MODULE, implementation=IMPLEMENTATION,
++                plan_body_sha256=PLAN_BODY_SHA256, norm_primitive="r004.norm128.comparator-faithful/v6")
++    plan['roots'] = plan['roots'][:12]
++    plan['root_dynamic_indices'] = list(range(6))
++    plan['roots'][11].update(shape=[POOL_BYTES], nbytes=POOL_BYTES)
++    # Five typed global fields; reused only after complete Y publication.
++    views = []
++    for name, offset, shape, writer, reader in (
++        ('qn', 0, [16,128], 'prep', 'core'), ('kn', 8192, [16,128], 'prep', 'core'),
++        ('beta', 16384, [48], 'prep', 'core'), ('decay_log', 16640, [48], 'prep', 'core'),
++        ('core', 16896, [48,128], 'core', 'y'),
++    ):
++        views.append(dict(name=name, dtype='float32', shape=shape, byte_offset=offset,
++                          nbytes=prod(shape)*4, writer=writer, last_reader=reader))
++    root = lambda i: dict(kind='argument', source=i)
++    scalar = lambda i: dict(kind='scalar_argument', source=i, add=0)
++    view = lambda off: dict(kind='pointer', source=11, dtype='float32', byte_offset=off)
++    table = (
++        ('prep', [48,1,1], 4, [root(0),root(2),root(6),root(7),root(8),root(9),
++                              view(0),view(8192),view(16384),view(16640)], [0,1]),
++        ('core', [48,1,8], 4, [view(0),view(8192),root(0),view(16384),view(16640),
++                              root(3),scalar(4),view(16896)], [2,5,6]),
++        ('y', [48,1,1], 4, [view(16896),root(1),root(10),root(5)], [1,3]),
++    )
++    entries = []
++    for phase, grid, warps, bindings, dynamic in table:
++        shape, axes = ((grid, ['head','batch','column_tile']) if phase=='core' else
++                       (grid, ['batch','vector_tile','row']) if phase=='gather' else
++                       ([grid[0]], ['head' if phase in ('prep','y') else 'element_tile']))
++        entries.append(dict(phase=phase, symbol='r017_T_'+phase+'_split4lut', grid=grid, num_warps=warps,
++                            maxnreg=80, enable_static_shared=phase=='prep',
++                            requires_grid_wide_sync=False, program_kind='ordinary', tasks_per_owner=1,
++                            depends_on=[entries[-1]['symbol']] if entries else [],
++                            argument_bindings=bindings, dynamic_argument_indices=dynamic,
++                            condition=None,
++                            execution_mesh=ExecutionMesh.fixed(shape,axes=axes,mapping='x-fast').to_data()))
++    partial=dict(name='partials',dtype='float32',shape=[2,48,40],byte_offset=41472,
++                 nbytes=15360,writer='partials',last_reader='prep')
++    views.append(partial)
++    first=dict(phase='partials',symbol='r017_T_partials_split4lut',grid=[48,2,10],num_warps=4,
++               maxnreg=80,enable_static_shared=True,requires_grid_wide_sync=False,
++               program_kind='ordinary',tasks_per_owner=1,depends_on=[],condition=None,
++               argument_bindings=[root(2),root(6),root(7),view(41472)],dynamic_argument_indices=[0],
++               execution_mesh=ExecutionMesh.fixed([48,2,10],axes=['head','bank','k_tile'],mapping='x-fast').to_data())
++    entries[0]['argument_bindings'].append(view(41472))
++    entries[0]['depends_on']=[first['symbol']]
++    entries.insert(0,first)
++    plan.update(pool=dict(root=11,nbytes=POOL_BYTES,scope='chip',pool_scope_stride_bytes=0,views=views),
++                entries=entries,
++                variants={'T_COMPLETE': dict(entry_indices=[0,1,2,3],input_boundary='ready_inputs',
++                                            output_boundary='r004_T_y_v6.complete')},
++                scenario_weights={name:dict(positions=steps,layers=48,executed_launches=48*4*steps)
++                    for name,steps in [('synthetic32',32),('chinese64',64)]})
++    import hashlib,json
++    plan['plan_body_sha256']=hashlib.sha256(json.dumps(
++        {k:v for k,v in plan.items() if k!='plan_body_sha256'},
++        sort_keys=True,separators=(',',':')).encode()).hexdigest()
++    return plan
++
++
++def validate_plan(plan):
++    expected = column_phase_plan()
++    if not _same_contract(plan, expected):
++        raise IRSchemaError('H004 phase plan differs from its complete standalone recipe.')
++    return deepcopy(expected)
++
++
++def column_writer_proof(phase):
++    sizes = {**reference_writer_census(),'projection_partials':3840}
++    writes = {'partials':['projection_partials'], 'prep':['qn','kn','beta','decay_log'], 'core':['state','core'], 'y':['y']}
++    if phase not in writes:
++        raise IRSchemaError('Unknown H004 phase writer.')
++    return dict(schema=column_phase_plan()['schema'],phase=phase,
++                scalar_writes={k:sizes[k] for k in writes[phase]},exact_once=True,
++                owner_mapping='x-fast',internal_grid_barriers=0,
++                norm_owner='4*lane+j; four readonly warp replicas' if phase in ('prep','y') else None,
++                norm_store_election='warp==0' if phase in ('prep','y') else None)
++
++
++def column_tensor_effects(phase):
++    plan = column_phase_plan()
++    entry = next(e for e in plan['entries'] if e['phase']==phase)
++    views = {v['byte_offset']:v for v in plan['pool']['views']}
++    accesses = []
++    for b in entry['argument_bindings']:
++        if b['kind']=='scalar_argument':
++            continue
++        if b['source']==3:
++            accesses.append(dict(source=3,mode='read_write' if phase=='core' else 'read',scope='chip',
++                                 shape=[48,128,128],nbytes=3145728,layer_source=4,
++                                 layer_stride_bytes=3145728,layer_bounds=[0,48]))
++        elif b['kind']=='pointer':
++            v = views[b['byte_offset']]
++            accesses.append(dict(source=11,mode='write' if v['writer']==phase else 'read',scope='chip',view=v))
++        else:
++            r = plan['roots'][b['source']]
++            accesses.append(dict(source=b['source'],mode='write' if b['source']==5 else 'read',
++                                 scope='chip',shape=r['shape'],nbytes=r['nbytes']))
++    return dict(phase=phase,accesses=accesses,depends_on=entry['depends_on'],condition=entry['condition'],
++                completion='all_ctas_on_same_stream',completion_cta_count=prod(entry['grid']),
++                state_effect='initial_clear' if phase=='clear' else 'fused_commit' if phase=='core' else None,
++                publishes_region_ready=phase=='y')
+--- a/python/triton/flagmega/rules/ntt/r031_model_policy.py
++++ b/python/triton/flagmega/rules/ntt/r031_model_policy.py
+@@ -0,0 +1,207 @@
++# Copyright 2026 FlagOS Contributors
++# SPDX-License-Identifier: MIT
++"""Explicit corrected T-v6 post-packing H004 model policy; native model packaging is a separate gate.
++
++The coarse effect uses one device-global value domain. Its three native
++program meshes, typed scratch fields and completion edges come exclusively
++from the qualified column plan. This policy does not turn the coarse call
++into a single 384-CTA kernel or reuse the standalone constructor ABI.
++"""
++from collections.abc import Mapping
++from copy import copy
++from dataclasses import replace
++
++from triton.flagmega.errors import IRVerificationError
++from triton.flagmega.ir.distributed_inference import broadcast_ir_type
++from triton.flagmega.ir.execution_mesh import ExecutionMesh
++from triton.flagmega.passes.auto_distributed.candidates import (
++    DistributedCandidate, DistributedCandidateProviderBase,
++    DistributedCandidateProviderRegistry,
++)
++from .r017_split4lut_bindings import (
++    MODULE, IMPLEMENTATION, PLAN_BODY_SHA256, column_phase_plan,
++)
++from .r004_gdn_phase_bindings import (
++    _same_contract, standalone_request, validate_coarse_node, validate_phase_plan,
++)
++
++REQUEST_KEY = "r004_model_policy"
++SUBJECT_SHA256 = "b7ee29ef5c4f5bc308e2f36ee73fd7c466da90598307769c4421bbcf70b17d58"
++PLAN_BODY_SHA256 = column_phase_plan()["plan_body_sha256"]
++OP = "nn.gdn_recurrent_core"
++
++
++def model_request(module):
++    request = module.metadata.get(REQUEST_KEY)
++    if request is None:
++        return None
++    expected = dict(schema="flagmega.r031-model-policy/v1", candidate=MODULE,
++                    plan_body_sha256=PLAN_BODY_SHA256,
++                    numerical_subject_sha256=SUBJECT_SHA256)
++    if not isinstance(request, Mapping) or not _same_contract(request, expected):
++        raise IRVerificationError("Invalid H004 model policy identity.", stage=module.stage)
++    if standalone_request(module) is not None:
++        raise IRVerificationError("Model and standalone GDN requests are mutually exclusive.")
++    return request
++
++
++def prepare_model_column_distribution(module):
++    """Explicit opt-in at complete packing; verify again on every fresh resume."""
++    if module.stage not in ("unused_functions_removed", "distribution_constants_frozen"):
++        raise IRVerificationError("H004 model integration must resume before distribution.",
++                                  stage=module.stage)
++    if standalone_request(module) is not None:
++        raise IRVerificationError("A standalone GDN module cannot become a model candidate.")
++    request = dict(schema="flagmega.r031-model-policy/v1", candidate=MODULE,
++                   plan_body_sha256=PLAN_BODY_SHA256,
++                   numerical_subject_sha256=SUBJECT_SHA256)
++    if model_request(module) is None:
++        module = replace(module, metadata={**module.metadata, REQUEST_KEY: request})
++    return configure_model_phases(module)
++
++
++def configure_model_phases(module):
++    """Keep the original inputs, tuple, effects and all neighboring nodes."""
++    if model_request(module) is None:
++        return module
++    if module.stage not in ("unused_functions_removed", "distribution_constants_frozen",
++                            "distribution_candidates"):
++        raise IRVerificationError("H004 phase ownership is before AutoDistributedPass.",
++                                  stage=module.stage)
++    if any(s.point_id.startswith(("distribution.", "tir.")) for s in module.selections):
++        raise IRVerificationError("H004 model policy cannot reuse downstream selections.")
++    if (module.metadata.get("num_hidden_layers") != 64
++            or tuple(module.metadata.get("imported_layer_indices", ())) != tuple(range(64))):
++        raise IRVerificationError("H004 model policy requires all 64 text layers.")
++    from triton.flagmega.passes.functions.graph import static_node_invocation_counts
++    counts = static_node_invocation_counts(module)
++    coarse = [n for n in module.nodes if n.op == OP and n.id in counts]
++    if sum(counts[n.id] for n in coarse) != 48:
++        raise IRVerificationError("H004 model policy requires exactly 48 recurrent invocations.")
++    plan = column_phase_plan()
++    # Dynamic describes the coarse value domain, not a launch grid. Native
++    # PREP/CORE/Y retain their own fixed meshes from phase_plan.
++    mesh = ExecutionMesh.dynamic().to_data()
++    changed = {}
++    for node in coarse:
++        validate_coarse_node(module, node)
++        if node.attrs.get("phase_plan") is not None:
++            if not _same_contract(validate_phase_plan(node.attrs["phase_plan"]), plan):
++                raise IRVerificationError("Mixed H004 model phase plans.", node_id=node.id)
++        changed[node.id] = replace(node, attrs={**node.attrs, "phase_plan": plan},
++                                  metadata={**node.metadata, "execution_mesh": mesh,
++                                            "kernel_program_kind": "ordinary"})
++    return replace(module, nodes=tuple(changed.get(n.id, n) for n in module.nodes))
++
++
++class ColumnEffectProvider(DistributedCandidateProviderBase):
++    """One coarse effect; full tensors reach the phase-owned scalar writers."""
++    op_names = frozenset({OP})
++    allows_partial_inputs = False
++    is_exhaustive = True
++
++    def _enumerate_candidates(self, context):
++        node = context.source_call
++        if model_request(context.module) is None:
++            raise IRVerificationError("Column GDN provider requires its model policy.")
++        validate_coarse_node(context.module, node)
++        validate_phase_plan(node.attrs.get("phase_plan"))
++        if context.placement.physical_level_size("b") != 1:
++            raise IRVerificationError("GDN coarse effect must use the device-global value domain.",
++                                      node_id=node.id)
++        return (DistributedCandidate(
++            "r004-column-complete-effect",
++            broadcast_ir_type(node.type, context.placement),
++            tuple(broadcast_ir_type(context.module.node_map[i].type, context.placement)
++                  for i in node.inputs),
++            0, "phase-owned-columns-and-complete-head-publication", OP, "agent",
++            "flagmega.r031-model-policy/v1", (PLAN_BODY_SHA256, SUBJECT_SHA256)),)
++
++
++class _SingleOpProvider:
++    def __init__(self, op, base):
++        self.op_names, self.base = frozenset({op}), base
++
++    def __getattr__(self, name):
++        return getattr(self.base, name)
++
++
++class ColumnDistributionPolicy:
++    """Preserve the installed placement, split and neighboring op policies."""
++    def __init__(self, base):
++        self.base = base
++
++    @property
++    def identity(self):
++        return self.base.identity + "+r031-r017:" + PLAN_BODY_SHA256
++
++    def __getattr__(self, name):
++        return getattr(self.base, name)
++
++    def register_candidate_providers(self, registry):
++        original = DistributedCandidateProviderRegistry()
++        self.base.register_candidate_providers(original)
++        registry.set_split_candidate_provider(original.split_candidate_provider)
++        for op in original.op_names:
++            registry.add(ColumnEffectProvider() if op == OP
++                         else _SingleOpProvider(op, original.try_get(op)))
++        if OP not in original.op_names:
++            registry.add(ColumnEffectProvider())
++
++
++def model_distribution_target(target, module):
++    """Public compiler hook also reconstructs the policy after IR reload."""
++    if model_request(module) is None:
++        return target
++    if target.name != "nvidia-sm120" or getattr(target, "codegen_backend", "triton") != "triton":
++        raise IRVerificationError("H004 model integration requires SM120 Triton.")
++    if isinstance(target.distribution_policy, ColumnDistributionPolicy):
++        return target
++    local = copy(target)
++    local.distribution_policy = ColumnDistributionPolicy(target.distribution_policy)
++    return local
++
++
++class ColumnTirProvider:
++    op_names = frozenset({OP})
++
++    def propose(self, node, context):
++        from triton.flagmega.codegen.triton.candidates.core import TritonCandidateProposal
++        if model_request(context.module) is None:
++            raise IRVerificationError("Model column selection requires its explicit policy.")
++        validate_coarse_node(context.module, node)
++        plan = validate_phase_plan(node.attrs.get("phase_plan"))
++        if plan["module"] != MODULE:
++            raise IRVerificationError("Model column selection received another candidate.")
++        implementations = tuple(i for i in context.implementations("gdn_recurrent")
++                                if i.id == IMPLEMENTATION)
++        if len(implementations) != 1:
++            raise IRVerificationError("Qualified H004 column implementation is missing.")
++        candidate = context.configure_implementation(
++            implementations[0], semantic_parameters={"phase_plan": plan})
++        return TritonCandidateProposal((candidate,), IMPLEMENTATION)
++
++
++def propose_model_tir(module, target):
++    """Select the existing tuned native algorithm; never fall back to P5-U."""
++    from triton.flagmega.targets.nvidia.gdn import r004_reference_implementations
++    from triton.flagmega.codegen.triton.implementation import TritonImplementationModel
++    local = model_distribution_target(target, module)
++    old = local.triton_implementation_model
++    catalog = tuple(i for i in r004_reference_implementations() if i.id == IMPLEMENTATION)
++    present = tuple(i for i in old.implementations if i.id == IMPLEMENTATION)
++    if not present:
++        local = copy(local)
++        local.triton_implementation_model = TritonImplementationModel(
++            (*old.implementations, *catalog), old.preferences, name=old.name + "+r004-column")
++    elif present != catalog:
++        raise IRVerificationError("Installed H004 algorithm differs from the qualified catalog.")
++    policy = copy(local.tir_selection_policy)
++    original = policy.registry
++    class Registry:
++        op_names = original.op_names
++
++        def provider_for(self, op):
++            return ColumnTirProvider() if op == OP else original.provider_for(op)
++    policy.registry = Registry()
++    return policy.propose(module, local)
+--- a/python/triton/flagmega/runtime/module.py
++++ b/python/triton/flagmega/runtime/module.py
+@@ -707,7 +707,7 @@
+         """
+         if (self.ir_module.metadata.get("r004_native_model_request") is not None
+                 or self.codegen.get("kernel_program_schema") in (
+-                    "flagmega.kernel-programs/v9-native-model", "flagmega.kernel-programs/v10-native-model-v6")):
++                    "flagmega.kernel-programs/v9-native-model", "flagmega.kernel-programs/v10-native-model-v6", "flagmega.kernel-programs/v11-native-model-r031")):
+             from triton.flagmega.runtime.r004_native_model import verified_model_programs
+             return verified_model_programs(self.codegen, self.kernels, self.ir_module)
+         if self.codegen.get("kernel_program_schema") == "flagmega.kernel-programs/v8-phase-serial":
+--- a/python/triton/flagmega/runtime/r004_native_model.py
++++ b/python/triton/flagmega/runtime/r004_native_model.py
+@@ -6,7 +6,7 @@
+ 
+ 
+ def verified_model_programs(codegen, kernels, module):
+-    from triton.flagmega.codegen.triton.r004_native_model import PROGRAM_SCHEMA, PROGRAM_SCHEMA_V6
++    from triton.flagmega.codegen.triton.r004_native_model import PROGRAM_SCHEMA, PROGRAM_SCHEMA_V6, PROGRAM_SCHEMA_R031
+     from triton.flagmega.codegen.triton.tir_package import describe_tir_package
+     from triton.flagmega.runtime.kernel_programs import _verify_source_program_literals
+     expected = describe_tir_package(module)
+@@ -14,7 +14,7 @@
+         if plain_package_value(codegen.get(key)) != plain_package_value(expected.get(key)):
+             raise ArtifactError('Native model bindings differ from the typed caller/arena contract.')
+     raw = codegen.get('kernels')
+-    if codegen.get('kernel_program_schema') not in (PROGRAM_SCHEMA, PROGRAM_SCHEMA_V6) or len(raw) != len(kernels):
++    if codegen.get('kernel_program_schema') not in (PROGRAM_SCHEMA, PROGRAM_SCHEMA_V6, PROGRAM_SCHEMA_R031) or len(raw) != len(kernels):
+         raise ArtifactError('Native model entry multiplicity differs from its contract.')
+     _verify_source_program_literals(codegen, raw, kernels)
+     entries = {}
+--- a/python/triton/flagmega/targets/nvidia/gdn.py
++++ b/python/triton/flagmega/targets/nvidia/gdn.py
+@@ -34,6 +34,53 @@
+         facts={"internal_grid_barriers": 0},
+     )
+ 
++    yield TritonImplementation('tir.gdn_recurrent.r017_w1', 'gdn_recurrent', 'r017_w1',
++        {'tile_state':(128,16), 'projection_tile':128, 'projection_window':1, 'phase_schema':'r017.gdn.ordered-window/v1'},
++        {'standalone_module':'r017_T_full_p5_w1', 'standalone_schema':'r004.gdn.standalone/v4'},
++        facts={'internal_grid_barriers':0})
++    yield TritonImplementation('tir.gdn_recurrent.r017_w2', 'gdn_recurrent', 'r017_w2',
++        {'tile_state':(128,16), 'projection_tile':128, 'projection_window':2, 'phase_schema':'r017.gdn.ordered-window/v1'},
++        {'standalone_module':'r017_T_full_p5_w2', 'standalone_schema':'r004.gdn.standalone/v4'},
++        facts={'internal_grid_barriers':0})
++    yield TritonImplementation('tir.gdn_recurrent.r017_w4', 'gdn_recurrent', 'r017_w4',
++        {'tile_state':(128,16), 'projection_tile':128, 'projection_window':4, 'phase_schema':'r017.gdn.ordered-window/v1'},
++        {'standalone_module':'r017_T_full_p5_w4', 'standalone_schema':'r004.gdn.standalone/v4'},
++        facts={'internal_grid_barriers':0})
++    yield TritonImplementation('tir.gdn_recurrent.r017_w8', 'gdn_recurrent', 'r017_w8',
++        {'tile_state':(128,16), 'projection_tile':128, 'projection_window':8, 'phase_schema':'r017.gdn.ordered-window/v1'},
++        {'standalone_module':'r017_T_full_p5_w8', 'standalone_schema':'r004.gdn.standalone/v4'},
++        facts={'internal_grid_barriers':0})
++    yield TritonImplementation('tir.gdn_recurrent.r017_w16', 'gdn_recurrent', 'r017_w16',
++        {'tile_state':(128,16), 'projection_tile':128, 'projection_window':16, 'phase_schema':'r017.gdn.ordered-window/v1'},
++        {'standalone_module':'r017_T_full_p5_w16', 'standalone_schema':'r004.gdn.standalone/v4'},
++        facts={'internal_grid_barriers':0})
++    yield TritonImplementation('tir.gdn_recurrent.r017_w32', 'gdn_recurrent', 'r017_w32',
++        {'tile_state':(128,16), 'projection_tile':128, 'projection_window':32, 'phase_schema':'r017.gdn.ordered-window/v1'},
++        {'standalone_module':'r017_T_full_p5_w32', 'standalone_schema':'r004.gdn.standalone/v4'},
++        facts={'internal_grid_barriers':0})
++    yield TritonImplementation('tir.gdn_recurrent.r017_w64', 'gdn_recurrent', 'r017_w64',
++        {'tile_state':(128,16), 'projection_tile':128, 'projection_window':64, 'phase_schema':'r017.gdn.ordered-window/v1'},
++        {'standalone_module':'r017_T_full_p5_w64', 'standalone_schema':'r004.gdn.standalone/v4'},
++        facts={'internal_grid_barriers':0})
++
++    yield TritonImplementation('tir.gdn_recurrent.r017_split','gdn_recurrent','r017_split',
++        {'tile_state':(128,16),'projection_tile':128,'phase_schema':'r017.gdn.split-ordered/v1'},
++        {'standalone_module':'r017_T_full_p5_split','standalone_schema':'r004.gdn.standalone/v4'},
++        facts={'internal_grid_barriers':0})
++
++    yield TritonImplementation('tir.gdn_recurrent.r017_split4','gdn_recurrent','r017_split4',
++        {'tile_state':(128,16),'projection_tile':128,'phase_schema':'r017.gdn.split-ordered/v1'},
++        {'standalone_module':'r017_T_full_p5_split4','standalone_schema':'r004.gdn.standalone/v4'},
++        facts={'internal_grid_barriers':0})
++    yield TritonImplementation('tir.gdn_recurrent.r017_split8','gdn_recurrent','r017_split8',
++        {'tile_state':(128,16),'projection_tile':128,'phase_schema':'r017.gdn.split-ordered/v1'},
++        {'standalone_module':'r017_T_full_p5_split8','standalone_schema':'r004.gdn.standalone/v4'},
++        facts={'internal_grid_barriers':0})
++
++    yield TritonImplementation('tir.gdn_recurrent.r017_split4lut','gdn_recurrent','r017_split4lut',
++        {'tile_state':(128,16),'projection_tile':128,'phase_schema':'r017.gdn.split-ordered/v1'},
++        {'standalone_module':'r017_T_full_p5_split4lut','standalone_schema':'r004.gdn.standalone/v4'},
++        facts={'internal_grid_barriers':0})
+ 
+ def r004_reference_applicable(node, context, implementation):
+     """Fail closed: no default model, unvalidated plan, or other implementation."""

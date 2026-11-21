@@ -1,0 +1,23 @@
+{
+  "argv": [
+    "g++",
+    "-O3",
+    "-std=c++17",
+    "-shared",
+    "-fPIC",
+    "-I/home/sunnycase/.cache/flagtree-cpp-qwen38/reference-src/llama.cpp-5ce06fc7/include",
+    "-I/home/sunnycase/.cache/flagtree-cpp-qwen38/reference-src/llama.cpp-5ce06fc7/ggml/include",
+    "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/llama_bridge.cpp",
+    "-L/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/milestones/m000/revisions/r003/profiles/model/r003-fullmodel-ab/builds/llama-20261117T151150224404Z/build/bin",
+    "-Wl,-rpath,/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/milestones/m000/revisions/r003/profiles/model/r003-fullmodel-ab/builds/llama-20261117T151150224404Z/build/bin",
+    "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/milestones/m000/revisions/r003/profiles/model/r003-fullmodel-ab/builds/llama-20261117T151150224404Z/build/bin/libllama.so.0.9.0",
+    "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/milestones/m000/revisions/r003/profiles/model/r003-fullmodel-ab/builds/llama-20261117T151150224404Z/build/bin/libggml.so.0.29.0",
+    "-o",
+    "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/llama_bridge.so"
+  ],
+  "returncode": 0,
+  "stdout": "",
+  "stderr": "",
+  "source_sha256": "d5174d5cc2a87845105c8dc0a210dee67b48d9cebe3dd7f33e1b46277cd89a25",
+  "session_run_unchanged": true
+}

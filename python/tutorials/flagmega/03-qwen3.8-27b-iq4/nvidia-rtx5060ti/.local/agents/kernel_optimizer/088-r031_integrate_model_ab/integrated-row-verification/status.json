@@ -1,0 +1,12 @@
+{
+  "status": "FAILED",
+  "seeds": [
+    20261120,
+    1,
+    37
+  ],
+  "all_rows_bitwise_equal": null,
+  "failures": [],
+  "model_claim": null,
+  "error": "Traceback (most recent call last):\n  File \"verify_rows.py\", line 54, in <module>\n    p.launch(*(p._arguments[x] for x in p._dynamic_indices),stream=c.stream.cuda_stream)\n  File \"/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/runtime/program_arguments.py\", line 52, in launch\n    raise RuntimeContractError(\"Shared GPU program requires the complete dynamic root ABI.\")\ntriton.flagmega.errors.RuntimeContractError: Shared GPU program requires the complete dynamic root ABI.\n"
+}

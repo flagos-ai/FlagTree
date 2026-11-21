@@ -1,0 +1,36 @@
+Traceback (most recent call last):
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/bootstrap.py", line 14, in <module>
+    runpy.run_path(sys.argv.pop(1),run_name='__main__')
+  File "/home/sunnycase/miniconda3/envs/flagtree/lib/python3.10/runpy.py", line 289, in run_path
+    return _run_module_code(code, init_globals, run_name,
+  File "/home/sunnycase/miniconda3/envs/flagtree/lib/python3.10/runpy.py", line 96, in _run_module_code
+    _run_code(code, mod_globals, init_globals,
+  File "/home/sunnycase/miniconda3/envs/flagtree/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "build.py", line 24, in <module>
+    m=c.compile(m).module
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/compiler.py", line 188, in compile
+    pass_result = pass_manager.run(current)
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/passes/manager.py", line 151, in run
+    current = verify_module(module_pass.run(current))
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/passes/manager.py", line 34, in run
+    return self.transform(module)
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/compiler.py", line 173, in <lambda>
+    lambda value, selected_stage=stage: selected_stage.run(value, self.target),
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/stages.py", line 88, in run
+    result = self.transform(module, target)
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/stages.py", line 201, in _lower_to_tir
+    return target.lower_to_tir(module)
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/targets/ntt.py", line 196, in lower_to_tir
+    return self.tir_lowering_policy.lower(module, self)
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/codegen/triton/lowering.py", line 326, in lower
+    selected = _materialize_direct_implementation_resources(selected, target)
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/codegen/triton/lowering.py", line 401, in _materialize_direct_implementation_resources
+    validate_transfer_pipeline(
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/codegen/triton/microkernels/materialization.py", line 22, in validate_transfer_pipeline
+    verify_transfer_sources(function, dispatch, selection, stage=stage)
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/ir/tir/transfer_pipeline_validation.py", line 52, in verify_transfer_sources
+    fail(f"implementation exceeds the declared alignment of {name!r}: "
+  File "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/source-tree/python/triton/flagmega/ir/tir/transfer_pipeline_validation.py", line 22, in fail
+    raise IRVerificationError(f"@{function.name} {message}", stage=stage)
+triton.flagmega.errors.IRVerificationError: @kernel_iq4_q8_glu_r006_glu_transport_t3_3409b30d8aacefba implementation exceeds the declared alignment of 'gate_weight': 16 bytes required, exceeding its 4-byte storage contract.

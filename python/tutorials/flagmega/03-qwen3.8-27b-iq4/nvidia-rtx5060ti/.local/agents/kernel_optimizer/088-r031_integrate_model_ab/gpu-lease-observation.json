@@ -1,0 +1,64 @@
+{
+  "monotonic_ns": 2787966445128850,
+  "lock_path": "/tmp/flagmega-gpu0.lock",
+  "inode": 1150,
+  "proc_locks": [
+    "36: FLOCK  ADVISORY  WRITE 3964670 00:6c:1150 0 EOF",
+    "36: -> FLOCK  ADVISORY  WRITE 3964685 00:6c:1150 0 EOF",
+    "36:  -> FLOCK  ADVISORY  WRITE 3969498 00:6c:1150 0 EOF"
+  ],
+  "owned_worker_commands": [
+    {
+      "pid": 3964670,
+      "argv": [
+        "flock",
+        "/tmp/flagmega-gpu0.lock",
+        "env",
+        "PYTHONPATH=/mnt/home-nas/work/repo/flagtree/python",
+        "/home/sunnycase/miniconda3/envs/flagtree/bin/python",
+        "bootstrap.py",
+        "ab_worker.py",
+        "ab-p4",
+        "0"
+      ]
+    },
+    {
+      "pid": 3964685,
+      "argv": [
+        "flock",
+        "/tmp/flagmega-gpu0.lock",
+        "env",
+        "PYTHONPATH=/mnt/home-nas/work/repo/flagtree/python",
+        "/home/sunnycase/miniconda3/envs/flagtree/bin/python",
+        "bootstrap.py",
+        "ab_worker.py",
+        "ab-p5",
+        "1"
+      ]
+    },
+    {
+      "pid": 3969340,
+      "argv": [
+        "/home/sunnycase/miniconda3/envs/flagtree/bin/python",
+        "bootstrap.py",
+        "ab_worker.py",
+        "ab-p4",
+        "0"
+      ]
+    },
+    {
+      "pid": 3969498,
+      "argv": [
+        "flock",
+        "/tmp/flagmega-gpu0.lock",
+        "env",
+        "PYTHONPATH=/mnt/home-nas/work/repo/flagtree/python",
+        "/home/sunnycase/miniconda3/envs/flagtree/bin/python",
+        "bootstrap.py",
+        "verify_rows.py",
+        "integrated-row-verification-attempt2"
+      ]
+    }
+  ],
+  "method": "all workers launched through util-linux flock on the same GPU0 lock"
+}

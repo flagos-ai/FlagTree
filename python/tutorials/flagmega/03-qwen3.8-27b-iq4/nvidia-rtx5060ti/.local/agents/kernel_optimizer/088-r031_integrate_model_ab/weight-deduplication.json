@@ -1,0 +1,24 @@
+{
+  "status": "CORRECTED_PASS",
+  "candidate_section": {
+    "kind": "rdata.image/v1",
+    "name": "rdata.image",
+    "nbytes": 14298103296,
+    "path": "assets/rdata.bin",
+    "sha256": "c650e210b77a66fd99f138e14d28005343d755ce84cf5399c478fe50af8bb80d"
+  },
+  "accepted_section": {
+    "kind": "rdata.image/v1",
+    "name": "rdata.image",
+    "nbytes": 14298103296,
+    "path": "assets/rdata.bin",
+    "sha256": "c650e210b77a66fd99f138e14d28005343d755ce84cf5399c478fe50af8bb80d"
+  },
+  "validation": "both section digests validated during actual model load; identical source asset reused",
+  "candidate": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/build-attempt2/artifact/assets/rdata.bin",
+  "readonly_target": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/048-r004_v6_model_integration/package-attempt1/assets/rdata.bin",
+  "removed_duplicate_bytes": 14298103296,
+  "method": "hard link",
+  "failed_method": "cross-directory symlink rejected by unchanged package verifier",
+  "same_inode": true
+}
