@@ -7,6 +7,7 @@
 #include "triton/Analysis/AxisInfo.h"
 
 namespace mlir::triton::HCU {
+class MatrixSharedCopies;
 void populateConvertLayoutOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                            const TargetInfo &targetInfo,
                                            RewritePatternSet &patterns,
@@ -40,7 +41,8 @@ void populateMLSOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                  const TargetInfo &targetInfo,
                                  RewritePatternSet &patterns,
                                  ModuleAxisInfoAnalysis &axisInfoAnalysis,
-                                 PatternBenefit benefit);
+                                 PatternBenefit benefit,
+                                 const MatrixSharedCopies &sharedCopies);
 
 void populateSPMDOpToLLVMPattern(LLVMTypeConverter &typeConverter,
                                  RewritePatternSet &patterns,

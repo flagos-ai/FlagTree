@@ -30,6 +30,7 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
+#include <optional>
 
 #include "triton/Dialect/TritonGPU/Transforms/PipelineExpander.h"
 
@@ -127,6 +128,19 @@ static SetVector<Value> getNestedOperands(Operation *op) {
   return operands;
 }
 
+// Reuse the common PipelineExpander constant recognition. Large integer
+// constants retain the dynamic-loop fallback instead of asserting in getInt.
+static std::optional<int64_t> getConstantIntValue(Value value) {
+  if (auto cst = value.getDefiningOp<arith::ConstantIndexOp>())
+    return cst.value();
+  if (auto cst = value.getDefiningOp<arith::ConstantOp>()) {
+    if (auto attr = dyn_cast<IntegerAttr>(cst.getValue()))
+      if (attr.getValue().isSignedIntN(64))
+        return attr.getInt();
+  }
+  return std::nullopt;
+}
+
 bool LoopPipelinerInternal::initializeLoopInfo(
     ForOp op, const triton::PipeliningOption &options) {
   LDBG("Start initializeLoopInfo");
@@ -150,18 +164,26 @@ bool LoopPipelinerInternal::initializeLoopInfo(
   }
 
   dynamicLoop = true;
-  auto upperBoundCst = ub.getDefiningOp<arith::ConstantIndexOp>();
-  auto lowerBoundCst = lb.getDefiningOp<arith::ConstantIndexOp>();
-  auto stepCst = step.getDefiningOp<arith::ConstantIndexOp>();
-  if (!upperBoundCst || !lowerBoundCst || !stepCst) {
+  auto upperBoundCst = getConstantIntValue(ub);
+  auto lowerBoundCst = getConstantIntValue(lb);
+  auto stepCst = getConstantIntValue(step);
+  bool hasStaticBounds = upperBoundCst && lowerBoundCst && stepCst;
+  // Preserve the existing index path. Newly recognized integer bounds must
+  // have a positive step and a representable range before host arithmetic.
+  if (hasStaticBounds && !isa<IndexType>(ub.getType())) {
+    int64_t range;
+    hasStaticBounds = *stepCst > 0 &&
+                      !llvm::SubOverflow(*upperBoundCst, *lowerBoundCst, range);
+  }
+  if (!hasStaticBounds) {
     if (!options.supportDynamicLoops) {
       LDBG("--dynamic loop not supported -> BAIL");
       return false;
     }
   } else {
-    int64_t ubImm = upperBoundCst.value();
-    int64_t lbImm = lowerBoundCst.value();
-    int64_t stepImm = stepCst.value();
+    int64_t ubImm = *upperBoundCst;
+    int64_t lbImm = *lowerBoundCst;
+    int64_t stepImm = *stepCst;
     int64_t numIteration = llvm::divideCeilSigned(ubImm - lbImm, stepImm);
     if (numIteration >= maxStage) {
       dynamicLoop = false;

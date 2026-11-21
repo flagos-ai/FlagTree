@@ -3,9 +3,12 @@
 #include "hcu/lib/TritonHCUGPUToLLVM/AsyncUtility.h"
 #include "hcu/lib/TritonHCUGPUToLLVM/TargetInfo.h"
 #include "hcu/lib/TritonHCUGPUTransforms/PipelineUtility.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
+#include <memory>
 #include <variant>
 
 #define DEBUG_TYPE "tritonhcugpu-pipeline-lower-loops"
@@ -40,6 +43,91 @@ struct AsyncCopyChainOps {
 
 using StreamOpVariant = std::variant<StreamCopyChainOps, AsyncCopyChainOps>;
 using LoadToStreamOpMap = llvm::MapVector<Operation *, StreamOpVariant>;
+
+// The per-load policy overrides the backend-wide default. Keep that default
+// separate from the loop's buffer policy so one explicit async load does not
+// turn its unannotated neighbours into async loads as well.
+static bool shouldUseAsyncCopy(Operation *load, bool useAsyncCopy) {
+  if (auto attr = load->getAttrOfType<BoolAttr>("tt.load.async"))
+    return attr.getValue();
+  return useAsyncCopy;
+}
+
+static bool hasAsyncLoad(const LoadToInfoMap &loads, bool useAsyncCopy) {
+  return llvm::any_of(loads, [&](const auto &entry) {
+    return shouldUseAsyncCopy(entry.first, useAsyncCopy);
+  });
+}
+
+// Joint producer/shared selection: the dot fragment's minimum vector need not
+// cap a globally proven 16B transfer at 8B. Keep this opt-in while validating
+// its read cost against the existing matrix-read charts.
+static bool preferWideAsyncCopies(scf::ForOp forOp, LoadToInfoMap &loads,
+                                  bool useAsyncCopy,
+                                  triton::HCU::ModuleAxisInfoAnalysis &axisInfo,
+                                  const triton::HCU::TargetInfo &target) {
+  auto module = forOp->getParentOfType<ModuleOp>();
+  auto enabled =
+      module->getAttrOfType<IntegerAttr>("ttg.hcu.prefer_wide_async_copy");
+  if (target.getArch() != "gfx936" || !enabled || enabled.getInt() != 1)
+    return false;
+  bool changed = false;
+  for (auto &[operation, info] : loads) {
+    auto load = dyn_cast<tt::LoadOp>(operation);
+    auto shared =
+        dyn_cast_or_null<ttg::SwizzledSharedEncodingAttr>(info.sharedEncoding);
+    if (!load || !shared || !shouldUseAsyncCopy(load, useAsyncCopy))
+      continue;
+    auto type = dyn_cast<RankedTensorType>(load.getType());
+    auto blocked = type ? dyn_cast<ttg::BlockedEncodingAttr>(type.getEncoding())
+                        : ttg::BlockedEncodingAttr{};
+    if (!type || type.getRank() != 2 || !blocked ||
+        !(type.getElementType().isF16() || type.getElementType().isBF16()) ||
+        shared.getOrder().front() != blocked.getOrder().front() ||
+        axisInfo.getAlignment(load.getPtr()) < 8 ||
+        (load.getMask() && axisInfo.getMaskAlignment(load.getMask()) < 8))
+      continue;
+    unsigned axis = blocked.getOrder().front();
+    auto shape = type.getShape();
+    if (shape[axis] < 8 || !llvm::isPowerOf2_64(shape[axis]))
+      continue;
+    unsigned maxPhase =
+        std::min<unsigned>(shared.getMaxPhase(), shape[axis] / 8);
+    auto widerShared = ttg::SwizzledSharedEncodingAttr::get(
+        load.getContext(), 8, shared.getPerPhase(), maxPhase, shared.getOrder(),
+        shared.getCTALayout());
+    auto elements = llvm::to_vector(blocked.getSizePerThread());
+    elements[axis] = std::max<unsigned>(elements[axis], 8);
+    auto encoding = ttg::BlockedEncodingAttr::get(
+        load.getContext(), shape, elements, blocked.getOrder(),
+        ttg::lookupNumWarps(load),
+        ttg::TritonGPUDialect::getThreadsPerWarp(module),
+        blocked.getCTALayout());
+    if (encoding == blocked && widerShared == shared)
+      continue;
+    IRRewriter builder(load);
+    // Keep the actual load operation stable: the deserialized schedule uses
+    // its identity. Preserve all logical operands, cache/padding attributes
+    // and existing users through an ordinary ownership conversion.
+    for (auto [index, operand] : llvm::enumerate(load->getOperands())) {
+      if (auto tensor = dyn_cast<RankedTensorType>(operand.getType())) {
+        auto converted = ttg::ConvertLayoutOp::create(
+            builder, load.getLoc(), tensor.cloneWithEncoding(encoding),
+            operand);
+        load->setOperand(index, converted.getResult());
+      }
+    }
+    load.getResult().setType(type.cloneWithEncoding(encoding));
+    builder.setInsertionPointAfter(load);
+    auto restored = ttg::ConvertLayoutOp::create(builder, load.getLoc(), type,
+                                                 load.getResult());
+    load.getResult().replaceAllUsesExcept(restored.getResult(),
+                                          restored.getOperation());
+    info.sharedEncoding = widerShared;
+    changed = true;
+  }
+  return changed;
+}
 
 bool canBeConvertedToAsyncLoad(unsigned numBuffers, tt::LoadOp loadOp,
                                ttg::SharedEncodingTrait sharedEnc,
@@ -94,6 +182,8 @@ StreamCopyChainOps createStreamCopy(tt::LoadOp loadOp, Value alloc,
                       .getDefiningOp<ttg::MemDescIndexOp>();
 
   tt::LoadOp newLoadOp = cast<tt::LoadOp>(builder.clone(*loadOp));
+  // The stream pipeline has already selected synchronous fallback.
+  newLoadOp->setAttr("tt.load.async", builder.getBoolAttr(false));
   auto storeOp = ttg::LocalStoreOp::create(builder, loc, newLoadOp, viewLoad);
   auto maybeLocalLoad =
       tt::replaceUsesWithLocalLoad(builder, loadOp->getResult(0), viewLoad);
@@ -202,6 +292,21 @@ std::optional<ttg::SharedEncodingTrait> getSharedEncIfAllUsersAreDotEnc(
           tempAttr = ttg::SwizzledSharedEncodingAttr::get(
               loadedValue.getContext(), dotOpEnc, srcTy.getShape(), sharedOrder,
               ctaLayout, bitWidth, /*needTrans=*/false);
+        }
+        auto mma = dyn_cast<ttg::AMDMfmaEncodingAttr>(dotOpEnc.getParent());
+        if (!useAsyncCopy && targetInfo.getArch() == "gfx936" && mma &&
+            mma.getMmacLayout() == ttg::MmacLayout::LEGACY &&
+            dotOpEnc.getOpIdx() == 1 && rank == 2 && sharedOrder[0] == 1 &&
+            (srcTy.getElementType().isF16() ||
+             srcTy.getElementType().isBF16()) &&
+            srcTy.getShape()[0] >= 16 && srcTy.getShape()[1] >= 64) {
+          // Legacy MMAC distributes four K groups across a wave. For an
+          // N-contiguous B tile, the generic MFMA no-swizzle rule maps those
+          // groups to the same LDS banks. Spread groups of four K rows over
+          // 16-column chunks while preserving vectorized producer stores.
+          // Async copies retain their own wave-coalesced destination policy.
+          tempAttr = ttg::SwizzledSharedEncodingAttr::get(
+              loadedValue.getContext(), 16, 4, 4, sharedOrder, ctaLayout);
         }
         LDBG("Deduced shared encoding candidate from dot layout: " << tempAttr);
         sharedEncs.push_back(tempAttr);
@@ -354,7 +459,7 @@ createStreamOps(const LoadToInfoMap &loadToInfo, scf::ForOp &forOp,
     triton::HCU::TargetInfo targetInfo(arch ? arch->str() : "");
 
     // Replace the old load with multi-buffered loads
-    if (useAsyncCopy &&
+    if (shouldUseAsyncCopy(loadOp, useAsyncCopy) &&
         canBeConvertedToAsyncLoad(numBuffers, loadOp, info.sharedEncoding,
                                   axisInfoAnalysis, targetInfo)) {
       unsigned vec = axisInfoAnalysis.getContiguity(loadOp.getPtr());
@@ -418,12 +523,13 @@ void remapClusters(tt::CoarseSchedule &schedule, ClusterMap clusterMap,
 //            can cause invalid schedules to be produced.
 LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
                            int &numBuffers, bool useAsyncCopy, bool waitAtTail,
+                           int globalPrefetch, int localPrefetch,
                            Clusters &clusters, tt::CoarseSchedule &schedule) {
   LDBG("Init SingleDotSchedule");
   int lastStage = numStages - 1;
   stages[SCHED_GLOBAL_LOAD] = 0;
-  stages[SCHED_LOCAL_STORE] = 0;
-  stages[SCHED_LOCAL_LOAD] = lastStage;
+  stages[SCHED_LOCAL_STORE] = globalPrefetch;
+  stages[SCHED_LOCAL_LOAD] = lastStage - localPrefetch;
   stages[SCHED_COMPUTE] = lastStage;
   stages[SCHED_ASYNC_WAIT] = stages[SCHED_LOCAL_LOAD];
 
@@ -495,6 +601,15 @@ LogicalResult initSchedule(int maxDist, Stages &stages, int numStages,
   int computeCluster = 2;
   if (stages[SCHED_LOCAL_LOAD] == stages[SCHED_COMPUTE]) {
     computeCluster = localLoadCluster;
+  }
+
+  if (globalPrefetch == 1 && localPrefetch == 1 && numStages == 3) {
+    // Keep the next global prefetch after the LDS publication barrier, so
+    // its vmcnt need not be drained before the prefetched LDS read.
+    localStoreCluster = 1;
+    localLoadCluster = 2;
+    globalLoadCluster = 3;
+    computeCluster = 4;
   }
 
   // Create a hash map to associate cluster hash in old schedule with its
@@ -596,10 +711,123 @@ void updateSchedule(scf::ForOp &forOp, const LoadToInfoMap &loadToInfo,
     maxDist = std::max(maxDist, info.distToUse);
   }
 
+  bool loopUsesAsyncCopy = hasAsyncLoad(loadToInfo, useAsyncCopy);
+  int globalPrefetch = 0;
+  int localPrefetch = 0;
+  auto module = forOp->getParentOfType<ModuleOp>();
+  auto prefetchAttr =
+      module->getAttrOfType<IntegerAttr>("ttg.hcu.local_prefetch");
+  auto arch = getHCUArch(module);
+  // Experimental opt-in for the direct, synchronous two-load GEMM path.
+  // Reuse StreamPipeline's local-prefetch schedule: LDS reads produce the
+  // next iteration's dot operands, carried in VGPRs by PipelineExpander.
+  // Leave unsupported loops and every default compilation unchanged.
+  bool localOnly = prefetchAttr && prefetchAttr.getInt() == 1 && numStages == 2;
+  bool publicThreeStage =
+      prefetchAttr && prefetchAttr.getInt() == 1 && numStages == 3;
+  bool doubleBuffered =
+      prefetchAttr &&
+      (prefetchAttr.getInt() == 3 || prefetchAttr.getInt() == 4) &&
+      numStages == 3;
+  bool twoLevel =
+      publicThreeStage ||
+      (prefetchAttr && prefetchAttr.getInt() == 2 && numStages == 3) ||
+      doubleBuffered;
+  if ((localOnly || twoLevel) && arch && *arch == "gfx936" &&
+      !loopUsesAsyncCopy && (!publicThreeStage || !useAsyncCopy) &&
+      maxDist == 0 && loadToInfo.size() == 2) {
+    auto dots = llvm::to_vector(forOp.getBody()->getOps<tt::DotOp>());
+    if (dots.size() == 1 && dots.front().getType().getRank() == 2 &&
+        llvm::all_of(loadToInfo, [&](const auto &entry) {
+          auto load = dyn_cast<tt::LoadOp>(entry.first);
+          if (!load || !entry.second.sharedEncoding ||
+              entry.second.use != dots.front().getOperation())
+            return false;
+          if (publicThreeStage) {
+            if (load.getIsVolatile())
+              return false;
+            if (Attribute policy = load->getAttr("tt.load.async")) {
+              auto flag = dyn_cast<BoolAttr>(policy);
+              if (!flag || flag.getValue())
+                return false;
+            }
+          }
+          return true;
+        })) {
+      globalPrefetch = twoLevel ? 1 : 0;
+      localPrefetch = 1;
+    }
+  }
+
+  // Private async diagnostic: use the existing StreamPipeline stage model
+  // with one iteration of LDS-to-VGPR prefetch. Keep the buffer formula and
+  // complete generic RAW/WAR barrier analysis unchanged.
+  auto ctas = module->getAttrOfType<IntegerAttr>("ttg.num-ctas");
+  auto lanes = module->getAttrOfType<IntegerAttr>("ttg.threads-per-warp");
+  if (prefetchAttr && prefetchAttr.getInt() == 5 && numStages == 3 && ctas &&
+      ctas.getInt() == 1 && lanes && lanes.getInt() == 64 && !waitAtTail &&
+      arch && *arch == "gfx936" && loopUsesAsyncCopy && maxDist == 0 &&
+      loadToInfo.size() == 2) {
+    auto dots = llvm::to_vector(forOp.getBody()->getOps<tt::DotOp>());
+    if (dots.size() == 1 &&
+        llvm::to_vector(forOp.getBody()->getOps<tt::LoadOp>()).size() == 2 &&
+        llvm::all_of(forOp.getBody()->without_terminator(), [](Operation &op) {
+          return op.getNumRegions() == 0 &&
+                 (isa<tt::LoadOp>(op) || isMemoryEffectFree(&op));
+        })) {
+      auto dot = dots.front();
+      auto aCvt = dot.getA().getDefiningOp<ttg::ConvertLayoutOp>();
+      auto bCvt = dot.getB().getDefiningOp<ttg::ConvertLayoutOp>();
+      auto a = aCvt ? aCvt.getSrc().getDefiningOp<tt::LoadOp>() : tt::LoadOp{};
+      auto b = bCvt ? bCvt.getSrc().getDefiningOp<tt::LoadOp>() : tt::LoadOp{};
+      auto mma =
+          dyn_cast<ttg::AMDMfmaEncodingAttr>(dot.getType().getEncoding());
+      auto aTy =
+          a ? dyn_cast<RankedTensorType>(a.getType()) : RankedTensorType{};
+      auto bTy =
+          b ? dyn_cast<RankedTensorType>(b.getType()) : RankedTensorType{};
+      if (a && b && aTy && bTy && a != b && !a.getIsVolatile() &&
+          !b.getIsVolatile() && isa<RankedTensorType>(a.getPtr().getType()) &&
+          isa<RankedTensorType>(b.getPtr().getType()) &&
+          a.getResult().hasOneUse() && b.getResult().hasOneUse() &&
+          aCvt.getResult().hasOneUse() && bCvt.getResult().hasOneUse() &&
+          dot.getType().getRank() == 2 && mma &&
+          mma.getMmacLayout() == ttg::MmacLayout::LEGACY &&
+          mma.getInstrShape() == ArrayRef<unsigned>({16, 16, 16}) &&
+          aTy.getElementType() == bTy.getElementType() &&
+          (aTy.getElementType().isF16() || aTy.getElementType().isBF16()) &&
+          llvm::all_of(loadToInfo, [&](const auto &entry) {
+            return (entry.first == a.getOperation() ||
+                    entry.first == b.getOperation()) &&
+                   entry.second.sharedEncoding &&
+                   entry.second.use == dot.getOperation();
+          })) {
+        localPrefetch = 1;
+      }
+    }
+  }
+
   int numBuffers = 1;
-  if (failed(initSchedule(maxDist, stages, numStages, numBuffers, useAsyncCopy,
-                          waitAtTail, clusters, schedule)))
+  if (failed(initSchedule(maxDist, stages, numStages, numBuffers,
+                          loopUsesAsyncCopy, waitAtTail, globalPrefetch,
+                          localPrefetch, clusters, schedule)))
     return;
+
+  // Private diagnostic: retain the two-level schedule and all barrier analysis,
+  // but alternate two LDS slots. LS and LL remain in the same stage, so this
+  // allocation override does not change their cluster ordering.
+  if (doubleBuffered && globalPrefetch == 1 && localPrefetch == 1)
+    numBuffers = 2;
+
+  // Reuse the existing synchronous local-prefetch schedule, without adding
+  // another stage of global-load register payloads. Generic membar remains
+  // conservative unless its final-CF two-slot proof recognizes this loop.
+  auto syncBuffers =
+      module->getAttrOfType<IntegerAttr>("ttg.hcu.sync_lds_buffers");
+  if (syncBuffers && syncBuffers.getInt() == 2 && localOnly && arch &&
+      *arch == "gfx936" && !loopUsesAsyncCopy && globalPrefetch == 0 &&
+      localPrefetch == 1 && maxDist == 0)
+    numBuffers = 2;
 
   // Convert the loads into shared memory allocations and loads from them.
   auto loadToStreamOps = createStreamOps(loadToInfo, forOp, numBuffers,
@@ -713,7 +941,7 @@ void updateSchedule(scf::ForOp &forOp, const LoadToInfoMap &loadToInfo,
 
   // Convert the loads into shared memory allocations and loads from them.
   // TODO support different numBuffers
-  int numBuffers = useAsyncCopy ? 2 : 1;
+  int numBuffers = hasAsyncLoad(loadToInfo, useAsyncCopy) ? 2 : 1;
   auto loadToStreamOps = createStreamOps(loadToInfo, forOp, numBuffers,
                                          useAsyncCopy, axisInfoAnalysis);
   scheduleStreamOps(loadToStreamOps, schedule, clusters);
@@ -747,10 +975,6 @@ void lowerLoop(scf::ForOp forOp,
 
   int numStages = schedule.getNumStages();
 
-  // i.e., we can still disable `waitAtTail` by explicitly disabling
-  // pingpong, which is the only use case of this scheduling variant.
-  bool waitAtTail = usePingpong && (numStages == 3) && useAsyncCopy;
-
   llvm::MapVector<Operation *, std::pair<int, Operation *>> loadOpToIndLevel =
       getIndirectLevel(axisInfoAnalysis, forOp, numStages);
 
@@ -765,22 +989,33 @@ void lowerLoop(scf::ForOp forOp,
       loadToInfo[load] = {nullptr, distance, use};
     } else {
       LDBG("Deduce shared encoding for: " << *load);
-      auto sharedEncoding =
-          getSharedEncIfAllUsersAreDotEnc(load, axisInfoAnalysis, targetInfo,
-                                          useAsyncCopy)
-              .value_or(nullptr);
+      auto sharedEncoding = getSharedEncIfAllUsersAreDotEnc(
+                                load, axisInfoAnalysis, targetInfo,
+                                shouldUseAsyncCopy(load, useAsyncCopy))
+                                .value_or(nullptr);
       loadToInfo[load] = {sharedEncoding, distance, use};
       LDBG("Populate loadInfo with shared encoding: " << sharedEncoding);
     }
   }
 
+  // New ownership conversions introduce pointer/mask SSA values. Recompute
+  // facts before asking whether those new values can use direct-to-LDS copy.
+  std::unique_ptr<triton::HCU::ModuleAxisInfoAnalysis> refreshedAxisInfo;
+  if (preferWideAsyncCopies(forOp, loadToInfo, useAsyncCopy, axisInfoAnalysis,
+                            targetInfo))
+    refreshedAxisInfo = std::make_unique<triton::HCU::ModuleAxisInfoAnalysis>(
+        forOp->getParentOfType<ModuleOp>());
+  auto &scheduleAxisInfo =
+      refreshedAxisInfo ? *refreshedAxisInfo : axisInfoAnalysis;
+  bool waitAtTail =
+      usePingpong && (numStages == 3) && hasAsyncLoad(loadToInfo, useAsyncCopy);
   if (succeeded(mlir::ChainedDotSchedule::checkPreconditions(forOp, numStages,
                                                              loadToInfo))) {
     ChainedDotSchedule::updateSchedule(forOp, loadToInfo, schedule,
-                                       axisInfoAnalysis, useAsyncCopy);
+                                       scheduleAxisInfo, useAsyncCopy);
   } else {
     SingleDotSchedule::updateSchedule(forOp, loadToInfo, schedule,
-                                      axisInfoAnalysis, numStages, useAsyncCopy,
+                                      scheduleAxisInfo, numStages, useAsyncCopy,
                                       waitAtTail);
   }
 

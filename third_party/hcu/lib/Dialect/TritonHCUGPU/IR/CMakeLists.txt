@@ -9,4 +9,5 @@ add_triton_library(TritonHCUGPUIR
   MLIRLLVMDialect
   TritonIR
   TritonGPUIR
+  TritonHCUUtils
 )

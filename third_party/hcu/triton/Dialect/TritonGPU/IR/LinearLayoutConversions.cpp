@@ -324,6 +324,7 @@ getLinearLayoutForMmacLayout(MLIRContext *ctx, MmacLayout mmacLayout,
   StringAttr kLane = S("lane");
   switch (mmacLayout) {
   case MmacLayout::LEGACY:
+  case MmacLayout::LEGACY_PAIRED_COLUMNS:
     return LinearLayout(
         {{kRegister, {{4, 0}, {8, 0}}},
          {kLane, {{0, 1}, {0, 2}, {0, 4}, {0, 8}, {1, 0}, {2, 0}}}},
@@ -350,6 +351,22 @@ getLinearLayoutForMmacLayout(MLIRContext *ctx, MmacLayout mmacLayout,
     assert(false && "Unsupported layout");
     return LinearLayout::empty();
   }
+}
+
+// A legacy MMAC pair uses two 16-column fragments per wave. Rename the
+// virtual column fragment bit as the low physical column bit in the result
+// and the B operand. Lowering keeps the same register order and opcode.
+static LinearLayout pairMmacColumns(const LinearLayout &layout,
+                                    StringAttr dim) {
+  auto bases = layout.getBases();
+  auto dims = llvm::to_vector(layout.getOutDimNames());
+  unsigned index = llvm::find(dims, dim) - dims.begin();
+  for (auto &entry : bases)
+    for (auto &basis : entry.second) {
+      int32_t col = basis[index];
+      basis[index] = (col & ~31) | ((col & 15) << 1) | ((col >> 4) & 1);
+    }
+  return LinearLayout(std::move(bases), dims);
 }
 
 LinearLayout
@@ -396,8 +413,23 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
 
   LinearLayout tileLayout = LinearLayout::empty();
   if (isHCUMmac()) {
+    // Operand swapping computes B^T A^T. Transpose only the native 16x16
+    // accumulator tile; the logical N-contiguous tile/warp repetition below
+    // must remain unchanged to match the MMAC lowering's fixed fcStrides.
+    // isTransposed defines the native tile chart, including singleton Slice
+    // and Broadcast queries. Shape only clips/repeats this chart below.
+    // AccelerateHCUMatmul checks target and real DotOp eligibility before
+    // constructing a rank3 transposed encoding; do not repeat shape gates here.
+    bool transposeLegacyTile =
+        isTransposed && (rank == 2 || rank == 3) &&
+        (getMmacLayout() == MmacLayout::LEGACY ||
+         getMmacLayout() == MmacLayout::LEGACY_PAIRED_COLUMNS) &&
+        mDim == 16 && nDim == 16 && getInstrShape().size() == 3 &&
+        getInstrShape()[2] == 16;
     tileLayout =
-        getLinearLayoutForMmacLayout(ctx, getMmacLayout(), {dimN, dimM});
+        transposeLegacyTile
+            ? getLinearLayoutForMmacLayout(ctx, getMmacLayout(), {dimM, dimN})
+            : getLinearLayoutForMmacLayout(ctx, getMmacLayout(), {dimN, dimM});
   } else {
     if (!isTransposed) {
       // Each lane holds 'height' elements along the M dimension.
@@ -486,6 +518,8 @@ AMDMfmaEncodingAttr::toLinearLayout(ArrayRef<int64_t> shape) const {
         LinearLayout::identity1D(warpsPerCTA[0], kWarp, outDimNames[order[2]]);
   }
 
+  if (getMmacLayout() == MmacLayout::LEGACY_PAIRED_COLUMNS)
+    tileLayout = pairMmacColumns(tileLayout, dimN);
   return combineCtaCgaWithShape(tileLayout, getCTALayout(), shape);
 }
 
@@ -673,6 +707,10 @@ LinearLayout mfmaDotToLinearLayout(DotOperandEncodingAttr dotMfmaLayout,
 
   LinearLayout warpLayout = identityStandardND(kWarp, warpsPerCTA, warpOrder);
   LinearLayout ctaLayout = tileLayout * warpLayout;
+
+  if (opIdx == 1 &&
+      mfmaLayout.getMmacLayout() == MmacLayout::LEGACY_PAIRED_COLUMNS)
+    ctaLayout = pairMmacColumns(ctaLayout, dimNonK);
 
   // Note the current the output order is [k, nonk]/[k, nonk, batch]. If the
   // layout's out-size is smaller than the shape, we follow this order to
