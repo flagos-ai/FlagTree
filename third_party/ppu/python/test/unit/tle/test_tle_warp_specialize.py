@@ -3,7 +3,13 @@
 * ``tle.gpu.warp_specialize`` with named-barrier handover (``alloc_barriers`` +
   ``barrier_wait`` / ``barrier_arrive`` without a phase): lowered to the PPU hardware
   named barriers, one per barrier slot, with the partitions running concurrently.
-* ``buffered_tensor.subslice`` as a dot operand of a swizzled ring slot.
+* Lowering paths of the partitions: reductions and ``debug_barrier`` in the default region and
+  in a worker, a ``noinline`` helper, captures, a ``warp_specialize`` in a loop, async and AIU
+  loads in a partition.
+* ``buffered_tensor.subslice`` as a dot operand of a swizzled ring slot, and the shared-memory
+  read order around a refilled ring slot (``FLAGTREE_KEEP_SMEM_READ_ORDER``).
+* A sparse-attention block (gathered rows, ``q k^T``, online softmax, ``p v``) split over two
+  and over three warp groups, with ``tle.pipe`` rings between them.
 """
 
 import os
@@ -385,3 +391,160 @@ def test_keep_smem_read_order_knob(tmp_path, keep):
                             env=env)
     assert result.returncode == 0, result.stderr
     assert f"loads before the loop: {keep}" in result.stdout
+
+
+# ---------------------------------------------------------------- a group that moves data, groups that compute
+#
+# A sparse-attention block with K == V, as in MLA: for each row block, gather BK rows of a table by index, then
+# s = q k^T, an online softmax and acc += p k. The pipes carry the gathered rows and, in the three-group form, the
+# scores. Two shapes: the default warps compute while a worker gathers, and the compute itself is split between a
+# QK group and a softmax + PV group.
+
+ATTN_BK = 64
+ATTN_BM = 64
+ATTN_TABLE_ROWS = 2048
+ATTN_SM_SCALE = 1.4426950408889634  # log2(e): the softmax below uses exp2
+
+
+@triton.jit
+def _attn_gather_rows(kv, idx, pid, t, K, D: tl.constexpr, BK: tl.constexpr):
+    ids = tl.load(idx + pid * K + t * BK + tl.arange(0, BK))
+    return kv + ids.to(tl.int64)[:, None] * D + tl.arange(0, D)[None, :]
+
+
+@triton.jit
+def _attn_softmax_update(s, m_i, l_i, acc):
+    m_new = tl.maximum(m_i, tl.max(s, 1))
+    alpha = tl.math.exp2(m_i - m_new)
+    p = tl.math.exp2(s - m_new[:, None])
+    return p, m_new, l_i * alpha + tl.sum(p, 1), acc * alpha[:, None]
+
+
+@triton.jit
+def _attn_gather(writer, kv, idx, K, D: tl.constexpr, BK: tl.constexpr):
+    pid = tl.program_id(0)
+    for t in range(K // BK):
+        slot = writer.acquire(t)
+        tle.gpu.copy(_attn_gather_rows(kv, idx, pid, t, K, D, BK), slot.k, [BK, D])
+        writer.commit(t)
+
+
+@triton.jit
+def _attn_compute(kv_reader, q, out, K, sm, D: tl.constexpr, BM: tl.constexpr, BK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs_m = pid * BM + tl.arange(0, BM)
+    offs_d = tl.arange(0, D)
+    q_t = tl.load(q + offs_m[:, None] * D + offs_d[None, :])
+    m_i = tl.full([BM], float("-inf"), tl.float32)
+    l_i = tl.zeros([BM], tl.float32)
+    acc = tl.zeros([BM, D], tl.float32)
+    for t in range(K // BK):
+        kb = tl.load(tle.gpu.local_ptr(kv_reader.wait(t).slot.k))
+        s = tl.dot(q_t, tl.trans(kb)) * sm
+        p, m_i, l_i, acc = _attn_softmax_update(s, m_i, l_i, acc)
+        acc = tl.dot(p.to(kb.dtype), kb, acc)
+        kv_reader.release(t)
+    tl.store(out + offs_m[:, None] * D + offs_d[None, :], (acc / l_i[:, None]).to(out.dtype.element_ty))
+
+
+@triton.jit
+def _attn_two_groups_kernel(q, kv, idx, out, K, sm, D: tl.constexpr, BM: tl.constexpr, BK: tl.constexpr,
+                            CAP: tl.constexpr):
+    ring = tle.gpu.alloc([CAP, BK, D], dtype=tl.bfloat16, layout=_ring_layout(8, 8), scope=tle.gpu.smem)
+    pipe = tle.pipe(capacity=CAP, k=ring)
+    tle.gpu.warp_specialize([(_attn_compute, (pipe.reader(), q, out, K, sm, D, BM, BK)),
+                             (_attn_gather, (pipe.writer(), kv, idx, K, D, BK))], [4], [128])
+
+
+@triton.jit
+def _attn_softmax_pv(kv_reader, s_reader, out, K, D: tl.constexpr, BM: tl.constexpr, BK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs_m = pid * BM + tl.arange(0, BM)
+    offs_d = tl.arange(0, D)
+    m_i = tl.full([BM], float("-inf"), tl.float32)
+    l_i = tl.zeros([BM], tl.float32)
+    acc = tl.zeros([BM, D], tl.float32)
+    for t in range(K // BK):
+        s = tl.load(tle.gpu.local_ptr(s_reader.wait(t).slot.s))
+        s_reader.release(t)
+        p, m_i, l_i, acc = _attn_softmax_update(s, m_i, l_i, acc)
+        kb = tl.load(tle.gpu.local_ptr(kv_reader.wait(t).slot.k))
+        acc = tl.dot(p.to(kb.dtype), kb, acc)
+        kv_reader.release(t)
+    tl.store(out + offs_m[:, None] * D + offs_d[None, :], (acc / l_i[:, None]).to(out.dtype.element_ty))
+
+
+@triton.jit
+def _attn_qk(q, kv_reader, s_writer, K, sm, D: tl.constexpr, BM: tl.constexpr, BK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs_m = pid * BM + tl.arange(0, BM)
+    q_t = tl.load(q + offs_m[:, None] * D + tl.arange(0, D)[None, :])
+    for t in range(K // BK):
+        kb = tl.load(tle.gpu.local_ptr(kv_reader.wait(t).slot.k))
+        s = tl.dot(q_t, tl.trans(kb)) * sm
+        kv_reader.release(t)
+        tl.store(tle.gpu.local_ptr(s_writer.acquire(t).s), s)
+        s_writer.commit(t)
+
+
+@triton.jit
+def _attn_three_groups_kernel(q, kv, idx, out, K, sm, D: tl.constexpr, BM: tl.constexpr, BK: tl.constexpr,
+                              CAP: tl.constexpr):
+    ring = tle.gpu.alloc([CAP, BK, D], dtype=tl.bfloat16, layout=_ring_layout(8, 8), scope=tle.gpu.smem)
+    s_ring = tle.gpu.alloc([1, BM, BK], dtype=tl.float32, layout=_ring_layout(4, 8), scope=tle.gpu.smem)
+    kv_pipe = tle.pipe(capacity=CAP, readers=("qk", "pv"), k=ring)
+    s_pipe = tle.pipe(capacity=1, s=s_ring)
+    tle.gpu.warp_specialize([(_attn_softmax_pv, (kv_pipe.reader("pv"), s_pipe.reader(), out, K, D, BM, BK)),
+                             (_attn_qk, (q, kv_pipe.reader("qk"), s_pipe.writer(), K, sm, D, BM, BK)),
+                             (_attn_gather, (kv_pipe.writer(), kv, idx, K, D, BK))], [4, 4], [128, 128])
+
+
+def _attn_inputs(d, n_tiles, n_blocks=4):
+    q = torch.randn(n_blocks * ATTN_BM, d, device="cuda", dtype=torch.bfloat16)
+    kv = torch.randn(ATTN_TABLE_ROWS, d, device="cuda", dtype=torch.bfloat16)
+    idx = torch.randint(0, ATTN_TABLE_ROWS, (n_blocks, n_tiles * ATTN_BK), device="cuda", dtype=torch.int32)
+    # exp2 with log2(e) folded into the scale is the natural-base softmax of q k^T / sqrt(d)
+    ref = torch.empty(n_blocks * ATTN_BM, d, device="cuda", dtype=torch.float32)
+    for b in range(n_blocks):
+        keys = kv[idx[b].long()].float()
+        scores = q[b * ATTN_BM:(b + 1) * ATTN_BM].float() @ keys.T / d**0.5
+        ref[b * ATTN_BM:(b + 1) * ATTN_BM] = torch.softmax(scores, dim=-1) @ keys
+    return q, kv, idx, ref
+
+
+def _check_attn(out, ref):
+    # p is rounded to bf16 before the second dot, so compare against the largest output value
+    torch.testing.assert_close(out.float(), ref, rtol=0, atol=2e-2 * ref.abs().max().item())
+
+
+@pytest.mark.parametrize("n_tiles", [1, 5])
+@pytest.mark.parametrize("capacity", [2, 3])
+@pytest.mark.parametrize("d", [128, 256])
+def test_gather_group_feeds_compute_group(d, capacity, n_tiles):
+    """The default warps run both dots and the online softmax on rows that a worker gathers into a pipe ring: the
+    row-index loads, the gather copies and the dots sit in different warp groups."""
+    q, kv, idx, ref = _attn_inputs(d, n_tiles)
+    out = torch.empty_like(q)
+    ck = _attn_two_groups_kernel[(idx.shape[0], )](q, kv, idx, out, idx.shape[1], ATTN_SM_SCALE / d**0.5, d, ATTN_BM,
+                                                   ATTN_BK, capacity, num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+    _check_attn(out, ref)
+    assert ck.metadata.num_warps == 8
+    assert "ttng.wait_barrier_named" in ck.asm["ttgir"]
+
+
+@pytest.mark.parametrize("n_tiles", [1, 5])
+@pytest.mark.parametrize("capacity", [2, 3])
+@pytest.mark.parametrize("d", [128, 256])
+def test_qk_group_and_softmax_pv_group_share_gathered_rows(d, capacity, n_tiles):
+    """Three groups: one gathers, one computes the scores, one runs the softmax and P V. The gathered rows have two
+    readers (the QK group and the PV group), and the scores pass from the QK group to the PV group through a second
+    pipe."""
+    q, kv, idx, ref = _attn_inputs(d, n_tiles)
+    out = torch.empty_like(q)
+    ck = _attn_three_groups_kernel[(idx.shape[0], )](q, kv, idx, out, idx.shape[1], ATTN_SM_SCALE / d**0.5, d, ATTN_BM,
+                                                     ATTN_BK, capacity, num_warps=4, num_stages=1)
+    torch.cuda.synchronize()
+    _check_attn(out, ref)
+    assert ck.metadata.num_warps == 12
+    assert "ttng.wait_barrier_named" in ck.asm["ttgir"]
