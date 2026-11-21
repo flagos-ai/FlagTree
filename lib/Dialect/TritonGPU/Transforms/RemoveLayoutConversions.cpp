@@ -5060,6 +5060,13 @@ void LayoutRematerialization::backwardRematerialization(
 // pattern and the address/mask chains are pure index/mask math (no loads,
 // reductions, anchors or block arguments).
 
+// A writeback that stores at most one warp's worth of elements gains no
+// bandwidth from its layout: the whole store is one memory transaction either
+// way. The convert in front of it can still be a shared-memory round trip with
+// barriers, so Phase 3 may retag such a writeback onto the stored value's
+// layout (see rematerializeWritebackLayout).
+constexpr int64_t kTinyWritebackElems = 32;
+
 // A global writeback shares the (ptr, value, mask?) operand layout between
 // tt.store and tt.atomic_rmw, and requires all its tensor operands to use one
 // encoding. An atomic qualifies only when its result is unused, so changing
@@ -5118,10 +5125,25 @@ bool LayoutRematerialization::rematerializeWritebackLayout(
   if (!targetEncoding || targetEncoding == valueType.getEncoding())
     return false;
 
+  // A writeback of at most `kTinyWritebackElems` elements gains nothing from
+  // its layout: the whole store is a single memory transaction either way, and
+  // at most one warp's lanes take part. The convert in front of it can still be
+  // a shared-memory round trip with barriers, so retagging the address chain is
+  // profitable even when the target is not an MMA layout. This is the epilogue
+  // of a block reduction such as gemv/mv (PPU): a 2-element result converted
+  // from slice{dim = 1, parent = wpc[2,2]} to blocked wpc[4], where every warp
+  // already holds the value and the convert only has to exchange it across
+  // warps. Requiring `cvtNeedsSharedMemory` keeps in-register conversions (the
+  // same kernel under wpc[1,4]) out, since retagging those is pure overhead.
+  bool tinyWriteback = valueType.getNumElements() <= kTinyWritebackElems;
+  bool tinyBlockedTarget =
+      tinyWriteback && isBlockedOrBlockedSliceEncoding(targetEncoding) &&
+      cvtNeedsSharedMemory(targetType, valueType);
+
   // Only target tensor-core (MMA) value layouts. These are the layouts whose
   // conversion is expensive (it round-trips through shared memory) and that
   // the earlier blocked-to-blocked phases intentionally leave untouched.
-  if (!isa<MmaEncodingTrait>(targetEncoding)) {
+  if (!isa<MmaEncodingTrait>(targetEncoding) && !tinyBlockedTarget) {
 #ifdef __PPU__
     if (rlcDbgLevel() >= 2)
       llvm::errs() << "[rlc] writeback skip(non-mma) tgt="
@@ -5132,10 +5154,12 @@ bool LayoutRematerialization::rematerializeWritebackLayout(
   // Trading per-thread store width for the removed convert only pays off on a
   // hot path: a writeback inside a loop (the convert serializes every
   // iteration) or an element-granular atomic. One-shot epilogues must keep the
-  // store's contiguity, else the decoalesced write costs more.
+  // store's contiguity, else the decoalesced write costs more. A writeback of
+  // one warp's worth of elements has no contiguity worth keeping, so it is
+  // exempt: it cannot lose more than the single transaction it already issues.
   auto atomicOp = dyn_cast<AtomicRMWOp>(writebackOp);
   bool allowNarrowerContiguity =
-      (atomicOp && !lowersToVectorAtomic(atomicOp)) ||
+      tinyBlockedTarget || (atomicOp && !lowersToVectorAtomic(atomicOp)) ||
       writebackOp->getParentOfType<scf::ForOp>() ||
       writebackOp->getParentOfType<scf::WhileOp>();
   if (!preservesWritebackMemoryAccess(ptrType, valueType, targetEncoding,
@@ -5147,8 +5171,10 @@ bool LayoutRematerialization::rematerializeWritebackLayout(
   // bandwidth; retagging it onto the fragmented MMA layout breaks that warp
   // coalescing. Only pays off with no coalescing to lose (a scatter store, or
   // an atomic). Guards a fully-coalesced persistent-matmul C store the loop
-  // exemption above would otherwise admit.
-  if (!isa<AtomicRMWOp>(writebackOp) && axisInfoAnalysis &&
+  // exemption above would otherwise admit. A block-wide tiny writeback is
+  // exempt for the same reason as above.
+  if (!tinyBlockedTarget && !isa<AtomicRMWOp>(writebackOp) &&
+      axisInfoAnalysis &&
       !isOrderIndifferentAccess(axisInfoAnalysis, ptrOperand.get()))
     return false;
 
