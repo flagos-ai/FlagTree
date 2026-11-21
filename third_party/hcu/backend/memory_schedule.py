@@ -3,11 +3,11 @@
 
 def prepare_memory_schedule(source, metadata, options, llvm, skip_schedule=False):
     schedule = options.memory_mma_schedule and not skip_schedule
-    # Legality alone does not prove profitability: store factoring can worsen
-    # scheduling, and packed rounds can cross a VGPR occupancy boundary.
+    # Legality alone does not prove profitability: factoring and OR/shift
+    # folding can worsen scheduling or extend address-register live ranges.
     factor = options.buffer_store_factor_offsets
     pack = options.arch == "gfx936"
-    combine = options.arch == "gfx936"
+    combine = options.combine_shifted_disjoint_or
     if not (schedule or factor or pack or combine):
         return source, False
     candidate, stats = llvm.optimize_hcu_memory_ir(source, options.arch, factor, pack, combine, schedule,

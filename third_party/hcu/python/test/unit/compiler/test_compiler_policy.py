@@ -32,7 +32,7 @@ def test_order_zero_loop_and_exact_off_source(enabled, loops):
     assert calls == ([("original", "gfx942", False, False, False, True, 4, 32768)] if enabled else [])
 
 
-@pytest.mark.parametrize("name", ["memory_mma_schedule", "coalesce_lgkm_waits"])
+@pytest.mark.parametrize("name", ["memory_mma_schedule", "coalesce_lgkm_waits", "combine_shifted_disjoint_or"])
 @pytest.mark.parametrize("invalid", [0, 1, 2, None, "false"])
 def test_policy_types(name, invalid):
     with pytest.raises(ValueError, match="must be boolean"):
@@ -43,7 +43,7 @@ def test_policy_types(name, invalid):
 def test_sql_boolean_normalization(value):
     from triton.backends.compiler import GPUTarget
     backend = _memory_schedule_policy_compiler.HIPBackend(GPUTarget("hip", "gfx936", 64))
-    names = ("memory_mma_schedule", "coalesce_lgkm_waits")
+    names = ("memory_mma_schedule", "coalesce_lgkm_waits", "combine_shifted_disjoint_or")
     parsed = backend.parse_options(dict.fromkeys(names, value))
     assert all(getattr(parsed, name) is bool(value) for name in names)
 

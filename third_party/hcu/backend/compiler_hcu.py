@@ -92,6 +92,8 @@ class HIPOptions:
     memory_mma_schedule: bool = False
     # This has measured scheduling tradeoffs; retain the independent choice.
     buffer_store_factor_offsets: bool = False
+    # A legal OR/shift fold can extend address live ranges; keep the cost choice.
+    combine_shifted_disjoint_or: bool = False
     coalesce_lgkm_waits: bool = False
     # Consume proved local-read MMAC operands before waiting for younger reads.
     mmac_operand_reuse: bool = False
@@ -188,6 +190,7 @@ class HIPOptions:
         object.__setattr__(self, "schedule_hint", ",".join(_schedule_hints(self.schedule_hint)) or "none")
         boolean_options = (
             "buffer_store_factor_offsets",
+            "combine_shifted_disjoint_or",
             "mmac_pair_columns",
             "normalize_buffer_record_pitch",
             "prefer_wide_async_copy",
@@ -203,6 +206,7 @@ class HIPOptions:
                 raise ValueError(f"{name} must be boolean")
         gfx936_options = (
             "buffer_store_factor_offsets",
+            "combine_shifted_disjoint_or",
             "priority_after_first_mmac",
             "mmac_operand_reuse",
             "terminal_readonly_publication",
