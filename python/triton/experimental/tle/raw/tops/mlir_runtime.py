@@ -54,6 +54,7 @@ class TOPSMLIRJITFunction(RawJITFunction):
     def __init__(self, fn: Any, pipeline: Optional[List[str]] = None, context: Optional[ir.Context] = None,
                  arch: str = "gcu400", use_gcu_opt: bool = True, *args, **kwargs) -> None:
         super().__init__(fn, **kwargs)
+        self.absfilename: Final[str] = inspect.getabsfile(self.fn)
         self.arch: Final[str] = arch
         self.use_gcu_opt: Final[bool] = use_gcu_opt
         self.region_dialect: Final[str] = "tops"
@@ -86,10 +87,6 @@ class TOPSMLIRJITFunction(RawJITFunction):
     @cached_property
     def ast(self) -> ast.Module:
         return ast.parse(self.src)
-
-    @cached_property
-    def absfilename(self) -> str:
-        return inspect.getabsfile(self.fn)
 
     @cached_property
     def fnname(self) -> str:

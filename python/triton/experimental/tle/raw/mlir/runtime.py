@@ -29,10 +29,7 @@ from mlir import ir
 from mlir.passmanager import PassManager
 
 from .codegen import MLIRCodeGenerator
-from triton.experimental.tle.raw.source_store import register_source
 from triton.experimental.tle.raw.runtime import RawJITFunction
-
-_pending_jit_fn_key = "mlir_jit_fn"
 
 
 class MLIRJITFunction(RawJITFunction):
@@ -40,6 +37,9 @@ class MLIRJITFunction(RawJITFunction):
     def __init__(self, fn: Any, pipeline: Optional[List[str]] = None, context: Optional[ir.Context] = None, *args,
                  **kwargs) -> None:
         super().__init__(fn, **kwargs)
+        if self.deferred:
+            raise RuntimeError("Deferred MLIR raw is not supported; use eager mode")
+        self.absfilename: Final[str] = inspect.getabsfile(self.fn)
         self.pipeline: Final[List[str]] = ([*pipeline] if pipeline is not None else [
             "convert-scf-to-cf",
             "finalize-memref-to-llvm",
@@ -60,10 +60,6 @@ class MLIRJITFunction(RawJITFunction):
     @cached_property
     def ast(self) -> ast.Module:
         return ast.parse(self.src)
-
-    @cached_property
-    def absfilename(self) -> str:
-        return inspect.getabsfile(self.fn)
 
     @cached_property
     def fnname(self) -> str:
@@ -96,25 +92,8 @@ class MLIRJITFunction(RawJITFunction):
     def make_llvm(self, context=None) -> str:
         return f"{self.ll}"
 
-    def register_pending_source(self, *, hint: str = "") -> str:
-        extern_func_name = self.extern_func_name or self.fnname
-        return register_source(
-            region_dialect=self.region_dialect,
-            extern_func_name=extern_func_name,
-            source=self.src,
-            hint=hint,
-            extra={_pending_jit_fn_key: self},
-        )
-
-    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = ""):
-        return builder.create_tle_raw_region_deferred(
-            source_id,
-            self.region_dialect,
-            self.arg_dialect,
-            handles,
-            alias_indices,
-            hint,
-        )
+    def create_region_deferred(self, *args, **kwargs):
+        raise RuntimeError("Deferred MLIR raw is not supported, including tensor fragment arguments")
 
     def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",
                               extern_func_name: str = ""):
@@ -123,11 +102,3 @@ class MLIRJITFunction(RawJITFunction):
     @cached_property
     def src(self) -> str:
         return inspect.getsource(self.fn)
-
-
-def compile_deferred_pending_source(entry: dict, *, context) -> str:
-    mlir_jit_fn = entry.get(_pending_jit_fn_key)
-    if not isinstance(mlir_jit_fn, MLIRJITFunction):
-        raise RuntimeError("deferred tle_raw MLIR source is missing its jit handle; "
-                           "re-register via MLIRJITFunction.register_pending_source()")
-    return mlir_jit_fn.make_llvm(context)

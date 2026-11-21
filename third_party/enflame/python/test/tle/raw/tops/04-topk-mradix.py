@@ -184,7 +184,7 @@ def topk_mradix_l1_launch(
         input_ptr, output_vals_ptr, output_idx_ptr,
         tle.gpu.local_ptr(l1, (0, )),
         tle.gpu.local_ptr(ws, (0, )), M, N, K, row_base, row_stride
-    ], output_indices=[1, 2])
+    ], output_indices=[])
 
 
 def _batch_radix_is_support(n_cols: int, level: int) -> bool:
