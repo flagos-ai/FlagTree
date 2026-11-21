@@ -226,11 +226,14 @@ def test_logical_policy_survives_split(priority, pointer, with_allocator):
     torch.testing.assert_close(c.cpu(), a.cpu().float() @ b.cpu().float().T, rtol=1e-3, atol=1e-3)
     copies = [line for line in kernel.asm["ptx"].splitlines() if "cp.async.bulk.tensor" in line]
     if pointer:
-        _assert_policy(kernel.asm["ptx"], policy, True)
+        ttgir_async = [line for line in kernel.asm["ttgir"].splitlines() if "ttg.async_copy_global_to_local" in line]
+        assert sum(f"evictionPolicy = l2_{priority}" in line for line in ttgir_async) > 1
+        ptx_async = [line for line in kernel.asm["ptx"].splitlines() if "cp.async." in line and "shared.global" in line]
+        assert len(ptx_async) > 1 and all(".L2::cache_hint" not in line for line in ptx_async)
     else:
         assert sum(".L2::cache_hint" in line for line in copies) > 1
+        assert f"createpolicy.fractional.L2::{priority}" in kernel.asm["ptx"]
     assert any(".L2::cache_hint" not in line for line in copies)
-    assert f"createpolicy.fractional.L2::{priority}" in kernel.asm["ptx"]
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.int32, torch.int8, torch.bool])

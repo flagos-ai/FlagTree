@@ -725,6 +725,7 @@ def TTG_TMACopyOp : TTG_Op<"tma_copy", [
   let assemblyFormat = [{
     $src `,` $dst `,` `[` $indices `]`
     (`,` `barrier` $barrier^)?
+    oilist(`evictionPolicy` `=` $evict)
     attr-dict `:` type($src) `,` type($dst)
     (`,` qualified(type($barrier))^)?
   }];

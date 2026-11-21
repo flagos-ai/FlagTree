@@ -277,7 +277,9 @@ jobs:
           output-base-dir: '${{ env.FLAGGEMS_CI_DIR }}/PR_vllm'
           pr-number: '${{ github.event.pull_request.number }}'
           first-parameter-only: 'true'
-          pre-command: ${{ inputs.flaggems-vllm-pre-command }}
+          pre-command: |
+            export PYTHONPATH="${{ steps.setup.outputs.FLAGGEMS_REPO_DIR }}/FlagGems/src${PYTHONPATH:+:${PYTHONPATH}}"
+            ${{ inputs.flaggems-vllm-pre-command }}
           flaggems-tag: ${{ inputs.flaggems-vllm-tag }}
           backend: ${{ inputs.backend }}
           repo-kind: flaggems-vllm

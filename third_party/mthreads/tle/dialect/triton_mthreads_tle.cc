@@ -1,5 +1,6 @@
 #ifdef __TLE__
 
+#include "Dialect/MUSA/IR/Dialect.h"
 #include "Dialect/MUSATLE/IR/Dialect.h"
 #include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSACommon/MMAContractUtils.h"
@@ -531,6 +532,22 @@ void init_triton_musa_tle_ir(py::module m) {
   builderCls.attr("mthreads_tle_16_warp_persistent_version") = py::int_(1);
   builderCls.attr("mthreads_tle_fused_pipe_consumer_version") = py::int_(1);
   builderCls
+      .def("create_mthreads_device_tensor_descriptor",
+           [](TritonOpBuilder &self, mlir::Value address, mlir::Type blockType,
+              bool isSigned) -> mlir::Value {
+             auto pointer =
+                 mlir::dyn_cast<mlir::triton::PointerType>(address.getType());
+             auto block = mlir::dyn_cast<mlir::RankedTensorType>(blockType);
+             if (!pointer || pointer.getAddressSpace() != 1 ||
+                 !pointer.getPointeeType().isInteger(8) || !block ||
+                 block.getRank() < 1 || block.getRank() > 5)
+               throw py::value_error(
+                   "device tensor descriptor requires a scalar global byte "
+                   "pointer and a rank-1..5 block type");
+             auto type = mlir::triton::TensorDescType::get(self.getContext(),
+                                                           block, isSigned);
+             return self.create<musa::ReinterpretTensorDescOp>(type, address);
+           })
       .def("create_mthreads_local_barrier",
            [](TritonOpBuilder &self) {
              auto barrier = self.create<ttg::BarrierOp>(ttg::AddrSpace::Local);
@@ -555,6 +572,26 @@ void init_triton_musa_tle_ir(py::module m) {
              return buildMthreadsBlockedLayout(self, sizePerThread,
                                                threadsPerWarp, warpsPerCTA,
                                                order, cgaBases);
+           })
+      .def("get_tle_linear_encoding",
+           [](TritonOpBuilder &self, std::vector<std::vector<int32_t>> regBases,
+              std::vector<std::vector<int32_t>> laneBases,
+              std::vector<std::vector<int32_t>> warpBases,
+              std::vector<std::vector<int32_t>> blockBases,
+              std::vector<int64_t> shape) -> mlir::Attribute {
+             auto *ctx = self.getBuilder().getContext();
+             auto kReg = mlir::StringAttr::get(ctx, "register");
+             auto kLane = mlir::StringAttr::get(ctx, "lane");
+             auto kWarp = mlir::StringAttr::get(ctx, "warp");
+             auto kBlock = mlir::StringAttr::get(ctx, "block");
+             auto outDims = mlir::triton::standardOutDimPairs(ctx, shape);
+             auto ll = mlir::triton::LinearLayout({{kReg, regBases},
+                                                   {kLane, laneBases},
+                                                   {kWarp, warpBases},
+                                                   {kBlock, blockBases}},
+                                                  outDims,
+                                                  /*requireSurjective=*/true);
+             return ttg::LinearEncodingAttr::get(ctx, std::move(ll));
            })
       .def("get_sliced_encoding",
            [](TritonOpBuilder &self, unsigned dim,

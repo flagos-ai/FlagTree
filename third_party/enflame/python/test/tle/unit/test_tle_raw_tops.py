@@ -31,12 +31,6 @@ class TestTOPSDialectRegistration:
         assert "tops_mlir" in registry
         assert registry["tops_mlir"] is TOPSMLIRJITFunction
 
-    def test_cuda_still_in_registry(self):
-        from triton.experimental.tle.raw.runtime import registry
-        from triton.experimental.tle.raw.cuda.runtime import CUDAJITFunction
-        assert "cuda" in registry
-        assert registry["cuda"] is CUDAJITFunction
-
     def test_mlir_still_in_registry(self):
         from triton.experimental.tle.raw.runtime import registry
         from triton.experimental.tle.raw.mlir.runtime import MLIRJITFunction

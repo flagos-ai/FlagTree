@@ -31,6 +31,7 @@
 #include "tle/dialect/include/IR/ExactSMEM.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
+#include "triton/Dialect/Triton/IR/CacheControls.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
@@ -135,6 +136,21 @@ public:
       return failure();
     }
 
+    // Backend dialects without an eviction field retain the default policy.
+    // Use Operation::getAttr for both inherent and discardable attributes.
+    auto evictionPolicy = triton::EvictionPolicy::NORMAL;
+    if (Attribute attr = op->getAttr("evict")) {
+      auto policyAttr = dyn_cast<triton::EvictionPolicyAttr>(attr);
+      if (!policyAttr)
+        return op.emitOpError("requires a valid eviction policy");
+      evictionPolicy = policyAttr.getValue();
+    }
+    if (evictionPolicy != triton::EvictionPolicy::NORMAL &&
+        llvm::none_of(op->getName().getAttributeNames(), [](StringAttr name) {
+          return name.getValue() == "evict";
+        }))
+      return op.emitOpError("backend does not support TMA eviction policies");
+
     if (direction == TransferDirection::GM_TO_SHARMEMORY) {
       // Load from global memory to shared memory
       auto srcType = cast<TensorDescType>(op.getSrc().getType());
@@ -172,7 +188,7 @@ public:
               pred);
         rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
             op.getLoc(), op.getSrc(), indices, userBarrier, dstMemDesc, pred,
-            CacheModifier::NONE, op.getEvict());
+            CacheModifier::NONE, evictionPolicy);
       } else {
         if (op->hasAttr(op.getExpectBytesAttrName()))
           return op.emitOpError("expect_bytes requires an explicit completion "
@@ -212,7 +228,7 @@ public:
         // Perform async TMA copy from global to existing shared memory
         rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
             op.getLoc(), op.getSrc(), indices, mbarrierAlloc, dstMemDesc, pred,
-            CacheModifier::NONE, op.getEvict());
+            CacheModifier::NONE, evictionPolicy);
 
         // Wait for completion and invalidate barrier
         Value phase = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
@@ -223,6 +239,10 @@ public:
 #endif
 
     } else {
+      if (evictionPolicy != triton::EvictionPolicy::NORMAL &&
+          !triton::isL2Eviction(evictionPolicy))
+        return op.emitOpError("eviction policies are supported only for "
+                              "global-to-shared TMA copies");
 #if !defined(__HCU__)
       if (op.getBarrier())
         return op.emitOpError(
@@ -249,7 +269,7 @@ public:
       // Perform async TMA copy from shared to global memory
       auto tmaStore =
           rewriter.create<triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp>(
-              op.getLoc(), op.getDst(), indices, op.getSrc(), op.getEvict());
+              op.getLoc(), op.getDst(), indices, op.getSrc(), evictionPolicy);
       tmaStore->setAttr(kTleTMAStoreExplicitCommitAttr, rewriter.getUnitAttr());
       rewriter.create<TMAStoreCommitGroupOp>(loc);
 

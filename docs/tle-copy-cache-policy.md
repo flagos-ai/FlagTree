@@ -1,511 +1,214 @@
-# Per-copy native cache policies
+# Native Cache Policies for TLE Copy and Global Memory Access
 
-`tle.gpu.copy(..., cache_policy=policy)` controls the global-memory access of
-one copy. `tle.gpu.CachePolicy` always means the NVIDIA native policy, even
-when importing the module on another platform. MThreads, PPU, HCU, and MetaX
-use their own namespaced policy objects. The compilation target must match
-the object's backend and supported copy path.
+`tle.gpu.copy(..., cache_policy=policy)` and `tl.load(..., cache_policy=policy)` /
+`tl.store(..., cache_policy=policy)` accept per-backend native cache-policy
+objects that control the global-memory side of an access:
 
-Omit the argument or pass Python `None` to preserve the backend's defaults.
-There is no common intent policy, target-selecting `backend` argument, or
-automatic conversion between backends. NVIDIA `CachePolicy()` requires an
-explicit hint and raises an error; use `None` for the default. Other native
-default constructors keep their existing meanings and are not folded away.
+- **NVIDIA**: `tle.gpu.CachePolicy` and `tle.gpu.FractionalEvictionPolicy`
+- **MThreads / MUSA**: `tle.gpu.mthreads.TMECachePolicy` (descriptor copies) and `tle.gpu.mthreads.LSUCachePolicy` (pointer copies and global load/store)
+- **Hygon / HCU**: `tle.gpu.hcu.CachePolicy`
+- **MetaX / MACA**: `tle.gpu.metax.CachePolicy`
+- **PPU**: `tle.gpu.ppu.CachePolicy` (LSU pointer copies and global load/store) and `tle.gpu.ppu.AIUCachePolicy` (AIU descriptor and block-pointer copies)
 
-Policies are immutable, compare and specialize by normalized value,
-and support host/JIT construction and constexpr worker forwarding. Policy
-fields must be compile-time values. Hints do not supply a
-barrier, change completion or synchronization, or guarantee cache residency.
+Omit `cache_policy` or pass `None` to preserve the backend's default lowering.
+There is no cross-backend portable intent mapping or `backend=` selector
+argument; the compilation target must match the policy object's backend, memory
+direction, and access path.
 
 ```python
+import triton.language as tl
+from triton.experimental.tle import language as tle
+
+# NVIDIA TMA descriptor copies: L2 eviction policies per operand
 first = tle.gpu.CachePolicy(l2=tle.gpu.FractionalEvictionPolicy("evict_first"))
 last = tle.gpu.CachePolicy(l2=tle.gpu.FractionalEvictionPolicy("evict_last"))
-tle.gpu.copy(a_desc, a_tile, [BM, BK], [m, k], cache_policy=first)
-tle.gpu.copy(b_desc, b_tile, [BK, BN], [k, n], cache_policy=last)
+tle.gpu.copy(a_desc, a_tile, [BM, BK], [m, k], cache_policy=last)
+tle.gpu.copy(b_desc, b_tile, [BK, BN], [k, n], cache_policy=first)
 
+# MThreads TME descriptor copy and LSU pointer / global store policy
 tme = tle.gpu.mthreads.TMECachePolicy(inner="none", outer="persist")
-lsu = tle.gpu.mthreads.LSUCachePolicy(inner_persistence=5, outer_persistence=2, l2_policy=0)
-ppu_lsu = tle.gpu.ppu.CachePolicy(5)  # equivalent to ppu.CachePolicy(".lu")
-ppu_aiu = tle.gpu.ppu.AIUCachePolicy(kp=5)
-hcu = tle.gpu.hcu.CachePolicy(".cs")
-metax = tle.gpu.metax.CachePolicy("cs")
+lsu = tle.gpu.mthreads.LSUCachePolicy(inner_persistence=3, outer_persistence=3, l2_policy=1)
+
+# PPU LSU load/store policy and AIU tensor-copy policy
+ppu_lsu = tle.gpu.ppu.CachePolicy(".lu")  # equivalent to ppu.CachePolicy(5)
+ppu_aiu = tle.gpu.ppu.AIUCachePolicy(kp=4)
+
+# Hygon HCU and MetaX MACA pointer / global load and store policies
+hcu_cs = tle.gpu.hcu.CachePolicy(".cs")
+metax_cg = tle.gpu.metax.CachePolicy("cg")
 ```
 
-Each object applies only on its corresponding backend and path. Similar
-modifier spellings across platforms do not establish equivalent ISA semantics.
-MUSA `"none"` is a native persistence value, distinct from Python `None`,
-explicit normal, and a verified bypass.
+Policy objects are immutable compile-time constants (`frozen=True`), compare
+and specialize by normalized value, and can be constructed on the host or inside
+`@triton.jit` functions (bind local variables with `policy: tl.constexpr = ...`
+when forwarding through loops or `warp_specialize` workers). Cache hints do not
+supply completion barriers or alter copy synchronization.
 
-## Supported policy objects
+---
 
-| Backend | Pointer copy | Descriptor copy |
+## 1. Supported Policy Objects by Backend and Path
+
+| Backend | Pointer Access (`tl.load`, `tl.store`, `tle.gpu.copy`) | Descriptor Copy (`tle.gpu.copy`) |
 | --- | --- | --- |
-| NVIDIA | `tle.gpu.CachePolicy`: cache modifier, single-level L1 or static L2 eviction | Same object, L2 policy only; load and store |
-| MThreads | `mthreads.LSUCachePolicy`: native inner/outer persistence and L2 controls | `mthreads.TMECachePolicy`: inner/outer persistence; load and store |
-| PPU | `ppu.CachePolicy`: native LSU modifier; `ppu.AIUCachePolicy`: supported block-pointer loads lowered to native AIU tensor copies | `ppu.AIUCachePolicy`: rank-2/rank-3 host or device descriptor loads; rank-3 uses 2D AIU slices; kp1–kp6, with kp3 aliasing kp2 |
-| HCU | `hcu.CachePolicy`: target-specific global-memory modifier | Explicit policy rejected |
-| MetaX | `metax.CachePolicy`: SDK memory modifier | Explicit policy rejected |
+| **NVIDIA** | `tle.gpu.CachePolicy`: cache modifier (`ca`, `cg`, `cs`, `lu`, `cv` on load; `wb`, `cg`, `cs`, `wt` on store), L1 eviction, or static L2 eviction (`fraction=1.0`) | `tle.gpu.CachePolicy`: static L2 eviction only (`l2=FractionalEvictionPolicy(...)`), load and store |
+| **MThreads / MUSA** | `mthreads.LSUCachePolicy`: native `inner_persistence` (`0..5`), `outer_persistence` (`0..5`), and `l2_policy` (`0..1`) | `mthreads.TMECachePolicy`: `inner` (`0..5` / `"none"`, `"once"`, `"normal"`, `"persist"`), `outer` (`0..3`), and load `prefetch_size` (`0`, `64`, `128`, `256`) |
+| **Hygon / HCU** | `hcu.CachePolicy`: native global/buffer modifiers (`""`, `.ca`, `.cg`, `.cs`, `.cv` on load; `""`, `.wb`, `.cg`, `.cs` on store) | Unsupported (raises `ValueError`) |
+| **MetaX / MACA** | `metax.CachePolicy`: native SDK modifiers (`ca`, `cg`, `cs`, `lu`, `cv` on load; `wb`, `cg`, `cs`, `wt` on store) | Unsupported (raises `ValueError`) |
+| **PPU** | `ppu.CachePolicy`: native LSU modifiers (`""`, `.ca`, `.cg`, `.cs`, `.cv`, `.lu`, `.nc`, `.bl` on load; `""`, `.wb`, `.cg`, `.cs`, `.wt`, `.bl` on store)<br>`ppu.AIUCachePolicy`: eligible block-pointer loads (`tle.gpu.copy`) promoted to AIU (`kp=1..6`) | `ppu.AIUCachePolicy`: rank-2 and rank-3 host/device descriptor loads (`kp=1..6`, with `kp=3` aliasing `kp=2`) |
 
-An object for another backend or an unsupported direction raises an error.
-CommonIR and unsupported backends reject explicit native policies.
-Transport selection uses the existing layout, width and scheduling rules.
-Hints do not prevent an async, AIU or HCU buffer conversion. The selected
-instruction keeps the controls it supports and adapts or omits the rest using
-the rules below. An adjustment emits an MLIR remark with the operation
-location, requested controls, effective controls and reason. Remarks are
-compiler diagnostics, not a persistent runtime warning. Triton's normal
-diagnostic filter hides remarks; set the existing
-`MLIR_ENABLE_DIAGNOSTICS=remarks` environment variable and use a fresh
-`TRITON_CACHE_DIR` to see them. Cached kernels do not compile again. Inspect
-the final native instructions when validating a hint.
-Mapping to a default is not a claim of equivalent cache behavior.
+---
 
-These rules apply after frontend normalization. Legacy string arguments keep
-their own accepted values: for example, NVIDIA `tl.load(cache_modifier=...)`
-accepts `""`, `.ca`, `.cg`, `.cv`; `.cs` and `.lu` in this branch use the
-native `CachePolicy` object. The conversion does not make an invalid legacy
-string valid. When both spellings request the same modifier, they produce
-the same `cache` enum. For example, on NVIDIA
-`tl.load(p, cache_modifier=".cg")` and
-`tl.load(p, cache_policy=tle.gpu.CachePolicy("cg"))` follow identical
-lowering. Explicit NVIDIA L1 and L2 eviction still have separate encodings.
+## 2. IR Representation, Pass-Through Rules, and Diagnostics
 
-Invalid values, backend/direction mismatches, unsupported explicit descriptor
-paths, and unsafe PPU modes still fail. Structural fallbacks, such as a copy
-too narrow for an async instruction, follow the same rules with and without a
-hint and retain the original fields on the replacement load/store. No cache
-flush, fence, barrier or synchronization change is introduced by conversion.
+Both `tle.gpu.copy` and `tl.load` / `tl.store` normalize `cache_policy` into the
+memory operation's formal IR attributes **before** creating the operation:
 
-## NVIDIA
+| Control | Formal IR Attribute |
+| --- | --- |
+| Standard NVIDIA / HCU / MetaX / PPU cache modifier | `cache` (`TT_CacheModifierAttr`, printed as `cacheModifier`) |
+| NVIDIA L1-only or L2-only eviction priority | Scoped `evict` (`TT_EvictionPolicyAttr`, e.g. `l1_evict_last`, `l2_evict_first`) |
+| Legacy `eviction_policy="evict_first"` / `"evict_last"` | Unscoped `evict` (`evict_first`, `evict_last`) |
+| PPU explicit LSU default (`ppu.CachePolicy("")`) | `cache = ppu_lsu_default` |
+| PPU AIU `kp=1..6` (`ppu.AIUCachePolicy(kp=N)`) | `cache = ppu_aiu_kpN` |
+| MThreads LSU 3-tuple (`mthreads.LSUCachePolicy`) | `cache = musa_iN_oN_lN` (all $6 \times 6 \times 2$ tuples) |
+| MThreads TME (`mthreads.TMECachePolicy`) | Existing MUSA TME persistence and prefetch operands |
+
+### Mid-End Transport Independence and Final Instruction Conversion
+
+1. **Zero Mid-End Interference**: Mid-end passes (`LowerLoops`,
+   `ConvertToBufferOps`, `OptimizeLocalPointerAsyncStores`,
+   `TlePlanLogicalDomains`, `TleLowerTmaCopy`, `TleDowngradeInvalidAsyncCopy`,
+   and `TlePromoteAsyncLoadToAIU` for ordinary LSU policies) select transport
+   channels solely from layout, vector width, alignment, and masking. Valid
+   cache policies never block async copy promotion, HCU buffer conversion, or
+   PPU AIU promotion; rewrites forward `getCache()` and `getEvict()` verbatim.
+2. **Upstream-Style Instruction Conversion and Remarks**: At final instruction
+   selection (`ToLLVM`), the chosen hardware instruction retains all controls
+   it can encode and converts or omits unsupported controls according to the
+   conversion matrix below. Whenever an explicit control is adjusted, the
+   compiler emits an MLIR remark reporting the operation location, requested
+   `(cache, evict)`, effective `(cache, evict)`, and reason. To view remarks,
+   compile with `MLIR_ENABLE_DIAGNOSTICS=remarks` and a fresh
+   `TRITON_CACHE_DIR`.
+
+---
+
+## 3. Cross-Backend Cache-Hint Conversion Matrix
+
+| Backend | Memory Path / Lowered Op | Requested Policy / Modifier | Effective Lowered Control | Target Instruction / LLVM IR / PTX | Conversion & Remark Rule |
+| --- | --- | --- | --- | --- | --- |
+| **NVIDIA**<br>(`sm_80`+) | `tl.load` / `tl.store` / `tle.gpu.copy` (synchronous pointer) | `cache`: `""`, `ca`, `cg`, `cs`, `lu`, `cv` (load); `""`, `wb`, `cg`, `cs`, `wt` (store)<br>`l1`: `evict_normal`, `evict_first`, `evict_last`, `evict_unchanged`, `no_allocate`<br>`l2`: `evict_normal`, `evict_first`, `evict_last`, `evict_unchanged` | **1:1 pass-through** | `ld.global.{ca,cg,cs,lu,cv}.L1::*.L2::*`<br>`st.global.{wb,cg,cs,wt}.L1::*.L2::*` | Legacy `eviction_policy="evict_first"/"evict_last"` sets both L1 and L2; typed `CachePolicy(l1=..., l2=...)` controls L1 or L2 independently. |
+| **NVIDIA** | `cp.async` (`AsyncCopyGlobalToLocalOp`, **16B**) | `cache`: `""`/`ca` $\to$ `ca`; `cg`/`cs`/`lu`/`cv` $\to$ **`cg`**<br>`l1`: any $\to$ **`evict_normal`**<br>`l2`: `evict_first`/`evict_last` | `cache`: `ca` or **`cg`**<br>`l1`: **`evict_normal`**<br>`l2`: **preserved at PTX $\ge$ 9.4**, **`evict_normal` at PTX $<$ 9.4** | `cp.async.{ca,cg}.shared.global[.L2::cache_hint]` (+ `createpolicy.fractional.L2::evict_*`) | 16B `cp.async` supports only `ca` and `cg`; `cs`/`lu`/`cv` convert to `cg`. L1 eviction is omitted. PTX $<$ 9.4 omits L2 policy to avoid a `ptxas` miscompilation (upstream #11660/#11848). |
+| **NVIDIA** | `cp.async` (`AsyncCopyGlobalToLocalOp`, **4B / 8B**) | `cache`: any (`cg`/`cs`/`lu`/`cv`) $\to$ **`ca`** (default build)<br>`l1`: any $\to$ **`evict_normal`**<br>`l2`: preserved at PTX $\ge$ 9.4, omitted at PTX $<$ 9.4 | `cache`: **`ca`**<br>`l1`: **`evict_normal`**<br>`l2`: preserved at PTX $\ge$ 9.4 / omitted at $<$ 9.4 | `cp.async.ca.shared.global` (+ PTX $\ge$ 9.4 L2 policy) | 4B/8B `cp.async` does not support `cg`; default builds (`__FLAGTREE_PIPELINE_ENHANCE__`) convert non-`ca` modifiers to `ca` with a remark. |
+| **NVIDIA** | TMA (`DescriptorLoadOp` / `AsyncTMACopyGlobalToLocalOp` / `AsyncTMACopyLocalToGlobalOp`) | `l2`: `FractionalEvictionPolicy("evict_first" \| "evict_last" \| ...)` | **1:1 pass-through** (`l2_evict_*`) | `cp.async.bulk.tensor.*.L2::cache_hint` | TMA consumes L2 eviction policies only; specifying `cache_modifier` or `l1` on a TMA descriptor copy raises a frontend `ValueError`. |
+| **MThreads / MUSA** | `tl.load` / `tl.store` / `tle.gpu.copy` (LSU pointer) | `LSUCachePolicy(inner_persistence=0..5, outer_persistence=0..5, l2_policy=0..1)` | **`mp_31`**: **1:1 pass-through** (`musa_i*_o*_l*`)<br>**non-`mp_31`**: ordinary `tl.load`/`tl.store` **fall back to default (`NONE`)** | **`mp_31`**: `llvm.musa.lsu.{ld,st}.cache.hint.i`<br>**non-`mp_31`**: default `load`/`store` | `None` fields resolve to SDK defaults (`inner=4, outer=2, l2=0(ld)/1(st)`). Explicit `tle.gpu.copy` LSU policies require `mp_31`. |
+| **MThreads / MUSA** | `memcpy.g2s` (`AsyncCopyGlobalToLocalOp`) | `LSUCachePolicy` or legacy `cache`/`evict` | **Converted to default `memcpy.g2s` (`NONE` / `NORMAL`)** | `llvm.musa.memcpy.g2s.*` | `memcpy.g2s` has no cache-hint operand; converts to default controls with a remark. |
+| **MThreads / MUSA** | TME Descriptor Copy (`tle.gpu.copy`) | `TMECachePolicy(inner=..., outer=..., prefetch_size=...)` | **1:1 pass-through** | `llvm.musa.tme.{ld,st}.tile.*` | `prefetch_size` (`0, 64, 128, 256`) applies to loads; stores require `prefetch_size=0`. |
+| **Hygon / HCU**<br>(`gfx928` / `gfx936` / `gfx938`) | `tl.load` / `tl.store` / `tle.gpu.copy` (Buffer & Global Ops) | `cache`:<br>• `""`/`.ca` (load), `""`/`.wb`/`.cg` (store) $\to$ `glc=0, slc=0`<br>• `.cg`/`.cs` (load), `.cs` (store) $\to$ `glc=1, slc=1`<br>• `.cv` (load), legacy `.wt` (store) $\to$ `glc=1, slc=0` | `cache`: **1:1 mapped to `glc`/`slc` bits** (and LLVM `nontemporal`/`volatile` on generic path)<br>`evict`: **`evict_normal`** on Buffer Ops | `buffer_{load,store}_*` (default `AMDGCN_USE_BUFFER_OPS=1`) or `global_{load,store}_*` | Buffer Ops omit `evict` with a remark. On generic non-buffer `gfx936` global loads, `.cg`/`.cs` constrain the pointer to a VGPR so uniform loads are not scalarized to `s_load`. |
+| **Hygon / HCU** | Direct-to-LDS (`AsyncCopyGlobalToLocalOp`) | `cache`: `.ca`/`""`, `.cg`, `.cs`, `.cv`<br>`evict`: any $\to$ **`evict_normal`** | `cache`: **1:1 mapped to `aux` cache bits**<br>`evict`: **`evict_normal`** | `llvm.amdgcn.raw.ptr.buffer.load.lds` | Hardware `buffer_load_lds` carries `glc`/`slc` bits and omits eviction priorities with a remark. |
+| **MetaX / MACA** | `tl.load` / `tl.store` / `tle.gpu.copy` (synchronous pointer) | **Load**: `ca`/`cv` (default), `cg` (volatile), `cs`/`lu` (`!nontemporal` + `!metaxgpu.l2rp`)<br>**Store**: `wt` (default), `wb` (`!metaxgpu.devc`), `cg` (`!nontemporal`), `cs` (`!nontemporal` + `!metaxgpu.l2rp`) | **1:1 mapped via `CopyCacheTranslation`** | Default: `llvm.mxc.{ldg,stg}.predicator`<br>With `cg`/`cs`/`lu`/`wb`: inlined `__flagtree_metax_copy_{load,store}_*` helper | `CopyCacheTranslation` attaches `!nontemporal`, `!metaxgpu.l2rp`, and `!metaxgpu.devc` metadata during LLVM IR export. |
+| **MetaX / MACA** | `AsyncCopyGlobalToLocalOp` | Any `cache` or `evict` | **Converted to default (`NONE` / `NORMAL`)** | `llvm.mxc.ldg.b*Async` | The selected async copy intrinsic uses its default cache controls and emits a remark. |
+| **PPU**<br>(ZW810E) | `tl.load` / `tl.store` / `tle.gpu.copy` (LSU pointer) | **Load**: `""`/`.ca` (default), `.nc`(`kp1`), `.cg`/`.cv`(`kp2`), `.cs`(`kp4`), `.lu`(`kp5`), `.bl`(`kp6`)<br>**Store**: `""`/`.wb` (default), `.cg`/`.wt`(`kp2`), `.cs`(`kp4`), `.bl`(`kp6`) | **1:1 mapped to PPU LSU `kp` mode** | `ld.global.{ca,nc,cg,cs,lu,bl}`<br>`st.global.{wb,cg,cs,bl}` | `.ba` (`kp7`) and LSU `kp3` are rejected in the frontend. |
+| **PPU** | `cp.async` (`AsyncCopyGlobalToLocalOp`) | Any LSU modifier / eviction policy | **16B**: **`cg`** (`ca` if explicitly `.ca`)<br>**4B / 8B**: **`ca`**<br>`evict`: **`evict_normal`** | `cp.async.{ca,cg}.shared.global` | Ordinary non-AIU async copies convert LSU modifiers to `cp.async` width controls and emit a remark. |
+| **PPU** | AIU Tensor Copy (`AIUCachePolicy` / `TlePromoteAsyncLoadToAIU`) | • `AIUCachePolicy(kp=1..6)` $\to$ **1:1 pass-through** (`kp3` aliases `kp2`)<br>• Ordinary `ppu.CachePolicy` on a block-pointer load promoted to AIU $\to$ **`kp=1` (`DEFAULT_AIU_KP`)** | `AIUCachePolicy`: **`kp1..6`**<br>Promoted `CachePolicy`: **`kp1`** | `vmem.aiu.ld.tsm...kpN` | `AIUCachePolicy(kp=7)` is rejected for read-after-write visibility safety on SDK 2.1. Promoted LSU policies convert to `kp=1` with a remark. |
+
+---
+
+## 4. Backend-Specific Policy Reference
+
+### 4.1 NVIDIA (`tle.gpu.CachePolicy`, `tle.gpu.FractionalEvictionPolicy`)
+
+`CachePolicy` and `FractionalEvictionPolicy` are exported directly from
+`triton.experimental.tle.language.gpu`. Calling `CachePolicy()` with no
+arguments raises `ValueError`; pass `None` to retain the default behavior.
 
 ```python
 from triton.experimental.tle.language.gpu import CachePolicy, FractionalEvictionPolicy
 
-reused = CachePolicy(l2=FractionalEvictionPolicy("evict_last"))
-streaming = CachePolicy(cache_modifier="cs")
-tle.gpu.copy(a_desc, a_smem, [BM, BK], [m, k], cache_policy=reused)
-# A surviving register load uses cs; a selected cp.async uses the table below.
-b = tl.load(b_ptrs, mask=valid, other=0, cache_policy=streaming)
+l2_retain = CachePolicy(l2=FractionalEvictionPolicy("evict_last"))
+l2_stream = CachePolicy(l2=FractionalEvictionPolicy("evict_first"))
+l1_stream = CachePolicy(l1="evict_first")
+l1_bypass = CachePolicy(cache_modifier="cg")
 ```
 
-Pointer loads accept `ca`, `cg`, `cs`, `lu`, and `cv`; stores accept `wb`, `cg`,
-`cs`, and `wt`. A leading dot is optional. These are PTX cache operators:
-
-| Operator | PTX meaning |
-| --- | --- |
-| load `ca` | Cache at all levels; ordinary load default |
-| load/store `cg` | Cache at the global level, bypass L1 |
-| load/store `cs` | Streaming access with evict-first allocation |
-| load `lu` | Last-use indication; global-memory behavior follows `cs` |
-| load `cv` | For system memory, invalidate matching L2 lines and refetch |
-| store `wb` | Write back at all coherent levels; ordinary store default |
-| store `wt` | Write through to system memory |
-
-`l1` accepts `evict_normal`, `evict_first`, `evict_last`, `evict_unchanged`,
-and `no_allocate`. Cache modifiers and explicit L1 eviction are separate
-alternatives and cannot be combined in this API. They are not TMA controls.
-
-`l2=FractionalEvictionPolicy(primary, fraction=1.0, secondary="evict_unchanged")`
-accepts primary `evict_normal`, `evict_first`, `evict_last`, or
-`evict_unchanged`. Only `fraction=1` and `secondary="evict_unchanged"` are
-supported. A non-unit fraction, a different secondary priority, non-None
-`l2_prefetch_size`, or setting both `l1` and `l2` raises an error.
-The retained constructor names make unsupported old configurations explicit.
-Cache modifier plus L2 eviction remains supported where the instruction allows it.
-The compiler reuses `createpolicy.fractional` with a constant 1.0, without
-hard-coding a hardware policy word. Explicit eviction requires SM80+;
-TMA requires SM90+.
-
-### NVIDIA conversion rules
-
-For ordinary `ld.global`/`st.global`, the native modifier and scoped eviction
-fields retain their existing lowering. TMA preserves its L2 policy and still
-rejects explicit cache operators or L1 fields. TMA has a separate instruction
-contract from non-bulk `cp.async`.
-
-In FlagTree's default NVIDIA build, the final per-thread transfer width of a non-bulk `cp.async` decides
-the cache operator, after layout/vectorization and mask analysis:
-
-| Requested load modifier | 16 bytes | 4 or 8 bytes |
-| --- | --- | --- |
-| `ca` | `ca` | `ca` |
-| Omitted, `cg`, `cs`, `lu`, `cv` | `cg` | `ca` |
-
-These width rules already apply on FlagTree `main` for legacy cache modifiers.
-For example, the instruction uses `cg` for a 16-byte `cs` request and `ca` for
-a narrow `cg` request. The compiler reports the adjustment for explicit hints.
-
-| Requested eviction | Effective non-bulk `cp.async` control |
-| --- | --- |
-| None | None |
-| Native L1 `evict_normal/first/last/unchanged/no_allocate` | Omitted; this instruction has no matching L1 eviction operand |
-| Native L2 `evict_normal/first/last/unchanged` | L2 policy at PTX 9.4+, otherwise omitted |
-| Legacy `eviction_policy="evict_first"/"evict_last"` | L2 policy at PTX 9.4+, otherwise omitted; the legacy values are not L1-only |
-
-FlagTree `main` uses the selected PTX version to guard the cache-hint operand
-against a ptxas miscompilation. The native L2 policy uses the same threshold.
-Builds without `__FLAGTREE_PIPELINE_ENHANCE__` retain upstream handling of
-legacy controls. They accept only omitted, `ca` or `cg` modifiers, pass explicit
-`ca`/`cg` through, and apply legacy `evict_first`/`evict_last` without a PTX
-version gate. The new explicitly scoped L2 policies still require PTX 9.4.
-
-TLE additionally omits L2 hints on async copies produced by its
-load-to-local-pointer-store rewrite when the copy is unmasked or belongs to
-a loop-free warp-specialize partition. This guards against invalid uniform
-register uses seen on H800 and applies even at PTX 9.4+. Other async copies,
-including unmasked pipeline copies, use the PTX rule in the table.
-
-Cache policies are compile-time values. Construct them on the host or inside
-a JIT function using compile-time arguments. Dynamic fractional and
-address-range policies are not part of this API.
-
-CUDA access-policy windows, set-aside budgets, external policy-handle imports
-and separate prefetch/discard instructions are outside this per-copy API.
-`ld.global.nc` also remains excluded: its noncoherent read path requires an
-additional immutable-data contract, unlike ordinary advisory cache hints.
-See the [PTX ISA](https://docs.nvidia.com/cuda/parallel-thread-execution/index.html).
-
-## MThreads
-
-`TMECachePolicy(inner="normal", outer="normal")` retains PR #1385's
-four public values: `none`, `once`, `normal`, and `persist`. Both descriptor
-directions carry their policy. The names describe MUSA persistence hints;
-they do not guarantee bypass, a precise reuse count, or locked residency.
-Python `None` means use the backend default and differs from `"none"`.
-Integer aliases 0/1/2/3 normalize to those four strings for both fields,
-including equality and JIT specialization. Inner accepts integers 0–5;
-outer accepts 0–3. `TMECachePolicy(inner=0, outer=3)` therefore equals
-`TMECachePolicy(inner="none", outer="persist")`.
-`inner` also accepts native integer codes `4` and `5`, verified on SDK 5.2/mp31;
-their replacement semantics are not assigned invented portable names.
-TME loads additionally accept `prefetch_size=0`, `64`, `128`, or `256` bytes.
-TME stores require zero. The SDK rejects outer codes 4/5 for both directions,
-so they are not exposed.
-
-`LSUCachePolicy(inner_persistence=None, outer_persistence=None, l2_policy=None)`
-uses native SDK integer controls. Inner/outer accept 0–5 and L2 accepts 0–1.
-The ordinary LSU defaults differ from TME: SDK loads use inner 4, outer 2,
-L2 0; stores use inner 4, outer 2, L2 1. The lowering preserves the SDK's
-direction-specific coherence parameter instead of exposing it as an eviction
-hint. Values 4/5 are native codes, not promises of a portable retention
-behavior. The four-value TME vocabulary must not be used to infer all LSU
-semantics.
-
-Ordinary `tl.load` and `tl.store` accept an LSU policy across MUSA targets.
-On mp_31 they emit the native SDK encoding. Other targets use the default
-load or store. Explicit LSU copies with native controls require mp_31. TME
-retains the explicit inner/outer/prefetch controls. An ordinary LSU load
-selected for `memcpy.g2s` uses that instruction's existing default controls:
-the LSU tuple and eviction hint are omitted with a remark. LSU controls are
-not reinterpreted as TME persistence, and a hint does not prevent async
-selection. Passing the wrong native policy type for an explicit copy path
-still raises an error.
-
-The direct load-to-shared-store rewrite keeps a register load for a nonzero
-masked `other`: `memcpy.g2s` only zero-fills and this rewrite has no post-load
-select. This is a data-semantics restriction shared by default and hinted
-copies, independent of cache policy. The separate async-load frontend already
-restores nonzero `other` through a select after its local load.
-
-## PPU
-
-PPU has native asynchronous tensor-copy instructions through AIU, with a
-per-copy `kp` cache field. The block pointer is a frontend representation:
-the supported path lowers `tt.load` to `AIULoadOp`, then to
-`AsyncAIUCopyGlobalToLocalOp` and a native `vmem.aiu.ld.tsm...kpN` instruction.
-It therefore uses the tensor-copy engine even though the Python operand is
-not a `tl.tensor_descriptor`.
-
-`tle.gpu.copy(descriptor, shared, shape, offsets, cache_policy=...)` now
-accepts both `tl.make_tensor_descriptor` and host `TensorDescriptor` inputs.
-The PPU frontend preserves the descriptor's base, shapes, strides and offsets
-through descriptor expansion into the native AIU path. It does not emit the
-unsupported NVIDIA-style `ttg.tma_copy` operation. With `cache_policy=None`,
-this newly supported path uses native kp1.
-
-On PPU targets that expand tensor descriptors to pointers, an AIU descriptor load requires
-descriptor expansion before block-pointer promotion. Modules without such
-a descriptor keep the original pass order, including legacy async block-pointer
-loads. The early rewrite is scheduled at module scope in mixed kernels.
-
-Rank-2 descriptors require packed row-major storage. Rank-3 descriptors are
-split into one 2D AIU copy per leading tile slice, with the requested kp on
-every slice; this is not a single native 3D instruction. The native SDK also
-has a 3D AIU helper, which is separate from this implementation. The two
-innermost dimensions must be packed; the leading stride is retained.
-
-Load modifiers are `""`, `.ca`, `.cg`, `.cs`, `.cv`, `.lu`, `.nc`, and `.bl`.
-Store modifiers are `""`, `.wb`, `.cg`, `.cs`, `.wt`, and `.bl`.
-These are native PPU names. On SDK 2.1/ppu0010, `.nc` emits kp1,
-`.cg`/`.cv` loads and `.cg`/`.wt` stores emit kp2, `.cs` emits kp4,
-`.lu` kp5, and `.bl` kp6. Default/`.ca` loads and
-default/`.wb` stores use the default mode. Aliases do not represent distinct
-measured hardware behaviors.
-
-`ppu.CachePolicy(1/2/4/5/6)` are load aliases for `.nc/.cg/.cs/.lu/.bl`;
-only 2/4/6 are valid stores. For example, `CachePolicy(5)` equals
-`CachePolicy(".lu")`; it does not mean L1 mode 5. Ordinary LSU kp3 is rejected
-even though AIU kp3 aliases kp2.
-
-The SDK can encode `.ba` (kp7), but loads failed after GPU input updates and
-stores failed with prewarmed output buffers. Both directions are rejected in
-the Python frontend and C++ lowering. Integer 7 is also rejected.
-No NVIDIA-style eviction or prefetch modifier is exposed: the tested SDK
-ignores those modifiers.
-
-If an ordinary LSU load is promoted to AIU, its LSU modifier uses the AIU
-default path instead of being translated by numeric coincidence. Explicit
-`AIUCachePolicy` keeps kp1–kp6 (including the SDK kp3→kp2 alias). Ordinary
-non-AIU asynchronous copy uses its existing default instruction controls;
-LSU modifiers and eviction hints are omitted with a remark. Promotion is not
-blocked by a legal LSU hint. An explicit AIU object on an unsupported shape
-or path still fails the structural checks below.
-Specifically, the ordinary async TIX emitter uses `cp.async.cg` for a 16-byte
-transfer and `cp.async.ca` for a 4/8-byte transfer, irrespective of the LSU
-modifier. These compatibility spellings do not assert NVIDIA cache semantics.
-
-`AIUCachePolicy(kp=1)` through `kp=6` selects native PPU0010 AIU modes for
-the supported descriptor and block-pointer loads. These are separate from ordinary LSU
-modifiers; kp3 is a kp2 alias on SDK 2.1. The existing swizzled load and
-acp commit/wait protocol are retained. Tiles require 16..2048 rows and at
-least 32 contiguous bytes per row, with 8/16/32-bit elements. The two AIU
-dimensions must be in `1..2**23`. X/Z offsets must be nonnegative and the
-whole tile must fit the 24-bit coordinate range. Constant invalid layouts
-and coordinates are rejected; dynamic constraints have runtime assertions.
-Upper-bound tail tiles are zero-filled. Negative leading-plane offsets in a
-rank-3 descriptor are handled by zero-filled slices; negative X/Z offsets
-are rejected because they faulted on the tested native path. Contiguous
-column-major rank-2 block pointers remain supported through their order.
-Descriptor block shape, copy shape and shared shape must match exactly.
-Only zero padding is supported. Stores, ordinary pointer tensors, logical
-non-power-of-two descriptors, explicit TMA barriers and PPU0015 are rejected.
-AIU completion is internal commit/wait, not an exposed asynchronous token.
-
-```python
-from triton.experimental.tle.language.gpu.ppu import AIUCachePolicy
-
-desc = tl.make_tensor_descriptor(a, [M, N], [N, 1], [32, 32])
-tile = tle.gpu.alloc((32, 32), tl.float32, nv_mma_shared_layout=False)
-tle.gpu.copy(desc, tile, (32, 32), (row, col),
-             cache_policy=AIUCachePolicy(kp=4))
-```
-
-**kp7 exists in hardware/SDK, but this API rejects it for AIU copies.**
-On SDK 2.1/ZW810E, overwriting an input on the GPU and then copying it with
-AIU kp7 returned stale data on block-pointer, device-descriptor and
-host-descriptor paths. The same probe with CPU-uploaded inputs passed.
-Earlier tests that read input back to the CPU before AIU did not expose this
-problem; they are not evidence of general kp7 coherence. No cache flush or
-mapping to another kp is silently inserted. The exact replacement/coherence
-semantics of kp4–kp7 remain undocumented in the sources available here.
-
-The native AIU intrinsic uses the SDK's typed-pointer ABI. A packaged helper
-performs pointer conversion and is assembled/linked by SDK `llvm-as` and
-`llvm-link`; the helper is inlined into the final kernel. The compiler cache
-key includes the helper's content hash. No generated LLVM IR is patched to
-insert cache controls.
-
-## Choosing and validating a policy
-
-Apply requests separately to A, B, and the output copy. A large input read
-once can be a streaming candidate when it competes with repeatedly reused
-data; the reused input can be a retention candidate. A write-once output can
-be a streaming candidate when it is not consumed soon from the cache.
-These are workload hypotheses, not default recommendations. In particular,
-do not interpret MThreads `none` as a universally beneficial streaming mode.
-
-Compare the complete kernel with unchanged math, tiling and synchronization.
-Inspect final native instructions and confirm the compared kernels use the
-intended transport. Check GPU-updated inputs, prewarmed outputs and
-masked/tail copies before measuring. Repeat timings in independent processes,
-with both reused buffers and buffer rotation representative of production.
-A fixed-buffer win can disappear with rotation. API equivalence and expression
-coverage are not additional performance gains. This API does not change global
-cache budgets, stream access-policy windows, or production operator policies.
-
-## HCU
-
-Load modifiers are `""`, `.ca`, `.cg`, `.cs`, `.cv`; store modifiers are
-`""`, `.wb`, `.cg`, `.cs`. `.cg`/`.cs` loads and `.cs` stores select the
-generic LLVM non-temporal path; `.cv` loads additionally use volatile.
-`.ca` loads and `.wb`/`.cg` stores are default aliases. They do not imply
-NVIDIA cache-level semantics. If the optimizer selects buffer/direct-to-LDS
-conversion, it forwards the existing `cache` enum to the target's buffer
-control-bit mapping (`glc` / `slc` on gfx936: `.cg`/`.cs` load and `.cs` store
-emit `glc slc`, `.cv` load and `.wt` store emit `glc`, `.ca` load and
-`.wb`/`.cg` store emit default bits). Eviction priorities are omitted because
-buffer ops do not carry them. A remark reports any omitted eviction priorities;
-compilation continues on the selected buffer path. A hint neither forces the
-generic path nor inhibits buffer conversion.
-For generic gfx936 global `.cg`/`.cs` loads, the address is constrained to a vector register so
-uniform-load scalarization does not discard the cache controls. This can add
-a scalar-to-vector move or increase register pressure; no additional volatile
-semantics are introduced.
-The HCU policy object accepts global accesses on HCU targets and uses the
-cache mapping for the compilation target.
-The legacy `tl.store(..., cache_modifier=".wt")` also remains available and
-retains its existing wait lowering. The native HCU object does not accept `.wt`.
-
-## MetaX
-
-Load modifiers are `ca`, `cg`, `cs`, `lu`, `cv`; stores accept `wb`, `cg`,
-`cs`, `wt`. A leading dot is optional. The MACA SDK mapping is:
-
-| Direction/mode | Compiler control |
-| --- | --- |
-| load `ca`/`cv` | Default aliases |
-| load `cg` | Volatile |
-| load `cs`/`lu` | Non-temporal plus L2 replacement metadata |
-| store `wb` | Device metadata |
-| store `cg` | Non-temporal |
-| store `cs` | Non-temporal plus L2 replacement metadata |
-| store `wt` | Default alias |
-
-Metadata is attached through LLVM translation and an inlined LLVM helper,
-not by textual rewriting of LLVM IR. Copy masks and vector types are
-preserved. Descriptor policies remain unsupported. A load selected for native
-asynchronous copy keeps that instruction and uses its default cache controls;
-the modifier and eviction hint are omitted with a remark because the current
-intrinsic has no verified cache-control operand.
-
-Loads with `cg/cs/lu` and stores with `wb/cg/cs` need the LLVM helper to
-express the controls in the table. This can change the instruction sequence
-of an existing program that specified one of these modifiers. Loads with
-`ca/cv` and stores with `wt` retain the ordinary predicator or vector-store
-path wherever eligible. Both Python spellings follow the same rule.
-
-## Native NVIDIA policy API
-
-`CachePolicy` and `FractionalEvictionPolicy` are exported directly from
-`triton.experimental.tle.language.gpu` (there is no `tle.gpu.nvidia` subpackage
-or `backend` parameter).
-
-Generic intent strings (`"reuse"`, `"streaming"`, `"bypass"`, `"default"`) are
-rejected rather than reinterpreted; use explicit native hardware controls
-instead:
-
-| Intent | Native `tle.gpu` expression |
-| --- | --- |
-| L2 retention | `CachePolicy(l2=FractionalEvictionPolicy("evict_last"))` |
-| L2 streaming | `CachePolicy(l2=FractionalEvictionPolicy("evict_first"))` |
-| L1 retention | `CachePolicy(l1="evict_last")` |
-| L1 streaming | `CachePolicy(l1="evict_first")` |
-| L1 bypass (cache global) | `CachePolicy(cache_modifier="cg")` |
-| Default behavior | Omit `cache_policy` or pass `None` |
-
-Simultaneous independent `l1` and `l2` eviction settings are rejected. A cache
-modifier plus L2 eviction remains available where the instruction permits it.
-The target and native type enforce backend compatibility without a separate
-`backend` keyword.
-
-## Ordinary global loads and stores
-
-`tl.load(..., cache_policy=policy)` and `tl.store(..., cache_policy=policy)`
-accept the same native memory policy objects as pointer copy. They keep the
-existing register-valued memory operation and do not allocate shared memory.
-The keyword is an extension in this FlagTree branch; upstream Triton language
-still exposes `cache_modifier` and `eviction_policy`, while Gluon also has
-policy objects.
-
-```python
-from triton.experimental.tle import language as tle
-
-x = tl.load(x_ptr + offsets, mask, other=0,
-            cache_policy=tle.gpu.ppu.CachePolicy(".lu"))
-tl.store(y_ptr + offsets, y, mask,
-         cache_policy=tle.gpu.mthreads.LSUCachePolicy(
-             inner_persistence=3, outer_persistence=3, l2_policy=1))
-```
-
-These two examples target different devices and belong in their respective
-backend kernels. NVIDIA uses `tle.gpu.CachePolicy`, HCU uses
-`tle.gpu.hcu.CachePolicy`, and MetaX uses `tle.gpu.metax.CachePolicy`.
-Passing `None` preserves the original load/store behavior. An explicit object
-cannot be combined with a nonempty `cache_modifier` or `eviction_policy`.
-The target, global address space, direction, architecture, and native field
-constraints are checked. Invalid requests are rejected instead of dropped.
-`TMECachePolicy` and `AIUCachePolicy` are copy-path controls and are rejected
-by ordinary load/store; use `LSUCachePolicy` and PPU `CachePolicy` there.
-
-Both entry points normalize policies **before creating the memory operation**:
-
-| Control | Formal IR representation |
-| --- | --- |
-| Ordinary NVIDIA/HCU/MetaX/PPU modifier | Existing `cache` enum (`cacheModifier` in text) |
-| NVIDIA L1-only / L2-only priority | Scoped `evict` enum, e.g. `l2_evict_last` |
-| PPU explicit LSU default | `cache = ppu_lsu_default`, retaining its identity until instruction selection |
-| PPU AIU kp1–6 | `cache = ppu_aiu_kpN`; kp3 still uses the SDK kp2 encoding |
-| MThreads LSU tuple | `cache = musa_iN_oN_lN`, covering all 6 × 6 × 2 tuples |
-| MThreads TME | Existing backend persistence and prefetch fields |
-
-The existing `evict_first` / `evict_last` values retain their legacy behavior;
-they are not renamed to L2-only policies. Native scoped values distinguish the
-requested hardware level. A TLE TMA copy and an NVIDIA TMA store now carry the
-same defaulted `evict` field that an NVIDIA TMA load already had.
-
-Policies normalize directly onto existing `cache` and `evict` fields before
-op creation rather than adding auxiliary dictionary attributes, location tags,
-or a separate policy propagation pass. Rewrites forward their existing
-`getCache()` and `getEvict()` arguments. PPU AIU rewrites that previously defaulted these fields
-now pass them explicitly. A new rewrite must still preserve the formal fields;
-ODS does not infer the meaning of an arbitrary replacement operation.
-
-Target/direction validation happens in policy normalization and backend
-lowering. `CacheControls.h` contains the NVIDIA async mappings and a shared
-adjustment-remark helper. Optimizer candidate queries do not filter on policy.
-Final lowering consumes supported controls and reports adaptations at the
-point where the instruction capability is known. Native PPU/MUSA modes are
-not reinterpreted as another backend's ordinary modifiers. Legacy
-modifier/eviction arguments follow the same conversion rules because they
-use the same IR fields. Changing a source location does not change a policy.
-
-Policies have compile-time fields and can be constructed on the
-host or in JIT code; bind a JIT local with
-`policy: tl.constexpr = ...` before forwarding it through loops or workers.
-Hints change cache/instruction controls, not synchronization or visibility.
-This interface does not promise that cache lines survive another launch.
-
-
-## 中文编译约定
-
-FlagTree 上游的 MThreads descriptor-to-shared `tle.gpu.copy` 已支持
-`TMECachePolicy`。本扩展在 `tle.gpu.copy` 以及普通 `tl.load`、
-`tl.store` 上提供各后端原生策略。前端校验目标、方向与搬运路径，
-并将普通 modifier、PPU AIU 模式和 MThreads LSU 三元组编码到 ODS
-`cache` / `evict` 字段。改写须转发这些字段。TMA store 和 TLE TMA
-载体增加了带默认值的 `evict` 字段，旧 `evict_first/last` 保留上游语义。
-
-NVIDIA 的 `fraction` 支持 1，`secondary` 支持 `evict_unchanged`。
-构造器校验 prefetch 以及 L1 和 L2 同时设置的组合。HCU 显式空 modifier
-对应 load `ca`、store `wb`。编译器按布局、宽度和调度选择访存指令，
-再按指令支持的字段应用 hint。发生转换时，MLIR remark 会给出位置、
-请求策略、有效策略和原因。
-如需显示诊断，使用已有的 `MLIR_ENABLE_DIAGNOSTICS=remarks`，并在新的
-`TRITON_CACHE_DIR` 下触发编译；默认诊断级别和缓存命中不会显示 remark。
-
-| 平台／最终路径 | 转换规则 |
-| --- | --- |
-| NV 普通 `ld.global/st.global` | 保留已支持的原生 modifier、单层 eviction |
-| NV TMA | 保留 L2；显式 L1、modifier 仍是非法请求 |
-| NV 默认构建的非 bulk `cp.async` | 显式 `ca` 保留；其他 load modifier 在 16B 下变为 `cg`，4/8B 下变为 `ca`；L1 eviction 省略。L2 在 PTX≥9.4 时保留；TLE 的 load→local-pointer store 融合在无 mask 或无循环 worker 中仍省略 L2 |
-| MThreads LSU／TME | 普通 LSU 原生三元组、TME persistence/prefetch 各自保留 |
-| MThreads `memcpy.g2s` | 使用该异步指令默认控制，不把 LSU 三元组改名为 TME persistence |
-| PPU LSU | 保留已有 modifier→kp 映射及方向限制 |
-| PPU AIU | 显式 AIU kp1–6 保留，kp3→kp2；普通 LSU 自动提升到 AIU 时使用 AIU 默认，不按数字推断同义 |
-| PPU 普通 async | 使用该异步路径原有默认控制 |
-| HCU gfx936 generic global | 保留 LLVM non-temporal/volatile 映射；`.cg/.cs` load 的地址使用 VGPR，两种写法一致。旧字符串 `.wt` store 继续走原 wait 路径 |
-| HCU gfx936 buffer／direct-to-LDS | 映射为硬件 `glc`/`slc` 控制位（`.cg/.cs` load 与 `.cs` store 设为 `glc slc`，`.cv` load 与 `.wt` store 设为 `glc`）；不携带 eviction |
-| MetaX 普通访存 | Load `cg/cs/lu` 和 store `wb/cg/cs` 经 LLVM helper；load `ca/cv` 和 store `wt` 保留原本可用的 predicator／向量写 |
-| MetaX async | 使用该异步路径默认控制 |
-
-后端、方向、非法值、显式 descriptor 路径和危险 PPU kp7 等检查保留。
-与 hint 无关的结构性同步回退仍保留原 `cache/evict` 字段。
-NV 使用最终 lowering 的目标 PTX 版本。关闭 `__FLAGTREE_PIPELINE_ENHANCE__`
-的构建延用上游对旧 modifier 和 eviction 的处理。新增的显式 L2 策略要求
-PTX 9.4 或更高。省略策略时沿用上游默认路径。
-
-
-实现依据：[上游 NVIDIA lowering](https://github.com/triton-lang/triton/blob/698e39e0d1e528043351f36a95007f75ea929ae8/third_party/nvidia/lib/TritonNVIDIAGPUToLLVM/LoadStoreOpToLLVM.cpp#L1121-L1185)、
-[上游 L1 省略与窄 cg 转 ca 测试](https://github.com/triton-lang/triton/blob/698e39e0d1e528043351f36a95007f75ea929ae8/test/Conversion/tritongpu_to_llvm.mlir#L1087-L1183)。
-这里沿用上游“按最终指令支持度处理 hint”的原则，其他后端使用各自已有 SDK
-映射；它们不是 NVIDIA cache operator 的跨平台等价实现。
+- **Cache modifiers (`cache_modifier`)**:
+  - Loads accept `"ca"`, `"cg"`, `"cs"`, `"lu"`, `"cv"` (with or without a leading dot).
+  - Stores accept `"wb"`, `"cg"`, `"cs"`, `"wt"` (with or without a leading dot).
+- **L1 eviction (`l1`)**: Accepts `"evict_normal"`, `"evict_first"`,
+  `"evict_last"`, `"evict_unchanged"`, and `"no_allocate"`. `cache_modifier`
+  and explicit `l1` cannot be combined.
+- **L2 eviction (`l2`)**: Accepts
+  `FractionalEvictionPolicy(primary, fraction=1.0, secondary="evict_unchanged")`
+  with `primary` in `{"evict_normal", "evict_first", "evict_last", "evict_unchanged"}`.
+  Only `fraction=1.0` and `secondary="evict_unchanged"` are supported.
+  Simultaneous `l1` and `l2` eviction settings and non-`None`
+  `l2_prefetch_size` are rejected. `cache_modifier` can be combined with `l2`
+  on pointer accesses.
+- **TMA copies**: Accept `l2` policies only (`sm_90`+).
+- **TLE async-copy L2 guard**: Async copies produced by TLE's
+  load-to-local-pointer-store rewrite omit L2 hints when unmasked or inside a
+  loop-free `warp_specialize` partition to avoid uniform register hazards on
+  Hopper.
+
+### 4.2 MThreads / MUSA (`TMECachePolicy`, `LSUCachePolicy`)
+
+- **`tle.gpu.mthreads.TMECachePolicy(inner="normal", outer="normal", prefetch_size=0)`**:
+  - Controls descriptor transfers (`tle.gpu.copy`).
+  - `inner` accepts `"none"`, `"once"`, `"normal"`, `"persist"`, or integer codes `0..5` (`0..3` normalize to the four strings).
+  - `outer` accepts `"none"`, `"once"`, `"normal"`, `"persist"`, or integer codes `0..3`.
+  - `prefetch_size` accepts `0`, `64`, `128`, or `256` bytes for descriptor loads, and requires `0` for descriptor stores.
+- **`tle.gpu.mthreads.LSUCachePolicy(inner_persistence=None, outer_persistence=None, l2_policy=None)`**:
+  - Controls pointer copies (`tle.gpu.copy`) and ordinary `tl.load` / `tl.store`.
+  - `inner_persistence` and `outer_persistence` accept `None` or integers in `0..5`; `l2_policy` accepts `None` or integers in `0..1`.
+  - `None` resolves to the direction's SDK default (`inner=4, outer=2, l2=0` for loads; `inner=4, outer=2, l2=1` for stores).
+  - Emits native `llvm.musa.lsu.{ld,st}.cache.hint.i` on `mp_31`; on other MUSA targets, ordinary `tl.load`/`tl.store` fall back to the default instruction while explicit `tle.gpu.copy` raises an error.
+
+### 4.3 Hygon / HCU (`tle.gpu.hcu.CachePolicy`)
+
+- **`tle.gpu.hcu.CachePolicy(cache_modifier="")`**:
+  - Loads accept `""`, `".ca"`, `".cg"`, `".cs"`, `".cv"`.
+  - Stores accept `""`, `".wb"`, `".cg"`, `".cs"`.
+  - On the default buffer-op path (`AMDGCN_USE_BUFFER_OPS=1`) and direct-to-LDS path, modifiers map to hardware `glc`/`slc` control bits (on `gfx936`: `.cg`/`.cs` load and `.cs` store set `glc slc`; `.cv` load sets `glc`; `.ca` load and `.wb`/`.cg` store use default `0`).
+  - On the generic global path, `.cg`/`.cs` loads and `.cs` stores attach LLVM `!nontemporal`, `.cv` loads attach `volatile`, and `gfx936` `.cg`/`.cs` loads constrain the pointer to a VGPR so uniform loads are not scalarized to `s_load`.
+  - Legacy `tl.store(..., cache_modifier=".wt")` remains supported on `tl.store` with its existing wait behavior, while `hcu.CachePolicy` rejects `".wt"`.
+
+### 4.4 MetaX / MACA (`tle.gpu.metax.CachePolicy`)
+
+- **`tle.gpu.metax.CachePolicy(cache_modifier)`**:
+  - Loads accept `"ca"`, `"cg"`, `"cs"`, `"lu"`, `"cv"` (leading dot optional).
+  - Stores accept `"wb"`, `"cg"`, `"cs"`, `"wt"` (leading dot optional).
+  - Load `"cg"` emits a volatile load; load `"cs"`/`"lu"` emit `!nontemporal` plus `!metaxgpu.l2rp` through an inlined LLVM helper (`__flagtree_metax_copy_load_*`); load `"ca"`/`"cv"` keep the default predicator path.
+  - Store `"wb"` emits `!metaxgpu.devc`, store `"cg"` emits `!nontemporal`, and store `"cs"` emits `!nontemporal` plus `!metaxgpu.l2rp` through `__flagtree_metax_copy_store_*`; store `"wt"` keeps the default store path.
+
+### 4.5 PPU (`tle.gpu.ppu.CachePolicy`, `tle.gpu.ppu.AIUCachePolicy`)
+
+- **`tle.gpu.ppu.CachePolicy(cache_modifier="")`**:
+  - Controls LSU pointer copies (`tle.gpu.copy`) and ordinary `tl.load` / `tl.store`.
+  - Loads accept `""`, `".ca"`, `".cg"`, `".cs"`, `".cv"`, `".lu"`, `".nc"`, `".bl"`, or integer aliases `1, 2, 4, 5, 6` (`.nc` $\to$ `kp1`, `.cg`/`.cv` $\to$ `kp2`, `.cs` $\to$ `kp4`, `.lu` $\to$ `kp5`, `.bl` $\to$ `kp6`).
+  - Stores accept `""`, `".wb"`, `".cg"`, `".cs"`, `".wt"`, `".bl"`, or integer aliases `2, 4, 6` (`.cg`/`.wt` $\to$ `kp2`, `.cs` $\to$ `kp4`, `.bl` $\to$ `kp6`).
+  - `".ba"` (`kp7`) and LSU `kp3` are rejected.
+- **`tle.gpu.ppu.AIUCachePolicy(kp=1)`**:
+  - Controls asynchronous AIU tensor copies (`tle.gpu.copy`) for supported rank-2 and rank-3 host/device tensor descriptors and contiguous block-pointer loads (`kp` in `1..6`, where `kp=3` aliases `kp=2` on SDK 2.1, and `kp=7` is rejected).
+  - Rank-2 descriptors require packed row-major storage; rank-3 descriptors lower to one 2D AIU transfer per leading slice with the requested `kp`.
+
+---
+
+## 5. Ordinary Global Loads and Stores (`tl.load` / `tl.store`)
+
+`tl.load(pointer, mask=None, other=None, ..., cache_policy=None)` and
+`tl.store(pointer, value, mask=None, ..., cache_policy=None)` accept the same
+pointer-path native policy objects as `tle.gpu.copy`:
+
+- **Accepted policy classes**: `tle.gpu.CachePolicy` (NVIDIA),
+  `tle.gpu.mthreads.LSUCachePolicy` (MThreads), `tle.gpu.hcu.CachePolicy` (Hygon),
+  `tle.gpu.metax.CachePolicy` (MetaX), and `tle.gpu.ppu.CachePolicy` (PPU).
+- **Copy-only policy rejection**: `TMECachePolicy` and `AIUCachePolicy` apply
+  only to `tle.gpu.copy` and raise `ValueError` if passed to `tl.load` or
+  `tl.store`.
+- **Mutual exclusion with legacy string arguments**: An explicit `cache_policy`
+  object cannot be combined with a non-empty `cache_modifier` or
+  `eviction_policy` argument (and on `tle.gpu.copy`, `cache_policy` cannot be
+  combined with `eviction_policy`).
+- **Address-space validation**: `cache_policy` requires a global-memory pointer
+  (address space `1`) and preserves register-valued `tl.load` / `tl.store`
+  semantics without allocating shared memory.

@@ -48,7 +48,10 @@ MTHREADS_TLE_FUSED_PIPE_CONSUMER_VERSION = getattr(libtriton.ir.builder, "mthrea
 # the SQMMA optimizations while avoiding the unsafe max-ILP scheduler.
 MTHREADS_TLE_DISABLE_MAX_ILP_SCHEDULER_VERSION = 1
 
+from .common import device_tensor_descriptor
+
 __all__ = [
+    "device_tensor_descriptor",
     "buffer",
     "common",
     "copy",

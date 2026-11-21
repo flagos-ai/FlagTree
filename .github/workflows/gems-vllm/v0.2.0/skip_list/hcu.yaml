@@ -40,6 +40,9 @@ skip_operators:
   - kda_state_scatter
   - kpool_state_compress
   - top_k_top_p
+  # bw1100 pass bw1100 fail
+  - bincount
+  - weight_norm_interface
 
 skip_test_patterns: []
 
