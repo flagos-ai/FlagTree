@@ -256,7 +256,12 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
     RankedTensorType origType = op.getType();
     auto origShape = origType.getShape();
     auto typeConverter = getTypeConverter<TritonGPUTypeConverter>();
+#ifdef __TLE__
+    // A dot in a warp_specialize partition uses the partition's warp count.
+    int numWarps = typeConverter->getNumWarps(op.getResult());
+#else
     int numWarps = typeConverter->getNumWarps();
+#endif
     int threadsPerWarp = typeConverter->getThreadsPerWarp();
     int numCTAs = typeConverter->getNumCTAs();
     auto rank = origShape.size();
@@ -408,7 +413,12 @@ struct TritonSplitOpPattern : public OpConversionPattern<triton::SplitOp> {
       auto defaultEnc = getDefaultBlockedEncoding(
           getContext(),
           cast<RankedTensorType>(op.getResult(0).getType()).getShape(),
+#ifdef __TLE__
+          typeConverter->getNumWarps(op.getResult(0)),
+          typeConverter->getThreadsPerWarp(),
+#else
           typeConverter->getNumWarps(), typeConverter->getThreadsPerWarp(),
+#endif
           typeConverter->getNumCTAs());
 
       auto append = [&](ArrayRef<unsigned> vals, unsigned val) {
@@ -1022,6 +1032,10 @@ public:
     mod->setAttr(AttrNumThreadsPerWarp, b.getI32IntegerAttr(threadsPerWarp));
     mod->setAttr(AttrNumCTAsName, b.getI32IntegerAttr(numCTAs));
     mod->setAttr(AttrTargetName, b.getStringAttr(this->target.getValue()));
+
+#ifdef __TLE__
+    typeConverter.snapshotNumWarps(mod);
+#endif
 
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();
