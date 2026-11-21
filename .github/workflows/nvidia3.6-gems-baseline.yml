@@ -48,7 +48,7 @@ jobs:
       flagtree-build-command: |
         set -x
         source ~/env-3.6.sh
-        MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+        MAX_JOBS=32 python3 -m pip install ".[flagtune]" --no-build-isolation -v
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
       FLAGTREE_FEISHU_APP_ID: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
