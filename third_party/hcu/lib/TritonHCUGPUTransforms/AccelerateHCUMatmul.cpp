@@ -1,5 +1,6 @@
 #include "TritonHCUGPUToLLVM/TargetUtils.h"
 #include "TritonHCUGPUTransforms/MfmaGroup.h"
+#include "TritonHCUGPUTransforms/MatrixLdsRead.h"
 #include "TritonHCUGPUTransforms/Passes.h"
 #include "TritonHCUGPUTransforms/WmmaGroup.h"
 #include "Utility.h"
@@ -254,13 +255,19 @@ warpsPerTile(Operation *dotOp, ArrayRef<int64_t> shape, int numWarps,
     return ret;
   }
 
-  // Case 3: Regular cases
+  // Case 3: Regular cases. The older factor-two M penalty is for legacy
+  // HCU layouts. On gfx938 it can put all waves in N for a 32x64 tile,
+  // increasing local M repetition and obstructing N-register vectorization.
+  // Keep the chain-dot/reduction and batched special cases above unchanged.
+  auto arch = dotOp->getParentOfType<ModuleOp>()
+                  ->getAttrOfType<StringAttr>("hcu.codegen_arch");
+  int mPenalty = arch && arch.getValue() == "gfx938" ? 1 : 2;
   SmallVector<int64_t, 2> tensorShape = {shape[0], shape[1]};
   SmallVector<unsigned, 3> ret = {1, 1};
   do {
     if (ret[0] * ret[1] >= numWarps)
       break;
-    if (tensorShape[0] / (shapePerWarp.first * 2) / ret[0] >=
+    if (tensorShape[0] / (shapePerWarp.first * mPenalty) / ret[0] >=
         tensorShape[1] / shapePerWarp.second / ret[1]) {
       if (ret[0] < tensorShape[0] / shapePerWarp.first) {
         ret[0] *= 2;
@@ -917,6 +924,45 @@ public:
 
     SmallVector<unsigned> tilesPerWarp = {1, 1};
     unsigned rank = oldRetType.getRank();
+    tt::LoadOp panelLoad;
+    auto module = dotOp->getParentOfType<ModuleOp>();
+    unsigned matrixTileK = tt::HCU::getMatrixLdsTileK(bElemType);
+    if (module->hasAttr("hcu.gemm_matrix_lds") && rank == 2 &&
+        !useMatrixLoad && !withScale && kPack == 1 &&
+        mmacLayout == MmacLayout::INTERLEAVE && aElemType == bElemType &&
+        mfmaInstr->bElementType == bElemType && oldRetType.getElementType().isF32() &&
+        mDim == 16 && nDim == 16 && kDim == matrixTileK && kBase == kDim / 4 &&
+        tt::HCU::isMatrixLdsPanelShape(oldBType.getShape(), matrixTileK) &&
+        ttg::getNumCTAs(oldRetType.getEncoding()) == 1 &&
+        !isChainDotHead(dotOp) && !isChainDotTail(dotOp)) {
+      Value input = b;
+      while (auto convert = input.getDefiningOp<ttg::ConvertLayoutOp>())
+        input = convert.getSrc();
+      if (auto load = input.getDefiningOp<tt::LoadOp>()) {
+        auto loadType = cast<RankedTensorType>(input.getType());
+        if (isa<ttg::BlockedEncodingAttr>(loadType.getEncoding()) &&
+            loadType.getShape() == oldBType.getShape() &&
+            ttg::getOrder(loadType).front() == 1 && !load.getIsVolatile()) {
+          auto panelWarps = warpsPerTileMFMA(dotOp, retShape, numWarps, {16, 32});
+          // Preserve the ordinary wave distribution where it already gives
+          // each N-wave a complete panel. Collapsing N groups duplicates
+          // the B fragments across M-waves and can increase LDS lifetime.
+          if (warpsPerTile[1] > panelWarps[1] &&
+              retShape[0] % (16 * warpsPerTile[0]) == 0 &&
+              retShape[1] % (32 * warpsPerTile[1]) == 0)
+            panelWarps = warpsPerTile;
+          bool largeB16Tile = matrixTileK == 16 &&
+              retShape[0] * retShape[1] > 32 * numWarps * 64;
+          if ((!largeB16Tile || panelWarps[1] > 1) &&
+              retShape[0] % (16 * panelWarps[0]) == 0 &&
+              retShape[1] % (32 * panelWarps[1]) == 0) {
+            warpsPerTile = std::move(panelWarps);
+            tilesPerWarp[1] = 2;
+            panelLoad = load;
+          }
+        }
+      }
+    }
     if (rank == 3) {
       tilesPerWarp.insert(tilesPerWarp.begin(), 1);
     }
@@ -1068,8 +1114,22 @@ public:
           1, newAEncoding, newBEncoding, aMatInfo, bMatInfo);
       a = convertAndCastTensor(rewriter, a, newAEncoding,
                                mfmaInstr->aElementType, compatibleAEncoding);
-      b = convertAndCastTensor(rewriter, b, newBEncoding,
-                               mfmaInstr->bElementType, compatibleBEncoding);
+      if (panelLoad) {
+        auto encoding =
+            tt::HCU::getMatrixLdsPanelEncoding(ctx, oldBType.getShape(), matrixTileK);
+        auto stagingType = ttg::MemDescType::get(
+            oldBType.getShape(), bElemType, encoding,
+            ttg::SharedMemorySpaceAttr::get(ctx));
+        auto loc = dotOp.getLoc();
+        auto alloc = ttg::LocalAllocOp::create(rewriter, loc, stagingType,
+                                              panelLoad.getResult());
+        auto operandType =
+            RankedTensorType::get(oldBType.getShape(), bElemType, newBEncoding);
+        b = ttg::LocalLoadOp::create(rewriter, loc, operandType, alloc);
+      } else {
+        b = convertAndCastTensor(rewriter, b, newBEncoding,
+                                 mfmaInstr->bElementType, compatibleBEncoding);
+      }
       newDot = rewriter.create<tt::DotOp>(dotOp.getLoc(), newAcc.getType(), a,
                                           b, newAcc, dotOp.getInputPrecision(),
                                           dotOp.getMaxNumImpreciseAcc());

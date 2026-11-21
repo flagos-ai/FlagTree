@@ -1,10 +1,14 @@
 #include "AsyncUtility.h"
+#include "TritonHCUGPUToLLVM/StaticPipe.h"
 
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
 #include "TargetInfo.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "mlir/IR/Matchers.h"
+#include "triton/Dialect/TritonGPU/IR/Attributes.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 namespace mlir::triton::HCU {
 namespace {
@@ -51,20 +55,117 @@ bool comesFromAsyncWait(Value token) {
 }
 } // namespace
 
+namespace {
+constexpr const char *issuerVerified = "tle.hcu.issuer_own_rows_verified";
+
+bool constInt(Value value, int64_t expected) {
+  APInt integer;
+  return matchPattern(value, m_ConstantInt(&integer)) &&
+         integer.getSExtValue() == expected;
+}
+
+// This first internal form has no buffer reuse, aliases or cross-wave reader.
+// The public descriptor/pipe lowering must supply its own lifetime proof later.
+bool proveIssuerOnly(hcugpu::AsyncWaitOp wait,
+                     hcugpu::MatrixLoadToLocalOp &issue,
+                     gpu::LocalLoadOp &load) {
+  if (wait.getNumInst() != 0 || wait->getNumOperands() != 1 ||
+      !wait.getResult().hasOneUse()) return false;
+  auto commit = wait->getOperand(0).getDefiningOp<gpu::AsyncCommitGroupOp>();
+  if (!commit || commit->getNumOperands() != 1 ||
+      !commit.getResult().hasOneUse()) return false;
+  issue = commit->getOperand(0).getDefiningOp<hcugpu::MatrixLoadToLocalOp>();
+  if (!issue || !issue->hasAttr("tle.hcu.issuer_only_copy") ||
+      !issue.getResult().hasOneUse()) return false;
+  load = dyn_cast<gpu::LocalLoadOp>(*wait.getResult().getUsers().begin());
+  if (!load || load.getToken() != wait.getResult() ||
+      load.getSrc() != issue.getDest()) return false;
+  auto ws = issue->getParentOfType<gpu::WarpSpecializeOp>();
+  auto mod = issue->getParentOfType<ModuleOp>();
+  auto arch = mod->getAttrOfType<StringAttr>("ttg.target");
+  if (!ws || !mod->hasAttr("tle.hcu.software_ws_2x2") || !arch ||
+      arch.getValue() != "hip:gfx938" || gpu::TritonGPUDialect::getNumCTAs(mod) != 1 ||
+      gpu::lookupNumWarps(issue) != 2 ||
+      gpu::TritonGPUDialect::getThreadsPerWarp(mod) != 64 ||
+      issue->getBlock() != &ws.getDefaultRegion().front() ||
+      wait->getBlock() != issue->getBlock() || load->getBlock() != issue->getBlock() ||
+      !issue->isBeforeInBlock(wait) || !wait->isBeforeInBlock(load)) return false;
+  auto allocation = issue.getDest().getDefiningOp<gpu::LocalAllocOp>();
+  if (!allocation || allocation->getBlock() != issue->getBlock() ||
+      allocation.getAlignmentOrDefault() < 256 ||
+      !allocation->isBeforeInBlock(issue)) return false;
+  // No aliases, second issue, pointer extraction, escape or reuse are admitted.
+  unsigned uses = 0;
+  for (Operation *user : allocation.getResult().getUsers()) {
+    if (user != issue.getOperation() && user != load.getOperation()) return false;
+    ++uses;
+  }
+  if (uses != 2) return false;
+  auto dst = cast<gpu::MemDescType>(issue.getDest().getType());
+  auto shared = dyn_cast<gpu::SwizzledSharedEncodingAttr>(dst.getEncoding());
+  auto tensor = cast<RankedTensorType>(load.getType());
+  auto blocked = dyn_cast<gpu::BlockedEncodingAttr>(tensor.getEncoding());
+  if (dst.getShape() != ArrayRef<int64_t>{64,64} || dst.getAllocShape() != dst.getShape() ||
+      !dst.getElementType().isInteger(8) || !shared || shared.getVec() != 32 ||
+      shared.getPerPhase() != 2 || shared.getMaxPhase() != 2 ||
+      shared.getOrder() != ArrayRef<unsigned>{1,0} || !blocked ||
+      blocked.getSizePerThread() != ArrayRef<unsigned>{32,1} ||
+      blocked.getThreadsPerWarp() != ArrayRef<unsigned>{1,64} ||
+      blocked.getWarpsPerCTA() != ArrayRef<unsigned>{2,1} ||
+      blocked.getOrder() != ArrayRef<unsigned>{1,0}) return false;
+  if (!issue.getBoundaryCheck().empty() || issue.getTensorShape() != ArrayRef<int32_t>{64,64} || issue.getShape().size() != 2 ||
+      issue.getStrides().size() != 2 || issue.getIndices().size() != 2 ||
+      !constInt(issue.getShape()[0],64) || !constInt(issue.getShape()[1],64) ||
+      !constInt(issue.getStrides()[0],64) || !constInt(issue.getStrides()[1],1) ||
+      !constInt(issue.getIndices()[0],0) || !constInt(issue.getIndices()[1],0)) return false;
+  return true;
+}
+} // namespace
+
+bool isVerifiedIssuerOnlyPair(Operation *a, Operation *b) {
+  if (isa<gpu::LocalLoadOp>(a)) std::swap(a,b);
+  auto issue = dyn_cast<hcugpu::MatrixLoadToLocalOp>(a);
+  auto load = dyn_cast<gpu::LocalLoadOp>(b);
+  return issue && load && issue->hasAttr(issuerVerified) &&
+         load->hasAttr(issuerVerified) && load.getSrc() == issue.getDest();
+}
+
 void addLocalBarrierAfterAmdGpuAsyncWait(ModuleOp mod) {
   auto *ctx = mod->getContext();
 
+  mod->removeAttr("tle.hcu.invalid_issuer_copy");
+  // Do not trust caller-provided proof markers from input IR.
+  mod.walk([](Operation *op) { op->removeAttr(issuerVerified); });
   SmallVector<hcugpu::AsyncWaitOp> waits;
   mod->walk([&waits](hcugpu::AsyncWaitOp waitOp) { waits.push_back(waitOp); });
 
   IRRewriter builder(mod.getContext());
   for (auto waitOp : waits) {
+    hcugpu::MatrixLoadToLocalOp issue;
+    gpu::LocalLoadOp load;
+    if (static_pipe::isTransportWait(waitOp,issue)) {
+      issue->setAttr(issuerVerified,UnitAttr::get(ctx));
+      continue;
+    }
+    if (proveIssuerOnly(waitOp, issue, load)) {
+      issue->setAttr(issuerVerified, UnitAttr::get(ctx));
+      load->setAttr(issuerVerified, UnitAttr::get(ctx));
+      continue;
+    }
     if (isa<mlir::gpu::BarrierOp, gpu::LocalBarrierOp>(waitOp->getNextNode()))
       continue;
 
     builder.setInsertionPointAfter(waitOp);
     builder.create<triton::gpu::LocalBarrierOp>(waitOp->getLoc());
   }
+  // Fail before type conversion, including orphan issues or malformed tokens.
+  mod.walk([&](hcugpu::MatrixLoadToLocalOp issue) {
+    if (issue->hasAttr("tle.hcu.issuer_only_copy") &&
+        !issue->hasAttr(issuerVerified)) {
+      issue.emitOpError("unproved issuer-only MLS ownership/lifecycle");
+      mod->setAttr("tle.hcu.invalid_issuer_copy", UnitAttr::get(ctx));
+    }
+  });
 }
 
 void annotateLocalLoadsSyncedViaAsyncWait(ModuleOp mod) {

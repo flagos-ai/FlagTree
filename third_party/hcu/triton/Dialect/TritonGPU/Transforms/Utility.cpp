@@ -721,6 +721,13 @@ bool isExpensiveToRemat(Operation *op, Attribute &targetEncoding) {
 }
 
 bool canFoldIntoConversion(Operation *op, Attribute targetEncoding) {
+#ifdef __TLE__
+  if (auto load = dyn_cast<triton::gpu::LocalLoadOp>(op)) {
+    if (isa<triton::gpu::HCUMlsSharedEncodingAttr>(
+            load.getSrc().getType().getEncoding()))
+      return targetEncoding == load.getType().getEncoding();
+  }
+#endif
   if (isa<triton::CatOp>(op))
     return !triton::gpu::isExpensiveCat(cast<triton::CatOp>(op),
                                         targetEncoding);

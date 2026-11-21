@@ -33,6 +33,84 @@ def is_in_thread_transpose_enabled(arch):
 _AMDGCN_TARGET_RE = re.compile(r'\.amdgcn_target\s+"amdgcn-amd-amdhsa-[^-"]*-(gfx[0-9a-z]+(?::[a-z0-9]+[+-])*)"')
 
 
+_GEMM_DOT_INPUT = re.compile(r"^tensor<[0-9]+x[0-9]+x(f16|bf16|f8E4M3FN), ")
+_GEMM_DOT_ACC = re.compile(r"^tensor<[0-9]+x[0-9]+xf32, ")
+_SYNC_GEMM_OPS = frozenset("""
+    builtin.module tt.func tt.return tt.get_program_id tt.get_num_programs
+    tt.make_range tt.broadcast tt.expand_dims tt.splat tt.trans
+    tt.dot ttg.convert_layout ttg.local_alloc ttg.local_dealloc ttg.local_load
+    ttg.local_store ttg.memdesc_index hcug.buffer_load hcug.buffer_store
+    scf.for scf.if scf.yield
+    arith.constant arith.addi arith.subi arith.muli arith.divsi arith.remsi
+    arith.divui arith.remui arith.cmpi arith.select arith.andi arith.ori
+    arith.xori arith.shli arith.shrsi arith.shrui arith.index_cast
+    arith.extsi arith.extui arith.trunci arith.addf arith.subf arith.mulf
+    arith.truncf arith.extf
+""".split())
+
+
+def _is_sync_buffer_gemm(mod):
+    """Recognize ordinary register-staged dense GEMM, including masked tiles."""
+    operations = {}
+
+    def collect(op):
+        operations.setdefault(op.get_name(), []).append(op)
+
+    mod.walk(collect)
+    if operations.keys() - _SYNC_GEMM_OPS:
+        return False
+    if not all(operations.get(name) for name in (
+            "scf.for", "tt.dot", "ttg.local_alloc", "ttg.local_load", "hcug.buffer_load")):
+        return False
+    funcs = operations.get("tt.func", [])
+    stores = operations.get("hcug.buffer_store", [])
+    if len(funcs) != 1 or len(stores) != 1:
+        return False
+    entry = funcs[0].get_region(0)
+    if stores[0].get_block().get_parent().id() != entry.id():
+        return False
+
+    for dot in operations["tt.dot"]:
+        lhs, rhs, acc = (str(dot.get_operand(i).get_type()) for i in range(3))
+        a, b = _GEMM_DOT_INPUT.match(lhs), _GEMM_DOT_INPUT.match(rhs)
+        if not (a and b and a[1] == b[1] and _GEMM_DOT_ACC.match(acc)):
+            return False
+    return True
+
+
+_MATRIX_LDS_TILE = re.compile(r"^tensor<([0-9]+)x([0-9]+)x(f16|bf16|f8E4M3FN|f32), ")
+
+
+def _is_gemm_matrix_lds_candidate(mod):
+    names = []
+    dots = []
+
+    def collect(op):
+        name = op.get_name()
+        names.append(name)
+        if name == "tt.dot":
+            dots.append(op)
+
+    mod.walk(collect)
+    if (names.count("tt.func") != 1 or len(dots) != 1
+            or names.count("tt.store") != 1 or "scf.for" not in names
+            or any(name not in _SYNC_GEMM_OPS and name not in
+                   {"tt.load", "tt.store", "tt.addptr", "tt.bitcast"}
+                   for name in names)):
+        return False
+
+    rhs = _MATRIX_LDS_TILE.match(str(dots[0].get_operand(1).get_type()))
+    acc = _MATRIX_LDS_TILE.match(str(dots[0].get_operand(2).get_type()))
+    if not rhs or not acc:
+        return False
+    if rhs[3] == "f8E4M3FN":
+        # Short FP8 panels can be slower when the two-stage pipeline reuses LDS.
+        return int(rhs[1]) >= 128
+    # The accelerator checks the output-tile budget against its chosen
+    # N-wave split before changing the physical B staging layout.
+    return True
+
+
 def _retarget_clang_args(clang_args, asm_text):
     m = _AMDGCN_TARGET_RE.search(asm_text)
     args = [a for a in clang_args if a != ""]
@@ -43,6 +121,11 @@ def _retarget_clang_args(clang_args, asm_text):
 
 @dataclass(frozen=True)
 class HIPOptions:
+    hcu_gemm_barrier_policy: str = "auto"
+    hcu_gemm_matrix_lds: bool = True
+    static_pipe_status_arg: int = -1
+    static_pipe_test_drop_ready: bool = False
+    static_pipe_counted_loop: bool = False
     num_warps: int = 4
     waves_per_eu: int = 1
     num_stages: int = 2
@@ -107,6 +190,23 @@ class HIPOptions:
     #    - see get_options_args() to get more options.
     sched_latency: str = 'none'
 
+    # Explicit code-generation policy; included in the compilation cache key.
+    hcu_sched_model: str = 'default'
+    hcu_descriptor_mls_load: bool = False
+    hcu_panel_pipeline: bool = False
+    hcu_panel_war_after_mma: int = 0
+    hcu_mmac_priority: str = 'none'
+    hcu_panel_native_war: bool = False
+    hcu_fold_equivalent_loop_state: bool = False
+    hcu_panel_stream_v: bool = False
+    hcu_identity_rescale: bool = False
+    hcu_panel_cross_iteration: bool = False
+    hcu_panel_compact_k: bool = False
+    hcu_panel_unroll2: bool = False
+    hcu_packed_f32: str = 'auto'
+    hcu_compact_rsrc: str = 'auto'
+    mmac_issue_group_size: int = 1
+
     # wasp options
     wasp_enabled: bool = False
     wdra_enabled: bool = False
@@ -117,6 +217,40 @@ class HIPOptions:
     wdra_num_mma_regs_tail: int = None
 
     def __post_init__(self):
+        if self.hcu_gemm_barrier_policy not in ("auto", "legacy"):
+            raise ValueError("hcu_gemm_barrier_policy must be auto or legacy")
+        if self.hcu_panel_war_after_mma not in (0,8,16,24):
+            raise ValueError('deferred WAR supports0/8/16/24MMAC;16/24require proved32MMA-eight-DS panel')
+        if self.hcu_panel_war_after_mma and (not self.hcu_panel_pipeline or not self.hcu_panel_native_war or self.hcu_panel_stream_v):
+            raise ValueError('deferred WAR requires panel/native WAR/no V streaming')
+
+        if self.hcu_mmac_priority not in ('none','control','high','yield'):
+            raise ValueError('hcu_mmac_priority must be none/control/high/yield')
+        if self.hcu_mmac_priority != 'none' and (self.arch!='gfx938' or self.num_warps!=4 or self.wasp_enabled or self.wdra_enabled):
+            raise ValueError('MMAC priority requires gfx938/four waves/no WS or WDRA')
+
+        if self.hcu_compact_rsrc not in ('auto','none','bfm'):
+            raise ValueError('hcu_compact_rsrc must be auto, none or bfm')
+        if self.hcu_compact_rsrc == 'bfm' and self.arch != 'gfx938':
+            raise ValueError('compact scalar resource materialization requires gfx938')
+        if self.mmac_issue_group_size not in (1,2):
+            raise ValueError('mmac_issue_group_size must be 1 or 2')
+        if self.mmac_issue_group_size != 1 and self.arch != 'gfx938':
+            raise ValueError('MMAC grouping currently requires gfx938')
+        if self.hcu_packed_f32 not in ('auto','none','add','fma','all','vector','cvt'):
+            raise ValueError('hcu_packed_f32 must be auto, none, add, fma, all, vector or cvt')
+        if self.hcu_packed_f32 not in ('none','auto') and self.arch != 'gfx938':
+            raise ValueError('packed FP32 lowering currently requires gfx938')
+        if self.hcu_descriptor_mls_load and (self.arch != 'gfx938' or self.num_warps != 4 or self.num_stages != 1 or self.num_ctas != 1 or self.wasp_enabled or self.wdra_enabled):
+            raise ValueError('descriptor MLS load requires gfx938, four waves, one stage/CTA, no WS/WDRA')
+        if (self.hcu_panel_native_war or self.hcu_panel_stream_v or self.hcu_identity_rescale or self.hcu_panel_cross_iteration or self.hcu_panel_compact_k or self.hcu_panel_unroll2) and not self.hcu_panel_pipeline:
+            raise ValueError("panel streaming/rescale requires panel pipeline")
+        if self.hcu_panel_pipeline and (self.arch != 'gfx938' or self.num_warps != 4 or self.num_stages != 1 or self.num_ctas != 1 or self.wasp_enabled or self.wdra_enabled):
+            raise ValueError('panel pipeline requires gfx938, four waves, one stage/CTA, no WS/WDRA')
+        if self.hcu_sched_model not in ("default", "gfx938-v2"):
+            raise ValueError("hcu_sched_model must be default or gfx938-v2")
+        if self.hcu_sched_model == "gfx938-v2" and self.arch != "gfx938":
+            raise ValueError("gfx938-v2 scheduling requires gfx938")
         gfx_major = int(self.arch[3:-2])  # Drop "gfx" prefix and minor/patch number
         warp_size = 32 if gfx_major >= 10 else 64
         object.__setattr__(self, 'warp_size', warp_size)
@@ -143,6 +277,36 @@ class HIPOptions:
     def hash(self):
         key = '_'.join([f'{name}-{val}' for name, val in self.__dict__.items()])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+
+def prepare_legacy_dtk_ir(kernel_ir):
+    """Conservative LLVM22 text compatibility for the pinned DTK17/18 readers."""
+    errno_none = 0
+    def attribute_group(group):
+        nonlocal errno_none
+        def effects(match):
+            nonlocal errno_none
+            if match.group(1) is None:return match.group(0)
+            parts = [part.strip() for part in match.group(1).split(',')]
+            errno = [part for part in parts if part.startswith('errnomem:')]
+            if any(part != 'errnomem: none' for part in errno):
+                raise RuntimeError('unverified non-none errnomem effect for legacy DTK')
+            if not errno:return match.group(0)
+            errno_none += 1
+            kept = [part for part in parts if part != 'errnomem: none']
+            return 'memory(' + ', '.join(kept) + ')' if kept else ''
+        return re.sub(r'"(?:\\.|[^"\\])*"|\bmemory\(([^)]*)\)', effects, group.group(0))
+    # Only canonical LLVM function-attribute groups, never string constants.
+    kernel_ir = re.sub(r'^attributes #[0-9]+ = \{[^\n]*\}$', attribute_group,
+                       kernel_ir, flags=re.MULTILINE)
+    lifetime_prefix = r'^[ \t]*(?:(?:(?:tail|musttail|notail) )?call\b|declare\b)'
+    lifetime_name = r'[^\n]*@llvm\.lifetime\.(?:start|end)\.p[0-9]+'
+    kernel_ir, lifetimes = re.subn(lifetime_prefix + lifetime_name + r'\([^\n]*\n',
+                                  '', kernel_ir, flags=re.MULTILINE)
+    if re.search(lifetime_prefix + lifetime_name, kernel_ir, flags=re.MULTILINE):
+        raise RuntimeError('unhandled LLVM22 lifetime intrinsic syntax')
+    return kernel_ir, errno_none, lifetimes
 
 
 class HIPBackend(BaseBackend):
@@ -332,6 +496,23 @@ class HIPBackend(BaseBackend):
                         "Set 'TRITON_HIP_CLANG_PATH' to its path.")
 
     @staticmethod
+    @functools.lru_cache(maxsize=None)
+    def _auto_pairing_aicc18(compiler_path):
+        version = subprocess.check_output([compiler_path, "--version"]).decode()
+        match = re.search(r"version\s*(\d+)\.", version)
+        return bool(match and match.group(1) == "18")
+
+    @staticmethod
+    @functools.lru_cache(maxsize=4)
+    def _supports_gemm_backoff(compiler_path):
+        # The wait insertion policy is part of the SDK codegen contract.
+        digest = hashlib.sha256()
+        with open(compiler_path, "rb") as clang:
+            for block in iter(lambda: clang.read(1 << 20), b""):
+                digest.update(block)
+        return digest.hexdigest() == "4f53d83289bee750fd398d8238f47642653e878c03f2845b4548d828bf6303c5"
+
+    @staticmethod
     def _get_clang_args(metadata, options):
         arch_args = {
             "gfx928": [
@@ -367,6 +548,19 @@ class HIPBackend(BaseBackend):
         clang_minor = match.group("minor")
         if clang_major in version_args:
             options_args.extend(version_args[clang_major])
+        if metadata.get("hcu_gemm_backoff_barrier", False):
+            options_args.append("-mllvm=-amdgpu-disable-backoff-barrier=false")
+        # Propagate the existing fusion contract into DTK's final codegen.
+        if options.arch == 'gfx938' and clang_major == '18' and options.enable_fp_fusion:
+            options_args.append('-mllvm=-fp-fuse=fast')
+        if options.hcu_packed_f32 not in ('none','auto') and clang_major != '18':
+            raise RuntimeError('packed FP32 intrinsics require the validated AICC18 ABI')
+        if options.hcu_compact_rsrc == 'bfm' and clang_major != '18':
+            raise RuntimeError('compact resource lowering requires validated AICC18')
+        if options.hcu_sched_model == "gfx938-v2":
+            if clang_major != "18":
+                raise RuntimeError("gfx938-v2 scheduling requires the validated AICC18 backend")
+            options_args.append("-mllvm=-hcu-use-gfx938-sched-model-v2=true")
 
         if options.sched_latency != 'none':
             sched_latency_args = {
@@ -405,6 +599,38 @@ class HIPBackend(BaseBackend):
         pm.enable_debug()
         passes.common.add_inliner(pm)
         passes.ttir.add_rewrite_tensor_pointer(pm)
+        # Only the measured gfx938/four-wave MLS contract is enabled.
+        builder = ir.builder(mod.context)
+        mod.set_attr("hcu.codegen_arch", builder.get_string_attr(options.arch))
+        compact = 0
+        if options.arch == 'gfx938' and options.hcu_compact_rsrc != 'none' and HIPBackend._auto_pairing_aicc18(str(HIPBackend.path_to_rocm_clang())):
+            compact = 2 if options.hcu_compact_rsrc == 'auto' else 1
+        mod.set_attr("hcu.compact_rsrc", builder.get_int32_attr(compact))
+        # 32 is an auto-policy request, resolved structurally before LLVM lowering.
+        # Explicit none remains a complete opt-out; other architectures/DTK stay unchanged.
+        packed = {'none':0, 'add':1, 'fma':2, 'all':3, 'vector':4, 'cvt':8}.get(options.hcu_packed_f32, 0)
+        if options.hcu_packed_f32 == 'auto' and options.arch == 'gfx938' and HIPBackend._auto_pairing_aicc18(str(HIPBackend.path_to_rocm_clang())):
+            packed = 32
+        mod.set_attr("hcu.packed_f32", builder.get_int32_attr(packed))
+        mod.set_attr("hcu.descriptor_mls_load", builder.get_int32_attr(int(options.hcu_descriptor_mls_load)))
+        direct_copy_enabled = (options.num_stages == 1 and options.warp_size == 64
+                               and options.num_ctas == 1 and not options.wasp_enabled)
+        mod.set_attr("tle.hcu.descriptor_mls_arch",
+                     builder.get_string_attr(options.arch if direct_copy_enabled else "disabled"))
+        mod.set_attr("tle.hcu.descriptor_mls_warps", builder.get_int32_attr(options.num_warps))
+        if os.environ.get("FLAGTREE_HCU_EXPERIMENTAL_SOFTWARE_WS") == "1" and "ttg.warp_specialize" in str(mod):
+            if (options.arch != "gfx938" or options.num_warps != 2 or options.warp_size != 64
+                    or options.num_ctas != 1 or options.num_stages != 1 or options.wasp_enabled or options.wdra_enabled):
+                raise RuntimeError("software WS requires gfx938 default2 + worker2 wave64, one CTA, no WDRA/WASP")
+            mod.set_attr("tle.hcu.software_ws_2x2", builder.get_int32_attr(1))
+        if "tle.pipe." in str(mod):
+            if os.environ.get("FLAGTREE_HCU_EXPERIMENTAL_STATIC_PIPE") != "1" or options.static_pipe_status_arg < 0:
+                raise RuntimeError("static HCU pipe requires opt-in and explicit static_pipe_status_arg")
+            mod.set_attr("tle.hcu.static_pipe_enabled",builder.get_int32_attr(1))
+            mod.set_attr("tle.hcu.static_pipe_status_arg",builder.get_int32_attr(options.static_pipe_status_arg))
+            mod.set_attr("tle.hcu.static_pipe_test_drop_ready",builder.get_int32_attr(int(options.static_pipe_test_drop_ready)))
+            mod.set_attr("tle.hcu.allow_counted_pipe",builder.get_int32_attr(int(options.static_pipe_counted_loop)))
+            passes.common.add_symbol_dce(pm)
         passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_combine(pm)
@@ -422,6 +648,8 @@ class HIPBackend(BaseBackend):
         pm.enable_debug()
         passes.ttir.add_convert_to_ttgpuir(pm, f"hip:{options.arch}", options.num_warps, options.warp_size,
                                            options.num_ctas)
+        if mod.get_int_attr("tle.hcu.software_ws_2x2"):
+            passes.ttgpuir.add_allocate_warp_groups(pm)
         tle.raw_passes.add_tle_convert_arg_to_memdesc(pm)
         tle.raw_passes.add_tle_remove_redundant_copy(pm)
         # flagtree tle: lower tle.extract_tile
@@ -432,6 +660,17 @@ class HIPBackend(BaseBackend):
         # distributed.passes.ttir.add_convert_to_ttgpuir_ext(pm, f"hip:{options.arch}", options.num_warps,
         #                                                    options.warp_size, options.num_ctas)
         pm.run(mod, 'make_ttgir_early')
+        if (options.hcu_gemm_matrix_lds and options.arch == "gfx938"
+                and options.num_ctas == 1 and options.num_warps == 4
+                and options.num_stages in (1, 2) and options.kpack == 1
+                and not (options.wasp_enabled or options.wdra_enabled
+                         or options.hcu_panel_pipeline or options.hcu_descriptor_mls_load
+                         or knobs.hcu.use_async_copy or is_in_thread_transpose_enabled(options.arch)
+                         or knobs.compilation.enable_asan or os.getenv("PMD_PATH"))
+                and _is_gemm_matrix_lds_candidate(mod)
+                and HIPBackend._supports_gemm_backoff(str(HIPBackend.path_to_rocm_clang().resolve()))):
+            builder = ir.builder(mod.context)
+            mod.set_attr("hcu.gemm_matrix_lds", builder.get_int32_attr(1))
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         emuTF32 = False
@@ -531,6 +770,7 @@ class HIPBackend(BaseBackend):
             hcu.passes.ttgpuir.add_update_async_wait_count(pm, options.arch)
         pm.run(mod, 'make_ttgir')
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
+        metadata["hcu_triton_ttgir"] = True
         return mod
 
     @staticmethod
@@ -553,6 +793,25 @@ class HIPBackend(BaseBackend):
     @staticmethod
     def make_llir(src, metadata, options):
         mod = src
+        metadata["hcu_gemm_backoff_barrier"] = (
+            options.hcu_gemm_barrier_policy == "auto"
+            and options.arch == "gfx938" and options.num_ctas == 1
+            and options.num_warps == 4 and options.num_stages in (1, 2)
+            and not (options.wasp_enabled or options.wdra_enabled or options.hcu_panel_pipeline
+                     or options.hcu_descriptor_mls_load or knobs.compilation.enable_asan
+                     or os.getenv("PMD_PATH"))
+            and metadata.get("hcu_triton_ttgir", False)
+            and not metadata.get("tensordesc_meta")
+            and _is_sync_buffer_gemm(mod)
+            and HIPBackend._supports_gemm_backoff(str(HIPBackend.path_to_rocm_clang().resolve()))
+        )
+        builder = ir.builder(mod.context)
+        mod.set_attr("hcu.codegen_arch", builder.get_string_attr(options.arch))
+        compact = 0
+        if options.arch == 'gfx938' and options.hcu_compact_rsrc != 'none' and HIPBackend._auto_pairing_aicc18(str(HIPBackend.path_to_rocm_clang())):
+            compact = 2 if options.hcu_compact_rsrc == 'auto' else 1
+        mod.set_attr("hcu.compact_rsrc", builder.get_int32_attr(compact))
+        mod.set_attr("hcu.mmac_issue_group", builder.get_int32_attr(options.mmac_issue_group_size))
         # TritonGPU -> LLVM-IR (MLIR)
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
@@ -564,7 +823,8 @@ class HIPBackend(BaseBackend):
         # LDS size is determined by provided arch name.
         custom_lds_size = 0
         hcu.passes.ttgpuir.add_optimize_lds_usage(pm, options.arch, custom_lds_size)
-        passes.convert.add_scf_to_cf(pm)
+        if not options.static_pipe_counted_loop:
+            passes.convert.add_scf_to_cf(pm)
         passes.gluon.add_inliner(pm)
         passes.convert.add_index_to_llvmir(pm)
 
@@ -573,6 +833,15 @@ class HIPBackend(BaseBackend):
         deferred_raw_materialize(mod, pm)
         # Before inline: remember tle.raw so make_amdgcn can opt into dcc.
         metadata["hcu_tle_raw"] = "tle.dsl_region" in str(mod)
+        if metadata["hcu_tle_raw"] and options.hcu_packed_f32 in ("vector", "cvt"):
+            raise ValueError("explicit paired vector/cvt policy is qualified only for ordinary TLE/Triton, not raw DSL")
+        if metadata["hcu_tle_raw"] and options.hcu_packed_f32 == "auto":
+            # Raw DSL may use DCC17; its intrinsic ABI is a separate contract.
+            mod.set_attr("hcu.packed_f32", builder.get_int32_attr(0))
+        if metadata["hcu_tle_raw"]:
+            if options.hcu_compact_rsrc == 'bfm':
+                raise ValueError('explicit compact resource policy is not qualified for raw DSL')
+            mod.set_attr("hcu.compact_rsrc", builder.get_int32_attr(0))
         tle.raw_passes.add_tle_dsl_region_inline(pm)
         kernel_name = mod.get_entry_func_name()
         # instrumentation point here so we can override IRs above (e.g., ttir and ttgir)
@@ -587,6 +856,8 @@ class HIPBackend(BaseBackend):
         ##    For now it is used as a controller for developers only.
         __HIP_FTZ = True
         hcu.passes.ttgpuir.add_to_llvmir(pm, options.arch, __HIP_FTZ)
+        if options.static_pipe_counted_loop:
+            passes.convert.add_scf_to_cf(pm)
         hcu.passes.ttgpuir.set_func_inline_attrs(pm, options.arch)
         # TritonDistributed Extension: distributed -> llvm
         distributed.passes.ttgpuir.hcu.add_distributed_to_llvm(pm, options.arch, __HIP_FTZ)
@@ -599,9 +870,10 @@ class HIPBackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
 
-        if options.wasp_enabled:
-            hcu.passes.ttgpuir.add_warp_specialize_to_llvm(pm, options.arch, options.wasp_num_load_warps,
-                                                           options.wasp_num_mma_warps, options.wdra_enabled,
+        if options.wasp_enabled or mod.get_int_attr("tle.hcu.software_ws_2x2"):
+            hcu.passes.ttgpuir.add_warp_specialize_to_llvm(pm, options.arch,
+                                                           2 if mod.get_int_attr("tle.hcu.software_ws_2x2") else options.wasp_num_load_warps,
+                                                           2 if mod.get_int_attr("tle.hcu.software_ws_2x2") else options.wasp_num_mma_warps, options.wdra_enabled,
                                                            options.wdra_num_load_regs or 0,
                                                            options.wdra_num_mma_regs_main or 0,
                                                            options.wdra_num_mma_regs_tail or 0)
@@ -668,6 +940,9 @@ class HIPBackend(BaseBackend):
         total_num_warps = src.get_int_attr("ttg.total-num-warps")
         total_num_warps = total_num_warps if total_num_warps is not None else options.num_warps
 
+        if src.get_int_attr("tle.hcu.software_ws_2x2"):
+            metadata["num_warps"] = total_num_warps
+
         # Set kernel attributes first given this may affect later optimizations.
         fns = [fn for fn in llvm_mod.get_functions() if not fn.is_declaration() and fn.name == kernel_name]
 
@@ -676,7 +951,8 @@ class HIPBackend(BaseBackend):
             fns[0].add_fn_attr("hcu-wdra-waves-per-tg", str(total_num_warps))
         # The public kernel should be kernel 0.
         fns[0].set_calling_conv(hcu.CALLING_CONV_AMDGPU_KERNEL)
-        fns[0].add_fn_attr("amdgpu-flat-work-group-size", f"1,{options.num_warps*options.warp_size}")
+        launch_num_warps = total_num_warps if src.get_int_attr("tle.hcu.software_ws_2x2") else options.num_warps
+        fns[0].add_fn_attr("amdgpu-flat-work-group-size", f"1,{launch_num_warps*options.warp_size}")
         if "memory-bound-attention" in options.schedule_hint.split(','):
             fns[0].add_fn_attr("amdgpu-sched-strategy", "iterative-ilp")
         fns[0].add_fn_attr("uniform-work-group-size", "true")
@@ -751,6 +1027,31 @@ class HIPBackend(BaseBackend):
         metadata["profile_scratch_size"] = src.get_int_attr("ttg.profile_scratch_memory_size") or 0
         metadata["profile_scratch_align"] = src.get_int_attr("ttg.profile_scratch_memory_alignment") or 1
 
+        if options.hcu_fold_equivalent_loop_state:
+            metadata["hcu_equivalent_loop_states_folded"] = hcu.fold_equivalent_loop_state(llvm_mod)
+
+        if options.hcu_panel_pipeline:
+            if not HIPBackend._auto_pairing_aicc18(str(HIPBackend.path_to_rocm_clang())):
+                raise ValueError('panel pipeline currently requires the verified AICC18 MLS ABI')
+            if options.hcu_panel_war_after_mma:
+                panel_report=hcu.optimize_panel_pipeline_deferred(llvm_mod, options.arch, options.num_warps, metadata["shared"], options.hcu_panel_stream_v, options.hcu_identity_rescale, options.hcu_panel_cross_iteration, options.hcu_panel_compact_k, options.hcu_panel_unroll2, options.hcu_panel_native_war, options.hcu_panel_war_after_mma)
+                if not panel_report['deferred_WAR_panels']:
+                    raise ValueError('deferred WAR proof failed: '+panel_report['reason'])
+            else:
+                panel_report = hcu.optimize_panel_pipeline(llvm_mod, options.arch, options.num_warps, metadata["shared"], options.hcu_panel_stream_v, options.hcu_identity_rescale, options.hcu_panel_cross_iteration, options.hcu_panel_compact_k, options.hcu_panel_unroll2, options.hcu_panel_native_war)
+
+            metadata["shared"] = panel_report["shared"]
+            metadata["hcu_panel_pipeline_report"] = panel_report
+
+        if options.hcu_mmac_priority != 'none':
+            if not HIPBackend._auto_pairing_aicc18(str(HIPBackend.path_to_rocm_clang())):
+                raise ValueError('MMAC priority requires verified AICC18')
+            modes={'control':1,'high':2,'yield':3}
+            priority_report=hcu.scope_mmac_priority(llvm_mod,options.arch,options.num_warps,modes[options.hcu_mmac_priority])
+            if not priority_report['groups']:
+                raise ValueError('MMAC priority proof failed: '+priority_report['reason'])
+            metadata['hcu_mmac_priority_report']=priority_report
+
         hcu.cleanup_bitcode_metadata(llvm_mod)
         # Disable inlining of print related functions,
         # because inlining of these function could slow down compilation significantly
@@ -773,11 +1074,15 @@ class HIPBackend(BaseBackend):
         # can also lead to regression in some cases. But from current observation,
         # the regression is not significant. It would be better to have some heuristics.
         if options.schedule_hint == 'attention':
-            flags.append('sink-insts-to-avoid-spills')
+            flags.append('-mllvm=-sink-insts-to-avoid-spills=true')
         # features = '-real-true16' if 'gfx11' in options.arch else ''
         # amdgcn = llvm.translate_to_asm(src, hcu.TARGET_TRIPLE, options.arch, features, flags, options.enable_fp_fusion,
         #                                False)
         kernel_ir = str(src)
+        kernel_ir, errno_none, lifetimes = prepare_legacy_dtk_ir(kernel_ir)
+        metadata["hcu_codegen_errno_none_compat"] = errno_none
+        metadata["hcu_codegen_lifetime_hints_elided"] = lifetimes
+        metadata["hcu_prepared_codegen_ir_sha256"] = hashlib.sha256(kernel_ir.encode()).hexdigest()
         # Prefer dcc for tle.raw when IR has no buffer.rsrc (dcc rejects that intrinsic).
         # Path follows FlagTree/DTK layout: {ROCM_PATH|/opt/dtk}/dcc/bin/dcc
         dcc = Path(HIPBackend.path_to_rocm()) / "dcc" / "bin" / "dcc"
@@ -891,5 +1196,8 @@ class HIPBackend(BaseBackend):
 
     @functools.lru_cache()
     def hash(self):
-        version = subprocess.check_output([HIPBackend.path_to_rocm_clang(), "--version"], encoding='utf-8')
+        clang = HIPBackend.path_to_rocm_clang()
+        version = subprocess.check_output([clang, "--version"], encoding='utf-8')
+        if self.target.arch == "gfx938":
+            version += f'-gemm-backoff={HIPBackend._supports_gemm_backoff(str(clang.resolve()))}'
         return f'{version}-{self.target}'

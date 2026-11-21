@@ -15,6 +15,9 @@ class TargetInfo;
 // This yields to the same behaviour compared to when membar adds the barrier.
 void addLocalBarrierAfterAmdGpuAsyncWait(ModuleOp mod);
 
+// Only true after strict issuer/local-load ownership validation in that pass.
+bool isVerifiedIssuerOnlyPair(Operation *a, Operation *b);
+
 // Annotates LocalLoadOps with ttg.hcug.syncedByAsyncWait=true if they are
 // synced by an AsyncWait.
 void annotateLocalLoadsSyncedViaAsyncWait(ModuleOp mod);

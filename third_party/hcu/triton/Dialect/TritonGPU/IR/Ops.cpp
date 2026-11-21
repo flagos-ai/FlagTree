@@ -349,6 +349,13 @@ struct CanonicalizeConvertFromConvert
 
     // cvt(local_load) -> local_load.
     if (auto sharedLoad = dyn_cast<LocalLoadOp>(arg)) {
+#ifdef __TLE__
+      // MLS shared memory has an instruction-specific physical layout.  Its
+      // loader only supports an AMD dot-operand result, not arbitrary layouts.
+      if (isa<HCUMlsSharedEncodingAttr>(
+              sharedLoad.getSrc().getType().getEncoding()))
+        return failure();
+#endif
       // Shared_load can load to any layout so we can always fold convert into
       // it.
       // We insert at the point of the original op as there could be ops with
@@ -1006,7 +1013,15 @@ LogicalResult WarpSpecializeOp::verify() {
   }
 
   std::optional<int> numWarps = maybeLookupNumWarps(*this);
-  if (numWarps && *numWarps % 4 != 0) {
+  bool software938 = false;
+  if (auto mod = (*this)->getParentOfType<ModuleOp>())
+    // Before target conversion, explicit tensor layouts may already expose
+    // the fixed two-wave count. Defer target-specific validation until the
+    // backend has installed the software-WS marker and ttg.target.
+    software938 = mod->hasAttr("tle.hcu.software_ws_2x2") || !mod->hasAttr("ttg.target");
+  bool fixedSoftware = software938 && numWarps && *numWarps == 2 &&
+      getPartitionNumWarps().size() == 1 && getPartitionNumWarps()[0] == 2;
+  if (numWarps && *numWarps % 4 != 0 && !fixedSoftware) {
     return mlir::emitError(getLoc()) << "warp-specialized kernels requires "
                                         "num_warps to be a multiple of 4";
   }

@@ -346,6 +346,48 @@ struct DotOpMFMAConversionHelper {
 
     Value firstMfma;
     auto vecTy = vec_ty(dstElemTy, elemsPerVec);
+    // Opt-in gfx938 issue policy: interleave independent accumulator chains
+    // inside a small N cluster. Each chain keeps the original increasing K
+    // order, including a nonzero C operand, and the default remains unchanged.
+    auto module = op->getParentOfType<ModuleOp>();
+    auto groupAttr = module->getAttrOfType<IntegerAttr>("hcu.mmac_issue_group");
+    auto archAttr = module->getAttrOfType<StringAttr>("hcu.codegen_arch");
+    bool clustered = isHCUMmac && groupAttr && groupAttr.getInt() == 2 &&
+                     archAttr && archAttr.getValue() == "gfx938";
+    if (clustered) {
+      for (int batch = 0; batch < numRepB; ++batch) {
+        for (int n0 = 0; n0 < numRepN; n0 += 2) {
+          int width = std::min(2, static_cast<int>(numRepN) - n0);
+          SmallVector<Value> accumulators(numRepM * width);
+          for (int m = 0; m < numRepM; ++m)
+            for (int j = 0; j < width; ++j) {
+              Value acc = tb.undef(vecTy);
+              for (int v = 0; v < elemsPerVec; ++v) {
+                int idx = linearize({batch, m, n0 + j, v}, fcStrides);
+                acc = tb.insert_element(vecTy, acc, fc[idx], tb.i32_val(v));
+              }
+              accumulators[m * width + j] = acc;
+            }
+          for (int k = 0; k < numVecInKBase; ++k)
+            for (int j = 0; j < width; ++j)
+              for (int m = 0; m < numRepM; ++m) {
+                Value a = operandA[{batch, m, k}];
+                Value b = operandB[{batch, n0 + j, k}];
+                if (mfmaLayout.getIsTransposed())
+                  std::swap(a, b);
+                Value &acc = accumulators[m * width + j];
+                acc = generateMFMAOp(intrinsicName, a, b, acc, mmacLayout);
+                if (!firstMfma)
+                  firstMfma = acc;
+              }
+          for (int m = 0; m < numRepM; ++m)
+            for (int j = 0; j < width; ++j)
+              adjustAccForSmallKDim(fc, accumulators[m * width + j], dstElemTy,
+                                   batch, m, n0 + j, numRepM, numRepN,
+                                   kDimInstrSize, kDimOperandSize, elemsPerVec);
+        }
+      }
+    } else {
     for (int b = 0; b < numRepB; ++b) {
       for (int m = 0; m < numRepM; ++m) {
         for (int n = 0; n < numRepN; ++n) {
@@ -374,6 +416,7 @@ struct DotOpMFMAConversionHelper {
                                 kDimInstrSize, kDimOperandSize, elemsPerVec);
         }
       }
+    }
     }
 
     // Originally, setprio (high) is set to the high-level dot op. After dot is

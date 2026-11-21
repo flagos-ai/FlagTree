@@ -18,6 +18,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #undef DEBUG_TYPE
@@ -37,6 +38,25 @@ namespace mlir {
 #include "TritonHCUGPUTransforms/Passes.h.inc"
 
 namespace {
+
+// Buffer instructions fill masked lanes with all-zero bits. Floating -0.0 is
+// numerically zero, but its sign bit requires retaining the explicit `other`.
+bool hasZeroBitPattern(Value value) {
+  auto constant = value.getDefiningOp<arith::ConstantOp>();
+  if (!constant)
+    return false;
+  Attribute attr = constant.getValue();
+  if (auto fp = dyn_cast<FloatAttr>(attr))
+    return fp.getValue().bitcastToAPInt().isZero();
+  if (auto integer = dyn_cast<IntegerAttr>(attr))
+    return integer.getValue().isZero();
+  if (auto dense = dyn_cast<DenseFPElementsAttr>(attr))
+    return dense.isSplat() &&
+           dense.getSplatValue<APFloat>().bitcastToAPInt().isZero();
+  if (auto dense = dyn_cast<DenseIntElementsAttr>(attr))
+    return dense.isSplat() && dense.getSplatValue<APInt>().isZero();
+  return false;
+}
 
 // ========================== HCU Utility Functions ==========================
 void collectAssumptionsForFuncArgPtr(
@@ -589,7 +609,7 @@ struct ConvertTritonLoadToBufferLoad : public mlir::OpRewritePattern<SourceOp> {
       auto splatOp = tensorPtr.getDefiningOp<triton::SplatOp>();
       Value basePtr = splatOp.getSrc();
       Value maybeOther{};
-      if (op.getOther() && !isZeroConst(op.getOther()))
+      if (op.getOther() && !hasZeroBitPattern(op.getOther()))
         maybeOther = op.getOther();
       Value maybeMask{};
       if (op.getMask() && !isSplatOneConstTensor(op.getMask()))
@@ -645,7 +665,61 @@ private:
       func.walk([&](tt::DotOp dot) { mayHaveDot = true; });
       hasDotOpMap.insert(std::make_pair(func, std::optional<bool>(mayHaveDot)));
     }
-    return mayHaveDot;
+    if (!mayHaveDot)
+      return false;
+    auto module = func->template getParentOfType<ModuleOp>();
+    auto arch = module ? module->template getAttrOfType<StringAttr>("hcu.codegen_arch")
+                       : StringAttr();
+    if (!arch || arch.getValue() != "gfx938")
+      return true;
+
+    // Preserve the old backend workaround for a load that can actually reach
+    // a dot operand. FP32 block scales consumed only by post-dot arithmetic
+    // do not feed the matrix instruction and need not take scalar global loads.
+    // Follow SCF loop state in both directions; unknown control flow/calls keep
+    // the conservative workaround, including a cast before a dot operand.
+    SmallVector<Value> worklist{ld.getResult()};
+    DenseSet<Value> seen;
+    while (!worklist.empty()) {
+      Value value = worklist.pop_back_val();
+      if (!seen.insert(value).second)
+        continue;
+      for (OpOperand &use : value.getUses()) {
+        Operation *user = use.getOwner();
+        if (isa<triton::DotOp>(user))
+          return true;
+        if (auto loop = dyn_cast<scf::ForOp>(user)) {
+          unsigned number = use.getOperandNumber();
+          if (number < 3 || number - 3 >= loop.getNumRegionIterArgs())
+            return true;
+          unsigned index = number - 3;
+          worklist.push_back(loop.getRegionIterArgs()[index]);
+          worklist.push_back(loop.getResult(index));
+          continue;
+        }
+        if (auto yield = dyn_cast<scf::YieldOp>(user)) {
+          unsigned index = use.getOperandNumber();
+          Operation *parent = yield->getParentOp();
+          if (auto loop = dyn_cast<scf::ForOp>(parent)) {
+            if (index >= loop.getNumRegionIterArgs())
+              return true;
+            worklist.push_back(loop.getRegionIterArgs()[index]);
+            worklist.push_back(loop.getResult(index));
+          } else if (auto conditional = dyn_cast<scf::IfOp>(parent)) {
+            if (index >= conditional.getNumResults())
+              return true;
+            worklist.push_back(conditional.getResult(index));
+          } else {
+            return true;
+          }
+          continue;
+        }
+        if (isa<triton::CallOp>(user) || user->getNumRegions() != 0)
+          return true;
+        llvm::append_range(worklist, user->getResults());
+      }
+    }
+    return false;
   }
 
   // Assumptions collected through the function

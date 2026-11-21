@@ -1,0 +1,2 @@
+FlagTree is licensed under MIT.
+Sage quantization grouping is adapted from SageAttention, Copyright (c) 2024 SageAttention team, Apache License 2.0. Source notices are preserved. New attention implementation and compiler changes are FlagOS contributions.

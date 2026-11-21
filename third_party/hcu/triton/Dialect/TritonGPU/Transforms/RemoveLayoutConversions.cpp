@@ -1012,11 +1012,22 @@ void LayoutRematerialization::rewriteSlice(SetVector<Value> &slice,
       Operation *newOp = builder.clone(*op);
       auto tensorType = cast<RankedTensorType>(op->getResult(0).getType());
       auto newType = tensorType.cloneWithEncoding(layout[op->getResult(0)]);
-      auto cvt = ConvertLayoutOp::create(builder, op->getLoc(), newType,
-                                         newOp->getResult(0));
-      mapping.map(op->getResult(0), cvt.getResult());
+      // Materialize the cloned constant directly in the requested encoding.
+      // A clone retaining its old explicit tag followed by a conversion cannot
+      // fold, causing the outer rematerialization fixed point to clone forever.
+      // The original definition/tag is untouched; this internal duplicate has
+      // identical logical elements and a new, consistent result type/tag.
+      auto constant = cast<arith::ConstantOp>(newOp);
+      auto elements = cast<DenseElementsAttr>(constant.getValue());
+      constant.getResult().setType(newType);
+      constant.setValueAttr(elements.reshape(newType));
+#ifdef __TLE__
+      if (getTleExplicitResultEncoding(op, 0))
+        setTleExplicitResultEncoding(constant, 0, newType.getEncoding());
+#endif
+      mapping.map(op->getResult(0), constant.getResult());
       addRematValue(op->getResult(0), layout[op->getResult(0)],
-                    cvt.getResult());
+                    constant.getResult());
       continue;
     }
     Operation *newOp = builder.clone(*op, mapping);
