@@ -48,6 +48,23 @@ inline constexpr llvm::StringLiteral kTLEPipeReaderTMEStoreAttr =
     "musa_tle.pipe_reader_tme_store";
 #endif // __TLE__
 
+// Native LSU/TME cache controls exist only on mp_31 (including its ph1
+// variants). Every check goes through these two helpers so the pass pipeline
+// and the LLVM lowering cannot disagree about which targets support them.
+inline constexpr int kMUSACacheControlCapability = 31;
+
+inline bool isMUSACacheControlTarget(llvm::StringRef target) {
+  return target == "musa:31" || target.starts_with("musa:ph1");
+}
+
+inline bool isMUSACacheControlTarget(Operation *op) {
+  auto module = op->getParentOfType<ModuleOp>();
+  if (!module)
+    return false;
+  auto target = module->getAttrOfType<StringAttr>("ttg.target");
+  return target && isMUSACacheControlTarget(target.getValue());
+}
+
 inline constexpr int32_t kTMEDescSizeBytes = 64;
 inline constexpr int32_t kTMEDescAlignBytes = 64;
 

@@ -23,6 +23,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "triton/Dialect/Triton/IR/CacheControls.h"
 #include "triton/Dialect/Triton/Transforms/ArithTypeConversion.h"
 #include "triton/Dialect/Triton/Transforms/FunctionTypeConversion.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
@@ -33,6 +34,7 @@
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Support/LLVM.h"
@@ -307,6 +309,39 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     const auto blockShape = op.getDesc().getType().getBlockType().getShape();
     auto descTy = op.getDesc().getType();
     auto desc = unpackDescriptor(descTy, adaptor.getDesc());
+    // PPU AIU promotion needs this descriptor as a block pointer.
+    auto async = op->getAttrOfType<BoolAttr>("tt.load.async");
+    if (async && async.getValue() && triton::isPPUAIUCache(op.getCache())) {
+      APInt padding;
+      if (matchPattern(desc.paddingOption, m_ConstantInt(&padding))) {
+        if (!padding.isZero())
+          return op.emitOpError(
+              "asynchronous descriptor copy requires zero padding");
+      } else {
+        Value zero = arith::ConstantIntOp::create(rewriter, loc, 0, 1);
+        Value valid = arith::CmpIOp::create(
+            rewriter, loc, arith::CmpIPredicate::eq, desc.paddingOption, zero);
+        triton::AssertOp::create(
+            rewriter, loc, valid,
+            "asynchronous descriptor copy requires zero padding");
+      }
+      SmallVector<int32_t> tile(blockShape.begin(), blockShape.end());
+      SmallVector<int32_t> order, boundary;
+      for (int i = tile.size() - 1; i >= 0; --i)
+        order.push_back(i);
+      for (unsigned i = 0; i < tile.size(); ++i)
+        boundary.push_back(i);
+      auto ptr = triton::MakeTensorPtrOp::create(rewriter, loc, desc.base,
+                                                 desc.shape, desc.strides,
+                                                 op.getIndices(), tile, order);
+      auto load = triton::LoadOp::create(
+          rewriter, loc, ptr.getResult(), boundary,
+          triton::PaddingOption::PAD_ZERO, op.getCache(), op.getEvict(), false);
+      load->setAttr("tt.load.async", async);
+
+      rewriter.replaceOp(op, load.getResult());
+      return success();
+    }
     auto offsets = castToI64(rewriter, op.getIndices());
     auto other = generateOther(rewriter, loc, descTy, desc.paddingOption);
     auto newLoad = rewriter.replaceOpWithNewOp<triton::LoadOp>(

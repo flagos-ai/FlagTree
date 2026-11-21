@@ -1117,26 +1117,51 @@ vals = tl.load(remote_ptr)
 tle.gpu.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
 ```
 
-- Signature: `tle.gpu.copy(src, dst, shape, offsets=None, barrier=None, mask=None, cache_policy=None)`
-- `cache_policy`：可选的后端专属编译期策略对象；公共接口不规定其字段。
-- MThreads 接受 `tle.gpu.mthreads.TMECachePolicy(inner="normal", outer="normal")`。每个字段接受 `"none"`、`"once"`、`"normal"` 或 `"persist"`。该对象不可变，按字段值比较和计算哈希，用于 JIT 特化。
-- 显式策略仅支持 MThreads 后端的 tensor descriptor → shared memory 搬运。其他后端、CommonIR、普通指针 copy 和 shared → global copy 会拒绝非 `None` 策略。
-- 省略参数或传 Python `None` 保持既有行为（MUSA TME 为 `normal/normal`）。Python `None` 与字符串 `"none"` 不同。
-- 两个提示作用于同一次 copy；A、B 的 copy 可分别设置不同策略对象。缓存提示不改变 barrier 完成或同步语义。
+- Signature: `tle.gpu.copy(src, dst, shape, offsets=None, barrier=None, mask=None, cache_policy=None, other=None, is_async=False, eviction_policy="")`
+- `cache_policy` 接收各后端原生缓存策略对象，作用于当前 copy 的 global-memory 一侧（不可与非空字符串 `eviction_policy` 同时传入）。`tle.gpu.CachePolicy(cache_modifier=None, l1=None, l2=None, l2_prefetch_size=None)` 仅适用于 NVIDIA，使用原生 PTX 修饰符与 eviction 控件。
+- 省略 `cache_policy` 或传入 `None` 保持原有默认行为。NVIDIA `CachePolicy()` 不接受空请求；其余后端的默认构造器保持各自 SDK 默认语义。MThreads `"none"` 是持久化枚举值，与 Python `None` 不同。
+- 静态策略对象不可变，支持在 host 或 JIT 内构造、按值特化，以及通过 `tl.constexpr` 向 worker 转发。所有策略字段必须为编译期常量，且不改变拷贝同步语义。
+- 后端、架构、读写方向、搬运路径或指令组合不匹配时直接报错。正式 `cache` 与 `evict` 字段在改写 pass 中原样透传；最终 lowering 保留目标指令支持的控制项，对其余控制项按指令能力转换或省略，并可通过 `MLIR_ENABLE_DIAGNOSTICS=remarks` 输出 MLIR remark。
 
-缓存驻留提示对性能影响很大。应从默认策略开始，针对实际 kernel、shape、dtype 和布局逐一实测非默认组合。不能仅因为访问是流式的就选 `inner="none"`：它可能使 GEMM 性能严重退化。`outer="none"` 有收益也不代表 `inner="none"` 有收益。这些名称不保证强制绕过缓存、固定复用次数或锁定驻留；本 API 不定义其与物理 L1/L2 的映射。
-
-显式使用默认驻留策略的 MUSA 示例：
+| 后端／路径 | 策略类型 | 可控字段 |
+| --- | --- | --- |
+| NVIDIA TMA | `tle.gpu.CachePolicy` | 静态 L2 eviction（`fraction=1`） |
+| NVIDIA 普通指针 copy | `tle.gpu.CachePolicy` | cache modifier、L1 eviction 或静态 L2 eviction；允许 modifier + L2 |
+| MThreads TME | `tle.gpu.mthreads.TMECachePolicy` | `inner` 0–5、`outer` 0–3（0–3 归一化为 `none`/`once`/`normal`/`persist`）；load `prefetch_size` |
+| MThreads LSU | `tle.gpu.mthreads.LSUCachePolicy` | `inner_persistence`/`outer_persistence` `None` 或 0–5；`l2_policy` `None` 或 0/1 |
+| PPU LSU | `tle.gpu.ppu.CachePolicy` | 原生 modifier 或 load `kp` 1/2/4/5/6、store `kp` 2/4/6 |
+| PPU AIU | `tle.gpu.ppu.AIUCachePolicy` | `kp` 1–6（`kp3` 按 SDK 映射为 `kp2`）；支持 descriptor 与 block-pointer load |
+| 海光／沐曦普通指针 copy | `tle.gpu.hcu.CachePolicy` / `tle.gpu.metax.CachePolicy` | 按读写方向校验的原生 modifier |
 
 ```python
-completion = tle.gpu.alloc_barrier(expect_bytes=BM * BK * 2)  # FP16/BF16
-tle.gpu.copy(a_desc, a_smem, [BM, BK], [m_offset, k_offset],
-             barrier=completion,
-             cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="normal", outer="normal"))
-tle.gpu.barrier_wait(completion, phaseIdx=0)
+# NVIDIA TMA: 每个 copy 可独立配置各自的 L2 eviction 策略
+tle.gpu.copy(a_desc, a_tile, [BM, BK], [m, k],
+             cache_policy=tle.gpu.CachePolicy(
+                 l2=tle.gpu.FractionalEvictionPolicy("evict_last")))
+tle.gpu.copy(b_desc, b_tile, [BK, BN], [k, n],
+             cache_policy=tle.gpu.CachePolicy(
+                 l2=tle.gpu.FractionalEvictionPolicy("evict_first")))
 ```
 
-`TMECachePolicy` 可在 host 或 JIT kernel 内构造，并作为 `tl.constexpr` 参数传给 `warp_specialize` 的 producer worker。裸元组和字符串不作为 MThreads 缓存策略对象接受。
+NVIDIA 策略要求 `fraction=1`、`secondary="evict_unchanged"`；非默认 `l2_prefetch_size`、同时设置 `l1`/`l2`，或同时设置 modifier 与显式 L1 eviction 均会报错。NVIDIA TMA 旁路 L1 并访问 L2，策略类型统一由 `tle.gpu` 导出。
+
+PPU `.ba`（`kp7`）与 LSU `kp3` 在前端与后端均显式拒绝。各后端的字符串及整数编码保持各自 SDK 原生语义。完整转换矩阵、方向／架构限制与用法示例见[原生 Cache Policy 指南](docs/tle-copy-cache-policy.md)。
+
+###### 3.3.1.1.6 `tl.load` 与 `tl.store` 的原生 `cache_policy`
+
+`tl.load(..., cache_policy=policy)` 与 `tl.store(..., cache_policy=policy)` 复用普通指针 copy 的原生策略对象（NVIDIA `tle.gpu.CachePolicy`、MThreads `tle.gpu.mthreads.LSUCachePolicy`、海光 `tle.gpu.hcu.CachePolicy`、沐曦 `tle.gpu.metax.CachePolicy`、PPU `tle.gpu.ppu.CachePolicy`），保持寄存器 tensor 读写语义，不额外分配或中转 shared memory：
+
+```python
+x = tl.load(x_ptr + offsets, mask=mask, other=0.0,
+            cache_policy=tle.gpu.ppu.CachePolicy(".lu"))
+tl.store(y_ptr + offsets, y, mask=mask,
+         cache_policy=tle.gpu.mthreads.LSUCachePolicy(
+             inner_persistence=3, outer_persistence=3, l2_policy=1))
+```
+
+- 省略参数或传入 `None` 保持原有默认行为；显式 `cache_policy` 对象不能与非空 `cache_modifier` 或 `eviction_policy` 同时使用。
+- 仅用于特定 copy 引擎的 `TMECachePolicy` 和 `AIUCachePolicy`，以及非 global 地址空间（address space $\ne 1$）指针在前端直接报错。
+- 策略对象在 op 创建前直接编码为正式 `cache` / `evict` 字段，并复用与 `tle.gpu.copy` 相同的中端透传与后端指令转换规则。完整转换表与字段说明见[原生 Cache Policy 指南](docs/tle-copy-cache-policy.md)。
 
 ##### 3.3.1.2 执行编排
 

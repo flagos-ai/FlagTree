@@ -149,6 +149,12 @@ def get_irformatter():
     raise RuntimeError("Cannot find irformatter")
 
 
+# Name prefix of the SDK bridge helpers emitted by the AIU cache-mode lowering
+# (third_party/ppu/lib/TritonPPUGPUToLLVM/LoadStoreOpToLLVM.cpp); the kp
+# number is appended. Definitions live in lib/aiu_cache_policy.ll.
+AIU_HELPER_PREFIX = "__flagtree_ppu_aiu_copy_kp"
+
+
 @functools.lru_cache()
 def get_ppu_llc():
     binary = "ppu-llc"
@@ -354,9 +360,15 @@ class PPUBackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
+        # AIU promotion needs a block pointer. Expand explicit AIU descriptors
+        # first; ordinary descriptors follow the original pass order.
+        early_descriptor = capability // 10 < 9 and ppu.has_aiu_descriptor_load(mod)
+        if early_descriptor:
+            passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
+            passes.common.add_canonicalizer(pm)
         ppu.passes.ttppugpuir.add_tle_promote_async_load_to_aiu(pm)
         passes.ttir.add_rewrite_tensor_pointer(pm)
-        if capability // 10 < 9:
+        if capability // 10 < 9 and not early_descriptor:
             passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_combine(pm)
@@ -535,6 +547,12 @@ class PPUBackend(BaseBackend):
 
         llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
 
+        # The AIU lowering calls SDK bridge helpers it only declares; record
+        # the exact set so make_hgbin links the bridge without inspecting text.
+        metadata["ppu_aiu_helpers"] = sorted(fn.name
+                                             for fn in llvm_mod.get_functions()
+                                             if fn.is_declaration() and fn.name.startswith(AIU_HELPER_PREFIX))
+
         # Get some metadata
         total_num_warps = src.get_int_attr("ttg.total-num-warps")
         if total_num_warps is not None:
@@ -549,6 +567,38 @@ class PPUBackend(BaseBackend):
         del llvm_mod
         del context
         return ret
+
+    @staticmethod
+    def _link_aiu_helpers(formatted_ir, sdk_bin, helpers):
+        """Link the SDK typed-pointer bridge for the AIU cache-mode helpers.
+
+        The bridge in ``lib/aiu_cache_policy.ll`` is written against the SDK's
+        typed-pointer LLVM, so it is assembled and linked with the SDK tools
+        rather than the build-time LLVM. ``helpers`` is the list of bridge
+        symbols the kernel declares, recorded by ``make_llir``; every one must
+        be defined by the bridge so an unsupported mode fails here, not in
+        ``ppu-llc``. The formatted input is kept next to the linked output so
+        a failing kernel can be reproduced from either file.
+        """
+        helper = Path(__file__).parent / "lib" / "aiu_cache_policy.ll"
+        provided = set(re.findall(r"^define\b.*?@(" + AIU_HELPER_PREFIX + r"\d+)\(", helper.read_text(), re.M))
+        missing = sorted(set(helpers) - provided)
+        if missing:
+            raise RuntimeError(f"PPU AIU cache policy helpers {missing} are not provided by {helper}")
+        helper_bc = formatted_ir + ".aiu.bc"
+        linked_ir = formatted_ir + ".aiu.ll"
+        try:
+            subprocess.run([str(sdk_bin / "llvm-as"), str(helper), "-o", helper_bc], check=True, capture_output=True,
+                           text=True)
+            subprocess.run([str(sdk_bin / "llvm-link"), formatted_ir, helper_bc, "-S", "-o", linked_ir], check=True,
+                           capture_output=True, text=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise RuntimeError("PPU AIU cache policy requires SDK llvm-as/llvm-link and its native helper ABI: " +
+                               str(exc) + " " + (getattr(exc, "stderr", "") or "")) from exc
+        finally:
+            if os.path.exists(helper_bc):
+                os.remove(helper_bc)
+        return linked_ir
 
     def make_hgbin(self, src, metadata, opt, capability):
         # Restore PPU target intrinsics that were disguised as ordinary external
@@ -580,6 +630,8 @@ please share the reproducer above with Triton project.
                 raise RuntimeError(error_msg) from e
 
             ppullc = get_ppu_llc()
+            if metadata.get("ppu_aiu_helpers"):
+                fsrcformatted = self._link_aiu_helpers(fsrcformatted, Path(ppullc).parent, metadata["ppu_aiu_helpers"])
 
             debug_info = []
             if knobs.compilation.disable_line_info:
@@ -680,4 +732,5 @@ please share the reproducer above with Triton project.
     @functools.lru_cache()
     def hash(self):
         version = get_ppu_llc_version()
-        return f'{version}-{self.target.arch}'
+        helper = Path(__file__).parent / "lib" / "aiu_cache_policy.ll"
+        return f'{version}-{self.target.arch}-{file_hash(str(helper))}'

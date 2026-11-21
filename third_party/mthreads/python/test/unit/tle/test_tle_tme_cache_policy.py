@@ -81,8 +81,9 @@ def _independent_policy_kernel(a, b):
     a_smem = tle.gpu.alloc((16, 64), a.dtype, nv_mma_shared_layout=False)
     b_smem = tle.gpu.alloc((16, 64), b.dtype, nv_mma_shared_layout=False)
     tle.gpu.copy(a, a_smem, (16, 64), (0, 0),
-                 cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="persist", outer="normal"))
-    tle.gpu.copy(b, b_smem, (16, 64), (0, 0), cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="once", outer="none"))
+                 cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="persist", outer="normal", prefetch_size=128))
+    tle.gpu.copy(b, b_smem, (16, 64), (0, 0),
+                 cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="once", outer="none", prefetch_size=64))
 
 
 def test_tme_cache_policy_is_per_copy():
@@ -90,8 +91,8 @@ def test_tme_cache_policy_is_per_copy():
                             signature={"a": "tensordesc<fp16[16,64]>", "b": "tensordesc<fp16[16,64]>"})
     calls = _tme_loads(compiled)
     assert len(calls) == 2
-    assert re.search(r"i32 3, i32 2, i32 0\)", calls[0]), calls
-    assert re.search(r"i32 1, i32 0, i32 0\)", calls[1]), calls
+    assert re.search(r"i32 128, i32 3, i32 2, i32 0\)", calls[0]), calls
+    assert re.search(r"i32 64, i32 1, i32 0, i32 0\)", calls[1]), calls
 
 
 @triton.jit
@@ -105,7 +106,7 @@ def _grouped_policy_kernel(a, b, out):
     for i in tl.static_range(4):
         slot = writer.acquire(i)
         tle.gpu.copy(a, slot.a, (16, 64), (i * 16, 0), barrier=full[i % 2],
-                     cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="persist", outer="normal"))
+                     cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="persist", outer="normal", prefetch_size=128))
         tle.gpu.copy(b, slot.b, (16, 64), (i * 16, 0), barrier=full[i % 2],
                      cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="once", outer="none"))
         writer.commit(i)
@@ -159,7 +160,7 @@ def _dynamic_policy_kernel(desc, policy):
 
 
 def test_tme_cache_policy_must_be_compile_time():
-    with pytest.raises(CompilationError, match="TMECachePolicy inner must be a compile-time string"):
+    with pytest.raises(CompilationError, match="TMECachePolicy inner must be"):
         compile_to_ttir(_dynamic_policy_kernel, signature={"desc": "tensordesc<fp16[16,64]>", "policy": "i32"})
 
 
@@ -175,22 +176,50 @@ def _unsupported_copy_kernel(desc, ptr, STORE: tl.constexpr):
                      cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="once", outer="none"))
 
 
-@pytest.mark.parametrize("store", [False, True])
-def test_tme_cache_policy_rejects_unsupported_direction(store):
-    with pytest.raises(CompilationError, match="only supported for descriptor-to-shared copies"):
+def test_tme_cache_policy_rejects_pointer_copy():
+    with pytest.raises(CompilationError, match="cache_policy"):
         compile_to_ttir(_unsupported_copy_kernel,
                         signature={"desc": "tensordesc<fp16[16,64]>", "ptr": "*fp16", "STORE":
-                                   "constexpr"}, constexprs={"STORE": store})
+                                   "constexpr"}, constexprs={"STORE": False})
+
+
+@triton.jit
+def _store_policy_kernel(src, dst, POLICY: tl.constexpr):
+    smem = tle.gpu.alloc((16, 64), src.dtype, nv_mma_shared_layout=False)
+    tle.gpu.copy(src, smem, (16, 64), (0, 0))
+    tle.gpu.copy(smem, dst, (16, 64), (0, 0), cache_policy=POLICY)
+
+
+@pytest.mark.parametrize("policy", PAIRS)
+def test_tme_store_cache_policy_reaches_intrinsic(policy):
+    compiled = compile_musa(
+        _store_policy_kernel,
+        signature={"src": "tensordesc<fp16[16,64]>", "dst": "tensordesc<fp16[16,64]>", "POLICY":
+                   "constexpr"}, constexprs={"POLICY": policy})
+    calls = [line for line in compiled.asm["llir"].splitlines() if "call void @llvm.musa.tme.st.2d(" in line]
+    inner, outer = (POLICIES.index(value) for value in (policy.inner, policy.outer))
+    assert calls
+    assert all(re.search(rf"i32 {inner}, i32 {outer}, i32 0\)", line) for line in calls), calls
+
+
+@pytest.mark.parametrize("policy", PAIRS)
+@pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
+def test_tme_store_cache_policy_runtime(policy):
+    src = torch.randn((16, 64), dtype=torch.float16, device="musa")
+    dst = torch.full_like(src, float("nan"))
+    _store_policy_kernel[(1, )](TensorDescriptor.from_tensor(src, [16, 64]),
+                                TensorDescriptor.from_tensor(dst, [16, 64]), policy, num_warps=4, num_stages=1)
+    torch.testing.assert_close(dst.cpu(), src.cpu(), rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("enabled,common_ir", [(False, False), (True, True)])
-def test_tme_cache_policy_rejects_other_backends(monkeypatch, enabled, common_ir):
-    from triton.experimental.tle.language.gpu import core
-    monkeypatch.setattr(core.mthreads_common, "enabled", lambda: enabled)
-    monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", common_ir)
+def test_tme_cache_policy_rejects_other_backends(enabled, common_ir):
+    from types import SimpleNamespace
+    from triton.experimental.tle.language.gpu._cache_policy import resolve_policy
+    semantic = SimpleNamespace(builder=SimpleNamespace(
+        options=SimpleNamespace(backend_name="musa" if enabled else "cuda", arch=31)))
     with pytest.raises(ValueError, match="copy cache_policy"):
-        core.copy(None, None, (), cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="once", outer="none"),
-                  _semantic=object())
+        resolve_policy(TMECachePolicy(inner="once", outer="none"), True, True, semantic, enabled, False, common_ir)
 
 
 @triton.jit
@@ -327,3 +356,108 @@ def test_tme_cache_policy_jit_cache_runtime():
     assert "musa.tme.inner_persistence = 1 : i32" in first.asm["ttir"]
     assert "musa.tme.inner_persistence = 2 : i32" in different.asm["ttir"]
     torch.testing.assert_close(out.cpu(), source.cpu(), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("prefetch", [0, 64, 128, 256])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_tme_prefetch_cache_hint_reaches_intrinsic(prefetch, explicit):
+    policy = TMECachePolicy(inner="once", outer="persist", prefetch_size=prefetch)
+    compiled = _compile_copy(policy, explicit)
+    calls = _tme_loads(compiled)
+    assert calls
+    assert all(re.search(rf"i32 {prefetch}, i32 1, i32 3, i32 0\)", line) for line in calls), calls
+
+
+@pytest.mark.parametrize("prefetch", [0, 64, 128, 256])
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
+def test_tme_prefetch_cache_hint_runtime(prefetch, explicit):
+    src = torch.randn((16, 64), device="musa", dtype=torch.float16)
+    dst = torch.empty_like(src)
+    policy = TMECachePolicy(prefetch_size=prefetch)
+    _copy_kernel[(1, )](TensorDescriptor.from_tensor(src, [16, 64]), dst, 0, policy, explicit, False, num_warps=4,
+                        num_stages=1)
+    torch.testing.assert_close(dst.cpu(), src.cpu(), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("prefetch", [-1, 32, 512, True])
+def test_tme_prefetch_cache_hint_rejects_unknown_size(prefetch):
+    with pytest.raises(ValueError, match="prefetch_size"):
+        TMECachePolicy(prefetch_size=prefetch)
+
+
+def test_tme_prefetch_cache_hint_rejects_store():
+    with pytest.raises(CompilationError, match="only supported for descriptor loads"):
+        compile_to_ttir(
+            _store_policy_kernel,
+            signature={"src": "tensordesc<fp16[16,64]>", "dst": "tensordesc<fp16[16,64]>", "POLICY":
+                       "constexpr"}, constexprs={"POLICY": TMECachePolicy(prefetch_size=64)})
+
+
+@pytest.mark.parametrize("field,value", [("inner", -1), ("inner", 6), ("inner", True), ("inner", "no_override"),
+                                         ("outer", 4), ("outer", 5)])
+def test_tme_native_scope_rejects_invalid_values(field, value):
+    with pytest.raises(ValueError, match=field):
+        TMECachePolicy(**{field: value})
+
+
+@pytest.mark.parametrize("inner", [4, 5])
+def test_tme_native_inner_policy_is_constexpr(inner):
+    first = TMECachePolicy(inner=inner, prefetch_size=256)
+    equal = TMECachePolicy(inner=tl.constexpr(inner), prefetch_size=tl.constexpr(256))
+    assert first == equal
+    assert hash(first) == hash(equal)
+    assert first.to_attributes(True)["inner"] == inner
+    compiled = _compile_copy(first, explicit=True)
+    calls = _tme_loads(compiled)
+    assert calls and all(re.search(rf"i32 256, i32 {inner}, i32 2, i32 0\)", line) for line in calls)
+
+
+@triton.jit
+def _native_scope_kernel(desc, values, row, POLICY: tl.constexpr, IS_LOAD: tl.constexpr, BM: tl.constexpr,
+                         BN: tl.constexpr):
+    smem = tle.gpu.alloc((BM, BN), desc.dtype, nv_mma_shared_layout=False)
+    offsets = tl.arange(0, BM)[:, None] * BN + tl.arange(0, BN)[None, :]
+    if IS_LOAD:
+        tle.gpu.copy(desc, smem, (BM, BN), (row, 0), cache_policy=POLICY)
+        tl.store(values + offsets, tl.load(tle.gpu.local_ptr(smem)))
+    else:
+        tl.store(tle.gpu.local_ptr(smem), tl.load(values + offsets))
+        tle.gpu.copy(smem, desc, (BM, BN), (row, 0), cache_policy=POLICY)
+
+
+@pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
+@pytest.mark.parametrize("inner,prefetch,is_load", [(4, 0, True), (5, 0, True), (4, 256, True), (5, 256, True),
+                                                    (4, 0, False), (5, 0, False)])
+@pytest.mark.parametrize("block", [(16, 64), (32, 128)])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+def test_tme_native_scope_warm_visibility(inner, prefetch, is_load, block, dtype):
+    bm, bn = block
+    src = torch.arange(4 * bm * bn, device="musa", dtype=torch.float32).reshape(4 * bm, bn)
+    src = (src % 127).to(dtype)
+    dst = torch.empty((bm, bn) if is_load else src.shape, device="musa", dtype=dtype)
+    policy = TMECachePolicy(inner=inner, prefetch_size=prefetch)
+    desc = TensorDescriptor.from_tensor(src if is_load else dst, [bm, bn])
+    for row in (bm, 2 * bm):
+        for _ in range(2):
+            # Read old inputs and output on the GPU before producer updates.
+            src.sum()
+            dst.sum()
+            torch.musa.synchronize()
+            src.add_(0.25)
+            dst.fill_(float("nan"))
+            torch.musa.synchronize()
+            compiled = _native_scope_kernel[(1, )](desc, dst if is_load else src, row, policy, is_load, bm, bn,
+                                                   num_warps=4, num_stages=1)
+            observed = dst.clone().cpu()
+            expected = src[row:row + bm].cpu() if is_load else torch.full_like(observed, float("nan"))
+            if not is_load:
+                expected[row:row + bm] = src[:bm].cpu()
+            torch.testing.assert_close(observed, expected, rtol=0, atol=0, equal_nan=True)
+            operation = "ld.tile.2d" if is_load else "st.2d"
+            calls = [
+                line for line in compiled.asm["llir"].splitlines() if f"call void @llvm.musa.tme.{operation}(" in line
+            ]
+            assert calls and all(re.search(rf"i32 {inner}, i32 2, i32 0\)", line) for line in calls)
+            if is_load:
+                assert all(re.search(rf"i32 {prefetch}, i32 {inner}, i32 2, i32 0\)", line) for line in calls)

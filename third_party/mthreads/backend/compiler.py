@@ -818,6 +818,10 @@ class MUSAOptions:
     instrumentation_mode: str = ""
     inplace_alias_pairs: str = ""
 
+    @property
+    def supports_lsu_cache_policy(self) -> bool:
+        return musa_capability_from_arch(self.arch) == 31
+
     def __post_init__(self):
         default_libdir = Path(__file__).parent / "lib"
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)

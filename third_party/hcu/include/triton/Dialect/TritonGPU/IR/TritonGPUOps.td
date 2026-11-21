@@ -610,7 +610,8 @@ def TTG_TMACopyOp : TTG_Op<"tma_copy", [Pure, MemoryEffects<[MemWrite]>]> {
   let arguments = (ins
     Arg<TTG_CopyOpType, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$src,
     Arg<TTG_CopyOpType, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$dst,
-    Variadic<I32>:$indices
+    Variadic<I32>:$indices,
+    DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict
   );
   //assemble
   let assemblyFormat = "$src `,`  $dst `,` `[` $indices `]` attr-dict `:` type($src) `,` type($dst)";

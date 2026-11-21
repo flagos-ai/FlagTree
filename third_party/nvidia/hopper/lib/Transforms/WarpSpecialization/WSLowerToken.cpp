@@ -208,7 +208,7 @@ static LogicalResult processProducerCommitTmaCopyOp(OpBuilder &builder,
     builder.setInsertionPoint(copy);
     auto lowered = ttng::AsyncTMACopyGlobalToLocalOp::create(
         builder, copy.getLoc(), copy.getSrc(), indices, bufferFull,
-        copy.getDst(), pred);
+        copy.getDst(), pred, tt::CacheModifier::NONE, copy.getEvict());
     setAsyncTaskIds(lowered, taskIds);
     copy.erase();
   }

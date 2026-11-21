@@ -19,7 +19,11 @@
 # SOFTWARE.
 
 # flagtree tle
-from . import mthreads
+from . import hcu, metax, mthreads, ppu
+from ._nvidia_cache_policy import (
+    CachePolicy,
+    FractionalEvictionPolicy,
+)
 from .core import (
     range,
     alloc,
@@ -47,7 +51,12 @@ from .types import (layout, distributed_encoding, BlockEncoding, MmaEncoding, Do
 storage_kind = memory_space
 
 __all__ = [
+    "CachePolicy",
+    "FractionalEvictionPolicy",
     "mthreads",
+    "hcu",
+    "metax",
+    "ppu",
     "range",
     "alloc",
     "alloc_barrier",

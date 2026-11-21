@@ -2,11 +2,12 @@
 #define TRITON_ATTR_DEFS
 
 include "mlir/IR/EnumAttr.td"
+include "include/triton/Dialect/Triton/IR/NativeCacheModifiers.td"
 
 // Attributes for LoadOp and StoreOp
 def TT_CacheModifierAttr : I32EnumAttr<
     "CacheModifier", "",
-    [
+    !listconcat([
         I32EnumAttrCase<"NONE", 1, "none">,
         I32EnumAttrCase<"CA", 2, "ca">,
         I32EnumAttrCase<"CG", 3, "cg">,
@@ -14,7 +15,10 @@ def TT_CacheModifierAttr : I32EnumAttr<
         I32EnumAttrCase<"CS", 5, "cs">,
         I32EnumAttrCase<"WT", 6, "wt">,
         I32EnumAttrCase<"CV", 7, "cv">,
-    ]> {
+        I32EnumAttrCase<"LU", 8, "lu">,
+        I32EnumAttrCase<"NC", 9, "nc">,
+        I32EnumAttrCase<"BL", 10, "bl">,
+    ], TT_NativeCacheModifiers)> {
     let cppNamespace = "::mlir::triton";
 }
 
@@ -31,11 +35,11 @@ def TT_MemSemanticAttr : I32EnumAttr<
 
 def TT_EvictionPolicyAttr : I32EnumAttr<
     "EvictionPolicy", "",
-    [
+    !listconcat([
         I32EnumAttrCase<"NORMAL", 1, "evict_normal">,
         I32EnumAttrCase<"EVICT_FIRST", 2, "evict_first">,
         I32EnumAttrCase<"EVICT_LAST", 3, "evict_last">
-    ]> {
+    ], TT_NativeEvictionPolicies)> {
     let cppNamespace = "::mlir::triton";
 }
 

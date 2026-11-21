@@ -34,6 +34,7 @@
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Analysis/AxisInfo.h"
+#include "triton/Dialect/Triton/IR/CacheControls.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
@@ -115,25 +116,6 @@ static bool isInLoopFreeWarpSpecializePartition(Operation *op) {
       return true;
   }
   return false;
-}
-
-static bool hasL2CachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
-  return copyOp.getEvict() == tt::EvictionPolicy::EVICT_FIRST ||
-         copyOp.getEvict() == tt::EvictionPolicy::EVICT_LAST;
-}
-
-static void
-dropUnsafeLoopFreePartitionCachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
-  if (!copyOp->hasAttr(kTleLocalPointerAsyncStoreAttr) ||
-      !hasL2CachePolicy(copyOp) || !isInLoopFreeWarpSpecializePartition(copyOp))
-    return;
-
-  // PTXAS may emit undefined uniform registers for straight-line
-  // warp-specialize producer partitions that use cp.async L2 cache-policy
-  // operands. Eviction policy is a non-semantic hint, so keep the async copy
-  // and drop only the unsafe hint in loop-free partitions.
-  copyOp.setEvictAttr(tt::EvictionPolicyAttr::get(copyOp.getContext(),
-                                                  tt::EvictionPolicy::NORMAL));
 }
 
 static unsigned floorPowerOfTwo(unsigned value) {
@@ -543,22 +525,39 @@ struct DowngradeInvalidAsyncCopyPass
         rematerializeLogicalAsyncCopy(copyOp, initialAxisInfo,
                                       caches[copyOp->getBlock()], dominance);
     }
-    downgradeCopies<tt::ModuleAxisInfoAnalysis>(module, false);
-    if (!plannedCopies.empty())
-      downgradeCopies<tle::ModuleAxisInfoAnalysis>(module, true);
+    if (failed(downgradeCopies<tt::ModuleAxisInfoAnalysis>(module, false)) ||
+        (!plannedCopies.empty() &&
+         failed(downgradeCopies<tle::ModuleAxisInfoAnalysis>(module, true))))
+      signalPassFailure();
   }
 
   template <typename AxisAnalysis>
-  void downgradeCopies(ModuleOp module, bool planned) {
+  LogicalResult downgradeCopies(ModuleOp module, bool planned) {
     AxisAnalysis axisInfo(module);
+    auto target = module->getAttrOfType<StringAttr>("ttg.target");
     SmallVector<ttg::AsyncCopyGlobalToLocalOp> invalidCopies;
     module.walk([&](ttg::AsyncCopyGlobalToLocalOp copyOp) {
       if (copyOp->hasAttr(kCopyPlanAttr) != planned)
         return;
-      dropUnsafeLoopFreePartitionCachePolicy(copyOp);
-      if (hasLegalCpAsyncWidth(copyOp, axisInfo))
+      // Width/layout fallback is independent of hints. Keep the original
+      // fields if the copy must become a synchronous load.
+      if (!hasLegalCpAsyncWidth(copyOp, axisInfo)) {
+        invalidCopies.push_back(copyOp);
         return;
-      invalidCopies.push_back(copyOp);
+      }
+      if (target && target.getValue().starts_with("cuda:") &&
+          copyOp->hasAttr(kTleLocalPointerAsyncStoreAttr) &&
+          usesNvidiaL2Policy(copyOp.getEvict()) &&
+          (!copyOp.getMask() || isInLoopFreeWarpSpecializePartition(copyOp))) {
+        // These TLE shapes exposed undefined uniform registers in LDGSTS on
+        // H800. Omit only the unsafe hint; retain cp.async and its protocol.
+        remarkCacheControlConversion(
+            copyOp, "NVIDIA cp.async", copyOp.getCache(),
+            EvictionPolicy::NORMAL,
+            "L2 hint omitted for unmasked or "
+            "loop-free warp-specialize TLE local-pointer copy");
+        copyOp.setEvict(EvictionPolicy::NORMAL);
+      }
     });
 
     IRRewriter rewriter(&getContext());
@@ -569,17 +568,16 @@ struct DowngradeInvalidAsyncCopyPass
         copyOp.emitError(
             "explicit tle.gpu.copy(is_async=True) cannot be represented by "
             "a legal NVIDIA cp.async width; refusing synchronous downgrade");
-        signalPassFailure();
-        return;
+        return failure();
       }
       if (copyOp->getBlock() &&
           failed(downgradeAsyncCopy(rewriter, copyOp, axisInfo))) {
         copyOp.emitError("cannot downgrade invalid async copy with non-trivial "
                          "async token users");
-        signalPassFailure();
-        return;
+        return failure();
       }
     }
+    return success();
   }
 };
 

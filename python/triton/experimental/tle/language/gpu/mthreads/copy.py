@@ -22,7 +22,7 @@ import triton.language.core as tl
 
 from .. import types as tle
 from . import common
-from .types import TMECachePolicy, _TME_CACHE_POLICIES
+from .types import TMECachePolicy
 
 
 def normalize_copy_shape(shape) -> tuple[int, ...]:
@@ -88,6 +88,7 @@ def normalize_offsets(offsets, rank: int):
 
 
 def normalize_cache_policy(cache_policy):
+    """Upstream entry point: ``(inner, outer)`` SDK codes for a MUSA TME copy."""
     cache_policy = tl._unwrap_if_constexpr(cache_policy)
     if cache_policy is None:
         return None
@@ -97,10 +98,24 @@ def normalize_cache_policy(cache_policy):
         raise ValueError("copy cache_policy is only supported by the MUSA TLE backend")
     if not isinstance(cache_policy, TMECachePolicy):
         raise ValueError("cache_policy must be a compile-time tle.gpu.mthreads.TMECachePolicy")
-    return tuple(_TME_CACHE_POLICIES.index(value) for value in (cache_policy.inner, cache_policy.outer))
+    return cache_policy.inner_code, cache_policy.outer_code
 
 
-def tmacopy(src, dst, direction, shape, offsets, barrier=None, cache_policy=None, _semantic=None) -> None:
+def native_tme_controls(cache_policy):
+    """Return ``((inner, outer) | None, prefetch_size)`` for the tma_copy builder.
+
+    TME persistence and prefetch travel as operands of the MUSA ``tma_copy``
+    operation, not as a ``tt.cache_policy`` annotation, so the resolved policy
+    is translated here into the SDK encodings.
+    """
+    scope = normalize_cache_policy(cache_policy)
+    if scope is None:
+        return None, 0
+    return scope, tl._unwrap_if_constexpr(cache_policy).prefetch_size
+
+
+def tmacopy(src, dst, direction, shape, offsets, barrier=None, cache_policy=None, _semantic=None, *,
+            prefetch_size=0) -> None:
     shape = normalize_copy_shape(shape)
     desc = src if direction.name == "GM_TO_LOCAL" else dst
     buffer = dst if direction.name == "GM_TO_LOCAL" else src
@@ -124,6 +139,7 @@ def tmacopy(src, dst, direction, shape, offsets, barrier=None, cache_policy=None
         if barrier.expect_bytes is None or int(barrier.expect_bytes) <= 0:
             raise ValueError("TMA copy barrier must have positive expect_bytes")
         _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, barrier.handle,
-                                          int(barrier.expect_bytes), cache_policy)
+                                          int(barrier.expect_bytes), cache_policy, prefetch_size)
         return
-    _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, cachePolicy=cache_policy)
+    _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, cachePolicy=cache_policy,
+                                      prefetchSize=prefetch_size)

@@ -1150,26 +1150,51 @@ Memory copy:
 tle.gpu.copy(a_ptrs + ystride_a * yoffs[None, :], a_smem, [XBLOCK, YBLOCK])
 ```
 
-- Signature: `tle.gpu.copy(src, dst, shape, offsets=None, barrier=None, mask=None, cache_policy=None)`
-- `cache_policy`: optional backend-specific compile-time policy object; the common API does not prescribe its fields.
-- MThreads accepts `tle.gpu.mthreads.TMECachePolicy(inner="normal", outer="normal")`. Each field accepts `"none"`, `"once"`, `"normal"`, or `"persist"`. This immutable object has value-based equality and hashing for JIT specialization.
-- Explicit policies are supported only by the MThreads backend for tensor-descriptor → shared-memory copies. Other backends, CommonIR, pointer copies, and shared-to-global copies reject a non-`None` policy.
-- Omitting the argument or passing Python `None` preserves the existing behavior (`normal/normal` for MUSA TME). Python `None` is different from the string `"none"`.
-- The two hints apply to the same copy operation. A and B copies can use different policy objects; hints do not change barrier completion or synchronization.
+- Signature: `tle.gpu.copy(src, dst, shape, offsets=None, barrier=None, mask=None, cache_policy=None, other=None, is_async=False, eviction_policy="")`
+- `cache_policy` accepts a native backend policy for the global-memory side of the copy (and cannot be combined with a non-empty legacy `eviction_policy` string). `tle.gpu.CachePolicy(cache_modifier=None, l1=None, l2=None, l2_prefetch_size=None)` is NVIDIA-only and uses native PTX modifiers and eviction controls.
+- Omit `cache_policy` or pass Python `None` to preserve the default path. NVIDIA `CachePolicy()` rejects an empty request; other native default constructors retain their original semantics. MThreads `"none"` is a persistence value, distinct from Python `None`.
+- Static policies are immutable and support host/JIT construction, value specialization, and `tl.constexpr` worker forwarding. Policy fields must be compile-time values. Every policy applies to the copy's global-memory end without changing synchronization.
+- Backend, architecture, direction, path, or instruction-combination mismatches raise errors. Formal `cache` and `evict` fields survive mid-end rewrites; final lowering preserves controls supported by the selected instruction and converts or omits the rest with an MLIR remark (`MLIR_ENABLE_DIAGNOSTICS=remarks`).
 
-Cache persistence is performance-sensitive. Start from the default and measure each non-default pair on the target kernel, shape, dtype, and layout. Streaming access alone does not justify `inner="none"`: it can severely degrade GEMM performance. A benefit from `outer="none"` does not imply a benefit from `inner="none"`. The names do not guarantee cache bypass, a fixed reuse count, or locked residency, and the physical L1/L2 mapping is not specified by this API.
-
-MUSA example using the default persistence explicitly:
+| Backend / path | Public policy | Controls |
+| --- | --- | --- |
+| NVIDIA TMA | `tle.gpu.CachePolicy` | Static L2 eviction only (`fraction=1`) |
+| NVIDIA pointer | `tle.gpu.CachePolicy` | Cache modifier, or L1 eviction, or static L2 eviction; modifier + L2 is allowed |
+| MThreads TME | `tle.gpu.mthreads.TMECachePolicy` | `inner` 0–5, `outer` 0–3 (`0..3` normalize to `none`/`once`/`normal`/`persist`); load `prefetch_size` |
+| MThreads LSU | `tle.gpu.mthreads.LSUCachePolicy` | `inner_persistence`/`outer_persistence` `None` or 0–5; `l2_policy` `None` or 0/1 |
+| PPU LSU | `tle.gpu.ppu.CachePolicy` | Native modifier or load `kp` 1/2/4/5/6 and store `kp` 2/4/6 |
+| PPU AIU | `tle.gpu.ppu.AIUCachePolicy` | `kp` 1–6 (`kp3` aliases `kp2`); supported descriptor and block-pointer loads |
+| HCU / MetaX pointer | `tle.gpu.hcu.CachePolicy` / `tle.gpu.metax.CachePolicy` | Direction-checked native modifiers |
 
 ```python
-completion = tle.gpu.alloc_barrier(expect_bytes=BM * BK * 2)  # FP16/BF16
-tle.gpu.copy(a_desc, a_smem, [BM, BK], [m_offset, k_offset],
-             barrier=completion,
-             cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="normal", outer="normal"))
-tle.gpu.barrier_wait(completion, phaseIdx=0)
+# NVIDIA TMA: controls are specified per copy, independently for each operand.
+tle.gpu.copy(a_desc, a_tile, [BM, BK], [m, k],
+             cache_policy=tle.gpu.CachePolicy(
+                 l2=tle.gpu.FractionalEvictionPolicy("evict_last")))
+tle.gpu.copy(b_desc, b_tile, [BK, BN], [k, n],
+             cache_policy=tle.gpu.CachePolicy(
+                 l2=tle.gpu.FractionalEvictionPolicy("evict_first")))
 ```
 
-A `TMECachePolicy` can be constructed on the host or inside a JIT kernel and passed as a `tl.constexpr` argument to a `warp_specialize` producer worker. Bare tuples and strings are not MThreads cache-policy objects.
+NVIDIA policies require `fraction=1` and `secondary="evict_unchanged"`. Non-default `l2_prefetch_size` and simultaneous `l1`/`l2` requests are rejected. NVIDIA TMA bypasses L1 and accesses L2. Modifier and explicit L1 eviction cannot be combined. NVIDIA policy types are exported directly by `tle.gpu`.
+
+PPU `.ba` (`kp7`) and LSU `kp3` are rejected. Native strings and integers retain their backend SDK meanings. See the [complete policy guide](docs/tle-copy-cache-policy.md) for the cross-backend conversion matrix, direction/architecture limits, and usage examples.
+
+###### 3.3.1.1.6 Native `cache_policy` on `tl.load` and `tl.store`
+
+`tl.load(..., cache_policy=policy)` and `tl.store(..., cache_policy=policy)` accept the same pointer-path native policy objects as `tle.gpu.copy` (`tle.gpu.CachePolicy`, `tle.gpu.mthreads.LSUCachePolicy`, `tle.gpu.hcu.CachePolicy`, `tle.gpu.metax.CachePolicy`, and `tle.gpu.ppu.CachePolicy`), while preserving register-valued load/store semantics without allocating shared memory:
+
+```python
+x = tl.load(x_ptr + offsets, mask=mask, other=0.0,
+            cache_policy=tle.gpu.ppu.CachePolicy(".lu"))
+tl.store(y_ptr + offsets, y, mask=mask,
+         cache_policy=tle.gpu.mthreads.LSUCachePolicy(
+             inner_persistence=3, outer_persistence=3, l2_policy=1))
+```
+
+- Passing `None` preserves the default load/store behavior. An explicit `cache_policy` object cannot be combined with a non-empty `cache_modifier` or `eviction_policy`.
+- Copy-only policies (`TMECachePolicy` and `AIUCachePolicy`) and non-global pointers (address space $\ne 1$) are rejected.
+- Policies normalize directly into the operation's `cache` and `evict` attributes prior to op creation and follow the same mid-end pass-through and backend conversion rules as `tle.gpu.copy`. See the [policy guide](docs/tle-copy-cache-policy.md) for the complete conversion matrix.
 
 ##### 3.3.1.2 Execution Orchestration
 

@@ -2,6 +2,7 @@
 #include "TargetInfo.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "triton/Dialect/Triton/IR/CacheControls.h"
 #ifdef __TLE__
 #include "mlir/IR/BuiltinAttributes.h"
 #endif
@@ -148,38 +149,63 @@ std::string getRegisterSizeCode(int size, bool is_float) {
   }
 }
 
-Value createCachePolicy(triton::EvictionPolicy opEvict,
+Value createCachePolicy(triton::EvictionPolicy evict,
                         ConversionPatternRewriter &rewriter, Location loc,
                         int computeCapability) {
-  // Emit createpolicy.fractional.L2::policy.b64 xx 1.0
-  PTXBuilder ptxBuilder;
-  const bool hasL2EvictPolicy =
-      opEvict == triton::EvictionPolicy::EVICT_FIRST ||
-      opEvict == triton::EvictionPolicy::EVICT_LAST;
-  Value policyRet;
+  if (computeCapability < 80)
+    return {};
+  StringRef priority;
+  if (isL2Eviction(evict))
+    priority = stringifyEvictionPolicy(evict).drop_front(3);
+  else if (evict == EvictionPolicy::EVICT_FIRST ||
+           evict == EvictionPolicy::EVICT_LAST)
+    priority = stringifyEvictionPolicy(evict);
+  else
+    return {};
+  PTXBuilder ptx;
+  auto &inst =
+      ptx.create("createpolicy.fractional")->o("L2::" + priority.str()).b(64);
+  auto *result = ptx.newOperand("=l", /*init=*/true);
+  inst(result, ptx.newConstantOperand("1.0"));
+  return ptx.launch(rewriter, loc, rewriter.getI64Type());
+}
 
-  const bool hardwareSupport = computeCapability >= 80;
+static LogicalResult verifyCacheControls(Operation *op, int capability,
+                                         bool isLoad, bool isTMA = false) {
+  auto cache = getCacheModifier(op);
+  auto evict = getEvictionPolicy(op);
+  bool valid =
+      cache == CacheModifier::NONE || cache == CacheModifier::CG ||
+      cache == CacheModifier::CS ||
+      (isLoad ? cache == CacheModifier::CA || cache == CacheModifier::LU ||
+                    cache == CacheModifier::CV
+              : cache == CacheModifier::WB || cache == CacheModifier::WT);
+  if (!valid)
+    return op->emitError("invalid NVIDIA cache modifier for this direction");
+  if (isL1Eviction(evict) && cache != CacheModifier::NONE)
+    return op->emitError(
+        "NVIDIA cache modifier and explicit L1 eviction cannot be combined");
+  if ((isL1Eviction(evict) || isL2Eviction(evict)) && capability < 80)
+    return op->emitError(
+        "explicit NVIDIA eviction policy requires sm_80 or newer");
+  if (isTMA && (cache != CacheModifier::NONE || isL1Eviction(evict)))
+    return op->emitError("TMA copy supports only L2 eviction policy");
+  return success();
+}
 
-  if (hasL2EvictPolicy && hardwareSupport) {
-    auto &policy =
-        ptxBuilder.create("createpolicy.fractional")
-            ->o("L2::evict_first",
-                opEvict == triton::EvictionPolicy::EVICT_FIRST)
-            .o("L2::evict_last", opEvict == triton::EvictionPolicy::EVICT_LAST)
-            .b(64);
-
-    const std::string writeConstraint = "=l";
-    // prepare asm operands
-    auto *dstOpr = ptxBuilder.newOperand(writeConstraint, /*init=*/true);
-    std::string fractionStr = "1.0";
-    auto *fractionOpr = ptxBuilder.newConstantOperand(fractionStr);
-    policy(dstOpr, fractionOpr);
-
-    Type policyRetTy = rewriter.getI64Type();
-    policyRet = ptxBuilder.launch(rewriter, loc, policyRetTy);
-  }
-
-  return policyRet;
+static void addGlobalCacheQualifiers(PTXInstr &inst, Operation *op,
+                                     bool hasL2Policy) {
+  inst.global();
+  auto cache = getCacheModifier(op);
+  auto evict = getEvictionPolicy(op);
+  if (cache != CacheModifier::NONE)
+    inst.o(stringifyCacheModifier(cache).str());
+  if (isL1Eviction(evict))
+    inst.o("L1::" + stringifyEvictionPolicy(evict).drop_front(3).str());
+  else
+    inst.o("L1::evict_first", evict == EvictionPolicy::EVICT_FIRST)
+        .o("L1::evict_last", evict == EvictionPolicy::EVICT_LAST);
+  inst.o("L2::cache_hint", hasL2Policy);
 }
 
 // Contains some helper functions for both Load and Store conversions.
@@ -273,6 +299,8 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
   LogicalResult
   matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (failed(verifyCacheControls(op, computeCapability, true)))
+      return failure();
     auto ctx = getContext();
     auto loc = op->getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
@@ -462,14 +490,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         ld->o("shared::cluster", isClusterSharedPtr)
             .o("shared", !isClusterSharedPtr);
       } else {
-        ld->global()
-            .o("ca", op.getCache() == triton::CacheModifier::CA)
-            .o("cg", op.getCache() == triton::CacheModifier::CG)
-            .o("L1::evict_first",
-               op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-            .o("L1::evict_last",
-               op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
-            .o("L2::cache_hint", l2PolicyReg != Value());
+        addGlobalCacheQualifiers(*ld, op, bool(l2PolicyReg));
       }
       ld->v(nWords).b(width);
 
@@ -489,18 +510,9 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
           createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
       // Define the instruction opcode
-      auto &ld = ptxBuilder.create("ld")
-                     ->o("volatile", op.getIsVolatile())
-                     .global()
-                     .o("ca", op.getCache() == triton::CacheModifier::CA)
-                     .o("cg", op.getCache() == triton::CacheModifier::CG)
-                     .o("L1::evict_first",
-                        op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-                     .o("L1::evict_last",
-                        op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
-                     .o("L2::cache_hint", l2PolicyReg != Value())
-                     .v(nWords)
-                     .b(width);
+      auto &ld = ptxBuilder.create("ld")->o("volatile", op.getIsVolatile());
+      addGlobalCacheQualifiers(ld, op, bool(l2PolicyReg));
+      ld.v(nWords).b(width);
 
       PTXBuilder::Operand *evictOpr = nullptr;
       if (l2PolicyReg)
@@ -565,6 +577,8 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
   LogicalResult
   matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (failed(verifyCacheControls(op, computeCapability, false)))
+      return failure();
     Value ptr = op.getPtr();
     Value value = op.getValue();
 
@@ -702,16 +716,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
         ptxStoreInstr->o("shared::cluster", isClusterSharedPtr)
             .o("shared", !isClusterSharedPtr);
       } else {
-        ptxStoreInstr->global()
-            .o("wb", op.getCache() == triton::CacheModifier::WB)
-            .o("cg", op.getCache() == triton::CacheModifier::CG)
-            .o("cs", op.getCache() == triton::CacheModifier::CS)
-            .o("wt", op.getCache() == triton::CacheModifier::WT)
-            .o("L1::evict_first",
-               op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-            .o("L1::evict_last",
-               op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
-            .o("L2::cache_hint", l2PolicyReg != Value());
+        addGlobalCacheQualifiers(*ptxStoreInstr, op, bool(l2PolicyReg));
       }
       ptxStoreInstr->v(nWords).b(width);
 
@@ -731,20 +736,9 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       Value l2PolicyReg =
           createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
-      auto &ptxStoreInstr =
-          ptxBuilder.create("st")
-              ->global()
-              .o("wb", op.getCache() == triton::CacheModifier::WB)
-              .o("cg", op.getCache() == triton::CacheModifier::CG)
-              .o("cs", op.getCache() == triton::CacheModifier::CS)
-              .o("wt", op.getCache() == triton::CacheModifier::WT)
-              .o("L1::evict_first",
-                 op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-              .o("L1::evict_last",
-                 op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
-              .o("L2::cache_hint", l2PolicyReg != Value())
-              .v(nWords)
-              .b(width);
+      auto &ptxStoreInstr = *ptxBuilder.create("st");
+      addGlobalCacheQualifiers(ptxStoreInstr, op, bool(l2PolicyReg));
+      ptxStoreInstr.v(nWords).b(width);
 
       PTXBuilder::Operand *evictOpr = nullptr;
       if (l2PolicyReg)
@@ -1383,6 +1377,8 @@ struct AsyncCopyGlobalToLocalOpConversion
   LogicalResult
   matchAndRewrite(triton::gpu::AsyncCopyGlobalToLocalOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (failed(verifyCacheControls(op, computeCapability, true)))
+      return failure();
     auto ctx = getContext();
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
@@ -1479,18 +1475,12 @@ struct AsyncCopyGlobalToLocalOpConversion
              << vecBytes << " bytes";
     }
     assert(vecBytes == 16 || vecBytes == 8 || vecBytes == 4);
-#ifdef __FLAGTREE_PIPELINE_ENHANCE__
-    // Modifiers cp.async cannot express fall back to ca/cg in emitCpAsync.
-    // This check, the PTX gate of the L2 hint and the modifier choice below
-    // have no run-time switch, unlike the TTGIR passes behind the same macro
-    // (knobs.nvidia.pipeline_enhance): their #else branches trap in ptxas or
-    // reject the op, so there is no lowering to switch back to.
-#else  // __FLAGTREE_PIPELINE_ENHANCE__
+#ifndef __FLAGTREE_PIPELINE_ENHANCE__
     if (op.getCache() != CacheModifier::NONE &&
         op.getCache() != CacheModifier::CA &&
         op.getCache() != CacheModifier::CG)
       return op.emitError("cp.async supports only ca/cg cache modifiers");
-#endif // __FLAGTREE_PIPELINE_ENHANCE__
+#endif
 
     auto freeVarMasks = getFreeVariableMasks(srcTy);
     // NOTE(@peterbell10): We load redundant data on different CTAs, so the data
@@ -1500,49 +1490,46 @@ struct AsyncCopyGlobalToLocalOpConversion
     Value threadPred =
         emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
 
-#ifdef __FLAGTREE_PIPELINE_ENHANCE__
-    // Adapted from https://github.com/triton-lang/triton/pull/11660 and
-    // https://github.com/triton-lang/triton/pull/11848: ptxas before CUDA 13.4
-    // (PTX 9.4) miscompiles cp.async with an L2::cache_hint into an illegal
-    // instruction, so the eviction policy is only emitted from PTX 9.4 on.
-    Value l2PolicyReg;
-    if (targetInfo.getPtxVersion() >= 94)
-      l2PolicyReg =
-          createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
-#else  // __FLAGTREE_PIPELINE_ENHANCE__
-    Value l2PolicyReg =
-        createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
-#endif // __FLAGTREE_PIPELINE_ENHANCE__
-
-    auto emitCpAsync =
-        [&b, threadPred, ptrTy, hasMask = bool(llMask), opCache = op.getCache(),
-#ifdef __TLE__
-         materializeOther,
+    auto evict =
+        getNvidiaAsyncEvictionPolicy(op.getEvict(), targetInfo.getPtxVersion());
+#ifndef __FLAGTREE_PIPELINE_ENHANCE__
+    // Preserve upstream's unversioned lowering of the two legacy policies.
+    // Explicit L2 policies introduced by TLE still require PTX 9.4.
+    if (op.getEvict() == EvictionPolicy::EVICT_FIRST ||
+        op.getEvict() == EvictionPolicy::EVICT_LAST)
+      evict = op.getEvict();
 #endif
-         l2PolicyReg](RewriterBase &rewriter, Location loc,
-                      ArrayRef<Value> vals, Value shmemAddr, int startIdx,
-                      VectorType vecTy) -> SmallVector<Value> {
+    Value l2PolicyReg =
+        createCachePolicy(evict, rewriter, loc, computeCapability);
+    llvm::SmallDenseSet<unsigned> reportedWidths;
+    auto emitCpAsync = [&b, &reportedWidths, &op, evict, threadPred, ptrTy,
+                        hasMask = bool(llMask),
+#ifdef __TLE__
+                        materializeOther,
+#endif
+                        l2PolicyReg](RewriterBase &rewriter, Location loc,
+                                     ArrayRef<Value> vals, Value shmemAddr,
+                                     int startIdx,
+                                     VectorType vecTy) -> SmallVector<Value> {
       assert(isa<VectorType>(vecTy));
       auto *ctx = rewriter.getContext();
       auto elemTy = vecTy.getElementType();
       auto nBytes = vecTy.getNumElements() * elemTy.getIntOrFloatBitWidth() / 8;
       assert(nBytes == 16 || nBytes == 8 || nBytes == 4);
-#ifdef __FLAGTREE_PIPELINE_ENHANCE__
-      // Adapted from https://github.com/triton-lang/triton/pull/11660: honor
-      // an explicit `ca`; `cg` only exists for 16-byte copies and `cv` not at
-      // all, so those take the default instead of rejecting the op.
-      CacheModifier srcCacheModifier =
-          nBytes == 16 && opCache != CacheModifier::CA ? CacheModifier::CG
-                                                       : CacheModifier::CA;
-#else  // __FLAGTREE_PIPELINE_ENHANCE__
-      // Keep Triton's historical default when the user does not specify a
-      // cache modifier, but honor tl.load/ttg.async_copy cache modifiers when
-      // they are present.
-      CacheModifier srcCacheModifier =
-          opCache == CacheModifier::NONE
-              ? (nBytes == 16 ? CacheModifier::CG : CacheModifier::CA)
-              : opCache;
-#endif // __FLAGTREE_PIPELINE_ENHANCE__
+      auto srcCacheModifier =
+          getNvidiaAsyncCacheModifier(op.getCache(), nBytes);
+#ifndef __FLAGTREE_PIPELINE_ENHANCE__
+      if (op.getCache() != CacheModifier::NONE)
+        srcCacheModifier = op.getCache();
+#endif
+      auto effectiveCache = op.getCache() == CacheModifier::NONE
+                                ? CacheModifier::NONE
+                                : srcCacheModifier;
+      if (reportedWidths.insert(nBytes).second)
+        remarkCacheControlConversion(op, "NVIDIA cp.async", effectiveCache,
+                                     evict,
+                                     "ca/cg is selected by transfer width; "
+                                     "only supported L2 eviction is emitted");
 
       auto structElem = vals[startIdx];
       auto srcElem = b.extract_val(ptrTy, structElem, 0);
@@ -1709,34 +1696,20 @@ struct AsyncTMACopyGlobalToLocalOpConversion
           triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp> {
   using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
 
-#ifdef __TLE__
-  AsyncTMACopyGlobalToLocalOpConversion(LLVMTypeConverter &typeConverter,
-                                        int computeCapability,
-                                        PatternBenefit benefit)
-      : ConvertOpToLLVMPattern(typeConverter, benefit),
-        computeCapability(computeCapability) {}
-
-  int computeCapability;
-#endif
   LogicalResult
   matchAndRewrite(triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp op,
                   OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     if (op.getCache() != triton::CacheModifier::NONE)
       return op.emitError("cache modifiers not supported yet");
-#ifndef __TLE__
-    if (op.getEvict() != triton::EvictionPolicy::NORMAL)
-      return op.emitError("eviction policy not supported yet");
-#endif
     if (op.getIsVolatile())
       return op.emitError("volatile not supported yet");
 
+    if (failed(verifyCacheControls(op, 90, true, true)))
+      return failure();
     auto loc = op.getLoc();
+    auto l2Policy = createCachePolicy(op.getEvict(), rewriter, loc, 90);
     auto b = TritonLLVMOpBuilder(loc, rewriter);
-#ifdef __TLE__
-    Value l2PolicyReg =
-        createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
-#endif
     ttg::MemDescType dstTy = op.getResult().getType();
     Type llvmElemTy = typeConverter->convertType(dstTy.getElementType());
     auto barrierMemObj = LLVM::getSharedMemoryObjectFromStruct(
@@ -1802,11 +1775,8 @@ struct AsyncTMACopyGlobalToLocalOpConversion
           ptxBuilderTMA.newOperand(adaptor.getDesc(), "l")};
       std::string tmaInst =
           "@$0 cp.async.bulk.tensor." + std::to_string(rank) +
-          "d.shared::cluster.global.mbarrier::complete_tx::bytes [$1], [$2, {";
-#ifdef __TLE__
-      if (l2PolicyReg)
-        tmaInst.insert(tmaInst.find(" [$1]"), ".L2::cache_hint");
-#endif
+          "d.shared::cluster.global.mbarrier::complete_tx::bytes" +
+          (l2Policy ? ".L2::cache_hint" : "") + " [$1], [$2, {";
 
       auto offsets = applyLinearLayout(loc, rewriter, msgToOffset,
                                        {{kMsg, copyIdxVal}, {kBlock, ctaId}});
@@ -1822,14 +1792,12 @@ struct AsyncTMACopyGlobalToLocalOpConversion
       }
       operands.push_back(
           ptxBuilderTMA.newOperand(barrierMemObj.getBase(), "r"));
-      tmaInst += "}], [$" + std::to_string(operandIdx++) + "];";
-#ifdef __TLE__
-      if (l2PolicyReg) {
-        operands.push_back(ptxBuilderTMA.newOperand(l2PolicyReg, "l"));
-        tmaInst.pop_back();
-        tmaInst += ", $" + std::to_string(operandIdx++) + ";";
+      tmaInst += "}], [$" + std::to_string(operandIdx++) + "]";
+      if (l2Policy) {
+        operands.push_back(ptxBuilderTMA.newOperand(l2Policy, "l"));
+        tmaInst += ", $" + std::to_string(operandIdx++);
       }
-#endif
+      tmaInst += ";";
 
       auto &tma = *ptxBuilderTMA.create(tmaInst);
       tma(operands, /*onlyAttachMLIRArgs=*/true);
@@ -1840,12 +1808,11 @@ struct AsyncTMACopyGlobalToLocalOpConversion
   }
 };
 
-LogicalResult convertTMAStoreLikeOp(Operation *op,
-                                    const TypeConverter *typeConverter,
-                                    ConversionPatternRewriter &rewriter,
-                                    Value tmaPtr, ttg::MemDescType srcTy,
-                                    Value src, ValueRange coords,
-                                    const std::string &tmaInst) {
+LogicalResult
+convertTMAStoreLikeOp(Operation *op, const TypeConverter *typeConverter,
+                      ConversionPatternRewriter &rewriter, Value tmaPtr,
+                      ttg::MemDescType srcTy, Value src, ValueRange coords,
+                      const std::string &tmaInst, Value l2Policy = {}) {
   auto loc = op->getLoc();
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   Type llvmElemTy = typeConverter->convertType(srcTy.getElementType());
@@ -1905,6 +1872,8 @@ LogicalResult convertTMAStoreLikeOp(Operation *op,
       operands.push_back(ptxBuilderTMA.newOperand(coord, "r"));
     }
     operands.push_back(ptxBuilderTMA.newOperand(shMemPtr, "r"));
+    if (l2Policy)
+      operands.push_back(ptxBuilderTMA.newOperand(l2Policy, "l"));
     auto &tma = *ptxBuilderTMA.create(tmaInst);
     tma(operands, /*onlyAttachMLIRArgs=*/true);
     ptxBuilderTMA.launch(rewriter, loc, voidTy);
@@ -1930,20 +1899,29 @@ struct AsyncTMACopyLocalToGlobalOpConversion
   matchAndRewrite(triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp op,
                   OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (failed(verifyCacheControls(op, 90, false, true)))
+      return failure();
+    auto l2Policy = createCachePolicy(op.getEvict(), rewriter, op.getLoc(), 90);
     std::ostringstream tmaInst;
     auto rank = op.getCoord().size();
     tmaInst << "@$0 cp.async.bulk.tensor." << rank;
-    tmaInst << "d.global.shared::cta.bulk_group [$1, {";
+    tmaInst << "d.global.shared::cta.bulk_group";
+    if (l2Policy)
+      tmaInst << ".L2::cache_hint";
+    tmaInst << " [$1, {";
     int operandIdx = 2;
     for (int i = 0; i < rank; i++) {
       tmaInst << "$" << operandIdx++;
       if (i != rank - 1)
         tmaInst << ", ";
     }
-    tmaInst << "}], [$" << (operandIdx++) << "];";
+    tmaInst << "}], [$" << (operandIdx++) << "]";
+    if (l2Policy)
+      tmaInst << ", $" << operandIdx++;
+    tmaInst << ";";
     return convertTMAStoreLikeOp(op, typeConverter, rewriter, adaptor.getDesc(),
                                  op.getSrc().getType(), adaptor.getSrc(),
-                                 adaptor.getCoord(), tmaInst.str());
+                                 adaptor.getCoord(), tmaInst.str(), l2Policy);
   }
 };
 
@@ -2308,18 +2286,9 @@ void mlir::triton::NVIDIA::populateLoadStoreOpToLLVMPatterns(
       typeConverter, targetInfo, computeCapability, axisInfoAnalysis, benefit);
   patterns.add<AsyncCommitGroupOpConversion, AsyncWaitOpConversion,
                AsyncCopyMbarrierArriveOpConversion>(typeConverter, benefit);
-#ifdef __TLE__
-  patterns.add<AsyncTMACopyGlobalToLocalOpConversion>(
-      typeConverter, computeCapability, benefit);
-  patterns.add<AsyncTMACopyLocalToGlobalOpConversion,
-               AsyncTMAReduceOpConversion, AsyncTMAGatherOpConversion,
-               AsyncTMAScatterOpConversion, TMAStoreWaitOpConversion>(
-      typeConverter, benefit);
-#else
   patterns.add<AsyncTMACopyGlobalToLocalOpConversion,
                AsyncTMACopyLocalToGlobalOpConversion,
                AsyncTMAReduceOpConversion, AsyncTMAGatherOpConversion,
                AsyncTMAScatterOpConversion, TMAStoreWaitOpConversion>(
       typeConverter, benefit);
-#endif
 }
