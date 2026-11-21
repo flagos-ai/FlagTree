@@ -440,54 +440,6 @@ static bool factorUniformBufferLoadMask(ConversionPatternRewriter &rewriter,
   return true;
 }
 
-// Store descriptors need the complete acyclic integer grid-index DAG.
-// Preserve the existing load/rematerialization acceptance domain. Every new
-// operation is deterministic integer arithmetic on recursively uniform inputs;
-// unknown calls, loads, thread/lane IDs and unproved CFG values remain
-// rejected.
-static bool isBufferStoreRebaseUniform(Value root) {
-  DenseMap<Value, bool> memo;
-  llvm::SmallDenseSet<Value, 64> active;
-  unsigned steps = 0;
-  std::function<bool(Value)> prove = [&](Value value) -> bool {
-    if (!isa<IntegerType>(value.getType()) || ++steps > 512)
-      return false;
-    if (auto it = memo.find(value); it != memo.end())
-      return it->second;
-    if (isRematerializationUniform(value)) {
-      memo[value] = true;
-      return true;
-    }
-    if (!active.insert(value).second)
-      return false;
-    auto finish = [&](bool result) {
-      active.erase(value);
-      memo[value] = result;
-      return result;
-    };
-    Operation *op = value.getDefiningOp();
-    if (!op || op->getNumRegions() || op->getNumSuccessors() ||
-        op->getNumResults() != 1)
-      return finish(false);
-    StringRef name = op->getName().getStringRef();
-    bool arithmetic =
-        isa<arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::AndIOp,
-            arith::OrIOp, arith::XOrIOp, arith::ShLIOp, arith::ShRUIOp,
-            arith::ShRSIOp, arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
-            arith::CmpIOp, arith::SelectOp, arith::DivSIOp, arith::DivUIOp,
-            arith::RemSIOp, arith::RemUIOp, arith::MinSIOp, arith::MinUIOp,
-            arith::MaxSIOp, arith::MaxUIOp, LLVM::AddOp, LLVM::SubOp,
-            LLVM::MulOp, LLVM::AndOp, LLVM::OrOp, LLVM::XOrOp, LLVM::ShlOp,
-            LLVM::LShrOp, LLVM::AShrOp, LLVM::SExtOp, LLVM::ZExtOp,
-            LLVM::TruncOp, LLVM::ICmpOp, LLVM::SelectOp, LLVM::SDivOp,
-            LLVM::UDivOp, LLVM::SRemOp, LLVM::URemOp>(op) ||
-        name == "llvm.intr.smin" || name == "llvm.intr.smax" ||
-        name == "llvm.intr.umin" || name == "llvm.intr.umax";
-    return finish(arithmetic && llvm::all_of(op->getOperands(), prove));
-  };
-  return prove(root);
-}
-
 // A deliberately small range proof for explicit offset terms. Bounds apply
 // to every tensor lane, independently of masks. Unknown arguments/loads/PHIs
 // and arithmetic that might wrap fall back to the existing offset lowering.
@@ -2464,136 +2416,8 @@ struct BufferStoreOpConversion
     //        buffer ops on HCUs as more hcu-specific details (stride field
     //        particularly) should be considered.
     // Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr, llStride);
-    // Rebase only an explicit splatted uniform term. A runtime unsigned
-    // bound handles arbitrary origin bits; the independently proven local
-    // range guarantees exact byte arithmetic. This is a module opt-in, not
-    // an input proof. Unknown layout/arithmetic keeps the original path.
-    Value storeUniformByteOffset;
     auto storeModule = op->getParentOfType<ModuleOp>();
-    auto rebaseAttr =
-        storeModule->getAttrOfType<BoolAttr>("ttg.hcu.rebase_buffer_store");
-    if (rebaseAttr && rebaseAttr.getValue() &&
-        targetInfo.getArch() == "gfx936" && !llStride &&
-        cast<RankedTensorType>(offset.getType())
-            .getElementType()
-            .isInteger(32)) {
-      Value sum = offset;
-      if (auto trunc = sum.getDefiningOp<arith::TruncIOp>())
-        sum = trunc.getIn();
-      if (auto add = sum.getDefiningOp<arith::AddIOp>()) {
-        for (unsigned side = 0; side != 2; ++side) {
-          Value uniformTensor = add->getOperand(side);
-          if (auto ext = uniformTensor.getDefiningOp<arith::ExtSIOp>())
-            uniformTensor = ext.getIn();
-          else if (auto ext = uniformTensor.getDefiningOp<arith::ExtUIOp>())
-            uniformTensor = ext.getIn();
-          auto splat = uniformTensor.getDefiningOp<triton::SplatOp>();
-          Value varying = add->getOperand(1 - side);
-          if (!splat || (!splat.getSrc().getType().isInteger(32) &&
-                         !splat.getSrc().getType().isInteger(64)))
-            continue;
-          Value uniform = rewriter.getRemappedValue(splat.getSrc());
-          Value local = rewriter.getRemappedValue(varying);
-          if (!uniform || !local || !isBufferStoreRebaseUniform(uniform))
-            continue;
-          unsigned elemBytes =
-              std::max(8u, valueElemTy.getIntOrFloatBitWidth()) / 8;
-          uint64_t vectorBytes = uint64_t(vec) * elemBytes;
-          if (!vectorBytes || vectorBytes > uint64_t(INT32_MAX))
-            continue;
-          uint64_t maxElement =
-              (uint64_t(INT32_MAX) - (vectorBytes - 1)) / elemBytes;
-          // A uniform runtime interval also handles dynamic nonnegative
-          // strides. Each bound is clamped to zero on failure; arithmetic on
-          // these bounded i64 values cannot overflow. Failure only chooses
-          // the original descriptor/offset path, never an unchecked access.
-          using Bound = std::pair<Value, Value>; // nonnegative maximum, valid
-          DenseMap<Value, Bound> knownBounds;
-          unsigned boundSteps = 0;
-          std::function<std::optional<Bound>(Value, unsigned)> bound;
-          bound = [&](Value source, unsigned depth) -> std::optional<Bound> {
-            if (depth > 16 || ++boundSteps > 512)
-              return std::nullopt;
-            if (auto it = knownBounds.find(source); it != knownBounds.end())
-              return it->second;
-            auto type =
-                dyn_cast<IntegerType>(getElementTypeOrSelf(source.getType()));
-            if (!type || (type.getWidth() != 32 && type.getWidth() != 64))
-              return std::nullopt;
-            auto save = [&](Value upper, Value valid) -> std::optional<Bound> {
-              Bound result{b.select(valid, upper, b.i64_val(0)), valid};
-              knownBounds[source] = result;
-              return result;
-            };
-            if (auto maximum = getNonNegativeOffsetMax(source)) {
-              bool fits = *maximum <= maxElement;
-              return save(b.i64_val(fits ? *maximum : 0), b.i1_val(fits));
-            }
-            Operation *def = source.getDefiningOp();
-            if (!def)
-              return std::nullopt;
-            if (auto splatValue = dyn_cast<triton::SplatOp>(def)) {
-              Value scalar = rewriter.getRemappedValue(splatValue.getSrc());
-              if (!scalar || !isBufferStoreRebaseUniform(scalar))
-                return std::nullopt;
-              if (scalar.getType().isInteger(32))
-                scalar = b.sext(i64_ty, scalar);
-              else if (!scalar.getType().isInteger(64))
-                return std::nullopt;
-              // Unsigned comparison rejects negative signed values too.
-              Value valid = b.icmp_ule(scalar, b.i64_val(maxElement));
-              return save(scalar, valid);
-            }
-            if (isa<triton::ExpandDimsOp, triton::BroadcastOp, ConvertLayoutOp,
-                    arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp>(def)) {
-              auto inner = bound(def->getOperand(0), depth + 1);
-              if (inner)
-                knownBounds[source] = *inner;
-              return inner;
-            }
-            if (!isa<arith::AddIOp, arith::MulIOp>(def))
-              return std::nullopt;
-            auto lhs = bound(def->getOperand(0), depth + 1);
-            auto rhs = bound(def->getOperand(1), depth + 1);
-            if (!lhs || !rhs)
-              return std::nullopt;
-            Value upper;
-            if (isa<arith::AddIOp>(def))
-              upper = b.add(lhs->first, rhs->first);
-            else
-              upper = b.mul(lhs->first, rhs->first);
-            Value valid = b.and_(b.and_(lhs->second, rhs->second),
-                                 b.icmp_ule(upper, b.i64_val(maxElement)));
-            return save(upper, valid);
-          };
-          auto range = bound(varying, 0);
-          if (!range)
-            continue;
-          auto locals = unpackLLElements(loc, local, rewriter);
-          if (locals.size() != offsetElems.size())
-            continue;
-          if (!uniform.getType().isInteger(32))
-            uniform = b.trunc(i32_ty, uniform);
-          Value threshold =
-              b.trunc(i32_ty, b.sub(b.i64_val(maxElement), range->first));
-          Value fits = b.and_(range->second, b.icmp_ule(uniform, threshold));
-          Value chosen = b.select(fits, uniform, b.i32_val(0));
-          Value remainder = b.sub(uniform, chosen);
-          for (Value &element : locals) {
-            if (!element.getType().isInteger(32))
-              element = b.trunc(i32_ty, element);
-            element = b.add(element, remainder);
-          }
-          offsetElems = std::move(locals);
-          storeUniformByteOffset = b.mul(chosen, b.i32_val(elemBytes));
-          break;
-        }
-      }
-    }
-    Value rsrcDesc = storeUniformByteOffset
-                         ? bufferEmitter.createResourceDescriptor(
-                               llPtr, Value{}, storeUniformByteOffset)
-                         : bufferEmitter.createResourceDescriptor(llPtr);
+    Value rsrcDesc = bufferEmitter.createResourceDescriptor(llPtr);
     MLIRContext *ctx = rewriter.getContext();
     auto moduleOp = op->getParentOfType<ModuleOp>();
     auto freeVarMasks = getFreeVariableMasks(valueTy);
@@ -2605,7 +2429,7 @@ struct BufferStoreOpConversion
     // every possible bit pattern of its inputs (without using the predicate),
     // covers its full i16 within the unchanged raw descriptor. A lost tensor
     // producer during conversion cannot supply or invalidate that proof.
-    // Unknown arithmetic or rebased resources keep emitStore per element.
+    // Unknown arithmetic keeps emitStore per element.
     auto scalarOffsetAttr = storeModule->getAttrOfType<BoolAttr>(
         "ttg.hcu.buffer_store_scalar_offset");
     auto splitImmediateAttr = storeModule->getAttrOfType<BoolAttr>(
@@ -2616,7 +2440,7 @@ struct BufferStoreOpConversion
     if (scalarOffsetAttr && scalarOffsetAttr.getValue() &&
         targetInfo.getArch() == "gfx936" &&
         (vec == 1 || vec == 2 || vec == 4 || vec == 8) && !llStride &&
-        !storeUniformByteOffset && valueElemTy.getIntOrFloatBitWidth() == 16 &&
+        valueElemTy.getIntOrFloatBitWidth() == 16 &&
         cacheMod == triton::CacheModifier::NONE) {
       // Each plan() must prove the full original offset <= MaxElement and
       // the exact nonnegative core+constant identity before any IR is emitted.
@@ -2632,8 +2456,8 @@ struct BufferStoreOpConversion
     int64_t numWarps =
         warps ? warps.getInt() : triton::gpu::lookupNumWarps(moduleOp);
     if (targetInfo.getArch() == "gfx936" && vec == 1 && !llStride &&
-        !storeUniformByteOffset && valueElemTy.getIntOrFloatBitWidth() == 16 &&
-        axisInfo && axisInfo->getDivisibility(0) % 4 == 0 && numWarps > 0 &&
+        valueElemTy.getIntOrFloatBitWidth() == 16 && axisInfo &&
+        axisInfo->getDivisibility(0) % 4 == 0 && numWarps > 0 &&
         numWarps <= 16 && TritonGPUDialect::getThreadsPerWarp(moduleOp) == 64 &&
         cast<RankedTensorType>(offset.getType())
             .getElementType()

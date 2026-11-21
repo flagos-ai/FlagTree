@@ -98,8 +98,6 @@ class HIPOptions:
     post_mma_wait: bool = False
     # Preserve proved LDS-DMA alias metadata through native lowering.
     lds_dma_alias_workaround: bool = False
-    # Rebase proved uniform store offsets; dynamic guards may increase pressure.
-    rebase_buffer_store: bool = False
     # Extract proved nonnegative constant byte displacements to raw store SOFFSET.
     buffer_store_scalar_offset: bool = False
     # Factor proved common VOFFSET expressions within a store block.
@@ -203,93 +201,65 @@ class HIPOptions:
         if type(self.min_shared_memory) is not int or self.min_shared_memory < 0:
             raise ValueError("min_shared_memory must be a nonnegative integer")
         object.__setattr__(self, "schedule_hint", ",".join(_schedule_hints(self.schedule_hint)) or "none")
-        if type(self.register_batch_owner) is not bool:
-            raise ValueError("register_batch_owner must be boolean")
-        if self.register_batch_owner and self.arch != "gfx936":
-            raise ValueError("register_batch_owner requires gfx936")
+        boolean_options = (
+            "register_batch_owner",
+            "register_batch_owner_shared_vector",
+            "mmac_pair_columns",
+            "normalize_buffer_record_pitch",
+            "prefer_wide_async_copy",
+            "structured_register_prepack_address",
+            "structured_register_unclamped_column",
+            "priority_after_first_mmac",
+            "mmac_operand_reuse",
+            "combine_shifted_disjoint_or",
+            "pack_bf16_rounds",
+            "terminal_readonly_publication",
+            "wave_private_sync",
+            "buffer_store_factor_offsets",
+            "buffer_store_scalar_offset",
+            "buffer_store_split_immediate",
+            "buffer_store_preserve_masked_base",
+            "interleave_global_lds_reads",
+            "interleave_global_lds_reads_fences",
+            "tupled_register_fences",
+            "lds_dma_alias_workaround",
+        )
+        for name in boolean_options:
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"{name} must be boolean")
+        gfx936_options = (
+            "register_batch_owner",
+            "structured_register_prepack_address",
+            "structured_register_unclamped_column",
+            "priority_after_first_mmac",
+            "mmac_operand_reuse",
+            "combine_shifted_disjoint_or",
+            "terminal_readonly_publication",
+            "wave_private_sync",
+            "buffer_store_factor_offsets",
+            "buffer_store_scalar_offset",
+            "buffer_store_split_immediate",
+            "buffer_store_preserve_masked_base",
+            "interleave_global_lds_reads",
+            "interleave_global_lds_reads_fences",
+            "tupled_register_fences",
+            "lds_dma_alias_workaround",
+        )
+        if self.arch != "gfx936":
+            for name in gfx936_options:
+                if getattr(self, name):
+                    raise ValueError(f"{name} requires gfx936")
         if self.register_batch_owner and not self.optimize_epilogue:
             raise ValueError("register_batch_owner requires optimize_epilogue")
-        if type(self.register_batch_owner_shared_vector) is not bool:
-            raise ValueError("register_batch_owner_shared_vector must be boolean")
         if self.register_batch_owner_shared_vector and not self.register_batch_owner:
             raise ValueError("register_batch_owner_shared_vector requires register_batch_owner")
-        if type(self.mmac_pair_columns) is not bool:
-            raise ValueError("mmac_pair_columns must be a bool")
         if self.mmac_pair_columns and (self.arch != "gfx936" or not self.mmac_transposed):
             raise ValueError("mmac_pair_columns requires transposed legacy MMAC on gfx936")
-        if type(self.normalize_buffer_record_pitch) is not bool:
-            raise ValueError("normalize_buffer_record_pitch must be boolean")
-        if type(self.prefer_wide_async_copy) is not bool:
-            raise ValueError("prefer_wide_async_copy must be boolean")
         if self.use_block_pingpong is not None and type(self.use_block_pingpong) is not bool:
             raise ValueError("use_block_pingpong must be bool or None")
-        MemorySchedulePolicy.from_options(self)
-        if type(self.structured_register_prepack_address) is not bool:
-            raise ValueError("structured_register_prepack_address must be boolean")
-        if self.structured_register_prepack_address and self.arch != "gfx936":
-            raise ValueError("structured_register_prepack_address requires gfx936")
-        if type(self.structured_register_unclamped_column) is not bool:
-            raise ValueError("structured_register_unclamped_column must be boolean")
-        if self.structured_register_unclamped_column and self.arch != "gfx936":
-            raise ValueError("structured_register_unclamped_column requires gfx936")
-        if type(self.priority_after_first_mmac) is not bool:
-            raise ValueError("priority_after_first_mmac must be boolean")
-        if type(self.mmac_operand_reuse) is not bool:
-            raise ValueError("mmac_operand_reuse must be boolean")
-        if self.mmac_operand_reuse and self.arch != "gfx936":
-            raise ValueError("mmac_operand_reuse requires the gfx936 completion model")
-        if self.priority_after_first_mmac and self.arch != "gfx936":
-            raise ValueError("priority_after_first_mmac requires gfx936")
-        if type(self.combine_shifted_disjoint_or) is not bool:
-            raise ValueError("combine_shifted_disjoint_or must be boolean")
-        if self.combine_shifted_disjoint_or and self.arch != "gfx936":
-            raise ValueError("combine_shifted_disjoint_or requires gfx936")
-        if type(self.pack_bf16_rounds) is not bool:
-            raise ValueError("pack_bf16_rounds must be boolean")
-        if type(self.terminal_readonly_publication) is not bool:
-            raise ValueError("terminal_readonly_publication must be boolean")
-        if self.terminal_readonly_publication and self.arch != "gfx936":
-            raise ValueError("terminal_readonly_publication requires gfx936")
-        if type(self.wave_private_sync) is not bool:
-            raise ValueError("wave_private_sync must be boolean")
-        if self.wave_private_sync and self.arch != "gfx936":
-            raise ValueError("wave_private_sync requires gfx936")
-        if type(self.buffer_store_factor_offsets) is not bool:
-            raise ValueError("buffer_store_factor_offsets must be boolean")
-        if self.buffer_store_factor_offsets and self.arch != "gfx936":
-            raise ValueError("buffer_store_factor_offsets requires gfx936")
-        if type(self.buffer_store_scalar_offset) is not bool:
-            raise ValueError("buffer_store_scalar_offset must be boolean")
-        if self.buffer_store_scalar_offset and self.arch != "gfx936":
-            raise ValueError("buffer_store_scalar_offset requires gfx936")
-        if type(self.buffer_store_split_immediate) is not bool:
-            raise ValueError("buffer_store_split_immediate must be boolean")
-        if self.buffer_store_split_immediate and self.arch != "gfx936":
-            raise ValueError("buffer_store_split_immediate requires gfx936")
-        if type(self.buffer_store_preserve_masked_base) is not bool:
-            raise ValueError("buffer_store_preserve_masked_base must be boolean")
-        if self.buffer_store_preserve_masked_base and self.arch != "gfx936":
-            raise ValueError("buffer_store_preserve_masked_base requires gfx936")
-        if type(self.interleave_global_lds_reads) is not bool:
-            raise ValueError("interleave_global_lds_reads must be boolean")
-        if type(self.interleave_global_lds_reads_fences) is not bool:
-            raise ValueError("interleave_global_lds_reads_fences must be boolean")
-        if (self.interleave_global_lds_reads or self.interleave_global_lds_reads_fences) and self.arch != "gfx936":
-            raise ValueError("interleave_global_lds_reads requires gfx936")
         if self.interleave_global_lds_reads_fences and not self.interleave_global_lds_reads:
             raise ValueError("interleave_global_lds_reads_fences requires interleave_global_lds_reads")
-        if type(self.tupled_register_fences) is not bool:
-            raise ValueError("tupled_register_fences must be boolean")
-        if self.tupled_register_fences and self.arch != "gfx936":
-            raise ValueError("tupled_register_fences requires gfx936")
-        if type(self.rebase_buffer_store) is not bool:
-            raise ValueError("rebase_buffer_store must be boolean")
-        if self.rebase_buffer_store and self.arch != "gfx936":
-            raise ValueError("rebase_buffer_store requires gfx936")
-        if type(self.lds_dma_alias_workaround) is not bool:
-            raise ValueError("lds_dma_alias_workaround must be a bool")
-        if self.lds_dma_alias_workaround and self.arch != "gfx936":
-            raise ValueError("lds_dma_alias_workaround requires gfx936")
+        MemorySchedulePolicy.from_options(self)
         if self.loop_unroll_stage not in ("ttir", "post-pipeline"):
             raise ValueError("loop_unroll_stage must be ttir or post-pipeline")
         if self.loop_unroll_stage == "post-pipeline" and self.arch != "gfx936":
@@ -346,6 +316,7 @@ class HIPBackend(BaseBackend):
         return f"hip:{options.arch}"
 
     def parse_options(self, opts) -> Any:
+        opts = dict(opts)
         legacy_sched_variant = opts.pop("instruction_sched_variant", None)
         args = {'arch': knobs.runtime.override_arch or self.target.arch}
 
@@ -867,8 +838,6 @@ class HIPBackend(BaseBackend):
             mod.set_attr("ttg.hcu.structured_register_prepack_address", ir.builder(mod.context).get_bool_attr(True))
         if options.structured_register_unclamped_column:
             mod.set_attr("ttg.hcu.structured_register_unclamped_column", ir.builder(mod.context).get_bool_attr(True))
-        if options.rebase_buffer_store:
-            mod.set_attr("ttg.hcu.rebase_buffer_store", ir.builder(mod.context).get_bool_attr(True))
         if options.buffer_store_scalar_offset:
             mod.set_attr("ttg.hcu.buffer_store_scalar_offset", ir.builder(mod.context).get_bool_attr(True))
         if options.buffer_store_split_immediate:
@@ -1231,16 +1200,16 @@ class HIPBackend(BaseBackend):
                 return fallback_schedules("preparation: " + str(error))
         # Run after all late LLVM scheduling transforms, before native selection.
         # Explicit off does not call the binding or alter the LLVM string.
-        if options.buffer_store_factor_offsets:
-            src, sites = llvm.factor_hcu_buffer_store_offsets(src, options.arch)
-            metadata["hcu_factored_buffer_store_offsets"] = sites
-        if options.pack_bf16_rounds:
-            src, sites = llvm.pack_hcu_bf16_rounds(src)
-            metadata["hcu_packed_bf16_round_sites"] = sites
-        if options.combine_shifted_disjoint_or:
-            src, sites, reason = llvm.combine_hcu_shifted_disjoint_or(src, options.arch)
-            metadata["hcu_shifted_disjoint_or_sites"] = sites
-            metadata["hcu_shifted_disjoint_or_result"] = reason
+        if options.buffer_store_factor_offsets or options.pack_bf16_rounds or options.combine_shifted_disjoint_or:
+            src, memory = llvm.optimize_hcu_memory_ir(src, options.arch, options.buffer_store_factor_offsets,
+                                                      options.pack_bf16_rounds, options.combine_shifted_disjoint_or)
+            if options.buffer_store_factor_offsets:
+                metadata["hcu_factored_buffer_store_offsets"] = memory["factored_stores"]
+            if options.pack_bf16_rounds:
+                metadata["hcu_packed_bf16_round_sites"] = memory["packed_bf16_rounds"]
+            if options.combine_shifted_disjoint_or:
+                metadata["hcu_shifted_disjoint_or_sites"] = memory["combined_shifts"]
+                metadata["hcu_shifted_disjoint_or_result"] = memory["shifted_reason"]
         # Find kernel names (there should only be one)
         # We get the name at the last possible step to accommodate `triton.compile`
         # on user-provided LLVM

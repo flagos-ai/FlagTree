@@ -452,7 +452,7 @@ void init_gluon_ir(py::module &&m) {
               return ttg::AMDMfmaEncodingAttr::get(
                   ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,
                   tilesPerWarp, elementBitWidth);
-            if (mmacLayout < 0 || mmacLayout > 4)
+            if (mmacLayout < 0 || mmacLayout > 5)
               throw std::invalid_argument("unknown HCU MMAC layout");
             return ttg::AMDMfmaEncodingAttr::get(
                 ctx, version, warpsPerCta, instrShape, transposed, ctaLayout,

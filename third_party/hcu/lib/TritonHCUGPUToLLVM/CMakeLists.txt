@@ -49,6 +49,7 @@ add_triton_library(TritonHCUGPUToLLVM
     SetFuncInlineAttrs.cpp
     MmaPhaseScheduling.cpp
     PostMmaWait.cpp
+    LLVMModuleTransforms.cpp
 
     DEPENDS
     TritonHCUGPUConversionPassIncGen
@@ -59,6 +60,7 @@ add_triton_library(TritonHCUGPUToLLVM
     TritonHCUGPUIR
     ${_TLE_LIBS}
     LLVMCore
+    LLVMIRReader
     LLVMPasses
     LLVMSupport
 )
