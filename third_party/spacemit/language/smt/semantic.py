@@ -210,6 +210,30 @@ def mmt4d(a_packed: tl.tensor, b_packed: tl.tensor, out_unpacked: tl.tensor, _se
     return tl.tensor(out, ret_type)
 
 
+def vmt4d(a: tl.tensor, b: tl.tensor, init: tl.tensor, _semantic=None):
+    assert len(a.shape) == 2, f"A must be 2D [1, K], got {a.shape}D"
+    assert len(b.shape) == 2, f"B must be 2D [K, N], got {b.shape}D"
+    assert a.shape[0] == 1, f"A must have M == 1, got {a.shape}"
+    assert a.shape[1] == b.shape[0], (f"K mismatch: A is [1, {a.shape[1]}] but B is [{b.shape[0]}, {b.shape[1]}]")
+    assert b.shape[1] > 1, f"N must be > 1, got {b.shape[1]}"
+    assert a.type.scalar == b.type.scalar, (f"A/B dtype mismatch: {a.type.scalar} vs {b.type.scalar}")
+
+    # f16 inputs without an explicit init accumulate in f32 (engine widening);
+    # with an init the init element type wins.
+    out_scalar = a.type.scalar
+    if init is not None:
+        assert len(init.shape) == 2, f"init must be 2D [1, N], got {init.shape}D"
+        assert init.shape == [1, b.shape[1]], (f"init shape {init.shape} != [1, {b.shape[1]}]")
+        out_scalar = init.type.scalar
+
+    ret_type = tl.block_type(out_scalar, [1, b.shape[1]])
+    if init is None:
+        out = _semantic.builder.create_vmt4d(a.handle, b.handle, None)
+    else:
+        out = _semantic.builder.create_vmt4d(a.handle, b.handle, init.handle)
+    return tl.tensor(out, ret_type)
+
+
 def mbarrier(flag, arrive_count, transaction_count, expect_count, _semantic=None) -> tl.tensor:
     from triton.language.core import _unwrap_if_constexpr
 

@@ -359,6 +359,46 @@ def MMT4DOp : XSMT_Op<"mmt4d", [Pure, MemoryEffects<[MemWrite]>]> {
   }];
 }
 
+def VMT4DOp : XSMT_Op<"vmt4d", [Pure, MemoryEffects<[MemWrite]>]> {
+  let summary = "M=1 matrix-vector multiplication with plain 2D tensors";
+  let description = [{
+    The `xsmt.vmt4d` operation performs a matrix-vector multiplication
+    (matvec) on plain 2D tensors: `a` is [1, K], `b` is [K, N], and the
+    result is [1, N]. Unlike `xsmt.mmt4d`, operands are NOT pre-packed.
+
+    If `c` is provided, performs `result = a @ b + c` (accumulation onto the
+    [1, N] init/bias tensor). If `c` is not provided, performs
+    `result = a @ b` with a zero-filled [1, N] init.
+
+    The op lowers to `linalg.matmul` (M=1) so downstream spine-opt lowering
+    (DirectMVPattern -> spestruct.vmt4d -> vmt4d2 -> slide-MMA engine path)
+    applies.
+
+    Example:
+    ```mlir
+    // Without accumulator
+    %result = xsmt.vmt4d %a, %b :
+        (tensor<1x256xf16>, tensor<256x512xf16>) -> tensor<1x512xf32>
+
+    // With accumulator
+    %result = xsmt.vmt4d %a, %b, %c :
+        (tensor<1x256xf16>, tensor<256x512xf16>, tensor<1x512xf32>) -> tensor<1x512xf32>
+    ```
+  }];
+
+  let arguments = (ins
+    TT_Tensor:$a,
+    TT_Tensor:$b,
+    Optional<TT_Tensor>:$c
+  );
+
+  let results = (outs TT_Tensor:$result);
+
+  let assemblyFormat = [{
+    $a `,` $b (`,` $c^)? attr-dict `:` type($a) `,` type($b) (`,` type($c)^)? `->` type($result)
+  }];
+}
+
 def XSMT_MBarrierCreateOp : XSMT_Op<"mbarrier_create"> {
   let summary = "Create a software barrier for thread synchronization.";
 
