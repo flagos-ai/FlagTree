@@ -32,7 +32,6 @@ def use_auto_shared_layout(layout):
     return is_metax and COMMON_IR_ENABLED and layout is None
 
 
-def select_default_smem_layout(shape):
-    """Return a Python default and no IR layout, allowing CommonIR to infer it."""
+def select_default_smem_layout(builder, shape):
     layout = tle.swizzled_shared_layout.make_default(rank=len(shape))
-    return layout, None
+    return layout, layout.to_ir(builder)

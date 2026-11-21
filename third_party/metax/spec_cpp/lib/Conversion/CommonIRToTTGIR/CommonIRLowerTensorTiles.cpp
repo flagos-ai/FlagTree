@@ -297,6 +297,18 @@ struct CommonIRLowerTensorTilesPass
   void runOnOperation() override {
     SmallVector<TensorTilePlan> plans;
     WalkResult result = getOperation().walk([&](Operation *op) {
+      if (isMctleExtractTile(op)) {
+        if (auto splat = op->getOperand(0).getDefiningOp<triton::SplatOp>()) {
+          auto result = OpBuilder(op).create<triton::SplatOp>(
+              op->getLoc(), op->getResult(0).getType(), splat.getSrc());
+          for (NamedAttribute attr : op->getAttrs())
+            if (attr.getName() != "tile_shape")
+              result->setAttr(attr.getName(), attr.getValue());
+          op->getResult(0).replaceAllUsesWith(result);
+          op->erase();
+          return WalkResult::advance();
+        }
+      }
       if (!isStaticMctleTile(op))
         return WalkResult::advance();
       auto plan = planTile(op);

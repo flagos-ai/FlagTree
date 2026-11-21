@@ -1038,10 +1038,11 @@ LogicalResult LayoutRematerialization::getConvertBackwardSlice(
   // Rematerialization must not recreate an explicitly constrained value in
   // another encoding. Leave a conversion at that boundary instead.
 #ifdef __FLAGTREE_COMMON_IR__
-  for (Value value : slice)
-    if (Attribute encoding = tile::getExplicitValueEncoding(value))
-      if (encoding != layout.lookup(value))
-        return failure();
+  for (Value value : slice) {
+    Attribute fixed = tile::getExplicitValueEncoding(value);
+    if (fixed && fixed != layout.lookup(value))
+      return failure();
+  }
 #endif
   return success();
 }

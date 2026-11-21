@@ -3,18 +3,6 @@
 
 include "mlir/Pass/PassBase.td"
 
-def CommonIRToTTGIR : Pass<"convert-common-ir-to-ttgir", "mlir::ModuleOp"> {
-  let summary = "convert GPU CommonIR buffers to TritonGPU descriptors";
-  let description = [{
-    Converts CommonIR buffers to TritonGPU descriptors: tile.alloc becomes
-    ttg.local_alloc, and buffer bridges resolve to the resulting memdesc.
-  }];
-  let dependentDialects = ["mlir::arith::ArithDialect",
-                           "mlir::triton::TritonDialect",
-                           "mlir::triton::gpu::TritonGPUDialect",
-                           "mlir::triton::tile::CommonIRDialect"];
-}
-
 def CommonIRLowerTensorTiles
     : Pass<"commonir-lower-tensor-tiles", "mlir::ModuleOp"> {
   let summary = "lower static MCTLE tensor tiles after TTGIR layout assignment";

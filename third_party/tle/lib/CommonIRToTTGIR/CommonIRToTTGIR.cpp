@@ -257,8 +257,14 @@ convertAllocations(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
     if (failed(memDescType))
       return WalkResult::interrupt();
     OpBuilder builder(op);
-    mapped[op.getResult()] =
+    auto allocation =
         builder.create<ttg::LocalAllocOp>(op.getLoc(), *memDescType);
+#ifdef USE_MACA
+    // Keep explicit layouts fixed during shared layout optimization.
+    if (!op->hasAttr("metax.auto_shared_layout"))
+      allocation->setAttr("tle.gpu_layout", memDescType->getEncoding());
+#endif
+    mapped[op.getResult()] = allocation.getResult();
     eraseOps.push_back(op);
     return WalkResult::advance();
   });
@@ -401,6 +407,13 @@ static LogicalResult convertSubviews(ModuleOp module,
         }
         offsets.push_back(static_cast<int32_t>(*constant));
       }
+#ifdef USE_MACA
+      // Nested slices address the original physical allocation.
+      *resultType = ttg::MemDescType::get(
+          resultType->getShape(), resultType->getElementType(),
+          resultType->getEncoding(), resultType->getMemorySpace(),
+          resultType->getMutableMemory(), sourceType.getAllocShape());
+#endif
       converted = builder.create<ttg::MemDescSubsliceOp>(
           op.getLoc(), *resultType, *source,
           builder.getDenseI32ArrayAttr(offsets));
@@ -650,6 +663,11 @@ public:
     bool hasRemainingGpuTileOps = false;
     module.walk([&](Operation *op) {
       if (op->getName().getDialectNamespace() == "tile") {
+#ifdef USE_MACA
+        // The TTIR-to-TTGIR pass consumes this hint when it assigns encodings.
+        if (isa<tile::SetLayoutOp>(op))
+          return;
+#endif
         op->emitError("was not eliminated by GPU TileIR conversion");
         hasRemainingGpuTileOps = true;
         return;

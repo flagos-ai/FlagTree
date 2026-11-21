@@ -40,14 +40,17 @@ LogicalResult validateLayoutHints(ModuleOp module, bool &hasHints) {
                            std::multiplies<uint64_t>());
   };
 
-  WalkResult result = module.walk([&](tile::SetLayoutOp op) {
+  WalkResult result = module.walk([&](tile::SetLayoutOp op) -> WalkResult {
     hasHints = true;
     Attribute encoding = op.getLayout();
     Attribute parent = encoding;
     while (auto slice = dyn_cast<ttg::SliceEncodingAttr>(parent))
       parent = slice.getParent();
-    if (auto operand = dyn_cast<ttg::DotOperandEncodingAttr>(parent))
+    if (auto operand = dyn_cast<ttg::DotOperandEncodingAttr>(parent)) {
       parent = operand.getParent();
+      if (isa<ttg::MACAMmaEncodingAttr>(parent) && operand.getKWidth() != 0)
+        return op.emitOpError("MACA MMA dot operands require kWidth = 0");
+    }
     auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(parent);
     auto mma = dyn_cast<ttg::MACAMmaEncodingAttr>(parent);
     auto linear = dyn_cast<ttg::LinearEncodingAttr>(parent);
@@ -114,6 +117,40 @@ bool canPropagateTo(Value value, Attribute encoding) {
   if (isa<triton::DotOp>(producer))
     return isa<ttg::MACAMmaEncodingAttr>(encoding);
   return true;
+}
+
+WalkResult validateHintedMmaDot(triton::DotOp dot) {
+  auto mma = dyn_cast_or_null<ttg::MACAMmaEncodingAttr>(
+      dot.getType().getEncoding());
+  if (!mma)
+    return WalkResult::advance();
+
+  auto module = dot->getParentOfType<ModuleOp>();
+  auto target = module->getAttrOfType<StringAttr>(ttg::AttrTargetName);
+  unsigned capability;
+  unsigned minor = mma.getVersionMinor();
+  if (!target ||
+      target.getValue().split(':').second.getAsInteger(10, capability) ||
+      capability / 10 != 8 || capability % 10 != minor)
+    return dot.emitOpError(
+        "MMA versionMinor must match the target compute capability");
+  if (!supportMMA(dot, 2, minor))
+    return dot.emitOpError(
+        "operand type or precision is unsupported by the target MMA");
+  auto halfType = [](Type type) { return type.isF16() || type.isBF16(); };
+  auto a = dot.getA().getType();
+  if (mma.getColMajor() &&
+      (!halfType(a.getElementType()) ||
+       !halfType(dot.getB().getType().getElementType())))
+    return dot.emitOpError("column-major MACA MMA requires FP16/BF16 operands");
+  if (a.getRank() != 2)
+    return dot.emitOpError("MACA MMA requires a rank-2 dot");
+  unsigned group = mma.getElementsMNK()[2];
+  if (group < getMinMmaElementsPerK(dot, minor) ||
+      a.getShape()[1] % (int64_t(group) * ttg::getMmaThreadShape()[2]) != 0)
+    return dot.emitOpError("MMA K register group must fit the instruction "
+                           "and dot K dimension");
+  return WalkResult::advance();
 }
 
 Attribute getReduceScanOperandEncoding(Operation *op) {
@@ -303,6 +340,8 @@ LogicalResult applyCommonIRLayoutHints(ModuleOp module) {
   const tile::LayoutHintCallbacks callbacks{
       inferOperand, inferResult, getTiedArgs, canPropagateTo, convertLayout};
   if (failed(tile::propagateLayoutHints(module, callbacks)))
+    return failure();
+  if (module.walk(validateHintedMmaDot).wasInterrupted())
     return failure();
 
   insertRequiredLayoutConversions(module);

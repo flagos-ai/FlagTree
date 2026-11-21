@@ -552,7 +552,7 @@ def alloc(
                     layout, layout_handle = iluvatar_layout.select_default_smem_layout(
                         _semantic.builder, unwrapped_shape, dtype, nv_mma_shared_layout)
                 elif metax_auto_shared_layout:
-                    layout, layout_handle = metax_layout.select_default_smem_layout(unwrapped_shape)
+                    layout, layout_handle = metax_layout.select_default_smem_layout(_semantic.builder, unwrapped_shape)
                 elif mthreads_auto_sqmma_shared_layout or not nv_mma_shared_layout:
                     layout = tle.swizzled_shared_layout.make_default(rank=len(unwrapped_shape))
                     layout_handle = _semantic.builder.make_swizzled_shared_encoding_attr(
@@ -591,7 +591,7 @@ def alloc(
             layout_handle = layout.to_ir(_semantic.builder)
 
         if tle_semantic.COMMON_IR_ENABLED:
-            return tle_semantic.alloc(
+            buffer = tle_semantic.alloc(
                 unwrapped_shape,
                 dtype,
                 storage,
@@ -600,6 +600,9 @@ def alloc(
                 init_value,
                 _semantic,
             )
+            if metax_auto_shared_layout:
+                buffer.handle.set_attr("metax.auto_shared_layout", _semantic.builder.get_unit_attr())
+            return buffer
 
         if storage == tle.smem:
             if alias is not None:

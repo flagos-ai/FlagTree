@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from triton._C.libtriton import metax
+from triton._C.libtriton import ir, metax
 from triton._common_ir import ENABLED
 from triton.runtime.cache import get_cache_key, get_cache_manager
 
@@ -62,7 +62,6 @@ class LayoutCandidates:
 def prepare_layout_candidates(src, backend, options, env_vars):
     """Cache candidate TTIR modules; compilation and benchmarking happen later."""
     from triton import knobs
-    from triton._C.libtriton import ir
     from flagtree import _flagprism
 
     if not ENABLED:
@@ -101,6 +100,7 @@ def _make_candidates(module, options, capability, cache):
     domains = metax.autolayout.enumerate_dot_layout_plans(module, capability, options.num_warps)
 
     assignments = compose_kernel_candidates(domains)
+    layout_tuned = ir.builder(module.context).get_bool_attr(True)
     variants, failures = [], []
     for index, assignment in enumerate(assignments):
         selection = {
@@ -110,6 +110,7 @@ def _make_candidates(module, options, capability, cache):
         }
         try:
             variant = module.clone()
+            variant.set_attr("metax.layout_tuned", layout_tuned)
             if assignment:
                 insert_dot_layout_candidate(variant, assignment, capability, options.num_warps)
         except Exception as error:

@@ -150,8 +150,6 @@ void init_triton_passes_commonir(py::module &&m) {
                      mlir::triton::metax::createCommonIRCoalesceAsyncCopy);
   ADD_PASS_WRAPPER_0("add_optimize_shared_layouts",
                      mlir::triton::metax::createCommonIROptimizeSharedLayouts);
-  ADD_PASS_WRAPPER_0("add_to_ttgir",
-                     mlir::triton::metax::createCommonIRToTTGIR);
 }
 #endif
 

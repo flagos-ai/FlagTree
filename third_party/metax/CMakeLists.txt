@@ -13,6 +13,8 @@ if(FLAGTREE_COMMON_IR_ENABLED)
   # Layout hint metadata access is header-only; no dependency on propagation.
   target_include_directories(TritonGPUIR PRIVATE
     ${PROJECT_SOURCE_DIR}/third_party/flir/include)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/flir/lib/Conversion/CommonIRToTritonGPU
+    ${PROJECT_BINARY_DIR}/third_party/flir/lib/Conversion/CommonIRToTritonGPU)
   add_subdirectory(spec_cpp/include/triton/Conversion/CommonIRToTTGIR
     ${PROJECT_BINARY_DIR}/include/triton/Conversion/CommonIRToTTGIR)
   add_subdirectory(spec_cpp/lib/Conversion/CommonIRToTTGIR)

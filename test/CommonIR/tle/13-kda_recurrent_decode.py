@@ -29,7 +29,7 @@ q|k|v 打包在 `mixed_qkv`（`[B, 2*H*K + HV*V]`），gate/beta 在核内由 a/
       `sum(axis=1)` 反推，B128/HV32 慢 1.0%，HV24 慢 3.0%。
     - `tle.gpu.metax.iglp`：收尾的取指/发射调度提示（默认开），K=128 两档 +1~3%。
     - `tle.gpu.alloc` + `tle.gpu.metax.async_copy_global_to_local` +
-      `gvm_arrive` + `barrier` + `local_load`：h tile 走 SMEM 的异步搬运路径
+      `gvm_arrive` + `barrier` + `buffer.load()`：h tile 走 SMEM 的异步搬运路径
       （`use_smem=True`，**默认关**）。设计上是在搬 4KB h tile 的同时算门控，
       但实测大形状只打平（1.01~1.02）、B32/K=V=64 反而 0.93~0.97——tile 太小，
       SMEM 往返 + 一次 barrier 盖过了重叠收益。
@@ -59,7 +59,6 @@ from triton._common_ir import ENABLED
 
 SOFTPLUS_THRESHOLD = 20.0
 
-
 # =============================================================================
 # 1. Packed decode kernel（单 token，q|k|v 打包进 mixed_qkv）
 # =============================================================================
@@ -68,12 +67,27 @@ SOFTPLUS_THRESHOLD = 20.0
 @triton.layout_tune()
 @triton.jit
 def fused_recurrent_gated_delta_rule_fwd_kernel(
-    mixed_qkv_ptr, a_ptr, b_ptr, A_log_ptr, dt_bias_ptr,
-    o_ptr, h0_ptr, ht_ptr, indices_ptr,
+    mixed_qkv_ptr,
+    a_ptr,
+    b_ptr,
+    A_log_ptr,
+    dt_bias_ptr,
+    o_ptr,
+    h0_ptr,
+    ht_ptr,
+    indices_ptr,
     scale,
-    stride_mixed, stride_a, stride_b, stride_h, stride_idx,
-    H: tl.constexpr, HV: tl.constexpr, K: tl.constexpr, V: tl.constexpr,
-    BK: tl.constexpr, BV: tl.constexpr,
+    stride_mixed,
+    stride_a,
+    stride_b,
+    stride_h,
+    stride_idx,
+    H: tl.constexpr,
+    HV: tl.constexpr,
+    K: tl.constexpr,
+    V: tl.constexpr,
+    BK: tl.constexpr,
+    BV: tl.constexpr,
     SOFTPLUS_THRESHOLD: tl.constexpr,
     USE_QK_L2NORM: tl.constexpr,
     ALIGNED: tl.constexpr,
@@ -100,7 +114,7 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
 
     state_idx = tl.load(indices_ptr + i_n * stride_idx).to(tl.int64)
     p_o = o_ptr + (i_n * HV + i_hv) * V + o_v
-    if state_idx < 0:                                     # idx<0: 输出 0，state 不动
+    if state_idx < 0:  # idx<0: 输出 0，state 不动
         zero = tl.zeros([BV], dtype=o_ptr.dtype.element_ty)
         if ALIGNED:
             tl.store(p_o, zero)
@@ -108,7 +122,7 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
             tl.store(p_o, zero, mask=mask_v)
         return
 
-    o_h = o_v[:, None] * K + o_k[None, :]                 # state tile [BV, BK] 的偏移
+    o_h = o_v[:, None] * K + o_k[None, :]  # state tile [BV, BK] 的偏移
     p_h = h0_ptr + state_idx * stride_h + i_hv * V * K
 
     # 1) 先把 h tile 的异步搬运发出去（global -> SMEM）
@@ -141,8 +155,7 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
     dt_bias_val = tl.load(dt_bias_ptr + i_hv).to(tl.float32)
 
     x = a_val + dt_bias_val
-    softplus_x = tl.where(x <= SOFTPLUS_THRESHOLD,
-                          tl.log(1.0 + tl.exp(tl.minimum(x, SOFTPLUS_THRESHOLD))), x)
+    softplus_x = tl.where(x <= SOFTPLUS_THRESHOLD, tl.log(1.0 + tl.exp(tl.minimum(x, SOFTPLUS_THRESHOLD))), x)
     g_val = -tl.exp(A_log_val) * softplus_x
     beta_val = (1.0 / (1.0 + tl.exp(-b_val))).to(b_ptr.dtype.element_ty).to(tl.float32)
 
@@ -165,20 +178,30 @@ def fused_recurrent_gated_delta_rule_fwd_kernel(
     out = tl.sum(h * q_row[None, :], axis=1)
     if ALIGNED:
         tl.store(p_o, out.to(o_ptr.dtype.element_ty))
-        tl.store(ht_ptr + state_idx * stride_h + i_hv * V * K + o_h,
-                 h.to(ht_ptr.dtype.element_ty))
+        tl.store(ht_ptr + state_idx * stride_h + i_hv * V * K + o_h, h.to(ht_ptr.dtype.element_ty))
     else:
         tl.store(p_o, out.to(o_ptr.dtype.element_ty), mask=mask_v)
-        tl.store(ht_ptr + state_idx * stride_h + i_hv * V * K + o_h,
-                 h.to(ht_ptr.dtype.element_ty), mask=mask_h)
+        tl.store(ht_ptr + state_idx * stride_h + i_hv * V * K + o_h, h.to(ht_ptr.dtype.element_ty), mask=mask_h)
     if USE_IGLP:
         tle.gpu.metax.iglp(config_2=2, config_5=1, config_6=2)
 
 
 def fused_recurrent_gated_delta_rule_fwd(
-    mixed_qkv, a, b, A_log, dt_bias, scale, initial_state, out, ssm_state_indices,
-    use_qk_l2norm_in_kernel=False, num_warps=None, bv=16,
-    use_smem=False, pin_layout=True, use_iglp=True,
+    mixed_qkv,
+    a,
+    b,
+    A_log,
+    dt_bias,
+    scale,
+    initial_state,
+    out,
+    ssm_state_indices,
+    use_qk_l2norm_in_kernel=False,
+    num_warps=None,
+    bv=16,
+    use_smem=False,
+    pin_layout=True,
+    use_iglp=True,
 ):
     """KDA decode adapter：单 token decode。state 原地更新，返回 (out, initial_state)。"""
     assert ENABLED, "Requires a MetaX FLAGTREE_COMMON_IR build"
@@ -222,17 +245,31 @@ def fused_recurrent_gated_delta_rule_fwd(
     NV = triton.cdiv(V, BV)
 
     fused_recurrent_gated_delta_rule_fwd_kernel[(NV, B * HV)](
-        mixed_qkv, a, b, A_log, dt_bias, out, initial_state, initial_state,
+        mixed_qkv,
+        a,
+        b,
+        A_log,
+        dt_bias,
+        out,
+        initial_state,
+        initial_state,
         ssm_state_indices,
         float(scale),
-        mixed_qkv.stride(0), a.stride(0), b.stride(0),
-        initial_state.stride(0), ssm_state_indices.stride(0),
-        H, HV, K, V, BK, BV,
+        mixed_qkv.stride(0),
+        a.stride(0),
+        b.stride(0),
+        initial_state.stride(0),
+        ssm_state_indices.stride(0),
+        H,
+        HV,
+        K,
+        V,
+        BK,
+        BV,
         SOFTPLUS_THRESHOLD=SOFTPLUS_THRESHOLD,
         USE_QK_L2NORM=bool(use_qk_l2norm_in_kernel),
         ALIGNED=(K == BK and V % BV == 0),
-        H_ENC=(tle.gpu.BlockEncoding([1, 1], [4, 16], [nw, 1], [1, 0])
-               if pin_layout else None),
+        H_ENC=(tle.gpu.BlockEncoding([1, 1], [4, 16], [nw, 1], [1, 0]) if pin_layout else None),
         USE_SMEM=bool(use_smem),
         USE_IGLP=bool(use_iglp),
         num_warps=nw,
@@ -242,7 +279,6 @@ def fused_recurrent_gated_delta_rule_fwd(
 
 # 算子名称（注册用别名）
 kda_recurrent_decode = fused_recurrent_gated_delta_rule_fwd
-
 
 # =============================================================================
 # 2. 参考实现
@@ -255,7 +291,7 @@ def reference(q, k, v, g, beta, state, normalize=False):
         q = q * torch.rsqrt(q.square().sum(-1, keepdim=True) + 1e-6)
         k = k * torch.rsqrt(k.square().sum(-1, keepdim=True) + 1e-6)
     group = v.shape[2] // q.shape[2]
-    q = q.repeat_interleave(group, dim=2) * q.shape[-1] ** -0.5
+    q = q.repeat_interleave(group, dim=2) * q.shape[-1]**-0.5
     k = k.repeat_interleave(group, dim=2)
     state = state.float().clone()
     outputs = []
@@ -273,8 +309,7 @@ def reference(q, k, v, g, beta, state, normalize=False):
 
 def _packed_gate(a, b, A_log, dt_bias):
     x = a.float() + dt_bias.float()
-    sp = torch.where(x <= SOFTPLUS_THRESHOLD,
-                     torch.log(1.0 + torch.exp(x.clamp(max=SOFTPLUS_THRESHOLD))), x)
+    sp = torch.where(x <= SOFTPLUS_THRESHOLD, torch.log(1.0 + torch.exp(x.clamp(max=SOFTPLUS_THRESHOLD))), x)
     g = -A_log.exp() * sp
     beta = b.float().sigmoid().to(b.dtype).float()
     return g, beta
@@ -292,8 +327,7 @@ def _check(name, got, exp, atol, rtol):
     return ok
 
 
-def _packed_inputs(B, H, HV, K, V, idx=None, padded_slot=False,
-                   state_dtype=torch.float32):
+def _packed_inputs(B, H, HV, K, V, idx=None, padded_slot=False, state_dtype=torch.float32):
     dev = "cuda"
     torch.manual_seed(11)
     mixed = (torch.randn(B, 2 * H * K + HV * V, device=dev, dtype=torch.bfloat16) * 0.1)
@@ -306,7 +340,7 @@ def _packed_inputs(B, H, HV, K, V, idx=None, padded_slot=False,
     if padded_slot:
         # 每个 slot 尾部留 64 个 fp32 的 padding，验证不依赖 HV*V*K 步长
         backing = torch.randn(n_slot, HV * V * K + 64, device=dev, dtype=state_dtype) * 0.01
-        state = backing[:, : HV * V * K].view(n_slot, HV, V, K)
+        state = backing[:, :HV * V * K].view(n_slot, HV, V, K)
     else:
         state = torch.randn(n_slot, HV, V, K, device=dev, dtype=state_dtype) * 0.01
 
@@ -314,12 +348,10 @@ def _packed_inputs(B, H, HV, K, V, idx=None, padded_slot=False,
         idx = torch.arange(1, B + 1, device=dev, dtype=torch.int32)
     else:
         idx = torch.tensor(idx, device=dev, dtype=torch.int32)
-    return dict(mixed=mixed, a=a, b=b, A_log=A_log, dt_bias=dt_bias,
-                state=state, idx=idx)
+    return dict(mixed=mixed, a=a, b=b, A_log=A_log, dt_bias=dt_bias, state=state, idx=idx)
 
 
-def _packed_case(name, B, H, HV, K, V, l2norm=True, idx=None,
-                 padded_slot=False, state_dtype=torch.float32, bv=16,
+def _packed_case(name, B, H, HV, K, V, l2norm=True, idx=None, padded_slot=False, state_dtype=torch.float32, bv=16,
                  kern_kw=None):
     dev = "cuda"
     inp = _packed_inputs(B, H, HV, K, V, idx, padded_slot, state_dtype)
@@ -331,16 +363,14 @@ def _packed_case(name, B, H, HV, K, V, l2norm=True, idx=None,
     q, k, v = mixed.split([H * K, H * K, HV * V], dim=-1)
     g, beta = _packed_gate(a, b, A_log, dt_bias)
     sel = idx.clamp_min(0).long()
-    exp_o, exp_s = reference(
-        q.reshape(B, 1, H, K), k.reshape(B, 1, H, K), v.reshape(B, 1, HV, V),
-        g[:, None], beta[:, None], before[sel], normalize=l2norm)
+    exp_o, exp_s = reference(q.reshape(B, 1, H, K), k.reshape(B, 1, H, K), v.reshape(B, 1, HV, V), g[:, None],
+                             beta[:, None], before[sel], normalize=l2norm)
     exp_o = exp_o.clone()
     exp_o[idx < 0] = 0
 
     out = torch.empty(B, 1, HV, V, device=dev, dtype=torch.bfloat16)
-    kda_recurrent_decode(
-        mixed, a, b, A_log, dt_bias, K ** -0.5, state, out, idx,
-        use_qk_l2norm_in_kernel=l2norm, bv=bv, **(kern_kw or {}))
+    kda_recurrent_decode(mixed, a, b, A_log, dt_bias, K**-0.5, state, out, idx, use_qk_l2norm_in_kernel=l2norm, bv=bv,
+                         **(kern_kw or {}))
 
     ok_o = _check(name, out, exp_o, 3e-3, 3e-2)
     # 有效 slot 必须被更新；无效 slot 必须原样不动
@@ -365,13 +395,10 @@ PACKED_CASES = [
     # 边界：V 不是 BV 的倍数 / K 不是 2 的幂 / bf16 state
     ("B16 H4 HV8 K64 V48", dict(B=16, H=4, HV=8, K=64, V=48)),
     ("B16 H4 HV8 K96 V64", dict(B=16, H=4, HV=8, K=96, V=64)),
-    ("B16 H4 HV8 K64 V64 bf16state", dict(B=16, H=4, HV=8, K=64, V=64,
-                                         state_dtype=torch.bfloat16)),
+    ("B16 H4 HV8 K64 V64 bf16state", dict(B=16, H=4, HV=8, K=64, V=64, state_dtype=torch.bfloat16)),
     # idx 语义：有效/无效混合 + padded slot stride
-    ("idx=[2,-1,0] padded", dict(B=3, H=2, HV=4, K=128, V=128,
-                                 idx=[2, -1, 0], padded_slot=True)),
+    ("idx=[2,-1,0] padded", dict(B=3, H=2, HV=4, K=128, V=128, idx=[2, -1, 0], padded_slot=True)),
 ]
-
 
 # TLE 开关的正确性覆盖：每个形状都要在三条 kernel 路径上过一遍
 #   默认      = 钉布局（set_layout）+ iglp
@@ -625,8 +652,7 @@ def _mc_packed_decode_grouped_hv_kernel(
             tl.store(p_ht, b_h.to(p_ht.dtype.element_ty), mask=mask_h)
 
 
-def _mcoplib_packed_decode(mixed_qkv, a, b, A_log, dt_bias, scale,
-                           initial_state, out, ssm_state_indices,
+def _mcoplib_packed_decode(mixed_qkv, a, b, A_log, dt_bias, scale, initial_state, out, ssm_state_indices,
                            use_qk_l2norm_in_kernel=False):
     """mcoplib packed decode：BV/LOAD_ORDER/grouped-hv 的选法与上游一致。"""
     B = mixed_qkv.shape[0]
@@ -637,8 +663,8 @@ def _mcoplib_packed_decode(mixed_qkv, a, b, A_log, dt_bias, scale,
     num_warps, num_stages = 1, 3
 
     # 0: original; 1: late state; 2: late Q; 3: late state and Q
-    measured = (((H == 16 and HV == 32) or (H == 8 and HV == 24))
-                and K == 128 and V == 128 and BV == 32 and num_warps == 1)
+    measured = (((H == 16 and HV == 32) or (H == 8 and HV == 24)) and K == 128 and V == 128 and BV == 32
+                and num_warps == 1)
     load_order = (1 if B * HV <= 128 else 3) if measured else 0
 
     group_value_heads, reuse_q, grouped_num_warps = False, False, num_warps
@@ -659,23 +685,33 @@ def _mcoplib_packed_decode(mixed_qkv, a, b, A_log, dt_bias, scale,
         stride_indices_seq=ssm_state_indices.stride(0),
     )
     common = dict(
-        mixed_qkv=mixed_qkv, a=a, b=b, A_log=A_log, dt_bias=dt_bias,
-        o=out, h0=initial_state, ht=initial_state,
-        ssm_state_indices=ssm_state_indices, scale=scale,
-        H=H, HV=HV, K=K, V=V, BK=BK, BV=BV,
+        mixed_qkv=mixed_qkv,
+        a=a,
+        b=b,
+        A_log=A_log,
+        dt_bias=dt_bias,
+        o=out,
+        h0=initial_state,
+        ht=initial_state,
+        ssm_state_indices=ssm_state_indices,
+        scale=scale,
+        H=H,
+        HV=HV,
+        K=K,
+        V=V,
+        BK=BK,
+        BV=BV,
         SOFTPLUS_THRESHOLD=SOFTPLUS_THRESHOLD,
         USE_QK_L2NORM_IN_KERNEL=use_qk_l2norm_in_kernel,
         **strides,
     )
     NV = triton.cdiv(V, BV)
     if group_value_heads:
-        _mc_packed_decode_grouped_hv_kernel[(NV, B * H)](
-            GROUP_SIZE=HV // H, REUSE_Q=reuse_q, GROUPED_SCHEDULE=0,
-            num_warps=grouped_num_warps, num_stages=num_stages, **common)
+        _mc_packed_decode_grouped_hv_kernel[(NV, B * H)](GROUP_SIZE=HV // H, REUSE_Q=reuse_q, GROUPED_SCHEDULE=0,
+                                                         num_warps=grouped_num_warps, num_stages=num_stages, **common)
     else:
-        _mc_packed_decode_kernel[(NV, B * HV)](
-            LOAD_ORDER=load_order, num_warps=num_warps,
-            num_stages=num_stages, **common)
+        _mc_packed_decode_kernel[(NV, B * HV)](LOAD_ORDER=load_order, num_warps=num_warps, num_stages=num_stages,
+                                               **common)
     return out, initial_state
 
 
@@ -687,8 +723,7 @@ def _mcoplib_packed_decode(mixed_qkv, a, b, A_log, dt_bias, scale,
 def _bench(fn, warmup=50, rep=200, rounds=3):
     """取 rounds 次 do_bench 的最小值（ms）：共享卡上别的租户一抢占，
     均值就会被抬高，最小值对抢占不敏感。"""
-    return min(triton.testing.do_bench(fn, warmup=warmup, rep=rep)
-               for _ in range(rounds))
+    return min(triton.testing.do_bench(fn, warmup=warmup, rep=rep) for _ in range(rounds))
 
 
 def _bench_packed(B, H, HV, K, V, bv=16, warps=None):
@@ -702,12 +737,10 @@ def _bench_packed(B, H, HV, K, V, bv=16, warps=None):
     state = inp["state"]
     out = torch.empty(B, 1, HV, V, device="cuda", dtype=torch.bfloat16)
 
-    ours = _bench(lambda: kda_recurrent_decode(
-        mixed, a, b, A_log, dt_bias, K ** -0.5, state, out, idx,
-        use_qk_l2norm_in_kernel=True, bv=bv, num_warps=warps))
+    ours = _bench(lambda: kda_recurrent_decode(mixed, a, b, A_log, dt_bias, K**-0.5, state, out, idx,
+                                               use_qk_l2norm_in_kernel=True, bv=bv, num_warps=warps))
 
-    mc = _bench(lambda: _mcoplib_packed_decode(
-        mixed, a, b, A_log, dt_bias, K ** -0.5, state, out, idx, True))
+    mc = _bench(lambda: _mcoplib_packed_decode(mixed, a, b, A_log, dt_bias, K**-0.5, state, out, idx, True))
 
     name = f"B{B} H{H} HV{HV} K{K} V{V} bv={eff_bv} w={eff_w}"
     print(f"| {name} | {ours * 1e3:.1f} | {mc * 1e3:.1f} | {mc / ours:.3f} |")
@@ -731,8 +764,7 @@ def run_benchmark():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--benchmark", action="store_true",
-                        help="只跑延迟对比，不做精度自测")
+    parser.add_argument("--benchmark", action="store_true", help="只跑延迟对比，不做精度自测")
     args = parser.parse_args()
     if args.benchmark:
         run_benchmark()

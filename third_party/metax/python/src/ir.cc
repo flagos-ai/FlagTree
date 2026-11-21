@@ -301,16 +301,6 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
   using ret = py::return_value_policy;
   using namespace pybind11::literals;
 
-  // MetaX does not build the tle Python module, so the shared TLE layer reads
-  // the CommonIR opt-in from libtriton.ir instead of libtriton.tle.
-  m.def("is_common_ir_enabled", []() {
-#ifdef __FLAGTREE_COMMON_IR__
-    return true;
-#else
-    return false;
-#endif
-  });
-
   py::enum_<PaddingOption>(m, "PADDING_OPTION", py::module_local())
       .value("PAD_ZERO", PaddingOption::PAD_ZERO)
       .value("PAD_NAN", PaddingOption::PAD_NAN)

@@ -2,8 +2,10 @@ from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, metax
 try:
     from triton._C.libtriton import tle
+    from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 except ImportError:
     tle = None
+    COMMON_IR_ENABLED = False
 try:
     from triton._C.libtriton import distributed
     enable_dist = True
@@ -15,7 +17,6 @@ try:
 except ImportError:
     enable_mctle = False
 from triton import knobs
-from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 
 from dataclasses import dataclass, field
 import functools
@@ -183,6 +184,14 @@ class MACAOptions:
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
+def _add_commonir_layout_passes(pm, mod):
+    passes.commonir.add_optimize_shared_layouts(pm)
+    passes.commonir.add_coalesce_async_copy(pm)
+    if mod.get_operation().get_bool_attr("metax.layout_tuned"):
+        passes.commonir.add_optimize_tensor_tile_layouts(pm)
+        passes.commonir.add_lower_tensor_tiles(pm)
+
+
 class MACABackend(BaseBackend):
 
     @staticmethod
@@ -247,8 +256,8 @@ class MACABackend(BaseBackend):
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.common.add_inliner(pm)
-        if COMMON_IR_ENABLED:
-            passes.commonir.add_to_ttgir(pm)
+        if COMMON_IR_ENABLED and tle is not None:
+            tle.passes.commonir.add_to_ttgir(pm, False)  # CommonIR(tile.*) -> ttg.local_*
         passes.ttir.add_rewrite_tensor_pointer(pm)
         passes.ttir.add_combine(pm)
         passes.common.add_canonicalizer(pm)
@@ -262,8 +271,6 @@ class MACABackend(BaseBackend):
 
     @staticmethod
     def make_ttgir(mod, metadata, opt, capability):
-        explicit_layouts = COMMON_IR_ENABLED and passes.commonir.has_layout_hints(mod)
-
         assert opt.pipeline_load_num >= -1, "invalid pipeline_load_num value!"
         scenarios = parse_option(opt.scenario)
         disable_prefetch = "unprefetch" in scenarios
@@ -287,18 +294,16 @@ class MACABackend(BaseBackend):
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         if COMMON_IR_ENABLED:
-            passes.commonir.add_optimize_shared_layouts(pm)
-            passes.commonir.add_coalesce_async_copy(pm)
-            passes.commonir.add_optimize_tensor_tile_layouts(pm)
-            passes.commonir.add_lower_tensor_tiles(pm)
+            _add_commonir_layout_passes(pm, mod)
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
+        has_layout_hints = COMMON_IR_ENABLED and passes.commonir.has_layout_hints(mod)
         if enable_mctle:
             mctle.passes.add_reject_dot_op(pm)
             mctle.passes.add_early_assign_memory_space(pm)
             # The prebuilt MCTLE selector does not preserve explicit layouts.
-            if not explicit_layouts:
+            if not has_layout_hints:
                 mctle.passes.add_select_encodings(pm)
             mctle.passes.add_insert_local_pointer_barriers(pm)
             mctle.passes.add_optimize_local_pointer_loads(pm)

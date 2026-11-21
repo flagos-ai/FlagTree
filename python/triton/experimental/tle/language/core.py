@@ -534,7 +534,11 @@ def insert_tile(
             index_ir = index_ir_handle
         else:
             index_ir = _semantic._convert_to_ir_values([index_value], require_i64=False)[0]
-        output = _semantic.builder.create_insert_tile(x.handle, tile.handle, index_ir)
+        output = _semantic.builder.create_insert_tile(
+            x.handle,
+            tile.handle,
+            index_ir,
+        )
         return tl.tensor(output, x.type)
     except Exception as e:
         raise RuntimeError(f"Failed to create insert_tile operation: {str(e)}") from e

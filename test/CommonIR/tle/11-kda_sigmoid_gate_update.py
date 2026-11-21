@@ -19,7 +19,7 @@ KDA 模式下 decay 是 [K] 向量（逐 k 列），普通模式下是标量。
     极高（实测同一形状 263ms → 22.6ms）。
   * 默认 num_warps 按 BK 分档（≤64 → 2，≥128 → 4）。K=128 用 2 warps 时归约爆炸
     （18.1ms → 2.82ms）。
-  * TLE 的 local_load 没有 slice/offset 参数，且 extract_tile 作用在 local_load 结果
+  * TLE 的 buffer.load() 没有 slice/offset 参数，且 extract_tile 作用在 buffer.load() 结果
     上会在 CommonIRLowerTensorTiles 阶段编译失败，故 SMEM 路径逐行提取用
     tl.max(tl.where(...)) 实现。
   * SMEM 路径无尾块掩码，TT 必须整除 T 且 ≥2，否则自动退回 bare。
@@ -56,10 +56,17 @@ def _resolve_bv(V):
 @triton.layout_tune()
 @triton.jit
 def _gate_precompute_kernel(
-    a_ptr, b_ptr, A_log_ptr, dt_bias_ptr,
-    g_pre_ptr, beta_pre_ptr, total,
-    HV: tl.constexpr, BS: tl.constexpr,
-    SOFTPLUS_BETA: tl.constexpr, SOFTPLUS_THRESHOLD: tl.constexpr,
+    a_ptr,
+    b_ptr,
+    A_log_ptr,
+    dt_bias_ptr,
+    g_pre_ptr,
+    beta_pre_ptr,
+    total,
+    HV: tl.constexpr,
+    BS: tl.constexpr,
+    SOFTPLUS_BETA: tl.constexpr,
+    SOFTPLUS_THRESHOLD: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)
     offs = pid * BS + tl.arange(0, BS)
@@ -84,8 +91,11 @@ def _gate_precompute_kernel(
 @triton.layout_tune()
 @triton.jit
 def _beta_precompute_kernel(
-    b_ptr, beta_pre_ptr, total,
-    HV: tl.constexpr, BS: tl.constexpr,
+    b_ptr,
+    beta_pre_ptr,
+    total,
+    HV: tl.constexpr,
+    BS: tl.constexpr,
 ):
     pid = tl.program_id(axis=0)
     offs = pid * BS + tl.arange(0, BS)
@@ -97,10 +107,18 @@ def _beta_precompute_kernel(
 @triton.layout_tune()
 @triton.jit
 def _kda_gate_precompute_kernel(
-    a_ptr, dt_bias_ptr, A_log_ptr, g_pre_ptr, total,
-    HV: tl.constexpr, K: tl.constexpr, BK: tl.constexpr,
-    USE_LOWER_BOUND: tl.constexpr, LOWER_BOUND: tl.constexpr,
-    SOFTPLUS_BETA: tl.constexpr, SOFTPLUS_THRESHOLD: tl.constexpr,
+    a_ptr,
+    dt_bias_ptr,
+    A_log_ptr,
+    g_pre_ptr,
+    total,
+    HV: tl.constexpr,
+    K: tl.constexpr,
+    BK: tl.constexpr,
+    USE_LOWER_BOUND: tl.constexpr,
+    LOWER_BOUND: tl.constexpr,
+    SOFTPLUS_BETA: tl.constexpr,
+    SOFTPLUS_THRESHOLD: tl.constexpr,
 ):
     # KDA 逐 token 逐 k 列衰减：写 exp(g) 到 g_pre[(b*T+t)*HV+hv, :]
     i = tl.program_id(axis=0)
@@ -125,8 +143,13 @@ def _kda_gate_precompute_kernel(
 @triton.layout_tune()
 @triton.jit
 def _qk_l2norm_precompute_kernel(
-    q_ptr, k_ptr, q_inv_ptr, k_inv_ptr, total,
-    K: tl.constexpr, BK: tl.constexpr,
+    q_ptr,
+    k_ptr,
+    q_inv_ptr,
+    k_inv_ptr,
+    total,
+    K: tl.constexpr,
+    BK: tl.constexpr,
 ):
     i = tl.program_id(axis=0)
     offs = tl.arange(0, BK)
@@ -145,16 +168,35 @@ def _qk_l2norm_precompute_kernel(
 @triton.layout_tune()
 @triton.jit
 def _sigmoid_gating_delta_rule_bare_kernel(
-    g_pre_ptr, a_ptr, dt_bias_ptr, A_log_ptr, beta_pre_ptr, q_inv_ptr, k_inv_ptr,
-    q_ptr, k_ptr, v_ptr, o_ptr,
-    h0_source_ptr, h0_indices_ptr, h_final_ptr,
-    scale, T,
-    B: tl.constexpr, H: tl.constexpr, HV: tl.constexpr,
-    K: tl.constexpr, V: tl.constexpr,
-    BK: tl.constexpr, BV: tl.constexpr,
-    USE_QK_L2NORM: tl.constexpr, IS_KDA: tl.constexpr,
-    USE_LOWER_BOUND: tl.constexpr, LOWER_BOUND: tl.constexpr,
-    SOFTPLUS_BETA: tl.constexpr, SOFTPLUS_THRESHOLD: tl.constexpr,
+    g_pre_ptr,
+    a_ptr,
+    dt_bias_ptr,
+    A_log_ptr,
+    beta_pre_ptr,
+    q_inv_ptr,
+    k_inv_ptr,
+    q_ptr,
+    k_ptr,
+    v_ptr,
+    o_ptr,
+    h0_source_ptr,
+    h0_indices_ptr,
+    h_final_ptr,
+    scale,
+    T,
+    B: tl.constexpr,
+    H: tl.constexpr,
+    HV: tl.constexpr,
+    K: tl.constexpr,
+    V: tl.constexpr,
+    BK: tl.constexpr,
+    BV: tl.constexpr,
+    USE_QK_L2NORM: tl.constexpr,
+    IS_KDA: tl.constexpr,
+    USE_LOWER_BOUND: tl.constexpr,
+    LOWER_BOUND: tl.constexpr,
+    SOFTPLUS_BETA: tl.constexpr,
+    SOFTPLUS_THRESHOLD: tl.constexpr,
     USE_STATE_POOL: tl.constexpr,
     UPDATE_POOL: tl.constexpr,
     STORE_FINAL: tl.constexpr,
@@ -203,9 +245,8 @@ def _sigmoid_gating_delta_rule_bare_kernel(
         beta_pre = tl.load(beta_pre_ptr + (i_n * T + t) * HV + i_hv).to(tl.float32)
 
         if IS_KDA:
-            decay_row = tl.load(
-                g_pre_ptr + ((i_n * T + t) * HV + i_hv) * K + o_k_row,
-                mask=o_k_row < K, other=1.0).to(tl.float32)
+            decay_row = tl.load(g_pre_ptr + ((i_n * T + t) * HV + i_hv) * K + o_k_row, mask=o_k_row < K,
+                                other=1.0).to(tl.float32)
         else:
             g_pre = tl.load(g_pre_ptr + (i_n * T + t) * HV + i_hv).to(tl.float32)
 
@@ -220,14 +261,12 @@ def _sigmoid_gating_delta_rule_bare_kernel(
 
     if STORE_FINAL:
         base_hf = (i_n * HV + i_hv) * K * V + i_v * BV
-        tl.store(h_final_ptr + base_hf + o_k_row * V + o_vc,
-                 h.to(h_final_ptr.dtype.element_ty))
+        tl.store(h_final_ptr + base_hf + o_k_row * V + o_vc, h.to(h_final_ptr.dtype.element_ty))
 
     # 回写 state pool：decode 语义是每步原地推进 cache
     if UPDATE_POOL:
         if idx >= 0:
-            tl.store(h0_source_ptr + base_h0 + o_k_row * V + o_vc,
-                     h.to(h0_source_ptr.dtype.element_ty))
+            tl.store(h0_source_ptr + base_h0 + o_k_row * V + o_vc, h.to(h0_source_ptr.dtype.element_ty))
 
 
 # ==================== 递推 kernel B：SMEM 双缓冲（metax 原语） ====================
@@ -236,17 +275,38 @@ def _sigmoid_gating_delta_rule_bare_kernel(
 @triton.layout_tune()
 @triton.jit
 def _sigmoid_gating_delta_rule_pc_kernel(
-    g_pre_ptr, a_ptr, dt_bias_ptr, A_log_ptr, beta_pre_ptr, q_inv_ptr, k_inv_ptr,
-    q_ptr, k_ptr, v_ptr, o_ptr,
-    h0_source_ptr, h0_indices_ptr, h_final_ptr,
-    scale, T,
-    B: tl.constexpr, H: tl.constexpr, HV: tl.constexpr,
-    K: tl.constexpr, V: tl.constexpr,
-    BK: tl.constexpr, BV: tl.constexpr,
-    TT: tl.constexpr, USE_QK_L2NORM: tl.constexpr, IS_KDA: tl.constexpr,
-    USE_LOWER_BOUND: tl.constexpr, LOWER_BOUND: tl.constexpr,
-    SOFTPLUS_BETA: tl.constexpr, SOFTPLUS_THRESHOLD: tl.constexpr,
-    USE_STATE_POOL: tl.constexpr, UPDATE_POOL: tl.constexpr,
+    g_pre_ptr,
+    a_ptr,
+    dt_bias_ptr,
+    A_log_ptr,
+    beta_pre_ptr,
+    q_inv_ptr,
+    k_inv_ptr,
+    q_ptr,
+    k_ptr,
+    v_ptr,
+    o_ptr,
+    h0_source_ptr,
+    h0_indices_ptr,
+    h_final_ptr,
+    scale,
+    T,
+    B: tl.constexpr,
+    H: tl.constexpr,
+    HV: tl.constexpr,
+    K: tl.constexpr,
+    V: tl.constexpr,
+    BK: tl.constexpr,
+    BV: tl.constexpr,
+    TT: tl.constexpr,
+    USE_QK_L2NORM: tl.constexpr,
+    IS_KDA: tl.constexpr,
+    USE_LOWER_BOUND: tl.constexpr,
+    LOWER_BOUND: tl.constexpr,
+    SOFTPLUS_BETA: tl.constexpr,
+    SOFTPLUS_THRESHOLD: tl.constexpr,
+    USE_STATE_POOL: tl.constexpr,
+    UPDATE_POOL: tl.constexpr,
     STORE_FINAL: tl.constexpr,
 ):
     i_v = tl.program_id(axis=0)
@@ -309,7 +369,7 @@ def _sigmoid_gating_delta_rule_pc_kernel(
             tle.gpu.metax.gvm_arrive(3)
         tle.gpu.metax.barrier_shared()
 
-        # local_load 只能整块装载（TLE 没有 slice-load）
+        # buffer.load() 只能整块装载（TLE 没有 slice-load）
         k_tile = k_smem.slot(cur).load().to(tl.float32)
         q_tile = q_smem.slot(cur).load().to(tl.float32)
         v_tile = v_smem.slot(cur).load().to(tl.float32)
@@ -333,9 +393,8 @@ def _sigmoid_gating_delta_rule_pc_kernel(
             beta_pre = tl.load(beta_pre_ptr + (i_n * T + t) * HV + i_hv).to(tl.float32)
 
             if IS_KDA:
-                decay_row = tl.load(
-                    g_pre_ptr + ((i_n * T + t) * HV + i_hv) * K + o_k_row,
-                    mask=o_k_row < K, other=1.0).to(tl.float32)
+                decay_row = tl.load(g_pre_ptr + ((i_n * T + t) * HV + i_hv) * K + o_k_row, mask=o_k_row < K,
+                                    other=1.0).to(tl.float32)
             else:
                 g_pre = tl.load(g_pre_ptr + (i_n * T + t) * HV + i_hv).to(tl.float32)
 
@@ -361,8 +420,7 @@ def _sigmoid_gating_delta_rule_pc_kernel(
     # 回写 state pool（decode 语义：每步原地推进 cache）
     if UPDATE_POOL:
         if idx >= 0:
-            tl.store(h0_source_ptr + base_h0 + o_h,
-                     h.to(h0_source_ptr.dtype.element_ty))
+            tl.store(h0_source_ptr + base_h0 + o_h, h.to(h0_source_ptr.dtype.element_ty))
 
 
 # ============================= 入口 =============================
@@ -378,11 +436,9 @@ def _choose_tt(T, requested):
     return max(tt, 1)
 
 
-def sigmoid_gating_delta_rule_pc(A_log, a, dt_bias, softplus_beta, softplus_threshold,
-                                 q, k, v, b, scale=None, num_warps=None, tt=None,
-                                 force_path=None, qk_l2norm=False,
-                                 initial_state_source=None, initial_state_indices=None,
-                                 output_final_state=False, disable_state_update=False,
+def sigmoid_gating_delta_rule_pc(A_log, a, dt_bias, softplus_beta, softplus_threshold, q, k, v, b, scale=None,
+                                 num_warps=None, tt=None, force_path=None, qk_l2norm=False, initial_state_source=None,
+                                 initial_state_indices=None, output_final_state=False, disable_state_update=False,
                                  is_kda=False, lower_bound=None):
     """sigmoid gating + delta rule（decode / chunked recurrent）。
 
@@ -411,7 +467,7 @@ def sigmoid_gating_delta_rule_pc(A_log, a, dt_bias, softplus_beta, softplus_thre
     HV = v.shape[2]
     V = v.shape[-1]
     if scale is None:
-        scale = K ** -0.5
+        scale = K**-0.5
     BK = triton.next_power_of_2(K)
     BV = _resolve_bv(V)
     NV = triton.cdiv(V, BV)
@@ -430,11 +486,16 @@ def sigmoid_gating_delta_rule_pc(A_log, a, dt_bias, softplus_beta, softplus_thre
         if dt_bias.dim() != 2 or tuple(dt_bias.shape) != (HV, K):
             raise ValueError(f"KDA 模式 dt_bias 期望 [HV={HV}, K={K}]，got {tuple(dt_bias.shape)}")
         g_pre = torch.empty(B * T * HV * K, device=q.device, dtype=torch.float32)
-        _beta_precompute_kernel[(triton.cdiv(total, BS),)](
-            b, beta_pre, total, HV=HV, BS=BS, num_warps=2)
-        _kda_gate_precompute_kernel[(total,)](
-            a, dt_bias, A_log, g_pre, total,
-            HV=HV, K=K, BK=BK,
+        _beta_precompute_kernel[(triton.cdiv(total, BS), )](b, beta_pre, total, HV=HV, BS=BS, num_warps=2)
+        _kda_gate_precompute_kernel[(total, )](
+            a,
+            dt_bias,
+            A_log,
+            g_pre,
+            total,
+            HV=HV,
+            K=K,
+            BK=BK,
             USE_LOWER_BOUND=lower_bound is not None,
             LOWER_BOUND=float(lower_bound) if lower_bound is not None else 0.0,
             SOFTPLUS_BETA=float(softplus_beta),
@@ -443,9 +504,16 @@ def sigmoid_gating_delta_rule_pc(A_log, a, dt_bias, softplus_beta, softplus_thre
         )
     else:
         g_pre = torch.empty(B * T * HV, device=q.device, dtype=torch.float32)
-        _gate_precompute_kernel[(triton.cdiv(total, BS),)](
-            a, b, A_log, dt_bias, g_pre, beta_pre, total,
-            HV=HV, BS=BS,
+        _gate_precompute_kernel[(triton.cdiv(total, BS), )](
+            a,
+            b,
+            A_log,
+            dt_bias,
+            g_pre,
+            beta_pre,
+            total,
+            HV=HV,
+            BS=BS,
             SOFTPLUS_BETA=float(softplus_beta),
             SOFTPLUS_THRESHOLD=float(softplus_threshold),
             num_warps=2,
@@ -455,9 +523,14 @@ def sigmoid_gating_delta_rule_pc(A_log, a, dt_bias, softplus_beta, softplus_thre
         n_rows = B * T * H
         q_inv = torch.empty(n_rows, device=q.device, dtype=torch.float32)
         k_inv = torch.empty(n_rows, device=q.device, dtype=torch.float32)
-        _qk_l2norm_precompute_kernel[(n_rows,)](
-            q, k, q_inv, k_inv, n_rows,
-            K=K, BK=BK,
+        _qk_l2norm_precompute_kernel[(n_rows, )](
+            q,
+            k,
+            q_inv,
+            k_inv,
+            n_rows,
+            K=K,
+            BK=BK,
             num_warps=1,
         )
     else:
@@ -469,8 +542,7 @@ def sigmoid_gating_delta_rule_pc(A_log, a, dt_bias, softplus_beta, softplus_thre
     use_pool = initial_state_source is not None and initial_state_indices is not None
     if use_pool:
         if initial_state_source.dim() != 4 or initial_state_source.shape[1:] != (HV, K, V):
-            raise ValueError(
-                f"initial_state_source 期望 [num_slots, HV, K, V]，got {tuple(initial_state_source.shape)}")
+            raise ValueError(f"initial_state_source 期望 [num_slots, HV, K, V]，got {tuple(initial_state_source.shape)}")
         h0_source = initial_state_source
         h0_indices = initial_state_indices
         if initial_state_indices.dtype != torch.int32:
@@ -491,12 +563,31 @@ def sigmoid_gating_delta_rule_pc(A_log, a, dt_bias, softplus_beta, softplus_thre
 
     if use_bare:
         _sigmoid_gating_delta_rule_bare_kernel[(NV, B * HV)](
-            g_pre, a, dt_bias, A_log, beta_pre, q_inv, k_inv,
-            q, k, v, o,
-            h0_source, h0_indices, h_final,
-            float(scale), T,
-            B, H, HV, K, V, BK, BV,
-            USE_QK_L2NORM=qk_l2norm, IS_KDA=is_kda,
+            g_pre,
+            a,
+            dt_bias,
+            A_log,
+            beta_pre,
+            q_inv,
+            k_inv,
+            q,
+            k,
+            v,
+            o,
+            h0_source,
+            h0_indices,
+            h_final,
+            float(scale),
+            T,
+            B,
+            H,
+            HV,
+            K,
+            V,
+            BK,
+            BV,
+            USE_QK_L2NORM=qk_l2norm,
+            IS_KDA=is_kda,
             USE_LOWER_BOUND=lower_bound is not None,
             LOWER_BOUND=float(lower_bound) if lower_bound is not None else 0.0,
             SOFTPLUS_BETA=float(softplus_beta),
@@ -509,12 +600,32 @@ def sigmoid_gating_delta_rule_pc(A_log, a, dt_bias, softplus_beta, softplus_thre
         )
     else:
         _sigmoid_gating_delta_rule_pc_kernel[(NV, B * HV)](
-            g_pre, a, dt_bias, A_log, beta_pre, q_inv, k_inv,
-            q, k, v, o,
-            h0_source, h0_indices, h_final,
-            float(scale), T,
-            B, H, HV, K, V, BK, BV, TT,
-            USE_QK_L2NORM=qk_l2norm, IS_KDA=is_kda,
+            g_pre,
+            a,
+            dt_bias,
+            A_log,
+            beta_pre,
+            q_inv,
+            k_inv,
+            q,
+            k,
+            v,
+            o,
+            h0_source,
+            h0_indices,
+            h_final,
+            float(scale),
+            T,
+            B,
+            H,
+            HV,
+            K,
+            V,
+            BK,
+            BV,
+            TT,
+            USE_QK_L2NORM=qk_l2norm,
+            IS_KDA=is_kda,
             USE_LOWER_BOUND=lower_bound is not None,
             LOWER_BOUND=float(lower_bound) if lower_bound is not None else 0.0,
             SOFTPLUS_BETA=float(softplus_beta),
@@ -537,19 +648,15 @@ def _softplus(x, beta, threshold):
     return torch.where(bx <= threshold, torch.log1p(torch.exp(bx)) / beta, x)
 
 
-def reference_sigmoid_delta(A_log, a, dt_bias, softplus_beta, softplus_threshold,
-                            q, k, v, b, scale, qk_l2norm=False,
-                            h0_source=None, h0_indices=None,
-                            output_final_state=False,
-                            is_kda=False, lower_bound=None):
+def reference_sigmoid_delta(A_log, a, dt_bias, softplus_beta, softplus_threshold, q, k, v, b, scale, qk_l2norm=False,
+                            h0_source=None, h0_indices=None, output_final_state=False, is_kda=False, lower_bound=None):
     """纯 torch 的 fp32 逐 token 参考实现。"""
     B, T, H, K = q.shape
     HV = v.shape[2]
     V = v.shape[-1]
     group = HV // H
     o = torch.zeros(B, T, HV, V, device=q.device, dtype=torch.float32)
-    h_out = (torch.zeros(B, HV, K, V, device=q.device, dtype=torch.float32)
-             if output_final_state else None)
+    h_out = (torch.zeros(B, HV, K, V, device=q.device, dtype=torch.float32) if output_final_state else None)
     for n in range(B):
         for hv in range(HV):
             if h0_source is not None and h0_indices is not None and h0_indices[n] >= 0:
@@ -570,13 +677,11 @@ def reference_sigmoid_delta(A_log, a, dt_bias, softplus_beta, softplus_threshold
                     if lower_bound is not None:
                         g = lower_bound * torch.sigmoid(torch.exp(A_log[hv].float()) * x)
                     else:
-                        g = -torch.exp(A_log[hv].float()) * _softplus(
-                            x, softplus_beta, softplus_threshold)
+                        g = -torch.exp(A_log[hv].float()) * _softplus(x, softplus_beta, softplus_threshold)
                     decay = torch.exp(g)
                 else:
-                    g = -torch.exp(A_log[hv].float()) * _softplus(
-                        a[n, t, hv].float() + dt_bias[hv].float(),
-                        softplus_beta, softplus_threshold)
+                    g = -torch.exp(A_log[hv].float()) * _softplus(a[n, t, hv].float() + dt_bias[hv].float(),
+                                                                  softplus_beta, softplus_threshold)
                     decay = torch.exp(g)
                 beta = torch.sigmoid(b[n, t, hv].float())
                 h = h * (decay[:, None] if is_kda else decay)
@@ -603,7 +708,8 @@ def _make_inputs(B=1, T=4, H=1, HV=1, K=16, V=16, seed=0, kda=False):
         dt_bias = torch.randn(HV, device=device, dtype=torch.float32)
     return (
         torch.randn(HV, device=device, dtype=torch.float32),
-        a, dt_bias,
+        a,
+        dt_bias,
         torch.randn(B, T, H, K, device=device, dtype=torch.float16) * s,
         torch.randn(B, T, H, K, device=device, dtype=torch.float16) * s,
         torch.randn(B, T, HV, V, device=device, dtype=torch.float16) * s,
@@ -636,7 +742,7 @@ def run_accuracy(atol=2e-2, rtol=2e-2):
         lower_bound = -5.0 if is_kda else None
         tag = " kda" if is_kda else ""
         A_log, a, dt_bias, q, k, v, b = _make_inputs(**c)
-        scale = c["K"] ** -0.5
+        scale = c["K"]**-0.5
         name = f"B{c['B']}T{c['T']}H{c['H']}HV{c['HV']}K{c['K']}V{c['V']}{tag}"
         paths = [(None, "auto"), ("bare", "bare")]
         if _choose_tt(c["T"], _DEFAULT_TT) >= 2:
@@ -647,15 +753,12 @@ def run_accuracy(atol=2e-2, rtol=2e-2):
                 variant = f"{pname}/l2norm:{'on' if qk_l2norm else 'off'}"
                 try:
                     if ref is None:
-                        ref = reference_sigmoid_delta(
-                            A_log, a, dt_bias, softplus_beta, softplus_threshold,
-                            q, k, v, b, scale, qk_l2norm=qk_l2norm,
-                            is_kda=is_kda, lower_bound=lower_bound)
-                    got = sigmoid_gating_delta_rule_pc(
-                        A_log, a, dt_bias, softplus_beta, softplus_threshold,
-                        q, k, v, b, scale=scale, qk_l2norm=qk_l2norm,
-                        force_path=force_path,
-                        is_kda=is_kda, lower_bound=lower_bound)
+                        ref = reference_sigmoid_delta(A_log, a, dt_bias, softplus_beta, softplus_threshold, q, k, v, b,
+                                                      scale, qk_l2norm=qk_l2norm, is_kda=is_kda,
+                                                      lower_bound=lower_bound)
+                    got = sigmoid_gating_delta_rule_pc(A_log, a, dt_bias, softplus_beta, softplus_threshold, q, k, v, b,
+                                                       scale=scale, qk_l2norm=qk_l2norm, force_path=force_path,
+                                                       is_kda=is_kda, lower_bound=lower_bound)
                     diff = (got - ref).abs().max().item()
                     ok = torch.allclose(got, ref, atol=atol, rtol=rtol)
                     print(f"| {name} | {variant} | {diff:.3g} | {ok} |")
@@ -664,21 +767,16 @@ def run_accuracy(atol=2e-2, rtol=2e-2):
                     print(f"| {name} | {variant} | ERR | - |")
         # state pool + final state
         try:
-            pool = torch.randn(B_POOL, c["HV"], c["K"], c["V"],
-                               device="cuda", dtype=torch.float32) * 0.1
+            pool = torch.randn(B_POOL, c["HV"], c["K"], c["V"], device="cuda", dtype=torch.float32) * 0.1
             idx = torch.arange(c["B"], device="cuda", dtype=torch.int32) % B_POOL
             idx[0] = -1
-            ref_o, ref_h = reference_sigmoid_delta(
-                A_log, a, dt_bias, softplus_beta, softplus_threshold,
-                q, k, v, b, scale, qk_l2norm=True,
-                h0_source=pool, h0_indices=idx, output_final_state=True,
-                is_kda=is_kda, lower_bound=lower_bound)
-            got_o, got_h = sigmoid_gating_delta_rule_pc(
-                A_log, a, dt_bias, softplus_beta, softplus_threshold,
-                q, k, v, b, scale=scale, qk_l2norm=True,
-                initial_state_source=pool, initial_state_indices=idx,
-                output_final_state=True,
-                is_kda=is_kda, lower_bound=lower_bound)
+            ref_o, ref_h = reference_sigmoid_delta(A_log, a, dt_bias, softplus_beta, softplus_threshold, q, k, v, b,
+                                                   scale, qk_l2norm=True, h0_source=pool, h0_indices=idx,
+                                                   output_final_state=True, is_kda=is_kda, lower_bound=lower_bound)
+            got_o, got_h = sigmoid_gating_delta_rule_pc(A_log, a, dt_bias, softplus_beta, softplus_threshold, q, k, v,
+                                                        b, scale=scale, qk_l2norm=True, initial_state_source=pool,
+                                                        initial_state_indices=idx, output_final_state=True,
+                                                        is_kda=is_kda, lower_bound=lower_bound)
             diff_o = (got_o - ref_o).abs().max().item()
             diff_h = (got_h - ref_h).abs().max().item()
             ok = (torch.allclose(got_o, ref_o, atol=atol, rtol=rtol)

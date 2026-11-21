@@ -1,5 +1,4 @@
 add_triton_library(MetaxCommonIRToTTGIR
-  CommonIRToTTGIR.cpp
   CommonIRSetLayout.cpp
   CommonIRLowerTensorTiles.cpp
 
