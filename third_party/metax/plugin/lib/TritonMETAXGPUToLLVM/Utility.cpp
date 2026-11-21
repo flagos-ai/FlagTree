@@ -366,6 +366,23 @@ void appendIntrinsicModifer(std::string &str, int vec, Type elemType) {
   }
 }
 
+Value decodeFp4E2M1(Location loc, ConversionPatternRewriter &rewriter,
+                    Value nibble, bool toFp16) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  unsigned mantissaBits = toFp16 ? 10 : 7;
+  unsigned exponentBias = toFp16 ? 15 : 127;
+  unsigned pointFive = toFp16 ? 0x3800 : 0x3f00;
+  Value sign = b.shl(b.and_(nibble, b.i16_val(8)), b.i16_val(12));
+  Value em = b.and_(nibble, b.i16_val(7));
+  Value body = b.shl(em, b.i16_val(mantissaBits - 1));
+  Value normal = b.icmp_ne(b.and_(em, b.i16_val(6)), b.i16_val(0));
+  body = b.select(
+      normal, b.add(body, b.i16_val((exponentBias - 1) << mantissaBits)), body);
+  body = b.select(b.icmp_eq(em, b.i16_val(1)), b.i16_val(pointFive), body);
+  Value decoded = b.or_(sign, body);
+  return toFp16 ? b.bitcast(decoded, f16_ty) : decoded;
+}
+
 Value convertBf16ToFp32(Location loc, RewriterBase &rewriter, const Value &v) {
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   auto as_int16 = b.bitcast(v, i16_ty);

@@ -1073,8 +1073,8 @@ bool supportMMA(Value value, int major, int minor) {
   return elemTy.isF16() || elemTy.isBF16() || (elemTy.isF32() && major >= 2) ||
          (elemTy.isF64() && major >= 2) ||
          (elemTy.isInteger(8) && major >= 2) ||
-         (llvm::isa<Float8E4M3FNType, Float8E5M2Type>(elemTy) && major >= 2 &&
-          minor >= 6);
+         (llvm::isa<Float8E4M3FNType, Float8E5M2Type>(elemTy) &&
+          supportsMACAFP8MMA(major, minor));
 }
 #endif
 // We get the smallest submap of srcTy^{-1} * dstTy that is not the identity

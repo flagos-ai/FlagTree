@@ -17,6 +17,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/Pass.h"
@@ -460,6 +461,8 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
              self.replaceAllUsesWith(newValue);
            })
       .def("get_type", &Value::getType)
+      .def("is_constant_zero",
+           [](Value &self) { return mlir::matchPattern(self, mlir::m_Zero()); })
       .def("id",
            [](Value &self) {
              // The Value is identified by and compared with

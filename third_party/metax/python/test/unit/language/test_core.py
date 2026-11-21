@@ -120,7 +120,7 @@ def check_type_supported(dtype, device):
     '''
     skip test if dtype is not supported on the current device
     '''
-    if device in ['cuda']:
+    if device in ['cuda'] and is_cuda():
         cc = torch.cuda.get_device_capability()
         if cc[0] < 8 and (dtype is tl.bfloat16 or dtype == "bfloat16" or dtype is torch.bfloat16):
             pytest.skip("bfloat16 is only supported on NVGPU with cc >= 80")
@@ -5655,7 +5655,9 @@ def matmul_kernel(  #
         stride_cm, stride_cn,  #
         BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  #
         low_precision_acc: tl.constexpr,  #
-        num_stages: tl.constexpr = 3  #
+        num_stages: tl.constexpr = 3,  #
+        initial_acc: tl.constexpr = 0., acc_dtype: tl.constexpr = tl.float32, out_dtype: tl.constexpr = tl.float32,
+        mask_k: tl.constexpr = False  #
 ):
     pid = tl.program_id(axis=0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
@@ -5666,11 +5668,15 @@ def matmul_kernel(  #
     offs_k = tl.arange(0, BLOCK_SIZE_K)
     a_ptrs = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
     b_ptrs = b_ptr + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
-    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+    accumulator = tl.full((BLOCK_SIZE_M, BLOCK_SIZE_N), initial_acc, dtype=acc_dtype)
     for k in tl.range(0, tl.cdiv(K, BLOCK_SIZE_K), num_stages=num_stages):
-        a = tl.load(a_ptrs)
-        b = tl.load(b_ptrs)
-        accumulator = tl.dot(a, b, acc=accumulator, max_num_imprecise_acc=low_precision_acc)
+        if mask_k:
+            a = tl.load(a_ptrs, mask=offs_k[None, :] < K - k * BLOCK_SIZE_K, other=0.)
+            b = tl.load(b_ptrs, mask=offs_k[:, None] < K - k * BLOCK_SIZE_K, other=0.)
+        else:
+            a = tl.load(a_ptrs)
+            b = tl.load(b_ptrs)
+        accumulator = tl.dot(a, b, acc=accumulator, out_dtype=out_dtype, max_num_imprecise_acc=low_precision_acc)
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
@@ -5679,9 +5685,330 @@ def matmul_kernel(  #
     tl.store(c_ptrs, accumulator)
 
 
+def _metax_fp8_dot_operand(dtype, shape, pattern, rng, device):
+    from triton.runtime.interpreter import _decode_float_to_fp64
+
+    if pattern == "finite":
+        codes = np.arange(256, dtype=np.uint8)
+        codes = codes[np.isfinite(_decode_float_to_fp64(codes, dtype))]
+        bits = np.resize(codes, math.prod(shape))
+        rng.shuffle(bits)
+        bits = bits.reshape(shape)
+    else:
+        code = {
+            "one": 0x38 if dtype == tl.float8e4nv else 0x3c, "subnormal": 1, "nan": 0x7f, "inf": 0x7c, "-inf": 0xfc
+        }[pattern]
+        bits = np.full(shape, code, dtype=np.uint8)
+    tensor = torch.from_numpy(bits.view(np.int8)).to(device)
+    return tensor, _decode_float_to_fp64(bits, dtype)
+
+
+@triton.jit
+def _metax_int8_dot(A, B, C, Y, M: tl.constexpr, N: tl.constexpr, K: tl.constexpr, A0: tl.constexpr, A1: tl.constexpr,
+                    B0: tl.constexpr, B1: tl.constexpr, USE_ACC: tl.constexpr, EXPLICIT_OUT: tl.constexpr,
+                    STAGES: tl.constexpr):
+    m, n, k = tl.arange(0, M), tl.arange(0, N), tl.arange(0, 32)
+    acc = tl.load(C + m[:, None] * N + n[None, :]) if USE_ACC else tl.zeros((M, N), tl.int32)
+    for start in tl.range(0, tl.cdiv(K, 32), num_stages=STAGES):
+        offsets = start * 32 + k
+        a = tl.load(A + m[:, None] * A0 + offsets[None, :] * A1, offsets[None, :] < K, other=0)
+        b = tl.load(B + offsets[:, None] * B0 + n[None, :] * B1, offsets[:, None] < K, other=0)
+        if not USE_ACC and K == 32:
+            acc = tl.dot(a, b)
+        elif EXPLICIT_OUT:
+            acc = tl.dot(a, b, acc=acc, out_dtype=tl.int32)
+        else:
+            acc = tl.dot(a, b, acc=acc)
+    tl.static_assert(acc.dtype == tl.int32)
+    tl.store(Y + m[:, None] * N + n[None, :], acc)
+
+
+def test_metax_int8_dot_native_compile(recwarn):
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+
+    source = ASTSource(_metax_int8_dot, {"A": "*i8", "B": "*i8", "C": "*i32", "Y": "*i32"},
+                       dict(M=8, N=8, K=32, A0=32, A1=1, B0=8, B1=1, USE_ACC=False, EXPLICIT_OUT=False, STAGES=1))
+    kernel = triton.compile(source, target=GPUTarget("maca", 80, 64))
+    assert "llvm.mxc.mma.i32." in kernel.asm["llir"]
+    assert not any("native=false" in str(w.message) for w in recwarn)
+
+
+@pytest.mark.parametrize("m,n,k,stages,scenario", [
+    (1, 1, 32, 1, ""),
+    (2, 4, 32, 1, ""),
+    (1, 16, 64, 2, ""),
+    (16, 1, 96, 2, ""),
+    (1, 64, 128, 2, ""),
+    (64, 1, 128, 2, ""),
+    (8, 16, 64, 2, ""),
+    (16, 8, 64, 2, ""),
+    (8, 8, 96, 3, "fullstage"),
+    (16, 16, 64, 2, "fullstage"),
+    (32, 32, 136, 2, ""),
+])
+@pytest.mark.parametrize("row_major", [False, True])
+@pytest.mark.parametrize("use_acc", [False, True])
+def test_metax_int8_dot(m, n, k, stages, scenario, row_major, use_acc, metax_device):
+    rng = np.random.default_rng(20261029)
+    av = rng.integers(-128, 128, size=(m, k), dtype=np.int16)
+    bv = rng.integers(-128, 128, size=(k, n), dtype=np.int16)
+    cv = (np.arange(m * n, dtype=np.int32).reshape(m, n) * 17) % 8192 - 4096
+    expected = av.astype(np.int64) @ bv.astype(np.int64) + (cv if use_acc else 0)
+    a = torch.from_numpy(av).to(torch.int8).to(metax_device)
+    b = torch.from_numpy(bv if row_major else bv.T.copy()).to(torch.int8).to(metax_device)
+    if not row_major:
+        b = b.T
+    c = torch.from_numpy(cv).to(metax_device)
+    raw = torch.full((m * n + 64, ), 0x13579, dtype=torch.int32, device=metax_device)
+    # Keep an explicit-output control; all small shapes exercise the default.
+    explicit = m == n == 16 and row_major
+    _metax_int8_dot[(1, )](a, b, c, raw[32:-32], m, n, k, *a.stride(), *b.stride(), use_acc, explicit, stages,
+                           num_warps=4, num_stages=stages, scenario=scenario)
+    actual = raw.cpu().numpy()
+    np.testing.assert_array_equal(actual[:32], np.full(32, 0x13579, dtype=np.int32))
+    np.testing.assert_array_equal(actual[-32:], np.full(32, 0x13579, dtype=np.int32))
+    np.testing.assert_array_equal(actual[32:-32].reshape(m, n), expected)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.int64])
+def test_metax_int8_dot_invalid_accumulator(dtype, metax_device):
+    a = torch.ones((16, 32), dtype=torch.int8, device=metax_device)
+    b = torch.ones((32, 16), dtype=torch.int8, device=metax_device)
+    c = torch.zeros((16, 16), dtype=dtype, device=metax_device)
+    y = torch.empty((16, 16), dtype=torch.int32, device=metax_device)
+    with pytest.raises(triton.CompilationError, match="expected accumulator dtype int32"):
+        _metax_int8_dot[(1, )](a, b, c, y, 16, 16, 32, *a.stride(), *b.stride(), True, False, 1, num_warps=4,
+                               num_stages=1)
+
+
+@triton.jit
+def _metax_pipelined_dot_with_acc(A, B, C, Y, M: tl.constexpr, N: tl.constexpr, BK: tl.constexpr, K: tl.constexpr):
+    r, c, k = tl.arange(0, M), tl.arange(0, N), tl.arange(0, BK)
+    # Converting the loaded accumulator to the MMA layout goes through shared
+    # memory. The pipeline prologue then stores the first operand tiles, and the
+    # allocator may place them over that scratch while other warps still read it.
+    acc = tl.load(C + r[:, None] * N + c[None, :])
+    for start in range(0, K, BK):
+        a = tl.load(A + r[:, None] * K + start + k[None, :])
+        b = tl.load(B + (start + k[:, None]) * N + c[None, :])
+        acc = tl.dot(a, b, acc)
+    tl.store(Y + r[:, None] * N + c[None, :], acc)
+
+
+@pytest.mark.parametrize("warps,stages,m,n,k", [(8, 3, 32, 32, 96), (8, 4, 32, 32, 96), (8, 3, 64, 64, 128),
+                                                (8, 3, 64, 32, 128), (4, 3, 64, 64, 128)])
+def test_metax_pipelined_dot_prologue_barrier(warps, stages, m, n, k, metax_device):
+    torch.manual_seed(1493)
+    a = torch.randint(-4, 5, (m, k), device=metax_device).to(torch.bfloat16)
+    b = torch.randint(-4, 5, (k, n), device=metax_device).to(torch.bfloat16)
+    acc = (torch.arange(m * n, dtype=torch.float32).reshape(m, n).remainder(13) / 8).to(metax_device)
+    expected = a.double() @ b.double() + acc.double()
+    # FP32 accumulation error, relative to the sum of absolute products.
+    bound = (k + 2) * 2**-24 * (a.double().abs() @ b.double().abs() + acc.double().abs())
+    out = torch.empty((m, n), dtype=torch.float32, device=metax_device)
+    # The race is intermittent: reuse the same inputs and compiled kernel.
+    for iteration in range(500):
+        kernel = _metax_pipelined_dot_with_acc[(1, )](a, b, acc, out, m, n, 32, k, num_warps=warps, num_stages=stages)
+        assert torch.all((out.double() - expected).abs() <= bound), iteration
+    # Guard against the loop silently falling back to the unpipelined schedule.
+    assert "memdesc<2x" in kernel.asm["ttgir"]
+
+
+_metax_fp8_pairs = list(itertools.product([tl.float8e4nv, tl.float8e5], repeat=2))
+
+
+@pytest.mark.parametrize("lhs_dtype,rhs_dtype,pattern,block,scenario",
+                         [(a, b, "finite", block, "")
+                          for a, b in _metax_fp8_pairs
+                          for block in (16, 32, 64)] + [(a, b, pattern, 64, scenario)
+                                                        for a, b in _metax_fp8_pairs
+                                                        for pattern, scenario in (("finite_row", ""),
+                                                                                  ("finite_row_tail", ""),
+                                                                                  ("finite_row", "fullstage"))] +
+                         [(a, b, pattern, 32, "")
+                          for a, b in _metax_fp8_pairs
+                          for pattern in ("subnormal", "rhs_subnormal", "nan")] + [(tl.float8e5, b, pattern, 32, "")
+                                                                                   for b in (tl.float8e4nv, tl.float8e5)
+                                                                                   for pattern in ("inf", "-inf")])
+def test_metax_fp8_dot(lhs_dtype, rhs_dtype, pattern, block, scenario, metax_device):
+    has_tail = pattern == "finite_row_tail"
+    is_row_major = pattern in ("finite_row", "finite_row_tail")
+    if is_row_major:
+        pattern = "finite"
+    m = n = block
+    k = 2 * block + (8 if has_tail else 0)
+    rng = np.random.default_rng(20261023)
+    a_pattern = "one" if pattern == "rhs_subnormal" else pattern
+    b_pattern = "finite" if pattern == "finite" else "subnormal" if pattern == "rhs_subnormal" else "one"
+    a, av = _metax_fp8_dot_operand(lhs_dtype, (m, k), a_pattern, rng, metax_device)
+    b, bv = _metax_fp8_dot_operand(rhs_dtype, (k, n), b_pattern, rng, metax_device)
+    if block == 64 and not is_row_major:
+        b = b.T.contiguous().T
+    out = torch.empty((m, n), dtype=torch.float32, device=metax_device)
+    initial_acc = 1.25 if pattern == "finite" else 0.
+    kernel = matmul_kernel[(1, )](triton.reinterpret(a, lhs_dtype), triton.reinterpret(b, rhs_dtype), out, m, n, k,
+                                  *a.stride(), *b.stride(), *out.stride(), block, block, max(block, 32), 0, num_warps=4,
+                                  num_stages=2, initial_acc=initial_acc, mask_k=has_tail, scenario=scenario)
+    actual = out.cpu().numpy().astype(np.float64)
+    with np.errstate(invalid="ignore"):
+        expected = av @ bv + initial_acc
+    if pattern in ("nan", "inf", "-inf", "subnormal", "rhs_subnormal"):
+        np.testing.assert_array_equal(actual, expected)
+    else:
+        eps = np.finfo(np.float32).eps
+        bound = k * eps / (1 - k * eps) * (np.abs(av) @ np.abs(bv) + abs(initial_acc))
+        assert np.isfinite(actual).all()
+        np.testing.assert_array_less(np.abs(actual - expected), bound + np.finfo(np.float32).tiny)
+    target = triton.runtime.driver.active.get_current_target()
+    is_native = target.arch // 10 == 8 and target.arch % 10 >= 6 and lhs_dtype == rhs_dtype
+    suffix = ("32f8" if lhs_dtype == tl.float8e4nv else "32bf8") if is_native else "16f16"
+    assert "llvm.mxc.mma.f32.16x16x" + suffix in kernel.asm["llir"]
+    if is_row_major and target.arch == 80:
+        promotions = [line for line in kernel.asm["ttgir"].splitlines() if "tt.fp_to_fp" in line and "xf8" in line]
+        if rhs_dtype == tl.float8e5:
+            assert promotions and all("#ttg.dot_op" in line for line in promotions)
+        else:
+            assert re.search(r"use.opt.maca.mma\s*=\s*1", kernel.asm["ttgir"])
+            assert promotions and all("#ttg.dot_op" not in line for line in promotions)
+            if lhs_dtype != rhs_dtype:
+                prologue = kernel.asm["ttgir"].split("scf.for", 1)[0]
+                assert "tt.fp_to_fp" in prologue and "ttg.local_store" in prologue
+
+
+@pytest.mark.parametrize("acc_dtype,out_dtype,error", [
+    (tl.float32, tl.float16, "requires out_dtype=float32"),
+    (tl.float32, tl.bfloat16, "requires out_dtype=float32"),
+    (tl.float16, tl.float32, "requires a float32 accumulator"),
+])
+def test_metax_fp8_dot_invalid_accumulator(acc_dtype, out_dtype, error):
+    from triton.backends.compiler import GPUTarget
+
+    source = _metax_fp8_dot_source(tl.float8e4nv, tl.float8e4nv, acc_dtype=acc_dtype, out_dtype=out_dtype)
+    with pytest.raises(triton.CompilationError, match=error):
+        triton.compile(source, target=GPUTarget("maca", 80, 64))
+
+
+def _metax_fp8_dot_source(lhs_dtype, rhs_dtype, block_m=32, block_n=32, acc_dtype=tl.float32, out_dtype=tl.float32):
+    from triton.compiler import ASTSource
+
+    signature = {name: "i32" for name in matmul_kernel.arg_names[:12]}
+    signature.update(a_ptr=f"*{lhs_dtype}", b_ptr=f"*{rhs_dtype}", c_ptr="*fp32")
+    constants = dict(BLOCK_SIZE_M=block_m, BLOCK_SIZE_N=block_n, BLOCK_SIZE_K=32, low_precision_acc=0, num_stages=2,
+                     initial_acc=1.25, acc_dtype=acc_dtype, out_dtype=out_dtype, mask_k=False)
+    return ASTSource(matmul_kernel, signature, constexprs=constants)
+
+
+@pytest.mark.parametrize("lhs_dtype,rhs_dtype", _metax_fp8_pairs)
+@pytest.mark.parametrize("m,n", [(1, 1), (8, 16), (16, 8)])
+@pytest.mark.parametrize("arch", [80, 86])
+def test_metax_fp8_dot_invalid_shape(lhs_dtype, rhs_dtype, m, n, arch):
+    from triton.backends.compiler import GPUTarget
+
+    with pytest.raises(triton.CompilationError, match=f"M >= 16, N >= 16 and K >= 32; got M={m}, N={n}, K=32"):
+        triton.compile(_metax_fp8_dot_source(lhs_dtype, rhs_dtype, m, n), target=GPUTarget("maca", arch, 64))
+
+
+@triton.jit
+def _metax_batched_fp8_dot():
+    a = tl.full((2, 16, 32), 0, tl.float8e4nv)
+    b = tl.full((2, 32, 16), 0, tl.float8e5)
+    tl.dot(a, b)
+
+
+def test_metax_fp8_dot_rejects_batch():
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+
+    with pytest.raises(triton.CompilationError, match="MetaX FP8 dot requires 2D inputs"):
+        triton.compile(ASTSource(_metax_batched_fp8_dot, {}), target=GPUTarget("maca", 80, 64))
+
+
+@pytest.mark.parametrize("arch", [75, 90])
+def test_metax_fp8_dot_rejects_arch_without_mma(arch):
+    from triton.backends.compiler import GPUTarget
+
+    source = _metax_fp8_dot_source(tl.float8e4nv, tl.float8e4nv)
+    with pytest.raises(triton.CompilationError, match=f"FP8 dot on target {arch} has no supported MMA path"):
+        triton.compile(source, target=GPUTarget("maca", arch, 64))
+
+
+@pytest.mark.parametrize("lhs,rhs,out_dtype,error", [
+    ("u8", "u8", tl.float32, "uint8 x uint8 -> int32"),
+    ("i8", "u8", tl.float32, "int8 x uint8 -> int32"),
+    ("fp8e4nv", "fp16", tl.float32, "fp8e4nv x fp16 -> fp32"),
+    ("fp16", "fp16", tl.float16, "fp16 x fp16 -> fp16"),
+])
+def test_metax_dot_unsupported_dtypes(lhs, rhs, out_dtype, error):
+    from triton.backends.compiler import GPUTarget
+
+    with pytest.raises(triton.CompilationError, match=rf"tl\.dot: {error} is not supported on MetaX"):
+        triton.compile(_metax_fp8_dot_source(lhs, rhs, out_dtype=out_dtype), target=GPUTarget("maca", 80, 64))
+
+
+@pytest.mark.parametrize("lhs_dtype,rhs_dtype", _metax_fp8_pairs)
+@pytest.mark.parametrize("diagnostics", ["", "warnings"])
+def test_metax_fp8_dot_diagnostic(lhs_dtype, rhs_dtype, diagnostics, fresh_triton_cache, monkeypatch, capfd):
+    from triton.backends.compiler import GPUTarget
+
+    if diagnostics:
+        monkeypatch.setenv("MLIR_ENABLE_DIAGNOSTICS", diagnostics)
+    else:
+        monkeypatch.delenv("MLIR_ENABLE_DIAGNOSTICS", raising=False)
+    with pytest.warns(UserWarning, match=r"tl\.dot: .*MetaX target 80.*native=false"):
+        triton.compile(_metax_fp8_dot_source(lhs_dtype, rhs_dtype), target=GPUTarget("maca", 80, 64),
+                       options={"num_warps": 4, "num_stages": 2})
+    assert ("using non-native FP8 dot on MetaX target" in capfd.readouterr().err) == bool(diagnostics)
+
+
+def test_metax_fp8_dot_resolver_uses_plugin_query(monkeypatch):
+    from triton._C.libtriton import metax
+    from triton.backends.compiler import GPUTarget
+    from triton.backends.metax.compiler import MACABackend
+
+    monkeypatch.setattr(metax, "resolve_fp8_dot", lambda arch, same_format: (arch == 80, arch == 80 and same_format),
+                        raising=False)
+    backend = MACABackend(GPUTarget("maca", 80, 64))
+    resolve_dot = backend.get_codegen_implementation(backend.parse_options({}))["resolve_dot"]
+    assert resolve_dot("fp8e4nv", "fp8e4nv", "fp32", 16, 16, 32).native
+    assert not resolve_dot("fp8e4nv", "fp8e5", "fp32", 16, 16, 32).native
+
+
+@pytest.mark.parametrize("lhs_dtype,rhs_dtype", _metax_fp8_pairs)
+@pytest.mark.parametrize("scenario", ["", "fullstage"])
+def test_metax_fp8_dot_xcore1600(lhs_dtype, rhs_dtype, scenario, fresh_triton_cache, tmp_path, monkeypatch, recwarn):
+    import os
+    from pathlib import Path
+    import shlex
+    from triton.backends.compiler import GPUTarget
+
+    compiler = Path(os.environ["MACA_PATH"]) / "mxgpu_llvm/bin/mxcc"
+    wrapper = tmp_path / "mxgpu_llvm/bin/mxcc"
+    wrapper.parent.mkdir(parents=True)
+    machine_log = tmp_path / "machine.log"
+    wrapper.write_text(f'#!/bin/sh\nexec {shlex.quote(str(compiler))} -offload-arch=xcore1600 '
+                       f'-mllvm -print-after=stack-frame-layout "$@" 2>{shlex.quote(str(machine_log))}\n')
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("TRITON_COMPILER_OPT_PATH", str(tmp_path))
+    monkeypatch.delenv("MLIR_ENABLE_DIAGNOSTICS", raising=False)
+    kernel = triton.compile(_metax_fp8_dot_source(lhs_dtype, rhs_dtype), target=GPUTarget("maca", 86, 64),
+                            options={"num_warps": 4, "num_stages": 2, "scenario": scenario})
+    assert any("native=false" in str(w.message) for w in recwarn) == (lhs_dtype != rhs_dtype)
+    assert b"maca-mxc-metax-macahca--xcore1600" in kernel.asm["mcfatbin"]
+    machine = machine_log.read_text()
+    if lhs_dtype == rhs_dtype:
+        suffix = "F8" if lhs_dtype == tl.float8e4nv else "BF8"
+        assert "MMA_F32_16X16X32" + suffix in machine
+        assert "MMA_F32_16X16X16F16" not in machine
+    else:
+        assert "MMA_F32_16X16X16F16" in machine
+        assert "MMA_F32_16X16X32F8" not in machine and "MMA_F32_16X16X32BF8" not in machine
+
+
 @pytest.mark.interpreter
 @pytest.mark.parametrize("M, N, K", [(128, 256, 256)])
-@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(128, 256, 128), (64, 64, 64)])
+# FP8 promotion to FP16 must fit C550's 64 KiB shared-memory limit.
+@pytest.mark.parametrize("BLOCK_M, BLOCK_N, BLOCK_K", [(64, 128, 64), (64, 64, 64)])
 @pytest.mark.parametrize(
     "in_type_str",
     ['float8e5', 'float8e5b16', 'float8e4b8', 'float8e4nv'] if is_hip() else ['float8e5', 'float8e4nv', 'float8e4b15'])

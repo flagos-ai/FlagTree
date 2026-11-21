@@ -306,11 +306,16 @@ struct TritonFp4ToFpScaledPattern
             /*fwdInference=*/true, op.getLoc(), outputTy)))
       return failure();
 
+    Value scale = adaptor.getScale();
+    auto scaleTy = cast<RankedTensorType>(scale.getType());
+    if (scaleTy.getEncoding() != inputEnc)
+      scale = rewriter.create<triton::gpu::ConvertLayoutOp>(
+          op.getLoc(), scaleTy.cloneWithEncoding(inputEnc), scale);
     auto newOutputTy = outputTy.cloneWithEncoding(outputEnc);
-    addNamedAttrs(rewriter.replaceOpWithNewOp<triton::Fp4ToFpScaledOp>(
-                      op, newOutputTy, adaptor.getInput(), adaptor.getScale(),
-                      op.getAxisAttr()),
-                  adaptor.getAttributes());
+    addNamedAttrs(
+        rewriter.replaceOpWithNewOp<triton::Fp4ToFpScaledOp>(
+            op, newOutputTy, adaptor.getInput(), scale, op.getAxisAttr()),
+        adaptor.getAttributes());
     return success();
   }
 };
