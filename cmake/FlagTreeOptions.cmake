@@ -696,6 +696,8 @@ function(flagtree_add_tle_generated_header_dependencies)
   foreach(_flagtree_tle_header_target IN ITEMS
       TritonAnalysis
       TritonAMDAnalysis
+      TritonHCUAnalysis
+      TritonHCUGPUToLLVM
       TritonToTritonGPU
       TritonGPUTransforms
       TritonNvidiaGPUTransforms

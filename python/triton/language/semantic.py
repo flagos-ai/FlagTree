@@ -1663,6 +1663,17 @@ class TritonSemantic(Generic[TensorTy]):
                 N, K // scale_factor
             ], f"rhs_scale must be a tensor of shape [{N}, {K // scale_factor}]. Got {rhs_scale_shape}"
 
+    def check_dot_scaled_support(self, lhs_format: str, rhs_format: str) -> None:
+        resolve_dot_scaled = self.builder.codegen_fns.get("resolve_dot_scaled")
+        if resolve_dot_scaled is not None:
+            scaled_cap = resolve_dot_scaled(lhs_format, rhs_format)
+            if not scaled_cap.supported:
+                raise ValueError(scaled_cap.diag
+                                 or f"tl.dot_scaled: {lhs_format} x {rhs_format} is not supported on this product")
+            if not scaled_cap.native:
+                warnings.warn(scaled_cap.diag or f"tl.dot_scaled: {lhs_format} x {rhs_format} is not native "
+                              "on this product: decomposed to a non-native path (native=false)")
+
     def dot_scaled(self, lhs: TensorTy, lhs_scale: TensorTy, lhs_format: str, rhs: TensorTy,
                    rhs_scale: Optional[TensorTy], rhs_format: str, acc: TensorTy | None, fast_math: bool,
                    lhs_k_pack: bool, rhs_k_pack: bool, out_dtype: tl.dtype) -> TensorTy:
@@ -1679,15 +1690,7 @@ class TritonSemantic(Generic[TensorTy]):
         assert lhs_format in allowed_formats, f"NYI: lhs_format {lhs_format}"
         assert rhs_format in allowed_formats, f"NYI: rhs_format {rhs_format}"
         # flagtree: non-native (decomposed) format combinations warn at compile time
-        resolve_dot_scaled = self.builder.codegen_fns.get("resolve_dot_scaled")
-        if resolve_dot_scaled is not None:
-            scaled_cap = resolve_dot_scaled(lhs_format, rhs_format)
-            if not scaled_cap.supported:
-                raise ValueError(scaled_cap.diag
-                                 or f"tl.dot_scaled: {lhs_format} x {rhs_format} is not supported on this product")
-            if not scaled_cap.native:
-                warnings.warn(scaled_cap.diag or f"tl.dot_scaled: {lhs_format} x {rhs_format} is not native "
-                              "on this product: decomposed to a non-native path (native=false)")
+        self.check_dot_scaled_support(lhs_format, rhs_format)
         rhs_scale_is_none = rhs_scale is None or (isinstance(rhs_scale, tl.constexpr) and rhs_scale.value is None)
         lhs_scale_is_none = lhs_scale is None or (isinstance(lhs_scale, tl.constexpr) and lhs_scale.value is None)
         lhs = self._bitcast_to_fp_type(lhs, lhs_format)

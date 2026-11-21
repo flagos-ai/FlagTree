@@ -458,6 +458,23 @@ def BufferAtomicCASOp : TT_HCUGPU_Op<"buffer_atomic_cas", [
 // BufferStoreOp
 //===----------------------------------------------------------------------===//
 
+def BufferStoreLdsOp : TT_HCUGPU_Op<"buffer_store_lds"> {
+  let summary = "Copy a contiguous LDS tile to global memory without payload VGPRs";
+  let description = [{
+    Internal gfx936 lowering for a full, unswizzled one-dimensional tile.
+    Each wave copies contiguous DWORDs using BUFFER_STORE_LDS_DWORD.
+    Unlike an async token operation, this operation waits for completion:
+    producers are synchronized before the copy and LDS can be reused afterward.
+    The conversion pass proves the destination contiguity, DWORD alignment,
+    element types and full-wave coverage before creating this operation.
+  }];
+  let arguments = (ins
+    Arg<TTG_MemDescType, "", [MemRead<SharedMemory>]>:$src,
+    Arg<TT_PtrTensor, "", [MemWrite<GlobalMemory>]>:$ptr
+  );
+  let assemblyFormat = "$src `,` $ptr attr-dict `:` type($src) `,` type($ptr)";
+}
+
 def BufferStoreOp : TT_HCUGPU_Op<"buffer_store", [
   AttrSizedOperandSegments,
   SameLoadStoreOperandsEncoding,

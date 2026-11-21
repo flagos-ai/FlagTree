@@ -65,6 +65,21 @@ void addLocalBarrierAfterAmdGpuAsyncWait(ModuleOp mod) {
     builder.setInsertionPointAfter(waitOp);
     builder.create<triton::gpu::LocalBarrierOp>(waitOp->getLoc());
   }
+  SmallVector<gpu::LocalLoadOp> explicitLoopLoads;
+  mod.walk([&](gpu::LocalLoadOp load) {
+    if (load->hasAttr("tle.explicit_async_loop_load"))
+      explicitLoopLoads.push_back(load);
+  });
+  for (auto load : explicitLoopLoads) {
+    // The coalesced producer and the consumer can assign bytes to different
+    // warps. Finish every LDS read before another warp starts the next copy
+    // into the same loop-local buffer; the pre-load wait only orders writes.
+    if (!isa<mlir::gpu::BarrierOp, gpu::LocalBarrierOp>(load->getNextNode())) {
+      builder.setInsertionPointAfter(load);
+      builder.create<gpu::LocalBarrierOp>(load.getLoc());
+    }
+    load->removeAttr("tle.explicit_async_loop_load");
+  }
 }
 
 void annotateLocalLoadsSyncedViaAsyncWait(ModuleOp mod) {

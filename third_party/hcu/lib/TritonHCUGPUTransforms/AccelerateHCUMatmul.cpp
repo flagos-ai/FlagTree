@@ -1,3 +1,4 @@
+#include "Dialect/TritonHCUGPU/Utility/CommonUtils.h"
 #include "TritonHCUGPUToLLVM/TargetUtils.h"
 #include "TritonHCUGPUTransforms/MfmaGroup.h"
 #include "TritonHCUGPUTransforms/Passes.h"
@@ -336,7 +337,6 @@ getCompatibleDotOpEncoding(int opIdx, ttg::DotOperandEncodingAttr dotAEncoding,
 
 FailureOr<MfmaIntrinsic>
 chooseMfmaInstructionWithMLS(tt::DotOp dot, int mfmaVersion,
-                             int enforcedNonKDim,
                              std::optional<MatrixLoadInfo> &aMatInfo,
                              std::optional<MatrixLoadInfo> &bMatInfo,
                              HCUISAFeature features = HCUISAFeature::NONE) {
@@ -354,8 +354,6 @@ chooseMfmaInstructionWithMLS(tt::DotOp dot, int mfmaVersion,
   auto rank = resShape.size();
   auto M = resShape[rank - 2];
   auto N = resShape[rank - 1];
-
-  (void)enforcedNonKDim;
 
   // Determine the mDim and nDim based on the matrix load and numWarps Info.
   unsigned mDim = !aMatInfo.has_value()
@@ -878,11 +876,16 @@ public:
     auto aMatInfo = getDotOperandMatrixLoadInfo(dotOp, 0);
     auto bMatInfo = getDotOperandMatrixLoadInfo(dotOp, 1);
     bool useMatrixLoad = aMatInfo.has_value() || bMatInfo.has_value();
+    if (useMatrixLoad && nonKDim != 0 && nonKDim != 16)
+      return rewriter.notifyMatchFailure(
+          dotOp, "HCU matrix loads require a 16x16 MMAC instruction");
 
     FailureOr<MfmaIntrinsic> mfmaInstr;
     if (useMatrixLoad) {
-      mfmaInstr = chooseMfmaInstructionWithMLS(dotOp, mfmaVersion, nonKDim,
-                                               aMatInfo, bMatInfo, features);
+      mfmaInstr = chooseMfmaInstructionWithMLS(dotOp, mfmaVersion, aMatInfo,
+                                               bMatInfo, features);
+      if (failed(mfmaInstr))
+        return failure();
     } else {
       // If mfmaVersion == 4 and both inputs are of F8F6F4 types, we will try to
       // use the V_MFMA_*_F8F6F4 instructions since it has higher FLOPs per
@@ -1081,192 +1084,6 @@ public:
 
     rewriter.replaceOp(dotOp, dotOutput);
 
-    return success();
-  }
-};
-
-class ScaledBlockedToMFMA final : public OpRewritePattern<triton::DotScaledOp> {
-  int mfmaVersion;
-  int nonKDim;
-  int kPack;
-
-  HCUISAFeature features;
-  MmacLayout mmacLayout;
-
-public:
-  ScaledBlockedToMFMA(MLIRContext *context, int mfmaVersion, int nonKDim,
-                      int kPack, HCUISAFeature features, MmacLayout mmacLayout,
-                      PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), mfmaVersion(mfmaVersion),
-        nonKDim(nonKDim), kPack(kPack), features(features),
-        mmacLayout(mmacLayout) {}
-
-  LogicalResult matchAndRewrite(triton::DotScaledOp dotOp,
-                                PatternRewriter &rewriter) const override {
-    // TODO: add support for m/n packed formats.
-    if (!dotOp.getLhsKPack() || !dotOp.getRhsKPack())
-      return failure();
-    using TensorValue = TypedValue<RankedTensorType>;
-
-    RankedTensorType oldRetType = dotOp.getType();
-    if (!isa_and_nonnull<BlockedEncodingAttr>(oldRetType.getEncoding()))
-      return rewriter.notifyMatchFailure(
-          dotOp, "expected blocked encoding result tensor");
-    unsigned rank = oldRetType.getRank();
-    if (rank == 3)
-      return rewriter.notifyMatchFailure(dotOp, "NYI: 3d case");
-
-    TensorValue a = dotOp.getA();
-    TensorValue b = dotOp.getB();
-    TensorValue aScale = dotOp.getAScale();
-    TensorValue bScale = dotOp.getBScale();
-    if (aScale && bScale)
-      return rewriter.notifyMatchFailure(dotOp, "NYI: both LHS and RHS scale");
-
-    ScaleDotElemType aElemType = dotOp.getAElemType();
-    ScaleDotElemType bElemType = dotOp.getBElemType();
-    auto supportsTypes = [](ScaleDotElemType elemType) {
-      return elemType == ScaleDotElemType::E2M1 ||
-             elemType == ScaleDotElemType::E4M3 ||
-             elemType == ScaleDotElemType::E5M2 ||
-             elemType == ScaleDotElemType::BF16 ||
-             elemType == ScaleDotElemType::FP16;
-    };
-    if (!supportsTypes(aElemType) || !supportsTypes(bElemType))
-      return rewriter.notifyMatchFailure(dotOp, "NYI: mxfp6 operand");
-
-    MLIRContext *ctx = dotOp.getContext();
-    auto moduleOp = dotOp->getParentOfType<ModuleOp>();
-    int numWarps = ttg::lookupNumWarps(dotOp);
-
-    ttg::CTAEncodingAttr ctaLayout =
-        ttg::getCTALayout(oldRetType.getEncoding());
-    int numThreads = ttg::TritonGPUDialect::getThreadsPerWarp(moduleOp);
-
-    // Choose a suitable MFMA instruction for this scaled dot op.
-    bool useFp16 = aElemType == ScaleDotElemType::FP16 ||
-                   bElemType == ScaleDotElemType::FP16;
-    FailureOr<MfmaIntrinsic> mfmaInstr =
-        chooseMfmaInstruction(dotOp, mfmaVersion, nonKDim, useFp16);
-    if (failed(mfmaInstr))
-      return rewriter.notifyMatchFailure(dotOp, "cannot choose mfma intrinsic");
-
-    if (useFp16) {
-      dotOp.emitRemark(
-          "Warning: detected one dot_scaled operand is fp16 tensor so "
-          "upcasting to fp16 for computation, which impacts precision; "
-          "experimental behavior and may change in future");
-    }
-
-    unsigned mDim = mfmaInstr->mDim;
-    unsigned nDim = mfmaInstr->nDim;
-    unsigned kDim = mfmaInstr->kDim;
-    unsigned kBase = mfmaInstr->kBase;
-
-    // For mxfp4 A/B tensor, we pack every two values into one int8 value there.
-    // For such cases, we have different initial kWidth for LHS and RHS, which
-    // will be "fixed" later by using upcast_mxfp to convert LHS to unpacked
-    // values. For such packed cases, we cannot support flexible kPack choices
-    // from the developer--it just does not apply here. So mandate the choice
-    // here.
-    bool isAPacked = aElemType == ScaleDotElemType::E2M1;
-    bool isBPacked = bElemType == ScaleDotElemType::E2M1;
-    bool isPacked = isAPacked || isBPacked;
-    unsigned kWidths[] = {isPacked ? (isAPacked ? 4 : 8) : kBase * kPack,
-                          isPacked ? (isAPacked ? 8 : 4) : kBase * kPack};
-
-    // For A/B tensor, 32 consecutive elements along K dim share the same scale.
-    // We'd like to keep the scale values together with the base values in the
-    // same warp to avoid cross-warp data exchange. It means we want warpsPerCTA
-    // = 1 along the N/M dimension for the mxfp A/B case. We achieve that by
-    // setting the M/N dimension as numWarps.
-    SmallVector<unsigned, 2> mfmaWarpsPerCTA(rank, 1);
-    mfmaWarpsPerCTA[aScale ? 0 : 1] = numWarps;
-
-    // Always use transposed mfma layout. This enables larger vectorization
-    // for global store instructions.
-    auto mfmaEnc = ttg::AMDMfmaEncodingAttr::get(
-        ctx, /*version=*/mfmaVersion, mfmaWarpsPerCTA, {mDim, nDim, kDim},
-        /*isTransposed=*/true, ctaLayout, {},
-        oldRetType.getElementType().getIntOrFloatBitWidth());
-
-    auto newRetType = RankedTensorType::get(
-        oldRetType.getShape(), oldRetType.getElementType(), mfmaEnc);
-
-    auto newAcc = rewriter.create<ttg::ConvertLayoutOp>(
-        dotOp.getC().getLoc(), newRetType, dotOp.getC());
-
-    auto upcastForMMA = [&](TensorValue v, int idx,
-                            ScaleDotElemType type) -> TensorValue {
-      auto vType = v.getType();
-      auto newVEncoding = DotOperandEncodingAttr::get(
-          ctx, idx, newRetType.getEncoding(), kWidths[idx]);
-      auto newVType = RankedTensorType::get(
-          vType.getShape(), vType.getElementType(), newVEncoding);
-      v = rewriter.create<ttg::ConvertLayoutOp>(v.getLoc(), newVType, v);
-      // Don't need to covert int8 holding mxfp4--the upcast_mxfp op can
-      // take int8 tensor as input.
-      if (type == ScaleDotElemType::BF16 || type == ScaleDotElemType::FP16 ||
-          type == ScaleDotElemType::E2M1 ||
-          (mfmaVersion == 4 &&
-           (type == ScaleDotElemType::E4M3 || type == ScaleDotElemType::E5M2)))
-        return v;
-
-      auto upcastedType = RankedTensorType::get(
-          vType.getShape(),
-          useFp16 ? rewriter.getF16Type() : rewriter.getBF16Type(),
-          newVEncoding);
-      return cast<TensorValue>(
-          rewriter.create<FpToFpOp>(v.getLoc(), upcastedType, v).getResult());
-    };
-    a = upcastForMMA(a, 0, aElemType);
-    b = upcastForMMA(b, 1, bElemType);
-
-    // We need to have "matching" encoding between the main tensor and scale
-    // tensor to make sure the scale values needed is in the same warp. So we
-    // adopt the same CTA layout and warps per CTA. The warp dimensions needs to
-    // match along M/N dimension too. With in a warp, we have 64 threads. We let
-    // each thread read in one scale value. So we need a threadsPerWarp =
-    // mDim/nDim along M/N dimension. Note that For MFMA intrinsics, mDim is
-    // always the same as nDim. And for scaled dot scale tensor, we always have
-    // K as the innermost dimension. So we have the same threadsPerWarp in the
-    // below no matter A or B scale. Similarly for warpsPerCTA, the non-K
-    // dimension is always at index 0.
-    assert(mDim == nDim);
-    SmallVector<unsigned, 2> threadsPerWarp = {mDim, numThreads / mDim};
-    SmallVector<unsigned, 2> blockWarpsPerCTA(rank, 1);
-    blockWarpsPerCTA[0] = numWarps;
-    auto newScaleEncoding = triton::gpu::BlockedEncodingAttr::get(
-        ctx, {1, 1}, threadsPerWarp, blockWarpsPerCTA, {1, 0}, ctaLayout);
-
-    auto upcastMXFP = [&](TensorValue v, TensorValue scale,
-                          ScaleDotElemType elemType, bool fastMath) -> Value {
-      if (!scale)
-        return v;
-
-      auto newScaleType = RankedTensorType::get(
-          scale.getType().getShape(), scale.getType().getElementType(),
-          newScaleEncoding);
-      auto convOp = rewriter.create<ttg::ConvertLayoutOp>(scale.getLoc(),
-                                                          newScaleType, scale);
-
-      Builder b(v.getContext());
-      // TODO: Emit device assert to check scale tensor range fitting into fp16?
-      Type outputElemType = useFp16 ? b.getF16Type() : b.getBF16Type();
-      auto outputType =
-          hcugpu::UpcastMXFPOp::deduceOutputType(v, elemType, outputElemType);
-      return rewriter.create<hcugpu::UpcastMXFPOp>(
-          dotOp.getLoc(), outputType, v, convOp, elemType, fastMath);
-    };
-
-    Value scaledA =
-        upcastMXFP(a, aScale, dotOp.getAElemType(), dotOp.getFastMath());
-    Value scaledB =
-        upcastMXFP(b, bScale, dotOp.getBElemType(), dotOp.getFastMath());
-    auto newDot = rewriter.create<DotOp>(dotOp.getLoc(), newRetType, scaledA,
-                                         scaledB, newAcc);
-    rewriter.replaceOpWithNewOp<ttg::ConvertLayoutOp>(dotOp, oldRetType,
-                                                      newDot);
     return success();
   }
 };
@@ -1796,6 +1613,12 @@ public:
   };
 
   bool isLegalFMAForm(DotOp dotOp, const DotElTypes &dotTypes) const {
+    // Keep small signed I8 dots in integer arithmetic with I32 accumulation,
+    // including shapes that cannot use a vector or matrix dot instruction.
+    if (dotTypes.a.isInteger(8) && dotTypes.a == dotTypes.b &&
+        dotTypes.c.isInteger(32) && dotTypes.d.isInteger(32)) {
+      return true;
+    }
     if (HCU::supportsVDot(arch)) {
       auto aOpType = dotOp.getA().getType();
       int rank = aOpType.getRank();
@@ -1945,6 +1768,22 @@ struct TritonHCUGPUAccelerateMatmulPass
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
 
+    bool invalidScale = false;
+    m.walk([&](DotScaledOp dot) {
+      for (Value scale : {dot.getAScale(), dot.getBScale()}) {
+        if (scale && !cast<RankedTensorType>(scale.getType())
+                          .getElementType()
+                          .isInteger(8)) {
+          dot.emitOpError("HCU dot_scaled requires uint8 E8M0 scales");
+          invalidScale = true;
+        }
+      }
+    });
+    if (invalidScale) {
+      signalPassFailure();
+      return;
+    }
+
     RewritePatternSet mfmaPatterns(context);
     auto features = triton::HCU::deduceHCUISAFeature(archGenerationName);
     auto mmacLayout = mmacLayoutForce != -1
@@ -1959,9 +1798,13 @@ struct TritonHCUGPUAccelerateMatmulPass
     case ISAFamily::CDNA1:
     case ISAFamily::CDNA2:
     case ISAFamily::CDNA3:
-      mfmaPatterns.add<::BlockedToMFMA, ::ScaledBlockedToMFMA>(
-          context, getMfmaVersion(isaFamily), matrixInstructionSize, kPack,
-          features, mmacLayout,
+      ttg::populateDecomposeScaledBlockedPatterns(mfmaPatterns,
+                                                  /*benefit=*/3);
+      // Unscaled HCU MMAC entries use the v3 encoding, including on gfx946.
+      mfmaPatterns.add<::BlockedToMFMA>(
+          context,
+          archGenerationName == "gfx946" ? 3 : getMfmaVersion(isaFamily),
+          matrixInstructionSize, kPack, features, mmacLayout,
           /*benefit=*/2);
       break;
     case ISAFamily::RDNA3:

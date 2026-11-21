@@ -2,6 +2,7 @@
 #define TRITON_THIRD_PARTY_HCU_INCLUDE_DIALECT_TRITONHCUGPU_UTILITY_COMMONUTILS_H_
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Tools/LinearLayout.h"
 
@@ -23,6 +24,9 @@ ElemLocationKey getElemCoordinatesFromRegisters(LinearLayout ll, unsigned regId,
 std::optional<int> getRegFromCoordinates(LinearLayout ll,
                                          ElemLocationKey coordinates,
                                          MLIRContext *ctx);
+
+constexpr char FP4DotLoop[] = "hcug.fp4_dot_loop";
+constexpr char FP4DecodeLoad[] = "hcug.fp4_decode_load";
 
 } // namespace mlir::triton::HCU
 
