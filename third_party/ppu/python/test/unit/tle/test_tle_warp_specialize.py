@@ -134,6 +134,36 @@ def test_reductions_in_default_and_worker_partitions(worker_warps):
     assert re.search(rf"__ppukernel_barrier_sync_cnt_void\(i32 2, i32 {32 * worker_warps}, i32 31\)", llir)
 
 
+@triton.jit
+def _dot_partition(a, b, o, B: tl.constexpr):
+    r = tl.arange(0, B)
+    x = tl.load(a + r[:, None] * B + r[None, :])
+    y = tl.load(b + r[:, None] * B + r[None, :])
+    tl.store(o + r[:, None] * B + r[None, :], tl.dot(x, y))
+
+
+@triton.jit
+def _dot_partitions_kernel(a, b, o, B: tl.constexpr, WORKER_WARPS: tl.constexpr):
+    tle.gpu.warp_specialize([(_dot_partition, (a, b, o, B)), (_dot_partition, (a, b, o + B * B, B))], [WORKER_WARPS],
+                            [128])
+
+
+@pytest.mark.parametrize("worker_warps", [1, 2, 4, 8])
+@pytest.mark.parametrize("default_warps", [4, 8])
+def test_dot_in_partition_of_another_warp_count(default_warps, worker_warps):
+    """A tl.dot in the default region and in a worker partition takes the result layout of its own warp group, so
+    a worker may run fewer or more warps than the default region (a producer need not match its consumer)."""
+    block = 64
+    a = torch.randn(block, block, device="cuda", dtype=torch.bfloat16)
+    b = torch.randn_like(a)
+    o = torch.zeros(2 * block * block, device="cuda")
+    _dot_partitions_kernel[(1, )](a, b, o, block, worker_warps, num_warps=default_warps)
+    torch.cuda.synchronize()
+    ref = a.float() @ b.float()
+    torch.testing.assert_close(o[:block * block].view(block, block), ref, rtol=0, atol=0.5)
+    torch.testing.assert_close(o[block * block:].view(block, block), ref, rtol=0, atol=0.5)
+
+
 @triton.jit(noinline=True)
 def _sum_row_helper(x, y, r, BLOCK: tl.constexpr):
     v = tl.load(x + r * BLOCK + tl.arange(0, BLOCK))
