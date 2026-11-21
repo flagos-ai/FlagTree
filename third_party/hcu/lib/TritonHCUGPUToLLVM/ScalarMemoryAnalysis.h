@@ -58,15 +58,20 @@ static bool controlMaySelectAnchor(Operation *branch, Operation *anchor,
   }
   return false;
 }
+// CTA data, per-wave execution control, and rematerializable expressions
+// are distinct contracts. Sharing CFG traversal does not widen descriptor data.
+enum class UniformScope { CTA, WaveControl };
 static bool uniformControlAt(Operation *anchor, triton::FuncOp fn,
                              llvm::SmallPtrSetImpl<void *> &active,
-                             PostDominanceInfo &postDominance);
+                             PostDominanceInfo &postDominance,
+                             UniformScope scope = UniformScope::CTA);
 static bool uniformValue(Value value, llvm::SmallPtrSetImpl<void *> &active,
-                         PostDominanceInfo &postDominance) {
+                         PostDominanceInfo &postDominance,
+                         UniformScope scope = UniformScope::CTA) {
   if (!value.getType().isIntOrIndex())
     return false;
   auto uniform = [&](Value v) {
-    return uniformValue(v, active, postDominance);
+    return uniformValue(v, active, postDominance, scope);
   };
   Value capture = resolveWarpSpecializeCapture(value);
   if (capture != value)
@@ -121,7 +126,7 @@ static bool uniformValue(Value value, llvm::SmallPtrSetImpl<void *> &active,
         if (auto branch = dyn_cast<cf::SwitchOp>(term))
           if (!uniform(branch.getFlag()))
             return false;
-        if (!uniformControlAt(term, fn, active, postDominance))
+        if (!uniformControlAt(term, fn, active, postDominance, scope))
           return false;
       }
     }
@@ -130,6 +135,17 @@ static bool uniformValue(Value value, llvm::SmallPtrSetImpl<void *> &active,
   Operation *op = value.getDefiningOp();
   if (!op)
     return false;
+  if (scope == UniformScope::WaveControl &&
+      op->getName().getStringRef() == "hcug.warp_group_id") {
+    auto size = op->getAttrOfType<IntegerAttr>("groupSize");
+    if (op->getNumOperands() || op->getNumResults() != 1 ||
+        !value.getType().isInteger(32) || !size ||
+        !size.getType().isInteger(32))
+      return false;
+    int64_t count = size.getInt();
+    return count > 0 && !(uint64_t(count) & uint64_t(count - 1)) &&
+           count <= triton::gpu::lookupNumWarps(op);
+  }
   if (isa<triton::GetProgramIdOp>(op))
     return true;
   if (!op->getName().getStringRef().starts_with("arith.") ||
@@ -139,7 +155,8 @@ static bool uniformValue(Value value, llvm::SmallPtrSetImpl<void *> &active,
 }
 static bool uniformControlAt(Operation *anchor, triton::FuncOp fn,
                              llvm::SmallPtrSetImpl<void *> &active,
-                             PostDominanceInfo &postDominance) {
+                             PostDominanceInfo &postDominance,
+                             UniformScope scope) {
   bool result = true;
   fn.walk([&](Operation *branch) {
     if (!result || branch->getNumSuccessors() < 2 ||
@@ -150,7 +167,7 @@ static bool uniformControlAt(Operation *anchor, triton::FuncOp fn,
       condition = conditional.getCondition();
     else if (auto selection = dyn_cast<cf::SwitchOp>(branch))
       condition = selection.getFlag();
-    if (!condition || !uniformValue(condition, active, postDominance))
+    if (!condition || !uniformValue(condition, active, postDominance, scope))
       result = false;
   });
   return result;

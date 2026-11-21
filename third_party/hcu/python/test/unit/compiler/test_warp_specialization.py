@@ -393,6 +393,8 @@ def test_worker_dot_and_priority_use_worker_layout(dtype):
     assert kernel.asm["ttgir"].count("hcug.accumulator_fence") == 2
     assert "s_setprio 1" in kernel.asm["amdgcn"]
     assert "s_setprio 0" in kernel.asm["amdgcn"]
+    assert any("<4 x float>" in line and "asm sideeffect" in line and "s_setprio" in line
+               for line in kernel.asm["llir"].splitlines())
 
 
 @triton.jit
@@ -482,7 +484,7 @@ def test_prefetched_dot_operand_stays_in_register_layout(dtype, k):
 from triton.backends.hcu.compiler import HIPBackend
 
 
-def _tle_structured_captures_lower(tmp_path, dtype, alignment, divergent=False):
+def _tle_structured_captures_lower(tmp_path, dtype, alignment, divergent=False, control=None):
     extra = ('%offset = "hcug.warp_group_id"() {groupSize = 1 : i32} : () -> i32\n'
              "    %derived = tt.addptr %p, %offset : !tt.ptr<DT>, i32").replace("DT", dtype) if divergent else ""
     base = "%derived" if divergent else "%p"
@@ -508,6 +510,23 @@ module attributes {{"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32,
     tt.return
   }}
 }}'''
+    if control is not None:
+        # Isolate structured-register execution from warp-specialize structure.
+        begin = text.index("    ttg.warp_specialize(")
+        body = text.index("      %zero =", begin)
+        end = text.index("      ttg.warp_return", body)
+        load = text[body:end].replace("%base", "%p")
+        selector = ('%tid = "hcug.warp_group_id"() {groupSize = 1 : i32} : () -> i32'
+                    if control == "wave" else "%tid = rocdl.workitem.id.x : i32")
+        prefix = ("    " + selector + "\n    %limit = arith.constant 1 : i32\n"
+                  "    %take = arith.cmpi ult, %tid, %limit : i32\n")
+        if control == "reconverged":
+            code = ("    cf.cond_br %take, ^left, ^right\n  ^left:\n    cf.br ^join\n"
+                    "  ^right:\n    cf.br ^join\n  ^join:\n" + load + "    tt.return\n")
+        else:
+            code = ("    cf.cond_br %take, ^load, ^exit\n  ^load:\n" + load +
+                    "    cf.br ^exit\n  ^exit:\n    tt.return\n")
+        text = text[:begin] + prefix + code + "  }\n}"
     path = tmp_path / "capture.mlir"
     path.write_text(text)
     context = libtriton.ir.context()
@@ -536,6 +555,17 @@ def test_capture_does_not_make_wave_varying_pointer_uniform(tmp_path, capfd, dty
     diagnostic = capfd.readouterr().err
     (tmp_path / "diagnostic.log").write_text(diagnostic)
     assert "uniform AS1 base" in diagnostic
+
+
+@pytest.mark.parametrize("control,accepted", [("reconverged", True), ("wave", True), ("lane", False)])
+def test_structured_register_control_is_site_relative(tmp_path, capfd, control, accepted):
+    if accepted:
+        result = _tle_structured_captures_lower(tmp_path, "bf16", 16, control=control)
+        assert "llvm.amdgcn.struct.ptr.buffer.load." in result
+    else:
+        with pytest.raises(RuntimeError):
+            _tle_structured_captures_lower(tmp_path, "bf16", 16, control=control)
+        assert "execution control" in capfd.readouterr().err
 
 
 # tle uniform division

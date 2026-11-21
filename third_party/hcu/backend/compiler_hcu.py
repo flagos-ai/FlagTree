@@ -3,7 +3,8 @@ from triton._C.libtriton import ir, passes, llvm, hcu, distributed, tle
 from triton import knobs
 from triton.runtime.errors import HSACOError
 from dataclasses import dataclass
-from .memory_schedule import MemorySchedulePolicy, prepare_memory_schedule
+from .memory_schedule import prepare_memory_schedule
+from .native_isa_model import analysis_scope
 from typing import Any, Dict, Optional, Tuple
 from types import ModuleType
 import hashlib
@@ -87,32 +88,19 @@ class HIPOptions:
     wave_private_sync: bool = False
     # Coalesce a proved terminal read-only LDS publication suffix.
     terminal_readonly_publication: bool = False
-    combine_shifted_disjoint_or: bool = False
-    pack_bf16_rounds: bool = False
     # Wave-group MMA motion, guarded by the native completion check.
-    mma_phase_schedule: bool = False
+    memory_mma_schedule: bool = False
+    # This has measured scheduling tradeoffs; retain the independent choice.
+    buffer_store_factor_offsets: bool = False
     coalesce_lgkm_waits: bool = False
     # Consume proved local-read MMAC operands before waiting for younger reads.
     mmac_operand_reuse: bool = False
-    # Complete local reads after compute before cross-wave buffer reuse.
-    post_mma_wait: bool = False
     # Preserve proved LDS-DMA alias metadata through native lowering.
     lds_dma_alias_workaround: bool = False
-    # Extract proved nonnegative constant byte displacements to raw store SOFFSET.
-    buffer_store_scalar_offset: bool = False
-    # Factor proved common VOFFSET expressions within a store block.
-    buffer_store_factor_offsets: bool = False
-    # Split proved constant bytes between MUBUF immediate and uniform SOFFSET.
-    buffer_store_split_immediate: bool = False
-    # Preserve the proved masked base with an exact tied i32 register identity.
-    buffer_store_preserve_masked_base: bool = False
+    # Direct VOFFSET, SOFFSET, split immediate, or a tied masked split base.
+    buffer_store_address_mode: str = "direct"
     # Post-O3 same-BB readonly GPR/LDS issue interleaving; no wait rewrite.
     interleave_global_lds_reads: bool = False
-    interleave_global_lds_reads_fences: bool = False
-    # Keep register-preserving fences in four-float tuples for MMAC allocation.
-    tupled_register_fences: bool = False
-    structured_register_prepack_address: bool = False
-    structured_register_unclamped_column: bool = False
     priority_after_first_mmac: bool = False
     launch_cooperative_grid: bool = False
     matrix_instr_nonkdim: int = 0
@@ -122,9 +110,6 @@ class HIPOptions:
     backend_name: str = 'hip'
     instrumentation_mode: str = ""
     optimize_epilogue: bool = True
-    # Dataclass defaults stay conservative; parse_options resolves target policy.
-    register_batch_owner: bool = False
-    register_batch_owner_shared_vector: bool = False
     # 0: mfma
     # 1: mmac legacy
     # 2: mmac interleave
@@ -202,64 +187,46 @@ class HIPOptions:
             raise ValueError("min_shared_memory must be a nonnegative integer")
         object.__setattr__(self, "schedule_hint", ",".join(_schedule_hints(self.schedule_hint)) or "none")
         boolean_options = (
-            "register_batch_owner",
-            "register_batch_owner_shared_vector",
+            "buffer_store_factor_offsets",
             "mmac_pair_columns",
             "normalize_buffer_record_pitch",
             "prefer_wide_async_copy",
-            "structured_register_prepack_address",
-            "structured_register_unclamped_column",
             "priority_after_first_mmac",
             "mmac_operand_reuse",
-            "combine_shifted_disjoint_or",
-            "pack_bf16_rounds",
             "terminal_readonly_publication",
             "wave_private_sync",
-            "buffer_store_factor_offsets",
-            "buffer_store_scalar_offset",
-            "buffer_store_split_immediate",
-            "buffer_store_preserve_masked_base",
             "interleave_global_lds_reads",
-            "interleave_global_lds_reads_fences",
-            "tupled_register_fences",
             "lds_dma_alias_workaround",
         )
         for name in boolean_options:
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"{name} must be boolean")
         gfx936_options = (
-            "register_batch_owner",
-            "structured_register_prepack_address",
-            "structured_register_unclamped_column",
+            "buffer_store_factor_offsets",
             "priority_after_first_mmac",
             "mmac_operand_reuse",
-            "combine_shifted_disjoint_or",
             "terminal_readonly_publication",
             "wave_private_sync",
-            "buffer_store_factor_offsets",
-            "buffer_store_scalar_offset",
-            "buffer_store_split_immediate",
-            "buffer_store_preserve_masked_base",
             "interleave_global_lds_reads",
-            "interleave_global_lds_reads_fences",
-            "tupled_register_fences",
             "lds_dma_alias_workaround",
         )
         if self.arch != "gfx936":
             for name in gfx936_options:
                 if getattr(self, name):
                     raise ValueError(f"{name} requires gfx936")
-        if self.register_batch_owner and not self.optimize_epilogue:
-            raise ValueError("register_batch_owner requires optimize_epilogue")
-        if self.register_batch_owner_shared_vector and not self.register_batch_owner:
-            raise ValueError("register_batch_owner_shared_vector requires register_batch_owner")
+        if self.buffer_store_address_mode not in ("direct", "scalar", "scalar-split", "scalar-fold"):
+            raise ValueError("invalid buffer_store_address_mode")
+        if self.buffer_store_address_mode != "direct" and self.arch != "gfx936":
+            raise ValueError("buffer_store_address_mode requires gfx936")
         if self.mmac_pair_columns and (self.arch != "gfx936" or not self.mmac_transposed):
             raise ValueError("mmac_pair_columns requires transposed legacy MMAC on gfx936")
         if self.use_block_pingpong is not None and type(self.use_block_pingpong) is not bool:
             raise ValueError("use_block_pingpong must be bool or None")
-        if self.interleave_global_lds_reads_fences and not self.interleave_global_lds_reads:
-            raise ValueError("interleave_global_lds_reads_fences requires interleave_global_lds_reads")
-        MemorySchedulePolicy.from_options(self)
+        for name in ("memory_mma_schedule", "coalesce_lgkm_waits"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"{name} must be boolean")
+            if getattr(self, name) and self.arch != "gfx936":
+                raise ValueError(f"{name} requires gfx936")
         if self.loop_unroll_stage not in ("ttir", "post-pipeline"):
             raise ValueError("loop_unroll_stage must be ttir or post-pipeline")
         if self.loop_unroll_stage == "post-pipeline" and self.arch != "gfx936":
@@ -315,6 +282,11 @@ class HIPBackend(BaseBackend):
     def get_target_name(self, options) -> str:
         return f"hip:{options.arch}"
 
+    @staticmethod
+    def get_codegen_capabilities():
+        """Semantic contracts for clients, independent of tuning option names."""
+        return frozenset({"readonly_interleave"})
+
     def parse_options(self, opts) -> Any:
         opts = dict(opts)
         legacy_sched_variant = opts.pop("instruction_sched_variant", None)
@@ -363,16 +335,6 @@ class HIPBackend(BaseBackend):
             if (field.type in (bool, Optional[bool]) and type(value) is int and value in (0, 1)):
                 args[name] = bool(value)
 
-        # Resolve defaults after effective arch/epilogue and bool normalization.
-        # Explicit False remains an ablation. No shape/config policy is used.
-        register_owner_default = (args["arch"] == "gfx936"
-                                  and args.get("optimize_epilogue", HIPOptions.optimize_epilogue) is True)
-        if "register_batch_owner" not in args:
-            args["register_batch_owner"] = register_owner_default
-        if "register_batch_owner_shared_vector" not in args:
-            args["register_batch_owner_shared_vector"] = (register_owner_default
-                                                          and args["register_batch_owner"] is True)
-
         # Consume the legacy `instruction_sched_variant` option and map it to
         # `schedule_hint`. If both are present, keep the explicit schedule_hint.
         if "schedule_hint" not in args and legacy_sched_variant is not None:
@@ -382,13 +344,13 @@ class HIPBackend(BaseBackend):
         # full-SIMD wave groups only when the launch supplies enough waves.
         # This is an initial scheduling heuristic; actual loop/queue proofs
         # and final native readiness still decide whether it can be used.
-        # Explicit options preserve independent manual experiments and off.
-        if "post_mma_wait" not in args and "mma_phase_schedule" not in args:
+        # An explicit policy overrides the automatic default.
+        if "memory_mma_schedule" not in args:
             waves = args.get("num_warps", HIPOptions.num_warps)
             paired = (args["arch"] == "gfx936" and type(waves) is int and waves >= 8 and waves % 8 == 0
                       and args.get("prefer_wide_async_copy", False) is True
                       and "local-prefetch" in _schedule_hints(args.get("schedule_hint", "none")))
-            args.update(post_mma_wait=paired, mma_phase_schedule=paired)
+            args["memory_mma_schedule"] = paired
 
         if args.get("wasp_enabled"):
             if args.get("wdra_enabled"):
@@ -616,14 +578,6 @@ class HIPBackend(BaseBackend):
     @staticmethod
     def make_ttgir(mod, metadata, options):
         metadata["hcu_register_owner_default_policy"] = _REGISTER_OWNER_DEFAULT_POLICY
-        if options.register_batch_owner:
-            builder = ir.builder(mod.context)
-            mod.set_attr("ttg.hcu.register_batch_owner", builder.get_bool_attr(True))
-            mod.set_attr("ttg.hcu.register_batch_owner_count", builder.get_int32_attr(0))
-        if options.register_batch_owner_shared_vector:
-            builder = ir.builder(mod.context)
-            mod.set_attr("ttg.hcu.register_batch_owner_shared_vector", builder.get_bool_attr(True))
-            mod.set_attr("ttg.hcu.register_batch_owner_shared_vector_count", builder.get_int32_attr(0))
         if options.prefer_wide_async_copy:
             mod.set_attr("ttg.hcu.prefer_wide_async_copy", ir.builder(mod.context).get_int32_attr(1))
         if options.wave_private_sync:
@@ -834,16 +788,9 @@ class HIPBackend(BaseBackend):
                      and (hcu.has_warp_specialize(mod) or hcu.has_cta_barrier(mod)))
         explicit_ws = manual_ws
         base_warps = mod.get_int_attr("ttg.num-warps") if explicit_ws else 0
-        if options.structured_register_prepack_address:
-            mod.set_attr("ttg.hcu.structured_register_prepack_address", ir.builder(mod.context).get_bool_attr(True))
-        if options.structured_register_unclamped_column:
-            mod.set_attr("ttg.hcu.structured_register_unclamped_column", ir.builder(mod.context).get_bool_attr(True))
-        if options.buffer_store_scalar_offset:
-            mod.set_attr("ttg.hcu.buffer_store_scalar_offset", ir.builder(mod.context).get_bool_attr(True))
-        if options.buffer_store_split_immediate:
-            mod.set_attr("ttg.hcu.buffer_store_split_immediate", ir.builder(mod.context).get_bool_attr(True))
-        if options.buffer_store_preserve_masked_base:
-            mod.set_attr("ttg.hcu.buffer_store_preserve_masked_base", ir.builder(mod.context).get_bool_attr(True))
+        if options.buffer_store_address_mode != "direct":
+            mod.set_attr("ttg.hcu.buffer_store_address_mode",
+                         ir.builder(mod.context).get_string_attr(options.buffer_store_address_mode))
         if options.loop_unroll_stage == "post-pipeline":
             late_pm = ir.pass_manager(mod.context)
             late_pm.enable_debug()
@@ -940,11 +887,9 @@ class HIPBackend(BaseBackend):
         # TritonDistributed Extension: libdevice -> llvm
         distributed.passes.ttgpuir.hcu.add_lib_device_to_llvmir(pm, __HIP_FTZ)
         pm.run(mod, 'make_llir')
-        if options.register_batch_owner:
-            metadata["hcu_register_batch_owner_count"] = (mod.get_int_attr("ttg.hcu.register_batch_owner_count") or 0)
-        if options.register_batch_owner_shared_vector:
-            metadata["hcu_register_batch_owner_shared_vector_count"] = (
-                mod.get_int_attr("ttg.hcu.register_batch_owner_shared_vector_count") or 0)
+        metadata["hcu_register_batch_owner_count"] = (mod.get_int_attr("ttg.hcu.register_batch_owner_count") or 0)
+        metadata["hcu_register_batch_owner_shared_vector_count"] = (
+            mod.get_int_attr("ttg.hcu.register_batch_owner_shared_vector_count") or 0)
 
         finish_deferred_raw_materialize()
 
@@ -1107,56 +1052,52 @@ class HIPBackend(BaseBackend):
         if options.lds_dma_alias_workaround:
             hcu.preserve_lds_dma_alias_scopes(llvm_mod, options.arch)
         if options.interleave_global_lds_reads:
-            interleave = hcu.interleave_global_lds_reads(llvm_mod, options.arch,
-                                                         options.interleave_global_lds_reads_fences)
+            interleave = hcu.interleave_global_lds_reads(llvm_mod, options.arch)
             for key, value in interleave.items():
                 metadata["hcu_global_lds_read_interleave_" + key] = int(value)
-        if options.tupled_register_fences:
-            fences = hcu.tuple_register_fences(llvm_mod, options.arch)
-            for key, value in fences.items():
-                metadata["hcu_tupled_register_fences_" + key] = int(value)
         return str(llvm_mod)
 
     ## TODO: [HCU] integrate with rocshmem
     @staticmethod
     def make_amdgcn(src, metadata, options, _skip_schedules=False):
-        amdgcn = HIPBackend._make_amdgcn_with_schedules(src, metadata, options, _skip_schedules)
-        if options.coalesce_lgkm_waits:
-            original = amdgcn
-            try:
-                from .waitcnt_coalesce import coalesce_lgkm_waits
-                from .mma_phase import check_native_readiness
-                candidate, report = coalesce_lgkm_waits(amdgcn, metadata["name"])
-                metadata["hcu_lgkm_wait_coalesce_result"] = report["reason"]
-                metadata["hcu_lgkm_wait_coalesce_deleted"] = 0
-                metadata["hcu_lgkm_wait_coalesce_strengthened"] = 0
+        with analysis_scope():
+            amdgcn = HIPBackend._make_amdgcn_with_schedules(src, metadata, options, _skip_schedules)
+            if options.coalesce_lgkm_waits:
+                original = amdgcn
+                try:
+                    from .waitcnt_coalesce import coalesce_lgkm_waits
+                    from .mma_phase import check_native_readiness
+                    candidate, report = coalesce_lgkm_waits(amdgcn, metadata["name"])
+                    metadata["hcu_lgkm_wait_coalesce_result"] = report["reason"]
+                    metadata["hcu_lgkm_wait_coalesce_deleted"] = 0
+                    metadata["hcu_lgkm_wait_coalesce_strengthened"] = 0
+                    if report["accepted"] and report["changed"]:
+                        audit = check_native_readiness(candidate, metadata["name"])
+                        metadata["hcu_lgkm_wait_coalesce_completion"] = audit
+                        if audit["accepted"]:
+                            amdgcn = candidate
+                            metadata["hcu_lgkm_wait_coalesce_deleted"] = report["deleted_count"]
+                            metadata["hcu_lgkm_wait_coalesce_strengthened"] = report["strengthened_count"]
+                        else:
+                            metadata["hcu_lgkm_wait_coalesce_result"] = "fallback: completion: " + audit["reason"]
+                except Exception as error:
+                    amdgcn = original
+                    metadata["hcu_lgkm_wait_coalesce_deleted"] = 0
+                    metadata["hcu_lgkm_wait_coalesce_strengthened"] = 0
+                    metadata["hcu_lgkm_wait_coalesce_result"] = "fallback: " + str(error)
+            if options.mmac_operand_reuse and not _skip_schedules:
+                from .mmac_operand_reuse import schedule_mmac_operand_reuse
+                candidate, report = schedule_mmac_operand_reuse(amdgcn, metadata["name"])
+                metadata["hcu_mmac_operand_reuse_result"] = report["reason"]
+                metadata["hcu_mmac_operand_reuse_sites"] = len(report["sites"])
                 if report["accepted"] and report["changed"]:
-                    audit = check_native_readiness(candidate, metadata["name"])
-                    metadata["hcu_lgkm_wait_coalesce_completion"] = audit
-                    if audit["accepted"]:
-                        amdgcn = candidate
-                        metadata["hcu_lgkm_wait_coalesce_deleted"] = report["deleted_count"]
-                        metadata["hcu_lgkm_wait_coalesce_strengthened"] = report["strengthened_count"]
-                    else:
-                        metadata["hcu_lgkm_wait_coalesce_result"] = "fallback: completion: " + audit["reason"]
-            except Exception as error:
-                amdgcn = original
-                metadata["hcu_lgkm_wait_coalesce_deleted"] = 0
-                metadata["hcu_lgkm_wait_coalesce_strengthened"] = 0
-                metadata["hcu_lgkm_wait_coalesce_result"] = "fallback: " + str(error)
-        if options.mmac_operand_reuse and not _skip_schedules:
-            from .mmac_operand_reuse import schedule_mmac_operand_reuse
-            candidate, report = schedule_mmac_operand_reuse(amdgcn, metadata["name"])
-            metadata["hcu_mmac_operand_reuse_result"] = report["reason"]
-            metadata["hcu_mmac_operand_reuse_sites"] = len(report["sites"])
-            if report["accepted"] and report["changed"]:
-                amdgcn = candidate
-        if (options.mmac_operand_reuse and not _skip_schedules and metadata.get("hcu_manual_warp_specialize")):
-            from .ready_lds_issue import schedule_ready_lds_issue
-            amdgcn, issue_report = schedule_ready_lds_issue(amdgcn, metadata["name"])
-            metadata["hcu_ready_lds_issue_sites"] = len(issue_report["sites"])
-            metadata["hcu_ready_lds_issue_result"] = issue_report["result"]
-        return amdgcn
+                    amdgcn = candidate
+            if (options.mmac_operand_reuse and not _skip_schedules and metadata.get("hcu_manual_warp_specialize")):
+                from .ready_lds_issue import schedule_ready_lds_issue
+                amdgcn, issue_report = schedule_ready_lds_issue(amdgcn, metadata["name"])
+                metadata["hcu_ready_lds_issue_sites"] = len(issue_report["sites"])
+                metadata["hcu_ready_lds_issue_result"] = issue_report["result"]
+            return amdgcn
 
     @staticmethod
     def _make_amdgcn_with_schedules(src, metadata, options, _skip_schedules=False):
@@ -1174,10 +1115,10 @@ class HIPBackend(BaseBackend):
         validate_imported_schedule = imported_schedule
 
         def fallback_schedules(reason):
-            if options.post_mma_wait:
+            if options.memory_mma_schedule:
                 metadata["hcu_post_mma_wait_result"] = "fallback: " + reason
                 metadata["hcu_post_mma_wait_loops"] = 0
-            if options.mma_phase_schedule:
+            if options.memory_mma_schedule:
                 metadata["hcu_mma_phase_result"] = "fallback: " + reason
                 metadata["hcu_mma_phase_loops"] = 0
             result = HIPBackend._make_amdgcn_with_schedules(stage_original, metadata, options, _skip_schedules=True)
@@ -1190,26 +1131,14 @@ class HIPBackend(BaseBackend):
                     raise HSACOError("Imported schedule IR failed native completion: " + audit["reason"])
             return result
 
-        if options.arch == "gfx936" and not _skip_schedules:
-            try:
-                src, prepared = prepare_memory_schedule(src, metadata, MemorySchedulePolicy.from_options(options), llvm,
-                                                        options.arch, options.num_warps)
-                if prepared:
-                    schedule_original = stage_original
-            except (RuntimeError, ValueError) as error:
-                return fallback_schedules("preparation: " + str(error))
-        # Run after all late LLVM scheduling transforms, before native selection.
-        # Explicit off does not call the binding or alter the LLVM string.
-        if options.buffer_store_factor_offsets or options.pack_bf16_rounds or options.combine_shifted_disjoint_or:
-            src, memory = llvm.optimize_hcu_memory_ir(src, options.arch, options.buffer_store_factor_offsets,
-                                                      options.pack_bf16_rounds, options.combine_shifted_disjoint_or)
-            if options.buffer_store_factor_offsets:
-                metadata["hcu_factored_buffer_store_offsets"] = memory["factored_stores"]
-            if options.pack_bf16_rounds:
-                metadata["hcu_packed_bf16_round_sites"] = memory["packed_bf16_rounds"]
-            if options.combine_shifted_disjoint_or:
-                metadata["hcu_shifted_disjoint_or_sites"] = memory["combined_shifts"]
-                metadata["hcu_shifted_disjoint_or_result"] = memory["shifted_reason"]
+        try:
+            src, prepared = prepare_memory_schedule(src, metadata, options, llvm, _skip_schedules)
+            if prepared:
+                schedule_original = stage_original
+        except (RuntimeError, ValueError) as error:
+            if _skip_schedules:
+                raise
+            return fallback_schedules("preparation: " + str(error))
         # Find kernel names (there should only be one)
         # We get the name at the last possible step to accommodate `triton.compile`
         # on user-provided LLVM
@@ -1313,9 +1242,9 @@ class HIPBackend(BaseBackend):
             # Readiness of the final native code is separate from whether
             # each requested IR scheduling preparation actually applied.
             metadata["hcu_schedule_native_readiness"] = audit
-            if options.post_mma_wait and metadata.get("hcu_post_mma_wait_loops", 0):
+            if options.memory_mma_schedule and metadata.get("hcu_post_mma_wait_loops", 0):
                 metadata["hcu_post_mma_wait_result"] = audit["reason"]
-            if options.mma_phase_schedule:
+            if options.memory_mma_schedule:
                 metadata["hcu_mma_phase_result"] = audit["reason"]
             if not audit["accepted"]:
                 if schedule_original is None:

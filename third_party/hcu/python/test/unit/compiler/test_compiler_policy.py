@@ -14,75 +14,43 @@ _memory_schedule_policy_compiler = pytest.importorskip("triton.backends.hcu.comp
 _memory_schedule_policy_compiler = import_module(_memory_schedule_policy_compiler.HIPBackend.__module__)
 
 
-def _memory_schedule_policy_options(**overrides):
-    values = dict(arch="gfx936", mma_phase_schedule=False, post_mma_wait=False, coalesce_lgkm_waits=False)
-    values.update(overrides)
-    return SimpleNamespace(**values)
-
-
-@pytest.mark.parametrize("post,phase,loops", product((False, True), (False, True), (0, 2)))
-def test_order_zero_loop_and_exact_off_source(post, phase, loops):
+@pytest.mark.parametrize("enabled,loops", product((False, True), (0, 2)))
+def test_order_zero_loop_and_exact_off_source(enabled, loops):
     calls = []
 
-    def wait(source, arch, threads, shared):
-        calls.append(("post", source, arch, threads, shared))
-        return source + ":wait", loops, "proof result"
-
-    def group(source, arch, warps):
-        calls.append(("phase", source, arch, warps))
-        return source + ":phase", loops
+    def optimize(source, arch, factor, pack, combine, schedule, warps, shared):
+        calls.append((source, arch, factor, pack, combine, schedule, warps, shared))
+        return "candidate", dict(post_loops=loops, phase_loops=loops, post_reason="proof", factored_stores=0,
+                                 packed_bf16_rounds=0, combined_shifts=0)
 
     metadata = {"shared": 32768}
-    policy = _memory_schedule_policy_schedule.MemorySchedulePolicy.from_options(
-        _memory_schedule_policy_options(post_mma_wait=post, mma_phase_schedule=phase))
-    source, prepared = _memory_schedule_policy_schedule.prepare_memory_schedule(
-        "original", metadata, policy, SimpleNamespace(prepare_hcu_post_mma_wait=wait,
-                                                      prepare_hcu_mma_phase_loops=group), "gfx936", 4)
-    expected = "original" + (":wait" if post and loops else "")
-    if post:
-        assert calls[0] == ("post", "original", "gfx936", 256, 32768)
-        assert metadata["hcu_post_mma_wait_loops"] == loops
-        assert metadata["hcu_post_mma_wait_preparation_result"] == "proof result"
-    if phase and (not post or loops):
-        assert calls[-1] == ("phase", expected, "gfx936", 4)
-        if loops:
-            expected += ":phase"
-            assert metadata["hcu_mma_phase_loops"] == loops
-    assert source == expected
-    assert prepared == bool(loops and (post or phase))
-    if not post and not phase:
-        assert calls == [] and metadata == {"shared": 32768}
+    options = SimpleNamespace(memory_mma_schedule=enabled, buffer_store_factor_offsets=False, pack_bf16_rounds=False,
+                              combine_shifted_disjoint_or=False, arch="gfx942", num_warps=4)
+    result = _memory_schedule_policy_schedule.prepare_memory_schedule("original", metadata, options,
+                                                                      SimpleNamespace(optimize_hcu_memory_ir=optimize))
+    assert result == (("candidate", True) if enabled and loops else ("original", False))
+    assert calls == ([("original", "gfx942", False, False, False, True, 4, 32768)] if enabled else [])
 
 
-@pytest.mark.parametrize("name", ["mma_phase_schedule", "post_mma_wait", "coalesce_lgkm_waits"])
+@pytest.mark.parametrize("name", ["memory_mma_schedule", "coalesce_lgkm_waits"])
 @pytest.mark.parametrize("invalid", [0, 1, 2, None, "false"])
 def test_policy_types(name, invalid):
     with pytest.raises(ValueError, match="must be boolean"):
-        _memory_schedule_policy_schedule.MemorySchedulePolicy.from_options(
-            _memory_schedule_policy_options(**{name: invalid}))
+        _memory_schedule_policy_compiler.HIPOptions(arch="gfx936", **{name: invalid})
 
 
 @pytest.mark.parametrize("value", [0, 1])
 def test_sql_boolean_normalization(value):
     from triton.backends.compiler import GPUTarget
     backend = _memory_schedule_policy_compiler.HIPBackend(GPUTarget("hip", "gfx936", 64))
-    names = ("mma_phase_schedule", "post_mma_wait", "coalesce_lgkm_waits")
+    names = ("memory_mma_schedule", "coalesce_lgkm_waits")
     parsed = backend.parse_options(dict.fromkeys(names, value))
     assert all(getattr(parsed, name) is bool(value) for name in names)
 
 
 def test_native_coalescer_target_contract():
     with pytest.raises(ValueError, match="requires gfx936"):
-        _memory_schedule_policy_schedule.MemorySchedulePolicy.from_options(
-            _memory_schedule_policy_options(arch="gfx942", coalesce_lgkm_waits=True))
-
-
-def test_only_selected_binding_is_required():
-    llvm = SimpleNamespace(prepare_hcu_post_mma_wait=lambda *args: ("prepared", 1, "proof"))
-    policy = _memory_schedule_policy_schedule.MemorySchedulePolicy.from_options(
-        _memory_schedule_policy_options(post_mma_wait=True))
-    assert _memory_schedule_policy_schedule.prepare_memory_schedule("source", {}, policy, llvm, "gfx936",
-                                                                    4) == ("prepared", True)
+        _memory_schedule_policy_compiler.HIPOptions(arch="gfx942", coalesce_lgkm_waits=True)
 
 
 def _memory_schedule_policy_fake_codegen(monkeypatch):
@@ -120,7 +88,9 @@ def test_failed_fresh_schedule_recovers_exact_original_source(monkeypatch):
     import triton.backends.hcu.mma_phase as native
     calls = _memory_schedule_policy_fake_codegen(monkeypatch)
 
-    def prepare(source, metadata, *_):
+    def prepare(source, metadata, options, llvm, skip_schedule=False):
+        if skip_schedule:
+            return source, False
         metadata.update(hcu_post_mma_wait_loops=1, hcu_mma_phase_loops=1)
         return source + "\n; prepared", True
 
@@ -129,8 +99,7 @@ def test_failed_fresh_schedule_recovers_exact_original_source(monkeypatch):
     source = 'define amdgpu_kernel void @kernel() { ret void }'
     metadata = {}
     result = _memory_schedule_policy_compiler.HIPBackend._make_amdgcn_with_schedules(
-        source, metadata,
-        _memory_schedule_policy_compiler.HIPOptions(arch="gfx936", post_mma_wait=True, mma_phase_schedule=True))
+        source, metadata, _memory_schedule_policy_compiler.HIPOptions(arch="gfx936", memory_mma_schedule=True))
     assert calls == [source + "\n; prepared", source]
     assert result == "kernel:\n s_nop 0\n s_endpgm\n"
     assert metadata["hcu_post_mma_wait_loops"] == metadata["hcu_mma_phase_loops"] == 0
@@ -164,8 +133,7 @@ def test_paired_default_uses_target_wave_coverage_and_intent_only(arch, waves, w
     backend = _memory_schedule_policy_compiler.HIPBackend(GPUTarget("hip", arch, 64))
     args = dict(num_warps=waves, prefer_wide_async_copy=wide, schedule_hint=hint)
     parsed = backend.parse_options(args)
-    assert parsed.post_mma_wait is expected
-    assert parsed.mma_phase_schedule is expected
+    assert parsed.memory_mma_schedule is expected
 
 
 def test_schedule_hint_normalization_and_explicit_none():
@@ -177,35 +145,13 @@ def test_schedule_hint_normalization_and_explicit_none():
     assert disabled.schedule_hint == "none"
 
 
-@pytest.mark.parametrize("manual", [
-    {"post_mma_wait": False},
-    {"mma_phase_schedule": False},
-    {"post_mma_wait": True},
-    {"mma_phase_schedule": True},
-    {"post_mma_wait": False, "mma_phase_schedule": True},
-    {"post_mma_wait": True, "mma_phase_schedule": False},
-    {"post_mma_wait": 0, "mma_phase_schedule": 0},
-])
-def test_explicit_schedule_options_disable_automatic_pair_resolution(manual):
+@pytest.mark.parametrize("manual", [False, True, 0, 1])
+def test_explicit_schedule_policy_overrides_automatic_default(manual):
     from triton.backends.compiler import GPUTarget
     backend = _memory_schedule_policy_compiler.HIPBackend(GPUTarget("hip", "gfx936", 64))
     parsed = backend.parse_options(
-        dict(num_warps=8, prefer_wide_async_copy=True, schedule_hint="local-prefetch", **manual))
-    assert parsed.post_mma_wait is bool(manual.get("post_mma_wait", False))
-    assert parsed.mma_phase_schedule is bool(manual.get("mma_phase_schedule", False))
-
-
-def test_declined_post_proof_never_runs_phase_alone_for_a_pair():
-
-    def forbidden(*args):
-        raise AssertionError("phase-only fallback must not run")
-
-    llvm = SimpleNamespace(prepare_hcu_post_mma_wait=lambda *args: ("unusable", 0, "declined"),
-                           prepare_hcu_mma_phase_loops=forbidden)
-    policy = _memory_schedule_policy_schedule.MemorySchedulePolicy(True, True)
-    metadata = {"shared": 65536}
-    assert _memory_schedule_policy_schedule.prepare_memory_schedule("original", metadata, policy, llvm, "gfx936",
-                                                                    8) == ("original", False)
+        dict(num_warps=8, prefer_wide_async_copy=True, schedule_hint="local-prefetch", memory_mma_schedule=manual))
+    assert parsed.memory_mma_schedule is bool(manual)
 
 
 # min shared memory

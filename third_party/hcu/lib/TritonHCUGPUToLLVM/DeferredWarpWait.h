@@ -1,7 +1,7 @@
 #ifndef TRITON_HCU_DEFERRED_WARP_WAIT_H
 #define TRITON_HCU_DEFERRED_WARP_WAIT_H
 
-#include "WarpSpecializeUtils.h"
+#include "MemDescProvenance.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Matchers.h"
@@ -105,7 +105,9 @@ class WindowTrace {
   std::optional<Window> window(Value value, unsigned depth = 0) {
     if (!spend() || depth == 64)
       return std::nullopt;
-    value = resolveWarpSpecializeCapture(value);
+    value = shared_view::identical(value);
+    if (!value)
+      return std::nullopt;
     if (auto alloc = value.getDefiningOp<gpu::LocalAllocOp>()) {
       if (ws->isAncestor(alloc))
         return std::nullopt;

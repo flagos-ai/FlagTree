@@ -11,9 +11,6 @@ struct ReadOnlyInterleaveStats {
   unsigned pureDependents = 0;
   unsigned rejectedDependencies = 0, invalidFunctions = 0, iglpFunctions = 0;
 };
-struct TupledRegisterFenceStats {
-  unsigned sites = 0, scalarLanes = 0, rejected = 0;
-};
 unsigned preserveLdsBarrierOrder(llvm::Module *module, const std::string &arch);
 llvm::Expected<unsigned>
 stripSynchronousBarrierMarkers(llvm::Module *module, const std::string &arch);
@@ -29,17 +26,17 @@ unsigned annotateLdsObjectScopes(llvm::Module *module, const std::string &arch,
 unsigned preserveLdsDmaAliasScopes(llvm::Module *module,
                                    const std::string &arch);
 ReadOnlyInterleaveStats interleaveGlobalLdsReads(llvm::Module *module,
-                                                 const std::string &arch,
-                                                 bool addFences);
-llvm::Expected<TupledRegisterFenceStats>
-tupleRegisterFences(llvm::Module *module, const std::string &arch);
+                                                 const std::string &arch);
 struct NativeMemoryOptimizationResult {
   std::string source;
   unsigned factoredStores = 0, packedBf16Rounds = 0, combinedShifts = 0;
-  std::string shiftedReason;
+  std::string shiftedReason, postReason;
+  unsigned postLoops = 0, phaseLoops = 0;
 };
 llvm::Expected<NativeMemoryOptimizationResult>
 optimizeMemoryIR(const std::string &source, const std::string &arch,
-                 bool factorStores, bool packRounds, bool combineShifts);
+                 bool factorStores, bool packRounds, bool combineShifts,
+                 bool schedule = false, unsigned numWarps = 0,
+                 unsigned sharedBytes = 0);
 } // namespace mlir::triton::HCU
 #endif

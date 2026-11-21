@@ -378,8 +378,11 @@ struct DotOpMFMAConversionHelper {
                   int index = linearize({b, m, n, v}, fcStrides);
                   fc[index] = tb.extract_element(dstElemTy, acc, tb.i32_val(v));
                 }
-                fc =
-                    HCU::emitAccumulatorFence(loc, fc, "s_setprio 1", rewriter);
+                fc = HCU::emitAccumulatorFence(
+                    loc, fc, "s_setprio 1", rewriter,
+                    HCU::usesMMACAccumulatorTuples(
+                        op,
+                        dyn_cast<RankedTensorType>(op.getResult().getType())));
                 acc = tb.undef(vecTy);
                 for (int v = 0; v < elemsPerVec; ++v) {
                   int index = linearize({b, m, n, v}, fcStrides);

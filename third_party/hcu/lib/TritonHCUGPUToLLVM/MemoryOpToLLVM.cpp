@@ -57,12 +57,14 @@ public:
         defer = true;
       }
     }
-    auto outputs =
-        triton::HCU::emitAccumulatorFence(op.getLoc(), values,
-                                          defer              ? ""
-                                          : op.getPriority() ? "s_setprio 1"
-                                                             : "s_setprio 0",
-                                          rewriter);
+    auto outputs = triton::HCU::emitAccumulatorFence(
+        op.getLoc(), values,
+        defer              ? ""
+        : op.getPriority() ? "s_setprio 1"
+                           : "s_setprio 0",
+        rewriter,
+        triton::HCU::usesMMACAccumulatorTuples(
+            op, dyn_cast<RankedTensorType>(op.getType())));
     rewriter.replaceOp(op, packLLElements(op.getLoc(), getTypeConverter(),
                                           outputs, rewriter, op.getType()));
     return success();

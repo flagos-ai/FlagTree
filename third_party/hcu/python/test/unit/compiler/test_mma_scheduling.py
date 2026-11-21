@@ -3,6 +3,8 @@
 import pytest
 import triton
 from triton._C import libtriton
+
+from . import hcu_test_utils as memory_rules
 from triton.backends.compiler import GPUTarget
 from triton.experimental import gluon as g
 from triton.experimental.gluon import language as gl
@@ -328,25 +330,22 @@ def _shared_schedule_model_loop_source(structured=False, control="linear", overl
     return "\n".join(lines)
 
 
-@pytest.mark.parametrize("binding", ["prepare_hcu_post_mma_wait"])
 @pytest.mark.parametrize("structured", [False, True])
 @pytest.mark.parametrize("control", ["linear", "legacy", "select"])
-def test_actual_complete_wave_domains_preserve_cross_wave_proof(binding, structured, control):
+def test_actual_complete_wave_domains_preserve_cross_wave_proof(structured, control):
     source = _shared_schedule_model_loop_source(structured, control)
-    output, loops, reason = getattr(libtriton.llvm, binding)(source, "gfx936", 256, 65536)
+    output, loops, reason = memory_rules.prepare_schedule(source, "gfx936", 256, 65536)
     assert loops == 1, reason
     assert output != source and "PASS_" in reason
 
 
 @pytest.mark.parametrize("kind", ["unknown", "nonuniform", "overlap", "select_unknown"])
-@pytest.mark.parametrize("binding", ["prepare_hcu_post_mma_wait"])
-def test_unproven_placement_and_overlapping_dma_rejected(binding, kind):
+def test_unproven_placement_and_overlapping_dma_rejected(kind):
     source = _shared_schedule_model_loop_source(control=kind, overlap=kind == "overlap")
-    output, loops, reason = getattr(libtriton.llvm, binding)(source, "gfx936", 256, 65536)
+    output, loops, reason = memory_rules.prepare_schedule(source, "gfx936", 256, 65536)
     assert loops == 0 and output == source
 
 
-@pytest.mark.parametrize("binding", ["prepare_hcu_post_mma_wait"])
 @pytest.mark.parametrize("predicate,truth", [
     ("eq", False),
     ("ne", True),
@@ -360,7 +359,7 @@ def test_unproven_placement_and_overlapping_dma_rejected(binding, kind):
     ("sle", True),
 ])
 @pytest.mark.parametrize("valid_read", [False, True])
-def test_comparison_signedness_controls_real_lds_footprint(binding, predicate, truth, valid_read):
+def test_comparison_signedness_controls_real_lds_footprint(predicate, truth, valid_read):
     source = _shared_schedule_model_loop_source(control="select")
     source = source.replace("%choice = icmp eq i32 %parity,0", f"%choice = icmp {predicate} i32 -2147483648,0")
     # The correct branch reads initialized bytes. Reversing the branches reads
@@ -369,7 +368,7 @@ def test_comparison_signedness_controls_real_lds_footprint(binding, predicate, t
     true_value, false_value = (0, 4096) if zero_on_true else (4096, 0)
     source = source.replace("%swap = select i1 %choice,i32 0,i32 16",
                             f"%swap = select i1 %choice,i32 {true_value},i32 {false_value}")
-    output, loops, reason = getattr(libtriton.llvm, binding)(source, "gfx936", 256, 65536)
+    output, loops, reason = memory_rules.prepare_schedule(source, "gfx936", 256, 65536)
     assert loops == int(valid_read), reason
     if not valid_read: assert output == source
 
@@ -412,14 +411,14 @@ def _pack_bf16_rounds_packed_ir(extra=""):
 
 
 def test_packs_two_rounded_high_halfwords():
-    result, sites = llvm.pack_hcu_bf16_rounds(_pack_bf16_rounds_packed_ir())
+    result, sites = memory_rules.pack_rounds(_pack_bf16_rounds_packed_ir())
     assert sites == 1
     assert "call i32 @llvm.amdgcn.perm" in result
     assert "i32 117834498)" in result  # Select high halfword from each input.
     assert result.count("i32 2147418112") == 2
     assert "%x.shift =" not in result and "%y.shift =" not in result
     assert result.index("select i1 %x.nan") < result.index("%y.bits =")
-    assert llvm.pack_hcu_bf16_rounds(result) == (result, 0)
+    assert memory_rules.pack_rounds(result) == (result, 0)
 
 
 @pytest.mark.parametrize(
@@ -435,12 +434,12 @@ def test_packs_two_rounded_high_halfwords():
 )
 def test_incompatible_pack_is_unchanged(original, replacement):
     source = _pack_bf16_rounds_packed_ir().replace(original, replacement, 1)
-    assert llvm.pack_hcu_bf16_rounds(source) == (source, 0)
+    assert memory_rules.pack_rounds(source) == (source, 0)
 
 
 def test_keeps_conversion_with_another_user():
     source = _pack_bf16_rounds_packed_ir("store bfloat %x.res, ptr %out")
-    assert llvm.pack_hcu_bf16_rounds(source) == (source, 0)
+    assert memory_rules.pack_rounds(source) == (source, 0)
 
 
 @g.jit
@@ -459,19 +458,17 @@ def test_packs_elementwise_conversion_without_matrix_layout():
         attrs={(0, ): [("tt.divisibility", 16)], (1, ): [("tt.divisibility", 16)]},
     )
     target = GPUTarget("hip", "gfx936", 64)
-    before = triton.compile(source, target=target, options={"num_warps": 1})
-    after = triton.compile(source, target=target, options={"num_warps": 1, "pack_bf16_rounds": True})
+    after = triton.compile(source, target=target, options={"num_warps": 1})
     assert after.metadata.hcu_packed_bf16_round_sites == 1
     shifts = r"^\s*v_lshrrev_b32(?:_e32|_e64)?\s"
-    assert len(re.findall(shifts, before.asm["amdgcn"], re.M)) == 2
     assert not re.findall(shifts, after.asm["amdgcn"], re.M)
 
 
 def test_combined_memory_rules_preserve_sequential_rounding_result():
     source = _pack_bf16_rounds_packed_ir()
-    sequential, _ = llvm.factor_hcu_buffer_store_offsets(source, "gfx936")
-    sequential, count = llvm.pack_hcu_bf16_rounds(sequential)
-    sequential, _, _ = llvm.combine_hcu_shifted_disjoint_or(sequential, "gfx936")
+    sequential, _ = memory_rules.factor_offsets(source, "gfx936")
+    sequential, count = memory_rules.pack_rounds(sequential)
+    sequential, _, _ = memory_rules.combine_shifts(sequential, "gfx936")
     combined, stats = llvm.optimize_hcu_memory_ir(source, "gfx936", True, True, True)
     assert combined == sequential
     assert stats["packed_bf16_rounds"] == count == 1

@@ -61,6 +61,7 @@ add_triton_library(TritonHCUGPUToLLVM
     ${_TLE_LIBS}
     LLVMCore
     LLVMIRReader
+    LLVMTransformUtils
     LLVMPasses
     LLVMSupport
 )

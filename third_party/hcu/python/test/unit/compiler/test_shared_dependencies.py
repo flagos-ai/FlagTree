@@ -606,7 +606,6 @@ def test_standard_wait_result_reaches_local_load(dtype, with_token):
     assert loads and any(" token " in line for line in loads) == with_token
     assert "ttg.async_wait" in kernel.asm["ttgir"]
     assert "mls_shared" not in kernel.asm["ttgir"]
-    assert "hcu.packet" not in kernel.asm["ttgir"]
 
 
 def test_shared_load_rejects_non_token():
@@ -638,4 +637,3 @@ def test_target_schedule_boundary_has_no_packet_or_thread_sync(mask):
     kernel = triton.compile(source, target=GPUTarget("hip", "gfx936", 64), options=dict(num_warps=4))
     assert f"@llvm.amdgcn.sched.barrier(i32 {mask})" in kernel.asm["llir"]
     assert "rocdl.s.barrier" not in kernel.asm["ttgir"]
-    assert "whole_packet" not in kernel.asm["ttgir"]

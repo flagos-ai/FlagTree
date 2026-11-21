@@ -1,13 +1,17 @@
 #include "TritonHCUGPUToLLVM/LLVMModuleTransforms.h"
 #include "TritonHCUGPUToLLVM/FactorBufferStoreOffsets.h"
+#include "TritonHCUGPUToLLVM/MmaPhaseScheduling.h"
 #include "TritonHCUGPUToLLVM/PackBf16Rounds.h"
+#include "TritonHCUGPUToLLVM/PostMmaWait.h"
 #include "TritonHCUGPUToLLVM/ShiftedDisjointOr.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
@@ -21,16 +25,15 @@
 #include "llvm/Support/KnownBits.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include <algorithm>
 #include <array>
 #include <optional>
-using mlir::triton::HCU::ReadOnlyInterleaveStats;
-using mlir::triton::HCU::TupledRegisterFenceStats;
+namespace mlir::triton::HCU {
 #include "ReadOnlyLoadInterleave.inc"
-#include "TupledRegisterFences.inc"
 // Run after LLVM optimization and only for the affected native compiler.
-static unsigned preserveLdsBarrierOrder(llvm::Module *module,
-                                        const std::string &arch) {
+unsigned preserveLdsBarrierOrder(llvm::Module *module,
+                                 const std::string &arch) {
   if (arch != "gfx936")
     return 0;
   auto *type = llvm::FunctionType::get(
@@ -59,7 +62,7 @@ static unsigned preserveLdsBarrierOrder(llvm::Module *module,
 // keep their intrinsic. Explicit async waits and LDS waits are untouched.
 // Keep synchronous functions on the established native barrier path. This
 // optimization targets outstanding global-to-LDS copies, not GPR loads.
-static llvm::Expected<unsigned>
+llvm::Expected<unsigned>
 stripSynchronousBarrierMarkers(llvm::Module *module, const std::string &arch) {
   if (arch != "gfx936")
     return 0;
@@ -94,8 +97,8 @@ stripSynchronousBarrierMarkers(llvm::Module *module, const std::string &arch) {
   return remove.size();
 }
 
-static llvm::Expected<unsigned>
-lowerTaggedLocalBarriers(llvm::Module *module, const std::string &arch) {
+llvm::Expected<unsigned> lowerTaggedLocalBarriers(llvm::Module *module,
+                                                  const std::string &arch) {
   if (arch != "gfx936")
     return 0;
   auto *marker = module->getFunction("__triton_hcu_local_barrier_marker");
@@ -224,8 +227,8 @@ lowerTaggedLocalBarriers(llvm::Module *module, const std::string &arch) {
 // Do not scalarize pointer bits or infer uniformity from a tensor/launch shape.
 // The AS1 GEP and resource fields keep their exact per-lane bit values; only
 // defined, wave-uniform integers receive the target's scalar register hint.
-static unsigned preserveUniformResourceIndices(llvm::Module *module,
-                                               const std::string &arch) {
+unsigned preserveUniformResourceIndices(llvm::Module *module,
+                                        const std::string &arch) {
   if (arch != "gfx936")
     return 0; // The reused uniformity proof specifies this target ABI.
   unsigned changed = 0;
@@ -326,8 +329,8 @@ static unsigned preserveUniformResourceIndices(llvm::Module *module,
 // DTK DAG selection can discard the x2 byte scale of a prefetched buffer
 // load. Protect its element offset after LLVM optimization: earlier freezes
 // are propagated away by LLVM 22 before the module reaches DTK.
-static unsigned preserveBufferLoadByteOffsets(llvm::Module *module,
-                                              const std::string &arch) {
+unsigned preserveBufferLoadByteOffsets(llvm::Module *module,
+                                       const std::string &arch) {
   if (arch != "gfx936")
     return 0;
   llvm::SmallSetVector<llvm::BinaryOperator *, 16> shifts;
@@ -377,8 +380,7 @@ static unsigned preserveBufferLoadByteOffsets(llvm::Module *module,
 // reads, even when the existing pipeline alias scopes prove that their slots
 // differ. This runs after LLVM optimization, under the opt-in local-prefetch
 // hint.
-static unsigned preferReadySharedLoads(llvm::Module *module,
-                                       const std::string &arch) {
+unsigned preferReadySharedLoads(llvm::Module *module, const std::string &arch) {
   if (arch != "gfx936")
     return 0;
 
@@ -766,9 +768,10 @@ static bool hasHcuAliasScope(llvm::MDNode *list, llvm::StringRef name,
   return false;
 }
 
-static unsigned annotateLdsObjectScopes(llvm::Module *module,
-                                        const std::string &arch,
-                                        unsigned waveSize) {
+} // namespace
+
+unsigned annotateLdsObjectScopes(llvm::Module *module, const std::string &arch,
+                                 unsigned waveSize) {
   if (arch != "gfx936" || waveSize != 64)
     return 0;
   unsigned changed = 0;
@@ -1070,8 +1073,6 @@ static unsigned annotateLdsObjectScopes(llvm::Module *module,
   return changed;
 }
 
-} // namespace
-
 // DTK groups LDS DMA writes by AAMDNodes but keeps one pointer per group.
 // BasicAA can disambiguate a read from that representative even when it reads
 // another fragment of the same group. The wait pass then falls back to its
@@ -1079,8 +1080,8 @@ static unsigned annotateLdsObjectScopes(llvm::Module *module,
 // first DMA pointer's provenance, retaining the scoped-noalias contract and
 // BasicAA everywhere else. A tied empty asm preserves all 32 pointer bits;
 // it does not assert non-aliasing or remove any explicit synchronization.
-static unsigned preserveLdsDmaAliasScopes(llvm::Module *module,
-                                          const std::string &arch) {
+unsigned preserveLdsDmaAliasScopes(llvm::Module *module,
+                                   const std::string &arch) {
   if (arch != "gfx936" || module->getDataLayout().getPointerSizeInBits(3) != 32)
     return 0;
   auto *i32 = llvm::Type::getInt32Ty(module->getContext());
@@ -1140,53 +1141,23 @@ static unsigned preserveLdsDmaAliasScopes(llvm::Module *module,
   return changed;
 }
 
-namespace mlir::triton::HCU {
-unsigned preserveLdsBarrierOrder(llvm::Module *module,
-                                 const std::string &arch) {
-  return ::preserveLdsBarrierOrder(module, arch);
+static llvm::Error verifyMemoryIR(llvm::Module &module, llvm::StringRef stage,
+                                  std::errc code) {
+  std::string errors;
+  llvm::raw_string_ostream stream(errors);
+  if (llvm::verifyModule(module, &stream))
+    return llvm::createStringError(std::make_error_code(code),
+                                   stage.str() + ": " + errors);
+  return llvm::Error::success();
 }
-llvm::Expected<unsigned>
-stripSynchronousBarrierMarkers(llvm::Module *module, const std::string &arch) {
-  return ::stripSynchronousBarrierMarkers(module, arch);
-}
-llvm::Expected<unsigned> lowerTaggedLocalBarriers(llvm::Module *module,
-                                                  const std::string &arch) {
-  return ::lowerTaggedLocalBarriers(module, arch);
-}
-unsigned preserveUniformResourceIndices(llvm::Module *module,
-                                        const std::string &arch) {
-  return ::preserveUniformResourceIndices(module, arch);
-}
-unsigned preserveBufferLoadByteOffsets(llvm::Module *module,
-                                       const std::string &arch) {
-  return ::preserveBufferLoadByteOffsets(module, arch);
-}
-unsigned preferReadySharedLoads(llvm::Module *module, const std::string &arch) {
-  return ::preferReadySharedLoads(module, arch);
-}
-unsigned annotateLdsObjectScopes(llvm::Module *module, const std::string &arch,
-                                 unsigned waveSize) {
-  return ::annotateLdsObjectScopes(module, arch, waveSize);
-}
-unsigned preserveLdsDmaAliasScopes(llvm::Module *module,
-                                   const std::string &arch) {
-  return ::preserveLdsDmaAliasScopes(module, arch);
-}
-ReadOnlyInterleaveStats interleaveGlobalLdsReads(llvm::Module *module,
-                                                 const std::string &arch,
-                                                 bool addFences) {
-  return ::interleaveGlobalLdsReads(module, arch, addFences);
-}
-llvm::Expected<TupledRegisterFenceStats>
-tupleRegisterFences(llvm::Module *module, const std::string &arch) {
-  return ::tupleRegisterFences(module, arch);
-}
+
 llvm::Expected<NativeMemoryOptimizationResult>
 optimizeMemoryIR(const std::string &source, const std::string &arch,
-                 bool factorStores, bool packRounds, bool combineShifts) {
+                 bool factorStores, bool packRounds, bool combineShifts,
+                 bool schedule, unsigned numWarps, unsigned sharedBytes) {
   NativeMemoryOptimizationResult result;
   result.source = source;
-  if (!factorStores && !packRounds && !combineShifts)
+  if (!schedule && !factorStores && !packRounds && !combineShifts)
     return result;
   llvm::LLVMContext context;
   llvm::SMDiagnostic diagnostic;
@@ -1196,12 +1167,38 @@ optimizeMemoryIR(const std::string &source, const std::string &arch,
     return llvm::createStringError(
         std::make_error_code(std::errc::invalid_argument),
         "Invalid LLVM IR for HCU memory optimizations");
-  std::string errors;
-  llvm::raw_string_ostream errorStream(errors);
-  if (llvm::verifyModule(*module, &errorStream))
-    return llvm::createStringError(
-        std::make_error_code(std::errc::invalid_argument),
-        "Input LLVM verification failed: " + errors);
+  if (auto error = verifyMemoryIR(*module, "Input LLVM verification failed",
+                                  std::errc::invalid_argument))
+    return std::move(error);
+  // Each preparation is transactional. A declined proof may have created
+  // annotations or helper declarations; none may leak into the committed IR.
+  if (schedule) {
+    auto candidate = llvm::CloneModule(*module);
+    flagtree::hcu::PostMmaWaitOptions options;
+    options.threads = numWarps * 64;
+    options.sharedBytes = sharedBytes;
+    auto post = flagtree::hcu::placePostMmaWaits(*candidate, arch, options);
+    result.postLoops = post.transformed;
+    result.postReason = post.reason;
+    if (post.transformed) {
+      if (auto error = verifyMemoryIR(*candidate,
+                                      "Post-MMA wait SSA verification failed",
+                                      std::errc::state_not_recoverable))
+        return std::move(error);
+      module = std::move(candidate);
+      candidate = llvm::CloneModule(*module);
+      auto phase =
+          flagtree::hcu::prepareMmaPhaseLoops(*candidate, arch, numWarps);
+      result.phaseLoops = phase.versioned;
+      if (phase.versioned) {
+        if (auto error =
+                verifyMemoryIR(*candidate, "MMA phase SSA verification failed",
+                               std::errc::state_not_recoverable))
+          return std::move(error);
+        module = std::move(candidate);
+      }
+    }
+  }
   if (factorStores)
     result.factoredStores =
         flagtree::hcu::factorBufferStoreOffsets(*module, arch);
@@ -1212,14 +1209,13 @@ optimizeMemoryIR(const std::string &source, const std::string &arch,
     result.combinedShifts = stats.combined;
     result.shiftedReason = stats.reason;
   }
-  if (!result.factoredStores && !result.packedBf16Rounds &&
-      !result.combinedShifts)
+  if (!result.postLoops && !result.phaseLoops && !result.factoredStores &&
+      !result.packedBf16Rounds && !result.combinedShifts)
     return result;
-  errors.clear();
-  if (llvm::verifyModule(*module, &errorStream))
-    return llvm::createStringError(
-        std::make_error_code(std::errc::state_not_recoverable),
-        "HCU memory optimization verification failed: " + errors);
+  if (auto error =
+          verifyMemoryIR(*module, "HCU memory optimization verification failed",
+                         std::errc::state_not_recoverable))
+    return std::move(error);
   result.source.clear();
   llvm::raw_string_ostream stream(result.source);
   module->print(stream, nullptr);

@@ -25,8 +25,6 @@
 
 #ifdef __HCU__
 #include "../../third_party/hcu/include/TritonHCUGPUToLLVM/LLVMModuleTransforms.h"
-#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/MmaPhaseScheduling.h"
-#include "../../third_party/hcu/include/TritonHCUGPUToLLVM/PostMmaWait.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/Support/KnownBits.h"
@@ -482,107 +480,40 @@ void init_triton_llvm(py::module &&m) {
 #ifdef __HCU__
   m.def("adapt_hcu_buffer_resources_for_clang18",
         &adaptHcuBufferResourcesForClang18);
-  auto optimizeMemoryIR = [](const std::string &source, const std::string &arch,
-                             bool factor, bool pack, bool combine) {
-    auto result = mlir::triton::HCU::optimizeMemoryIR(source, arch, factor,
-                                                      pack, combine);
-    if (!result) {
-      std::string message;
-      std::error_code code;
-      llvm::handleAllErrors(result.takeError(),
-                            [&](const llvm::StringError &error) {
-                              message = error.getMessage();
-                              code = error.convertToErrorCode();
-                            });
-      if (code == std::errc::invalid_argument)
-        throw std::invalid_argument(message);
-      throw std::runtime_error(message);
-    }
-    return std::move(*result);
-  };
-  m.def("optimize_hcu_memory_ir",
-        [optimizeMemoryIR](const std::string &source, const std::string &arch,
-                           bool factorStores, bool packRounds,
-                           bool combineShifts) {
-          auto result = optimizeMemoryIR(source, arch, factorStores, packRounds,
-                                         combineShifts);
-          py::dict stats;
-          stats["factored_stores"] = result.factoredStores;
-          stats["packed_bf16_rounds"] = result.packedBf16Rounds;
-          stats["combined_shifts"] = result.combinedShifts;
-          stats["shifted_reason"] = result.shiftedReason;
-          return py::make_tuple(result.source, stats);
-        });
-  // Keep focused entrypoints for callers and isolated rule tests. They all use
-  // the same module runner as the production combined pipeline.
-  m.def("pack_hcu_bf16_rounds", [optimizeMemoryIR](const std::string &source) {
-    auto result = optimizeMemoryIR(source, "", false, true, false);
-    return py::make_tuple(result.source, result.packedBf16Rounds);
-  });
-  m.def("factor_hcu_buffer_store_offsets",
-        [optimizeMemoryIR](const std::string &source,
-                           const std::string &arch) -> py::tuple {
-          if (arch != "gfx936")
-            return py::make_tuple(source, 0u);
-          auto result = optimizeMemoryIR(source, arch, true, false, false);
-          return py::make_tuple(result.source, result.factoredStores);
-        });
-  m.def("combine_hcu_shifted_disjoint_or",
-        [optimizeMemoryIR](const std::string &source, const std::string &arch) {
-          auto result = optimizeMemoryIR(source, arch, false, false, true);
-          return py::make_tuple(result.source, result.combinedShifts,
-                                result.shiftedReason);
-        });
-  m.def("prepare_hcu_post_mma_wait",
-        [](const std::string &source, const std::string &arch, unsigned threads,
-           unsigned sharedBytes) -> py::tuple {
-          llvm::LLVMContext context;
-          llvm::SMDiagnostic diagnostic;
-          auto module =
-              llvm::parseIR(llvm::MemoryBufferRef(source, "post_mma_wait"),
-                            diagnostic, context);
-          if (!module)
-            throw std::invalid_argument("Invalid LLVM IR for post-MMA wait");
-          flagtree::hcu::PostMmaWaitOptions options;
-          options.threads = threads;
-          options.sharedBytes = sharedBytes;
-          auto stats = flagtree::hcu::placePostMmaWaits(*module, arch, options);
-          if (!stats.transformed)
-            return py::make_tuple(source, 0u, stats.reason);
-          std::string errors;
-          llvm::raw_string_ostream errorStream(errors);
-          if (llvm::verifyModule(*module, &errorStream))
-            throw std::runtime_error("Post-MMA wait SSA verification failed: " +
-                                     errors);
-          std::string result;
-          llvm::raw_string_ostream stream(result);
-          module->print(stream, nullptr);
-          return py::make_tuple(result, stats.transformed, stats.reason);
-        });
-  m.def("prepare_hcu_mma_phase_loops",
-        [](const std::string &source, const std::string &arch,
-           unsigned numWarps) -> py::tuple {
-          llvm::LLVMContext context;
-          llvm::SMDiagnostic diagnostic;
-          auto module = llvm::parseIR(
-              llvm::MemoryBufferRef(source, "mma_phase"), diagnostic, context);
-          if (!module)
-            throw std::invalid_argument(
-                "Invalid LLVM IR for MMA phase preparation");
-          auto stats =
-              flagtree::hcu::prepareMmaPhaseLoops(*module, arch, numWarps);
-          if (!stats.versioned)
-            return py::make_tuple(source, 0u);
-          std::string errors;
-          llvm::raw_string_ostream errorStream(errors);
-          if (llvm::verifyModule(*module, &errorStream))
-            throw std::runtime_error("MMA phase SSA verification failed: " +
-                                     errors);
-          std::string result;
-          llvm::raw_string_ostream stream(result);
-          module->print(stream, nullptr);
-          return py::make_tuple(result, stats.versioned);
-        });
+  m.def(
+      "optimize_hcu_memory_ir",
+      [](const std::string &source, const std::string &arch, bool factorStores,
+         bool packRounds, bool combineShifts, bool schedule, unsigned numWarps,
+         unsigned sharedBytes) {
+        auto result = mlir::triton::HCU::optimizeMemoryIR(
+            source, arch, factorStores, packRounds, combineShifts, schedule,
+            numWarps, sharedBytes);
+        if (!result) {
+          std::string message;
+          std::error_code code;
+          llvm::handleAllErrors(result.takeError(),
+                                [&](const llvm::StringError &error) {
+                                  message = error.getMessage();
+                                  code = error.convertToErrorCode();
+                                });
+          if (code == std::errc::invalid_argument)
+            throw std::invalid_argument(message);
+          throw std::runtime_error(message);
+        }
+        py::dict stats;
+        stats["factored_stores"] = result->factoredStores;
+        stats["packed_bf16_rounds"] = result->packedBf16Rounds;
+        stats["combined_shifts"] = result->combinedShifts;
+        stats["shifted_reason"] = result->shiftedReason;
+        stats["post_loops"] = result->postLoops;
+        stats["post_reason"] = result->postReason;
+        stats["phase_loops"] = result->phaseLoops;
+        return py::make_tuple(result->source, stats);
+      },
+      py::arg("source"), py::arg("arch"), py::arg("factor_stores"),
+      py::arg("pack_rounds"), py::arg("combine_shifts"),
+      py::arg("schedule") = false, py::arg("num_warps") = 0,
+      py::arg("shared_bytes") = 0);
 #endif
 
   py::class_<llvm::LLVMContext>(m, "context", py::module_local())

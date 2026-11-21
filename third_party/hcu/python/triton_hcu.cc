@@ -67,7 +67,6 @@ using mlir::triton::HCU::preserveLdsBarrierOrder;
 using mlir::triton::HCU::preserveLdsDmaAliasScopes;
 using mlir::triton::HCU::preserveUniformResourceIndices;
 using mlir::triton::HCU::stripSynchronousBarrierMarkers;
-using mlir::triton::HCU::tupleRegisterFences;
 
 namespace {
 const char *const hcuTargetTriple = "amdgcn-amd-amdhsa";
@@ -559,8 +558,8 @@ void init_triton_hcu(py::module &&m) {
   m.def("preserve_lds_dma_alias_scopes", &preserveLdsDmaAliasScopes);
   m.def("prefer_ready_shared_loads", &preferReadySharedLoads);
   m.def("interleave_global_lds_reads",
-        [](llvm::Module *module, const std::string &arch, bool addFences) {
-          auto s = interleaveGlobalLdsReads(module, arch, addFences);
+        [](llvm::Module *module, const std::string &arch) {
+          auto s = interleaveGlobalLdsReads(module, arch);
           py::dict d;
           d["transformed_windows"] = s.windows;
           d["moved_global_reads"] = s.globalReads;
@@ -572,18 +571,7 @@ void init_triton_hcu(py::module &&m) {
           d["iglp_functions"] = s.iglpFunctions;
           return d;
         });
-  m.def("tuple_register_fences",
-        [](llvm::Module *module, const std::string &arch) {
-          auto expected = tupleRegisterFences(module, arch);
-          if (!expected)
-            throw std::runtime_error(llvm::toString(expected.takeError()));
-          auto stats = *expected;
-          py::dict result;
-          result["sites"] = stats.sites;
-          result["scalar_lanes"] = stats.scalarLanes;
-          result["rejected"] = stats.rejected;
-          return result;
-        });
+
   m.doc() = "Python bindings to the HCU Triton backend";
 
   auto passes = m.def_submodule("passes");

@@ -1,44 +1,28 @@
-"""Late memory/MMA scheduling preparation; native completion stays mandatory."""
-from dataclasses import dataclass
+"""One late LLVM transaction; native completion remains mandatory."""
 
 
-@dataclass(frozen=True)
-class MemorySchedulePolicy:
-    post_mma: bool
-    phase: bool
-
-    @classmethod
-    def from_options(cls, options):
-        for name in ("mma_phase_schedule", "post_mma_wait", "coalesce_lgkm_waits"):
-            if type(getattr(options, name)) is not bool:
-                raise ValueError(f"{name} must be boolean")
-        if options.coalesce_lgkm_waits and options.arch != "gfx936":
-            raise ValueError("coalesce_lgkm_waits requires gfx936")
-        return cls(options.post_mma_wait, options.mma_phase_schedule)
-
-
-def prepare_memory_schedule(source, metadata, policy, llvm, arch, num_warps):
-    """Prepare full LDS completion after MMA, then independent MMA grouping.
-
-    Preparation is not a native correctness certificate. The caller verifies
-    final code and restores its unscheduled source on preparation/audit failure.
-    A zero-loop result must not replace source with a returned candidate.
-    """
-    prepared = False
-    if policy.post_mma:
-        candidate, loops, reason = llvm.prepare_hcu_post_mma_wait(source, arch, num_warps * 64,
-                                                                  int(metadata.get("shared", 0)))
-        metadata["hcu_post_mma_wait_preparation_result"] = reason
-        metadata["hcu_post_mma_wait_result"] = reason
-        metadata["hcu_post_mma_wait_loops"] = loops
-        if loops:
-            source, prepared = candidate, True
-    # A requested pair must not degrade to phase-only motion when the
-    # prerequisite wait proof declines the loop. Phase-only remains available
-    # explicitly with post_mma=False.
-    if policy.phase and (not policy.post_mma or prepared):
-        candidate, loops = llvm.prepare_hcu_mma_phase_loops(source, arch, num_warps)
-        if loops:
-            source, prepared = candidate, True
-            metadata["hcu_mma_phase_loops"] = loops
-    return source, prepared
+def prepare_memory_schedule(source, metadata, options, llvm, skip_schedule=False):
+    schedule = options.memory_mma_schedule and not skip_schedule
+    # Legality alone does not prove profitability: store factoring can worsen
+    # scheduling, and packed rounds can cross a VGPR occupancy boundary.
+    factor = options.buffer_store_factor_offsets
+    pack = options.arch == "gfx936"
+    combine = options.arch == "gfx936"
+    if not (schedule or factor or pack or combine):
+        return source, False
+    candidate, stats = llvm.optimize_hcu_memory_ir(source, options.arch, factor, pack, combine, schedule,
+                                                   options.num_warps, int(metadata.get("shared", 0)))
+    if schedule:
+        reason = stats["post_reason"]
+        metadata.update(hcu_post_mma_wait_preparation_result=reason, hcu_post_mma_wait_result=reason,
+                        hcu_post_mma_wait_loops=stats["post_loops"], hcu_mma_phase_loops=stats["phase_loops"])
+    if factor:
+        metadata["hcu_factored_buffer_store_offsets"] = stats["factored_stores"]
+    if pack:
+        metadata["hcu_packed_bf16_round_sites"] = stats["packed_bf16_rounds"]
+    if combine:
+        metadata["hcu_shifted_disjoint_or_sites"] = stats["combined_shifts"]
+        metadata["hcu_shifted_disjoint_or_result"] = stats["shifted_reason"]
+    prepared = bool(stats["post_loops"] or stats["phase_loops"])
+    changed = prepared or any(stats[k] for k in ("factored_stores", "packed_bf16_rounds", "combined_shifts"))
+    return candidate if changed else source, prepared

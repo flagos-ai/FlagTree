@@ -545,19 +545,15 @@ public:
       }
     }
 
-    // The option only requests the alternative; all source/tree/layout gates
-    // above and the complete register-only type plan below are independent.
+    // Both register-owner plans prove the complete reduction tree and layout.
+    // Prefer shared vectorization when legal, otherwise retain the
+    // register-only plan and finally the existing shared-memory epilogue
+    // fallback.
     std::optional<RegisterBatchOwnerPlan> registerPlan;
-    auto requested =
-        module->getAttrOfType<BoolAttr>("ttg.hcu.register_batch_owner");
-    if (requested && requested.getValue() &&
-        add.getLhs() == combine.getArgument(0) &&
+    if (add.getLhs() == combine.getArgument(0) &&
         add.getRhs() == combine.getArgument(1)) {
-      auto sharedRequested = module->getAttrOfType<BoolAttr>(
-          "ttg.hcu.register_batch_owner_shared_vector");
-      if (sharedRequested && sharedRequested.getValue())
-        registerPlan = planRegisterBatchOwner(srcType, warps, reduce.getLoc(),
-                                              /*sharedVector=*/true);
+      registerPlan = planRegisterBatchOwner(srcType, warps, reduce.getLoc(),
+                                            /*sharedVector=*/true);
       // Failed source-basis/type/split proof falls back to the unchanged v1
       // register-owner plan before any operation is created.
       if (!registerPlan)

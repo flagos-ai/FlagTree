@@ -21,8 +21,7 @@ class BufferStorePairing {
     uint64_t one;
   };
 
-  DenseMap<Value, Value> scalars;
-  DenseMap<Value, SmallVector<Value>> aggregates;
+  BufferAddressFacts addressFacts;
   DenseMap<Value, Facts> known;
   DenseMap<Value, Affine> forms;
   // Evaluate only expressions whose inputs are constants and the workgroup
@@ -50,65 +49,12 @@ class BufferStorePairing {
     return llvm::maskTrailingOnes<uint64_t>(bits);
   }
 
-  // Unpack only exact insert/extract chains. An opaque aggregate never
-  // contributes an address or a mask proof.
   Value scalar(Value value) {
-    if (auto it = scalars.find(value); it != scalars.end())
-      return it->second;
-    Value original = value;
-    while (budget) {
-      --budget;
-      if (auto cast = value.getDefiningOp<LLVM::BitcastOp>();
-          cast && cast.getArg().getType() == value.getType()) {
-        value = cast.getArg();
-        continue;
-      }
-      if (auto cast = value.getDefiningOp<UnrealizedConversionCastOp>();
-          cast && cast.getInputs().size() == 1 && cast.getOutputs().size() == 1 &&
-          cast.getInputs().front().getType() == value.getType()) {
-        value = cast.getInputs().front();
-        continue;
-      }
-      auto extract = value.getDefiningOp<LLVM::ExtractValueOp>();
-      if (!extract || extract.getPosition().size() != 1)
-        break;
-      int64_t index = extract.getPosition()[0];
-      Value container = extract.getContainer();
-      auto type = dyn_cast<LLVM::LLVMStructType>(container.getType());
-      if (!type || type.isOpaque() || type.getBody().size() > 256 || index < 0 ||
-          uint64_t(index) >= type.getBody().size())
-        break;
-      auto [it, inserted] = aggregates.try_emplace(container);
-      if (inserted) {
-        auto &fields = it->second;
-        fields.resize(type.getBody().size());
-        while (budget) {
-          --budget;
-          auto insert = container.getDefiningOp<LLVM::InsertValueOp>();
-          if (!insert || insert.getPosition().size() != 1)
-            break;
-          auto field = insert.getPosition()[0];
-          if (!fields[field])
-            fields[field] = insert.getValue();
-          container = insert.getContainer();
-        }
-      }
-      Value field = it->second[index];
-      if (!field || field.getType() != value.getType())
-        break;
-      value = field;
-    }
-    scalars.try_emplace(original, value);
-    return value;
+    Value normalized = addressFacts.scalar(value);
+    return normalized ? normalized : value;
   }
-
   std::optional<uint64_t> constant(Value value) {
-    Attribute attr;
-    if (matchPattern(scalar(value), m_Constant(&attr)))
-      if (auto integer = dyn_cast<IntegerAttr>(attr))
-        if (integer.getValue().getBitWidth() <= 64)
-          return integer.getValue().getZExtValue();
-    return std::nullopt;
+    return addressFacts.constant(value);
   }
 
   bool evaluateLanes(Value value, unsigned depth = 0) {

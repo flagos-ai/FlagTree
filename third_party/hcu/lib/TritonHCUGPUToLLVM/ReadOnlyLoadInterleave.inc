@@ -1,7 +1,4 @@
 // LLVM-only, post-optimization read/read interleaving. No DMA or wait rewrite.
-#include "llvm/ADT/DenseSet.h"
-#include "llvm/IR/Dominators.h"
-#include "llvm/IR/Verifier.h"
 
 namespace {
 
@@ -91,9 +88,10 @@ static bool interleaveUseDominated(llvm::Instruction *position,
   return user == position || dt.dominates(position, user);
 }
 
-static ReadOnlyInterleaveStats
-interleaveGlobalLdsReads(llvm::Module *module, const std::string &arch,
-                         bool addFences) {
+} // namespace
+
+ReadOnlyInterleaveStats
+interleaveGlobalLdsReads(llvm::Module *module, const std::string &arch) {
   ReadOnlyInterleaveStats stats;
   if (arch != "gfx936") return stats;
   if (llvm::verifyModule(*module, &llvm::errs())) {
@@ -181,7 +179,7 @@ interleaveGlobalLdsReads(llvm::Module *module, const std::string &arch,
     for (auto &plan : plans) {
       for (auto *g : plan.moving)
         g->moveBefore(plan.middle->getIterator()); // SDK22 moveBefore iterator; avoids moveAfter iterator ABI.
-      if (addFences) {
+      {
         auto *f = llvm::Intrinsic::getOrInsertDeclaration(
             module, llvm::Intrinsic::amdgcn_sched_barrier);
         llvm::IRBuilder<> before(plan.global.front()), after(plan.middle);
@@ -218,4 +216,3 @@ interleaveGlobalLdsReads(llvm::Module *module, const std::string &arch,
   }
   return stats;
 }
-} // namespace

@@ -6,6 +6,8 @@ import re
 import pytest
 import triton
 from triton._C import libtriton
+
+from . import hcu_test_utils as memory_rules
 from triton.backends.compiler import GPUTarget
 from triton.experimental import gluon as g
 from triton.experimental.gluon import language as gl
@@ -74,6 +76,32 @@ def test_buffer_store_pairs_skip_possible_descriptor_boundary():
     assert sorted(stores) == ["dword", "short", "short"]
 
 
+@g.jit
+def _buffer_store_address_modes(C):
+    layout: gl.constexpr = gl.BlockedLayout([1], [64], [1], [0])
+    index = gl.arange(0, 128, layout=layout)
+    # Bound the complete offset for every possible program-id bit pattern.
+    origin = (gl.program_id(0) & 3) * 512
+    buffer_store((index + 19).to(gl.int16), C, origin + index + 5, index < 117)
+
+
+@pytest.mark.parametrize("mode", ["direct", "scalar", "scalar-split", "scalar-fold"])
+def test_address_strategies_preserve_payload_and_partial_mask(mode):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("requires HCU device")
+    target = triton.runtime.driver.active.get_current_target()
+    if target.backend != "hip" or target.arch != "gfx936":
+        pytest.skip("requires gfx936 buffer address lowering")
+    output = torch.full((4096, ), -1, device="cuda", dtype=torch.int16)
+    _buffer_store_address_modes[(4, )](output, num_warps=1, buffer_store_address_mode=mode)
+    expected = torch.full((4096, ), -1, dtype=torch.int16)
+    for program in range(4):
+        begin = program * 512 + 5
+        expected[begin:begin + 117] = torch.arange(117, dtype=torch.int16) + 19
+    torch.testing.assert_close(output.cpu(), expected, rtol=0, atol=0)
+
+
 # factor buffer store offsets
 
 from triton._C.libtriton import llvm
@@ -121,8 +149,7 @@ declare void @{intrinsic}({payload}, ptr addrspace(8), i32, i32, i32 immarg)
 
 @pytest.mark.parametrize("masked", [False, True])
 def test_factors_disjoint_shared_expressions(masked):
-    transformed, count = llvm.factor_hcu_buffer_store_offsets(_factor_buffer_store_offsets_fixture(masked=masked),
-                                                              "gfx936")
+    transformed, count = memory_rules.factor_offsets(_factor_buffer_store_offsets_fixture(masked=masked), "gfx936")
     assert count == 2
     stores = [
         line.strip()
@@ -149,7 +176,7 @@ def test_factors_disjoint_shared_expressions(masked):
 )
 def test_keeps_unproved_or_unsupported_stores(arch, kwargs):
     source = _factor_buffer_store_offsets_fixture(**kwargs)
-    assert llvm.factor_hcu_buffer_store_offsets(source, arch) == (source, 0)
+    assert memory_rules.factor_offsets(source, arch) == (source, 0)
 
 
 @pytest.mark.parametrize("masked", [False, True])
@@ -163,7 +190,7 @@ def test_keeps_unproved_or_unsupported_stores(arch, kwargs):
 ])
 def test_address_factoring_does_not_depend_on_payload_type(masked, payload, suffix):
     source = _factor_buffer_store_offsets_fixture(masked=masked, payload=payload, suffix=suffix)
-    transformed, count = llvm.factor_hcu_buffer_store_offsets(source, "gfx936")
+    transformed, count = memory_rules.factor_offsets(source, "gfx936")
     assert count == 2
     # The same modulo-i32 offset equality applies to every payload overload;
     # neither data, descriptor, mask, cache policy nor store order changes.
@@ -171,14 +198,14 @@ def test_address_factoring_does_not_depend_on_payload_type(masked, payload, suff
     stores = [line for line in transformed.splitlines() if f"call void @{intrinsic}" in line]
     assert len(stores) == 2 and all(f"{payload} %value" in line for line in stores)
     assert transformed.count("select i1 %valid") == (2 if masked else 0)
-    assert llvm.factor_hcu_buffer_store_offsets(transformed, "gfx936") == (transformed, 0)
+    assert memory_rules.factor_offsets(transformed, "gfx936") == (transformed, 0)
 
 
 @pytest.mark.parametrize("soffset", [0, 4096, -16])
 @pytest.mark.parametrize("cache", [0, 1, 2, 3])
 def test_preserves_other_address_and_cache_fields(soffset, cache):
-    transformed, count = llvm.factor_hcu_buffer_store_offsets(
-        _factor_buffer_store_offsets_fixture(soffset=soffset, cache=cache), "gfx936")
+    transformed, count = memory_rules.factor_offsets(_factor_buffer_store_offsets_fixture(soffset=soffset, cache=cache),
+                                                     "gfx936")
     assert count == 2
     stores = [
         line for line in transformed.splitlines() if f"call void @{_factor_buffer_store_offsets_INTRINSIC}" in line
@@ -722,9 +749,9 @@ def test_private_pointer_argument_requires_uniform_base_proof(tmp_path, capfd, d
 @pytest.mark.parametrize("masked", [False, True])
 def test_combined_memory_rules_preserve_sequential_store_result(masked):
     source = _factor_buffer_store_offsets_fixture(masked=masked)
-    sequential, count = llvm.factor_hcu_buffer_store_offsets(source, "gfx936")
-    sequential, _ = llvm.pack_hcu_bf16_rounds(sequential)
-    sequential, _, _ = llvm.combine_hcu_shifted_disjoint_or(sequential, "gfx936")
+    sequential, count = memory_rules.factor_offsets(source, "gfx936")
+    sequential, _ = memory_rules.pack_rounds(sequential)
+    sequential, _, _ = memory_rules.combine_shifts(sequential, "gfx936")
     combined, stats = llvm.optimize_hcu_memory_ir(source, "gfx936", True, True, True)
     assert combined == sequential
     assert stats["factored_stores"] == count == 2

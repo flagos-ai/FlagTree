@@ -8,6 +8,8 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 from triton._C import libtriton
+
+from . import hcu_test_utils as memory_rules
 from triton.backends.compiler import GPUTarget
 from triton.compiler import ASTSource
 
@@ -43,7 +45,7 @@ def _post_mma_true_assume_cpu_driver(monkeypatch):
     monkeypatch.setenv("AMDGCN_USE_BUFFER_OPS", "1")
 
 
-def _post_mma_true_assume_compile_mm(dtype, post=False, phase=False):
+def _post_mma_true_assume_compile_mm(dtype, schedule=False):
     source = ASTSource(_post_mma_true_assume_pipelined_mm, {name: "*" + dtype
                                                             for name in ["A", "B", "C"]}, {},
                        attrs={(i, ): [("tt.divisibility", 16), ("tt.pointer_range", 32)]
@@ -52,8 +54,8 @@ def _post_mma_true_assume_compile_mm(dtype, post=False, phase=False):
         source, target=GPUTarget("hip", "gfx936", 64),
         options=dict(num_warps=8, num_stages=5, loop_unroll_stage="post-pipeline", schedule_hint="local-prefetch",
                      lds_dma_alias_workaround=True, prefer_wide_async_copy=True, kpack=2, mmac_warps_m=4,
-                     mmac_transposed=True, optimize_epilogue=True, coalesce_lgkm_waits=True, mma_phase_schedule=phase,
-                     post_mma_wait=post))
+                     mmac_transposed=True, optimize_epilogue=True, coalesce_lgkm_waits=True,
+                     memory_mma_schedule=schedule))
 
 
 @pytest.mark.parametrize("dtype", ["bf16", "fp16"])
@@ -74,7 +76,7 @@ def test_storage_assumptions_preserved_and_unknown_effects_rejected(dtype):
              ("volatile_store", src.replace(line, line + f"  store volatile i32 0, ptr addrspace(1) {pointers[2]}\n",
                                             1), 0)]
     for name, ir, expected in cases:
-        changed, loops, reason = libtriton.llvm.prepare_hcu_post_mma_wait(ir, "gfx936", 512, 65536)
+        changed, loops, reason = memory_rules.prepare_schedule(ir, "gfx936", 512, 65536)
         assert loops == expected, (dtype, name, reason)
         if loops:
             assert changed.count("call void @llvm.assume(i1 true)") == ir.count("call void @llvm.assume(i1 true)")
@@ -85,9 +87,8 @@ def test_storage_assumptions_preserved_and_unknown_effects_rejected(dtype):
 
 
 @pytest.mark.parametrize("dtype", ["bf16", "fp16"])
-@pytest.mark.parametrize("phase", [False, True])
-def test_scheduled_native_completion(dtype, phase):
-    compiled = _post_mma_true_assume_compile_mm(dtype, post=True, phase=phase)
+def test_scheduled_native_completion(dtype):
+    compiled = _post_mma_true_assume_compile_mm(dtype, schedule=True)
     metadata = compiled.metadata._asdict()
     assert metadata["hcu_post_mma_wait_loops"] == 1
     assert metadata["hcu_schedule_native_readiness"]["accepted"]

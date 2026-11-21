@@ -58,60 +58,17 @@ static bool structuredRegisterDataUniform(Value v) {
   llvm::SmallPtrSet<void *,32> seen;
   return mlir::triton::HCU::memory_analysis::uniformValue(v,seen);
 }
-// EXECUTION CONTROL may differ between waves but must agree across all lanes
-// of each wave. Keep this local to explicit structured-register loads; neither
-// the ordinary descriptor-uniformity proof acquires no new authority.
-static bool structuredRegisterWaveControl(Value v,llvm::SmallPtrSetImpl<void *>& seen) {
-  if(!v.getType().isIntOrIndex())return false;
-  if(!seen.insert(v.getAsOpaquePointer()).second)return true;
-  if(auto arg=dyn_cast<BlockArgument>(v)) {
-    Block* dest=arg.getOwner();unsigned n=arg.getArgNumber();
-    if(auto f=dyn_cast<triton::FuncOp>(dest->getParentOp()))
-      if(dest==&f.getBody().front())return triton::isKernel(f);
-    if(dest->hasNoPredecessors())return false;
-    for(Block* pred:dest->getPredecessors()) {
-      Operation* term=pred->getTerminator();bool edge=false;
-      if(auto br=dyn_cast<cf::BranchOp>(term)) {
-        if(br.getDest()!=dest||n>=br.getDestOperands().size()||!structuredRegisterWaveControl(br.getDestOperands()[n],seen))return false;
-        edge=true;
-      } else if(auto br=dyn_cast<cf::CondBranchOp>(term)) {
-        if(!structuredRegisterWaveControl(br.getCondition(),seen))return false;
-        if(br.getTrueDest()==dest) {
-          if(n>=br.getTrueDestOperands().size()||!structuredRegisterWaveControl(br.getTrueDestOperands()[n],seen))return false;
-          edge=true;
-        }
-        if(br.getFalseDest()==dest) {
-          if(n>=br.getFalseDestOperands().size()||!structuredRegisterWaveControl(br.getFalseDestOperands()[n],seen))return false;
-          edge=true;
-        }
-      }
-      if(!edge)return false;
-    }return true;
-  }
-  Operation* op=v.getDefiningOp();if(!op)return false;
-  if(op->getName().getStringRef()=="hcug.warp_group_id") {
-    auto size=op->getAttrOfType<IntegerAttr>("groupSize");
-    if(op->getNumOperands()||op->getNumResults()!=1||!v.getType().isInteger(32)||!size||!size.getType().isInteger(32))return false;
-    int64_t count=size.getInt();
-    return count>0&&!(uint64_t(count)&uint64_t(count-1))&&count<=triton::gpu::lookupNumWarps(op);
-  }
-  if(isa<triton::GetProgramIdOp>(op))return true;
-  if(!op->getName().getStringRef().starts_with("arith.")||op->getNumRegions())return false;
-  for(Value operand:op->getOperands())if(!structuredRegisterWaveControl(operand,seen))return false;
-  return true;
-}
-static bool structuredRegisterExecutionUniform(Operation* site) {
-  auto f=site->getParentOfType<triton::FuncOp>();if(!f)return false;
-  bool result=true;
-  f.walk([&](Operation* op) {
-    if(auto br=dyn_cast<cf::CondBranchOp>(op)) {
-      llvm::SmallPtrSet<void *,32> seen;
-      result&=structuredRegisterWaveControl(br.getCondition(),seen);
-    } else if(op->getNumSuccessors()>1) {
-      // No switch/indirect/unknown conditional-control model is inferred.
-      result=false;
-    }
-  });return result;
+// Only branches that can select this load's execution constrain its wave
+// control. Unrelated divergent branches that reconverge before it do not.
+static bool structuredRegisterExecutionUniform(Operation *site) {
+  auto fn = site->getParentOfType<triton::FuncOp>();
+  if (!fn)
+    return false;
+  PostDominanceInfo postDominance(fn);
+  llvm::SmallPtrSet<void *, 32> active;
+  return mlir::triton::HCU::memory_analysis::uniformControlAt(
+      site, fn, active, postDominance,
+      mlir::triton::HCU::memory_analysis::UniformScope::WaveControl);
 }
 static bool structuredRegisterBaseUniform(Value v) {
   v = mlir::triton::HCU::resolveWarpSpecializeCapture(v);
@@ -136,10 +93,6 @@ static LogicalResult verifyStructuredRegisterLoads(ModuleOp mod,StringRef arch) 
     op->removeAttr(StructuredRegisterWidth);
     op->removeAttr(StructuredRegisterOrder);
   });
-  if(auto a=mod->getAttr("ttg.hcu.structured_register_prepack_address");a&&!isa<BoolAttr>(a))
-    return mod.emitError("structured-register: prepack-address option must be BoolAttr");
-  if(auto a=mod->getAttr("ttg.hcu.structured_register_unclamped_column");a&&!isa<BoolAttr>(a))
-    return mod.emitError("structured-register: unclamped-column option must be BoolAttr");
   LogicalResult answer=success();
   mod.walk([&](triton::MatrixLoadOp op) {
     if(!op->hasAttr(StructuredRegisterRequest) || failed(answer))return;
@@ -229,12 +182,10 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
     Value nonnegative=b.select(b.icmp_sge(R,b.i32_val(0)),R,b.i32_val(0));
     Value rowBase=b.select(b.icmp_ult(nonnegative,safeM),nonnegative,safeM);
     Value validK=b.icmp_ule(C,b.i32_val(K-op.getType().getShape()[1]));
-    auto unclampedAttr=op->getParentOfType<ModuleOp>()->getAttrOfType<BoolAttr>(
-        "ttg.hcu.structured_register_unclamped_column");
     // The existing validK/enable guard still makes NR=0 for every invalid
     // column. The descriptor base then has no effective memory access.
     // No inbounds/nowrap promises are added to its integer/pointer math.
-    Value colBase=unclampedAttr&&unclampedAttr.getValue()?C:b.select(validK,C,b.i32_val(0));
+    Value colBase=C;
     // rowBase is clamped to [0, safeM], so this subtraction cannot underflow.
     // Keep the clamp for negative/OOB rows; no saturating inline asm is needed.
     Value remaining=b.sub(safeM,rowBase);
@@ -242,9 +193,6 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
     Value records=b.select(enabled,remaining,b.i32_val(0));
     Value baseOffset=b.sub(b.add(b.mul(b.zext(i64_ty,rowBase),b.i64_val(*rowStride)),b.zext(i64_ty,colBase)),b.i64_val(8));
     Value base=b.gep(ptr_ty(ctx,1),elem,a.getBase(),baseOffset);
-    auto prepackAttr=op->getParentOfType<ModuleOp>()->getAttrOfType<BoolAttr>(
-        "ttg.hcu.structured_register_prepack_address");
-    bool prepack = prepackAttr && prepackAttr.getValue();
     int64_t recordPitch = cacheDistributedRecordPitch(
         op, *rowStride, op.getType().getShape()[0], op.getType().getShape()[1]);
     Value resource = rw.createOrFold<ROCDL::MakeBufferRsrcOp>(
@@ -271,7 +219,7 @@ struct StructuredRegisterLoadConversion : public ConvertOpToLLVMPattern<triton::
       Value offset=b.add(b.shl(xy[1].second,b.i32_val(1)),b.i32_val(16));
       if (recordPitch != *rowStride)
         offset = b.add(offset, b.mul(index,b.i32_val(2*(*rowStride-recordPitch))));
-      if(prepack) {
+      {
         // Bind the two halves as one live VReg64 address value before the
         // structured intrinsic extracts them again. This is a pure exact
         // register identity, with no memory clobber or synchronization.

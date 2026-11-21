@@ -2,7 +2,7 @@
 #define TRITON_HCU_PHYSICAL_SHARED_REGIONS_H
 
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
-#include "WarpSpecializeUtils.h"
+#include "MemDescProvenance.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "triton/Analysis/Allocation.h"
@@ -237,14 +237,14 @@ class PhysicalSharedRegions {
       if (!input || src.getRank() != type.getRank() ||
           src.getEncoding() != type.getEncoding() ||
           src.getElementType() != type.getElementType() ||
-          src.getAllocShape() != type.getAllocShape())
+          src.getAllocShape() != type.getAllocShape() ||
+          !shared_view::boundedSlice(src.getShape(), type.getShape(),
+                                     slice.getOffsets()))
         return std::nullopt;
       for (auto &view : *input) {
         for (unsigned d = 0; d < view.offsets.size(); ++d) {
           int64_t offset = slice.getOffsets()[d];
-          if (offset < 0 || offset > src.getShape()[d] ||
-              type.getShape()[d] > src.getShape()[d] - offset ||
-              offset > INT32_MAX - view.offsets[d])
+          if (offset > INT32_MAX - view.offsets[d])
             return std::nullopt;
           view.offsets[d] += offset;
         }
@@ -296,34 +296,14 @@ class PhysicalSharedRegions {
         dependents[input].push_back(v);
         pending.push_back(input);
       };
-      if (Value capture = resolveWarpSpecializeCapture(v); capture != v) {
-        follow(capture);
+      if (auto edges = shared_view::incoming(v)) {
+        for (Value input : *edges)
+          follow(input);
       } else if (auto select = v.getDefiningOp<arith::SelectOp>()) {
         follow(select.getTrueValue());
         follow(select.getFalseValue());
-      } else if (auto arg = dyn_cast<BlockArgument>(v)) {
-        Block *block = arg.getOwner();
-        bool incoming = false;
-        for (Block *pred : block->getPredecessors()) {
-          auto branch = dyn_cast<BranchOpInterface>(pred->getTerminator());
-          if (!branch ||
-              !isa<cf::BranchOp, cf::CondBranchOp>(pred->getTerminator()))
-            return std::nullopt;
-          for (unsigned i = 0; i < branch->getNumSuccessors(); ++i) {
-            if (branch->getSuccessor(i) != block)
-              continue;
-            auto ops = branch.getSuccessorOperands(i);
-            unsigned produced = ops.getProducedOperandCount(),
-                     n = arg.getArgNumber();
-            if (n < produced ||
-                n - produced >= ops.getForwardedOperands().size())
-              return std::nullopt;
-            follow(ops.getForwardedOperands()[n - produced]);
-            incoming = true;
-          }
-        }
-        if (!incoming)
-          return std::nullopt;
+      } else if (isa<BlockArgument>(v)) {
+        return std::nullopt;
       } else {
         auto states = views(v, 0, budget);
         if (!states)

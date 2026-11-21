@@ -498,6 +498,7 @@ static std::optional<uint64_t> getNonNegativeOffsetMax(Value value,
   return std::nullopt;
 }
 
+#include "BufferAddressFacts.h"
 #include "BufferStorePairing.inc"
 #include "BufferStoreScalarOffset.inc"
 
@@ -2430,15 +2431,15 @@ struct BufferStoreOpConversion
     // covers its full i16 within the unchanged raw descriptor. A lost tensor
     // producer during conversion cannot supply or invalidate that proof.
     // Unknown arithmetic keeps emitStore per element.
-    auto scalarOffsetAttr = storeModule->getAttrOfType<BoolAttr>(
-        "ttg.hcu.buffer_store_scalar_offset");
-    auto splitImmediateAttr = storeModule->getAttrOfType<BoolAttr>(
-        "ttg.hcu.buffer_store_split_immediate");
-    auto preserveMaskedBaseAttr = storeModule->getAttrOfType<BoolAttr>(
-        "ttg.hcu.buffer_store_preserve_masked_base");
+    auto addressMode = storeModule->getAttrOfType<StringAttr>(
+        "ttg.hcu.buffer_store_address_mode");
+    auto mode = addressMode ? addressMode.getValue() : "direct";
+    bool scalarAddress =
+        mode == "scalar" || mode == "scalar-split" || mode == "scalar-fold";
+    bool splitAddress = mode == "scalar-split" || mode == "scalar-fold";
+    bool preserveMaskedBase = mode == "scalar-fold";
     bool useScalarOffset = false;
-    if (scalarOffsetAttr && scalarOffsetAttr.getValue() &&
-        targetInfo.getArch() == "gfx936" &&
+    if (scalarAddress && targetInfo.getArch() == "gfx936" &&
         (vec == 1 || vec == 2 || vec == 4 || vec == 8) && !llStride &&
         valueElemTy.getIntOrFloatBitWidth() == 16 &&
         cacheMod == triton::CacheModifier::NONE) {
@@ -2520,7 +2521,7 @@ struct BufferStoreOpConversion
           Value payload = b.bitcast(storeVal, payloadType);
           Value voffset = masked;
           uint64_t scalarBytes = plan->constant * 2;
-          if (splitImmediateAttr && splitImmediateAttr.getValue()) {
+          if (splitAddress) {
             // gfx936 MUBUF has a 12-bit byte immediate. Keep the original
             // predicate/sentinel, and expose only this low displacement in
             // VOFFSET so instruction selection may fold it into offset:imm.
@@ -2534,7 +2535,7 @@ struct BufferStoreOpConversion
               // opaque to arithmetic reassociation across the select. This
               // requests instruction selection; it is not a range proof.
               // Tied allocation/CSE may still add copies or merge identities.
-              if (preserveMaskedBaseAttr && preserveMaskedBaseAttr.getValue())
+              if (preserveMaskedBase)
                 masked =
                     LLVM::InlineAsmOp::create(
                         rewriter, loc, masked.getType(), ValueRange{masked}, "",

@@ -210,15 +210,14 @@ def _ready_shared_loads_readonly_interleave_fixture(tmp_path, native, offset=0, 
 
 @pytest.mark.parametrize("native", ["load", "normal", "alt"])
 @pytest.mark.parametrize("offset", [0, 2048])
-@pytest.mark.parametrize("fences", [False, True])
-def test_readonly_interleave_covers_native_shared_reads(tmp_path, native, offset, fences):
+def test_readonly_interleave_covers_native_shared_reads(tmp_path, native, offset):
     module, keepalive = _ready_shared_loads_readonly_interleave_fixture(tmp_path, native, offset)
-    result = libtriton.hcu.interleave_global_lds_reads(module, "gfx936", fences)
+    result = libtriton.hcu.interleave_global_lds_reads(module, "gfx936")
     assert result["transformed_windows"] == 1 and result["moved_global_reads"] == 1 and result["split_lds_reads"] == 2
-    assert result["sched_barriers_added"] == (2 if fences else 0)
+    assert result["sched_barriers_added"] == 2
     text = str(module)
     assert text.index("%first =") < text.index("%global =") < text.index("%second =")
-    again = libtriton.hcu.interleave_global_lds_reads(module, "gfx936", fences)
+    again = libtriton.hcu.interleave_global_lds_reads(module, "gfx936")
     assert again["transformed_windows"] == 0 and str(module) == text
 
 
@@ -234,7 +233,7 @@ def test_readonly_interleave_covers_native_shared_reads(tmp_path, native, offset
 def test_readonly_interleave_native_reads_keep_effect_boundaries(tmp_path, native, boundary):
     module, keepalive = _ready_shared_loads_readonly_interleave_fixture(tmp_path, native, boundary=boundary)
     before = str(module)
-    result = libtriton.hcu.interleave_global_lds_reads(module, "gfx936", True)
+    result = libtriton.hcu.interleave_global_lds_reads(module, "gfx936")
     assert result["transformed_windows"] == 0 and str(module) == before
 
 
@@ -250,7 +249,7 @@ def test_readonly_interleave_native_reads_retain_fallback(tmp_path, native, vola
         function = next(f for f in module.get_functions() if f.name == "readonly_fixture")
         function.set_calling_conv(0)
     before = str(module)
-    result = libtriton.hcu.interleave_global_lds_reads(module, arch, True)
+    result = libtriton.hcu.interleave_global_lds_reads(module, arch)
     assert result["transformed_windows"] == 0 and str(module) == before
 
 
@@ -258,7 +257,7 @@ def test_readonly_interleave_native_reads_retain_fallback(tmp_path, native, vola
 def test_readonly_interleave_native_reads_preserve_global_address_dependency(tmp_path, native):
     module, keepalive = _ready_shared_loads_readonly_interleave_fixture(tmp_path, native, dependent=True)
     before = str(module)
-    result = libtriton.hcu.interleave_global_lds_reads(module, "gfx936", True)
+    result = libtriton.hcu.interleave_global_lds_reads(module, "gfx936")
     assert result["transformed_windows"] == 0 and result["rejected_dependencies"] == 1
     assert str(module) == before
 

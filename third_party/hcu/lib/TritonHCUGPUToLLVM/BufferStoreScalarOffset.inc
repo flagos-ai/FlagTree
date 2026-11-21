@@ -14,12 +14,12 @@ public:
   using Plan=std::shared_ptr<Node>;
 private:
   struct Facts {uint64_t maximum,zero;unsigned width;};
-  DenseMap<Value,Value> normalized;
+  BufferAddressFacts addressFacts;
   DenseMap<Value,Facts> factsMemo;
   DenseMap<Value,Plan> planMemo;
   llvm::SmallDenseSet<Value,32> active;
   DenseMap<const Node*,Value> emitted;
-  unsigned aggregateSteps=0,factSteps=0,planSteps=0;
+  unsigned factSteps=0,planSteps=0;
   static uint64_t widthMask(unsigned width) {return width==64?~uint64_t(0):(uint64_t(1)<<width)-1;}
   static uint64_t upperZeros(uint64_t maximum,unsigned width) {
     uint64_t used=0;while(maximum){used=(used<<1)|1;maximum>>=1;}
@@ -29,43 +29,9 @@ private:
     unsigned n=0;while(n<width&&((zero>>n)&1))++n;return n;
   }
   std::optional<uint64_t> integerConstant(Value value) {
-    value=scalar(value);if(!value)return {};
-    Attribute attr;if(!matchPattern(value,m_Constant(&attr)))return {};
-    auto c=dyn_cast<IntegerAttr>(attr);if(!c||c.getValue().getBitWidth()>64)return {};
-    return c.getValue().getZExtValue(); // Bit pattern; negativity checked by bounds.
+    return addressFacts.constant(value);
   }
-  Value scalar(Value value) {
-    if(auto it=normalized.find(value);it!=normalized.end())return it->second;
-    Value original=value;
-    while(true) {
-      if(++aggregateSteps>32768)return {};
-      if(auto cast=value.getDefiningOp<LLVM::BitcastOp>()) {
-        auto type=dyn_cast<IntegerType>(value.getType());
-        // Tensor constants can lower to exact i32->i32 / i64->i64 identity
-        // bitcasts. Do not cross vector, pointer, float, or width-changing casts.
-        if(!type||(type.getWidth()!=32&&type.getWidth()!=64)||
-           cast->getOperand(0).getType()!=value.getType())return {};
-        value=cast->getOperand(0);continue;
-      }
-      auto extract=value.getDefiningOp<LLVM::ExtractValueOp>();
-      if(!extract)break;
-      auto position=extract.getPosition();
-      auto type=dyn_cast<LLVM::LLVMStructType>(extract.getContainer().getType());
-      if(position.size()!=1||!type||type.isOpaque()||position[0]<0||
-         uint64_t(position[0])>=type.getBody().size()||type.getBody()[position[0]]!=value.getType())return {};
-      Value container=extract.getContainer();
-      while(true) {
-        if(++aggregateSteps>32768)return {};
-        auto insert=container.getDefiningOp<LLVM::InsertValueOp>();
-        if(!insert||insert.getPosition().size()!=1||insert.getContainer().getType()!=type||insert.getType()!=type)return {};
-        int64_t field=insert.getPosition()[0];
-        if(field<0||uint64_t(field)>=type.getBody().size()||insert.getValue().getType()!=type.getBody()[field])return {};
-        if(field==position[0]) {value=insert.getValue();break;}
-        container=insert.getContainer();
-      }
-    }
-    normalized[original]=value;return value;
-  }
+  Value scalar(Value value) { return addressFacts.scalar(value); }
   std::optional<Facts> facts(Value value,unsigned depth=0) {
     value=scalar(value);if(!value||depth>48||++factSteps>16384)return {};
     if(auto it=factsMemo.find(value);it!=factsMemo.end())return it->second;

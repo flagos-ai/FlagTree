@@ -1,3 +1,4 @@
+#include "MemDescProvenance.h"
 // gfx936 wave-private staging: coalesce redundant waits within proven read
 // runs.
 #include "mlir/IR/Matchers.h"
@@ -54,46 +55,6 @@ class WavePrivateSyncStaging {
       if ((unsigned(basis[0]) & (warps - 1)) != 0)
         return false;
     return true;
-  }
-
-  // Restrict forwarding to identical SSA incoming values, not just equal
-  // descriptor types or an allocation-analysis may-alias set. Cycles decline.
-  mlir::Value identicalIncoming(mlir::Value value) const {
-    using namespace mlir;
-    SmallVector<Value, 8> seen;
-    for (unsigned depth = 0; depth < 8; ++depth) {
-      auto arg = dyn_cast<BlockArgument>(value);
-      if (!arg)
-        return value;
-      if (llvm::is_contained(seen, value))
-        return {};
-      seen.push_back(value);
-      Block *block = arg.getOwner();
-      Value incoming;
-      for (Block *pred : block->getPredecessors()) {
-        auto branch = dyn_cast<BranchOpInterface>(pred->getTerminator());
-        if (!branch)
-          return {};
-        for (unsigned i = 0; i < branch->getNumSuccessors(); ++i) {
-          if (branch->getSuccessor(i) != block)
-            continue;
-          auto operands = branch.getSuccessorOperands(i);
-          unsigned produced = operands.getProducedOperandCount();
-          unsigned number = arg.getArgNumber();
-          if (number < produced ||
-              number - produced >= operands.getForwardedOperands().size())
-            return {};
-          Value next = operands.getForwardedOperands()[number - produced];
-          if (incoming && incoming != next)
-            return {};
-          incoming = next;
-        }
-      }
-      if (!incoming)
-        return {};
-      value = incoming;
-    }
-    return {};
   }
 
   // Rank3 full allocation, exact padded physical batch planes. This uses the
@@ -205,14 +166,8 @@ class WavePrivateSyncStaging {
         src.getMutableMemory() != dst.getMutableMemory() || offsets[0] != 0 ||
         src.getShape()[0] != dst.getShape()[0])
       return false;
-    for (unsigned d = 0; d != 3; ++d) {
-      int64_t begin = offsets[d], extent = dst.getShape()[d];
-      // Subtraction form also excludes offset+extent signed overflow.
-      if (begin < 0 || extent <= 0 || src.getShape()[d] < extent ||
-          begin > src.getShape()[d] - extent)
-        return false;
-    }
-    return true;
+    return mlir::triton::HCU::shared_view::boundedSlice(
+        src.getShape(), dst.getShape(), offsets);
   }
 
   // Transpose changes logical axes only, including the allocation shape and
@@ -255,18 +210,18 @@ class WavePrivateSyncStaging {
   std::optional<Provenance> provenance(mlir::Value value, Id id) const {
     using namespace mlir;
     namespace ttg = triton::gpu;
-    value = identicalIncoming(value);
+    value = mlir::triton::HCU::shared_view::identical(value);
     for (unsigned depth = 0; value && depth < 8; ++depth) {
       if (auto trans = value.getDefiningOp<ttg::MemDescTransOp>()) {
         if (!paddedBatchViewTranspose(trans))
           return std::nullopt;
-        value = identicalIncoming(trans.getSrc());
+        value = mlir::triton::HCU::shared_view::identical(trans.getSrc());
         continue;
       }
       if (auto slice = value.getDefiningOp<ttg::MemDescSubsliceOp>()) {
         if (!boundedPaddedBatchSlice(slice))
           return std::nullopt;
-        value = identicalIncoming(slice.getSrc());
+        value = mlir::triton::HCU::shared_view::identical(slice.getSrc());
         continue;
       }
       if (auto alloc = value.getDefiningOp<ttg::LocalAllocOp>()) {
@@ -277,7 +232,7 @@ class WavePrivateSyncStaging {
       }
       if (auto index = value.getDefiningOp<ttg::MemDescIndexOp>()) {
         auto src = index.getSrc().getType(), dst = index.getType();
-        auto root = identicalIncoming(index.getSrc());
+        auto root = mlir::triton::HCU::shared_view::identical(index.getSrc());
         auto alloc = root ? root.getDefiningOp<ttg::LocalAllocOp>()
                           : ttg::LocalAllocOp{};
         llvm::APInt slot;
