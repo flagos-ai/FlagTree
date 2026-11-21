@@ -7,10 +7,6 @@ pointers in a loop, and a couple of fp16 matmul shapes. The original
 asserts are numerical comparisons against torch on CUDA; here we drop the
 numerical comparisons (compile-only) but keep the IR-shape assertions
 that the upstream tests use to pin down lowering invariants.
-
-The two fp16 kernels (tiled_matmul, full_view_dot) currently xfail on PPU
-because their ``tle.gpu.copy`` is rewritten into a ``cp.async`` shorter
-than 4 bytes due to an upstream Triton constraint.
 """
 
 import os

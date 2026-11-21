@@ -101,7 +101,8 @@ def test_descriptor_copy_with_barrier_is_rejected():
 
     x = torch.randn(64, 64, dtype=torch.bfloat16, device="cuda")
     desc = TensorDescriptor.from_tensor(x, [64, 64])
-    with pytest.raises(Exception, match="completion barrier|barrier="):
+    # PPU has no mbarrier: the frontend rejects the completion barrier and names the API.
+    with pytest.raises(NotImplementedError, match=r"tle\.gpu\.copy\(barrier="):
         kernel[(1, )](desc, x, R=64, C=64, num_warps=4)
 
 
