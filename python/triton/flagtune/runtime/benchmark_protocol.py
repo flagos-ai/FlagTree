@@ -25,6 +25,8 @@ import os
 import warnings
 from dataclasses import dataclass
 from enum import Enum
+from importlib import import_module
+from inspect import unwrap
 from typing import Any, Callable, Sequence
 
 from triton.flagtune.runtime.device import UnsupportedFlagTuneDeviceError
@@ -123,42 +125,27 @@ def _validate_request(
     return selected
 
 
-def _bench_npu_graph(device, kernel_call, rep, n_retries, quantiles):
-    from triton.testing import _summarize_statistics
+def _enable_npu_graph_compat(device) -> str | None:
+    import torch
 
-    caller_stream = device.current_stream()
-    stream = device.Stream()
-    stream.wait_stream(caller_stream)
-    with device.stream(stream):
-        kernel_call()
-        start = device.Event(enable_timing=True)
-        end = device.Event(enable_timing=True)
-        start.record()
-        for _ in range(5):
-            kernel_call()
-        end.record()
-        device.synchronize()
-        estimate_ms = start.elapsed_time(end) / 5
-        repeats = 1000 if estimate_ms == 0 else max(1, int(rep / estimate_ms))
+    try:
+        import_module("torch_npu.contrib.transfer_to_npu")
+    except ImportError as exc:
+        return f"TorchNPU CUDA compatibility layer is unavailable ({exc})"
 
-        graph = device.NPUGraph()
-        with device.graph(graph, stream=stream):
-            for _ in range(repeats):
-                kernel_call()
-        device.synchronize()
-
-        samples = []
-        try:
-            for _ in range(n_retries):
-                start.record()
-                graph.replay()
-                end.record()
-                device.synchronize()
-                samples.append(start.elapsed_time(end) / repeats)
-        finally:
-            graph.reset()
-    caller_stream.wait_stream(stream)
-    return _summarize_statistics(samples, quantiles, "mean")
+    for cuda_name, npu_name in (
+        ("CUDAGraph", "NPUGraph"),
+        ("graph", "graph"),
+        ("Event", "Event"),
+        ("Stream", "Stream"),
+        ("stream", "stream"),
+        ("synchronize", "synchronize"),
+    ):
+        native = getattr(device, npu_name, None)
+        # TorchNPU wraps some aliases to translate explicit device arguments.
+        if native is None or unwrap(getattr(torch.cuda, cuda_name, None)) is not unwrap(native):
+            return f"TorchNPU CUDA compatibility layer did not redirect torch.cuda.{cuda_name}"
+    return None
 
 
 def resolve_benchmarker(
@@ -179,17 +166,25 @@ def resolve_benchmarker(
     if selected is BenchmarkMode.REPLAY:
         get_interface = getattr(active, "get_device_interface", None)
         device = get_interface() if get_interface is not None else None
+        reason = "active Triton backend does not provide a registered replay benchmarker"
         if callable(getattr(device, "NPUGraph", None)) and callable(getattr(device, "graph", None)):
+            reason = _enable_npu_graph_compat(device)
+        if reason is None:
+            from triton.testing import do_bench_cudagraph
+
             per_replay_ms = measurement_ms / n_retries
 
             def replay_benchmark(kernel_call, quantiles):
-                return _bench_npu_graph(device, kernel_call, per_replay_ms, n_retries, quantiles)
+                # The helper starts on a new stream. Wait for its inputs before
+                # it runs the primer and records the first timing events.
+                device.current_stream().synchronize()
+                return do_bench_cudagraph(kernel_call, rep=per_replay_ms, quantiles=quantiles, n_retries=n_retries)
 
             return ResolvedBenchmarker(
                 protocol=BenchmarkProtocol(
                     requested_mode=selected,
                     resolved_mode=BenchmarkMode.REPLAY,
-                    implementation="ascend_npu_graph_replay_v1",
+                    implementation="triton_ascend_transfer_to_npu_graph_replay_v1",
                     cache_policy="warm_l2",
                     # Graph timing uses a primer and a short calibration, not a timed warmup.
                     warmup_ms=0,
@@ -199,7 +194,6 @@ def resolve_benchmarker(
                 ),
                 benchmark=replay_benchmark,
             )
-        reason = "active Triton backend does not provide a registered replay benchmarker"
         if not allow_fallback:
             raise RuntimeError(reason)
         fallback_reason = reason

@@ -1,6 +1,8 @@
+from functools import wraps
 from types import SimpleNamespace
 
 import pytest
+import torch
 import triton.testing as triton_testing
 
 from triton.flagtune.runtime import benchmark_protocol as benchmark_module
@@ -129,29 +131,50 @@ def test_ascend_strict_replay_request_is_rejected(monkeypatch):
         benchmark_module.resolve_benchmarker("replay", warmup_ms=5, measurement_ms=20, allow_fallback=False)
 
 
-def test_ascend_replay_uses_npu_graph_and_preserves_budget(monkeypatch):
+def test_ascend_replay_uses_cudagraph_with_torchnpu_and_preserves_budget(monkeypatch):
     active = _driver_for("triton.backends.ascend.driver", "npu")
-    active.device_interface = SimpleNamespace(NPUGraph=object, graph=lambda: None)
+    calls = []
+    active.device_interface = SimpleNamespace(
+        NPUGraph=object,
+        graph=lambda: None,
+        Event=object,
+        Stream=object,
+        stream=lambda: None,
+        synchronize=lambda: None,
+        current_stream=lambda: SimpleNamespace(synchronize=lambda: calls.append("synchronize")),
+    )
     monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
     quantiles = (0.5, 0.2, 0.8)
 
-    def graph_benchmark(device, kernel_call, rep, n_retries, quantiles):
-        assert device is active.device_interface
+    def install_compat(module):
+        assert module == "torch_npu.contrib.transfer_to_npu"
+        calls.append("import")
+        cuda = SimpleNamespace(**vars(active.device_interface))
+        cuda.CUDAGraph = cuda.NPUGraph
+
+        @wraps(cuda.synchronize)
+        def sync():
+            active.device_interface.synchronize()
+
+        cuda.synchronize = sync
+        monkeypatch.setattr(torch, "cuda", cuda)
+
+    def graph_benchmark(kernel_call, *, rep, n_retries, quantiles):
         assert (rep, n_retries, quantiles) == (5.0, 4, (0.5, 0.2, 0.8))
         kernel_call()
         return [1.0, 0.8, 1.2]
 
-    monkeypatch.setattr(benchmark_module, "_bench_npu_graph", graph_benchmark)
+    monkeypatch.setattr(benchmark_module, "import_module", install_compat)
+    monkeypatch.setattr(triton_testing, "do_bench_cudagraph", graph_benchmark)
     resolved = benchmark_module.resolve_benchmarker("replay", warmup_ms=5, measurement_ms=20, n_retries=4,
                                                     allow_fallback=False)
-    calls = []
-    assert resolved.benchmark(lambda: calls.append(True), quantiles) == [1.0, 0.8, 1.2]
-    assert calls == [True]
+    assert resolved.benchmark(lambda: calls.append("kernel"), quantiles) == [1.0, 0.8, 1.2]
+    assert calls == ["import", "synchronize", "kernel"]
     assert not active.observed
     assert resolved.protocol.as_dict() == {
         "requested_mode": "replay",
         "resolved_mode": "replay",
-        "implementation": "ascend_npu_graph_replay_v1",
+        "implementation": "triton_ascend_transfer_to_npu_graph_replay_v1",
         "cache_policy": "warm_l2",
         "warmup_ms": 0,
         "measurement_ms": 20,
@@ -159,6 +182,33 @@ def test_ascend_replay_uses_npu_graph_and_preserves_budget(monkeypatch):
         "per_replay_ms": 5.0,
         "fallback_reason": None,
     }
+
+
+def test_ascend_incomplete_cuda_aliases_fall_back_to_events(monkeypatch):
+    active = _driver_for("triton.backends.ascend.driver", "npu")
+    active.device_interface = SimpleNamespace(NPUGraph=object, graph=lambda: None)
+    monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
+    monkeypatch.setattr(benchmark_module, "import_module", lambda _: None)
+    monkeypatch.setattr(torch, "cuda", SimpleNamespace(CUDAGraph=object, graph=lambda: None))
+    with pytest.warns(RuntimeWarning, match="did not redirect torch.cuda.graph"):
+        resolved = benchmark_module.resolve_benchmarker("replay", warmup_ms=5, measurement_ms=20)
+    assert resolved.protocol.resolved_mode is benchmark_module.BenchmarkMode.EVENT
+
+
+@pytest.mark.parametrize("redirected", [False, True])
+def test_nvidia_driver_distinguishes_cuda_from_torchnpu_alias(monkeypatch, redirected):
+    nvidia_driver = pytest.importorskip("triton.backends.nvidia.driver")
+
+    def npu_is_available():
+        return True
+
+    monkeypatch.setattr(torch, "npu", SimpleNamespace(is_available=npu_is_available), raising=False)
+    if redirected:
+        monkeypatch.setattr(torch.cuda, "is_available", npu_is_available)
+    else:
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None)
+    assert nvidia_driver.CudaDriver.is_active() is (not redirected)
 
 
 @pytest.mark.parametrize("backend", ["cuda", "hip", "maca", "musa"])

@@ -57,14 +57,16 @@ def _summarize_statistics(times, quantiles, return_mode):
         return statistics.median(times)
 
 
-def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mode="mean"):
+def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mode="mean", *, n_retries=10):
     """
     Benchmark the runtime of the provided function.
 
     :param fn: Function to benchmark
     :type fn: Callable
-    :param rep: Repetition time (in ms)
-    :type rep: int
+    :param rep: Target execution time of each graph replay (in ms).
+    :type rep: float
+    :param n_retries: Number of timed graph replays.
+    :type n_retries: int
     :param grad_to_none: Reset the gradient of the provided tensor to None
     :type grad_to_none: torch.tensor, optional
     :param return_mode: The statistical measure to return. Options are "min", "max", "mean", "median", or "all". Default is "mean".
@@ -112,7 +114,6 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
         torch.cuda.synchronize()
         # measure time and return
         ret = []
-        n_retries = 10
         for _ in range(n_retries):
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)
