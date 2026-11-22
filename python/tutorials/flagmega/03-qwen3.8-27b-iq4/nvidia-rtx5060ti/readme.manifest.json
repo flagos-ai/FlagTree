@@ -1,0 +1,448 @@
+{
+  "schema": "flagmega.working-view/v1",
+  "mode": "working",
+  "kind": "readme",
+  "scope": "root",
+  "sync_id": "r001-qualified-20261116T1618Z-canonical-readme",
+  "generation": 25,
+  "agent_name": "graph profiler",
+  "agent_id": "codex:/root:graph_profiler:measure_r001_qualified",
+  "source_id": "r001-qualified-20261116T1618Z",
+  "observed_at_utc": "2026-11-16T16:37:49.397469+00:00",
+  "status": {
+    "build": "resource-qualified-review-pending",
+    "NUM": "passed",
+    "measurement": "measured-unreviewed",
+    "review": "pending",
+    "candidate_qualification_status": "resource-qualified-review-pending",
+    "milestone_achieved": false,
+    "milestone_status": "open",
+    "h001_5_percent_both": false,
+    "strict_llama_win_both": false,
+    "bandwidth_80_both": false,
+    "visible_context": [
+      "r001 resource admission + default NUM passed; review pending",
+      "Fresh three-way ordinary pairing: r001 vs fixed r000 vs llama.cpp; 2 processes x 3 rounds",
+      "Artifact cap96-104 155144Z / ae96264431d4; old r001 superseded"
+    ],
+    "candidate_artifact": {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/milestones/m000/revisions/r001/attempts/full64-h001-cap96-104-20261116T155144Z/artifact/artifact.json",
+      "nbytes": 26591847,
+      "sha256": "ae96264431d4f13e1918fbd9cbba180ec5c918c5070c82292f1da2726b77bd32"
+    },
+    "superseded_primary_rows": [
+      {
+        "value": 4.63541121047648,
+        "low": 4.634745235676705,
+        "high": 4.636077376693971,
+        "measurement_ids": [
+          "r001-h001-20261116T143230Z-synthetic32-candidate-p0",
+          "r001-h001-20261116T143230Z-synthetic32-candidate-p1"
+        ],
+        "status": "measured",
+        "label": "FlagMega / synthetic32",
+        "x": 2,
+        "point_id": "r001",
+        "main_improvement": "H001: warp-local registers/shuffle; R4, 4 warps, exact FP32 preserved"
+      }
+    ]
+  },
+  "input_pins": [
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/summary.json",
+      "sha256": "27208efa132a83b91a98e6a9d8b5c5c748c3804c48881154ba3495a116b3c807"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/protocol.json",
+      "sha256": "9f58febcea57c03b5ce0e36ce2fef0e1f3dfbc8fce64f2be7d269cc02b31fc14"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/raw-audit.json",
+      "sha256": "71fe2e197b3d233fc5a3dd384932c0445920e9b0b7e31da3c5e5d4dcd6b7e55d"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/renders/r001-profiler-final-20261116T1454/performance-vs-iteration.json",
+      "sha256": "30145a3e43d5a8f41270004aa635ef2f4d8b2a22b6dcd027fd573fbf9c869cc2"
+    },
+    {
+      "path": ".local/reports/r001-qualified-final-20261116T1635Z/response.md",
+      "sha256": "393704bc42d83397e2c2d72bba0200819fa998fffa320dfb76acd644c78cf634"
+    },
+    {
+      "path": ".local/task.yaml",
+      "sha256": "02e5e00b34175e92198e1d94e49b74629d7a15cecb87505610f23ce060ce42db"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/attempts/full64-h001-cap96-104-20261116T155144Z/sources.json",
+      "sha256": "5ef35489c84592e4ca904b388cc80b14020863961a48aa763dd80ebb1c0e9ea0"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r000/attempts/candidate-r4-fresh-20261116T1023/sources.json",
+      "sha256": "a87eb6ae1606cbaecf83c1839419ff78e7f066d629cd83367b9dd37a29b50b67"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/attempts/full64-h001-cap96-104-20261116T155144Z/artifact/artifact.json",
+      "sha256": "ae96264431d4f13e1918fbd9cbba180ec5c918c5070c82292f1da2726b77bd32"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r000/attempts/candidate-r4-fresh-20261116T1023/artifact/artifact.json",
+      "sha256": "1868b4438b7ca8048f63f2a8b7bec56c4409d6c4587c2f5a7d347ae72b963375"
+    },
+    {
+      "path": ".local/reports/r001-qualified-final-20261116T1635Z/default-encoder.py",
+      "sha256": "bf101b0e781a4d6a1e3e450f35597b984b9d55c8d4772564fe7795aac607788d"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r000/attempts/candidate-r4-fresh-20261116T1023/source/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/agent_optimizations/iq4_streaming/native.py",
+      "sha256": "0b8aa4e4218a0946a4a7fa929695c0f673b848785aa999a8994bae3216d721c5"
+    },
+    {
+      "path": ".local/reports/r001-qualified-final-20261116T1635Z/supersession.json",
+      "sha256": "7235d234d67d9cb3b6e3622069c3737702a958cb069943619d23aa08865367e6"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/runtime-source-pins/manifest.json",
+      "sha256": "49afb060228472a2eefb7b2804ff221b37a1e86f1064150c210bc10d4a6ded7c"
+    },
+    {
+      "path": ".local/reports/r001-qualified-final-20261116T1635Z/resource-owner-snapshot.json",
+      "sha256": "d655a039763b02f545fbfccb13822e90862e2911683641debb2ae0c400731a1a"
+    },
+    {
+      "path": ".local/agents/kernel_optimizer/apply_exact_prescription/attempt-20261116T155144Z/runtime-03/runtime-resources.json",
+      "sha256": "161f92ba6d181f28e0dca6ed814ef48bea33c534d9555553fcbb2ff955f4cc80"
+    },
+    {
+      "path": ".local/agents/kernel_optimizer/apply_exact_prescription/attempt-20261116T155144Z/pc-proof-runtime-02/pc-proof.json",
+      "sha256": "151dae6e40778d56f5bd0b4e86034b6adb99e76776d2f1c377f9a405c8f890f7"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-synthetic32-candidate-p0/result.json",
+      "sha256": "c1003ce7421615abcdc2400682e1c2b8450b0dd04ff025b1e40e2e708d755f3f"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-synthetic32-baseline-p0/result.json",
+      "sha256": "d924bcefb00d46f9c97031562a241ace13b0422832dbb9acf222c6f876a011d6"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-synthetic32-llama-p0/native/metadata.json",
+      "sha256": "3b899297de95beb2e34f399108a971af560c0371844688dc4302396dfdae4695"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-synthetic32-llama-p1/native/metadata.json",
+      "sha256": "2464d5b521a84ddd2171dce39f40e56062b5267784689702ae661b45cc66c5ee"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-synthetic32-baseline-p1/result.json",
+      "sha256": "d5f454da3ed9f5c640b4e16554b35356842cbe6f40fc042df12f7712c6a8351c"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-synthetic32-candidate-p1/result.json",
+      "sha256": "215734c4f8dca868405fefba7bdbb744faf8c7375e1917ce873c2df864dc58a5"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-chinese64-baseline-p0/result.json",
+      "sha256": "317a55f74ed6ea16b6fd244779b2233a9a0eef36fbc64cd16ed406599b073756"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-chinese64-llama-p0/native/metadata.json",
+      "sha256": "03fbd449f5683a921d50fcbf8a01ecd03e28732f9985d806b049b2fbce28f3c1"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-chinese64-candidate-p0/result.json",
+      "sha256": "996b33942ee2bf1f4090c4cc2067c0c9ad61032b18ad823b529d7ecef873a4e1"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-chinese64-candidate-p1/result.json",
+      "sha256": "90bcb85eef725606b45a59a21fb0057ac10ad050c49615742d5e572a01fd5b7c"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-chinese64-llama-p1/native/metadata.json",
+      "sha256": "3a517142725355e550fe457c5d09c564d03838a1fcb4ae43ad3593ca37757772"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-chinese64-baseline-p1/result.json",
+      "sha256": "0269400216c328a1ea2a7921c5a322dca379185cbcccc822f006ad63eb9bac53"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-synthetic32-candidate-p0/result.rounds.jsonl",
+      "sha256": "6d5c1974cc862e23cc921f505424d388d62cdf632b81149c5005cc1e9efe3a44"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-synthetic32-baseline-p0/result.rounds.jsonl",
+      "sha256": "c1ac73ccc7c8462203e44f628a6bd92188a71e32abc0083643e717e6cb02bcd0"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-synthetic32-baseline-p1/result.rounds.jsonl",
+      "sha256": "0a5916ed8ed30cae570d24935f2c874eb8c398bfdae689cf89f151401a8669b3"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-synthetic32-candidate-p1/result.rounds.jsonl",
+      "sha256": "71e34c7c9fb5ac8a74964e9d1e24ea753d9d6f28006a582531ce6b6188c872ad"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-chinese64-baseline-p0/result.rounds.jsonl",
+      "sha256": "dbcced4a0ac4d52272da1d152cb24297279363c8f745024124e73d8875cfd53b"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-chinese64-candidate-p0/result.rounds.jsonl",
+      "sha256": "82e24a48b9099ff0cd6f9775839ca842c6488db985f51362831bec8daf4913b0"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-chinese64-candidate-p1/result.rounds.jsonl",
+      "sha256": "22fbce55a3a579d28da8c05a66029894ca809bbf8027b6f1ded9749aefbe0868"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-qualified-20261116T1618Z/ordinary/r001-qualified-20261116T1618Z-chinese64-baseline-p1/result.rounds.jsonl",
+      "sha256": "75d1f5d8d8fe8d0bd58a8eebd23138e938421422dfbac75c3db9a2bd7c84deba"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/summary.json",
+      "sha256": "c021624a49db40ab8de698cf7b784fa11e2a947d53f485e074fb4e62577a5207"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/protocol.json",
+      "sha256": "1174561002774142aed9c50a144d55884c48de9bbbd5188e04ee42fefe2c3f9b"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/raw-audit.json",
+      "sha256": "b771c1465f9121c270c44029483c9a81617cb2394785400928cd17ad71adeb5f"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/performance-vs-iteration-synthetic32.json",
+      "sha256": "bed0d8e97e93fda70b91e28ff2f53926472d02e7c1e0021d7a8c6a46637fd273"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/report-final/response.md",
+      "sha256": "a826cf4803226675aa2a4465f527861593e9daf8d93b9ca06e76a1ed8e60103a"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/attempts/full64-h001-20261116T142200Z/sources.json",
+      "sha256": "012945cd8a471e8847693da8cda8d44de718028b77a3bb0d8316a8a253107ad4"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/attempts/full64-h001-20261116T142200Z/artifact/artifact.json",
+      "sha256": "03b555d2579d3fac95e16483bc1e9b70d9a5be7fb9c4bab3f30ed434c186eb67"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/attempts/full64-h001-20261116T142200Z/source/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/agent_optimizations/iq4_streaming/native.py",
+      "sha256": "e64c5b6fc10ef5c2f908bd5de847412ca81ed1645d563bead5bc3716faa870d7"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/attempts/full64-h001-20261116T142200Z/smoke/smoke.json",
+      "sha256": "77b57c84812c1b42deb897f55badd849164250a5eabf9bf045f826ed5454cd42"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/attempts/full64-h001-20261116T142200Z/smoke-02/native-manifest.json",
+      "sha256": "30f4c7cce3c246c2b31bf746d3af9128a105d45fd42793bdb4be386c588c7583"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-synthetic32-candidate-p0/result.json",
+      "sha256": "de51df1897b6b31a9d1e528a86b0fed30364395e90454c1b2493d2ac6e2fb1ca"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-synthetic32-baseline-p0/result.json",
+      "sha256": "7097186dbe479886126969977e4872d84a54fbf4b90450dc9ca827912f5a6ea1"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-synthetic32-llama-p0/native/metadata.json",
+      "sha256": "1d4e1eda05d4ef5aa2ab1fb7be20736aaa04b096c3846c8d76645b5c08f016c5"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-synthetic32-llama-p1/native/metadata.json",
+      "sha256": "b9317590b97085423102bd107c7bce65ca656016b95e7182fe208fa3881fdd4f"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-synthetic32-baseline-p1/result.json",
+      "sha256": "ec14fe88c3aa6c852b350f21d3e5b38e0c17db9eceec8dad420441787f63d622"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-synthetic32-candidate-p1/result.json",
+      "sha256": "210c06ea4f75ca2119c4d4d588adb10759c9c7cd11fe21151b2f9a3df7d942ea"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-chinese64-baseline-p0/result.json",
+      "sha256": "6b136aad16174daae7d7e3af5ded5d50a8aacdfe7113e0f34145c423a29792bd"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-chinese64-llama-p0/native/metadata.json",
+      "sha256": "4fef1f3e11dd8c8062047a8cb91aed2cccfbd7846e30b2f2514604e36fe363fe"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-chinese64-candidate-p0/result.json",
+      "sha256": "daf77efde4a939debf2bfdada6dfeb069a5efa478fea2ec18d3738f1dbc4c10a"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-chinese64-candidate-p1/result.json",
+      "sha256": "c1a2717b4ad2045b1405412f4b378e08f3890ee1a65b37d756209e1004243788"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-chinese64-llama-p1/native/metadata.json",
+      "sha256": "1ecd3e16c6070bc6387fe87b7eeb3db45af22fb421013d5b8c8ba10c52f681f0"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-chinese64-baseline-p1/result.json",
+      "sha256": "9e4c9fff09fd2fa55648160cb0ccd3dcd76d0bfca75c682b59614a2e91deca68"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-synthetic32-candidate-p0/result.rounds.jsonl",
+      "sha256": "023014a26486236bb33568ff2ae223c8b0daf995243501c94e9dd3984b7f5dbb"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-synthetic32-baseline-p0/result.rounds.jsonl",
+      "sha256": "d962025d2bb81d8ae3af2230a258983d1682711723530886bc18f5ec0277b2eb"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-synthetic32-baseline-p1/result.rounds.jsonl",
+      "sha256": "362823e98d7f375b6c0574a0423db259e43e9ccc531c33a45f695a618630bce8"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-synthetic32-candidate-p1/result.rounds.jsonl",
+      "sha256": "1bf5e45064a6e42dd77e36aad588bb727fe29a980bbd9c23425825431fa7e90a"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-chinese64-baseline-p0/result.rounds.jsonl",
+      "sha256": "9c8e5c4ecb12f9e4f757ab72d00002a41f4c02516c8e5f05e40e3dae5bf2eec9"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-chinese64-candidate-p0/result.rounds.jsonl",
+      "sha256": "b36fd5e405a74f638e400a66dd1b093a84f9c1204a85205cd57c1e18a58f3884"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-chinese64-candidate-p1/result.rounds.jsonl",
+      "sha256": "0fd5e86bb67923e14c43776c5c2b00e96d7973654d6439ea0b9907849b582c19"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/measurements/r001-h001-20261116T143230Z/ordinary/r001-h001-20261116T143230Z-chinese64-baseline-p1/result.rounds.jsonl",
+      "sha256": "e72e106457e90fd6b9120cc9be35c532d76e70b6dd3e06534066bf1a99c49965"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/87c2292e46802f9c25a397f10746b27ef29ed2e9a4d67a36e0623f1b8e505c0d-summary.json",
+      "sha256": "87c2292e46802f9c25a397f10746b27ef29ed2e9a4d67a36e0623f1b8e505c0d"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/a27700dceca4164cc52b74afac0e8c97fe61781174acf6a0dcb5fa045dcb9b2d-protocol.json",
+      "sha256": "a27700dceca4164cc52b74afac0e8c97fe61781174acf6a0dcb5fa045dcb9b2d"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/8234b5bfd6b8358a6dda6df9248af19b4f19b7e0ce9161defb686ebe98f9ceb2-raw-audit.json",
+      "sha256": "8234b5bfd6b8358a6dda6df9248af19b4f19b7e0ce9161defb686ebe98f9ceb2"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/4b7f3e02aa60c83d5804782af83e400c3c117cebf11c51ef4ba1de9c1656d105-review.json",
+      "sha256": "4b7f3e02aa60c83d5804782af83e400c3c117cebf11c51ef4ba1de9c1656d105"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/02e5e00b34175e92198e1d94e49b74629d7a15cecb87505610f23ce060ce42db-task.yaml",
+      "sha256": "02e5e00b34175e92198e1d94e49b74629d7a15cecb87505610f23ce060ce42db"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/a87eb6ae1606cbaecf83c1839419ff78e7f066d629cd83367b9dd37a29b50b67-sources.json",
+      "sha256": "a87eb6ae1606cbaecf83c1839419ff78e7f066d629cd83367b9dd37a29b50b67"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/3d8d1f1283a2dca2c900c94a835611082318e787519815f23edd7f5003fe43f3-readme.md",
+      "sha256": "3d8d1f1283a2dca2c900c94a835611082318e787519815f23edd7f5003fe43f3"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/ee72eed6f15882a50a97d3333865e992fa042332a0c104741d251da078068d11-result.rounds.jsonl",
+      "sha256": "ee72eed6f15882a50a97d3333865e992fa042332a0c104741d251da078068d11"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/112eada1cbf11775e3bbeff4ef03f1fd17760e6706bfdaa088b779751074b3f8-result.json",
+      "sha256": "112eada1cbf11775e3bbeff4ef03f1fd17760e6706bfdaa088b779751074b3f8"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/39c001f869840e224b066de765ae6d91c79f0d4f9a1d0a6430877e679f96a81e-result.rounds.jsonl",
+      "sha256": "39c001f869840e224b066de765ae6d91c79f0d4f9a1d0a6430877e679f96a81e"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/39440747b9c7ab3cbf3411c43f41b9ac8907ca1042052b9377897a449ab9ed84-result.json",
+      "sha256": "39440747b9c7ab3cbf3411c43f41b9ac8907ca1042052b9377897a449ab9ed84"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/fd2c9cce2534cea5e9d07845deb23f1195d876336f93ab1427709301ca62a8aa-result.rounds.jsonl",
+      "sha256": "fd2c9cce2534cea5e9d07845deb23f1195d876336f93ab1427709301ca62a8aa"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/9ef1b48993163969173a510fcb9af76096d183f996745891f0e7457e5fbaed7b-result.json",
+      "sha256": "9ef1b48993163969173a510fcb9af76096d183f996745891f0e7457e5fbaed7b"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/0605ea8e012c518b42909b7511896927440c7d733de94a01b4ef8521b85753b2-result.rounds.jsonl",
+      "sha256": "0605ea8e012c518b42909b7511896927440c7d733de94a01b4ef8521b85753b2"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/0738897e42f761115d3b99e9fbf2986033aa1401f603cbe1aea02b12b425968a-result.json",
+      "sha256": "0738897e42f761115d3b99e9fbf2986033aa1401f603cbe1aea02b12b425968a"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/3e38f6cec7a1a78d0dd8558dc3e31a14a39194b7989dea123c4041beebdbca81-metadata.json",
+      "sha256": "3e38f6cec7a1a78d0dd8558dc3e31a14a39194b7989dea123c4041beebdbca81"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/65395c90322b4af64a96a2af3c1c6239cde40bdeb3678e2c09f128fe2b669034-metadata.json",
+      "sha256": "65395c90322b4af64a96a2af3c1c6239cde40bdeb3678e2c09f128fe2b669034"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/0ae0a06534db04de8737d3e7eb6802f151a8d4e05b4b778d5f007aba0d7a22f9-result.rounds.jsonl",
+      "sha256": "0ae0a06534db04de8737d3e7eb6802f151a8d4e05b4b778d5f007aba0d7a22f9"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/39137463b3a9eeafb58204aaaad0e4b58608988488b506a7f7e14b93dedc55b7-result.json",
+      "sha256": "39137463b3a9eeafb58204aaaad0e4b58608988488b506a7f7e14b93dedc55b7"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/a0b0b01a8d8dcffb290c80202e0e61793419fc2f35e9c612bbd21c48a78a8309-result.rounds.jsonl",
+      "sha256": "a0b0b01a8d8dcffb290c80202e0e61793419fc2f35e9c612bbd21c48a78a8309"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/74cdf40671044b6d86dfc3db5e210872dbb9e262f78e072b6fb6555fdae91fe6-result.json",
+      "sha256": "74cdf40671044b6d86dfc3db5e210872dbb9e262f78e072b6fb6555fdae91fe6"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/6e5e545f4a016ce1740ee90cc7802302296d45b01ee0c632d0896c3d1024e5a9-result.rounds.jsonl",
+      "sha256": "6e5e545f4a016ce1740ee90cc7802302296d45b01ee0c632d0896c3d1024e5a9"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/d7251a92f67144d401b21b96a67e21ee6beb0bf7f1990a0029435252aafa8461-result.json",
+      "sha256": "d7251a92f67144d401b21b96a67e21ee6beb0bf7f1990a0029435252aafa8461"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/5fb5c9f42082b7d991b67bc2abe8b2cfee4a17ee7b3a5939c67c1666fea44817-result.rounds.jsonl",
+      "sha256": "5fb5c9f42082b7d991b67bc2abe8b2cfee4a17ee7b3a5939c67c1666fea44817"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/82f8822e49a7c2d9981d92e27e1146829577bac6c689465bff47e56a161fff69-result.json",
+      "sha256": "82f8822e49a7c2d9981d92e27e1146829577bac6c689465bff47e56a161fff69"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/2396d320556a215cd5190e21181dfc1fb8234eec7eaebe9c7f240ca1fc9e64d6-metadata.json",
+      "sha256": "2396d320556a215cd5190e21181dfc1fb8234eec7eaebe9c7f240ca1fc9e64d6"
+    },
+    {
+      "path": ".local/reports/tps-figures-20261116/input-snapshots/aafe3fd14b115678dd498fa7df8d2168e6cf492d1c8e7071abaf7b8a9ca91db8-metadata.json",
+      "sha256": "aafe3fd14b115678dd498fa7df8d2168e6cf492d1c8e7071abaf7b8a9ca91db8"
+    },
+    {
+      "path": ".local/milestones/m000/revisions/r001/attempts/full64-h001-cap96-104-20261116T155144Z/sources.json",
+      "sha256": "5ef35489c84592e4ca904b388cc80b14020863961a48aa763dd80ebb1c0e9ea0"
+    }
+  ],
+  "request_sha256": "0bac2969117627caea7d9a9cf5d1acd93296c4b0ff2592b2132c5544d44e524d",
+  "source_manifest": {
+    "path": ".local/milestones/m000/revisions/r001/attempts/full64-h001-cap96-104-20261116T155144Z/sources.json",
+    "sha256": "5ef35489c84592e4ca904b388cc80b14020863961a48aa763dd80ebb1c0e9ea0"
+  },
+  "files": [
+    {
+      "source": ".local/reports/r001-qualified-final-20261116T1635Z/canonical/readme.md",
+      "path": "readme.md",
+      "sha256": "b31a544671482409c0fbd17f97d5f45b5638fd67bbe931f969508f5271bfe3ef",
+      "source_id": "r001-qualified-20261116T1618Z",
+      "size_bytes": 7910
+    }
+  ],
+  "archive": ".local/working/readme/r001-qualified-20261116T1618Z-canonical-readme",
+  "acceptance_note": "Latest actual working state; acceptance and achieved history require separate review."
+}

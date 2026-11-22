@@ -1,0 +1,295 @@
+{
+  "schema": "flagmega.working-figures/v1",
+  "generated_utc": "2026-11-22T04:46:52Z",
+  "source_id": "030-r031-figures-ladder-20261122T044652Z",
+  "synthetic": false,
+  "new_measurement": false,
+  "numerical_series_changed": false,
+  "numerical_series_reason": "graph/operator 面板改用 r003 捕获的真实数据（1,014 条 kernel 活动 + 9 个角色），backends 的空行写明从未在本工作区跑过；无新增计时",
+  "working_status": {
+    "build": "r031 BUILT: R27 GLU megakernel + R17 GDN PREP integrated; r004_column_v6 冻结回退保留",
+    "NUM": "MODEL_TOKEN10 PASS 两场景（synthetic32 + chinese64 第 7 个 token = 4960）; 三 seed 全行逐位 PASS",
+    "measurement": "整模 ordinary A/B: 35.315518 / 35.344314 ms/token; 3 独立进程配对; 全程无 ncu",
+    "review": "历史 r003/r004 审查保留; 当前 working-figure independent raw-to-chart review PENDING",
+    "revision_id": "r031",
+    "record_status": "achieved",
+    "milestone_status": "achieved",
+    "milestone_achieved": true,
+    "strict_llama_win_both": true,
+    "bandwidth_80_both": true,
+    "standing_strict_both": true,
+    "G012": "ACHIEVED / both scenarios measured strictly faster than llama.cpp with >=80% spec bandwidth",
+    "r031_status": "整模 A/B PASS 两场景; 严格快于 llama.cpp; 带宽 86.100405% / 86.030256% of 448 spec",
+    "bandwidth_percent_of_448": {
+      "synthetic32": 86.10040519196922,
+      "chinese64": 86.03025595335227
+    },
+    "bandwidth_percent_of_428_165": {
+      "synthetic32": 90.08905801735827,
+      "chinese64": 90.0156590732587
+    },
+    "achieved_weight_GB_s": {
+      "synthetic32": 385.72981526002206,
+      "chinese64": 385.41554667101815
+    },
+    "paired_llama_delta_ms": {
+      "synthetic32": {
+        "values": [
+          -0.6520671458333283,
+          -0.7019496354166677,
+          -0.7017857083333325
+        ],
+        "n": 3,
+        "df": 2,
+        "mean": -0.6852674965277762,
+        "sd": 0.028752463941337406,
+        "low95": -0.7566925765093089,
+        "high95": -0.6138424165462435,
+        "t975": 4.302652729696142,
+        "unit": "independent process mean"
+      },
+      "chinese64": {
+        "values": [
+          -0.5986868854166687,
+          -0.6038783281249991,
+          -0.579976369791666
+        ],
+        "n": 3,
+        "df": 2,
+        "mean": -0.594180527777778,
+        "sd": 0.01257204627016977,
+        "low95": -0.6254112220309898,
+        "high95": -0.5629498335245662,
+        "t975": 4.302652729696142,
+        "unit": "independent process mean"
+      }
+    },
+    "paired_r004_delta_ms": {
+      "synthetic32": {
+        "values": [
+          -1.6190097604166667,
+          -1.6431014687500038,
+          -1.6577022499999998
+        ],
+        "n": 3,
+        "df": 2,
+        "mean": -1.6399378263888902,
+        "sd": 0.019539285101580896,
+        "low95": -1.6884761013697671,
+        "high95": -1.5913995514080133,
+        "t975": 4.302652729696142,
+        "unit": "independent process mean"
+      },
+      "chinese64": {
+        "values": [
+          -1.6221490625000001,
+          -1.599451817708335,
+          -1.6240658177083347
+        ],
+        "n": 3,
+        "df": 2,
+        "mean": -1.6152222326388899,
+        "sd": 0.013691164228931447,
+        "low95": -1.649232970017324,
+        "high95": -1.5812114952604557,
+        "t975": 4.302652729696142,
+        "unit": "independent process mean"
+      }
+    },
+    "measured_minus_conditional_prediction_ms": {
+      "synthetic32": 0.5861326423611075,
+      "chinese64": 0.539605984375001
+    },
+    "weight_bytes": 13622248096,
+    "model_token10": "synthetic32 PASS; chinese64 PASS (generated token 7 = 4960); three seeds row-identical",
+    "branch": "r031/r27-r17-model-ab",
+    "commit": "293d5c9c3",
+    "visible_context": [
+      "r031 整模 A/B: synthetic32 35.315518 / chinese64 35.344314 ms/token, 3 独立进程配对, t95(df=2)",
+      "严格快于同 PID llama.cpp: -0.685267 [-0.756693, -0.613842] / -0.594181 [-0.625411, -0.562950] ms",
+      "严格快于冻结历史 llama: -0.612630 [-0.651030, -0.574231] / -0.510477 [-0.554090, -0.466865] ms",
+      "同 PID r004 配对差: -1.639938 [-1.688476, -1.591400] / -1.615222 [-1.649233, -1.581211] ms",
+      "decode 带宽: 385.729815 / 385.415547 GB/s = 448 spec 86.100405% / 86.030256%; 428.165 可达 90.089058% / 90.015659%",
+      "带宽分子 13,622,248,096 B/token 沿用 r004; 不使用 profiler DRAM counter 或 kernel 求和冒充整模",
+      "MODEL_TOKEN10: synthetic32 PASS; chinese64 PASS 于第 7 个 token = 4960; eager/graph 与完整 endpoint SHA256/finite/guards 一致",
+      "三 seed 从 reset 状态逐调用核对全部行: 64×17408 GLU BF16 行, 48 组 qn/kn, beta/decay_log, core/y, state 6144 行",
+      "R27: grid 17408, 160 threads (4 consumer + 1 producer), 897 B static shared, 40 regs, 9 CTA/SM, ptxas 0/0, --minnctapersm=9 --opt-level=2",
+      "R17: GDN PREP grid 48->960 CTAs, 45.008000 -> 12.291467 us, 48 层 1.496218 ms; 四阶段 ptxas 0/0",
+      "R27 独立 K9 QUALIFIED U95 -9.618899 / -12.783380; R17 8/8 units, max U95 -27.029893",
+      "R27 与 R16 替换同一 GLU, R16 未被选择; R16 的 -5.369834 us 不计作节省, 两轮收益不可相加",
+      "实测 +0.586133 / +0.539606 ms 慢于条件外推 34.729385 / 34.804708; 未强行归因到任何未测算子",
+      "r004_column_v6 冻结回退保留: 34 个完整 cubin 仅 overlay 调试源路径节不同, 可显式回退",
+      "branch r031/r27-r17-model-ab, commit 293d5c9c3; r004 证据逐字节未变",
+      "可见上下文按 r031 收据记录; 当前 working figures 的 independent raw-to-chart review PENDING",
+      "m000 = 两场景严格快于 llama.cpp 且 decode 带宽 >=80% spec; 本轮两项同时实测达成",
+      "Source 030-r031-figures-model-ab-20261122T025237Z; UTC 2026-11-22T02:52:37Z"
+    ],
+    "numerical_contract": "TOKEN10-LLAMA-PINNED/v1",
+    "stack_policy": "RECORDED_ONLY; measured performance decides; zero stack is not a gate"
+  },
+  "files": [
+    {
+      "path": "figures/performance-vs-iteration.svg",
+      "source": ".local/agents/graph_profiler/030-r031_figures_model_ab/rendered5/performance-vs-iteration.svg",
+      "sha256": "52cf363a52a3d297b4451bf261e6b4c18c5e209e153c73a2c4e9d8aa648d090e",
+      "size_bytes": 130405,
+      "input": {
+        "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/graph_profiler/030-r031_figures_model_ab/history.json",
+        "bytes": 116569,
+        "sha256": "6664a871eaa443d2a60e528ea8e361840783f62feb7609e49de31c3cd5a58af7"
+      },
+      "template_binding": {
+        "path": "/mnt/home-nas/work/repo/flagtree/skills/flagmega-developer/assets/workspace-figures/history.json",
+        "template_id": "history",
+        "sha256": "0e1bc1bcfddf323df250ee59608ecffe02b233f10ab14a25da01f8119e8a5784",
+        "renderer_sha256": "a3182f61292f5a70f8ea825feef9fb813368516ab33b571401b42fcd90520c32",
+        "maintained_path": "/mnt/home-nas/work/repo/flagtree/skills/flagmega-developer/assets/workspace-figures/history.json"
+      },
+      "layout": "normal",
+      "source_id": "030-r031-figures-ladder-20261122T044652Z"
+    },
+    {
+      "path": "figures/performance-vs-milestone.svg",
+      "source": ".local/agents/graph_profiler/030-r031_figures_model_ab/rendered5/performance-vs-milestone.svg",
+      "sha256": "94975a243843eb1b14ba699d59defd8222d224117f6075821a6738dff1bc9ce2",
+      "size_bytes": 97574,
+      "input": {
+        "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/graph_profiler/030-r031_figures_model_ab/milestones.json",
+        "bytes": 93342,
+        "sha256": "cc4a8ac85885cd888fff393a8e94a1a91ec5b7c448b6bff7f3a693294d0b05d5"
+      },
+      "template_binding": {
+        "path": "/mnt/home-nas/work/repo/flagtree/skills/flagmega-developer/assets/workspace-figures/milestones.json",
+        "template_id": "milestones",
+        "sha256": "db12cac702ba24c9c5afa20e314427c3a4c9d7085df556bf812e40fe788ec81c",
+        "renderer_sha256": "a3182f61292f5a70f8ea825feef9fb813368516ab33b571401b42fcd90520c32",
+        "maintained_path": "/mnt/home-nas/work/repo/flagtree/skills/flagmega-developer/assets/workspace-figures/milestones.json"
+      },
+      "layout": "normal",
+      "source_id": "030-r031-figures-ladder-20261122T044652Z"
+    },
+    {
+      "path": "figures/graph-trace.svg",
+      "source": ".local/agents/graph_profiler/030-r031_figures_model_ab/rendered5/graph-trace.svg",
+      "sha256": "26c697f9a896315e761c4a96374f471d995dbc8e5a245ddf453567da55498807",
+      "size_bytes": 259079,
+      "input": {
+        "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/graph_profiler/030-r031_figures_model_ab/graph.json",
+        "bytes": 287506,
+        "sha256": "4d15f37386feccbd60f15dda74d1b0dd88eb63c4698e34a9160239b008099458"
+      },
+      "template_binding": {
+        "path": "/mnt/home-nas/work/repo/flagtree/skills/flagmega-developer/assets/workspace-figures/graph.json",
+        "template_id": "graph",
+        "sha256": "10a65261c5b54070105437ed9f6adf0c3f9ea98de35caffbdf862bea1b0c6ee8",
+        "renderer_sha256": "a3182f61292f5a70f8ea825feef9fb813368516ab33b571401b42fcd90520c32",
+        "maintained_path": "/mnt/home-nas/work/repo/flagtree/skills/flagmega-developer/assets/workspace-figures/graph.json"
+      },
+      "layout": "normal",
+      "source_id": "030-r031-figures-ladder-20261122T044652Z"
+    },
+    {
+      "path": "figures/operator-latency.svg",
+      "source": ".local/agents/graph_profiler/030-r031_figures_model_ab/rendered5/operator-latency.svg",
+      "sha256": "c9fce8dd843258b7f572645aa3c367e837892ef99e40a73daf5fd5cd7cd23763",
+      "size_bytes": 88962,
+      "input": {
+        "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/graph_profiler/030-r031_figures_model_ab/operators.json",
+        "bytes": 81206,
+        "sha256": "9d6ec7e914cc40fa8592068a6f1f8ccc640fd605d0553c72fde9778fa7c2c024"
+      },
+      "template_binding": {
+        "path": "/mnt/home-nas/work/repo/flagtree/skills/flagmega-developer/assets/workspace-figures/operators.json",
+        "template_id": "operators",
+        "sha256": "8be233df2fc0ef5fb7a805fbdbc2a340d36a3496fbe1f6ee06357f66a3b6bf4f",
+        "renderer_sha256": "a3182f61292f5a70f8ea825feef9fb813368516ab33b571401b42fcd90520c32",
+        "maintained_path": "/mnt/home-nas/work/repo/flagtree/skills/flagmega-developer/assets/workspace-figures/operators.json"
+      },
+      "layout": "normal",
+      "source_id": "030-r031-figures-ladder-20261122T044652Z"
+    },
+    {
+      "path": "figures/backend-comparison.svg",
+      "source": ".local/agents/graph_profiler/030-r031_figures_model_ab/rendered5/backend-comparison.svg",
+      "sha256": "1962ae3e812a2c80ce96274228eaceabc439cb1e74f81ed7452a948092826c66",
+      "size_bytes": 93777,
+      "input": {
+        "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/graph_profiler/030-r031_figures_model_ab/backends.json",
+        "bytes": 85642,
+        "sha256": "1bd29b9248256b9cfc1c4c3313d50388b5b14af2f8515053d07cedb81a42208c"
+      },
+      "template_binding": {
+        "path": "/mnt/home-nas/work/repo/flagtree/skills/flagmega-developer/assets/workspace-figures/backends.json",
+        "template_id": "backends",
+        "sha256": "afba5069240910fc2e8862670f4dfca9fee019bc683c4898b8e6668778ae5216",
+        "renderer_sha256": "a3182f61292f5a70f8ea825feef9fb813368516ab33b571401b42fcd90520c32",
+        "maintained_path": "/mnt/home-nas/work/repo/flagtree/skills/flagmega-developer/assets/workspace-figures/backends.json"
+      },
+      "layout": "normal",
+      "source_id": "030-r031-figures-ladder-20261122T044652Z"
+    }
+  ],
+  "input_pins": [
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/ab-statistics.json",
+      "bytes": 65858,
+      "sha256": "67b5a85ff557bc27105ee46520993ca2db9016c9400c2d3716f3d6c7643bec34"
+    },
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/integration-ab-receipt.json",
+      "bytes": 262714,
+      "sha256": "a5ef3519af15f44d27e3de048ecb9e75ce3aef96658d957b05f91b3143caa1cc"
+    },
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/REPORT.md",
+      "bytes": 6719,
+      "sha256": "b6a28c94e8da35e6cbc4a4378ff39be06dd98ccf8222e2c6ce1ac0324189a9f7"
+    },
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/delivery-verification.json",
+      "bytes": 843,
+      "sha256": "1f704add5aa060f460db81712f7bef969038152ae71a3338ed3d3c89fa743911"
+    },
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/protected-verification.json",
+      "bytes": 198,
+      "sha256": "35ecb0f60039d104b786acb82c46cce319f83bbb21e4d9e2e26a7f298731e54e"
+    },
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/r031-r27-subject-receipt.json",
+      "bytes": 2653,
+      "sha256": "d3a92f95f6e7f56817a2077dcdb87049351c8250f53083dd319ea773f873adae"
+    },
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_optimizer/088-r031_integrate_model_ab/r031-r17-subject-receipt.json",
+      "bytes": 2185,
+      "sha256": "e8dbc01b83b678d23ac703de77dd8a4530e8fca52e21b5bc1eae779bb6a972c2"
+    },
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_profiler/013-r030_r27_k9_qualify/r27-k9-receipt.json",
+      "bytes": 41451300,
+      "sha256": "62fa80e3c7494232a5ac89fe582ef05c0f6a6c89cb847ef0dfa9c1a3534cc257"
+    },
+    {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/.local/agents/kernel_profiler/011-r017_r016_k9_qualify/k9-qualification-receipt.json",
+      "bytes": 55305113,
+      "sha256": "68d1ee51a7aa6d16b5b4e87d88bf4ad2f4cee9bd0d5975c9cc27c9f2a88f17eb"
+    }
+  ],
+  "renderer": {
+    "path": "/mnt/home-nas/work/repo/flagtree/skills/flagmega-developer/scripts/render_workspace_figures.py",
+    "bytes": 36449,
+    "sha256": "a3182f61292f5a70f8ea825feef9fb813368516ab33b571401b42fcd90520c32"
+  },
+  "previous_manifest": {
+    "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/figures/manifest.json",
+    "bytes": 15605,
+    "sha256": "130f90a2cd2a5945143c70df98449f43a26373b11c398aec3f60efb734a5a08d",
+    "original": {
+      "path": "/mnt/home-nas/work/repo/flagtree/python/tutorials/flagmega/03-qwen3.8-27b-iq4/nvidia-rtx5060ti/figures/manifest.json",
+      "bytes": 15605,
+      "sha256": "130f90a2cd2a5945143c70df98449f43a26373b11c398aec3f60efb734a5a08d"
+    }
+  },
+  "review_status": "PENDING independent raw-to-chart review"
+}

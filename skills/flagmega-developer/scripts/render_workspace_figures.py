@@ -209,7 +209,11 @@ def validate(data, input_path):
             require(nonempty(clock.get('source')) and clock.get('nominal_ns_verified') is True and
                     (clock.get('resolution_ns') is None or type(clock.get('resolution_ns')) is int and clock['resolution_ns'] > 0),
                     'recorded leaders need documented nominal ns; unknown resolution stays null')
-            require(clock.get('alignment') == 'pending', 'recorded leader mode does not establish calibrated clock alignment')
+            require(clock.get('alignment') in {'pending', 'validated_common'}, 'invalid leader clock alignment')
+            if clock.get('alignment') == 'validated_common':
+                require(type(clock.get('resolution_ns')) is int and clock['resolution_ns'] > 0 and
+                        capture.get('calibration_from_full_capture') is True,
+                        'calibrated leader detail needs measured resolution and full-capture calibration evidence')
             window = data.get('observed_window_ns')
             require(isinstance(window, list) and len(window) == 2 and all(type(t) is int for t in window) and 0 <= window[0] < window[1],
                     'recorded leaders need their emitted observed window')
@@ -306,7 +310,7 @@ def render(data):
         height, bottom, top = 490, 380, 110
         valid = [row for row in rows if row.get('value') is not None]
         require(valid, 'series needs at least one measured point')
-        xs = [row['x'] for row in rows]
+        xs = [row['x'] for row in (data['rows'] if compact else rows)]
         xmax = max(1, max(xs))
         ymin = min(row.get('low', row['value']) for row in valid)
         ymax = max(row.get('high', row['value']) for row in valid)
@@ -319,24 +323,33 @@ def render(data):
             line(LEFT, y(value), WIDTH - RIGHT, y(value))
             text(LEFT - 12, y(value) + 4, f'{value:.4g}', anchor='end')
         text(LEFT, 96, f"{data['metric']} ({data['unit']})")
+        measured_x = {row['x'] for row in rows if row.get('value') is not None}
         for index in sorted(set(xs)):
             labels = data.get('x_labels', {})
-            text(x(index), bottom + 24, labels.get(str(index), index), anchor='middle')
+            text(x(index), bottom + 24, labels.get(str(index), index), 13,
+                 COLORS['unknown'] if index not in measured_x else '#334155', anchor='middle')
         text((LEFT + WIDTH - RIGHT) / 2, bottom + 46, data['x_axis'], anchor='middle')
         groups = defaultdict(list)
-        for row in rows:
+        for row in (data['rows'] if compact else rows):
             groups[row['label']].append(row)
         for label, group in groups.items():
-            previous = None
+            previous, gap = None, False
             for row in sorted(group, key=lambda item: item['x']):
                 if row.get('value') is None:
-                    text(x(row['x']), bottom - 8, '?', fill=COLORS['unknown'], anchor='middle')
-                    previous = None
+                    gap = True
+                    marker_x = x(row['x']) - 3
+                    why = row.get('reason') or 'no measurement for this revision'
+                    parts.append(f'<rect class="no-measurement-marker" x="{marker_x:.2f}" y="{bottom + 8:.2f}" '
+                                 f'width="6" height="6" fill="none" stroke="{COLORS["unknown"]}">'
+                                 f'<title>{escape(label)} / {escape(row.get("point_id") or row["x"])}: '
+                                 f'{escape(why)}</title></rect>')
                     continue
                 px, py = x(row['x']), y(row['value'])
                 color = STATUS_COLORS[row['status']]
-                if previous and ((compact and not row.get('_gap_before')) or row['x'] == previous['x'] + 1):
-                    line(x(previous['x']), y(previous['value']), px, py, COLORS['tensor'], 1.5)
+                if previous:
+                    line(x(previous['x']), y(previous['value']), px, py, COLORS['tensor'], 1.5,
+                         'stroke-dasharray="6 4"' if gap else '')
+                gap = False
                 if 'low' in row:
                     line(px, y(row['low']), px, y(row['high']), color, 1.5)
                     for bound in ('low', 'high'):
@@ -344,9 +357,16 @@ def render(data):
                 parts.append(f'<circle class="performance-point-marker" cx="{px:.2f}" cy="{py:.2f}" r="5" fill="{color}"><title>{escape(label)}: {row["value"]} {escape(data["unit"])}; {escape(row["status"])}</title></circle>')
                 if row['status'] == 'achieved':
                     parts.append(f'<circle cx="{px:.2f}" cy="{py:.2f}" r="9" fill="none" stroke="{color}"/>')
-                text(px + 8, py - 9, label, 11)
+                # Keep the final series label inside the SVG view box.
+                label_at_right = px > WIDTH - RIGHT - 180
+                if len(groups) > 1:
+                    text(px - 8 if label_at_right else px + 8,
+                         py + 18 if label_at_right else py - 9, label, 11,
+                         anchor='end' if label_at_right else 'start')
                 previous = row
-        text(24, 456, 'Point status: blue measured/qualified; green ring achieved; gray no gain; orange rejected; purple pending. Missing values remain gaps.', 12)
+        caption = (data.get('caption') if nonempty(data.get('caption')) else None) or \
+            'Points: measured revisions; bars: 95% CI. Open squares: no measurement; dashed segments bridge them.'
+        text(24, 456, caption, 12)
     elif data['kind'] == 'bar':
         sort = data.get('sort_by', 'input')
         if sort != 'input':
@@ -378,8 +398,13 @@ def render(data):
         clock_unit = 'raw globaltimer units' if recorded_callers else 'ns'
         span = max(1, end - origin)
         x = lambda value: LEFT + (value - origin) / span * plot_width
-        text(LEFT, 96, (f"{data['invocation']}; CTA{data['caller_capture']['cta']}/SM{data['caller_capture']['SM']}; raw clock, resolution/calibration pending" if recorded_callers else f"{data['invocation']}; CTA{data['leader_capture']['cta']} nominal globaltimer ns; resolution/calibration pending" if recorded_leaders
-                       else f"{data['invocation']}; common clock; relative ns from {origin}"))
+        if recorded_leaders and data['timebase'].get('alignment') == 'validated_common':
+            clock_label = (f"{data['invocation']}; CTA{data['leader_capture']['cta']}; common PTX globaltimer; "
+                           f"{data['timebase']['resolution_ns']} ns observed granularity; host bounds in clock receipt")
+        else:
+            clock_label = (f"{data['invocation']}; CTA{data['caller_capture']['cta']}/SM{data['caller_capture']['SM']}; raw clock, resolution/calibration pending" if recorded_callers else f"{data['invocation']}; CTA{data['leader_capture']['cta']} nominal globaltimer ns; resolution/calibration pending" if recorded_leaders
+                           else f"{data['invocation']}; common clock; relative ns from {origin}")
+        text(LEFT, 96, clock_label)
         py = 110
         for row in rows:
             tracks = []
@@ -432,14 +457,14 @@ def render(data):
         summary_x = 650 if revision_coverage else 420
         py = height + 5
         rect(24, py, WIDTH - 48, 31, '#e2e8f0')
-        text(34, py + 21, 'Revision' if revision_coverage else '性能点', 13, '#0f172a')
-        text(value_x, py + 21, '整模 Decode TPS / 状态' if revision_coverage else
+        text(34, py + 21, 'Revision' if revision_coverage else 'Performance point', 13, '#0f172a')
+        text(value_x, py + 21, 'Decode TPS / status' if revision_coverage else
              'Decode TPS' if data['unit'] == 'tokens/s' else f"{data['metric']} ({data['unit']})", 13, '#0f172a')
         if optimization_column:
-            text(summary_x, py + 21, '主要优化点', 13, '#0f172a')
+            text(summary_x, py + 21, 'Main optimization', 13, '#0f172a')
         py += 31
         for point in table_rows:
-            summary = point.get('main_improvement', '主要优化点待补充')
+            summary = point.get('main_improvement', 'optimization not recorded')
             summaries = textwrap.wrap(summary, width=64) if revision_coverage else [summary]
             row_height = max(32, 16 + 16*len(summaries))
             parts.append(f'<g class="performance-point-table-row" data-point-id="{escape(str(point["point_id"]), quote=True)}" data-model-measured="{str(point.get("value") is not None).lower()}">')
