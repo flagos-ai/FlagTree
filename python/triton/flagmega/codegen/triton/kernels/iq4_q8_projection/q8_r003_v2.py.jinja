@@ -1,0 +1,10 @@
+{# Copyright 2026 FlagOS Contributors; SPDX-License-Identifier: MIT #}
+{# Accepted arithmetic stays in the repository JIT module. #}
+from triton.flagmega.codegen.triton.iq4_q8_kernels import dp4a_m1 as _r003_iq4_q8_projection
+{% for call in render_calls %}
+{% if call.family == "iq4_q8_projection" %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+    _r003_iq4_q8_projection({{ call.pointers | join(', ') }}{% for name, value in call.constexprs.items() %}, {{ name }}={{ value }}{% endfor %})
+{% endif %}
+{% endfor %}

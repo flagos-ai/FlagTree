@@ -356,6 +356,26 @@ struct ElementwiseInlineAsmOpConversion
   LogicalResult
   matchAndRewrite(ElementwiseInlineAsmOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+#ifdef __TLE__
+    if (op->hasAttr("tle.indexed32")) {
+      auto expected = BlockedEncodingAttr::get(
+          op.getContext(), {1, 1}, {1, 32}, {4, 1}, {1, 0},
+          CTAEncodingAttr::fromSplitParams(op.getContext(), {1, 1}, {1, 1}, {1, 0}));
+      for (Type type : llvm::concat<Type>(op.getOperandTypes(), op.getResultTypes())) {
+        auto tensor = dyn_cast<RankedTensorType>(type);
+        if (!tensor || tensor.getShape() != ArrayRef<int64_t>({4, 32}) ||
+            tensor.getEncoding() != expected ||
+            getNumElementsPerThreads(type, getTypeConverter()) != 1)
+          return op.emitOpError("indexed32 lost the E32 one-register-per-lane mapping");
+      }
+      for (Operation *parent = op->getParentOp(); parent;
+           parent = parent->getParentOp()) {
+        if (parent->getName().getStringRef() == "scf.if" ||
+            parent->getName().getStringRef() == "scf.while")
+          return op.emitOpError("indexed32 cannot be lowered under conditional participation");
+      }
+    }
+#endif
     Location loc = op->getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
 

@@ -33,6 +33,8 @@ _TRANSPARENT_ADAPTERS = frozenset({
 
 
 def _is_rms_consumer(node: Node, input_id: str) -> bool:
+    if node.attrs.get("compute_profile", "default") != "default":
+        return False
     return (
         node.op == "nn.rms_norm"
         and node.inputs

@@ -34,6 +34,8 @@ def fuse_gather_reduce_add_norm_apply_rule() -> RewriteRule:
 
 def _rewrite(result, module: IRModule):
     norm = result["norm"]
+    if norm.attrs.get("compute_profile", "default") != "default":
+        return norm
     node_map = module.node_map
     users = _users(module)
     positions = {node.id: index for index, node in enumerate(module.nodes)}

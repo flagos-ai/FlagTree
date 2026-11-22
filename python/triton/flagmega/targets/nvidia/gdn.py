@@ -6,6 +6,59 @@ from triton.flagmega.codegen.triton.implementation import TritonImplementation
 from triton.flagmega.ir import T, tensor_type
 
 
+R004_REFERENCE_ID = "tir.gdn_recurrent.r004_reference_v4"
+
+
+def r004_reference_implementations():
+    """Frozen C comparator; applicability requires the versioned standalone plan."""
+    yield TritonImplementation(
+        R004_REFERENCE_ID, "gdn_recurrent", "r004_reference_v4",
+        {"tile_state": (128, 16), "projection_tile": 128,
+         "phase_schema": "r004.gdn.column-register/v4"},
+        {"standalone_module": "r004_C_full_p5_v4",
+         "standalone_schema": "r004.gdn.standalone/v4"},
+        facts={"internal_grid_barriers": 0},
+    )
+
+    yield TritonImplementation(
+        "tir.gdn_recurrent.r004_column_v4", "gdn_recurrent", "r004_column_v4",
+        {"tile_state": (128, 16), "projection_tile": 128, "phase_schema": "r004.gdn.column-register/v4"},
+        {"standalone_module": "r004_T_full_p5_v4", "standalone_schema": "r004.gdn.standalone/v4"},
+        facts={"internal_grid_barriers": 0},
+    )
+
+    yield TritonImplementation(
+        "tir.gdn_recurrent.r004_column_v6", "gdn_recurrent", "r004_column_v6",
+        {"tile_state": (128, 16), "projection_tile": 128, "phase_schema": "r004.gdn.column-register/v6"},
+        {"standalone_module": "r004_T_full_p5_v6", "standalone_schema": "r004.gdn.standalone/v4"},
+        facts={"internal_grid_barriers": 0},
+    )
+
+
+def r004_reference_applicable(node, context, implementation):
+    """Fail closed: no default model, unvalidated plan, or other implementation."""
+    from collections.abc import Mapping
+    from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import (
+        standalone_request, validate_phase_plan,
+    )
+
+    request = standalone_request(context.module)
+    plan = node.attrs.get("phase_plan")
+    if not (
+        implementation.id == R004_REFERENCE_ID
+        and node.op == "nn.gdn_recurrent_core"
+        and isinstance(request, Mapping)
+        and request.get("schema") == "r004.gdn.standalone/v4"
+        and request.get("module") == "r004_C_full_p5_v4"
+        and type(request.get("readonly_layer")) is int
+        and 0 <= request["readonly_layer"] < 48
+        and isinstance(plan, Mapping)
+    ):
+        return False
+    validate_phase_plan(plan)
+    return True
+
+
 def gdn_state_pipeline_implementations():
     for columns in (32, 64, 128, 256, 512):
         for rows in (4, 16, 32):
@@ -50,4 +103,5 @@ def gdn_scalar_head_gate_implementations():
 
 
 __all__ = ["gdn_state_pipeline_implementations", "gdn_large_key_implementations",
-           "gdn_scalar_head_gate_implementations"]
+           "gdn_scalar_head_gate_implementations", "r004_reference_implementations",
+           "r004_reference_applicable", "R004_REFERENCE_ID"]

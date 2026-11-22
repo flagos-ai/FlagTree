@@ -69,42 +69,20 @@ static Value stripConvertLayouts(Value value) {
   return current;
 }
 
-static Value stripIndexValueWrappers(Value value) {
-  Value current = value;
-  while (true) {
-    if (auto cvt = current.getDefiningOp<ttg::ConvertLayoutOp>()) {
-      current = cvt.getSrc();
-      continue;
-    }
-    if (auto ext = current.getDefiningOp<arith::ExtSIOp>()) {
-      current = ext.getIn();
-      continue;
-    }
-    if (auto ext = current.getDefiningOp<arith::ExtUIOp>()) {
-      current = ext.getIn();
-      continue;
-    }
-    if (auto trunc = current.getDefiningOp<arith::TruncIOp>()) {
-      current = trunc.getIn();
-      continue;
-    }
-    if (auto cast = current.getDefiningOp<arith::IndexCastOp>()) {
-      current = cast.getIn();
-      continue;
-    }
-    break;
-  }
-  return current;
-}
-
 static std::optional<int64_t> getConstantIntLike(Value value) {
-  value = stripIndexValueWrappers(value);
+  // Layout conversion preserves index values. Integer conversions do not:
+  // truncation wraps, and zero extension changes negative signed values.
+  // Leave all integer conversions opaque unless their result is constant.
+  value = stripConvertLayouts(value);
   if (auto splat = value.getDefiningOp<tt::SplatOp>())
     return getConstantIntLike(splat.getSrc());
   if (auto cst = value.getDefiningOp<arith::ConstantOp>()) {
     if (auto dense = dyn_cast<DenseIntElementsAttr>(cst.getValue())) {
-      if (dense.isSplat())
-        return dense.getSplatValue<APInt>().getSExtValue();
+      if (dense.isSplat()) {
+        APInt cst = dense.getSplatValue<APInt>();
+        if (cst.getBitWidth() <= 64)
+          return cst.getSExtValue();
+      }
     }
   }
   if (auto cst = value.getDefiningOp<arith::ConstantIntOp>())
@@ -115,50 +93,56 @@ static std::optional<int64_t> getConstantIntLike(Value value) {
 }
 
 static std::optional<StaticIndexCoverage>
-matchRangeWithStaticOffset(Value value) {
-  Value current = stripIndexValueWrappers(value);
-  if (auto range = current.getDefiningOp<tt::MakeRangeOp>())
-    return StaticIndexCoverage{range.getStart(),
-                               range.getEnd() - range.getStart()};
-
-  auto add = current.getDefiningOp<arith::AddIOp>();
-  if (!add)
+matchStaticIndexCoverage(Value index, unsigned depth = 0) {
+  if (depth > 16)
     return std::nullopt;
-
-  auto tryMatch = [&](Value lhs,
-                      Value rhs) -> std::optional<StaticIndexCoverage> {
-    Value lhsStripped = stripIndexValueWrappers(lhs);
-    auto range = lhsStripped.getDefiningOp<tt::MakeRangeOp>();
-    if (!range)
-      return std::nullopt;
-    std::optional<int64_t> cst = getConstantIntLike(rhs);
-    if (!cst)
-      return std::nullopt;
-    return StaticIndexCoverage{range.getStart() + *cst,
-                               range.getEnd() - range.getStart()};
-  };
-
-  if (auto coverage = tryMatch(add.getLhs(), add.getRhs()))
-    return coverage;
-  return tryMatch(add.getRhs(), add.getLhs());
-}
-
-static std::optional<StaticIndexCoverage>
-matchStaticIndexCoverage(Value index) {
   if (auto cst = getConstantIntLike(index))
     return StaticIndexCoverage{*cst, 1};
 
-  Value current = stripIndexValueWrappers(index);
-  if (auto coverage = matchRangeWithStaticOffset(current))
-    return coverage;
-
+  Value current = stripConvertLayouts(index);
+  if (auto range = current.getDefiningOp<tt::MakeRangeOp>())
+    return StaticIndexCoverage{range.getStart(),
+                               int64_t(range.getEnd()) - range.getStart()};
   if (auto bcast = current.getDefiningOp<tt::BroadcastOp>())
-    current = stripIndexValueWrappers(bcast.getSrc());
+    return matchStaticIndexCoverage(bcast.getSrc(), depth + 1);
+  if (auto expand = current.getDefiningOp<tt::ExpandDimsOp>())
+    return matchStaticIndexCoverage(expand.getSrc(), depth + 1);
 
-  while (auto expand = current.getDefiningOp<tt::ExpandDimsOp>())
-    current = stripIndexValueWrappers(expand.getSrc());
-
-  return matchRangeWithStaticOffset(current);
+  // Prove a conservative signed-i32 envelope for affine arena indices.
+  // Unknown operations and any possible wrap retain whole-buffer hazards.
+  auto *op = current.getDefiningOp();
+  Type element = current.getType();
+  if (auto shaped = dyn_cast<ShapedType>(element))
+    element = shaped.getElementType();
+  if (!op || op->getNumOperands() != 2 ||
+      !element.isInteger(32) ||
+      !isa<arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::MaxSIOp>(op))
+    return std::nullopt;
+  auto lhs = matchStaticIndexCoverage(op->getOperand(0), depth + 1);
+  auto rhs = matchStaticIndexCoverage(op->getOperand(1), depth + 1);
+  if (!lhs || !rhs)
+    return std::nullopt;
+  int64_t lo, hi;
+  int64_t a = lhs->offset, b = a + lhs->size - 1;
+  int64_t c = rhs->offset, d = c + rhs->size - 1;
+  if (std::min(a, c) < INT32_MIN || std::max(b, d) > INT32_MAX)
+    return std::nullopt;
+  if (isa<arith::AddIOp>(op)) {
+    lo = a + c;
+    hi = b + d;
+  } else if (isa<arith::SubIOp>(op)) {
+    lo = a - d;
+    hi = b - c;
+  } else if (isa<arith::MulIOp>(op)) {
+    lo = std::min({a * c, a * d, b * c, b * d});
+    hi = std::max({a * c, a * d, b * c, b * d});
+  } else {
+    lo = std::max(a, c);
+    hi = std::max(b, d);
+  }
+  if (lo < INT32_MIN || hi > INT32_MAX)
+    return std::nullopt;
+  return StaticIndexCoverage{lo, hi - lo + 1};
 }
 
 static bool isTiledSMEMStorageRoot(Value value) {

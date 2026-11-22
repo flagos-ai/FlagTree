@@ -31,6 +31,7 @@ class PagedAttentionStateConfig:
     block_size: int = 256
     num_blocks: int = 16
     lanes: int = 8
+    cache_dtype: DType = DType.BFLOAT16
 
     def __post_init__(self) -> None:
         values = (self.num_layers, self.num_kv_heads, self.head_dim, self.block_size, self.num_blocks, self.lanes)
@@ -39,6 +40,13 @@ class PagedAttentionStateConfig:
         if self.head_dim % self.lanes:
             raise IRSchemaError(
                 f"Paged-attention head dimension {self.head_dim} is not divisible by {self.lanes} lanes.")
+        try:
+            dtype = DType(self.cache_dtype)
+        except (TypeError, ValueError) as error:
+            raise IRSchemaError("Paged-attention cache element type must be bfloat16 or float16.") from error
+        if dtype not in {DType.BFLOAT16, DType.FLOAT16}:
+            raise IRSchemaError("Paged-attention cache element type must be bfloat16 or float16.")
+        object.__setattr__(self, "cache_dtype", dtype)
 
     @property
     def max_sequence_length(self) -> int:
@@ -47,7 +55,7 @@ class PagedAttentionStateConfig:
     @property
     def cache_type(self):
         return tensor_type(
-            VectorType(DType.BFLOAT16, (self.lanes,)),
+            VectorType(self.cache_dtype, (self.lanes,)),
             [self.num_blocks, self.num_layers, 2, self.block_size, self.num_kv_heads, self.head_dim // self.lanes],
         )
 
@@ -99,8 +107,8 @@ def paged_attention_state_config_from_type(
             "Expected a configured paged-attention cache reference with a "
             "vectorized kv_caches field."
         )
-    if cache.dtype.elem_type != DType.BFLOAT16:
-        raise IRSchemaError("Paged-attention KV cache element type must be bfloat16.")
+    if cache.dtype.elem_type not in {DType.BFLOAT16, DType.FLOAT16}:
+        raise IRSchemaError("Paged-attention KV cache element type must be bfloat16 or float16.")
     if len(cache.dtype.lanes) != 1:
         raise IRSchemaError(
             "Paged-attention state currently requires one cache vector axis."
@@ -120,6 +128,7 @@ def paged_attention_state_config_from_type(
         block_size=shape[3],
         num_blocks=shape[0],
         lanes=lanes,
+        cache_dtype=cache.dtype.elem_type,
     )
     expected_fields = dict(config.ref_type.fields)
     if fields != expected_fields:
@@ -154,9 +163,10 @@ class PagedAttentionState:
 
     def validate(self, *, dynamic_values: bool = True) -> None:
         torch = _torch()
-        if tuple(self.kv_caches.shape) != self.config.storage_shape or self.kv_caches.dtype != torch.bfloat16:
+        dtype = getattr(torch, self.config.cache_dtype.value)
+        if tuple(self.kv_caches.shape) != self.config.storage_shape or self.kv_caches.dtype != dtype:
             raise EvaluationError(
-                f"Packed KV cache must be BF16{self.config.storage_shape}, got "
+                f"Packed KV cache must be {self.config.cache_dtype.value}{self.config.storage_shape}, got "
                 f"{self.kv_caches.dtype}{tuple(self.kv_caches.shape)}.")
         contracts = (
             ("query_start_loc", self.query_start_loc, (2,), torch.int32),
@@ -270,7 +280,7 @@ class PagedAttentionState:
         if not keys:
             empty = torch.empty(
                 (0, self.config.num_kv_heads, self.config.head_dim),
-                dtype=torch.bfloat16,
+                dtype=self.kv_caches.dtype,
                 device=self.kv_caches.device,
             )
             return empty, empty.clone()
@@ -284,7 +294,7 @@ class PagedAttentionState:
 def create_paged_attention_state(config: PagedAttentionStateConfig, *, device: str = "cpu") -> PagedAttentionState:
     torch = _torch()
     state = PagedAttentionState(
-        torch.zeros(config.storage_shape, dtype=torch.bfloat16, device=device),
+        torch.zeros(config.storage_shape, dtype=getattr(torch, config.cache_dtype.value), device=device),
         torch.tensor([0, 1], dtype=torch.int32, device=device),
         torch.zeros((1,), dtype=torch.int32, device=device),
         torch.zeros((1,), dtype=torch.int64, device=device),

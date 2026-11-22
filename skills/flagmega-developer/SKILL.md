@@ -96,6 +96,16 @@ overlaps still require the original execution's clocks and calibration.
 2. Every revision has a versioned plan, append-only tracking and authentic scoped signatures.
 3. A numerical pass, completed build, theoretical bound or noise-level delta cannot
    establish milestone achievement. Preserve failed and no-gain revisions.
+3a. The numerical acceptance contract is **end-to-end token agreement**: the model's
+   first few generated tokens must match the mainstream reference framework. Nothing
+   else is required of the numbers — not intermediate values, not logits, not
+   per-layer/per-step error ledgers. A numerical subject must not make a reference
+   out of a frozen artifact's internal state, because the artifact may not be
+   instrumented and a recomputation may not stand in for an observation; those three
+   rules together are unsatisfiable. Behavioural and machine gates stay in force:
+   faithful comparator closure, arithmetic/ABI/memory/effects, resources, the
+   candidate's own finiteness, guards, reset and trajectory repeatability, and K9's
+   latency strict win.
 4. Keep baseline/candidate comparisons matched and all required gates visible;
    close only after independent verification and reproduction.
 5. Synchronize current artifacts/figures on every authoritative output/state change,
@@ -127,3 +137,22 @@ overlaps still require the original execution's clocks and calibration.
 2. Reuse evidence by identity; changed plans/source/artifacts need affected signatures again.
 3. Start ready work under its own prerequisites; separate measurement from rendering/review.
 4. Keep performance gaps, failures and unsigned work assigned instead of declaring completion.
+5. Over-specifying a contract blocks work as effectively as under-specifying it. Before
+   freezing an obligation, check that something can actually satisfy it: name the
+   observation that discharges each required reference, and confirm it is reachable
+   without violating another frozen rule. Deadlocks found later cost a versioned plan,
+   a new numerical subject and every affected signature.
+6. Wherever comparator arithmetic is the target, prescribe the candidate's arithmetic
+   identically, including element ownership, reduction tree and rounded/FMA nodes.
+   Different frozen norm trees build a numerical gap into the plan; correct that
+   prescription at its owning stage instead of blaming the model or weakening token
+   agreement. Name, justify and separately qualify any deliberate arithmetic divergence.
+   Changed source/selection/fusion/prepared-cubin identity needs fresh affected plan
+   and K9 signatures; token recovery establishes no performance result.
+7. Before freezing an evidence requirement, verify the installed toolchain can
+   produce the named observation on the target hardware, and name its provider.
+   Check actual attribution, resolution and simultaneous-provider compatibility;
+   a documented API or two successful separate captures does not prove a joint
+   observation. An impossible observation is a contract defect: correct its source
+   with a versioned, justified substitute and explicit limits, preserving unrelated
+   qualified identities and renewing affected signatures instead of waiting indefinitely.

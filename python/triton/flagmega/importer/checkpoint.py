@@ -543,8 +543,8 @@ class GGUFCheckpoint:
     ``gguf`` is an optional dependency because ordinary FlagMega users only
     need safetensors.  The package's ``GGUFReader`` uses a read-only memmap;
     quantized tensor values are never copied or dequantized by this class. Quantized
-    tensor names are also exposed under the Qwen3.8 Hugging Face namespace so
-    the existing layer importer can consume the same semantic graph.
+    tensor names are also exposed under their Qwen Hugging Face namespace so
+    model importers can consume the same semantic graph.
     """
 
     _QWEN_PREFIX = "model.language_model."
@@ -690,7 +690,7 @@ class GGUFCheckpoint:
         values = np.asarray(tensor.data)
         if str(tensor.tensor_type.name) == "BF16":
             values = (values.astype(np.uint32) << 16).view(np.float32)
-        if key in self._aliases:
+        if key in self._aliases and self._config["model_type"] != "qwen3":
             # GGML stores the actual decay coefficient and RMS multiplier;
             # HF's semantic graph expects A_log and a zero-centred norm weight.
             # These tiny F32 parameters are unrelated to quantized matrices.
@@ -753,8 +753,10 @@ class GGUFCheckpoint:
 
     def _build_config(self) -> dict[str, Any]:
         arch = str(self._metadata("general.architecture", ""))
+        if arch == "qwen3":
+            return self._build_qwen3_config()
         if arch not in {"qwen35", "qwen3next"}:
-            raise ImporterError(f"GGUF checkpoint architecture {arch!r} is not Qwen3.8/qwen35.")
+            raise ImporterError(f"Unsupported GGUF checkpoint architecture {arch!r}; expected qwen3, qwen35 or qwen3next.")
         hidden = _gguf_positive_int(self._metadata(f"{arch}.embedding_length"), "embedding_length")
         intermediate = _gguf_positive_int(self._metadata(f"{arch}.feed_forward_length"), "feed_forward_length")
         layers = _gguf_positive_int(self._metadata(f"{arch}.block_count"), "block_count")
@@ -838,17 +840,60 @@ class GGUFCheckpoint:
             },
         }
 
+    def _build_qwen3_config(self) -> dict[str, Any]:
+        def positive(name, default=None):
+            return _gguf_positive_int(self._metadata("qwen3." + name, default), name)
+
+        hidden = positive("embedding_length")
+        heads = positive("attention.head_count")
+        kv_heads = positive("attention.head_count_kv", heads)
+        head_dim = positive("attention.key_length", hidden // heads)
+        if heads % kv_heads:
+            raise ImporterError("GGUF Qwen3 attention heads must be divisible by KV heads.")
+        if positive("attention.value_length", head_dim) != head_dim:
+            raise ImporterError("GGUF Qwen3 key and value head dimensions must match.")
+        embedding = self._raw.get("token_embd.weight")
+        if embedding is None or len(embedding.shape) != 2 or int(embedding.shape[0]) != hidden:
+            raise ImporterError("GGUF Qwen3 token embedding must be a matrix with embedding_length columns.")
+        return {
+            "model_type": "qwen3",
+            "architectures": ["Qwen3ForCausalLM"],
+            "vocab_size": _gguf_positive_int(embedding.shape[1], "vocab_size"),
+            "num_hidden_layers": positive("block_count"),
+            "hidden_size": hidden,
+            "intermediate_size": positive("feed_forward_length"),
+            "num_attention_heads": heads,
+            "num_key_value_heads": kv_heads,
+            "head_dim": head_dim,
+            "rms_norm_eps": float(self._metadata("qwen3.attention.layer_norm_rms_epsilon", 1e-6)),
+            "rope_theta": float(self._metadata("qwen3.rope.freq_base", 1000000.0)),
+            "max_position_embeddings": positive("context_length"),
+            # GGUF padding is tokenizer metadata, not a zero embedding row.
+            "pad_token_id": None,
+            "tie_word_embeddings": "output.weight" not in self._raw,
+            "hidden_act": "silu",
+            "attention_bias": False,
+            "mlp_bias": False,
+            "quantization_config": {"quant_method": "gguf", "activation_scheme": "native"},
+            "gguf": {
+                "path": self.path.name,
+                "architecture": "qwen3",
+                "padding_token_id": self._metadata("tokenizer.ggml.padding_token_id"),
+            },
+        }
+
     def _build_aliases(self) -> dict[str, str]:
         aliases: dict[str, str] = {}
+        prefix = "model." if self._metadata("general.architecture") == "qwen3" else self._QWEN_PREFIX
         for raw in self._raw:
             if raw == "output.weight":
                 aliases["lm_head.weight"] = raw
                 continue
             if raw == "output_norm.weight":
-                aliases[self._QWEN_PREFIX + "norm.weight"] = raw
+                aliases[prefix + "norm.weight"] = raw
                 continue
             if raw == "token_embd.weight":
-                aliases[self._QWEN_PREFIX + "embed_tokens.weight"] = raw
+                aliases[prefix + "embed_tokens.weight"] = raw
                 continue
             if not raw.startswith("blk."):
                 continue
@@ -878,13 +923,14 @@ class GGUFCheckpoint:
                 "ssm_norm.weight": "linear_attn.norm.weight",
                 "ssm_out.weight": "linear_attn.out_proj.weight",
                 "post_attention_norm.weight": "post_attention_layernorm.weight",
+                "ffn_norm.weight": "post_attention_layernorm.weight",
                 "ffn_gate.weight": "mlp.gate_proj.weight",
                 "ffn_up.weight": "mlp.up_proj.weight",
                 "ffn_down.weight": "mlp.down_proj.weight",
             }
             mapped = names.get(tail)
             if mapped is not None:
-                aliases[f"{self._QWEN_PREFIX}layers.{layer}.{mapped}"] = raw
+                aliases[f"{prefix}layers.{layer}.{mapped}"] = raw
         return aliases
 
 

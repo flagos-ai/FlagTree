@@ -240,6 +240,9 @@ def _create_plan(
     occupied: set[str],
 ) -> _ThreadingPlan | None:
     parameter_indices = {node_id: index for index, node_id in enumerate(function.parameters)}
+    if any(node.op == "nn.norm_stats" and node.attrs.get("compute_profile", "default") != "default"
+           for node in function_nodes(module, function)):
+        return None
     groups: dict[tuple[int, int, bool, int, str, int | None], list[Node]] = {}
     for node in function_nodes(module, function):
         if node.op != "nn.norm_stats" or node.inputs[0] not in parameter_indices:

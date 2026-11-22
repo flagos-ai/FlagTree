@@ -282,6 +282,10 @@ def _module_source(
             positional=(_tir_expr(function),),
         )
         lines.extend(_indent(expression, 8).splitlines())
+    for name in ("heterogeneous_plan", "heterogeneous_program"):
+        for value in getattr(module, name + "s"):
+            expression = _call_expr("self." + name, positional=(_tir_expr(value),))
+            lines.extend(_indent(expression, 8).splitlines())
     for node in module.nodes:
         expression = _node_expr(node, names)
         statement = f"{names[node.id]} = {expression}"
@@ -1135,6 +1139,8 @@ def _load_dump_directory(directory: Path) -> IRModule:
         first_module.prim_functions,
         first_module.kernel_definitions,
         first_module.execution_functions,
+        first_module.heterogeneous_plans,
+        first_module.heterogeneous_programs,
     )
     indices: set[int] = set()
     names: set[str] = set()
@@ -1158,6 +1164,8 @@ def _load_dump_directory(directory: Path) -> IRModule:
             module.prim_functions,
             module.kernel_definitions,
             module.execution_functions,
+            module.heterogeneous_plans,
+            module.heterogeneous_programs,
         ) != common_module:
             raise CheckpointError(f"Function checkpoint {checkpoint} has conflicting module metadata.")
         if info.function_index in indices or info.function_name in names:
@@ -1209,6 +1217,8 @@ def _load_dump_directory(directory: Path) -> IRModule:
         prim_functions=first_module.prim_functions,
         kernel_definitions=first_module.kernel_definitions,
         execution_functions=first_module.execution_functions,
+        heterogeneous_plans=first_module.heterogeneous_plans,
+        heterogeneous_programs=first_module.heterogeneous_programs,
         metadata=merged_metadata,
         constant_recipes=first_module.constant_recipes,
         selection_points=tuple(

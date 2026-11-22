@@ -17,6 +17,8 @@ def fuse_norm_apply_input_cast_rule():
 
     def rewrite(result, module):
         norm, converted, value = result["norm"], result["cast"], result["value"]
+        if norm.attrs.get("compute_profile", "default") != "default":
+            return norm
         source, target, output = (tensor_of(node.type) for node in (value, converted, norm))
         scalar = lambda dtype: dtype.elem_type if isinstance(dtype, VectorType) else dtype
         lanes = lambda dtype: dtype.lanes if isinstance(dtype, VectorType) else ()

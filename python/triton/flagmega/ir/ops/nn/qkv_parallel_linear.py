@@ -7,8 +7,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
-from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.model import DType, IRType, Node, NoneType, TensorType, TupleType, tensor_type
+from triton.flagmega.ir.distributed_inference import all_broadcast, tensor_of
+from triton.flagmega.ir.model import DType, DistributedType, IRType, Node, NoneType, SBP, TensorType, TupleType, tensor_type
+from triton.flagmega.ir.ops._compute_profile import normalize_compute_profile, require_host_reference
+from triton.flagmega.ir.ops.math._quantized import matrix_width
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpDefinition,
@@ -30,7 +32,7 @@ _OPTIONAL_TENSOR = is_tensor() | is_none()
     display_name="NN.QKVParallelLinear",
 )
 class QKVParallelLinear(OpDefinition):
-    """nncase-compatible QKV projection with logical ``[K,N]`` weights."""
+    """QKV projection with dense ``[K,N]`` or explicit native GGUF byte rows."""
 
     input = input_parameter(is_tensor() & has_rank(2))
     q_weight = input_parameter(is_tensor() & has_rank(2))
@@ -49,6 +51,10 @@ class QKVParallelLinear(OpDefinition):
     num_kv_heads = attribute_parameter()
     output_data_type = attribute_parameter()
     reduction_order = attribute_parameter(default="relaxed")
+    q_weight_encoding = attribute_parameter(default=None)
+    k_weight_encoding = attribute_parameter(default=None)
+    v_weight_encoding = attribute_parameter(default=None)
+    native_compute_profile = attribute_parameter(default="f32")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -59,7 +65,15 @@ class QKVParallelLinear(OpDefinition):
                 raise IRSchemaError(f"QKVParallelLinear {name} must be positive.")
         output_type = DType(attrs["output_data_type"])
         normalize_reduction_order(attrs)
+        native = normalize_compute_profile(attrs, "QKVParallelLinear", key="native_compute_profile",
+                                           default="f32", supported="k230_q8_fp16_v1")
+        encodings = tuple(attrs[f"{role}_weight_encoding"] for role in ("q", "k", "v"))
+        if any(encoding is not None for encoding in encodings) or native:
+            if not native or encodings != ("IQ4_XS",) * 3 or attrs.get("reduction_order", "relaxed") != "relaxed":
+                raise IRSchemaError("Native QKVParallelLinear requires three IQ4_XS weights and k230_q8_fp16_v1.")
+            native.update({f"{role}_weight_encoding": encoding for role, encoding in zip(("q", "k", "v"), encodings)})
         return {
+            **native,
             "num_heads": int(attrs["num_heads"]),
             "num_kv_heads": int(attrs["num_kv_heads"]),
             "output_data_type": output_type,
@@ -69,6 +83,7 @@ class QKVParallelLinear(OpDefinition):
     @classmethod
     def ir_attrs(cls, attrs: Mapping[str, object]) -> Mapping[str, object]:
         return {
+            **{key: value for key, value in attrs.items() if key.endswith("weight_encoding") or key == "native_compute_profile"},
             "num_heads": attrs["num_heads"],
             "num_kv_heads": attrs["num_kv_heads"],
             "output_data_type": DType(attrs["output_data_type"]).value,
@@ -85,6 +100,8 @@ class QKVParallelLinear(OpDefinition):
         ))
         if not isinstance(value.dtype, DType):
             raise IRSchemaError("QKVParallelLinear input must have a scalar dtype.")
+        if attrs.get("native_compute_profile", "f32") != "f32":
+            return cls._infer_native(inputs, attrs, value, weights)
         if any(weight.shape[0] != value.shape[1] for weight in weights):
             raise IRSchemaError("QKVParallelLinear logical [K,N] weights must match input K.")
         scales = tuple(parameter.type_of(inputs) for parameter in (
@@ -121,7 +138,33 @@ class QKVParallelLinear(OpDefinition):
         return TupleType(outputs)
 
     @classmethod
+    def _infer_native(cls, inputs, attrs, value, weights):
+        if value.dtype != DType.FLOAT32 or DType(attrs["output_data_type"]) != DType.FLOAT32:
+            raise IRSchemaError("Native QKVParallelLinear requires scalar F32 input/output.")
+        if value.shape[0].value not in range(1, 9):
+            raise IRSchemaError("Native QKVParallelLinear requires one to eight fixed token rows.")
+        for role, weight in zip(("q", "k", "v"), weights):
+            if matrix_width(weight, attrs[f"{role}_weight_encoding"]) != value.shape[1]:
+                raise IRSchemaError("Native QKVParallelLinear byte rows must match logical input K.")
+        if any(not isinstance(parameter.type_of(inputs), NoneType) for parameter in cls.input_parameters[4:]):
+            raise IRSchemaError("Native QKVParallelLinear does not support biases or FP8 scales.")
+        outputs = tuple(tensor_type(DType.FLOAT32, (value.shape[0], weight.shape[0])) for weight in weights)
+        heads, kv_heads = int(attrs["num_heads"]), int(attrs["num_kv_heads"])
+        _check_heads(outputs, heads, kv_heads)
+        if (heads % kv_heads or any(not output.shape[-1].is_fixed for output in outputs)
+                or len({output.shape[-1].fixed_value // count for output, count in zip(outputs, (heads, kv_heads, kv_heads))}) != 1):
+            raise IRSchemaError("Native QKVParallelLinear requires equal head dimensions and grouped query heads.")
+        input_types = tuple(parameter.type_of(inputs) for parameter in cls.input_parameters[:4])
+        if any(isinstance(item, DistributedType) for item in input_types):
+            if (not all(isinstance(item, DistributedType) and all_broadcast(item) for item in input_types)
+                    or len({item.placement for item in input_types}) != 1):
+                raise IRSchemaError("Native QKVParallelLinear requires a common complete broadcast placement.")
+            outputs = tuple(DistributedType(output, (SBP.broadcast(),) * 2, input_types[0].placement) for output in outputs)
+        return TupleType(outputs)
+
+    @classmethod
     def evaluate(cls, node, arguments, context):
+        require_host_reference(node, key="native_compute_profile", default="f32")
         output_dtype = context.torch_dtype(DType(node.attrs["output_data_type"]))
         return tuple(
             _project(

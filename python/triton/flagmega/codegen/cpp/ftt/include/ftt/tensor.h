@@ -27,9 +27,9 @@ class tensor_view {
 
     FTT_HOST_DEVICE T *data() const noexcept { return data_; }
 
-    static constexpr dim_t extent(size_t axis) { return TShape::at(axis); }
-    static constexpr dim_t stride(size_t axis) { return TStrides::at(axis); }
-    static constexpr dim_t size() { return TShape::length(); }
+    FTT_HOST_DEVICE static constexpr dim_t extent(size_t axis) { return TShape{}.at(axis); }
+    FTT_HOST_DEVICE static constexpr dim_t stride(size_t axis) { return TStrides{}.at(axis); }
+    FTT_HOST_DEVICE static constexpr dim_t size() { return TShape{}.length(); }
 
     template <class... TIndices>
     FTT_HOST_DEVICE T &operator()(TIndices... indices) const noexcept {
@@ -42,7 +42,7 @@ class tensor_view {
     template <class TNewShape,
               class TNewStrides = row_major_strides_t<TNewShape>>
     FTT_HOST_DEVICE tensor_view<T, TNewShape, TNewStrides> reshape() const noexcept {
-        static_assert(TNewShape::length() == TShape::length(),
+        static_assert(TNewShape{}.length() == TShape{}.length(),
                       "reshape must preserve element count");
         return tensor_view<T, TNewShape, TNewStrides>(data_);
     }
@@ -50,7 +50,7 @@ class tensor_view {
     // Narrow to the sub-view starting at `offset` along axis 0.
     template <dim_t Extent>
     FTT_HOST_DEVICE auto slice(dim_t offset) const noexcept {
-        return tensor_view<T, TShape, TStrides>(data_ + offset * TStrides::at(0));
+        return tensor_view<T, TShape, TStrides>(data_ + offset * TStrides{}.at(0));
     }
 
   private:

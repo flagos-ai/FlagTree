@@ -85,7 +85,10 @@ def _execution_policy(module, node, default):
                 or geometry != expected or parameters.get('program_owner_mapping') != 'x-fast'):
             raise IRVerificationError('Explicit fixed grid differs from its declared physical mesh/mapping.',
                                       stage=module.stage, node_id=node.id)
-    return mesh, kind, warps, maxnreg, geometry
+    static_shared = node.metadata.get("kernel_enable_static_shared")
+    if static_shared is not None and type(static_shared) is not bool:
+        raise IRVerificationError("kernel_enable_static_shared must be a strict bool.", node_id=node.id)
+    return mesh, kind, warps, maxnreg, geometry, static_shared
 
 
 def _root_unit(module, node, kernels, default, function_name=None):
@@ -144,6 +147,19 @@ def plan_execution_programs(module, target, kernels):
         warps = group['key'][2] or target.plan_launch(module, nodes)['num_warps']
         recipe = selected_task_recipe(nodes[0]) if mesh.kind is ExecutionMeshKind.DYNAMIC else None
         symbol = f'flagmega_{module.entry}_program_{len(programs)}'
+        maxnreg = group['key'][3]
+        if maxnreg is None and module.metadata.get('r004_native_model_request') is not None:
+            from triton.flagmega.rules.ntt.r004_native_model import native_model_request
+            from triton.flagmega.ir.ops.math._iq4_q8 import OPS
+            from triton.flagmega.ir.tir.kernel_dispatch import kernel_dispatch_for_call
+            native_model_request(module)
+            # Q8 entries carry their already qualified 80/96/104 options.
+            # Every ordinary neighbour keeps the frozen cap80 after rebuild.
+            dispatches = (kernel_dispatch_for_call(module,n) for n in nodes)
+            q8 = any((d.parameters if d is not None else n.attrs.get('parameters', {})).get('family')
+                     in OPS.values() for n,d in zip(nodes,dispatches,strict=True))
+            if not q8:
+                maxnreg = 80
         programs.append({
             'symbol': symbol,
             'function': function,
@@ -153,8 +169,9 @@ def plan_execution_programs(module, target, kernels):
             'execution_mesh': mesh.to_data(),
             'program_kind': group['kind'].value,
             'data_placement': domain.to_data(),
-            **({'maxnreg': group['key'][3]} if group['key'][3] is not None else {}),
+            **({'maxnreg': maxnreg} if maxnreg is not None else {}),
             **({'launch_recipe': recipe.to_data()} if recipe is not None else {}),
+            **({'enable_static_shared': group['key'][5]} if group['key'][5] is not None else {}),
         })
         return ProgramInvocation(symbol)
 
@@ -179,8 +196,8 @@ def plan_execution_programs(module, target, kernels):
                 steps.append(unit)
                 plan_function(unit.callee)
                 continue
-            identity, (mesh, kind, requested_warps, maxnreg, geometry), members = unit
-            key = (mesh.fusion_key, kind, requested_warps, maxnreg, geometry)
+            identity, (mesh, kind, requested_warps, maxnreg, geometry, static_shared), members = unit
+            key = (mesh.fusion_key, kind, requested_warps, maxnreg, geometry, static_shared)
             if group is None or mesh.fusion_key is None or group['key'] != key:
                 if group is not None:
                     steps.append(emit_group(name, group))
@@ -227,6 +244,10 @@ def verify_program_mesh(module, request):
             return tuple(p for field in value.fields for p in placements(field))
         return ()
 
+    if mesh.kind is ExecutionMeshKind.FIXED and mesh.mapping == 'x-fast':
+        expected = (*mesh.shape, *(1 for _ in range(3-len(mesh.shape))))
+        if not 1 <= len(mesh.shape) <= 3 or tuple(request.get('grid', ())) != expected:
+            raise IRVerificationError('x-fast program grid differs from its fixed mesh.',stage=module.stage)
     function_name = request.get('function', module.entry)
     if function_name not in module.function_map:
         raise IRVerificationError('Execution program references an unknown function scope.', stage=module.stage)

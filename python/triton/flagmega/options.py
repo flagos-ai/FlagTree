@@ -51,7 +51,12 @@ class CompileOptions:
     # Executable CLI paths bind their actual backend before TIR proposals.
     codegen_backend: str | None = None
 
+    # Source planning is opt-in and does not imply executable runtime support.
+    heterogeneous_protocol: str | None = None
+
     def __post_init__(self) -> None:
+        if self.heterogeneous_protocol is not None and (not isinstance(self.heterogeneous_protocol, str) or not self.heterogeneous_protocol.strip()):
+            raise ValueError("heterogeneous_protocol must be a non-empty protocol name.")
         if self.codegen_backend not in (None, "cpp", "triton"):
             raise ValueError("codegen_backend must be 'cpp' or 'triton'.")
         if self.bufferize_opt_level not in (None, "fast", "optimized"):

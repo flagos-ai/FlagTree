@@ -1,0 +1,39 @@
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: MIT
+# r004.norm128.comparator-faithful/v6. Each warp owns a complete readonly replica.
+V_T = tl.constexpr(tle.gpu.BlockEncoding([4],[32],[4],[0]))
+V2_T = tl.constexpr(tle.gpu.BlockEncoding([1,4],[32,1],[4,1],[0,1]))
+W_T = tl.constexpr(tle.gpu.BlockEncoding([1],[32],[4],[0]))
+
+@triton.jit
+def norm128_v6(x):
+    x = tle.gpu.set_layout(x,V_T)
+    x2 = tle.gpu.set_layout(tl.reshape(x,[32,4]),V2_T)
+    even, odd = tl.split(tl.reshape(x2,[32,2,2]))
+    x0,x2 = tl.split(even)
+    x1,x3 = tl.split(odd)
+    x0 = tle.gpu.set_layout(x0,W_T)
+    x1 = tle.gpu.set_layout(x1,W_T)
+    x2 = tle.gpu.set_layout(x2,W_T)
+    x3 = tle.gpu.set_layout(x3,W_T)
+    p = tl.inline_asm_elementwise(
+        "{ .reg .f32 p; mul.rn.f32 p,$2,$2; fma.rn.f32 p,$1,$1,p; "
+        "fma.rn.f32 p,$3,$3,p; fma.rn.f32 $0,$4,$4,p; }",
+        constraints="=f,f,f,f,f",args=[x0,x1,x2,x3],dtype=tl.float32,is_pure=True,pack=1)
+    return reduce32_xor_v4(p)
+
+@triton.jit
+def norm_broadcast_v6(x):
+    x2 = tle.gpu.set_layout(tl.broadcast_to(x[:,None],[32,4]),V2_T)
+    return tle.gpu.set_layout(tl.reshape(x2,[128]),V_T)
+
+@triton.jit
+def norm_mul_v6(x,y):
+    return tl.inline_asm_elementwise("mul.rn.f32 $0,$1,$2;",constraints="=f,f,f",
+        args=[x,y],dtype=tl.float32,is_pure=True,pack=1)
+
+@triton.jit
+def norm_warp0_v6():
+    tid = tl.inline_asm_elementwise("mov.u32 $0,%tid.x;",constraints="=r",args=[],
+        dtype=tl.int32,is_pure=True,pack=1)
+    return tid < 32

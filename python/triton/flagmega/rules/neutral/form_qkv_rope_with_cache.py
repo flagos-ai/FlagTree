@@ -104,6 +104,8 @@ def _legal_region(result, module):
     q_head, k_head = (qkv_head_from_match(result, prefix) for prefix in ("q", "k"))
     if q_head is None or k_head is None:
         return None
+    if any(head.norm.attrs.get("compute_profile", "default") != "default" for head in (q_head, k_head)):
+        return None
     if any(head.norm.attrs.get("math_mode", "fast") != "fast" for head in (q_head, k_head)):
         # This fused ABI currently specifies the fast Q/K inverse square root.
         return None

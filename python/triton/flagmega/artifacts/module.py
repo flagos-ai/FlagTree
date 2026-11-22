@@ -203,6 +203,10 @@ def write_artifact(
                 sections.append(record_section(
                     destination, destination / codegen["triton_trace"][field + "_file"],
                     name=f"diagnostic.trace.{field}", kind=f"diagnostic.trace-{field}/v1"))
+        for index, record in enumerate(codegen.get("device_sources", ())):
+            sections.append(record_section(
+                destination, resolve_artifact_path(destination, record["path"]),
+                name=f"codegen.device.{index}", kind="codegen.k230-device/v1"))
         # A C++ package is only loadable through its built library, so the
         # library is a verified section too: a hand-edited or stale .so is
         # rejected at load time exactly as a stale generated source is.
@@ -502,6 +506,19 @@ def load_artifact(
                     "Artifact codegen descriptor does not match its built "
                     "library section."
                 )
+        device_sources = codegen.get("device_sources", ())
+        actual_device = {name: section for name, section in by_name.items() if name.startswith("codegen.device.")}
+        if device_sources or actual_device or codegen.get("kind") in {"k230_cpp/v2", "k230_cpp/v3", "k230_cpp/v4"}:
+            expected_device = {"generated_kpu.cpp", "k230-exchange-image.h"} if codegen.get("kind") == "k230_cpp/v2" else {
+                "program.h", "generated_kpu.cpp", "k230-program-image.h", "k230-program-image.bin"}
+            if (codegen.get("kind") not in {"k230_cpp/v2", "k230_cpp/v3", "k230_cpp/v4"} or codegen_backend != "cpp" or manifest.get("target") != "k230"
+                    or len(device_sources) != len(expected_device) or {v.get("path") for v in device_sources} != expected_device
+                    or set(actual_device) != {f"codegen.device.{i}" for i in range(len(expected_device))}):
+                raise ArtifactError("K230 device program source sections are incomplete or unsupported.")
+            for index, record in enumerate(device_sources):
+                section = actual_device[f"codegen.device.{index}"]
+                if section.kind != "codegen.k230-device/v1" or section.path != record["path"] or section.sha256 != record["sha256"]:
+                    raise ArtifactError("K230 device program source descriptor differs from its section.")
     elif codegen is not None:
         raise ArtifactError("compiler_ir artifact cannot contain a codegen descriptor.")
     return manifest, module

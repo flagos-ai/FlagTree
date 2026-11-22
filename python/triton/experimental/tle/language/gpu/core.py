@@ -117,6 +117,32 @@ def set_layout(value, layout, _semantic=None):
 
 
 @tl.builtin
+def indexed32(value, src, _semantic=None):
+    """Full-warp indexed U32 transport for the checked [4,32] E32 interface.
+
+    All 32 lanes must reach each call, including inactive output rows. Callers
+    initialize every source and supply indices in [0,31]; no index truncation
+    or participation mask is inferred here. This operation is side effectful,
+    convergent and non-duplicable in the owning NVIDIA lowering.
+    """
+    from .types import BlockEncoding
+    for operand, dtype in ((value, tl.uint32), (src, tl.int32)):
+        if not isinstance(operand, tl.tensor) or operand.type.shape != [4, 32] or operand.dtype != dtype:
+            raise ValueError("indexed32 requires U32[4,32] and I32[4,32] E32 operands")
+    options = _semantic.builder.options
+    if (getattr(options, "num_warps", None) != 4 or getattr(options, "warp_size", 32) != 32
+            or getattr(options, "num_ctas", 1) != 1):
+        raise ValueError("indexed32 requires four full 32-lane warps and one CTA")
+    if not hasattr(_semantic.builder, "create_tle_gpu_indexed32"):
+        raise RuntimeError("indexed32 requires the checked __TLE__ NVIDIA lowering")
+    layout = BlockEncoding([1, 1], [1, 32], [4, 1], [1, 0])
+    value = set_layout(value, layout, _semantic=_semantic)
+    src = set_layout(src, layout, _semantic=_semantic)
+    result = tl.tensor(_semantic.builder.create_tle_gpu_indexed32(value.handle, src.handle), value.type)
+    return set_layout(result, layout, _semantic=_semantic)
+
+
+@tl.builtin
 def fence_proxy_async_global(_semantic=None):
     """Order global-memory accesses between the generic and async proxies.
 

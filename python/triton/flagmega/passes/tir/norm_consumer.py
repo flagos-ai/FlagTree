@@ -80,6 +80,8 @@ def find_norm_consumer_matches(module: IRModule) -> dict[str, NormConsumerMatch]
 
 
 def _rms_contract(norm: Node, module: IRModule) -> dict[str, object] | None:
+    if norm.attrs.get("compute_profile", "default") != "default":
+        return None
     if norm.op == "nn.rms_norm" and len(norm.inputs) == 2:
         return {
             "weight": norm.inputs[1],

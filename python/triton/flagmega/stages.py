@@ -71,6 +71,7 @@ class Stage:
     output_dialect: str | None = None
     selection_point: bool = False
     compatible_input_stages: frozenset[str] = frozenset()
+    target_extension: bool = False
 
     def accepts(self, module_stage: str) -> bool:
         return module_stage == self.input_stage or module_stage in self.compatible_input_stages
@@ -121,10 +122,10 @@ def get_stage(name: str) -> Stage:
 def next_stage(module_stage: str) -> Stage | None:
     exact = [
         stage for stage in _STAGES.values()
-        if stage.input_stage == module_stage
+        if stage.input_stage == module_stage and not stage.target_extension
     ]
     matches = exact or [
-        stage for stage in _STAGES.values() if stage.accepts(module_stage)
+        stage for stage in _STAGES.values() if stage.accepts(module_stage) and not stage.target_extension
     ]
     if not matches:
         return None
@@ -298,10 +299,16 @@ register_stage(Stage(
     compatible_input_stages=frozenset({"canonical", "egraph_candidates", "extracted", "normalization_decomposed"}),
 ))
 register_stage(Stage(
+    "insert-iq4-q8-preparation", "decomposed", "iq4_q8_prepared",
+    lambda module, _target: __import__("triton.flagmega.passes.insert_iq4_q8_preparation", fromlist=["insert_iq4_q8_preparation"]).insert_iq4_q8_preparation(module),
+    target_extension=True,
+))
+register_stage(Stage(
     "hoist-call-invariants",
     "decomposed",
     "call_invariants_hoisted",
     lambda module, _target: hoist_call_invariant_expressions(module),
+    compatible_input_stages=frozenset({"iq4_q8_prepared"}),
 ))
 register_stage(Stage(
     "propose-vectorization",
@@ -573,6 +580,7 @@ register_stage(Stage(
     "memory_placed_tir",
     _plan_function_memory,
     output_dialect="semantic_tir",
+    compatible_input_stages=frozenset({"heterogeneous_planned_tir"}),
 ))
 register_stage(Stage(
     "bufferize",
@@ -605,4 +613,21 @@ register_stage(Stage(
     "bufferized_tir",
     _lower_transfer_pipeline_regions,
     output_dialect="bufferized_tir",
+    compatible_input_stages=frozenset({"heterogeneous_program_tir"}),
 ))
+
+
+def _plan_heterogeneous_execution(module, target):
+    from triton.flagmega.passes.tir.heterogeneous_execution import plan_heterogeneous_execution
+    return plan_heterogeneous_execution(module, target)
+
+
+def _form_heterogeneous_execution(module, target):
+    from triton.flagmega.passes.tir.heterogeneous_execution import form_heterogeneous_execution
+    return form_heterogeneous_execution(module, target)
+
+
+register_stage(Stage("plan-heterogeneous-execution", "packaged_tir", "heterogeneous_planned_tir",
+    _plan_heterogeneous_execution, output_dialect="semantic_tir", target_extension=True))
+register_stage(Stage("form-heterogeneous-execution", "synchronized_tir", "heterogeneous_program_tir",
+    _form_heterogeneous_execution, output_dialect="bufferized_tir", target_extension=True))

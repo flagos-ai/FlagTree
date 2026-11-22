@@ -268,9 +268,32 @@ def _append_execution_functions(lines: list[str], module: IRModule) -> None:
         ))
         _print_tir_stmt(lines, function.body, 2)
         lines.append("}")
+    for plan in module.heterogeneous_plans:
+        lines.extend(("", f'T.HeterogeneousPlan("{plan.name}", protocol={plan.protocol!r}, slots={plan.slots}) {{'))
+        for value in plan.placements:
+            lines.append(f"  {value.source_function}/{value.call_id}: {value.domain}, implementation={value.implementation!r}, projections={value.projections}")
+        for value in plan.resources:
+            lines.append(f"  resource {value.name}: {_script_type_text(value.type)}@{value.memory_space}, alignment={value.alignment}, lifetime={value.lifetime.value}")
+        lines.append("}")
+    for program in module.heterogeneous_programs:
+        launch = program.launch
+        lines.extend(("", f'T.HeterogeneousProgram("{program.name}", plan={program.plan!r}) {{',
+                      f"  launch cpu={launch.cpu_entry}, device={launch.device_entry}, epoch={launch.epoch_resource}"))
+        for exchange in program.exchanges:
+            if exchange.kind == "value_exchange":
+                lines.append(f"  value_exchange {exchange.name}: {exchange.producer_domain}/{exchange.producer} -> {exchange.consumer_domain}/{exchange.consumer}, word={exchange.state_word.to_data()!r}, values={[v.name for v in exchange.values]!r}")
+            else:
+                lines.append(f"  exchange {exchange.name}: source={exchange.source_function}/{exchange.origin_call_id}, projection={exchange.projection}, slot_stride_bytes={exchange.slot_stride_bytes}")
+        for worker in program.functions:
+            lines.append(f"  worker {worker.function.name} domain={worker.domain} source={worker.source_function} phases={worker.phase_count} {{")
+            _print_tir_stmt(lines, worker.function.body, 4)
+            lines.append("  }")
+        lines.append(f"  drain after={program.drain.after!r}, epoch={program.drain.epoch_resource}")
+        lines.append("}")
 
 
 def _print_tir_stmt(lines: list[str], statement, indent: int) -> None:
+    from triton.flagmega.ir.tir.heterogeneous import ChannelBarrier, KernelPhaseInvoke, WorkerCall
     from triton.flagmega.ir.tir import (
         Block,
         Barrier,
@@ -290,6 +313,18 @@ def _print_tir_stmt(lines: list[str], statement, indent: int) -> None:
     )
 
     prefix = " " * indent
+    if isinstance(statement, KernelPhaseInvoke):
+        lines.append(f"{prefix}{statement.call_id}: T.KernelPhase({statement.phase!r}, origin={statement.origin_call_id!r}, projection={statement.projection}, exchange={statement.exchange!r}, after={statement.dependencies!r})")
+        return
+    if isinstance(statement, ChannelBarrier):
+        ranges = tuple((value.storage, value.physical_id, value.offset, value.nbytes, value.mode) for value in statement.ranges)
+        lines.append(f"{prefix}{statement.call_id}: T.ChannelBarrier({statement.event!r}, exchange={statement.exchange!r}, sequence={statement.sequence}, epoch={statement.epoch_resource!r}, after={statement.after!r}, ranges={ranges!r})")
+        return
+    if isinstance(statement, WorkerCall):
+        lines.append(f"{prefix}T.WorkerCall(phase_offset={statement.phase_offset}) {{")
+        _print_tir_stmt(lines, statement.invocation, indent + 2)
+        lines.append(prefix + "}")
+        return
     if isinstance(statement, Sequential):
         for field in statement.fields:
             _print_tir_stmt(lines, field, indent)

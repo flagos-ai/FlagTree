@@ -38,6 +38,7 @@
 #include "triton/Tools/LinearLayout.h"
 #include "llvm/ADT/STLExtras.h"
 #ifdef __TLE__
+#include "tle/dialect/include/IR/PhysicalShared.h"
 #include "tle/dialect/include/Tools/SharedStoreOwnership.h"
 #endif
 #include "llvm/Support/MathExtras.h"
@@ -1017,6 +1018,12 @@ SharedMemoryObject::getMaskSpanOffsets(triton::gpu::MemDescType srcTy) {
   if (allocShape == shape) {
     return 0;
   }
+#ifdef __TLE__
+  if (triton::tle::isAffineFlatShared(srcTy))
+    // A non-power-of-two slice has no valid bit-mask decomposition. Keep
+    // address fusion conservative and carry its actual affine view offset.
+    return ~uint64_t(0);
+#endif
   if (auto paddedEncoding = dyn_cast<triton::gpu::PaddedSharedEncodingAttr>(
           srcTy.getEncoding())) {
     // Mask is used in fusion of constant part of memory operation address as
@@ -1060,6 +1067,10 @@ Value SharedMemoryObject::getShmemOffset(Location loc, RewriterBase &rewriter,
   if (!isAffineSharedMemoryAccess(srcTy)) {
     return b.i32_val(0);
   }
+#ifdef __TLE__
+  if (triton::tle::isAffineFlatShared(srcTy))
+    return offsets.front();
+#endif
 
   LinearLayout ll;
   // We return the offset without the padding. The padding will be added in the

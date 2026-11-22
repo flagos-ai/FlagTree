@@ -1,0 +1,146 @@
+{# Owning H001 native template; frozen m000/r001 v2.1 E32 chain. #}
+import triton.experimental.tle.language as tle
+
+@triton.jit
+def _iq4_e32(value):
+    tl.static_assert(value.shape == [4, 32], "H001 numeric chain requires [4,32]")
+    layout: tl.constexpr = tle.gpu.BlockEncoding([1, 1], [1, 32], [4, 1], [1, 0])
+    return tle.gpu.set_layout(value, layout)
+
+@triton.jit
+def _iq4_erow(value):
+    layout: tl.constexpr = tle.gpu.SlicedEncoding(1, tle.gpu.BlockEncoding([1, 1], [1, 32], [4, 1], [1, 0]))
+    return tle.gpu.set_layout(value, layout)
+
+@triton.jit
+def _iq4_lanes():
+    return _iq4_e32(tl.broadcast_to(tl.arange(0, 32)[None, :], (4, 32)))
+
+@triton.jit
+def _iq4_broadcast_row(value):
+    return _iq4_e32(tl.broadcast_to(_iq4_erow(value)[:, None], (4, 32)))
+
+@triton.jit
+def _iq4_indexed_f32(value, src):
+    bits = tle.gpu.indexed32(_iq4_e32(value).to(tl.uint32, bitcast=True), _iq4_e32(src).to(tl.int32))
+    return _iq4_e32(bits.to(tl.float32, bitcast=True))
+
+@triton.jit
+def _iq4_rn_mul(a, b):
+    return _iq4_e32(tl.inline_asm_elementwise("mul.rn.f32 $0, $1, $2;", constraints="=f,f,f", args=[_iq4_e32(a), _iq4_e32(b)], dtype=tl.float32, is_pure=True, pack=1))
+
+@triton.jit
+def _iq4_rn_add(a, b):
+    return _iq4_e32(tl.inline_asm_elementwise("add.rn.f32 $0, $1, $2;", constraints="=f,f,f", args=[_iq4_e32(a), _iq4_e32(b)], dtype=tl.float32, is_pure=True, pack=1))
+
+@triton.jit
+def _iq4_rn_fma(a, b, c):
+    return _iq4_e32(tl.inline_asm_elementwise("fma.rn.f32 $0, $1, $2, $3;", constraints="=f,f,f,f", args=[_iq4_e32(a), _iq4_e32(b), _iq4_e32(c)], dtype=tl.float32, is_pure=True, pack=1))
+
+@triton.jit
+def _iq4_signed_lut(code):
+    lo = _iq4_e32(tl.where(code < 8, 0xbfad9881, 0x26190d01).to(tl.uint32))
+    hi = _iq4_e32(tl.where(code < 8, 0xf6eaddcf, 0x71594535).to(tl.uint32))
+    return _iq4_e32(tl.inline_asm_elementwise(
+        "{ .reg .b32 v; prmt.b32 v, $1, $2, $3; shl.b32 v, v, 24; shr.s32 v, v, 24; cvt.rn.f32.s32 $0, v; }",
+        constraints="=f,r,r,r", args=[lo, hi, code & 7], dtype=tl.float32, is_pure=True, pack=1))
+
+@triton.jit
+def _iq4_leaf_step(words, header, scales, bank, leaf, HALF: tl.constexpr, D: tl.constexpr):
+    lanes = _iq4_lanes()
+    semantic = lanes < 8
+    t = lanes + D + HALF * 128
+    group: tl.constexpr = (D + HALF * 128) // 32
+    byte = 16 * group + t % 16
+    src_word = _iq4_e32(tl.where(semantic, byte // 4, 0).to(tl.int32))
+    packed = tle.gpu.indexed32(words, src_word)
+    src_x = _iq4_e32(tl.where(semantic, (lanes + D) % 32, lanes).to(tl.int32))
+    xv = _iq4_indexed_f32(bank, src_x)
+    # Decode and consume one term with its real leaf dependency. Only the
+    # new leaf escapes this per-thread scalar region. The checked full-warp
+    # transports remain outside it; all operands and results retain E32.
+    decode: tl.constexpr = (
+        "{ .reg .b32 code, shift, sc, hi, lo, v, index; .reg .b16 d; "
+        ".reg .pred small; .reg .f32 delta, sf, lut, weight, product; "
+        "rem.u32 index, $6, 4; mul.lo.u32 shift, index, 8; "
+        f"add.u32 index, $6, {D + HALF * 128}; rem.u32 index, index, 32; "
+        "div.u32 index, index, 16; mad.lo.u32 shift, index, 4, shift; "
+        "shr.u32 code, $1, shift; and.b32 code, code, 15; "
+        f"shr.u32 sc, $3, {4 * group}; and.b32 sc, sc, 15; "
+        f"shr.u32 hi, $2, {16 + 2 * group}; and.b32 hi, hi, 3; "
+        "shl.b32 hi, hi, 4; or.b32 sc, sc, hi; "
+        "cvt.rn.f32.u32 sf, sc; sub.rn.f32 sf, sf, 0f42000000; "
+        "cvt.u16.u32 d, $2; cvt.f32.f16 delta, d; "
+        "setp.lt.u32 small, code, 8; "
+        "selp.b32 lo, 0xbfad9881, 0x26190d01, small; "
+        "selp.b32 hi, 0xf6eaddcf, 0x71594535, small; "
+        "and.b32 index, code, 7; prmt.b32 v, lo, hi, index; "
+        "shl.b32 v, v, 24; shr.s32 v, v, 24; cvt.rn.f32.s32 lut, v; "
+        "mul.rn.f32 weight, delta, sf; mul.rn.f32 weight, weight, lut; "
+    )
+    if D == 8:
+        update: tl.constexpr = "mul.rn.f32 $0, weight, $4; }"
+    elif D < 48:
+        update: tl.constexpr = "fma.rn.f32 $0, weight, $4, $5; }"
+    else:
+        update: tl.constexpr = "mul.rn.f32 product, weight, $4; add.rn.f32 $0, product, $5; }"
+    value = _iq4_e32(tl.inline_asm_elementwise(
+        decode + update, constraints="=f,r,r,r,f,f,r",
+        args=[packed, header, scales, xv, leaf, lanes],
+        dtype=tl.float32, is_pure=True, pack=1))
+    return _iq4_e32(tl.where(semantic, value, 0.0))
+
+@triton.jit
+def _iq4_combine(leaf):
+    lanes = _iq4_lanes()
+    pair_owner = (lanes < 8) & ((lanes % 2) == 0)
+    partner = _iq4_indexed_f32(leaf, tl.where(pair_owner, lanes + 1, lanes))
+    pairs = _iq4_e32(tl.where(pair_owner, _iq4_rn_add(leaf, partner), 0.0))
+    middle_owner = (lanes == 0) | (lanes == 2)
+    partner = _iq4_indexed_f32(pairs, tl.where(middle_owner, lanes + 4, lanes))
+    middle = _iq4_e32(tl.where(middle_owner, _iq4_rn_add(pairs, partner), 0.0))
+    partner = _iq4_indexed_f32(middle, tl.where(lanes == 0, 2, lanes))
+    return _iq4_e32(tl.where(lanes == 0, _iq4_rn_add(middle, partner), 0.0))
+
+@triton.jit
+def _iq4_stream_dot(source, weight, up_weight, rows, active, K: tl.constexpr, R: tl.constexpr, GLU: tl.constexpr):
+    tl.static_assert(R == 4 and K % 256 == 0, "H001 requires R4 and K256 blocks")
+    rows = _iq4_erow(rows.to(tl.int64))
+    active = _iq4_erow(active)
+    lanes = _iq4_lanes()
+    mask = _iq4_broadcast_row(active)
+    leader = mask & (lanes == 0)
+    zero_src = _iq4_e32(tl.full((4, 32), 0, tl.int32))
+    base_rows = _iq4_erow(rows * ((K // 256) * 136))
+    accumulator = _iq4_e32(tl.full((4, 32), 0.0, tl.float32))
+    up_accumulator = _iq4_e32(tl.full((4, 32), 0.0, tl.float32))
+    for block in tl.range(0, K // 256):
+        base = _iq4_broadcast_row(base_rows + block.to(tl.int64) * 136)
+        h = tle.gpu.indexed32(_iq4_e32(tl.load(weight.to(tl.pointer_type(tl.uint32)) + base // 4, mask=leader, other=0)), zero_src)
+        sl = tle.gpu.indexed32(_iq4_e32(tl.load(weight.to(tl.pointer_type(tl.uint32)) + base // 4 + 1, mask=leader, other=0)), zero_src)
+        words = _iq4_e32(tl.load(weight.to(tl.pointer_type(tl.uint32)) + base // 4 + 2 + lanes, mask=mask, other=0))
+        if GLU:
+            uh = tle.gpu.indexed32(_iq4_e32(tl.load(up_weight.to(tl.pointer_type(tl.uint32)) + base // 4, mask=leader, other=0)), zero_src)
+            usl = tle.gpu.indexed32(_iq4_e32(tl.load(up_weight.to(tl.pointer_type(tl.uint32)) + base // 4 + 1, mask=leader, other=0)), zero_src)
+            uw = _iq4_e32(tl.load(up_weight.to(tl.pointer_type(tl.uint32)) + base // 4 + 2 + lanes, mask=mask, other=0))
+        for half in tl.static_range(0, 2):
+            leaf = _iq4_e32(tl.full((4, 32), 0.0, tl.float32))
+            up_leaf = _iq4_e32(tl.full((4, 32), 0.0, tl.float32))
+{% for bank, ds in [(0,[8,0,16,24]), (1,[32,40,48,56]), (2,[64,72,80,88]), (3,[96,104,112,120])] %}
+            # Consume gate, then up, before releasing this bank. No matrix
+            # rereads: both K256 payload/header/scale sets stay live.
+            bank = _iq4_e32(tl.load(source + block * 256 + half * 128 + {{ bank * 32 }} + lanes, mask=mask, other=0).to(tl.float32))
+{% for d in ds %}
+            leaf = _iq4_leaf_step(words, h, sl, bank, leaf, half, {{ d }})
+{% endfor %}
+            if GLU:
+{% for d in ds %}
+                up_leaf = _iq4_leaf_step(uw, uh, usl, bank, up_leaf, half, {{ d }})
+{% endfor %}
+{% endfor %}
+            part = _iq4_combine(leaf)
+            accumulator = _iq4_e32(tl.where(leader, _iq4_rn_add(accumulator, part), 0.0))
+            if GLU:
+                part = _iq4_combine(up_leaf)
+                up_accumulator = _iq4_e32(tl.where(leader, _iq4_rn_add(up_accumulator, part), 0.0))
+    return accumulator, up_accumulator

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.types import DType, VectorType
+from triton.flagmega.ir.ops._compute_profile import compute_profile_supports_target
 
 
 def normalize_block_scaled_precision(attrs, opname):
@@ -55,6 +56,8 @@ def normalize_glu_activation_quantization(attrs, opname):
 
 
 def block_scaled_precision_supports_target(attrs, platform, architecture):
+    if not compute_profile_supports_target(attrs, platform, architecture):
+        return False
     return (attrs.get("activation_quantization") != "dynamic_fp8_sm90"
             or (platform == "nvidia" and architecture == "sm90"))
 

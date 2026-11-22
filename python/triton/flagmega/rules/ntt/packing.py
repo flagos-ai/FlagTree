@@ -952,6 +952,8 @@ class NttPackingPolicy:
         node: Node,
         module: IRModule,
     ) -> dict[str, object] | None:
+        if any(node.attrs.get(f"{role}_weight_encoding") is not None for role in ("q", "k", "v")):
+            return None
         input_type = module.node_map[node.inputs[0]].type
         if not isinstance(input_type, TensorType) or not isinstance(input_type.dtype, DType):
             return None

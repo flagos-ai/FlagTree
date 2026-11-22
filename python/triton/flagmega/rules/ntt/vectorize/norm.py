@@ -19,6 +19,8 @@ class VectorizeRMSNorm:
         self.lane_bytes = lane_bytes
 
     def candidates(self, node: Node, module: IRModule) -> tuple[VectorizeCandidate, ...]:
+        if node.attrs.get("compute_profile", "default") != "default":
+            return ()
         if node.op != "nn.rms_norm" or not node.effect.is_pure or not isinstance(node.type, TensorType):
             return ()
         value = module.node_map[node.inputs[0]].type

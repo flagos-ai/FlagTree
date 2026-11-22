@@ -1,0 +1,17 @@
+{% include "kernels/_iq4_streaming.py.jinja" %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "iq4_streaming_glu" %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    local_n_offsets = tl.program_id(0).to(tl.int64) * {{ call.tile_n }} + _iq4_erow(tl.arange(0, {{ call.tile_n }}))
+    active = _iq4_erow(local_n_offsets < ({{ call.active_n }}))
+    rows = _iq4_erow(({{ call.weight_row_offset }}) // {{ (call.k // 256) * 136 }})
+    gate, up = _iq4_stream_dot({{ call.value }}, {{ call.gate_weight }}, {{ call.up_weight }}, rows, active, {{ call.k }}, {{ call.tile_n }}, True)
+    value = _iq4_rn_mul(_iq4_e32(gate * tl.sigmoid(gate)), up)
+    destination = _iq4_e32({{ call.result }} + _iq4_broadcast_row({{ call.destination_offset }}))
+    writer = _iq4_broadcast_row(active) & (_iq4_lanes() == 0)
+    tl.store(destination, _iq4_e32(value.to(tl.bfloat16)), mask=writer)
+{% endif %}
+{% endfor %}

@@ -3,7 +3,6 @@
  */
 #pragma once
 #include "shape.h"
-#include <utility>
 
 // Loop skeletons.
 //
@@ -24,7 +23,7 @@ FTT_DEVICE_INLINE void apply_axis(Callable &&body, TIndices... outer) {
     } else {
         FTT_UNROLL
         for (dim_t i = 0; i < TShape::at(Axis); ++i)
-            apply_axis<TShape, Axis + 1>(std::forward<Callable>(body), outer...,
+            apply_axis<TShape, Axis + 1>(body, outer...,
                                          i);
     }
 }
@@ -34,7 +33,23 @@ FTT_DEVICE_INLINE void apply_axis(Callable &&body, TIndices... outer) {
 // Visit every index of `TShape` in row-major order.
 template <class TShape, class Callable>
 FTT_DEVICE_INLINE void apply(Callable &&body) {
-    detail::apply_axis<TShape, 0>(std::forward<Callable>(body));
+    detail::apply_axis<TShape, 0>(body);
+}
+
+namespace detail {
+template <size_t Axis, class Shape, class Callable, class Index>
+FTT_HOST_DEVICE constexpr void apply_shape_axis(const Shape &shape, Callable &body, const Index &index) {
+    if constexpr (Axis == Shape::rank()) { body(index); }
+    else {
+        FTT_UNROLL
+        for (dim_t i = 0; i < shape.template at<Axis>(); ++i) { apply_shape_axis<Axis + 1>(shape, body, index.append(i)); }
+    }
+}
+} // namespace detail
+
+template <class Shape, class Callable>
+FTT_HOST_DEVICE constexpr void apply(const Shape &shape, Callable &&body) {
+    detail::apply_shape_axis<0>(shape, body, make_shape());
 }
 
 // Visit `count` elements, striding by the CTA's thread count so each thread

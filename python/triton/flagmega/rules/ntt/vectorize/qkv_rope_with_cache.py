@@ -103,6 +103,8 @@ class VectorizeQKVRoPEWithCache:
 
 
 def _try_plan(node: Node, module: IRModule) -> _PackingPlan | None:
+    if node.attrs.get("norm_compute_profile", "default") != "default" or "query_output_lanes" in node.attrs:
+        return None
     if node.op != "nn.qkv_rope_with_cache" or len(node.inputs) != 12:
         return None
     qkv = module.node_map[node.inputs[0]]

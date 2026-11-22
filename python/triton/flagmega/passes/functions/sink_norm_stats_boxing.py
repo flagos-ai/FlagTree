@@ -386,6 +386,7 @@ def _partial_call_argument(
         consumer.binding_id is None
         or consumer.source_parameter_index is None
         or argument.op != "nn.norm_stats"
+        or argument.attrs.get("compute_profile", "default") != "default"
         or argument.type != materialized_type
         or int(argument.attrs["axis"]) != consumer.axis
         or bool(argument.attrs["use_mean"]) != consumer.use_mean

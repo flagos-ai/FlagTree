@@ -25,7 +25,7 @@ from triton.flagmega.errors import (
 )
 from triton.flagmega.evaluator.recipe_scope import recipe_output_scope
 from triton.flagmega.importer.checkpoint import Checkpoint, TensorByteRange
-from triton.flagmega.ir import DType, DistributedType, IRModule, TensorType, VectorType, verify_module
+from triton.flagmega.ir import DType, DistributedType, IRModule, TensorType, TupleType, VectorType, verify_module
 from triton.flagmega.ir.ops.core import get_definition
 
 
@@ -264,8 +264,15 @@ def materialize_numpy_recipe(module, recipe, checkpoint, *, storage_reader=None,
     return values
 
 
-def _validate_storage_value(node, value, context: NumpyMaterializationContext) -> None:
-    tensor = _tensor_type(node.type)
+def _validate_storage_value(node, value, context: NumpyMaterializationContext, *, value_type=None) -> None:
+    value_type = node.type if value_type is None else value_type
+    if isinstance(value_type, TupleType):
+        if not isinstance(value, tuple) or len(value) != len(value_type.fields):
+            raise EvaluationError(f"NumPy materializer tuple {node.id!r} has an invalid field count.", node_id=node.id)
+        for field, field_type in zip(value, value_type.fields, strict=True):
+            _validate_storage_value(node, field, context, value_type=field_type)
+        return
+    tensor = _tensor_type(value_type)
     expected_shape = _physical_shape(tensor)
     if not isinstance(value, context.numpy.ndarray):
         raise EvaluationError(

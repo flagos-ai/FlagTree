@@ -8,6 +8,7 @@ from typing import Mapping, Sequence
 from math import isfinite, prod
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
+from triton.flagmega.ir.ops._compute_profile import require_host_reference
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.memory_effect import MemoryEffect
 from triton.flagmega.ir.model import (
@@ -84,8 +85,8 @@ class RotaryEmbedding(OpDefinition):
         if output_dtype not in {DType.BFLOAT16, DType.FLOAT32}:
             raise IRSchemaError("RotaryEmbedding output_dtype must be BF16/FP32.")
         math_mode = attrs["math_mode"]
-        if math_mode not in {"fast", "accurate"}:
-            raise IRSchemaError("RotaryEmbedding math_mode must be fast or accurate.")
+        if math_mode not in {"fast", "accurate", "ggml"}:
+            raise IRSchemaError("RotaryEmbedding math_mode must be fast, accurate or ggml.")
         try:
             frequencies = tuple(float(value) for value in attrs["inverse_frequencies"])
         except (TypeError, ValueError) as error:
@@ -93,6 +94,8 @@ class RotaryEmbedding(OpDefinition):
         if frequencies and (len(frequencies) != head_dim // 2 or
                             any(not isfinite(value) or value <= 0 for value in frequencies)):
             raise IRSchemaError("RotaryEmbedding inverse_frequencies must contain head_dim/2 positive finite values.")
+        if math_mode == "ggml" and (lanes or output_dtype != DType.FLOAT32 or scaling != 1.0 or frequencies):
+            raise IRSchemaError("RotaryEmbedding ggml mode requires unscaled scalar F32 output and angle recurrence.")
         result = {
             "head_dim": head_dim,
             "theta": theta,
@@ -117,6 +120,8 @@ class RotaryEmbedding(OpDefinition):
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         reference = tensor_of(cls.reference.type_of(inputs))
         caches = cls.cache.read(inputs)
+        if attrs.get("math_mode") == "ggml" and caches:
+            raise IRSchemaError("RotaryEmbedding ggml mode requires direct angle recurrence.")
         if len(caches) > 1:
             raise IRSchemaError("RotaryEmbedding accepts at most one precomputed cache.")
         if caches:
@@ -141,6 +146,8 @@ class RotaryEmbedding(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        if node.attrs.get("math_mode") == "ggml":
+            require_host_reference(node, key="math_mode", default="fast")
         reference = cls.reference.read(arguments)
         state = cls.state.read(arguments)
         if not isinstance(state, PagedAttentionState):

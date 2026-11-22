@@ -7,7 +7,10 @@ from types import SimpleNamespace
 import pytest
 
 from triton.flagmega.errors import RuntimeContractError
-from triton.flagmega.runtime.prepared import PreparedKernel, ResourceContract, _validate_resources
+from triton.flagmega.runtime.prepared import (
+    PreparedKernel, ResourceContract, _validate_resources,
+    prepare_compiled_kernel, prepare_jit_kernel,
+)
 
 
 def _compiled(*, local_words=10, stack=40, stores=0, loads=0):
@@ -138,3 +141,39 @@ def test_resident_shared_budget_is_checked_before_loading():
 
     with pytest.raises(RuntimeContractError, match="240000 shared-memory bytes for 2 resident block"):
         _validate_resources(Unloaded(), ResourceContract(4, 2))
+
+
+@pytest.mark.parametrize("prepare", [prepare_compiled_kernel, prepare_jit_kernel])
+@pytest.mark.parametrize("dynamic,static", [(768, 0), (0, 768), (256, 512),
+                                           (384, 0), (0, 384), (128, 256)])
+def test_static_and_dynamic_shared_obey_same_prepare_limits(prepare, dynamic, static):
+    class Unloaded:
+        metadata = SimpleNamespace(num_warps=4, shared=dynamic, static_shared=static)
+
+        @property
+        def run(self):
+            raise AssertionError("Shared admission must precede driver loading")
+
+    compiled = Unloaded()
+    kernel = SimpleNamespace(run=lambda *args, **kwargs: compiled)
+    subject = kernel if prepare is prepare_jit_kernel else compiled
+    total = dynamic + static
+    diagnostic = ("768 shared-memory bytes; limit is 512" if total == 768
+                  else "768 shared-memory bytes for 2 resident block")
+    with pytest.raises(RuntimeContractError, match=diagnostic):
+        prepare(subject, (), (), grid=(1,), contract=ResourceContract(4, 2, shared_memory_capacity_bytes=512))
+
+
+@pytest.mark.parametrize("dynamic,static", [(256, 0), (0, 256), (128, 128)])
+def test_shared_report_counts_static_without_changing_launch_dynamic(dynamic, static):
+    compiled = _compiled(local_words=0, stack=0)
+    compiled.metadata.shared = dynamic
+    compiled.metadata.static_shared = static
+    prepared = prepare_compiled_kernel(compiled, (), (), grid=(1,),
+                                      contract=ResourceContract(4, 2, shared_memory_capacity_bytes=512))
+    report = prepared.resource_report
+    assert report["shared_memory_bytes"] == 256
+    assert report["resident_shared_memory_bytes"] == 512
+    assert report["static_shared_memory_bytes"] == static
+    assert report["dynamic_shared_memory_bytes"] == dynamic
+    assert compiled.metadata.shared == dynamic

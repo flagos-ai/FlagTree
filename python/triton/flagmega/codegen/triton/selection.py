@@ -14,6 +14,8 @@ from triton.flagmega.codegen.triton.candidates import (
 )
 from triton.flagmega.codegen.triton.distribution import requires_distributed_grid
 from triton.flagmega.ir import Candidate, IRModule, SelectionPoint
+from triton.flagmega.errors import CodegenError
+from triton.flagmega.ir.ops._compute_profile import compute_profile_supports_target
 from triton.flagmega.passes.tir import (
     find_norm_consumer_matches,
     find_projection_logits_argmax_matches,
@@ -60,6 +62,9 @@ class TritonTirSelectionPolicy:
         mesh_hierarchy = target.distributed_placements(module)[0].hierarchy
         points: list[SelectionPoint] = []
         for node in module.nodes:
+            if not compute_profile_supports_target(node.attrs, getattr(target, "codegen_platform", None),
+                                                    getattr(target, "codegen_architecture", None)):
+                raise CodegenError(f"{node.op} has a native compute profile unsupported by this target.")
             from triton.flagmega.codegen.triton.fusion import require_fusion
             require_fusion(node, tuple(module.node_map[value] for value in node.inputs))
             point_id = f"tir.{node.id}"

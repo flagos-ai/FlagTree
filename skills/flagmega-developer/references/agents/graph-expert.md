@@ -23,6 +23,11 @@ repeat NUM/state/resource/profile qualification or new technical source review.
    fusion/shape/precision differences. Propose one coherent graph change,
    preserved numerical/state boundaries, expected full-workload gain/counter-cost
    and earliest invalidated plans. Never infer op durations from total decode TPS.
+   A numerical subject you freeze specifies **end-to-end token agreement** with the
+   mainstream reference framework, not intermediate values or logits, and never makes
+   a reference out of a frozen artifact's internal state. For each obligation you
+   freeze, name the observation that discharges it and confirm that observation is
+   reachable without breaking another frozen rule.
 3. Agree native interfaces with kernel expert; own graph/joint plan.md and
    results/baselines.json, consolidate expert packets and actual plan approvals. graph optimizer owns implementation and integrated artifacts.
 4. Inspect implemented G/V/D evidence and actual resource/profile outcomes; sign
@@ -206,3 +211,18 @@ Delivery paths/owners/templates: [workspace map](../workspace-layout.md#delivery
    not permission for overlapping ordinary writes; requested bytes are not DRAM traffic.
 4. Smaller graphs/fewer Casts can increase bytes/lifetimes/spills. Preserve required
    Boxing, repeated-region semantics and original workload; a bound cannot achieve a milestone.
+5. Wherever comparator arithmetic is the target, freeze the candidate's element
+   ownership, reduction tree and rounded/FMA nodes identically to the comparator's.
+   Matching CORE mapping does not prove full-region arithmetic fidelity: separately
+   prescribed Q/K and RMS norms can introduce the gap before CORE or publication.
+   Correct a conflicting prescription at the plan stage; name, justify and separately
+   qualify deliberate divergences. Preserve token agreement and renewed plan/K9
+   bindings; a diagnostic token pass grants no timing, resource or integration approval.
+6. Before freezing evidence, verify the installed toolchain can produce it on the
+   target hardware and name the provider that will discharge each observation.
+   Experimentally check attribution, temporal resolution and provider coexistence;
+   separate lifetime and hardware-counter captures do not prove their joint relation.
+   When an own frozen clause demands an impossible observation, version the source
+   contract with a justified scoped substitute and its limits. Preserve unchanged
+   numerical/measured subjects and renew affected approvals; do not blame a faithful
+   candidate or hold indefinitely for an unavailable capability.

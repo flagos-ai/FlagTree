@@ -24,6 +24,7 @@
 #include "tle/dialect/include/Analysis/AxisInfoExt.h"
 
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/PhysicalShared.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -127,6 +128,8 @@ static int64_t sharedIdentityRun(triton::gpu::MemDescType type,
   bound = std::max<int64_t>(bound, 1);
   if (type.getRank() == 0)
     return 1;
+  if (isAffineFlatShared(type))
+    return bound;
 
   if (auto padded = dyn_cast<triton::gpu::PaddedSharedEncodingAttr>(shared)) {
     // LocalPointersOpConversion linearizes by the declared order before
@@ -166,6 +169,24 @@ static int64_t sharedIdentityRun(triton::gpu::MemDescType type,
   return 1;
 }
 
+// Flat views carry byte origins separately from their encoding. An alias or
+// subview at +4 bytes must not inherit a 16-byte vector alignment proof.
+static int64_t flatViewAlignment(Value value) {
+  auto type = cast<triton::gpu::MemDescType>(value.getType());
+  int64_t elemBytes = std::max<int64_t>(1, getIntOrFloatOrPtrBitWidth(type.getElementType()) / 8);
+  if (type.getRank() != 1)
+    return elemBytes;
+  if (auto alloc = value.getDefiningOp<triton::gpu::LocalAllocOp>())
+    return alloc.getAlignmentOrDefault();
+  if (auto alias = value.getDefiningOp<MemDescAliasOp>())
+    return std::gcd(flatViewAlignment(alias.getSrc()), alias.getOffsetBytes());
+  if (auto slice = value.getDefiningOp<triton::gpu::MemDescSubsliceOp>())
+    return std::gcd(flatViewAlignment(slice.getSrc()),
+                    slice.getOffsets().front() * elemBytes);
+  // A function parameter has no proven byte origin at this analysis stage.
+  return elemBytes;
+}
+
 class TleLocalPointersOpAxisInfoVisitor final : public AxisInfoVisitor {
 public:
   AxisInfo
@@ -195,6 +216,8 @@ public:
               memDescTy.getEncoding()))
         baseAlignBytes =
             std::max<int64_t>(baseAlignBytes, sharedEnc.getAlignment());
+      if (isAffineFlatShared(memDescTy))
+        baseAlignBytes = flatViewAlignment(local.getSrc());
 
       int64_t offsetDivElems = highestPowOf2Divisor<int64_t>(0);
       bool hasConstOffset = true;
@@ -321,6 +344,9 @@ public:
     AxisInfo::DimVectorT byteDivisibility = offsetInfo.getDivisibility();
     AxisInfo::DimVectorT physicalContiguity = offsetInfo.getContiguity();
     int64_t identityRun = sharedIdentityRun(memDescTy, elemBytes);
+    if (isAffineFlatShared(memDescTy))
+      identityRun = std::min(identityRun,
+                            std::max<int64_t>(1, flatViewAlignment(local.getSrc()) / elemBytes));
     for (int d = 0; d < rank; ++d) {
       physicalContiguity[d] = std::min(physicalContiguity[d], identityRun);
       byteDivisibility[d] = std::gcd(

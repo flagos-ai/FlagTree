@@ -970,6 +970,15 @@ void init_triton_ir(py::module &&m) {
              return self.create<triton::tle::SetLayoutOp>(
                  value.getType(), value, targetEncoding);
            })
+      .def("create_tle_gpu_indexed32",
+           [](TritonOpBuilder &self, Value value, Value src) -> Value {
+             auto op = self.create<ElementwiseInlineAsmOp>(
+                 SmallVector<Type>{value.getType()},
+                 "// tle.indexed32\nshfl.sync.idx.b32 $0, $1, $2, 0x1f, 0xffffffff;",
+                 "=r,r,r", false, 1, SmallVector<Value>{value, src});
+             op->setAttr("tle.indexed32", self.getBuilder().getUnitAttr());
+             return op->getResult(0);
+           })
 #endif
       .def("get_bool_attr",
            [](TritonOpBuilder &self, bool value) {

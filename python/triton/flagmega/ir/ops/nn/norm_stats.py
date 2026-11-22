@@ -37,6 +37,12 @@ from triton.flagmega.ir.type_pattern import is_tensor
     display_name="NN.NormStats",
 )
 class NormStats(OpDefinition):
+    """Additive default statistics or explicit ggml F32 mean-square statistics.
+
+    ``ggml_f32_v1`` squares in F32, sums and divides internally in F64,
+    then stores one F32 mean square per row. It is not a partial reduction.
+    """
+
     value = input_parameter(is_tensor(), name="input")
     axis = attribute_parameter()
     use_mean = attribute_parameter()
@@ -46,10 +52,13 @@ class NormStats(OpDefinition):
     reduction_block_traversal = attribute_parameter(default="forward")
     reduction_tree_group_size = attribute_parameter(default=None)
     reduction_group_seed_index = attribute_parameter(default=0)
+    compute_profile = attribute_parameter(default="default")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
         attrs = super().normalize_attrs(attributes)
+        from triton.flagmega.ir.ops._compute_profile import normalize_compute_profile
+        profile = normalize_compute_profile(attrs, "NormStats", supported="ggml_f32_v1")
         axis = attrs["axis"]
         if isinstance(axis, bool) or not isinstance(axis, int):
             raise IRSchemaError("NormStats axis must be an integer.")
@@ -75,7 +84,9 @@ class NormStats(OpDefinition):
             raise IRSchemaError("NormStats reduction_tree_group_size must be a positive power of two.")
         if tree_group is not None and order == "unspecified":
             raise IRSchemaError("NormStats reduction_tree_group_size requires an explicit reduction_order.")
-        return {"axis": axis, "use_mean": bool(attrs["use_mean"]),
+        if profile and (attrs["use_mean"] or group != 1 or order != "unspecified" or tree_group is not None):
+            raise IRSchemaError("NormStats ggml_f32_v1 requires RMS mean-square statistics without GPU reduction overrides.")
+        return {"axis": axis, "use_mean": bool(attrs["use_mean"]), **profile,
                 **({"reduction_block_size": block} if block is not None else {}),
                 **({"reduction_block_traversal": traversal} if traversal != "forward" else {}),
                 **({"reduction_tree_group_size": tree_group} if tree_group is not None else {}),
@@ -88,6 +99,11 @@ class NormStats(OpDefinition):
         value_type = cls.value.type_of(inputs)
         value = tensor_of(value_type)
         axis = normalize_axis(int(attrs["axis"]), value.rank)
+        if attrs.get("compute_profile", "default") != "default":
+            from triton.flagmega.ir.ops._compute_profile import verify_complete_f32
+            verify_complete_f32(value_type, "NormStats")
+            if axis != value.rank - 1:
+                raise IRSchemaError("NormStats ggml_f32_v1 reduces the final axis.")
         group = attrs.get("reduction_group_size", 1)
         if group > 1 or attrs.get("reduction_order", "unspecified") != "unspecified":
             suffix = value.shape[axis:]
@@ -134,6 +150,8 @@ class NormStats(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        from triton.flagmega.ir.ops._compute_profile import require_host_reference
+        require_host_reference(node)
         value_type = tensor_of(context.types[cls.value.read(node.inputs)])
         value = unpack_default_vector(cls.value.read(arguments), value_type)
         group = node.attrs.get("reduction_group_size", 1)

@@ -31,3 +31,6 @@ __all__ = [
     "VectorizedMatMul",
     "VectorizedUnary",
 ]
+
+from .q8_1_prepare import Q8_1Prepare
+from .iq4_xs_q8_1_matmul import IQ4XSQ8_1MatMul

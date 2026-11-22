@@ -20,6 +20,7 @@ from triton.flagmega.ir.model import (
 )
 from triton.flagmega.ir.constant_recipe import ConstantRecipe
 from triton.flagmega.ir.tir import ExecutionFunction, PrimFunction, KernelDefinition
+from triton.flagmega.ir.tir.heterogeneous import HeterogeneousPlan, HeterogeneousProgram
 
 
 class IRBuilder:
@@ -32,6 +33,8 @@ class IRBuilder:
         self._functions: list[Function] = []
         self._prim_functions: list[PrimFunction] = []
         self._execution_functions: list[ExecutionFunction] = []
+        self._heterogeneous_plans: list[HeterogeneousPlan] = []
+        self._heterogeneous_programs: list[HeterogeneousProgram] = []
         self._kernel_definitions: list[KernelDefinition] = []
         self._counter = 0
 
@@ -172,6 +175,22 @@ class IRBuilder:
         self._kernel_definitions.append(value)
         return value
 
+    def heterogeneous_plan(self, value: HeterogeneousPlan) -> HeterogeneousPlan:
+        if not isinstance(value, HeterogeneousPlan):
+            raise TypeError("IRBuilder.heterogeneous_plan requires a HeterogeneousPlan.")
+        if any(plan.name == value.name for plan in self._heterogeneous_plans):
+            raise IRSchemaError(f"Duplicate heterogeneous plan {value.name!r}.")
+        self._heterogeneous_plans.append(value)
+        return value
+
+    def heterogeneous_program(self, value: HeterogeneousProgram) -> HeterogeneousProgram:
+        if not isinstance(value, HeterogeneousProgram):
+            raise TypeError("IRBuilder.heterogeneous_program requires a HeterogeneousProgram.")
+        if any(program.name == value.name for program in self._heterogeneous_programs):
+            raise IRSchemaError(f"Duplicate heterogeneous program {value.name!r}.")
+        self._heterogeneous_programs.append(value)
+        return value
+
     @property
     def nodes(self) -> tuple[Node, ...]:
         """Snapshot the nodes built so far for Python constant recipe builders."""
@@ -195,6 +214,8 @@ class IRBuilder:
             entry=entry,
             prim_functions=tuple(self._prim_functions),
             execution_functions=tuple(self._execution_functions),
+            heterogeneous_plans=tuple(self._heterogeneous_plans),
+            heterogeneous_programs=tuple(self._heterogeneous_programs),
             kernel_definitions=tuple(self._kernel_definitions),
             metadata=self.metadata,
             constant_recipes=tuple(constant_recipes),
@@ -327,6 +348,12 @@ class Module:
 
     def execution_function(self, value: ExecutionFunction) -> ExecutionFunction:
         return self.builder.execution_function(value)
+
+    def heterogeneous_plan(self, value: HeterogeneousPlan) -> HeterogeneousPlan:
+        return self.builder.heterogeneous_plan(value)
+
+    def heterogeneous_program(self, value: HeterogeneousProgram) -> HeterogeneousProgram:
+        return self.builder.heterogeneous_program(value)
 
     def kernel_definition(self, value: KernelDefinition) -> KernelDefinition:
         return self.builder.kernel_definition(value)

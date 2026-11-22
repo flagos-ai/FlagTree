@@ -26,6 +26,9 @@
 #include <vector>
 
 #include "triton/Dialect/Triton/IR/Utility.h"
+#ifdef __TLE__
+#include "tle/dialect/include/IR/PhysicalShared.h"
+#endif
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
@@ -1217,6 +1220,17 @@ LinearLayout TritonGPUDialect::toLinearLayout(ArrayRef<int64_t> shape,
   LinearLayout result = LinearLayout::empty();
   if (auto distributed = dyn_cast<DistributedEncodingTrait>(layout)) {
     result = distributed.toLinearLayout(shape);
+#ifdef __TLE__
+  } else if (triton::tle::isAffineFlatShared(shape, layout) &&
+             shape.front() > 0 && !llvm::isPowerOf2_64(shape.front())) {
+    // Bit-layout clients (e.g. async-copy coalescing) need a legal carrier.
+    // This identity map covers the real arena, but does not allocate its
+    // power-of-two tail. MemDesc extent, allocation size and affine pointers
+    // continue to use the original shape and enforce the real view bounds.
+    int64_t carrier = llvm::PowerOf2Ceil(uint64_t(shape.front()));
+    result = swizzledSharedToLinearLayout(
+        {carrier}, cast<SwizzledSharedEncodingAttr>(layout));
+#endif
   } else {
     assert(llvm::all_of(shape,
                         [](int64_t dim) {

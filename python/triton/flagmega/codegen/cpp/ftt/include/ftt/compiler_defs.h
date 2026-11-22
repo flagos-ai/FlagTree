@@ -17,10 +17,19 @@
 #define FTT_ARCH_NVIDIA 1
 #endif
 
+// RISC-V 64 host side (K230's C908).  Detected from the compiler's own macros so
+// an SDK build picks it up without extra flags; vector code additionally needs
+// the V extension, which FTT_RVV gates.
+#if !defined(FTT_ARCH_ILUVATAR) && !defined(FTT_ARCH_NVIDIA) && (defined(__riscv) && __riscv_xlen == 64)
+#define FTT_ARCH_RISCV64 1
+#if defined(__riscv_v_intrinsic)
+#define FTT_RVV 1
+#endif
+#endif
+
 #if defined(FTT_ARCH_ILUVATAR) && defined(FTT_ARCH_NVIDIA)
 #error "Select exactly one FTT architecture."
-#elif !defined(FTT_ARCH_ILUVATAR) && !defined(FTT_ARCH_NVIDIA)
-#error "Define FTT_ARCH_ILUVATAR or FTT_ARCH_NVIDIA."
+
 #endif
 
 // Device/host function qualifiers.  Iluvatar's COREX toolchain accepts the
@@ -51,6 +60,13 @@
 #define FTT_DEVICE_PASS 1
 #endif
 
+// Namespace constants need device storage when their address is used.
+#if defined(FTT_DEVICE_PASS)
+#define FTT_CONSTANT FTT_DEVICE static constexpr
+#else
+#define FTT_CONSTANT inline constexpr
+#endif
+
 #if defined(FTT_ARCH_NVIDIA) && defined(__CUDACC__)
 #define FTT_INLINE __forceinline__
 #else
@@ -60,11 +76,16 @@
 
 // Loop hints.  Kernel bodies are generated with statically known trip counts
 // wherever the IR knows them, so full unrolling is the common case.
+#if defined(FTT_ARCH_NVIDIA) || defined(FTT_ARCH_ILUVATAR)
 #define FTT_UNROLL _Pragma("unroll")
 #if defined(FTT_ARCH_NVIDIA)
 #define FTT_NO_UNROLL _Pragma("unroll 1")
 #else
 #define FTT_NO_UNROLL _Pragma("nounroll")
+#endif
+#else
+#define FTT_UNROLL
+#define FTT_NO_UNROLL
 #endif
 
 namespace ftt {

@@ -80,7 +80,8 @@ def form_add_norm_stats(module: IRModule) -> IRModule:
         for stats in stats_nodes:
             # AddNormStats permits partial-owner sums. It cannot express a
             # prescribed complete-vector tree, so retain that explicit op.
-            if (stats.attrs.get("reduction_group_size", 1) != 1
+            if (stats.attrs.get("compute_profile", "default") != "default"
+                    or stats.attrs.get("reduction_group_size", 1) != 1
                     or stats.attrs.get("reduction_order", "unspecified") != "unspecified"):
                 valid = False
                 break

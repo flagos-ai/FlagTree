@@ -24,6 +24,7 @@ from triton.flagmega.ir.type_pattern import is_ir_type
 )
 class TupleValue(OpDefinition):
     const_evaluable = True
+    numpy_materializable = True
     fields = variadic_input_parameter(is_ir_type())
 
     @classmethod
@@ -32,6 +33,10 @@ class TupleValue(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        return tuple(arguments)
+
+    @classmethod
+    def materialize_numpy(cls, node, arguments, context):
         return tuple(arguments)
 
     @classmethod

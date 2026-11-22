@@ -158,10 +158,21 @@ def prepare_kernel_calls(
             "variant": str(raw.get("variant", "")),
             "execution_kind": str(raw.get("execution_kind", "")),
             "internal_grid_barriers": internal_grid_barriers,
-            "arguments": _call_runtime_arguments(raw),
+            "arguments": (list(raw["arguments"])
+                          if raw.get("variant") in ("r004_reference_v4", "r004_column_v4", "r004_column_v6")
+                          and not raw.get('parameters', {}).get('native_model_contract')
+                          else _call_runtime_arguments(raw)),
         }
         call["signature"] = ", ".join(call["arguments"])
+        if family in {"q8_1_prepare", "iq4_q8_projection", "iq4_q8_glu", "iq4_q8_interleaved"}:
+            from triton.flagmega.codegen.triton.iq4_q8_renderer import register
+            register()
         encoder = _FAMILY_ENCODERS.get(family)
+        if encoder is None and family in {
+            "iq4_streaming_projection", "iq4_streaming_glu", "iq4_streaming_interleaved"
+        }:
+            from triton.flagmega.codegen.triton.iq4_streaming_renderer import encode_default
+            encoder = encode_default
         if encoder is None:
             raise CodegenError(
                 f"TIR call {call['call']!r} has no renderer for "
@@ -182,7 +193,11 @@ def prepare_kernel_calls(
             if device_views:
                 encoder_raw = {**encoder_raw, "readonly_device_views": device_views}
         call.update(encoder(encoder_raw))
-        call["participation_active"] = _exclusive_participation_active(raw)
+        _bind_explicit_task_recipe(call, raw)
+        call["participation_active"] = (
+            "True" if call["variant"] in ("r004_reference_v4", "r004_column_v4", "r004_column_v6")
+            else _exclusive_participation_active(raw)
+        )
         norm_owner = _canonical_norm_stats_execution_active(raw, call)
         if norm_owner is not None:
             participation = call["participation_active"]
@@ -213,6 +228,24 @@ def prepare_kernel_calls(
         _bind_transfer_pipeline_parameters(call, raw)
         calls.append(call)
     return calls
+
+
+def _bind_explicit_task_recipe(call, raw):
+    """Carry the selected independent work domain into the callee launch ABI.
+
+    An explicit work domain can count scalar rows of a packed/tuple result.
+    Family operand encoders do not own or reconstruct this compiler recipe.
+    Legacy mappings without work_size keep their family-derived contract.
+    """
+    mapping = raw.get("parameters", {}).get("task_mapping")
+    if not isinstance(mapping, Mapping) or "work_size" not in mapping:
+        return
+    from triton.flagmega.ir.launch_recipe import TaskLaunchRecipe
+    recipe = TaskLaunchRecipe.from_data(mapping).to_data()
+    encoded = call.get("task_launch_recipe")
+    if encoded is not None and dict(encoded) != recipe:
+        raise CodegenError("Family task coverage differs from the selected explicit launch recipe.")
+    call["task_launch_recipe"] = recipe
 
 
 def _kernel_output_type(raw):
@@ -2220,7 +2253,86 @@ def _gdn_convolution_call(raw) -> dict[str, object]:
     }
 
 
+def _r004_gdn_phase_call(raw) -> dict[str, object]:
+    """Consume the package's native projection, preserving ordered pointer ABI.
+
+    Root/view/scalar projection belongs to the typed package binding. These are
+    native pointer parameters, never dtype/offset immediates or value-tile args.
+    """
+    if raw.get('parameters', {}).get('native_model_contract') is not None:
+        from .r004_native_model import encode_model_call
+        return encode_model_call(raw)
+    from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import (
+        phase_writer_proof, validate_phase_plan,
+    )
+    parameters = raw.get("parameters", {})
+    plan = validate_phase_plan(parameters.get("phase_plan"))
+    phase = parameters.get("r004_phase")
+    entry = next((e for e in plan["entries"] if e["phase"] == phase), None)
+    if entry is None:
+        raise CodegenError("Unknown frozen r004 C phase.")
+    if raw.get("implementation") != plan["implementation"]:
+        raise CodegenError("r004 phase requires its registered reference provider.")
+    attrs = raw.get("semantic_attrs", {})
+    # The accepted artifact stores epsilon as an IEEE F32 value. Validate
+    # its exact frozen bits, including the Python literal spelling of 1e-6.
+    from struct import pack
+    epsilon = attrs.get("epsilon")
+    epsilon_matches = (type(epsilon) in (float, int)
+                       and pack("f", epsilon) == pack("f", 1e-6))
+    required = {"num_key_heads": 16, "num_value_heads": 48,
+                "key_head_dim": 128, "value_head_dim": 128,
+                "b_weight_encoding": "IQ4_XS", "a_weight_encoding": "IQ4_XS"}
+    if (any(attrs.get(k) != v for k, v in required.items())
+            or attrs.get("value_head_order", "grouped") != "tiled"
+            or attrs.get("qk_norm_mode", "clamp") != "clamp"
+            or attrs.get("qk_norm_epsilon", 1e-12) != 1e-12
+            or not epsilon_matches
+            or attrs.get("round_normalized_qk", False)
+            or not attrs.get("round_beta", True) or attrs.get("round_core", False)
+            or attrs.get("gate_math_mode", "accurate") != "accurate"):
+        raise CodegenError("r004 C numerical contract differs from the native template.")
+    for formal, index in (("qkv", 0), ("z", 1), ("projection_input", 2),
+                          ("b_weight", 6), ("a_weight", 7), ("a_log", 8),
+                          ("dt_bias", 9), ("norm_weight", 10)):
+        abi = _buffer(raw, "inputs", formal)["abi"]
+        root = plan["roots"][index]
+        if (abi.get("scalar_dtype") != root["dtype"]
+                or prod(_static_shape(abi, "logical_shape")) * int(abi.get("scalar_lane_count", 1))
+                != prod(root["shape"])):
+            raise CodegenError(f"r004 C {formal} typed scalar inventory differs from v4.")
+    if (list(parameters.get("program_grid", ())) != entry["grid"]
+            or parameters.get("program_owner_mapping") != "x-fast"):
+        raise CodegenError("r004 phase grid/owner mapping differs from v4.")
+    arguments = raw.get("arguments")
+    from triton.flagmega.codegen.triton.kernels.gdn_recurrent.r004_contract_v4 import native_arguments
+    NATIVE_ARGUMENTS = native_arguments(plan)
+    expected = list(NATIVE_ARGUMENTS[phase])
+    if not isinstance(arguments, (list, tuple)) or list(arguments) != expected:
+        raise CodegenError("r004 phase requires native arguments in frozen positions.")
+    if (raw.get("argument_bindings") is not None
+            and list(raw["argument_bindings"]) != entry["argument_bindings"]):
+        raise CodegenError("r004 phase root/scalar/view bindings differ from v4.")
+    facts = raw.get("facts", {})
+    if facts.get("internal_grid_barriers", 0) != 0:
+        raise CodegenError("r004 C phases cannot contain grid barriers.")
+    return {
+        "phase": phase, "native_arguments": expected,
+        "arguments": expected, "signature": ", ".join(expected),
+        "argument_bindings": entry["argument_bindings"],
+        "dynamic_argument_indices": entry["dynamic_argument_indices"],
+        "grid": entry["grid"], "num_warps": entry["num_warps"],
+        "maxnreg": 80, "enable_static_shared": entry["enable_static_shared"],
+        "requires_grid_wide_sync": False, "program_kind": "ordinary",
+        "depends_on": entry["depends_on"], "tasks_per_owner": 1,
+        "execution_mesh": entry["execution_mesh"],
+        "scalar_writer_proof": phase_writer_proof(phase, plan),
+    }
+
+
 def _gdn_recurrent_call(raw) -> dict[str, object]:
+    if raw.get("variant") in ("r004_reference_v4", "r004_column_v4", "r004_column_v6"):
+        return _r004_gdn_phase_call(raw)
     state = _buffer(raw, "inputs", "state", 1)
     qkv = _buffer(raw, "inputs", "qkv")
     z = _buffer(raw, "inputs", "z")

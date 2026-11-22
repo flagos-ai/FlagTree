@@ -71,6 +71,8 @@ def describe_tir_package(
     later, so sharing this descriptor builder does not repack its pool twice.
     """
 
+    if module.heterogeneous_plans or module.heterogeneous_programs:
+        raise CodegenError("This backend cannot lower a heterogeneous execution program.")
     try:
         verify_module(module)
     except IRVerificationError as error:
@@ -102,6 +104,8 @@ def describe_tir_package(
         )
         for name in function_names
     }
+    if module.metadata.get('r004_standalone_request') is not None:
+        return _describe_r004_phase_package(module,package_plan,bindings)
     from .function_pool_abi import bank_row_strides, function_pool_origins
     owned_origins = (function_pool_origins(
         bindings, bank_row_strides(module, verify_buffer_plan(module)), entry=module.entry)
@@ -402,6 +406,8 @@ def describe_tir_package(
     if trace_plan is not None:
         trace_plan.finish(descriptor)
     descriptor.update(describe_kernel_programs(module, package_plan, descriptor))
+    from .r004_native_model import project_model_programs
+    descriptor = project_model_programs(module, descriptor)
     if "persistent_window_resources" in module.metadata:
         from triton.flagmega.ir.persistent_window import plan_window_resources
 
@@ -1277,3 +1283,245 @@ __all__ = [
     "describe_tir_package",
     "render_tir_package",
 ]
+
+
+def _describe_r004_phase_package(module, package_plan, bindings):
+    """Lower a selected coarse ABI into normal native entry template namespaces."""
+    import hashlib
+    import json
+    from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import (
+        standalone_request, validate_phase_plan, phase_runtime_binding, verify_phase_runtime_binding,
+        phase_writer_proof, phase_plan_for, PROGRAM_SCHEMA, IMPLEMENTATION, DYNAMIC_ROOTS, PLAN_BODY_SHA256, DELTA_SHA256,
+    )
+    from triton.flagmega.ir.distributed_type import Placement
+    from triton.flagmega.codegen.triton.kernel_programs import _task_owner_partition
+    request=standalone_request(module)
+    if request is None:
+        raise CodegenError('Phase implementation requires an explicit standalone request.')
+    raw_calls=[call for binding in bindings.values() for call in binding['call_abi']['kernel_calls']]
+    if len(raw_calls)!=1 or raw_calls[0].get('implementation')!=phase_plan_for(request['module'])['implementation']:
+        raise CodegenError('Standalone C must contain exactly one selected coarse GDN call.')
+    raw=raw_calls[0]
+    parameters=raw.get('parameters',{})
+    if raw.get('facts',{}).get('internal_grid_barriers')!=0 or 'grid_sync' in raw.get('facts',{}).get('requires',()):
+        raise CodegenError('Selected coarse phase contract contains an internal grid barrier.')
+    plan=validate_phase_plan(parameters.get('phase_plan',raw.get('semantic_attrs',{}).get('phase_plan')))
+    DYNAMIC_ROOTS = plan['root_dynamic_indices']
+    binding=module.metadata.get('r004_runtime_binding')
+    if binding is None:
+        binding=phase_runtime_binding(request['readonly_layer'],module.metadata.get('r004_readonly_provenance',{}),plan)
+    verify_phase_runtime_binding(binding)
+    if binding['readonly_layer']!=request['readonly_layer']:
+        raise CodegenError('Phase runtime readonly row differs from owning policy.')
+    _verify_r004_bufferized_abi(module,raw,plan)
+    _verify_r004_native_definitions(module,plan)
+    from triton.flagmega.codegen.triton.kernels.gdn_recurrent.r004_contract_v4 import native_arguments
+    formals=native_arguments(plan)
+    programs=[]; launches=[]; render_calls=[]
+    for entry in plan['entries']:
+        phase=entry['phase']; names=formals[phase]
+        shape=entry['execution_mesh']['shape']
+        domain=Placement(tuple(shape),'xyz'[:len(shape)],'b'*len(shape)).to_data()
+        selected={**raw,'call':raw['call']+'.'+phase,'arguments':names,
+                  'parameters':{**parameters,'phase_plan':plan,'r004_phase':phase,
+                                'program_grid':entry['grid'],'program_owner_mapping':'x-fast'},
+                  'facts':{**raw.get('facts',{}),'internal_grid_barriers':0,
+                           'scalar_writer_proof':phase_writer_proof(phase,plan)}}
+        call=prepare_kernel_calls([selected],function_name=module.entry)[0]
+        _task_owner_partition({**entry,'data_placement':domain},{'grid':entry['grid']},[call])
+        if call['internal_grid_barriers'] or 'grid_sync' in call.get('facts',{}).get('requires',()):
+            raise CodegenError('Phase ordinary entry cannot contain an internal barrier.')
+        render_calls.append(call)
+        typed=[name+': tl.int32' if name=='Layer' else (name+': tl.float32' if name in ('Scale','Bias') else name) for name in names]
+        launch={**{key:plain_package_value(entry[key]) for key in (
+            'symbol','grid','num_warps','maxnreg','enable_static_shared','requires_grid_wide_sync',
+            'program_kind','depends_on','condition','dynamic_argument_indices','argument_bindings','execution_mesh')},
+                'calls':[selected['call']],'data_placement':domain,'stream_index':0,
+                'runtime_binding':{'signature':names,'root_dynamic_indices':DYNAMIC_ROOTS.copy(),
+                                   'argument_bindings':entry['argument_bindings']},
+                'scalar_writer_proof':phase_writer_proof(phase,plan),'internal_grid_barriers':0}
+        launches.append(launch)
+        programs.append({**launch,'signature_arguments':names,'typed_signature_arguments':typed,
+                         'signature':',\n    '.join(typed),'scalar_arguments':[n for n in names if n in ('Layer','Scale','Bias')],
+                         'render_calls':[call],'device_functions':[],'pipeline_schedule':None,
+                         'entry_events':[{'kind':'tir.kernel_call','call':selected['call'],'family':call['family'],
+                             'variant':call['variant'],'symbol':call['symbol'],'arguments':', '.join(names),
+                             'barrier_before':False,'execution_kind':'ordinary'}],
+                         'mesh_context':{**_local_mesh(), 'use_tle':True,'distributed_entry':False,
+                                         'grid_barrier_axis_groups':[]}})
+    raw_templates=package_plan['kernel_templates']
+    platform,architecture=module_template_target(module)
+    registry=TritonTemplateRegistry()
+    templates=[registry.resolve(KernelTemplateSpec(str(v['kernel']),str(v['variant']),platform,architecture)) for v in raw_templates]
+    # Normal source/toolchain artifact hashes are checked by loader. This key
+    # adds the interface, selected source identity and ALL entry compile options.
+    key_material={'interface':plan['schema'],'module_semantic_hash':module.semantic_hash,
+                  'plan_body_sha256':plan['plan_body_sha256'],'delta_sha256':DELTA_SHA256,
+                  'variants':plan['variants'],'runtime_binding':binding,
+                  'options':launches,'templates':raw_templates,'toolchain':module.metadata.get('toolchain',{}),
+                  'renderer_sources':_r004_source_hashes(plan),'runtime_toolchain':_r004_toolchain_identity()}
+    key=hashlib.sha256(json.dumps(plain_package_value(key_material),sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    signature=[r['name'] for r in plan['roots']]
+    return {'schema':TIR_PACKAGE_DESCRIPTOR_SCHEMA,'symbol':plan['entries'][0]['symbol'],'grid':[48,1,1],
+            'num_warps':4,'dynamic_argument_indices':DYNAMIC_ROOTS.copy(),'signature_arguments':signature,
+            'typed_signature_arguments':[n+': tl.int32' if n in ('gdn_layer','clear_required') else
+                    (n+': tl.float32' if n in ('clear_scale','clear_bias') else n) for n in signature],
+            'signature':', '.join(signature),'scalar_arguments':['gdn_layer'],'runtime_binding':plain_package_value(binding),
+            'host_tensor_descriptor_specs':[],'function_offset_tables':[], 'function_schedule':{},
+            'render_calls':render_calls,'entry_events':[],'device_functions':[],'pipeline_schedule':None,
+            'kernel_templates':templates,'kernel_template_specs':plain_package_value(raw_templates),
+            'platform':platform,'target_architecture':architecture,'use_tle':True,
+            'distributed_entry':False,'distributed_device_dptr':False,'device_context_abi':None,
+            'device_window_storage':None,'grid_barrier_axis_groups':[], 'replicated_block_runtime_pool':False,
+            'kernel_program_schema':PROGRAM_SCHEMA,'kernels':launches,'programs':programs,
+            'phase_interface':plan['schema'],'phase_cache_key':key,'phase_variants':plan['variants'],
+            'plan_body_sha256':plan['plan_body_sha256'],'delta_sha256':DELTA_SHA256, **_local_mesh()}
+
+
+def _r004_source_hashes(plan=None):
+    import hashlib
+    from pathlib import Path
+    root=Path(__file__).parent
+    paths=[root/'tir_package.py', root/'kernel_programs.py', root/'kernel_call_renderers.py',
+           root/'kernels/gdn_recurrent/r004_reference_v4.py.jinja',
+           root/'kernels/gdn_recurrent/r004_helpers_v4.py.jinja',
+           root/'kernels/gdn_recurrent/r004_contract_v4.py',
+           root.parent.parent/'targets/nvidia/gdn.py',
+           root.parent.parent/'passes/tir/materialize_kernel_definitions.py',
+           root.parent.parent/'rules/ntt/r004_gdn_phase_bindings.py',
+           root/'execution_programs.py',root.parent.parent/'runtime/module.py',
+           root.parent.parent/'targets/ntt.py',root.parent.parent/'targets/portable_triton_implementations.py',
+           root.parent.parent/'ir/execution_mesh.py',root.parent.parent/'ir/tir/serialization.py',
+           root.parent.parent/'ir/ops/nn/gdn_recurrent_core.py']
+    if plan is not None and plan['module'] == 'r004_T_full_p5_v4':
+        paths += [root/'kernels/gdn_recurrent/r004_column_v4.py.jinja', root.parent.parent/'rules/ntt/r004_column_phase_bindings.py', root.parent.parent/'runtime/r004_phase_pool.py']
+    if plan is not None and plan['module'] == 'r004_T_full_p5_v6':
+        paths += [root/'kernels/gdn_recurrent/r004_column_v6.py.jinja',
+                  root/'kernels/gdn_recurrent/r004_norm_v6.py.jinja',
+                  root.parent.parent/'rules/ntt/r004_column_phase_bindings_v6.py',
+                  root.parent.parent/'runtime/r004_phase_pool.py']
+    return {str(p.relative_to(root.parent.parent)):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths if p.is_file()}
+
+
+def _verify_r004_bufferized_abi(module,raw,plan):
+    """Verify actual coarse buffers and typed phase arena before projecting views."""
+    from math import prod
+    buffer_plan=verify_buffer_plan(module)
+    for side in ('inputs','outputs','workspaces'):
+        for parameter in raw.get(side,()):
+            for value in parameter.get('buffers',()):
+                abi=value.get('abi',{})
+                if int(abi.get('pool_scope_stride_bytes',0)):
+                    raise CodegenError('Standalone phase buffers must use CHIP storage without scope stride.')
+    # Arena may be one aggregate U8 requirement with typed phase views, or nine
+    # explicitly resolved F32 allocations. Both must resolve signed offsets.
+    workspaces={w['formal']:w for w in raw.get('workspaces',())}
+    if 'phase_pool' in workspaces:
+        values=workspaces['phase_pool'].get('buffers',())
+        if len(values)!=1:
+            raise CodegenError('Phase pool must have one typed backing buffer.')
+        buffer=buffer_plan.buffer_map[values[0]['actual']]
+        if buffer.dtype.value!='uint8' or int(buffer.nbytes)!=plan['pool']['nbytes']:
+            raise CodegenError('Phase pool backing span/dtype differs from frozen ABI.')
+    else:
+        raise CodegenError('Selected coarse GDN is missing its typed phase_pool workspace.')
+    state=next((p for p in raw['inputs'] if p['formal']=='state'),None)
+    if state is None or len(state.get('buffers',()))!=1:
+        raise CodegenError('Standalone C state must expose exactly its recurrent layer view.')
+    state_buffer=buffer_plan.buffer_map[state['buffers'][0]['actual']]
+    bindings=state_buffer.offset_bindings
+    from triton.flagmega.ir.dim_expr import dim
+    from triton.flagmega.ir.types import VectorType
+    if (not isinstance(state_buffer.dtype,VectorType) or state_buffer.dtype.elem_type.value!='float32'
+            or tuple(state_buffer.dtype.lanes)!=(4,) or state_buffer.shape!=(1,48,128,32)
+            or state_buffer.strides!=(196608,4096,32,1)
+            or state_buffer.nbytes!=3145728 or state_buffer.mem_span.buffer.nbytes!=150994944
+            or len(bindings)!=1 or bindings[0][1]!='gdn_layer'
+            or not state_buffer.mem_span.start.equivalent(dim(bindings[0][0])*3145728)):
+        raise CodegenError('Phase state layer view does not bind the exact full parent/layer stride.')
+    for layer in range(48):
+        begin=state_buffer.mem_span.start.evaluate({bindings[0][0]:layer})
+        if begin!=layer*3145728 or begin+state_buffer.nbytes>state_buffer.mem_span.buffer.nbytes:
+            raise CodegenError('Phase state View escapes its selected layer/parent.')
+    outputs={p['formal']:p for p in raw['outputs']}
+    y=outputs.get('result_0',{})
+    if len(y.get('buffers',()))!=1:
+        raise CodegenError('Phase final output root is missing.')
+    y_buffer=buffer_plan.buffer_map[y['buffers'][0]['actual']]
+    if y_buffer.dtype.value!='bfloat16' or y_buffer.shape!=(1,6144) or y_buffer.nbytes!=12288:
+        raise CodegenError('Phase final output root shape/span differs from v4.')
+    from triton.flagmega.ir.distributed_inference import tensor_of
+    expected_formals={'qkv':0,'z':1,'projection_input':2,'b_weight':6,'a_weight':7,'a_log':8,'dt_bias':9,'norm_weight':10}
+    for formal,index in expected_formals.items():
+        parameter=next((p for p in raw['inputs'] if p['formal']==formal),None)
+        if parameter is None or len(parameter.get('buffers',()))!=1:
+            raise CodegenError('Phase input root missing from typed bufferized ABI.')
+        buffer=buffer_plan.buffer_map[parameter['buffers'][0]['actual']]
+        root=plan['roots'][index]
+        from triton.flagmega.ir.types import VectorType
+        dtype=buffer.dtype.elem_type if isinstance(buffer.dtype,VectorType) else buffer.dtype
+        if dtype.value!=root['dtype'] or int(buffer.nbytes)!=root['nbytes']:
+            raise CodegenError('Phase input typed span differs from signed scalar root inventory.')
+
+
+def _r004_toolchain_identity():
+    from pathlib import Path
+    import triton
+    from triton._C import libtriton
+    from triton.backends.nvidia import compiler
+    paths=[Path(libtriton.__file__),Path(compiler.__file__)]
+    return {'triton_version':triton.__version__,
+            'files':{p.name:_r004_cached_file_digest(str(p),p.stat().st_size,p.stat().st_mtime_ns) for p in paths}}
+
+
+from functools import lru_cache as _r004_lru_cache
+
+
+@_r004_lru_cache(maxsize=8)
+def _r004_cached_file_digest(path, size, mtime):
+    import hashlib
+    from pathlib import Path
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _verify_r004_native_definitions(module, plan):
+    from triton.flagmega.ir.memory_effect import MemoryAccessMode
+    from triton.flagmega.ir import TensorType
+    from triton.flagmega.ir.tir import PrimParameterRole
+    from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import phase_writer_proof
+    views={v['byte_offset']:v for v in plan['pool']['views']}
+    from triton.flagmega.codegen.triton.kernels.gdn_recurrent.r004_contract_v4 import native_arguments
+    NATIVE_ARGUMENTS = native_arguments(plan)
+    for entry in plan['entries']:
+        definition=module.kernel_callable_map.get(entry['symbol'])
+        if definition is None or len(definition.parameters)!=len(entry['argument_bindings']):
+            raise CodegenError('Missing typed native phase definition/signature.')
+        dispatch=definition.dispatch
+        if (dispatch.parameters.get('r004_phase')!=entry['phase']
+                or list(dispatch.parameters.get('program_grid',()))!=entry['grid']
+                or dispatch.parameters.get('program_owner_mapping')!='x-fast'
+                or dispatch.facts.get('internal_grid_barriers')!=0
+                or plain_package_value(dispatch.facts.get('scalar_writer_proof'))!=phase_writer_proof(entry['phase'],plan)):
+            raise CodegenError('Typed native phase definition has stale owner/barrier/writer facts.')
+        effects=dict(dispatch.memory_effects)
+        native_order=NATIVE_ARGUMENTS[entry['phase']]
+        by_name={p.name:p for p in definition.parameters}
+        if (set(by_name)!=set(native_order) or
+                plain_package_value(definition.attrs.get('native_parameter_order'))!=list(native_order)):
+            raise CodegenError('Typed native parameter projection differs from the exact named native ABI.')
+        for i,(name,binding) in enumerate(zip(native_order,entry['argument_bindings'],strict=True)):
+            parameter=by_name[name]
+            value=views[binding['byte_offset']] if binding['kind']=='pointer' else plan['roots'][binding['source']]
+            tensor=parameter.type
+            write_positions={'clear':{0},'gather':{3},'core':{6,8},'pb':{2},'pa':{2},
+                             'beta':{1},'bias':{2},'gate':{2},'q':{1},'k':{1},'rms':{2},'y':{2}}
+            if plan['module'] in ('r004_T_full_p5_v4', 'r004_T_full_p5_v6'):
+                write_positions.update(prep={6,7,8,9}, core={5,7}, y={3})
+            role=PrimParameterRole.OUTPUT if i in write_positions[entry['phase']] else PrimParameterRole.INPUT
+            mode=(MemoryAccessMode.READ_WRITE if (entry['phase']=='clear' and i==0 or plan['module'] in ('r004_T_full_p5_v4', 'r004_T_full_p5_v6') and entry['phase']=='core' and i==5) else
+                  (MemoryAccessMode.WRITE if role is PrimParameterRole.OUTPUT else MemoryAccessMode.READ))
+            if (not isinstance(tensor,TensorType) or tensor.dtype.value!=value['dtype']
+                    or tuple(d.fixed_value for d in tensor.shape)!=tuple(value['shape'])
+                    or parameter.role is not role or parameter.name not in effects
+                    or effects[parameter.name].physical_mode!=mode):
+                raise CodegenError('Typed phase View/root shape, lifetime or state effect differs from v4.')

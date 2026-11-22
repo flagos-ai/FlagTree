@@ -33,6 +33,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/PhysicalShared.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -266,6 +267,10 @@ struct LocalPointersOpConversion
       Value elemOffset;
       if (bufferRank == 0) {
         elemOffset = b.i32_val(0);
+      } else if (tle::isAffineFlatShared(memDescTy)) {
+        // Keep the real allocation extent and view offset. LinearLayout's
+        // invertible bit mapping requires powers of two; this arena does not.
+        elemOffset = idxCoords.front();
       } else if (auto paddedEnc =
                      dyn_cast<ttg::PaddedSharedEncodingAttr>(sharedEnc)) {
         auto order = ttg::getOrder(sharedEnc, memDescTy.getShape());

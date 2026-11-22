@@ -250,6 +250,8 @@ def decompose_paged_attention_rule(
 
     def rewrite(result, module: IRModule):
         source = result["call"]
+        if source.attrs.get("compute_profile", "default") != "default":
+            return source
         q = result["q"]
         state = result["state"]
         layer_id = result["layer_id"]

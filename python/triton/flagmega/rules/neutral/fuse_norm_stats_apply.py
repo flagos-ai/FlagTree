@@ -51,6 +51,8 @@ def fuse_norm_stats_apply_rule() -> RewriteRule:
         if normalized_axis != value_tensor.rank - 1:
             return source
         stats_source = _strip_adapters(stats, module)
+        if source.attrs.get("compute_profile", "default") != stats_source.attrs.get("compute_profile", "default"):
+            return source
         if (
             stats_source.op != "nn.norm_stats"
             or bool(stats_source.attrs["use_mean"])
@@ -74,7 +76,8 @@ def fuse_norm_stats_apply_rule() -> RewriteRule:
         try:
             prepared = definition.prepare(
                 (value, scale),
-                {"epsilon": float(source.attrs["epsilon"]), "weight_bias": 0.0},
+                {"epsilon": float(source.attrs["epsilon"]), "weight_bias": 0.0,
+                 **({"compute_profile": source.attrs["compute_profile"]} if "compute_profile" in source.attrs else {})},
             )
         except IRSchemaError:
             return source

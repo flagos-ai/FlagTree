@@ -55,6 +55,7 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
     b_weight_encoding = attribute_parameter(default=None)
     a_weight_encoding = attribute_parameter(default=None)
     value_head_order = attribute_parameter(default="grouped")
+    phase_plan = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -103,6 +104,9 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
             raise IRSchemaError("GatedDeltaNetRecurrentCore value_head_order must be grouped or tiled.")
         if head_order != "grouped":
             values["value_head_order"] = head_order
+        if attrs.get("phase_plan") is not None:
+            from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import validate_phase_plan
+            values["phase_plan"] = validate_phase_plan(attrs["phase_plan"])
         return values
 
     @classmethod
@@ -175,8 +179,36 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
         )
 
     @classmethod
+    def phase_workspaces(cls, node: Node):
+        """Typed subviews of a single CHIP phase arena; no semantic decomposition."""
+        if node.attrs.get('phase_plan') is None:
+            return ()
+        from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import validate_phase_plan
+        from triton.flagmega.ir.tir import WorkspaceRequirement
+        plan = validate_phase_plan(node.attrs['phase_plan'])
+        return tuple(WorkspaceRequirement(v['name'], tensor_type(v['dtype'],v['shape']),
+                                         memory_space='workspace',alignment=256)
+                     for v in plan['pool']['views'])
+
+    @classmethod
+    def phase_effects(cls, node: Node):
+        if node.attrs.get('phase_plan') is None:
+            return ()
+        from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import validate_phase_plan, phase_tensor_effects
+        plan = validate_phase_plan(node.attrs['phase_plan'])
+        return tuple(phase_tensor_effects(e['phase'],plan) for e in plan['entries'])
+
+    @classmethod
     def cost(cls, node: Node) -> OpCost:
-        del node
+        phase = node.attrs.get("phase_plan")
+        if phase is not None:
+            from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import validate_phase_plan
+            plan = validate_phase_plan(phase)
+            if plan["module"] == "r004_T_full_p5_v4":
+                return OpCost(flops=None, bytes_read=None, bytes_written=None,
+                              notes=("stateful-rank1-update", plan["schema"], "3-entry-direct-parent", "phase-pool:41472", "new-nodes:96/token", "core-scratch:24576", "qk:16384", "gates:384"))
+            return OpCost(flops=None, bytes_read=None, bytes_written=None,
+                          notes=("stateful-rank1-update", "r004.gdn.column-register/v4", "12-registry-11-subsequent-12-initial", "phase-pool:3212800", "gather-bytes:6291456"))
         return OpCost(
             flops=None,
             bytes_read=None,

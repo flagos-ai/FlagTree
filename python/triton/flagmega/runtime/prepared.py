@@ -128,12 +128,16 @@ class PreparedKernel:
     def resource_report(self) -> dict[str, object]:
         compiled = self.compiled_kernel
         registers = int(compiled.n_regs)
-        shared = int(compiled.metadata.shared)
+        dynamic_shared = int(compiled.metadata.shared)
+        static_shared = int(getattr(compiled.metadata, "static_shared", 0))
+        shared = dynamic_shared + static_shared
         return {
             "name": str(compiled.name),
             "num_warps": int(compiled.metadata.num_warps),
             "registers_per_thread": registers,
             "shared_memory_bytes": shared,
+            "dynamic_shared_memory_bytes": dynamic_shared,
+            "static_shared_memory_bytes": static_shared,
             **_spill_resource_report(compiled, self.contract),
             "required_resident_blocks_per_sm": self.contract.resident_blocks_per_sm,
             "resident_registers": registers * int(compiled.metadata.num_warps) * self.contract.warp_size
@@ -385,7 +389,10 @@ def prepare_compiled_kernel(
 def _validate_resources(compiled, contract: ResourceContract, grid: Sequence[int] = (1,)) -> None:
     # Shared usage is available before driver loading. A failed load may cache
     # an error launcher without initializing the driver register counters.
-    shared = int(compiled.metadata.shared)
+    # metadata.shared is the launch's dynamic byte count. Static allocation
+    # also occupies the CTA/SM budget, without becoming launch dynamic bytes.
+    # Backends predating static placement report their entire footprint in shared.
+    shared = int(compiled.metadata.shared) + int(getattr(compiled.metadata, "static_shared", 0))
     if shared > contract.shared_memory_capacity_bytes:
         raise RuntimeContractError(
             f"Compiled kernel uses {shared} shared-memory bytes; limit is {contract.shared_memory_capacity_bytes}.")

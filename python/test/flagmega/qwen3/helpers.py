@@ -159,12 +159,11 @@ def full_checkpoint_wmma(
     return MemoryCheckpoint(model_config, infos, values)
 
 
-def full_metadata_checkpoint(*, num_hidden_layers: int = 2) -> MemoryCheckpoint:
+def full_metadata_checkpoint(
+    *, num_hidden_layers: int = 2, hidden: int = 2048, intermediate: int = 6144, vocab: int = 4096
+) -> MemoryCheckpoint:
     """Shape-realistic checkpoint metadata without allocating model weights."""
 
-    hidden = 2048
-    intermediate = 6144
-    vocab = 4096
     model_config = {
         **config(),
         "vocab_size": vocab,
@@ -183,12 +182,12 @@ def full_metadata_checkpoint(*, num_hidden_layers: int = 2) -> MemoryCheckpoint:
         prefix = f"model.layers.{layer}."
         specs.update({
             prefix + "input_layernorm.weight": (hidden,),
-            prefix + "self_attn.q_proj.weight": (hidden, hidden),
+            prefix + "self_attn.q_proj.weight": (2048, hidden),
             prefix + "self_attn.k_proj.weight": (1024, hidden),
             prefix + "self_attn.v_proj.weight": (1024, hidden),
             prefix + "self_attn.q_norm.weight": (128,),
             prefix + "self_attn.k_norm.weight": (128,),
-            prefix + "self_attn.o_proj.weight": (hidden, hidden),
+            prefix + "self_attn.o_proj.weight": (hidden, 2048),
             prefix + "post_attention_layernorm.weight": (hidden,),
             prefix + "mlp.gate_proj.weight": (intermediate, hidden),
             prefix + "mlp.up_proj.weight": (intermediate, hidden),

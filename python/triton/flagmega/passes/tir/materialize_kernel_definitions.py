@@ -22,6 +22,7 @@ from triton.flagmega.ir.model import (
     TensorType,
     TupleType,
     logical_type,
+    tensor_type,
 )
 from triton.flagmega.ir.ops.core import ParameterInfo, get_definition
 from triton.flagmega.ir.tir import (
@@ -39,7 +40,7 @@ from triton.flagmega.ir.tir import (
 )
 
 
-def materialize_kernel_definitions(module: IRModule) -> IRModule:
+def materialize_kernel_definitions(module: IRModule, *, module_kind: str = "triton") -> IRModule:
     """Intern one typed kernel contract per implementation/physical ABI.
 
     Graph references share immutable selection data. Later KernelInvoke nodes
@@ -63,7 +64,18 @@ def materialize_kernel_definitions(module: IRModule) -> IRModule:
         if node.op != "tir.kernel":
             nodes.append(node)
             continue
-        function, identity = _kernel_definition(node, module)
+        function, identity = _kernel_definition(node, module, module_kind=module_kind)
+        if function.dispatch.parameters.get("variant") in ("r004_reference_v4", "r004_column_v4", "r004_column_v6"):
+            # One coarse call retains the tuple/state effect. Named native
+            # definitions are contracts; the package projects the 12-entry conditional registry.
+            for phase_definition in r004_phase_definitions(function):
+                previous = next((f for f in result_functions
+                                 if f.name == phase_definition.name), None)
+                if previous is not None and previous != phase_definition:
+                    raise IRVerificationError("Conflicting frozen r004 phase definition.")
+                if previous is None:
+                    result_functions.append(phase_definition)
+                    occupied.add(phase_definition.name)
         existing = identities.get(identity)
         if existing is None:
             name = function.name
@@ -94,7 +106,17 @@ def materialize_kernel_definitions(module: IRModule) -> IRModule:
     return replace_kernel_callables(module, result_functions, nodes=tuple(nodes))
 
 
-def _kernel_definition(node: Node, module: IRModule) -> tuple[KernelDefinition, str]:
+def _q8_formal_alignment(node, name, *, result=False):
+    """Declared scalar access requirements propagate through caller aliases."""
+    from triton.flagmega.ir.ops.math._iq4_q8 import OPS
+    op=node.attrs.get("semantic_op")
+    if op not in OPS: return None
+    from triton.flagmega.codegen.triton.iq4_q8_renderer import parameter_alignments
+    return parameter_alignments(OPS[op],node.attrs["semantic_attrs"])[name]
+
+
+
+def _kernel_definition(node: Node, module: IRModule, *, module_kind: str = "triton") -> tuple[KernelDefinition, str]:
     definition = get_definition(str(node.attrs["semantic_op"]))
     parameter_infos = tuple(_parameter_info(definition.input_parameters, index) for index in range(len(node.inputs)))
     parameter_names = _unique_parameter_names(parameter_infos)
@@ -109,8 +131,13 @@ def _kernel_definition(node: Node, module: IRModule) -> tuple[KernelDefinition, 
             parameter_effects, node.inputs, strict=True
         )
     )
+    from triton.flagmega.ir.ops.math._iq4_q8 import OPS as q8_ops
+    if definition.op_name in q8_ops:
+        # Keep placeholder pointer identity in the formal ABI without READ effects.
+        roles = tuple(PrimParameterRole.INPUT if name.endswith("_scale") else role
+                      for name, role in zip(parameter_names, roles, strict=True))
     parameters = tuple(
-        PrimParameter(name, value_type, role)
+        PrimParameter(name, value_type, role, alignment_bytes=_q8_formal_alignment(node, name))
         for name, value_type, role in zip(
             parameter_names,
             (module.node_map[value].type for value in node.inputs),
@@ -165,6 +192,35 @@ def _kernel_definition(node: Node, module: IRModule) -> tuple[KernelDefinition, 
     kernel_parameters = dict(node.attrs.get("parameters", {}))
     raw_workspaces = tuple(kernel_parameters.pop("workspaces", ()))
     workspaces = tuple(_workspace_requirement(value) for value in raw_workspaces)
+    if kernel_parameters.get("variant") in ("r004_reference_v4", "r004_column_v4", "r004_column_v6"):
+        from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import (
+            standalone_request, validate_phase_plan,
+        )
+        from triton.flagmega.rules.ntt.r004_native_model import native_model_request
+        model_contract = native_model_request(module)
+        if model_contract is not None:
+            if module_kind != "triton" or kernel_parameters.get("variant") != ("r004_column_v6" if model_contract["schema"] == "r004.gdn.native-model/v2" else "r004_column_v4"):
+                raise IRVerificationError("Native model GDN only supports the qualified Triton column path.")
+            kernel_parameters["native_model_contract"] = model_contract
+        elif module_kind != "triton" or standalone_request(module) is None:
+            raise IRVerificationError("r004 reference is standalone Triton only.")
+        plan = validate_phase_plan(node.attrs["semantic_attrs"].get("phase_plan"))
+        if node.attrs.get("candidate") != plan["implementation"]:
+            raise IRVerificationError("r004 phase plan/provider identity mismatch.")
+        kernel_parameters["phase_plan"] = plan
+        # One backing arena keeps exact signed offsets. Its ten typed F32
+        # views/spans/lifetimes live in phase_plan and native definitions.
+        expected_workspaces = (WorkspaceRequirement(
+            "phase_pool", tensor_type("uint8", (plan["pool"]["nbytes"],)),
+            memory_space="workspace", alignment=256),)
+        # The generic GDN target attachment predates the phase provider and
+        # requests core_scratch for every variant. Replace only that known
+        # requirement under this explicit versioned standalone contract.
+        legacy_scratch = (WorkspaceRequirement(
+            "core_scratch", tensor_type("float32", (48, 128)), alignment=128),)
+        if workspaces and workspaces not in (expected_workspaces, legacy_scratch):
+            raise IRVerificationError("r004 typed phase workspaces differ from v4.")
+        workspaces = expected_workspaces
     common_dispatch = {
         "semantic_op": str(node.attrs["semantic_op"]),
         "arguments": parameter_names,
@@ -207,6 +263,8 @@ def _kernel_definition(node: Node, module: IRModule) -> tuple[KernelDefinition, 
         "result_type": node.type.to_data(),
         "effect": node.effect.to_data(),
     }
+    if module_kind != "triton":
+        payload["module_kind"] = module_kind
     if dispatch.semantic_op in {
         "distributed.boxing",
         "distributed.force_boxing",
@@ -231,7 +289,7 @@ def _kernel_definition(node: Node, module: IRModule) -> tuple[KernelDefinition, 
     stem = re.sub(r"[^a-zA-Z0-9_]+", "_", f"{family}_{variant}").strip("_").lower()
     name = f"kernel_{stem[:64]}_{identity[:16]}"
     result_parameters = tuple(
-        PrimParameter(name, value_type, PrimParameterRole.OUTPUT)
+        PrimParameter(name, value_type, PrimParameterRole.OUTPUT, alignment_bytes=_q8_formal_alignment(node, name, result=True))
         for name, value_type in result_fields
     )
     workspace_parameters = tuple(
@@ -245,7 +303,7 @@ def _kernel_definition(node: Node, module: IRModule) -> tuple[KernelDefinition, 
     )
     function = KernelDefinition(
         name=name,
-        module_kind="triton",
+        module_kind=module_kind,
         parameters=(*parameters, *result_parameters, *workspace_parameters),
         dispatch=dispatch,
         results=Return(tuple(
@@ -255,6 +313,92 @@ def _kernel_definition(node: Node, module: IRModule) -> tuple[KernelDefinition, 
         attrs={},
     )
     return function, identity
+
+
+def r004_phase_definitions(coarse: KernelDefinition) -> tuple[KernelDefinition, ...]:
+    """Materialize exact native contracts from a selected coarse phase plan.
+
+    No graph partitioning or synthetic generic kernel ops: each definition
+    records its own pool/root effects and the frozen native positional ABI.
+    """
+    from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import (
+        phase_writer_proof, validate_phase_plan,
+    )
+    plan = validate_phase_plan(coarse.dispatch.parameters.get("phase_plan"))
+    if coarse.dispatch.candidate != plan["implementation"]:
+        raise IRVerificationError("r004 native definition has the wrong provider.")
+    from triton.flagmega.codegen.triton.kernels.gdn_recurrent.r004_contract_v4 import native_arguments
+    NATIVE_ARGUMENTS = native_arguments(plan)
+    views = {v["byte_offset"]: v for v in plan["pool"]["views"]}
+    definitions = []
+    for entry in plan["entries"]:
+        phase = entry["phase"]
+        model_contract = coarse.dispatch.parameters.get("native_model_contract")
+        if model_contract is not None:
+            from triton.flagmega.rules.ntt.r004_native_model import model_phase_symbol
+            symbol = model_phase_symbol(phase, model_contract)
+            dependencies = [model_phase_symbol(plan['entries'][i]['phase'], model_contract)
+                            for i in range(len(plan['entries']))
+                            if plan['entries'][i]['symbol'] in entry['depends_on']]
+        else:
+            symbol, dependencies = entry['symbol'], entry['depends_on']
+        parameters, reads, writes, effects = [], [], [], []
+        for i, binding in enumerate(entry["argument_bindings"]):
+            descriptor = (views[binding["byte_offset"]] if binding["kind"] == "pointer"
+                          else plan["roots"][binding["source"]])
+            if model_contract is not None and binding['source'] == 3:
+                descriptor = {**descriptor, 'shape':model_contract['native_state_shape'],
+                              'nbytes':model_contract['native_state_nbytes']}
+            name = NATIVE_ARGUMENTS[phase][i]
+            is_write = (descriptor.get("writer") == phase
+                        or (phase in ("core", "clear") and binding["source"] == 3)
+                        or (phase == "y" and binding["source"] == 5))
+            is_read = not is_write or (binding['source']==3 and (phase=='clear' or plan['module'] in ('r004_T_full_p5_v4', 'r004_T_full_p5_v6') and phase=='core'))
+            # ParameterRole describes the canonical logical TIR ABI;
+            # memory_effects separately describe physical reads/writes.
+            # The explicit native_parameter_order below restores the frozen
+            # native positions without weakening PrimFunction ordering.
+            role = PrimParameterRole.OUTPUT if is_write else PrimParameterRole.INPUT
+            parameters.append(PrimParameter(name, tensor_type(descriptor["dtype"], descriptor["shape"]), role))
+            access = (MemoryEffect.READ_WRITE if is_read and is_write
+                      else MemoryEffect.WRITE if is_write else MemoryEffect.READ)
+            effects.append((name, access))
+            if is_read: reads.append(name)
+            if is_write: writes.append(name)
+        native_order = tuple(p.name for p in parameters)
+        parameters = [p for p in parameters if p.role == PrimParameterRole.INPUT] + [
+            p for p in parameters if p.role == PrimParameterRole.OUTPUT]
+        # A coarse distributed signature has nine semantic inputs. It cannot
+        # describe a native phase's three/two/eight pointer positions; phase
+        # placement belongs to its own execution mesh and scalar writer proof.
+        selected = {**{k: v for k, v in coarse.dispatch.parameters.items() if k != "distribution"}, "r004_phase": phase,
+                    "phase_plan": plan, "program_grid": entry["grid"],
+                    "program_owner_mapping": "x-fast"}
+        dispatch = KernelDispatch(
+            semantic_op=coarse.dispatch.semantic_op,
+            candidate=plan["implementation"], parameters=selected,
+            facts={"internal_grid_barriers": 0, "scalar_writer_proof": phase_writer_proof(phase, plan)},
+            arguments=tuple(p.name for p in parameters if p.role != PrimParameterRole.OUTPUT),
+            outputs=tuple(p.name for p in parameters if p.role == PrimParameterRole.OUTPUT),
+            semantic_attrs=coarse.dispatch.semantic_attrs,
+            reads=tuple(reads), writes=tuple(writes), memory_effects=tuple(effects),
+            effect_kind=coarse.dispatch.effect_kind if phase in ("core", "clear") else "pure",
+            effect_resource=coarse.dispatch.effect_resource if phase in ("core", "clear") else None,
+        )
+        definitions.append(KernelDefinition(
+            name=symbol, module_kind="triton", parameters=tuple(parameters), dispatch=dispatch,
+            results=Return(tuple(ReturnBinding(ValueRef(p.name, p.type), p.name)
+                                 for p in parameters if p.role == PrimParameterRole.OUTPUT)),
+            attrs={"execution_mesh": entry["execution_mesh"], "kernel_program_kind": "ordinary",
+                   "kernel_num_warps": entry["num_warps"], "kernel_maxnreg": 80,
+                   "kernel_enable_static_shared": entry["enable_static_shared"],
+                   "native_parameter_order": list(native_order),
+                   "argument_bindings": entry["argument_bindings"],
+                   "dynamic_argument_indices": entry["dynamic_argument_indices"],
+                   "depends_on": dependencies, "phase_pool": plan["pool"],
+                   **({"native_model_contract": model_contract} if model_contract is not None else {})},
+        ))
+    return tuple(definitions)
 
 
 def _parameter_role(effect: MemoryEffect, value_type) -> PrimParameterRole:
@@ -304,6 +448,8 @@ def _existing_kernel_identity(function: PrimFunction) -> str | None:
             "resource": dispatch.effect_resource,
         },
     }
+    if function.module_kind != "triton":
+        payload["module_kind"] = function.module_kind
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     ).hexdigest()

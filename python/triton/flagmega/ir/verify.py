@@ -99,6 +99,9 @@ def verify_module(
     expected_stage: str | None = None,
     expected_dialect: str | None = None,
 ) -> IRModule:
+    if 'r004_native_model_request' in module.metadata:
+        from triton.flagmega.rules.ntt.r004_native_model import native_model_request
+        native_model_request(module)
     try:
         phase = ConstantPhase(str(module.metadata.get("constant_phase", ConstantPhase.OPEN.value)))
     except ValueError as error:
@@ -217,6 +220,8 @@ def verify_module(
         prim_names.add(kernel.name)
         verify_prim_function(kernel)
     verify_execution_functions(module)
+    from triton.flagmega.ir.tir.heterogeneous import verify_heterogeneous_programs
+    verify_heterogeneous_programs(module)
     from triton.flagmega.ir.program_execution import verify_program_execution
     verify_program_execution(module)
 

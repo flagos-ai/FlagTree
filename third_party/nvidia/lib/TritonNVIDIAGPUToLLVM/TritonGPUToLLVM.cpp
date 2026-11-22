@@ -143,6 +143,30 @@ struct ConvertTritonGPUToLLVM
     ModuleMembarAnalysis membarPass(&allocation, NVIDIA::canSkipBarSync);
     membarPass.run();
 
+#ifdef __TLE__
+    if (mod->hasAttr("tle.static_shared")) {
+      // Fixed participant counts require the ordinary, unspecialized CTA.
+      // Reject unsupported geometry instead of changing collective semantics.
+      auto numWarps = mod->getAttrOfType<IntegerAttr>("ttg.num-warps");
+      auto totalWarps = mod->getAttrOfType<IntegerAttr>("ttg.total-num-warps");
+      if (triton::gpu::TritonGPUDialect::getNumCTAs(mod) != 1 ||
+          (totalWarps && totalWarps.getInt() != numWarps.getInt())) {
+        mod.emitError("tle.static_shared requires an ordinary single CTA");
+        return signalPassFailure();
+      }
+      int threads = numWarps.getInt() *
+                    triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
+      mod.walk([&](mlir::gpu::BarrierOp barrier) {
+        OpBuilder b(barrier);
+        auto loc = barrier.getLoc();
+        auto id = LLVM::ConstantOp::create(b, loc, b.getI32Type(), 0);
+        auto count = LLVM::ConstantOp::create(b, loc, b.getI32Type(), threads);
+        NVVM::BarrierOp::create(b, loc, id, count);
+        barrier.erase();
+      });
+    }
+#endif
+
     mlir::LowerToLLVMOptions option(context);
     option.overrideIndexBitwidth(32);
     TritonGPUToLLVMTypeConverter typeConverter(context, option, targetInfo);
@@ -320,6 +344,31 @@ private:
     OpBuilder b(mod.getBodyRegion());
     auto loc = mod.getLoc();
     auto elemTy = typeConverter.convertType(b.getIntegerType(8));
+#ifdef __TLE__
+    if (mod->hasAttr("tle.static_shared")) {
+      auto size = mod->getAttrOfType<IntegerAttr>("ttg.shared");
+      if (!size) {
+        mod.emitError("tle.static_shared requires allocated shared offsets");
+        signalPassFailure();
+        return;
+      }
+      int alignment = 16;
+      mod.walk([&](triton::gpu::LocalAllocOp alloc) {
+        alignment = std::max(alignment, int(alloc.getAlignmentOrDefault()));
+      });
+      auto arrayTy = LLVM::LLVMArrayType::get(elemTy, size.getInt());
+      auto global = LLVM::GlobalOp::create(
+          b, loc, arrayTy, false, LLVM::Linkage::Internal, "global_smem",
+          Attribute(), alignment,
+          static_cast<unsigned>(NVVM::NVVMMemorySpace::Shared));
+      Block *initializer = b.createBlock(&global.getInitializerRegion());
+      b.setInsertionPointToStart(initializer);
+      auto undef = LLVM::UndefOp::create(b, loc, arrayTy);
+      LLVM::ReturnOp::create(b, loc, undef.getResult());
+      mod->setAttr("ttg.static_shared", size);
+      return;
+    }
+#endif
     // Set array size 0 and external linkage indicates that we use dynamic
     // shared allocation to allow a larger shared memory size for each kernel.
     //

@@ -57,7 +57,7 @@ def _hoist_function(module: IRModule, name: str) -> IRModule:
         if node.id in function.parameters:
             continue
         if (not node.effect.is_pure or not _immutable(node.type)
-                or node.op in {"builtin.var", "builtin.call", "tir.call"}
+                or node.op in {"builtin.var", "builtin.call", "tir.call", "math.q8_1_prepare"}
                 or any(value not in dependencies for value in node.inputs)):
             continue
         sources = frozenset().union(*(dependencies[value] for value in node.inputs))

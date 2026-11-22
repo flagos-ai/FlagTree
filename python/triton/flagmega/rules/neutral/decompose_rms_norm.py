@@ -28,6 +28,7 @@ def decompose_rms_norm_rule() -> RewriteRule:
         if not isinstance(weight.type, TensorType):
             raise TypeError("DecomposeRMSNorm expects a logical tensor weight before AutoDistributed.")
         metadata = decomposition_metadata(source, "DecomposeRMSNorm")
+        profile = {"compute_profile": source.attrs["compute_profile"]} if "compute_profile" in source.attrs else {}
         prefix: list[Node] = []
         scale = weight
         weight_bias = float(source.attrs["weight_bias"])
@@ -58,7 +59,7 @@ def decompose_rms_norm_rule() -> RewriteRule:
             "nn.norm_stats",
             f"{source.id}.decomposed.stats",
             (value,),
-            {"axis": -1, "use_mean": False},
+            {"axis": -1, "use_mean": False, **profile},
             metadata,
         )
         prefix.extend((bias, stats))
@@ -67,7 +68,7 @@ def decompose_rms_norm_rule() -> RewriteRule:
             source.id,
             (value, stats, scale, bias),
             {"axis": -1, "epsilon": float(source.attrs["epsilon"]), "use_mean": False,
-             "round_before_scale": True},
+             "round_before_scale": True, **profile},
             metadata,
         )
         return RewriteResult(replacement, tuple(prefix))

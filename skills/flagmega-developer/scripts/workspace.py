@@ -26,7 +26,7 @@ import dashboard as dashboard_table
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = json.loads((ROOT / 'assets/workspace-templates/deliverables.json').read_text())
 AGENTS = CATALOG['agents']
-ARTIFACT_SUFFIXES = {'.py', '.il', '.mlir', '.ttir', '.ttgir', '.ll', '.llir', '.ptx', '.sass'}
+ARTIFACT_SUFFIXES = {'.py', '.il', '.script', '.mlir', '.ttir', '.ttgir', '.ll', '.llir', '.ptx', '.sass'}
 WORKING_METADATA = {'artifacts': '.local/views/root-artifacts.json',
                     'figures': 'figures/manifest.json', 'readme': 'readme.manifest.json'}
 

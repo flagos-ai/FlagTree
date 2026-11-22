@@ -26,6 +26,8 @@ class VectorizeNormStats:
         self.lane_bytes = lane_bytes
 
     def candidates(self, node: Node, module: IRModule) -> tuple[VectorizeCandidate, ...]:
+        if node.attrs.get("compute_profile", "default") != "default":
+            return ()
         if node.op != "nn.norm_stats" or not node.effect.is_pure:
             return ()
         value = module.node_map[node.inputs[0]].type

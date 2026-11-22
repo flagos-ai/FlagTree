@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
+from triton.flagmega.ir.ops._compute_profile import normalize_compute_profile, require_host_reference, verify_complete_f32
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import SBPBroadCast
 from triton.flagmega.ir.memory_effect import MemoryEffect
@@ -24,7 +25,7 @@ from triton.flagmega.ir.ops.nn._attention_layout import (
     normalize_attention_layout,
     to_seq_head_dim,
 )
-from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionState
+from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionState, paged_attention_state_config_from_type
 from triton.flagmega.ir.ops.nn.qwen3_paged_attention import _scalar_int
 from triton.flagmega.ir.type_pattern import has_dtype, has_rank, is_ref, is_tensor
 from triton.flagmega.ir.types import VectorType
@@ -52,6 +53,7 @@ class PagedAttention(OpDefinition):
     probability_rounding = attribute_parameter(default="normalized")
     softmax_block_size = attribute_parameter(default=64)
     softmax_traversal = attribute_parameter(default="forward")
+    compute_profile = attribute_parameter(default="default")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -72,6 +74,15 @@ class PagedAttention(OpDefinition):
         if attrs.get("probability_rounding", "normalized") == "online_bf16" and scalar != DType.BFLOAT16:
             raise IRSchemaError("PagedAttention online BF16 probabilities require BF16 queries.")
         layout = tuple(attrs["layout"])
+        if attrs.get("compute_profile", "default") != "default":
+            verify_complete_f32(query_type, "PagedAttention")
+            config = paged_attention_state_config_from_type(cls.state.type_of(inputs))
+            tokens = query.shape[layout.index("seq")].value
+            rowwise = attrs["compute_profile"] == "ggml_cpu_f16_rowwise_1t_v1"
+            if (config.cache_dtype != DType.FLOAT16 or (tokens not in range(2, 9) if rowwise else tokens != 1)
+                    or query.shape[layout.index("dim")].value != config.head_dim
+                    or query.shape[layout.index("head")].fixed_value % config.num_kv_heads):
+                raise IRSchemaError("PagedAttention native profile requires its exact F32 query count and compatible F16 KV heads.")
         head_axis = layout.index("head")
         dim_axis = layout.index("dim")
         if (
@@ -98,6 +109,7 @@ class PagedAttention(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        require_host_reference(node)
         query_type = tensor_of(context.types[cls.q.read(node.inputs)])
         result = paged_attention_scalar_value(
             cls.q.read(arguments),
@@ -131,6 +143,7 @@ class PagedAttention(OpDefinition):
 def normalize_paged_attention_attrs(
     attributes: Mapping[str, object],
 ) -> dict[str, object]:
+    profile = normalize_compute_profile(attributes, "PagedAttention", supported=("ggml_cpu_f16_1t_v1", "ggml_cpu_f16_rowwise_1t_v1"))
     scale = float(attributes["scale"])
     hidden_size = attributes["hidden_size"]
     if scale <= 0:
@@ -150,7 +163,10 @@ def normalize_paged_attention_attrs(
     traversal = attributes.get("softmax_traversal", "forward")
     if traversal not in {"forward", "reverse"}:
         raise IRSchemaError("PagedAttention softmax_traversal must be forward or reverse.")
+    if profile and (rounding != "normalized" or block != 64 or traversal != "forward"):
+        raise IRSchemaError("PagedAttention ggml_cpu_f16_1t_v1 does not use GPU softmax overrides.")
     return {
+        **profile,
         "scale": scale,
         "layout": normalize_attention_layout(attributes["layout"]),
         "hidden_size": hidden_size,

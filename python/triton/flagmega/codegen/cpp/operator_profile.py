@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Normal optional caller-event instrumentation; no model kernel/IR rewrites.
 
-This first protocol accepts only a fixed, flat, uniform SM120 call schedule.
+SM120 protocols use GPU timestamps; K230 uses synchronous native call timers.
 All clock/resources/NUM evidence comes from the separately built diagnostic.
 """
 from __future__ import annotations
@@ -25,8 +25,10 @@ def digest(value):
 def validate_option(mode, *, target, codegen_backend='cpp', emit_executable=True):
     if mode is None:
         return
+    if mode in {'k230-steady-clock-v1', 'k230-exchange-steady-clock-v1', 'k230-program-steady-clock-v1', 'k230-program-acquire-steady-clock-v1'} and target == 'k230' and codegen_backend == 'cpp' and emit_executable:
+        return
     if mode not in MODES or target != 'nvidia-sm120' or codegen_backend != 'cpp' or not emit_executable:
-        raise ValueError('CPP operator profiling requires explicit cta-globaltimer-v1/v2 NVIDIA SM120 executable output.')
+        raise ValueError('CPP operator profiling requires a supported mode matching its target and executable C++ output.')
 
 def _uniform(event):
     if event.get('participation_active', 'True') not in ('True', True):

@@ -329,6 +329,19 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         if not isinstance(binding, Mapping):
             raise ArtifactError("TIR call-graph artifact has no runtime binding.")
         self.runtime_binding = binding
+        self._phase_binding = binding.get("schema") in ("r004.gdn.column-register/v4", "r004.gdn.column-register/v6")
+        self._phase_static_roots = ()
+        self._phase_stream = None
+        self._phase_next_entry = 0
+        self._phase_roots = ()
+        self._phase_call_indices = ()
+        self._phase_selector_identity = None
+        if getattr(self, "_phase_binding", False):
+            from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import verify_phase_runtime_binding
+            try:
+                verify_phase_runtime_binding(binding)
+            except IRSchemaError as error:
+                raise ArtifactError(str(error)) from error
         self.buffer_plan = verify_buffer_plan(ir_module)
         persistent_request = ir_module.metadata.get("persistent_window_resources")
         persistent_plan = self.codegen.get("persistent_window_resources")
@@ -362,7 +375,8 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         arguments = tuple(binding.get("arguments", ()))
         pools = tuple(binding.get("pools", ()))
         signature = tuple(str(value) for value in binding.get("signature", ()))
-        expected = tuple(str(value["name"]) for value in (*arguments, *pools))
+        ordered = sorted((*arguments,*pools),key=lambda value:value['root_index']) if self._phase_binding else (*arguments,*pools)
+        expected = tuple(str(value["name"]) for value in ordered)
         if signature != expected:
             raise ArtifactError(
                 "TIR runtime binding signature does not match arguments and pools."
@@ -428,7 +442,7 @@ class GeneratedTirCallGraphModule(RuntimeModule):
             if str(spec["source"]) in external_names
         )
         expected_dynamic = (
-            *range(len(arguments)),
+            *(binding["root_dynamic_indices"] if self._phase_binding else range(len(arguments))),
             *(
                 descriptor_base + index
                 for index in self._dynamic_descriptor_indices
@@ -532,11 +546,46 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         self._mark_loaded(device)
         return self
 
+    def bind_shared_phase_pool(self, pool):
+        """Bind one caller-owned H004 arena before prepare, with serial completion.
+
+        CUDA same-stream ordering completes the previous Y before another layer
+        may overwrite any field; no per-call copy/allocation or host sync is added.
+        """
+        from triton.flagmega.runtime.r004_phase_pool import SharedGdnPhasePool
+        if (type(pool) is not SharedGdnPhasePool or not self._phase_binding
+                or self.runtime_binding['phase_plan']['module'] != 'r004_T_full_p5_v5'
+                or self._prepared):
+            raise RuntimeContractError('Shared phase arena is an unprepared H004-only binding.')
+        if 'phase_pool' not in self._pool_values or pool.tensor.device != self._pool_values['phase_pool'].device:
+            raise RuntimeContractError('Load H004 on the shared arena device before binding it.')
+        self._pool_values['phase_pool'] = pool.tensor
+        self._shared_phase_pool = pool
+        return self
+
     def prepare(self, *external_arguments) -> "GeneratedTirCallGraphModule":
         self._prepare_external(tuple(external_arguments))
         return self
 
-    def run_into(self, *external_arguments, stream=None) -> None:
+    def run_into(self, *external_arguments, stream=None, scenario=None, token_position=None) -> None:
+        if self._phase_binding:
+            shared_pool = getattr(self, '_shared_phase_pool', None)
+            if shared_pool is not None:
+                shared_pool.check_stream(stream)
+            from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import phase_variant
+            self._require_prepared()
+            if len(external_arguments)!=len(self.runtime_binding['root_dynamic_indices']):
+                raise RuntimeContractError('Phase launch requires dynamic roots [0,1,2,3,4,5,12,13].')
+            variant=(phase_variant(scenario,token_position,external_arguments[7])
+                     if len(self.runtime_binding['signature'])==16 else 'T_COMPLETE')
+            self._phase_launch_roots(external_arguments)
+            identity=getattr(stream,'cuda_stream',stream)
+            if identity is not None and self._phase_stream is not None and identity!=self._phase_stream:
+                raise RuntimeContractError('Phase pool instance is bound to one caller stream.')
+            if self._phase_call_indices:
+                raise RuntimeContractError('Previous full P5 call has not finished enqueueing Y.')
+            self._phase_call_indices=tuple(self.runtime_binding['phase_plan']['variants'][variant]['entry_indices'])
+            self._phase_next_entry=self._phase_call_indices[0]
         self._launch_external(tuple(external_arguments), stream=stream)
 
     def diagnostic_workspace(self, *, clone: bool = False) -> dict[str, object]:
@@ -641,7 +690,18 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         `codegen["kernels"]`, see ITERATION.md Trial 31-32) get one spec per
         list entry instead.
         """
+        if (self.ir_module.metadata.get("r004_native_model_request") is not None
+                or self.codegen.get("kernel_program_schema") in (
+                    "flagmega.kernel-programs/v9-native-model", "flagmega.kernel-programs/v10-native-model-v6")):
+            from triton.flagmega.runtime.r004_native_model import verified_model_programs
+            return verified_model_programs(self.codegen, self.kernels, self.ir_module)
+        if self.codegen.get("kernel_program_schema") == "flagmega.kernel-programs/v8-phase-serial":
+            from triton.flagmega.codegen.triton.kernel_programs import verified_phase_programs
+            return verified_phase_programs(self.codegen, self.kernels, self.ir_module)
         if "kernel_program_schema" in self.codegen:
+            if any("enable_static_shared" in spec for spec in self.codegen.get("kernels", ())):
+                from triton.flagmega.codegen.triton.kernel_programs import verified_option_programs
+                return verified_option_programs(self.codegen, self.kernels, self.ir_module)
             return verified_kernel_programs(self.codegen, self.kernels, self.ir_module)
         raw_kernels = self.codegen.get("kernels")
         if raw_kernels is None:
@@ -658,6 +718,8 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                     "grid": tuple(int(value) for value in self.codegen["grid"]),
                 },
             )
+        if any("enable_static_shared" in spec or "maxnreg" in spec for spec in raw_kernels):
+            raise ArtifactError("Per-entry compile options require a verified kernel program schema.")
         if len(raw_kernels) != len(self.kernels):
             raise ArtifactError(
                 f"Manifest describes {len(raw_kernels)} kernel(s) but "
@@ -696,6 +758,8 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         self._frozen_native = context
 
     def _prepare_external(self, external_arguments: tuple[object, ...]) -> None:
+        if getattr(self,'_phase_binding',False) and self._prepared is not None:
+            raise RuntimeContractError('GDN phase instance must be prepared once; create a fresh instance for rebinding.')
         context = getattr(self, "_diagnostic_resources", None)
         if context is not None:
             context.verify_artifact(self.artifact, self.manifest, self.codegen)
@@ -720,6 +784,10 @@ class GeneratedTirCallGraphModule(RuntimeModule):
             external_arguments
         )
         arguments = (*external_arguments, *pool_arguments)
+        if getattr(self, "_phase_binding", False):
+            from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import verify_phase_external_arguments, project_phase_roots
+            arguments=project_phase_roots(self.runtime_binding,external_arguments,pool_arguments[0])
+            verify_phase_external_arguments(self.runtime_binding, arguments, check_payload=True)
         if self._needs_device_dptr:
             if self._device_dptr is None:
                 raise RuntimeContractError(
@@ -768,6 +836,29 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                     contract = replace(contract, registers_per_thread_limit=min(
                         contract.registers_per_thread_limit, spec['maxnreg']))
                     options['maxnreg'] = spec['maxnreg']
+                if 'enable_static_shared' in spec:
+                    if type(spec['enable_static_shared']) is not bool or not str(target).startswith('nvidia-'):
+                        raise ArtifactError('enable_static_shared requires a strict bool and NVIDIA target.')
+                    from triton.backends.nvidia.compiler import CUDAOptions
+                    if 'enable_static_shared' not in CUDAOptions.__dataclass_fields__:
+                        raise ArtifactError('Backend has no enable_static_shared compilation option.')
+                    options['enable_static_shared'] = spec['enable_static_shared']
+                elif getattr(self, "_phase_binding", False):
+                    raise ArtifactError('Phase entry is missing enable_static_shared.')
+                if 'compile_options' in spec:
+                    declared = spec['compile_options']
+                    allowed = {'num_warps', 'num_ctas', 'num_stages', 'maxnreg',
+                               'enable_fp_fusion', 'enable_static_shared', 'ptx_options'}
+                    if 'enable_arch_accel' in declared:
+                        from triton.flagmega.codegen.triton.r007_first_region import verify_program_options
+                        verify_program_options(declared)
+                        allowed.add('enable_arch_accel')
+                    if not isinstance(declared, Mapping) or set(declared) != allowed:
+                        raise ArtifactError('Invalid checked program compile options.')
+                    for key, value in declared.items():
+                        if key in options and (type(options[key]) is not type(value) or options[key] != value):
+                            raise ArtifactError(f'Program compile option conflicts with normal prepare: {key}.')
+                        options[key] = value
                 from triton.flagmega.runtime.program_arguments import BoundProgram, project_arguments
                 bindings = spec.get("argument_bindings")
                 if frozen is None:
@@ -790,8 +881,14 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                         allocation_device=self._device,
                         **options,
                     )
-                prepared.append(instance if bindings is None else BoundProgram(
-                    instance, bindings, spec["dynamic_argument_indices"], self.codegen["dynamic_argument_indices"]))
+                if getattr(self, "_phase_binding", False):
+                    if bindings is None:
+                        raise ArtifactError('Phase entry requires explicit native argument bindings.')
+                    prepared.append(_PhaseBoundProgram(instance, bindings, spec['dynamic_argument_indices'],
+                                    self.codegen['dynamic_argument_indices'], owner=self, index=index))
+                else:
+                    prepared.append(instance if bindings is None else BoundProgram(
+                        instance, bindings, spec['dynamic_argument_indices'], self.codegen['dynamic_argument_indices']))
             if self.codegen.get("kernel_program_schema") in {
                 "flagmega.kernel-programs/v2-dag", "flagmega.kernel-programs/v3-dag-completion",
                 "flagmega.kernel-programs/v4-functions",
@@ -802,8 +899,28 @@ class GeneratedTirCallGraphModule(RuntimeModule):
                     specs, tuple(prepared), device=self._device, target=self.manifest.get("target")
                 )
             self._prepared = tuple(prepared)
+        if getattr(self, "_phase_binding", False):
+            self._phase_roots = arguments
+            if len(arguments)==16:
+                selector=arguments[12]
+                self._phase_selector_identity=(selector.data_ptr(),selector._version)
         self.prepare_count += 1
         self._mark_prepared()
+
+    def _phase_launch_roots(self, dynamic):
+        from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import verify_phase_external_arguments, DYNAMIC_ROOTS
+        DYNAMIC_ROOTS=self.runtime_binding['root_dynamic_indices']
+        if len(dynamic)!=len(DYNAMIC_ROOTS) or not self._phase_roots:
+            raise RuntimeContractError('Phase launch requires the prepared eight-root dynamic projection.')
+        roots=list(self._phase_roots)
+        for index,value in zip(DYNAMIC_ROOTS,dynamic,strict=True):
+            roots[index]=value
+        verify_phase_external_arguments(self.runtime_binding,roots)
+        if len(roots)==16:
+            selector=roots[12]
+            if (selector.data_ptr(),selector._version)!=self._phase_selector_identity:
+                raise RuntimeContractError('GDN selector must retain its prepared immutable initialization epoch.')
+        return tuple(roots)
 
     def _launch_external(
         self, external_arguments: tuple[object, ...], *, stream=None
@@ -811,7 +928,19 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         self._require_prepared()
         if self._prepared is None:
             raise RuntimeContractError("Artifact must be prepared before launch.")
-        self._validate_external_arguments(external_arguments)
+        if getattr(self, "_phase_binding", False):
+            roots=self._phase_launch_roots(external_arguments)
+            if stream is None:
+                stream = _torch().cuda.current_stream(self._device).cuda_stream
+            stream_identity = getattr(stream, 'cuda_stream', stream)
+            if self._phase_stream is not None and stream_identity != self._phase_stream:
+                raise RuntimeContractError('Phase pool instance is bound to one caller stream.')
+            self._phase_stream = stream_identity
+            for index in tuple(self._phase_call_indices):
+                self._prepared[index].launch(*external_arguments,stream=stream_identity)
+            return
+        else:
+            self._validate_external_arguments(external_arguments)
         # Pool-backed descriptors are static arguments captured by prepare.
         # Rebinding all of them here repeats validation and tensor-view work
         # even though launch only consumes the external-backed descriptors.
@@ -942,9 +1071,19 @@ class GeneratedTirCallGraphModule(RuntimeModule):
         has_device_context = (
             self._device_dptr is not None or self._device_window is not None
         )
+        if getattr(self,'_phase_binding',False) and self._phase_stream is not None and str(self._device).startswith('cuda'):
+            # This also protects close(synchronize=False): host dispatch completion
+            # does not release scratch until the final stream work has completed.
+            _torch().cuda.synchronize(_torch().device(self._device))
         self._prepared = None
         self._program_dag = None
         self._pool_values = {}
+        self._phase_static_roots = ()
+        self._phase_stream = None
+        self._phase_next_entry = 0
+        self._phase_roots = ()
+        self._phase_call_indices = ()
+        self._phase_selector_identity = None
         self._tensor_descriptors.clear()
         self._function_offset_values = ()
         self._device_dptr = None
@@ -2189,3 +2328,38 @@ def _typed_byte_view(storage, offset: int, nbytes: int, dtype: object, shape: tu
     if view.data_ptr() % 16:
         raise ArtifactError("Generated static buffer is not 16-byte aligned.")
     return view
+
+
+from triton.flagmega.runtime.program_arguments import BoundProgram as _NormalBoundProgram
+
+
+class _PhaseBoundProgram(_NormalBoundProgram):
+    """Normal BoundProgram with the phase ABI/DAG guard at its launch boundary."""
+
+    def __init__(self, *args, owner, index):
+        super().__init__(*args)
+        self._phase_owner=owner
+        self._phase_index=index
+
+    def launch(self, *arguments, stream=None):
+        owner=self._phase_owner
+        owner._require_prepared()
+        roots=owner._phase_launch_roots(arguments)
+        if not owner._phase_call_indices or self._phase_index!=owner._phase_next_entry:
+            raise RuntimeContractError('Phase BoundProgram launch violates the serial dependency DAG.')
+        if stream is None:
+            stream=_torch().cuda.current_stream(owner._device).cuda_stream
+        identity=getattr(stream,'cuda_stream',stream)
+        if owner._phase_stream is not None and identity!=owner._phase_stream:
+            raise RuntimeContractError('Phase pool instance is bound to one caller stream.')
+        owner._phase_stream=identity
+        if str(owner._device).startswith('cuda'):
+            torch=_torch()
+            caller_stream=torch.cuda.ExternalStream(identity,device=owner._device)
+            for value in roots:
+                if isinstance(value,torch.Tensor):
+                    value.record_stream(caller_stream)
+        super().launch(*arguments,stream=identity)
+        remaining=owner._phase_call_indices[1:]
+        owner._phase_call_indices=remaining
+        owner._phase_next_entry=remaining[0] if remaining else None

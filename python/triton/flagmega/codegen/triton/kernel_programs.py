@@ -9,6 +9,7 @@ Explicit concurrency requires the corresponding lifetime/dependency proof.
 """
 
 import keyword
+from math import prod
 from collections.abc import Mapping
 
 from triton.flagmega.codegen.triton.package_plan import plain_package_value
@@ -43,7 +44,7 @@ def target_kernel_programs(module, capability):
     programs = []
     symbols = set()
     for request in raw:
-        if not isinstance(request, Mapping) or set(request) - {"symbol", "calls", "num_warps", "grid", "depends_on", "tasks_per_owner", "execution_mesh", "program_kind", "data_placement", "launch_recipe", "maxnreg", "function"}:
+        if not isinstance(request, Mapping) or set(request) - {"symbol", "calls", "num_warps", "grid", "depends_on", "tasks_per_owner", "execution_mesh", "program_kind", "data_placement", "launch_recipe", "maxnreg", "function", "enable_static_shared", "requires_grid_wide_sync"}:
             raise IRVerificationError("Kernel program request has unknown fields.", stage=module.stage)
         symbol = request.get("symbol")
         calls = request.get("calls")
@@ -83,6 +84,12 @@ def target_kernel_programs(module, capability):
             if (type(maxnreg) is not int or maxnreg < 8 or maxnreg > 256 or maxnreg % 8
                     or 'maxnreg' not in getattr(capability, 'supported_program_compile_options', ())):
                 raise IRVerificationError('Program register cap is unsupported by this target/resource contract.', stage=module.stage)
+        if 'enable_static_shared' in request:
+            from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import supports_static_shared
+            if type(request['enable_static_shared']) is not bool or not supports_static_shared(capability):
+                raise IRVerificationError('Program enable_static_shared must be a supported strict bool.', stage=module.stage)
+        if 'requires_grid_wide_sync' in request and type(request['requires_grid_wide_sync']) is not bool:
+            raise IRVerificationError('Program requires_grid_wide_sync must be a strict bool.', stage=module.stage)
         mesh_fields = {"execution_mesh", "program_kind", "data_placement"}
         present = mesh_fields.intersection(request)
         if present and present != mesh_fields:
@@ -104,6 +111,7 @@ def target_kernel_programs(module, capability):
                 **({key: request[key] for key in mesh_fields} if present else {}),
                 **({'launch_recipe': request['launch_recipe']} if 'launch_recipe' in request else {}),
                 **({'maxnreg': maxnreg} if maxnreg is not None else {}),
+                **({key: request[key] for key in ('enable_static_shared', 'requires_grid_wide_sync') if key in request}),
                 **({"grid": tuple(request["grid"])} if "grid" in request else {}),
                 **({"tasks_per_owner": tasks} if "tasks_per_owner" in request else {}),
                 **({"depends_on": tuple(request["depends_on"])} if "depends_on" in request
@@ -150,25 +158,39 @@ def _task_owner_partition(request, descriptor, selected):
         if (tasks != 1 or tuple(grid) != recipe.grid_upper_bound or len(selected) != 1
                 or plain_package_value(selected[0].get('task_launch_recipe')) != recipe.to_data()):
             raise CodegenError('Dynamic program task/tail coverage differs from its selected callee ABI.')
+        if any(int(buffer.get('abi', {}).get('pool_scope_stride_bytes', 0))
+               for call in selected for side in ('inputs', 'outputs')
+               for binding in call.get(side, ()) for buffer in binding.get('buffers', ())):
+            raise CodegenError('Independent task entries require CHIP storage across their callee ABI.')
         return None
     if 'execution_mesh' in request:
         from triton.flagmega.ir.distributed_type import placement_from_data
         domain = placement_from_data(request['data_placement'])
         logical = [domain.physical_level_size('b'), 1, 1]
-    if tasks == 1 and grid != logical and 'execution_mesh' in request:
+    if tasks == 1 and 'execution_mesh' in request and (
+            grid != logical or request['execution_mesh'].get('mapping') == 'x-fast'):
         mesh_shape = tuple(request['execution_mesh'].get('shape', ()))
         expected = list((*mesh_shape, *(1 for _ in range(3 - len(mesh_shape)))))
-        if (len(mesh_shape) == 2 and grid == expected and grid[0] * grid[1] == logical[0]
-                and selected and all(tuple(c.get('parameters', {}).get('program_grid', ())) == tuple(grid)
+        if (not 1 <= len(mesh_shape) <= 3 or grid != expected or prod(grid) != logical[0]
+                or not selected or not all(
+                    tuple(c.get('parameters', {}).get('program_grid', ())) == tuple(grid)
                     and c.get('parameters', {}).get('program_owner_mapping') == 'x-fast'
-                    and not c.get('internal_grid_barriers', 0) for c in selected)
-                and not any(int(buffer.get('abi', {}).get('pool_scope_stride_bytes', 0))
-                    for call in selected for side in ('inputs', 'outputs')
-                    for binding in call[side] for buffer in binding.get('buffers', ()))):
-            # The selected grid/mapping is already part of the typed program
-            # request and is rebuilt by the runtime verifier. One owner per
-            # CTA needs no additional interleaved-task runtime ABI.
-            return None
+                    and c.get('task_partition', {}).get('tasks_per_owner', 1) == 1
+                    and not c.get('internal_grid_barriers', 0)
+                    and not c.get('facts', {}).get('internal_grid_barriers', 0)
+                    and 'grid_sync' not in c.get('facts', {}).get('requires', ()) for c in selected)
+                or any(int(buffer.get('abi', {}).get('pool_scope_stride_bytes', 0))
+                       for call in selected for side in ('inputs', 'outputs')
+                       for binding in call.get(side, ()) for buffer in binding.get('buffers', ()))):
+            raise CodegenError('Kernel program physical grid requires an explicit task-to-owner ABI: mesh/mapping/barrier/pool mismatch.')
+        # Existing row-major rank-two native implementations retain their
+        # physical-access verifier. Explicit x-fast phase meshes additionally
+        # bind the complete scalar census to the selected contract.
+        if request['execution_mesh'].get('mapping') == 'x-fast' or len(mesh_shape) == 3:
+            from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import verify_scalar_writer_proof
+            for call in selected:
+                verify_scalar_writer_proof(call, grid)
+        return None
     if (len(grid) != 3 or any(type(v) is not int or v <= 0 for v in grid)
             or tasks == 1 and grid != logical
             or tasks > 1 and (logical[1:] != [1, 1] or grid != [logical[0] * tasks, 1, 1])):
@@ -212,6 +234,23 @@ def describe_kernel_programs(module, plan, descriptor):
     if plain_package_value(raw) != plain_package_value(requested):
         raise CodegenError("Kernel program plan differs from its target-owned partition request.")
     return _describe_program_partition(module, raw, descriptor)
+
+
+def _q8_program_options(selected, launch):
+    """Propagate validated family options into the normal runtime spec."""
+    from triton.flagmega.ir.ops.math._iq4_q8 import OPS
+    calls=[c for c in selected if c.get("family") in OPS.values()]
+    if not calls: return
+    if len(selected)!=1 or len(calls)!=1 or launch.get("program_kind")!="ordinary":
+        raise CodegenError("Q8 requires one independent ordinary call per program.")
+    options=calls[0].get("compile_options")
+    expected_keys={"num_warps","num_ctas","num_stages","maxnreg","enable_fp_fusion","enable_static_shared","ptx_options"}
+    if not isinstance(options,Mapping) or set(options)!=expected_keys:
+        raise CodegenError("Q8 checked compile options missing from native call.")
+    for key in ("num_warps","maxnreg","enable_static_shared"):
+        if key not in launch or type(launch[key]) is not type(options[key]) or launch[key]!=options[key]:
+            raise CodegenError(f"Q8 program option differs from selected call: {key}.")
+    launch["compile_options"]=dict(options)
 
 
 def _describe_program_partition(module, raw, descriptor, *, function_name=None, complete_scope=True):
@@ -330,6 +369,8 @@ def _describe_program_partition(module, raw, descriptor, *, function_name=None, 
         synchronized |= completes_device
         if 'launch_recipe' in request and synchronized:
             raise CodegenError('Independent dynamic tiles cannot contain grid/device waits.')
+        if 'requires_grid_wide_sync' in request and request['requires_grid_wide_sync'] != bool(synchronized):
+            raise CodegenError('Program requires_grid_wide_sync differs from its internal barriers.')
         launch = {
             "symbol": symbol,
             "grid": grid,
@@ -341,11 +382,16 @@ def _describe_program_partition(module, raw, descriptor, *, function_name=None, 
                if 'execution_mesh' in request else {}),
             **({'launch_recipe': plain_package_value(request['launch_recipe'])} if 'launch_recipe' in request else {}),
             **({'maxnreg': request['maxnreg']} if 'maxnreg' in request else {}),
+            **({'enable_static_shared': request['enable_static_shared']} if 'enable_static_shared' in request else {}),
             **({"task_owner_partition": task_owner} if task_owner else {}),
             **({"depends_on": list(request["depends_on"]), "stream_index": streams[symbol],
                 "external_writes": list(external_writes[symbol]),
                 "device_completion": bool(completes_device)} if streams is not None else {}),
         }
+        _q8_program_options(list(selected.values()), launch)
+        if any(c.get('family') == 'r007_first_region' for c in selected.values()):
+            from triton.flagmega.codegen.triton.r007_first_region import program_options
+            program_options(list(selected.values()), launch)
         launches.append(launch)
         mesh_context = {}
         if 'execution_mesh' in request:
@@ -369,6 +415,7 @@ def _describe_program_partition(module, raw, descriptor, *, function_name=None, 
                 "symbol": symbol,
                 "num_warps": warps,
                 "entry_events": segment,
+                **({key: request[key] for key in ("grid", "maxnreg", "enable_static_shared", "requires_grid_wide_sync", "depends_on", "program_kind") if key in request}),
                 "render_calls": list(selected.values()),
                 "device_functions": list(used_functions.values()),
                 "pipeline_schedule": pipeline,
@@ -397,3 +444,40 @@ def _describe_program_partition(module, raw, descriptor, *, function_name=None, 
             KERNEL_PROGRAM_MESH_SCHEMA if has_mesh else KERNEL_PROGRAM_FUNCTION_SCHEMA if shared else
             KERNEL_PROGRAM_DAG_COMPLETION_SCHEMA if streams is not None else KERNEL_PROGRAM_SCHEMA,
             "kernels": launches, "programs": programs}
+
+
+def verified_option_programs(codegen, kernels, module):
+    """Reload options by rebuilding the authoritative typed package, losslessly."""
+    from triton.flagmega.runtime.kernel_programs import _verify_source_program_literals
+    from triton.flagmega.codegen.triton.tir_package import describe_tir_package
+    from triton.flagmega.errors import ArtifactError
+    from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import _same_contract
+    expected=describe_tir_package(module)
+    raw=codegen.get('kernels')
+    if (not isinstance(raw,(list,tuple)) or len(raw)!=len(kernels)
+            or expected.get('kernel_program_schema')!=codegen.get('kernel_program_schema')
+            or not _same_contract(raw,plain_package_value(expected.get('kernels')))):
+        raise ArtifactError('Program options/resources differ from the rebuilt typed package.')
+    _verify_source_program_literals(codegen,raw,kernels)
+    return tuple({**s,'grid':tuple(s['grid']),'dynamic_argument_indices':tuple(s['dynamic_argument_indices'])} for s in raw)
+
+
+def verified_phase_programs(codegen, kernels, module):
+    from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import verify_phase_runtime_binding, PROGRAM_SCHEMA, DYNAMIC_ROOTS
+    from triton.flagmega.errors import ArtifactError, IRSchemaError
+    try:
+        verify_phase_runtime_binding(codegen['runtime_binding'])
+    except (IRSchemaError,KeyError) as error:
+        raise ArtifactError(str(error)) from error
+    if codegen.get('kernel_program_schema')!=PROGRAM_SCHEMA or tuple(codegen.get('dynamic_argument_indices',()))!=tuple(codegen['runtime_binding']['root_dynamic_indices']):
+        raise ArtifactError('Phase module dynamic projection/schema differs from interface v4.')
+    specs=verified_option_programs(codegen,kernels,module)
+    from triton.flagmega.codegen.triton.tir_package import describe_tir_package
+    rebuilt=describe_tir_package(module)
+    if any(plain_package_value(codegen.get(k)) != plain_package_value(rebuilt.get(k))
+           for k in ('runtime_binding','phase_cache_key','phase_interface','phase_variants','plan_body_sha256','delta_sha256')):
+        raise ArtifactError('Phase roots/interface/source-toolchain cache identity differs from typed package.')
+    if any(s.get('stream_index')!=0 or s.get('requires_grid_wide_sync') is not False
+           or s.get('program_kind')!='ordinary' or 'enable_static_shared' not in s for s in specs):
+        raise ArtifactError('Phase entries require explicit serial ordinary options.')
+    return specs

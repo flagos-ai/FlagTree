@@ -36,6 +36,10 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Verifier.h"
+#ifdef __TLE__
+#include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/Instructions.h"
+#endif
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -516,6 +520,20 @@ void init_triton_llvm(py::module &&m) {
         if (!llvmMod) {
           throw std::runtime_error("failed to translate module to LLVM IR");
         }
+#ifdef __TLE__
+        // MLIR inline_asm has no callsite convergence fields. Attach these
+        // before any LLVM optimization, only to the owning checked collective.
+        for (auto &function : *llvmMod)
+          for (auto &block : function)
+            for (auto &instruction : block)
+              if (auto *call = llvm::dyn_cast<llvm::CallBase>(&instruction))
+                if (auto *assembly = llvm::dyn_cast<llvm::InlineAsm>(call->getCalledOperand()))
+                  if (assembly->getAsmString() ==
+                      "// tle.indexed32\nshfl.sync.idx.b32 $0, $1, $2, 0x1f, 0xffffffff;") {
+                    call->addFnAttr(llvm::Attribute::Convergent);
+                    call->addFnAttr(llvm::Attribute::NoDuplicate);
+                  }
+#endif
         return llvmMod;
       },
       py::keep_alive<0, 2>(), py::call_guard<py::gil_scoped_release>());

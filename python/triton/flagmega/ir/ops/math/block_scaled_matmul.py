@@ -5,7 +5,7 @@
 from math import prod
 from typing import Mapping, Sequence
 
-from triton.flagmega.errors import IRSchemaError
+from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.dim_expr import try_div_exactly
 from triton.flagmega.ir.distributed_inference import all_broadcast, placement_of, split_policy, tensor_of
 from triton.flagmega.ir.distributed_type import scale_split_units
@@ -42,6 +42,8 @@ class BlockScaledMatMul(OpDefinition):
     ``weight_dequant_dtype`` optionally rounds FP32(code * block_scale) to
     F16/BF16 before multiplication, independently of the stored FP8 dtype.
     Defaults retain dynamic activation quantization and unrounded weights.
+    Native ``k230_q8_fp16_v1`` uses ggml Q8 activation quantization, KPU
+    FP16 intermediates, FP24 reduction and an FP16 result widened to F32.
     """
 
     const_evaluable = True
@@ -55,6 +57,7 @@ class BlockScaledMatMul(OpDefinition):
     output_lanes = attribute_parameter(default=())
     activation_quantization = attribute_parameter(default="dynamic_fp8")
     weight_dequant_dtype = attribute_parameter(default=None)
+    native_compute_profile = attribute_parameter(default="f32")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -73,6 +76,13 @@ class BlockScaledMatMul(OpDefinition):
         if attrs.get("output_data_type") is not None:
             result["output_data_type"] = DType(attrs["output_data_type"]).value
         result.update(normalize_block_scaled_precision(attrs, "BlockScaledMatMul"))
+        profile = attrs["native_compute_profile"]
+        if not isinstance(profile, str) or profile not in {"f32", "k230_q8_fp16_v1"}:
+            raise IRSchemaError("BlockScaledMatMul native_compute_profile must be f32 or k230_q8_fp16_v1.")
+        if profile != "f32":
+            if encoding not in {"IQ4_XS", "Q6_K"} or result["output_lanes"]:
+                raise IRSchemaError("BlockScaledMatMul k230_q8_fp16_v1 requires IQ4_XS/Q6_K storage and no output_lanes.")
+            result["native_compute_profile"] = profile
         return result
 
     @classmethod
@@ -98,6 +108,9 @@ class BlockScaledMatMul(OpDefinition):
         if output_n is None:
             raise IRSchemaError("BlockScaledMatMul N must be divisible by output_lanes.")
         scalar_dtype = DType(attrs["output_data_type"]) if attrs.get("output_data_type") else value.dtype
+        if attrs.get("native_compute_profile", "f32") != "f32" and (
+                value.dtype != DType.FLOAT32 or scalar_dtype != DType.FLOAT32):
+            raise IRSchemaError("BlockScaledMatMul k230_q8_fp16_v1 requires F32 input and output.")
         output = tensor_type(VectorType(scalar_dtype, lanes) if lanes else scalar_dtype, (value.shape[0], output_n))
         placement = placement_of(value_type, weight_type, scale_type)
         if placement is None:
@@ -126,6 +139,12 @@ class BlockScaledMatMul(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        profile = node.attrs.get("native_compute_profile", "f32")
+        if profile != "f32":
+            raise EvaluationError(
+                f"BlockScaledMatMul native_compute_profile={profile!r} requires a validated hardware reference; "
+                "no software evaluator is registered."
+            )
         dtype = tensor_of(node.type).dtype
         output = block_scaled_linear(
             cls.value.read(arguments),

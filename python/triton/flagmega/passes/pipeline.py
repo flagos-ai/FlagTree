@@ -86,10 +86,12 @@ PIPELINE_GROUPS = (
             "extracted",
             "normalization_decomposed",
             "decomposed",
+            "iq4_q8_prepared",
         }),
         "call_invariants_hoisted",
         (
             PipelinePass("DecomposeComplexOps", "decompose-gdn"),
+            TargetPipelineExtension("IQ4Q8Preparation", "register_iq4_q8_preparation_passes"),
             PipelinePass("HoistCallInvariantExpressions", "hoist-call-invariants"),
         ),
     ),
@@ -247,6 +249,8 @@ PIPELINE_GROUPS = (
             "selected_microkernels",
             "tensor_subspans_lowered",
             "packaged_tir",
+            "heterogeneous_planned_tir",
+            "heterogeneous_program_tir",
             "memory_placed_tir",
             "allocated_tir",
             "scheduled_tir",
@@ -271,6 +275,7 @@ PIPELINE_GROUPS = (
             PipelinePass("ProposeTIRMicroKernels", "propose-microkernels"),
             PipelinePass("SelectTIRMicroKernels", "select-microkernels"),
             PipelinePass("FinalizeTIRPackage", "finalize-tir-package"),
+            TargetPipelineExtension("PreBufferizationPasses", "register_pre_bufferization_passes"),
             PipelinePass("PlanFunctionMemory", "plan-function-memory"),
             PipelinePass("Bufferize", "bufferize"),
             PipelinePass(
@@ -278,6 +283,7 @@ PIPELINE_GROUPS = (
                 "materialize-execution-functions",
             ),
             PipelinePass("PlanMemorySynchronization", "plan-memory-synchronization"),
+            TargetPipelineExtension("PostSynchronizationPasses", "register_post_synchronization_passes"),
             PipelinePass(
                 "LowerTransferPipelineRegions",
                 "lower-transfer-pipeline-regions",

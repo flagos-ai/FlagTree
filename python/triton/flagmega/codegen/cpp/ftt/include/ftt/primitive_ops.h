@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: MIT
  */
 #pragma once
+#include "vector_ops.h"
 #include "compiler_defs.h"
 
 // Arch-neutral scalar math and dtype conversion.
@@ -129,15 +130,15 @@ FTT_DEVICE_INLINE float sqrt(float value) { return __builtin_sqrtf(value); }
 // TIR renderers reaches these through `codegen/cpp/expressions.py`.  They are
 // templates so an index expression keeps its own integer type rather than
 // silently widening or narrowing through a fixed signature.
-template <class T> FTT_DEVICE_INLINE T max(T left, T right) {
+template <class T, detail::enable_if_t<!is_fixed_dim_v<T> && !is_vector_v<T>, int> = 0> FTT_DEVICE_INLINE T max(T left, T right) {
     return left < right ? right : left;
 }
 
-template <class T> FTT_DEVICE_INLINE T min(T left, T right) {
+template <class T, detail::enable_if_t<!is_fixed_dim_v<T> && !is_vector_v<T>, int> = 0> FTT_DEVICE_INLINE T min(T left, T right) {
     return right < left ? right : left;
 }
 
-template <class T> FTT_DEVICE_INLINE T abs(T value) {
+template <class T, detail::enable_if_t<!is_vector_v<T>, int> = 0> FTT_DEVICE_INLINE T abs(T value) {
     return value < T(0) ? static_cast<T>(-value) : value;
 }
 

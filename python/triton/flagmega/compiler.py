@@ -50,6 +50,14 @@ class Compiler:
             if configure is None:
                 raise StageError(f"Target {self.target.name!r} does not support bufferize optimization levels.")
             self.target = configure(self.options.bufferize_opt_level)
+        protocol = self.options.heterogeneous_protocol
+        if protocol is None and self.target.name == "k230":
+            protocol = "k230.functions/v1"
+        if protocol is not None:
+            configure = getattr(self.target, "with_heterogeneous_protocol", None)
+            if configure is None:
+                raise StageError(f"Target {self.target.name!r} has no heterogeneous planning contract.")
+            self.target = configure(protocol)
         if self.options.codegen_backend is not None:
             # Bind after target configuration, which may reconstruct the target.
             # Registered targets are shared; this belongs to one invocation.
@@ -81,6 +89,8 @@ class Compiler:
     ) -> CompileResult:
         verify_module(module)
         self._verify_bufferize_level(module)
+        if module.heterogeneous_plans or module.heterogeneous_programs:
+            self.target.verify(module)
         if plan is not None:
             module = apply_plan(module, plan)
             verify_module(module)
@@ -116,6 +126,8 @@ class Compiler:
     def compile(self, module: IRModule, *, stop_after: str | None = None) -> CompileResult:
         verify_module(module)
         self._verify_bufferize_level(module)
+        if module.heterogeneous_plans or module.heterogeneous_programs:
+            self.target.verify(module)
         if stop_after is not None:
             # An agent's misspelled boundary must not run the remaining
             # pipeline and freeze decisions it intended to edit.

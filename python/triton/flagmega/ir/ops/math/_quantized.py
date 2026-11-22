@@ -6,7 +6,7 @@ from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.types import DType
 from triton.flagmega.ir.model import tensor_type
 
-BLOCK_BYTES = {"IQ4_XS": 136, "Q4_K": 144}
+BLOCK_BYTES = {"IQ4_XS": 136, "Q4_K": 144, "Q6_K": 210}
 
 
 def matrix_width(weight, encoding):
@@ -53,6 +53,15 @@ def decode_native_rows(weight, encoding, *, logical_k=None):
     if logical_k is not None and k != logical_k:
         raise EvaluationError(f"Native GGUF logical K mismatch: activation {logical_k}, weight {k}.")
     blocks = weight.contiguous().reshape(weight.shape[0], -1, block_bytes)
+    if encoding == "Q6_K":
+        position = torch.arange(256, device=weight.device)
+        half, part, lane = position // 128, position % 128 // 32, position % 32
+        low = blocks[..., half * 64 + (part % 2) * 32 + lane].long()
+        high = blocks[..., 128 + half * 32 + lane].long()
+        codes = ((low >> (4 * (part // 2))) & 15) | (((high >> (2 * part)) & 3) << 4)
+        scales = blocks[..., 192 + position // 16].view(torch.int8).float()
+        d = blocks[..., 208:210].contiguous().view(torch.float16).float()
+        return ((d * scales) * (codes - 32).float()).reshape(weight.shape[0], k)
     d = blocks[..., :2].contiguous().view(torch.float16).float()
     group = torch.arange(8, device=weight.device)
     if encoding == "IQ4_XS":

@@ -1465,17 +1465,11 @@ class BufferPlanner:
             allocation = (
                 f"callframe:{function.name}:{node.id}:{pool.memory_space}"
             )
-            pool_live_end = frame_live_end
-            if function.name == self.module.entry and self.concurrent_programs:
-                # Public result allocations and forwarded input/state pointers
-                # do not live in this private callee frame. Retain a frame
-                # beyond program completion only for results actually backed
-                # by that pool; otherwise unrelated long-lived results would
-                # keep every repeated layer's scratch alive to function end.
-                holds_result = any(self.descriptors[result].mem_span.buffer.memory_space == pool.memory_space
-                                   for result in formal_results)
-                pool_live_end = max(index if call_end is None else call_end,
-                                    frame_live_end if holds_result else index)
+            # Keep only pools that back results past call completion.
+            holds_result = any(self.descriptors[result].mem_span.buffer.memory_space == pool.memory_space
+                               for result in formal_results)
+            pool_live_end = max(index if call_end is None else call_end,
+                                frame_live_end if holds_result else index)
             lifetimes[pool.memory_space].append(BufferLifetime(
                 allocation,
                 pool.scope_bytes,
@@ -2258,6 +2252,15 @@ class BufferPlanner:
                     else self.rdata_space.name if storage == "rdata"
                     else "external"
                 )
+                source = self.module.node_map.get(source_node)
+                requested = None if source is None else source.metadata.get("bufferization.external_memory_space")
+                if requested is not None:
+                    requested_space = self.options.memory_space_map.get(str(requested))
+                    if (memory_space != "external" or storage not in {"input", "parameter", "state"}
+                            or requested_space is None or requested_space.strategy is not AllocationStrategy.EXTERNAL
+                            or requested_space.allocation_scope is not MemoryAllocationScope.EXTERNAL):
+                        raise IRVerificationError("External memory placement requires an external parameter space.")
+                    memory_space = requested_space.name
                 physical_space = self.options.memory_space_map[memory_space]
                 required_alignment = max(
                     physical_space.granularity,

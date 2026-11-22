@@ -9,6 +9,7 @@ from dataclasses import replace
 from math import prod
 
 from triton.flagmega.errors import IRSchemaError
+from triton.flagmega.ir.ops._compute_profile import normalize_compute_profile, require_host_reference, verify_complete_f32
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import SBPBroadCast, SBPPartial
 from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorType
@@ -48,6 +49,10 @@ class NormApply(OpDefinition):
     and scaling. Intermediate and final input-dtype rounding use this dtype;
     ``output_dtype`` can then convert that rounded result. Defaults preserve
     the physical value dtype and existing checkpoint semantics.
+
+    ``ggml_f32_v1`` consumes F32 mean-square statistics, not additive sums.
+    It uses F32 sqrt, reciprocal, numerator and weight products in that order.
+    Zero bias is an identity without another addition, preserving signed zero.
     """
     value = input_parameter(is_tensor(), name="input")
     stats = input_parameter(is_tensor())
@@ -60,11 +65,13 @@ class NormApply(OpDefinition):
     output_dtype = attribute_parameter(default=None)
     input_dtype = attribute_parameter(default=None)
     math_mode = attribute_parameter(default="fast")
+    compute_profile = attribute_parameter(default="default")
     inplace_input_parameters = (value,)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
         attrs = super().normalize_attrs(attributes)
+        profile = normalize_compute_profile(attrs, "NormApply", supported="ggml_f32_v1")
         axis = attrs["axis"]
         if isinstance(axis, bool) or not isinstance(axis, int):
             raise IRSchemaError("NormApply axis must be an integer.")
@@ -86,7 +93,10 @@ class NormApply(OpDefinition):
             if dtype not in {DType.BFLOAT16, DType.FLOAT32}:
                 raise IRSchemaError(f"NormApply {name} must be bfloat16 or float32.")
             optional_dtypes[name] = dtype.value
-        return {**optional_dtypes,
+        if profile and (attrs["use_mean"] or attrs["math_mode"] != "fast"
+                        or any(dtype != "float32" for dtype in optional_dtypes.values())):
+            raise IRSchemaError("NormApply ggml_f32_v1 requires F32 RMS mean-square statistics without precision overrides.")
+        return {**optional_dtypes, **profile,
                 **({"math_mode": attrs["math_mode"]} if attrs["math_mode"] != "fast" else {}),
                 "axis": axis, "epsilon": epsilon, "use_mean": bool(attrs["use_mean"]),
                 "round_before_scale": attrs["round_before_scale"]}
@@ -102,6 +112,15 @@ class NormApply(OpDefinition):
         scale = tensor_of(scale_type)
         bias = tensor_of(bias_type)
         axis = normalize_axis(int(attrs["axis"]), value.rank)
+        profile = attrs.get("compute_profile", "default")
+        source = cls.stats.read(inputs)
+        if source.op == "nn.norm_stats" and source.attrs.get("compute_profile", "default") != profile:
+            raise IRSchemaError("NormApply and NormStats compute profiles must match.")
+        if profile != "default":
+            for parameter in cls.input_parameters:
+                verify_complete_f32(parameter.type_of(inputs), "NormApply")
+            if axis != value.rank - 1:
+                raise IRSchemaError("NormApply ggml_f32_v1 normalizes the final axis.")
         if not all(is_float_dtype(item.dtype) for item in (value, scale, bias)):
             raise IRSchemaError("NormApply input, scale and bias must be floating point.")
         expected_stats = stats_tensor_type(value, axis, bool(attrs["use_mean"]))
@@ -163,6 +182,7 @@ class NormApply(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        require_host_reference(node)
         input_type = tensor_of(context.types[cls.value.read(node.inputs)])
         scale_type = tensor_of(context.types[cls.scale.read(node.inputs)])
         bias_type = tensor_of(context.types[cls.bias.read(node.inputs)])

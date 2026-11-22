@@ -45,6 +45,7 @@ from triton.flagmega.ir.tir import (
 from triton.flagmega.targets.nvidia.gdn import (
     gdn_large_key_implementations, gdn_state_pipeline_implementations,
     gdn_scalar_head_gate_implementations,
+    r004_reference_implementations,
 )
 from triton.flagmega.targets.nvidia.mhc import mhc_contiguous_tf32_implementations
 from triton.flagmega.targets.nvidia.mla import mla_projection_implementations
@@ -103,6 +104,18 @@ def _implementation(
     )
 
 
+class _StandaloneAwareImplementationModel(TritonImplementationModel):
+    """Keep standalone definitions out of every ordinary provider enumeration."""
+
+    def find(self, family: str, **contract: object):
+        return tuple(
+            implementation for implementation in super().find(family, **contract)
+            if implementation.contract.get("standalone_schema") is None
+            or all(contract.get(key) == implementation.contract[key]
+                   for key in ("standalone_schema", "standalone_module"))
+        )
+
+
 def portable_triton_implementation_model() -> TritonImplementationModel:
     """Describe implemented SM90 variants without putting machine knobs in rules."""
 
@@ -111,6 +124,7 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
         *gdn_state_pipeline_implementations(),
         *gdn_large_key_implementations(),
         *gdn_scalar_head_gate_implementations(),
+        *r004_reference_implementations(),
         *delta_rule_implementations(),
         *portable_tensor_transform_implementations(),
         *portable_gather_implementations(),
@@ -2209,7 +2223,7 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
             "packed_k_major_gemv", "packed_tensor_descriptor_smem_pipeline_gemv"}
         else implementation for implementation in implementations
     )
-    return TritonImplementationModel(implementations, preferences, "nvidia-sm90/v45")
+    return _StandaloneAwareImplementationModel(implementations, preferences, "nvidia-sm90/v45")
 
 
 __all__ = ["portable_triton_implementation_model"]

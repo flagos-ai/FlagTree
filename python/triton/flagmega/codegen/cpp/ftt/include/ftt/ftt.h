@@ -5,16 +5,8 @@
 
 // FTT -- FlagMega Tensor Template.
 //
-// A small C++ header library for FlagMega's generated kernels, modelled on
-// nncase's NTT but scoped to what the FlagMega IR actually emits.  Two
-// deliberate differences from NTT:
-//
-//   * Shapes are always fixed.  The FlagMega IR resolves every extent before
-//     the codegen package plan exists, so the dynamic-dimension machinery
-//     NTT carries would be dead weight here.
-//   * Tensors are views only.  Generated kernels never allocate; buffers come
-//     from the artifact's workspace / block_local_data / arguments with
-//     offsets fixed by the buffer plan.
+// Dimension, shape and vector infrastructure adapted from nncase NTT.
+// Tensor views use caller-owned storage from the generated buffer plan.
 //
 // Arch dispatch follows NTT's pattern: one macro selects the arch directory,
 // and only `arch/<name>/*` changes per target.  Iluvatar BI-V150 is the first
@@ -24,6 +16,9 @@
 #include "compiler_defs.h"
 #include "shape.h"
 #include "tensor.h"
+#include "vector_ops.h"
+#include "utility.h"
+#include "apply.h"
 
 #if defined(FTT_ARCH_ILUVATAR)
 #include "arch/iluvatar/arch_types.h"
@@ -31,9 +26,8 @@
 #elif defined(FTT_ARCH_NVIDIA)
 #include "arch/nvidia/arch_types.h"
 #include "arch/nvidia/primitive_ops.h"
-#else
-#error "No FTT arch selected."
 #endif
 
-#include "apply.h"
+#if defined(FTT_ARCH_ILUVATAR) || defined(FTT_ARCH_NVIDIA)
 #include "primitive_ops.h"
+#endif

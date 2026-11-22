@@ -107,6 +107,9 @@ class NttTarget(ABC):
         self.vectorization_policy.register_propagation_rules(registry)
 
     def distributed_placements(self, module: IRModule) -> tuple[Placement, ...]:
+        from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import standalone_request
+        if standalone_request(module) is not None:
+            return (Placement((48,), "h", "b"),)
         return self.distribution_policy.placements(module)
 
     def register_auto_distributed_candidate_providers(
@@ -131,19 +134,39 @@ class NttTarget(ABC):
         # element type.  Lowering a selected vector expression to a scalar
         # schedule contract here used to erase its physical type before the
         # distribution search and made the distributed dump misleading.
-        return AutoDistributedPass.run(module, self)
+        from triton.flagmega.rules.ntt.r004_model_policy import model_request, configure_model_phases, model_distribution_target
+        from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import configure_standalone_phases, standalone_distribution_target
+        if model_request(module) is not None:
+            module = configure_model_phases(module)
+            return AutoDistributedPass.run(module, model_distribution_target(self, module))
+        module = configure_standalone_phases(module)
+        return AutoDistributedPass.run(module, standalone_distribution_target(self,module))
 
     def propose_distribution(self, module: IRModule) -> IRModule:
-        return AutoDistributedPass.propose(module, self)
+        from triton.flagmega.rules.ntt.r004_model_policy import model_request, configure_model_phases, model_distribution_target
+        from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import configure_standalone_phases, standalone_distribution_target
+        if model_request(module) is not None:
+            module = configure_model_phases(module)
+            return AutoDistributedPass.propose(module, model_distribution_target(self, module))
+        module = configure_standalone_phases(module)
+        return AutoDistributedPass.propose(module, standalone_distribution_target(self,module))
 
     def apply_distribution(self, module: IRModule) -> IRModule:
-        return AutoDistributedPass.apply(module, self)
+        from triton.flagmega.rules.ntt.r004_model_policy import model_request, model_distribution_target
+        if model_request(module) is not None:
+            return AutoDistributedPass.apply(module, model_distribution_target(self, module))
+        from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import standalone_distribution_target
+        return AutoDistributedPass.apply(module, standalone_distribution_target(self,module))
 
     def propose_packing(self, module: IRModule) -> IRModule:
         return self.packing_policy.propose(module, self)
 
     def apply_packing(self, module: IRModule) -> IRModule:
         return self.packing_policy.apply(module, self)
+
+    def register_iq4_q8_preparation_passes(self, registry):
+        if getattr(self, "enable_iq4_q8_preparation", False):
+            registry.add("InsertIQ4Q8Preparation", "insert-iq4-q8-preparation")
 
     def register_post_auto_packing_passes(self, registry) -> None:
         """Register backend-level graph passes that run after ABI threading.
@@ -154,7 +177,19 @@ class NttTarget(ABC):
 
         del registry
 
+    def register_pre_bufferization_passes(self, registry) -> None:
+        del registry
+
+    def register_post_synchronization_passes(self, registry) -> None:
+        del registry
+
     def propose_tir(self, module: IRModule) -> IRModule:
+        from triton.flagmega.rules.ntt.r004_model_policy import model_request, propose_model_tir
+        if model_request(module) is not None:
+            return propose_model_tir(module, self)
+        from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import standalone_request, propose_standalone_tir
+        if standalone_request(module) is not None:
+            return propose_standalone_tir(module, self)
         return self.tir_selection_policy.propose(module, self)
 
     def lower_to_tir(self, module: IRModule) -> IRModule:

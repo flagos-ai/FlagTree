@@ -160,6 +160,16 @@ def _op_function(definition):
 
 
 class _math:
+    @staticmethod
+    def q8_1_prepare(value, **kwargs):
+        from triton.flagmega.ir.ops.math.q8_1_prepare import Q8_1Prepare
+        return Q8_1Prepare.construct(value, **kwargs)
+
+    @staticmethod
+    def iq4_xs_q8_1_matmul(q8, weight, weight_scale, **kwargs):
+        from triton.flagmega.ir.ops.math.iq4_xs_q8_1_matmul import IQ4XSQ8_1MatMul
+        return IQ4XSQ8_1MatMul.construct(q8, weight, weight_scale, **kwargs)
+
 
     @staticmethod
     @_op_function(Div)
@@ -353,6 +363,7 @@ class _math:
         output_lanes: tuple[int, ...] = (),
         activation_quantization: str = "dynamic_fp8",
         weight_dequant_dtype: DType | str | None = None,
+        native_compute_profile: str = "f32",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -369,6 +380,7 @@ class _math:
             output_lanes=output_lanes,
             activation_quantization=activation_quantization,
             weight_dequant_dtype=weight_dequant_dtype,
+            native_compute_profile=native_compute_profile,
             name=name,
             metadata=metadata,
         )
@@ -413,6 +425,16 @@ class _math:
 
 
 class _nn:
+    @staticmethod
+    def iq4_xs_q8_1_glu(q8, gate_weight, gate_weight_scale, up_weight, up_weight_scale, **kwargs):
+        from triton.flagmega.ir.ops.nn.iq4_xs_q8_1_glu import IQ4XSQ8_1Glu
+        return IQ4XSQ8_1Glu.construct(q8, gate_weight, gate_weight_scale, up_weight, up_weight_scale, **kwargs)
+
+    @staticmethod
+    def iq4_xs_q8_1_interleaved_projection(q8, weight, weight_scale, **kwargs):
+        from triton.flagmega.ir.ops.nn.iq4_xs_q8_1_interleaved_projection import IQ4XSQ8_1InterleavedProjection
+        return IQ4XSQ8_1InterleavedProjection.construct(q8, weight, weight_scale, **kwargs)
+
 
     @staticmethod
     @_op_function(L2Normalization)
@@ -846,6 +868,7 @@ class _nn:
         reduction_block_traversal: str = "forward",
         reduction_tree_group_size: int | None = None,
         reduction_group_seed_index: int = 0,
+        compute_profile: str = "default",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -858,6 +881,7 @@ class _nn:
             reduction_block_traversal=reduction_block_traversal,
             reduction_tree_group_size=reduction_tree_group_size,
             reduction_group_seed_index=reduction_group_seed_index,
+            compute_profile=compute_profile,
             name=name, metadata=metadata)
 
     @staticmethod
@@ -891,6 +915,7 @@ class _nn:
         output_dtype: DType | str | None = None,
         input_dtype: DType | str | None = None,
         math_mode: str = "fast",
+        compute_profile: str = "default",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -908,6 +933,7 @@ class _nn:
             output_dtype=output_dtype,
             input_dtype=input_dtype,
             math_mode=math_mode,
+            compute_profile=compute_profile,
             name=name,
             metadata=metadata,
         )
@@ -1035,6 +1061,7 @@ class _nn:
         padding_idx: int | None = None,
         weight_encoding: str | None = None,
         output_lanes: Sequence[int] = (),
+        output_data_type: DType | str | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1046,6 +1073,7 @@ class _nn:
             padding_idx=padding_idx,
             weight_encoding=weight_encoding,
             output_lanes=output_lanes,
+            output_data_type=output_data_type,
             name=name,
             metadata=metadata,
         )
@@ -1118,6 +1146,7 @@ class _nn:
         *,
         epsilon: float,
         weight_bias: float = 1.0,
+        compute_profile: str = "default",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1128,6 +1157,7 @@ class _nn:
             weight,
             epsilon=epsilon,
             weight_bias=weight_bias,
+            compute_profile=compute_profile,
             name=name,
             metadata=metadata,
         )
@@ -1149,6 +1179,7 @@ class _nn:
         gate_clamp_max: float | None = None,
         up_clamp: float | None = None,
         activation_quantization: str = "dynamic_fp8",
+        native_compute_profile: str = "f32",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1168,6 +1199,7 @@ class _nn:
             gate_clamp_max=gate_clamp_max,
             up_clamp=up_clamp,
             activation_quantization=activation_quantization,
+            native_compute_profile=native_compute_profile,
             name=name,
             metadata=metadata,
         )
@@ -1309,6 +1341,10 @@ class _nn:
         num_kv_heads: int,
         output_data_type: str,
         reduction_order: str = "relaxed",
+        q_weight_encoding: str | None = None,
+        k_weight_encoding: str | None = None,
+        v_weight_encoding: str | None = None,
+        native_compute_profile: str = "f32",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1332,6 +1368,10 @@ class _nn:
             num_kv_heads=num_kv_heads,
             output_data_type=output_data_type,
             reduction_order=reduction_order,
+            q_weight_encoding=q_weight_encoding,
+            k_weight_encoding=k_weight_encoding,
+            v_weight_encoding=v_weight_encoding,
+            native_compute_profile=native_compute_profile,
             name=name,
             metadata=metadata,
         )
@@ -1420,6 +1460,8 @@ class _nn:
         rotary_dim: int | None = None,
         qkv_layout: tuple[str, str, str],
         attention_layout: tuple[str, str, str],
+        norm_compute_profile: str = "default",
+        query_output_lanes: tuple[int, ...] | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1454,6 +1496,8 @@ class _nn:
             k_round_before_scale=k_round_before_scale,
             round_qk_intermediates=round_qk_intermediates,
             rotary_dim=rotary_dim,
+            norm_compute_profile=norm_compute_profile,
+            query_output_lanes=query_output_lanes,
             name=name,
             metadata=metadata,
         )
@@ -1549,6 +1593,7 @@ class _nn:
         probability_rounding: str = "normalized",
         softmax_block_size: int = 64,
         softmax_traversal: str = "forward",
+        compute_profile: str = "default",
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1564,6 +1609,7 @@ class _nn:
             probability_rounding=probability_rounding,
             softmax_block_size=softmax_block_size,
             softmax_traversal=softmax_traversal,
+            compute_profile=compute_profile,
             name=name,
             metadata=metadata,
         )
@@ -1712,6 +1758,7 @@ class _nn:
         b_weight_encoding: str | None = None,
         a_weight_encoding: str | None = None,
         value_head_order: str = "grouped",
+        phase_plan: Mapping[str, object] | None = None,
         name: str | None = None,
         metadata: Metadata = None,
     ) -> Node:
@@ -1742,6 +1789,7 @@ class _nn:
             b_weight_encoding=b_weight_encoding,
             a_weight_encoding=a_weight_encoding,
             value_head_order=value_head_order,
+            phase_plan=phase_plan,
             name=name,
             metadata=metadata,
         )
@@ -2441,6 +2489,26 @@ class _ntt:
 
 
 class _tir:
+    @staticmethod
+    def k230_gemv_prepare(value, packed, **attributes):
+        from triton.flagmega.ir.ops.tir.k230_program import K230GemvPrepare
+        return K230GemvPrepare.construct(value, packed, **attributes)
+
+    @staticmethod
+    def k230_gemv_region(prefix, packed, **attributes):
+        from triton.flagmega.ir.ops.tir.k230_program import K230GemvRegion
+        return K230GemvRegion.construct(prefix, packed, **attributes)
+
+    @staticmethod
+    def k230_glu_region(prefix, packed, constants, **attributes):
+        from triton.flagmega.ir.ops.tir.k230_program import K230GluRegion
+        return K230GluRegion.construct(prefix, packed, constants, **attributes)
+
+    @staticmethod
+    def k230_gemv_finish(value, packed, **attributes):
+        from triton.flagmega.ir.ops.tir.k230_program import K230GemvFinish
+        return K230GemvFinish.construct(value, packed, **attributes)
+
     @staticmethod
     @_op_function(ParameterBank)
     def parameter_bank(*, schema, source, rows, result_type=None, name=None, metadata=None):

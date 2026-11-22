@@ -13,6 +13,8 @@ from triton.flagmega.rules.neutral._utility import make_node
 
 def fuse_norm_stats_input_cast_rule():
     def rewrite(node, module):
+        if node.attrs.get("compute_profile", "default") != "default":
+            return None
         original = module.node_map[node.inputs[0]]
         converted = original
         # A packet Bitcast can factor lanes but must preserve dense scalar

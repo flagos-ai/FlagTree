@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from triton.flagmega.errors import ImporterError
 from triton.flagmega.importer.checkpoint import Checkpoint, DirectoryCheckpoint, TensorInfo
 from triton.flagmega.importer.source import attach_import_source_locations
+from triton.flagmega.importer.qwen3_native import import_native_qwen3, validate_native_profile
 from triton.flagmega.ir import (
     DType,
     IRBuilder,
@@ -57,7 +58,10 @@ def _validate_execution(execution_phase: str, num_tokens: int) -> int:
     """Return the validated token count; decode must be exactly one token."""
     if type(num_tokens) is not int or num_tokens <= 0:
         raise ImporterError("num_tokens must be a positive integer.")
-    if execution_phase != "prefill" and num_tokens != 1:
+    if execution_phase == "verify":
+        if not 2 <= num_tokens <= 8:
+            raise ImporterError("verify requires two to eight token rows.")
+    elif execution_phase != "prefill" and num_tokens != 1:
         raise ImporterError("decode-1 requires exactly one token.")
     return num_tokens
 
@@ -308,10 +312,12 @@ class Qwen3LayerImporter:
         revision: str | None = None,
         execution_phase: str = "decode-1",
         num_tokens: int = 1,
+        native_compute_profile: str | None = None,
     ) -> None:
         if layer != 0:
             raise ImporterError("Qwen3 single-layer P0 currently imports exactly layer 0.")
         self.execution_phase = execution_phase
+        self.native_compute_profile = validate_native_profile(native_compute_profile, execution_phase)
         self.num_tokens = _validate_execution(execution_phase, num_tokens)
         self.checkpoint = DirectoryCheckpoint(checkpoint) if isinstance(checkpoint, str) else checkpoint
         self.layer = layer
@@ -327,9 +333,12 @@ class Qwen3LayerImporter:
             self.config.head_dim,
             block_size=block_size,
             num_blocks=num_blocks,
+            cache_dtype=DType.FLOAT16 if self.native_compute_profile else DType.BFLOAT16,
         )
 
     def import_module(self) -> IRModule:
+        if self.native_compute_profile is not None:
+            return import_native_qwen3(self, full_model=False)
         config = self.config
         builder = IRBuilder(
             dialect="high_level",
@@ -498,8 +507,6 @@ class Qwen3LayerImporter:
             padding_idx=_optional_int(config.get("pad_token_id")),
             tie_word_embeddings=bool(config.get("tie_word_embeddings", False)),
         )
-        if result.query_size != result.hidden_size:
-            raise ImporterError("Qwen3 P0 requires num_attention_heads * head_dim == hidden_size.")
         if result.num_attention_heads % result.num_key_value_heads:
             raise ImporterError("Qwen3 attention heads must be divisible by KV heads.")
         if result.epsilon <= 0 or result.rope_theta <= 0:
@@ -526,8 +533,10 @@ class Qwen3ModelImporter:
         revision: str | None = None,
         execution_phase: str = "decode-1",
         num_tokens: int = 1,
+        native_compute_profile: str | None = None,
     ) -> None:
         self.execution_phase = execution_phase
+        self.native_compute_profile = validate_native_profile(native_compute_profile, execution_phase)
         self.num_tokens = _validate_execution(execution_phase, num_tokens)
         self.checkpoint = (
             DirectoryCheckpoint(checkpoint) if isinstance(checkpoint, str) else checkpoint
@@ -555,9 +564,12 @@ class Qwen3ModelImporter:
             self.config.head_dim,
             block_size=block_size,
             num_blocks=num_blocks,
+            cache_dtype=DType.FLOAT16 if self.native_compute_profile else DType.BFLOAT16,
         )
 
     def import_module(self) -> IRModule:
+        if self.native_compute_profile is not None:
+            return import_native_qwen3(self, full_model=True)
         config = self.config
         builder = IRBuilder(
             dialect="high_level",
@@ -989,9 +1001,11 @@ def import_qwen3_layer(
     block_size: int = 256,
     num_blocks: int = 16,
     revision: str | None = None,
+    native_compute_profile: str | None = None,
 ) -> IRModule:
     return Qwen3LayerImporter(
-        checkpoint, layer=layer, block_size=block_size, num_blocks=num_blocks, revision=revision).import_module()
+        checkpoint, layer=layer, block_size=block_size, num_blocks=num_blocks, revision=revision,
+        native_compute_profile=native_compute_profile).import_module()
 
 
 def import_qwen3_model(
@@ -1002,6 +1016,7 @@ def import_qwen3_model(
     revision: str | None = None,
     execution_phase: str = "decode-1",
     num_tokens: int = 1,
+    native_compute_profile: str | None = None,
 ) -> IRModule:
     return Qwen3ModelImporter(
         checkpoint,
@@ -1010,6 +1025,7 @@ def import_qwen3_model(
         revision=revision,
         execution_phase=execution_phase,
         num_tokens=num_tokens,
+        native_compute_profile=native_compute_profile,
     ).import_module()
 
 

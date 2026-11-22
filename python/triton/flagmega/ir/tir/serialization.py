@@ -70,6 +70,8 @@ def tir_to_data(node: TIRNode) -> dict[str, object]:
         result.pop("call_id", None)
     if node.kind == "pipeline_stage" and getattr(node, "source_readiness", None) is None:
         result.pop("source_readiness", None)
+    if node.kind == "pipeline_exchange" and not getattr(node, "slot_stride_bytes", 0):
+        result.pop("slot_stride_bytes", None)
     return result
 
 
@@ -78,6 +80,10 @@ def tir_from_data(data: Mapping[str, object]) -> TIRNode:
         cls = node_type(str(data["kind"]))
     except (KeyError, ValueError) as error:
         raise ValueError(f"Unknown TIR node kind {data.get('kind')!r}.") from error
+    if cls.__module__ == "triton.flagmega.ir.tir.heterogeneous":
+        unknown = set(data) - {"kind", *(field.name for field in fields(cls))}
+        if unknown:
+            raise ValueError(f"Unknown heterogeneous TIR fields {sorted(unknown)!r}.")
     values = {
         field.name: _decode(data[field.name])
         for field in fields(cls)
@@ -95,7 +101,11 @@ def tir_from_data(data: Mapping[str, object]) -> TIRNode:
                 "workspace", None, workspace_offset, workspace_nbytes
             ),
         ) if workspace_offset or workspace_nbytes else ()
-    return cls(**values)
+    node = cls(**values)
+    if node.kind == "kernel_dispatch" and getattr(node, "semantic_attrs", {}).get("phase_plan") is not None:
+        from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import validate_phase_plan
+        validate_phase_plan(node.semantic_attrs["phase_plan"])
+    return node
 
 
 def _encode(value: object) -> object:
@@ -125,6 +135,10 @@ def _encode(value: object) -> object:
     if isinstance(value, Enum):
         return {"$enum": type(value).__name__, "value": value.value}
     if isinstance(value, Mapping):
+        if value.get('kind') in {'argument', 'scalar_argument', 'pointer', 'immediate', 'fixed', 'dynamic'}:
+            # These ordinary data contracts have a discriminator too. A tagged
+            # mapping avoids weakening the unknown-TIR-kind rejection below.
+            return {'$mapping': {str(key): _encode(item) for key,item in sorted(value.items())}}
         return {str(key): _encode(item) for key, item in sorted(value.items())}
     if isinstance(value, tuple):
         return {"$tuple": [_encode(item) for item in value]}
@@ -140,6 +154,8 @@ def _decode(value: object) -> object:
         return tuple(_decode(item) for item in value)
     if not isinstance(value, Mapping):
         return value
+    if "$mapping" in value:
+        return {str(key): _decode(item) for key,item in value["$mapping"].items()}
     if "$fusion" in value:
         from triton.flagmega.ir.fusion import Fusion
         return Fusion.from_data(value["$fusion"])

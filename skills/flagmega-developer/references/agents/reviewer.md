@@ -24,6 +24,12 @@ repeat NUM/state/resource/profile qualification or new technical source review.
 2. Inspect source and affected G/V/D/K contracts; run agreed independent NUM/state/
    resource checks and matched uninstrumented timing. graph profiler's samples
    need independent audit; rerun decisive checks when their provenance/scope is insufficient.
+   The agreed NUM is **end-to-end token agreement** with the mainstream reference
+   framework over the model's first few generated tokens; intermediate values and
+   logits are not required. Still refuse a recomputation offered in place of an
+   observation, and refuse an instrumented build of a frozen artifact — but when a
+   subject demands a reference that neither can supply, report the contract as
+   unsatisfiable instead of grinding on it.
 3. Audit raw capture data before chart creation, then independently audit actual
    rendered calculations/coverage. Execute fresh-checkout reproduction through
    tracked tests/benchmark scripts; missing captures/figures remain owned pending gates.

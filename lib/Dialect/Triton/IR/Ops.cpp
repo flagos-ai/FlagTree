@@ -1309,6 +1309,28 @@ Speculation::Speculatability ElementwiseInlineAsmOp::getSpeculatability() {
 }
 
 LogicalResult ElementwiseInlineAsmOp::verify() {
+#ifdef __TLE__
+  if ((*this)->hasAttr("tle.indexed32")) {
+    if (getPure() || getPackedElement() != 1 || getNumOperands() != 2 ||
+        getNumResults() != 1 || getConstraints() != "=r,r,r" ||
+        getAsmString() != "// tle.indexed32\nshfl.sync.idx.b32 $0, $1, $2, 0x1f, 0xffffffff;")
+      return emitOpError("indexed32 requires the pinned nonpure pack=1 collective");
+    for (Type type : getOperandTypes()) {
+      auto tensor = dyn_cast<RankedTensorType>(type);
+      if (!tensor || tensor.getShape() != ArrayRef<int64_t>({4, 32}) ||
+          !tensor.getElementType().isInteger(32))
+        return emitOpError("indexed32 requires two i32[4,32] operands");
+    }
+    if ((*this)->getResult(0).getType() != getOperand(0).getType())
+      return emitOpError("indexed32 must preserve the source type and encoding");
+    for (Operation *parent = (*this)->getParentOp(); parent;
+         parent = parent->getParentOp()) {
+      if (parent->getName().getStringRef() == "scf.if" ||
+          parent->getName().getStringRef() == "scf.while")
+        return emitOpError("indexed32 cannot be used under conditional participation");
+    }
+  }
+#endif
   if (getNumOperands() >= 1) {
     auto tensorType = dyn_cast<RankedTensorType>(getOperand(0).getType());
     size_t numInputElems = tensorType ? tensorType.getNumElements() : 0;

@@ -107,3 +107,6 @@ __all__ = [
     "Qwen3PagedAttention",
     "VectorizedRMSNorm",
 ]
+
+from .iq4_xs_q8_1_glu import IQ4XSQ8_1Glu
+from .iq4_xs_q8_1_interleaved_projection import IQ4XSQ8_1InterleavedProjection

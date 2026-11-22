@@ -14,6 +14,11 @@ from triton.flagmega.ir.tir.buffer_region import BufferRegion
 from triton.flagmega.ir.tir.buffer_store import BufferStore
 from triton.flagmega.ir.tir.evaluate import Evaluate
 from triton.flagmega.ir.tir.execution_function import ExecutionFunction
+from triton.flagmega.ir.tir.heterogeneous import (
+    ChannelBarrier, ExecutionPlacement, HeterogeneousDrain, HeterogeneousLaunch,
+    HeterogeneousPlan, HeterogeneousProgram, KernelPhaseInvoke, PipelineExchange, ValueExchange,
+    WorkerCall, WorkerFunction,
+)
 from triton.flagmega.ir.tir.for_loop import For, LoopMode, LoopPartition
 from triton.flagmega.ir.tir.loop_carry import LoopCarry
 from triton.flagmega.ir.tir.if_then_else import IfThenElse
@@ -50,6 +55,17 @@ class T:
     """Typed aliases retain constructor signatures and IDE completion."""
 
     physical_buffer = PhysicalBuffer
+    channel_barrier = ChannelBarrier
+    execution_placement = ExecutionPlacement
+    heterogeneous_drain = HeterogeneousDrain
+    heterogeneous_launch = HeterogeneousLaunch
+    heterogeneous_plan = HeterogeneousPlan
+    heterogeneous_program = HeterogeneousProgram
+    kernel_phase_invoke = KernelPhaseInvoke
+    value_exchange = ValueExchange
+    pipeline_exchange = PipelineExchange
+    worker_call = WorkerCall
+    worker_function = WorkerFunction
     kernel_definition = KernelDefinition
     kernel_invoke = KernelInvoke
     barrier = Barrier

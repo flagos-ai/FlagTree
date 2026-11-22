@@ -257,10 +257,19 @@ def verify_buffer_plan(module: IRModule) -> BufferPlan:
                 raise IRVerificationError(
                     f"Buffer {descriptor.id!r} uses {allocation.memory_space!r}, expected {expected!r}."
                 )
-        elif allocation.memory_space != "external":
+        elif (allocation.memory_space not in spaces or
+              spaces[allocation.memory_space].allocation_scope.value != "external"):
             raise IRVerificationError(
                 f"External buffer {descriptor.id!r} uses non-external PhysicalBuffer {allocation.id!r}."
             )
+        source = module.node_map.get(descriptor.source_node)
+        requested = None if source is None else source.metadata.get("bufferization.external_memory_space")
+        if (spaces[allocation.memory_space].allocation_scope.value == "external" and allocation.memory_space != "external"
+                and descriptor.alias is None and requested != allocation.memory_space):
+            raise IRVerificationError("A distinct external parameter space requires an explicit source contract.")
+        if requested is not None and (allocation.memory_space != requested or
+                                     spaces[allocation.memory_space].allocation_scope.value != "external"):
+            raise IRVerificationError("External parameter memory space differs from its source contract.")
         if descriptor.alias is not None:
             try:
                 source = buffers[descriptor.alias.source]

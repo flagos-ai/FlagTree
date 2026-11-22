@@ -48,6 +48,9 @@ def plan_function_memory(
     and chip/partial output effects remain in the default pool.
     """
 
+    if module.heterogeneous_plans:
+        from triton.flagmega.passes.tir.heterogeneous_execution import validate_heterogeneous_resources
+        validate_heterogeneous_resources(module, options)
     block_local = options.block_local
     spaces = options.memory_space_map
     if block_local is None or block_local == options.workspace:

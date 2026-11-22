@@ -119,7 +119,7 @@ class DistributedMaterializer:
                     )
                 call_type = next(iter(result_types))
                 call_output_types = (
-                    call_type.fields if isinstance(call_type, TupleType) else (call_type,)
+                    call_type.fields if len(function.outputs) != 1 and isinstance(call_type, TupleType) else (call_type,)
                 )
                 if len(call_output_types) != len(function.outputs):
                     raise IRVerificationError(

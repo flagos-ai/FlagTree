@@ -35,6 +35,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #ifdef __TLE__
+#include "tle/dialect/include/IR/PhysicalShared.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
 #endif
 #include "triton/Tools/LayoutUtils.h"
@@ -1085,6 +1086,23 @@ LogicalResult MemDescSubsliceOp::verify() {
   if (!isa<SharedEncodingTrait>(srcEnc) || !isa<SharedEncodingTrait>(dstEnc)) {
     return emitError("src and dst must both be of shared memory encoding");
   }
+
+#ifdef __TLE__
+  if (triton::tle::isAffineFlatShared(srcTy) &&
+      (!llvm::isPowerOf2_64(srcTy.getDimSize(0)) ||
+       !llvm::isPowerOf2_64(dstTy.getDimSize(0)))) {
+    // A flat physical slice is an affine interval, not a bit-layout tile.
+    // Preserve its backing and prove containment before accepting the view.
+    if (srcEnc != dstEnc || srcTy.getAllocShape() != dstTy.getAllocShape())
+      return emitError("affine flat subslice must preserve encoding and backing");
+    int64_t offset = getOffsets().front();
+    int64_t extent = dstTy.getDimSize(0);
+    if (offset < 0 || extent <= 0 || extent > srcTy.getDimSize(0) ||
+        offset > srcTy.getDimSize(0) - extent)
+      return emitError("affine flat subslice is outside the source extent");
+    return success();
+  }
+#endif
 
   SetVector<int> splitDims{};
   for (int i = 0; i < srcTy.getRank(); i++) {

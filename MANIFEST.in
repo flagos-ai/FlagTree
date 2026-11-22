@@ -6,6 +6,9 @@ graft lib
 graft python/src
 graft python/test
 graft python/triton
+recursive-include python/triton/flagmega/codegen/cpp/ftt *.h *.cpp
+include python/triton/flagmega/codegen/cpp/ftt/NTT-LICENSE
+include python/triton/flagmega/codegen/cpp/ftt/README.md
 graft test
 graft third_party
 graft unittest

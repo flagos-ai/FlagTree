@@ -168,8 +168,10 @@ def placement_for_execution_mesh(placement, mesh):
     mesh = execution_mesh(mesh)
     if mesh is None:
         return placement
-    if mesh.mapping not in (None, 'row_major'):
+    if mesh.mapping not in (None, 'row_major', 'x-fast'):
         raise IRSchemaError(f'No reviewed data mapping for execution mesh {mesh.mapping!r}.')
+    if mesh.mapping == 'x-fast' and not 1 <= len(mesh.shape) <= 3:
+        raise IRSchemaError('x-fast execution grids require rank one through three.')
     block_axes = tuple(i for i, level in enumerate(placement.hierarchy_levels) if level == 'b')
     if mesh.kind is ExecutionMeshKind.DYNAMIC:
         shape = (1,) * len(block_axes)

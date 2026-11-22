@@ -100,9 +100,8 @@ def file_hash(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def sm_arch_from_capability(capability: int):
-    # TODO: Handle non-"a" sms
-    suffix = "a" if capability >= 90 else ""
+def sm_arch_from_capability(capability: int, enable_arch_accel: bool = True):
+    suffix = "a" if capability >= 90 and enable_arch_accel else ""
     return f"sm_{capability}{suffix}"
 
 
@@ -134,8 +133,15 @@ class CUDAOptions:
     sanitize_overflow: bool = True
     arch: str = None
     instrumentation_mode: str = ""
+    # Opt in to a fixed CTA shared arena. The native allocator still owns
+    # sizes, alignment, liveness and helper offsets; launch dynamic bytes are 0.
+    enable_static_shared: bool = False
+    # Explicit per-entry target identity; default preserves existing binaries.
+    enable_arch_accel: bool = True
 
     def __post_init__(self):
+        if type(self.enable_arch_accel) is not bool:
+            raise ValueError("enable_arch_accel must be a strict bool")
         default_libdir = Path(__file__).parent / 'lib'
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
         if not extern_libs.get('libdevice', None):
@@ -479,6 +485,8 @@ class CUDABackend(BaseBackend):
         return mod
 
     def make_llir(self, src, metadata, options, capability):
+        if options.enable_static_shared:
+            src.set_attr("tle.static_shared", ir.builder(src.context).get_int32_attr(1))
         ptx_version = get_ptx_version_from_options(options, self.target.arch)
 
         mod = src
@@ -558,7 +566,7 @@ class CUDABackend(BaseBackend):
             raise RuntimeError(
                 "Address Sanitizer Error: Address sanitizer is currently only supported on the AMD backend")
         llvm_mod = llvm.to_module(mod, context)
-        proc = sm_arch_from_capability(capability)
+        proc = sm_arch_from_capability(capability, options.enable_arch_accel)
         features = get_features(options, self.target.arch)
         triple = 'nvptx64-nvidia-cuda'
         nvidia.set_short_ptr()
@@ -577,7 +585,12 @@ class CUDABackend(BaseBackend):
         total_num_warps = src.get_int_attr("ttg.total-num-warps")
         if total_num_warps is not None:
             metadata["num_warps"] = total_num_warps
-        metadata["shared"] = src.get_int_attr("ttg.shared")
+        shared = src.get_int_attr("ttg.shared")
+        static_shared = src.get_int_attr("ttg.static_shared")
+        if options.enable_static_shared and static_shared is None:
+            raise RuntimeError("native compiler did not honor tle.static_shared")
+        metadata["shared"] = 0 if static_shared is not None else shared
+        metadata["static_shared"] = static_shared or 0
         metadata["tmem_size"] = src.get_int_attr("ttg.tensor_memory_size")
         metadata["global_scratch_size"] = src.get_int_attr("ttg.global_scratch_memory_size")
         metadata["global_scratch_align"] = src.get_int_attr("ttg.global_scratch_memory_alignment")
@@ -595,7 +608,7 @@ class CUDABackend(BaseBackend):
         ptx_version = get_ptx_version_from_options(opt, self.target.arch)
 
         triple = 'nvptx64-nvidia-cuda'
-        proc = sm_arch_from_capability(capability)
+        proc = sm_arch_from_capability(capability, opt.enable_arch_accel)
         features = get_features(opt, self.target.arch)
         flags = ["nvptx-mad-wide-opt"]
         ret = llvm.translate_to_asm(src, triple, proc, features, flags, opt.enable_fp_fusion, False)
@@ -637,7 +650,7 @@ class CUDABackend(BaseBackend):
                 debug_info += ["-lineinfo"]
 
             fmad = [] if opt.enable_fp_fusion else ["--fmad=false"]
-            arch = sm_arch_from_capability(capability)
+            arch = sm_arch_from_capability(capability, opt.enable_arch_accel)
 
             # Disable ptxas optimizations if requested
             disable_opt = ['--opt-level', '0'] if knobs.nvidia.disable_ptxas_opt else []
