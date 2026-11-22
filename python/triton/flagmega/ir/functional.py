@@ -2490,25 +2490,6 @@ class _ntt:
 
 class _tir:
     @staticmethod
-    def k230_gemv_prepare(value, packed, **attributes):
-        from triton.flagmega.ir.ops.tir.k230_program import K230GemvPrepare
-        return K230GemvPrepare.construct(value, packed, **attributes)
-
-    @staticmethod
-    def k230_gemv_region(prefix, packed, **attributes):
-        from triton.flagmega.ir.ops.tir.k230_program import K230GemvRegion
-        return K230GemvRegion.construct(prefix, packed, **attributes)
-
-    @staticmethod
-    def k230_glu_region(prefix, packed, constants, **attributes):
-        from triton.flagmega.ir.ops.tir.k230_program import K230GluRegion
-        return K230GluRegion.construct(prefix, packed, constants, **attributes)
-
-    @staticmethod
-    def k230_gemv_finish(value, packed, **attributes):
-        from triton.flagmega.ir.ops.tir.k230_program import K230GemvFinish
-        return K230GemvFinish.construct(value, packed, **attributes)
-
     @staticmethod
     @_op_function(ParameterBank)
     def parameter_bank(*, schema, source, rows, result_type=None, name=None, metadata=None):

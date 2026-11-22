@@ -17,7 +17,7 @@
 #define FTT_ARCH_NVIDIA 1
 #endif
 
-// RISC-V 64 host side (K230's C908).  Detected from the compiler's own macros so
+// RISC-V 64 host side.  Detected from the compiler's own macros so
 // an SDK build picks it up without extra flags; vector code additionally needs
 // the V extension, which FTT_RVV gates.
 #if !defined(FTT_ARCH_ILUVATAR) && !defined(FTT_ARCH_NVIDIA) && (defined(__riscv) && __riscv_xlen == 64)

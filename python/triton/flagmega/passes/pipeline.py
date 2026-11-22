@@ -249,8 +249,6 @@ PIPELINE_GROUPS = (
             "selected_microkernels",
             "tensor_subspans_lowered",
             "packaged_tir",
-            "heterogeneous_planned_tir",
-            "heterogeneous_program_tir",
             "memory_placed_tir",
             "allocated_tir",
             "scheduled_tir",

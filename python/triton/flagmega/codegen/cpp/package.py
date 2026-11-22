@@ -50,12 +50,6 @@ def render_cpp_package_artifact(
     cpp_operator_profile: str | None = None,
     dumper: Dumper | None = None,
 ) -> dict[str, object]:
-    if target == "k230":
-        if cpp_max_registers is not None:
-            from triton.flagmega.errors import CodegenError
-            raise CodegenError("K230 does not implement GPU register caps.")
-        from .k230 import render_k230_package
-        return render_k230_package(module, output_dir, operator_profile=cpp_operator_profile)
     validate_cpp_max_registers(cpp_max_registers, target=target)
     if cpp_operator_profile is not None:
         from .operator_profile import validate_option

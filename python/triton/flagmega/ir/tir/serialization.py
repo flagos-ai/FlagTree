@@ -70,8 +70,6 @@ def tir_to_data(node: TIRNode) -> dict[str, object]:
         result.pop("call_id", None)
     if node.kind == "pipeline_stage" and getattr(node, "source_readiness", None) is None:
         result.pop("source_readiness", None)
-    if node.kind == "pipeline_exchange" and not getattr(node, "slot_stride_bytes", 0):
-        result.pop("slot_stride_bytes", None)
     return result
 
 
@@ -80,10 +78,6 @@ def tir_from_data(data: Mapping[str, object]) -> TIRNode:
         cls = node_type(str(data["kind"]))
     except (KeyError, ValueError) as error:
         raise ValueError(f"Unknown TIR node kind {data.get('kind')!r}.") from error
-    if cls.__module__ == "triton.flagmega.ir.tir.heterogeneous":
-        unknown = set(data) - {"kind", *(field.name for field in fields(cls))}
-        if unknown:
-            raise ValueError(f"Unknown heterogeneous TIR fields {sorted(unknown)!r}.")
     values = {
         field.name: _decode(data[field.name])
         for field in fields(cls)

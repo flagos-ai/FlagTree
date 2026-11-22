@@ -79,9 +79,7 @@ class MatMulGlu(OpDefinition):
         result.update(normalize_glu_activation_quantization(attributes, "MatMulGlu"))
         from triton.flagmega.ir.ops._compute_profile import normalize_compute_profile
         profile = normalize_compute_profile(attributes, "MatMulGlu", key="native_compute_profile",
-                                            default="f32", supported=("k230_q8_fp16_v1", "k230_iq4_act1_f16_experimental_v1"))
-        if profile and result.get("gate_weight_encoding") != "IQ4_XS":
-            raise IRSchemaError("MatMulGlu k230_q8_fp16_v1 requires IQ4_XS gate/up weights.")
+                                            default="f32", supported=())
         result.update(profile)
         return result
 
@@ -92,11 +90,7 @@ class MatMulGlu(OpDefinition):
         value = tensor_of(value_type)
         gate = tensor_of(gate_type)
         up = tensor_of(up_type)
-        native_profile = attrs.get("native_compute_profile", "f32") != "f32"
-        if native_profile and (value.dtype != DType.FLOAT32 or value.shape[0].value not in range(1, 9)
-                               or attrs["native_compute_profile"] != "k230_q8_fp16_v1" and value.shape[0].value != 1):
-            raise IRSchemaError("MatMulGlu native profile requires one to eight scalar F32 token rows; experimental ACT requires one.")
-        if attrs.get("gate_weight_encoding") is not None and not native_profile and value.dtype != DType.BFLOAT16:
+        if attrs.get("gate_weight_encoding") is not None and value.dtype != DType.BFLOAT16:
             raise IRSchemaError("Native MatMulGlu currently requires scalar BF16 input/output.")
         verify_block_scaled_precision_inputs(value, gate, tensor_of(gate_scale_type), attrs, "MatMulGlu")
         verify_block_scaled_precision_inputs(value, up, tensor_of(up_scale_type), attrs, "MatMulGlu")
@@ -105,9 +99,6 @@ class MatMulGlu(OpDefinition):
             raise IRSchemaError("MatMulGlu gate/up weight types must match.")
         if value.shape[1] != matrix_width(gate, attrs.get("gate_weight_encoding")):
             raise IRSchemaError("MatMulGlu value/weight K dimensions must match.")
-        if attrs.get("native_compute_profile") == "k230_iq4_act1_f16_experimental_v1" and (
-                value.shape[1].fixed_value != 1024 or gate.shape[0].fixed_value != 3072):
-            raise IRSchemaError("Experimental K230 ACT1 GLU requires M3072/K1024.")
         for weight, scale, encoding in ((gate, tensor_of(gate_scale_type), attrs.get("gate_weight_encoding")),
                                         (up, tensor_of(up_scale_type), attrs.get("up_weight_encoding"))):
             verify_native_scale_type(value, weight, scale, encoding=encoding,
@@ -120,8 +111,6 @@ class MatMulGlu(OpDefinition):
             raise IRSchemaError("Distributed MatMulGlu requires every tensor operand to name a placement.")
         if all(all_broadcast(item) for item in input_types):
             return DistributedType(output, (SBP.broadcast(), SBP.broadcast()), placement)
-        if native_profile:
-            raise IRSchemaError("MatMulGlu k230_q8_fp16_v1 requires complete broadcast operands.")
         gate_split = split_policy(gate_type, 0)
         if (gate_split is not None and gate_split == split_policy(up_type, 0) and all_broadcast(value_type)
                 and all_broadcast(gate_scale_type) and all_broadcast(up_scale_type)):

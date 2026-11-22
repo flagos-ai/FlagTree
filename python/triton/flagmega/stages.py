@@ -580,7 +580,6 @@ register_stage(Stage(
     "memory_placed_tir",
     _plan_function_memory,
     output_dialect="semantic_tir",
-    compatible_input_stages=frozenset({"heterogeneous_planned_tir"}),
 ))
 register_stage(Stage(
     "bufferize",
@@ -613,21 +612,5 @@ register_stage(Stage(
     "bufferized_tir",
     _lower_transfer_pipeline_regions,
     output_dialect="bufferized_tir",
-    compatible_input_stages=frozenset({"heterogeneous_program_tir"}),
 ))
 
-
-def _plan_heterogeneous_execution(module, target):
-    from triton.flagmega.passes.tir.heterogeneous_execution import plan_heterogeneous_execution
-    return plan_heterogeneous_execution(module, target)
-
-
-def _form_heterogeneous_execution(module, target):
-    from triton.flagmega.passes.tir.heterogeneous_execution import form_heterogeneous_execution
-    return form_heterogeneous_execution(module, target)
-
-
-register_stage(Stage("plan-heterogeneous-execution", "packaged_tir", "heterogeneous_planned_tir",
-    _plan_heterogeneous_execution, output_dialect="semantic_tir", target_extension=True))
-register_stage(Stage("form-heterogeneous-execution", "synchronized_tir", "heterogeneous_program_tir",
-    _form_heterogeneous_execution, output_dialect="bufferized_tir", target_extension=True))

@@ -178,9 +178,6 @@ from triton.flagmega.ir.ops.core import (
 from triton.flagmega.ir.printer import companion_suffix, il_source, script_source, text_source
 from triton.flagmega.ir.verify import verify_module
 from triton.flagmega.ir.tir import (
-    ChannelBarrier, ExecutionPlacement, HeterogeneousDrain, HeterogeneousLaunch,
-    HeterogeneousPlan, HeterogeneousProgram, KernelPhaseInvoke, PipelineExchange, ValueExchange,
-    WorkerCall, WorkerFunction, heterogeneous_source_hash, verify_heterogeneous_programs,
     Block,
     Barrier,
     BarrierScope,
@@ -277,9 +274,6 @@ from triton.flagmega.ir.type_pattern import (
 )
 
 __all__ = [
-    "ChannelBarrier", "ExecutionPlacement", "HeterogeneousDrain", "HeterogeneousLaunch",
-    "HeterogeneousPlan", "HeterogeneousProgram", "KernelPhaseInvoke", "PipelineExchange", "ValueExchange",
-    "WorkerCall", "WorkerFunction", "heterogeneous_source_hash", "verify_heterogeneous_programs",
     "ExecutionMesh",
     "ExecutionMeshKind",
     "KernelProgramKind",

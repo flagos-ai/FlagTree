@@ -220,8 +220,6 @@ def verify_module(
         prim_names.add(kernel.name)
         verify_prim_function(kernel)
     verify_execution_functions(module)
-    from triton.flagmega.ir.tir.heterogeneous import verify_heterogeneous_programs
-    verify_heterogeneous_programs(module)
     from triton.flagmega.ir.program_execution import verify_program_execution
     verify_program_execution(module)
 

@@ -5,7 +5,7 @@ The dimension, shape, vector, storage and operation APIs are adapted from
 the license is in `NTT-LICENSE`.
 
 Include `<ftt/ftt.h>` for the common API. The common headers support C++17,
-CUDA host/device compilation and the K230 freestanding toolchain. Tensor views
+CUDA host/device compilation and a freestanding RISC-V toolchain. Tensor views
 use caller-owned memory. Vector values own their fixed lane storage.
 
 ```cpp
@@ -53,5 +53,5 @@ infrastructure; architecture-specific kernels keep their existing dispatch.
 
 Run `python -m pytest python/test/flagmega/codegen/cpp/test_ftt_dimensions.py`.
 The suite runs host checks and compile-failure contracts, builds CUDA PTX when
-`nvcc` is available, and builds K230 objects when the toolchain is available.
-`K230_LLVM_DIR` and `K230_CLANG` override the local toolchain discovery.
+`nvcc` is available, and builds RISC-V objects when the toolchain is available.
+Toolchain discovery honours the documented compiler environment overrides.

@@ -46,7 +46,6 @@ from triton.flagmega.ir.types import (
 
 if TYPE_CHECKING:
     from triton.flagmega.ir.tir import ExecutionFunction, KernelDefinition, PrimFunction
-    from triton.flagmega.ir.tir.heterogeneous import HeterogeneousPlan, HeterogeneousProgram
 
 
 IR_VERSION = 1
@@ -621,8 +620,6 @@ class IRModule:
     selections: tuple[SelectionRecord, ...] = ()
     provenance: tuple[ProvenanceRecord, ...] = ()
     ir_version: int = IR_VERSION
-    heterogeneous_plans: tuple[HeterogeneousPlan, ...] = ()
-    heterogeneous_programs: tuple[HeterogeneousProgram, ...] = ()
     _semantic_hash_cache: Any = field(default_factory=lambda: _SemanticHashCache(), compare=False, repr=False)
     _verification_cache: Any = field(default_factory=lambda: _LocalGraphVerificationCache(), compare=False, repr=False)
 
@@ -631,8 +628,6 @@ class IRModule:
         object.__setattr__(self, "functions", tuple(self.functions))
         object.__setattr__(self, "prim_functions", tuple(self.prim_functions))
         object.__setattr__(self, "execution_functions", tuple(self.execution_functions))
-        object.__setattr__(self, "heterogeneous_plans", tuple(self.heterogeneous_plans))
-        object.__setattr__(self, "heterogeneous_programs", tuple(self.heterogeneous_programs))
         object.__setattr__(self, "kernel_definitions", tuple(self.kernel_definitions))
         object.__setattr__(self, "metadata", _freeze_mapping(normalize_execution_mesh_metadata(self.metadata)))
         object.__setattr__(self, "constant_recipes", tuple(self.constant_recipes))
@@ -697,9 +692,6 @@ class IRModule:
             data["execution_functions"] = [
                 value.to_data() for value in self.execution_functions
             ]
-        for name in ("heterogeneous_plans", "heterogeneous_programs"):
-            if getattr(self, name):
-                data[name] = [value.to_data() for value in getattr(self, name)]
         return data
 
     @cached_property
@@ -726,8 +718,6 @@ class IRModule:
             execution_functions=tuple(
                 tir_from_data(value) for value in data.get("execution_functions", ())
             ),
-            heterogeneous_plans=tuple(tir_from_data(value) for value in data.get("heterogeneous_plans", ())),
-            heterogeneous_programs=tuple(tir_from_data(value) for value in data.get("heterogeneous_programs", ())),
             metadata=data.get("metadata", {}),
             constant_recipes=tuple(ConstantRecipe.from_data(value) for value in data.get("constant_recipes", ())),
             selection_points=tuple(SelectionPoint.from_data(value) for value in data.get("selection_points", ())),
@@ -825,8 +815,6 @@ def function_module(
         prim_functions=module.prim_functions,
         kernel_definitions=module.kernel_definitions,
         execution_functions=module.execution_functions,
-        heterogeneous_plans=module.heterogeneous_plans,
-        heterogeneous_programs=module.heterogeneous_programs,
         metadata=metadata,
         constant_recipes=module.constant_recipes,
         selection_points=points,
@@ -1053,9 +1041,6 @@ def _semantic_payload(module: IRModule) -> str:
         fields["execution_functions"] = _semantic_array(
             module.execution_functions
         )
-    for name in ("heterogeneous_plans", "heterogeneous_programs"):
-        if getattr(module, name):
-            fields[name] = _semantic_array(getattr(module, name))
     return "{" + ",".join(
         _canonical_json(key) + ":" + fields[key]
         for key in sorted(fields)
@@ -1121,7 +1106,7 @@ class _SemanticHashCache:
         arrays = {name: getattr(module, name) for name in (
             "constant_recipes", "functions", "nodes", "selection_points", "selections",
         )}
-        for name in ("prim_functions", "kernel_definitions", "execution_functions", "heterogeneous_plans", "heterogeneous_programs"):
+        for name in ("prim_functions", "kernel_definitions", "execution_functions"):
             if getattr(module, name):
                 arrays[name] = getattr(module, name)
         scalar = {name: getattr(module, name) for name in ("dialect", "entry", "ir_version", "stage")}

@@ -31,13 +31,10 @@ def verify_complete_f32(value_type, opname):
 
 
 def compute_profile_supports_target(attrs, platform, architecture):
-    profiles = (("native_compute_profile", "f32", ("k230_q8_fp16_v1", "k230_iq4_act1_f16_experimental_v1")),
-                ("compute_profile", "default", ("ggml_f32_v1", "ggml_cpu_f16_1t_v1", "ggml_cpu_f16_rowwise_1t_v1")),
-                ("norm_compute_profile", "default", "ggml_f32_v1"))
-    native_target = platform == "k230" and architecture == "k230"
-    for key, default, supported in profiles:
-        profile = attrs.get(key, default)
-        if profile != default and (not native_target or profile not in (
-                supported if isinstance(supported, tuple) else (supported,))):
+    profiles = (("native_compute_profile", "f32"),
+                ("compute_profile", "default"),
+                ("norm_compute_profile", "default"))
+    for key, default in profiles:
+        if attrs.get(key, default) != default:
             return False
-    return attrs.get("math_mode") != "ggml" or native_target
+    return attrs.get("math_mode") != "ggml"

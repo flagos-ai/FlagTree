@@ -59,20 +59,3 @@ def test_external_storage_requires_explicit_source_annotation():
     changed = replace(buffered, nodes=tuple(replace(n, metadata={}) if n.id == "source" else n for n in buffered.nodes))
     with pytest.raises(IRVerificationError, match="external"):
         fm.verify_buffer_plan(changed)
-
-
-def test_typed_program_workspace_accesses_keep_physical_hazards():
-    from .test_kernel_workspace_abi import _selected_workspace_kernels
-    from triton.flagmega.ir.tir.heterogeneous_verify import source_call_conflicts
-    from triton.flagmega.passes.tir.heterogeneous_values import _accesses
-    module = _selected_workspace_kernels()
-    plan = fm.make_buffer_plan(module)
-    first = plan.resolve_kernel_workspace("first", "partials")
-    second = plan.resolve_kernel_workspace("second", "partials")
-    left = fm.KernelInvoke("first", "unused", workspaces=(fm.PrimCallBinding("partials", first.id),))
-    right = fm.KernelInvoke("second", "unused", workspaces=(fm.PrimCallBinding("partials", second.id),))
-    accesses = _accesses(module, plan, "main", left)
-    assert len(accesses) == 1
-    assert accesses[0][1].mode == "read_write" and accesses[0][1].nbytes == 128
-    assert source_call_conflicts(module, "main", left, right, buffer_plan=plan)
-    assert not source_call_conflicts(module, "main", replace(left, workspaces=()), right, buffer_plan=plan)

@@ -42,8 +42,6 @@ class BlockScaledMatMul(OpDefinition):
     ``weight_dequant_dtype`` optionally rounds FP32(code * block_scale) to
     F16/BF16 before multiplication, independently of the stored FP8 dtype.
     Defaults retain dynamic activation quantization and unrounded weights.
-    Native ``k230_q8_fp16_v1`` uses ggml Q8 activation quantization, KPU
-    FP16 intermediates, FP24 reduction and an FP16 result widened to F32.
     """
 
     const_evaluable = True
@@ -77,12 +75,8 @@ class BlockScaledMatMul(OpDefinition):
             result["output_data_type"] = DType(attrs["output_data_type"]).value
         result.update(normalize_block_scaled_precision(attrs, "BlockScaledMatMul"))
         profile = attrs["native_compute_profile"]
-        if not isinstance(profile, str) or profile not in {"f32", "k230_q8_fp16_v1"}:
-            raise IRSchemaError("BlockScaledMatMul native_compute_profile must be f32 or k230_q8_fp16_v1.")
-        if profile != "f32":
-            if encoding not in {"IQ4_XS", "Q6_K"} or result["output_lanes"]:
-                raise IRSchemaError("BlockScaledMatMul k230_q8_fp16_v1 requires IQ4_XS/Q6_K storage and no output_lanes.")
-            result["native_compute_profile"] = profile
+        if not isinstance(profile, str) or profile != "f32":
+            raise IRSchemaError("BlockScaledMatMul native_compute_profile supports only f32 on this branch.")
         return result
 
     @classmethod
@@ -108,9 +102,6 @@ class BlockScaledMatMul(OpDefinition):
         if output_n is None:
             raise IRSchemaError("BlockScaledMatMul N must be divisible by output_lanes.")
         scalar_dtype = DType(attrs["output_data_type"]) if attrs.get("output_data_type") else value.dtype
-        if attrs.get("native_compute_profile", "f32") != "f32" and (
-                value.dtype != DType.FLOAT32 or scalar_dtype != DType.FLOAT32):
-            raise IRSchemaError("BlockScaledMatMul k230_q8_fp16_v1 requires F32 input and output.")
         output = tensor_type(VectorType(scalar_dtype, lanes) if lanes else scalar_dtype, (value.shape[0], output_n))
         placement = placement_of(value_type, weight_type, scale_type)
         if placement is None:

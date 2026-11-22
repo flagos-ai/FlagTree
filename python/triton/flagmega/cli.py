@@ -160,7 +160,7 @@ def _codegen_option(parser: argparse.ArgumentParser) -> None:
     from triton.flagmega.artifacts.module import CODEGEN_BACKENDS
     parser.add_argument("--codegen-backend", choices=CODEGEN_BACKENDS, default="triton",
                         help="Executable source backend (default: triton)")
-    parser.add_argument("--cpp-operator-profile", choices=("cta-globaltimer-v1", "cta-globaltimer-v2", "k230-steady-clock-v1", "k230-exchange-steady-clock-v1", "k230-program-steady-clock-v1", "k230-program-acquire-steady-clock-v1"),
+    parser.add_argument("--cpp-operator-profile", choices=("cta-globaltimer-v1", "cta-globaltimer-v2"),
                         help="Separate eager diagnostic operator timestamps; ordinary timing ineligible")
     parser.add_argument("--cpp-max-registers", type=int,
                         help="Optional NVIDIA executable C++ register limit per thread (1..255)")

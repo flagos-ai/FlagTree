@@ -72,8 +72,7 @@ class IRVisitor:
                     self._visit_value(output, module, recipe_map)
                 self.visit_constant_recipe(recipe, module)
         if self.visit_prim_functions:
-            for function in (*module.prim_functions, *module.kernel_definitions, *module.execution_functions,
-                             *module.heterogeneous_plans, *module.heterogeneous_programs):
+            for function in (*module.prim_functions, *module.kernel_definitions, *module.execution_functions):
                 self._visit_tir(function)
         if self.visit_attributes:
             self._visit_embedded(module.metadata)

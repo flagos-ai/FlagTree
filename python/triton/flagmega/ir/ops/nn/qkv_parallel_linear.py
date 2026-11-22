@@ -66,12 +66,10 @@ class QKVParallelLinear(OpDefinition):
         output_type = DType(attrs["output_data_type"])
         normalize_reduction_order(attrs)
         native = normalize_compute_profile(attrs, "QKVParallelLinear", key="native_compute_profile",
-                                           default="f32", supported="k230_q8_fp16_v1")
+                                           default="f32", supported=())
         encodings = tuple(attrs[f"{role}_weight_encoding"] for role in ("q", "k", "v"))
-        if any(encoding is not None for encoding in encodings) or native:
-            if not native or encodings != ("IQ4_XS",) * 3 or attrs.get("reduction_order", "relaxed") != "relaxed":
-                raise IRSchemaError("Native QKVParallelLinear requires three IQ4_XS weights and k230_q8_fp16_v1.")
-            native.update({f"{role}_weight_encoding": encoding for role, encoding in zip(("q", "k", "v"), encodings)})
+        if any(encoding is not None for encoding in encodings):
+            raise IRSchemaError("QKVParallelLinear native weight encodings are not available on this branch.")
         return {
             **native,
             "num_heads": int(attrs["num_heads"]),

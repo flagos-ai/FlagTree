@@ -30,11 +30,6 @@ from triton.flagmega.ir.tir.buffer_region import BufferRegion
 from triton.flagmega.ir.tir.buffer_store import BufferStore
 from triton.flagmega.ir.tir.evaluate import Evaluate
 from triton.flagmega.ir.tir.execution_function import ExecutionFunction
-from triton.flagmega.ir.tir.heterogeneous import (
-    ChannelBarrier, ExecutionPlacement, HeterogeneousDrain, HeterogeneousLaunch,
-    HeterogeneousPlan, HeterogeneousProgram, KernelPhaseInvoke, PipelineExchange, ValueExchange,
-    WorkerCall, WorkerFunction, heterogeneous_source_hash, verify_heterogeneous_programs,
-)
 from triton.flagmega.ir.tir.execution import execution_calls_of, execution_items_of, verify_execution_functions
 from triton.flagmega.ir.tir.loop_carry import LoopCarry
 from triton.flagmega.ir.tir.execution_kind import (
@@ -88,9 +83,6 @@ def make_buffer_plan(module, *, alignment: int = 256, options=None, allocation_s
 
 
 __all__ = [
-    "ChannelBarrier", "ExecutionPlacement", "HeterogeneousDrain", "HeterogeneousLaunch",
-    "HeterogeneousPlan", "HeterogeneousProgram", "KernelPhaseInvoke", "PipelineExchange", "ValueExchange",
-    "WorkerCall", "WorkerFunction", "heterogeneous_source_hash", "verify_heterogeneous_programs",
     "TIRInplaceTransferPartition",
     "KernelDefinition", "KernelInvoke",
     "AliasInfo", "AliasKind", "Barrier", "BarrierScope", "Binary", "Block", "Buffer", "BufferDescriptor", "BufferTuple",

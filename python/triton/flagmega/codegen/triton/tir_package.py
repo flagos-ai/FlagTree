@@ -71,8 +71,6 @@ def describe_tir_package(
     later, so sharing this descriptor builder does not repack its pool twice.
     """
 
-    if module.heterogeneous_plans or module.heterogeneous_programs:
-        raise CodegenError("This backend cannot lower a heterogeneous execution program.")
     try:
         verify_module(module)
     except IRVerificationError as error:

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Normal optional caller-event instrumentation; no model kernel/IR rewrites.
 
-SM120 protocols use GPU timestamps; K230 uses synchronous native call timers.
+SM120 protocols use GPU timestamps from the diagnostic build.
 All clock/resources/NUM evidence comes from the separately built diagnostic.
 """
 from __future__ import annotations
@@ -24,8 +24,6 @@ def digest(value):
 
 def validate_option(mode, *, target, codegen_backend='cpp', emit_executable=True):
     if mode is None:
-        return
-    if mode in {'k230-steady-clock-v1', 'k230-exchange-steady-clock-v1', 'k230-program-steady-clock-v1', 'k230-program-acquire-steady-clock-v1'} and target == 'k230' and codegen_backend == 'cpp' and emit_executable:
         return
     if mode not in MODES or target != 'nvidia-sm120' or codegen_backend != 'cpp' or not emit_executable:
         raise ValueError('CPP operator profiling requires a supported mode matching its target and executable C++ output.')
