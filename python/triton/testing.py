@@ -5,12 +5,9 @@ import statistics
 import subprocess
 import sys
 from contextlib import contextmanager
-from importlib import import_module
-from inspect import unwrap
 from typing import Any, Dict, List
 from . import language as tl
 from . import runtime
-from ._flagtree_backend import FLAGTREE_BACKEND
 
 
 def nvsmi(attrs):
@@ -60,39 +57,14 @@ def _summarize_statistics(times, quantiles, return_mode):
         return statistics.median(times)
 
 
-def _enable_npu_graph_compat(device):
-    import torch
-
-    try:
-        import_module("torch_npu.contrib.transfer_to_npu")
-    except ImportError as exc:
-        return f"TorchNPU CUDA compatibility layer is unavailable ({exc})"
-
-    for cuda_name, npu_name in (
-        ("CUDAGraph", "NPUGraph"),
-        ("graph", "graph"),
-        ("Event", "Event"),
-        ("Stream", "Stream"),
-        ("stream", "stream"),
-        ("synchronize", "synchronize"),
-    ):
-        native = getattr(device, npu_name, None)
-        # TorchNPU wraps some aliases to translate explicit device arguments.
-        if native is None or unwrap(getattr(torch.cuda, cuda_name, None)) is not unwrap(native):
-            return f"TorchNPU CUDA compatibility layer did not redirect torch.cuda.{cuda_name}"
-    return None
-
-
-def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mode="mean", *, n_retries=10):
+def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mode="mean"):
     """
     Benchmark the runtime of the provided function.
 
     :param fn: Function to benchmark
     :type fn: Callable
-    :param rep: Target execution time of each graph replay (in ms).
-    :type rep: float
-    :param n_retries: Number of timed graph replays.
-    :type n_retries: int
+    :param rep: Repetition time (in ms)
+    :type rep: int
     :param grad_to_none: Reset the gradient of the provided tensor to None
     :type grad_to_none: torch.tensor, optional
     :param return_mode: The statistical measure to return. Options are "min", "max", "mean", "median", or "all". Default is "mean".
@@ -100,14 +72,6 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
     """
     import torch
     assert return_mode in ["min", "max", "mean", "median", "all"]
-
-    if FLAGTREE_BACKEND == "ascend":
-        import_module("torch_npu")
-        error = _enable_npu_graph_compat(torch.npu)
-        if error is not None:
-            raise RuntimeError(error)
-        # The helper below starts on a new stream.
-        torch.npu.current_stream().synchronize()
 
     with torch.cuda.stream(torch.cuda.Stream()):
         # warmup
@@ -148,6 +112,7 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
         torch.cuda.synchronize()
         # measure time and return
         ret = []
+        n_retries = 10
         for _ in range(n_retries):
             start_event = torch.cuda.Event(enable_timing=True)
             end_event = torch.cuda.Event(enable_timing=True)

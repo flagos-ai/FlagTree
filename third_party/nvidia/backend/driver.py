@@ -762,11 +762,7 @@ class CudaDriver(GPUDriver):
     def is_active():
         try:
             import torch
-            is_cuda_available = torch.cuda.is_available
-            # TorchNPU's transfer_to_npu can expose the NPU probe as CUDA.
-            if is_cuda_available is getattr(getattr(torch, "npu", None), "is_available", None):
-                return False
-            return is_cuda_available() and (torch.version.hip is None)
+            return torch.cuda.is_available() and (torch.version.hip is None)
         except ImportError:
             return False
 

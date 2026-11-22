@@ -25,6 +25,8 @@ import os
 import warnings
 from dataclasses import dataclass
 from enum import Enum
+from importlib import import_module
+from inspect import unwrap
 from typing import Any, Callable, Sequence
 
 from triton.flagtune.runtime.device import UnsupportedFlagTuneDeviceError
@@ -123,6 +125,28 @@ def _validate_request(
     return selected
 
 
+def _enable_npu_graph_compat(device):
+    import torch
+
+    try:
+        import_module("torch_npu.contrib.transfer_to_npu")
+    except ImportError as exc:
+        return f"TorchNPU CUDA compatibility layer is unavailable ({exc})"
+
+    for cuda_name, npu_name in (
+        ("CUDAGraph", "NPUGraph"),
+        ("graph", "graph"),
+        ("Event", "Event"),
+        ("Stream", "Stream"),
+        ("stream", "stream"),
+        ("synchronize", "synchronize"),
+    ):
+        native = getattr(device, npu_name, None)
+        if native is None or unwrap(getattr(torch.cuda, cuda_name, None)) is not unwrap(native):
+            return f"TorchNPU CUDA compatibility layer did not redirect torch.cuda.{cuda_name}"
+    return None
+
+
 def resolve_benchmarker(
     mode: BenchmarkMode | str,
     *,
@@ -143,27 +167,33 @@ def resolve_benchmarker(
         device = get_interface() if get_interface is not None else None
         reason = "active Triton backend does not provide a registered replay benchmarker"
         if callable(getattr(device, "NPUGraph", None)) and callable(getattr(device, "graph", None)):
-            from triton.testing import _enable_npu_graph_compat
-
             reason = _enable_npu_graph_compat(device)
         if reason is None:
             from triton.testing import do_bench_cudagraph
 
-            per_replay_ms = measurement_ms / n_retries
+            replay_count = 10
+            if n_retries != replay_count:
+                warnings.warn(
+                    f"Triton's graph benchmark uses {replay_count} replays, requested {n_retries}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            per_replay_ms = measurement_ms / replay_count
 
             def replay_benchmark(kernel_call, quantiles):
-                return do_bench_cudagraph(kernel_call, rep=per_replay_ms, quantiles=quantiles, n_retries=n_retries)
+                device.current_stream().synchronize()
+                return do_bench_cudagraph(kernel_call, rep=per_replay_ms, quantiles=quantiles)
 
             return ResolvedBenchmarker(
                 protocol=BenchmarkProtocol(
                     requested_mode=selected,
                     resolved_mode=BenchmarkMode.REPLAY,
-                    implementation="triton_ascend_transfer_to_npu_graph_replay_v1",
+                    implementation="triton_ascend_transfer_to_npu_graph_replay_v2",
                     cache_policy="warm_l2",
                     # Graph timing uses a primer and a short calibration, not a timed warmup.
                     warmup_ms=0,
                     measurement_ms=measurement_ms,
-                    n_retries=n_retries,
+                    n_retries=replay_count,
                     per_replay_ms=per_replay_ms,
                 ),
                 benchmark=replay_benchmark,
