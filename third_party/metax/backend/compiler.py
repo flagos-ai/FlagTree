@@ -379,7 +379,11 @@ class MACABackend(BaseBackend):
 
     @staticmethod
     def make_llir(src, metadata, options, capability):
-        src, copy_cache_helpers = metax.split_copy_cache_helpers(src)
+        split_copy_cache_helpers = getattr(metax, "split_copy_cache_helpers", None)
+        if split_copy_cache_helpers is not None and "mccache.helper" in src:
+            src, copy_cache_helpers = split_copy_cache_helpers(src)
+        else:
+            copy_cache_helpers = ""
         mlir_opt_path = knobs.metax.mlir_opt_path
         opted_mlir = metax.mlir_opt(src, mlir_opt_path)
         mlir_translate_path = knobs.metax.mlir_translate_path
