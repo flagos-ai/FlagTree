@@ -25,8 +25,6 @@ import os
 import warnings
 from dataclasses import dataclass
 from enum import Enum
-from importlib import import_module
-from inspect import unwrap
 from typing import Any, Callable, Sequence
 
 from triton.flagtune.runtime.device import UnsupportedFlagTuneDeviceError
@@ -125,29 +123,6 @@ def _validate_request(
     return selected
 
 
-def _enable_npu_graph_compat(device) -> str | None:
-    import torch
-
-    try:
-        import_module("torch_npu.contrib.transfer_to_npu")
-    except ImportError as exc:
-        return f"TorchNPU CUDA compatibility layer is unavailable ({exc})"
-
-    for cuda_name, npu_name in (
-        ("CUDAGraph", "NPUGraph"),
-        ("graph", "graph"),
-        ("Event", "Event"),
-        ("Stream", "Stream"),
-        ("stream", "stream"),
-        ("synchronize", "synchronize"),
-    ):
-        native = getattr(device, npu_name, None)
-        # TorchNPU wraps some aliases to translate explicit device arguments.
-        if native is None or unwrap(getattr(torch.cuda, cuda_name, None)) is not unwrap(native):
-            return f"TorchNPU CUDA compatibility layer did not redirect torch.cuda.{cuda_name}"
-    return None
-
-
 def resolve_benchmarker(
     mode: BenchmarkMode | str,
     *,
@@ -168,6 +143,8 @@ def resolve_benchmarker(
         device = get_interface() if get_interface is not None else None
         reason = "active Triton backend does not provide a registered replay benchmarker"
         if callable(getattr(device, "NPUGraph", None)) and callable(getattr(device, "graph", None)):
+            from triton.testing import _enable_npu_graph_compat
+
             reason = _enable_npu_graph_compat(device)
         if reason is None:
             from triton.testing import do_bench_cudagraph
@@ -175,9 +152,6 @@ def resolve_benchmarker(
             per_replay_ms = measurement_ms / n_retries
 
             def replay_benchmark(kernel_call, quantiles):
-                # The helper starts on a new stream. Wait for its inputs before
-                # it runs the primer and records the first timing events.
-                device.current_stream().synchronize()
                 return do_bench_cudagraph(kernel_call, rep=per_replay_ms, quantiles=quantiles, n_retries=n_retries)
 
             return ResolvedBenchmarker(

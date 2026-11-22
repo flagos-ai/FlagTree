@@ -5,9 +5,12 @@ import statistics
 import subprocess
 import sys
 from contextlib import contextmanager
+from importlib import import_module
+from inspect import unwrap
 from typing import Any, Dict, List
 from . import language as tl
 from . import runtime
+from ._flagtree_backend import FLAGTREE_BACKEND
 
 
 def nvsmi(attrs):
@@ -57,6 +60,29 @@ def _summarize_statistics(times, quantiles, return_mode):
         return statistics.median(times)
 
 
+def _enable_npu_graph_compat(device):
+    import torch
+
+    try:
+        import_module("torch_npu.contrib.transfer_to_npu")
+    except ImportError as exc:
+        return f"TorchNPU CUDA compatibility layer is unavailable ({exc})"
+
+    for cuda_name, npu_name in (
+        ("CUDAGraph", "NPUGraph"),
+        ("graph", "graph"),
+        ("Event", "Event"),
+        ("Stream", "Stream"),
+        ("stream", "stream"),
+        ("synchronize", "synchronize"),
+    ):
+        native = getattr(device, npu_name, None)
+        # TorchNPU wraps some aliases to translate explicit device arguments.
+        if native is None or unwrap(getattr(torch.cuda, cuda_name, None)) is not unwrap(native):
+            return f"TorchNPU CUDA compatibility layer did not redirect torch.cuda.{cuda_name}"
+    return None
+
+
 def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mode="mean", *, n_retries=10):
     """
     Benchmark the runtime of the provided function.
@@ -74,6 +100,14 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, quantiles=None, return_mod
     """
     import torch
     assert return_mode in ["min", "max", "mean", "median", "all"]
+
+    if FLAGTREE_BACKEND == "ascend":
+        import_module("torch_npu")
+        error = _enable_npu_graph_compat(torch.npu)
+        if error is not None:
+            raise RuntimeError(error)
+        # The helper below starts on a new stream.
+        torch.npu.current_stream().synchronize()
 
     with torch.cuda.stream(torch.cuda.Stream()):
         # warmup

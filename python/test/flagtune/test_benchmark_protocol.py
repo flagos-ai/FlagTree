@@ -141,7 +141,6 @@ def test_ascend_replay_uses_cudagraph_with_torchnpu_and_preserves_budget(monkeyp
         Stream=object,
         stream=lambda: None,
         synchronize=lambda: None,
-        current_stream=lambda: SimpleNamespace(synchronize=lambda: calls.append("synchronize")),
     )
     monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
     quantiles = (0.5, 0.2, 0.8)
@@ -164,12 +163,12 @@ def test_ascend_replay_uses_cudagraph_with_torchnpu_and_preserves_budget(monkeyp
         kernel_call()
         return [1.0, 0.8, 1.2]
 
-    monkeypatch.setattr(benchmark_module, "import_module", install_compat)
+    monkeypatch.setattr(triton_testing, "import_module", install_compat)
     monkeypatch.setattr(triton_testing, "do_bench_cudagraph", graph_benchmark)
     resolved = benchmark_module.resolve_benchmarker("replay", warmup_ms=5, measurement_ms=20, n_retries=4,
                                                     allow_fallback=False)
     assert resolved.benchmark(lambda: calls.append("kernel"), quantiles) == [1.0, 0.8, 1.2]
-    assert calls == ["import", "synchronize", "kernel"]
+    assert calls == ["import", "kernel"]
     assert not active.observed
     assert resolved.protocol.as_dict() == {
         "requested_mode": "replay",
@@ -188,7 +187,7 @@ def test_ascend_incomplete_cuda_aliases_fall_back_to_events(monkeypatch):
     active = _driver_for("triton.backends.ascend.driver", "npu")
     active.device_interface = SimpleNamespace(NPUGraph=object, graph=lambda: None)
     monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
-    monkeypatch.setattr(benchmark_module, "import_module", lambda _: None)
+    monkeypatch.setattr(triton_testing, "import_module", lambda _: None)
     monkeypatch.setattr(torch, "cuda", SimpleNamespace(CUDAGraph=object, graph=lambda: None))
     with pytest.warns(RuntimeWarning, match="did not redirect torch.cuda.graph"):
         resolved = benchmark_module.resolve_benchmarker("replay", warmup_ms=5, measurement_ms=20)
