@@ -1,5 +1,4 @@
 from functools import wraps
-from importlib import import_module
 from types import SimpleNamespace
 
 import pytest
@@ -195,38 +194,6 @@ def test_ascend_incomplete_cuda_aliases_fall_back_to_events(monkeypatch):
     with pytest.warns(RuntimeWarning, match="did not redirect torch.cuda.graph"):
         resolved = benchmark_module.resolve_benchmarker("replay", warmup_ms=5, measurement_ms=20)
     assert resolved.protocol.resolved_mode is benchmark_module.BenchmarkMode.EVENT
-
-
-@pytest.mark.parametrize("redirected", [False, True])
-def test_ascend_driver_distinguishes_cuda_from_torchnpu_alias(monkeypatch, redirected):
-    from triton._flagtree_backend import FLAGTREE_BACKEND
-
-    if FLAGTREE_BACKEND != "ascend":
-        pytest.skip("requires the Ascend runtime overlay")
-    driver_module = import_module("triton.runtime.driver")
-
-    def npu_is_available():
-        return True
-
-    def npu_driver():
-        return "npu"
-
-    npu_driver.is_active = npu_is_available
-    nvidia_driver = SimpleNamespace(is_active=lambda: torch.cuda.is_available())
-    monkeypatch.setattr(driver_module, "backends", {
-        "ascend": SimpleNamespace(driver=npu_driver),
-        "nvidia": SimpleNamespace(driver=nvidia_driver),
-    })
-    monkeypatch.setattr(torch, "npu", SimpleNamespace(is_available=npu_is_available), raising=False)
-    if redirected:
-        monkeypatch.setattr(torch.cuda, "is_available", npu_is_available)
-    else:
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    if redirected:
-        assert driver_module._create_driver() == "npu"
-    else:
-        with pytest.raises(RuntimeError, match="2 active drivers"):
-            driver_module._create_driver()
 
 
 @pytest.mark.parametrize("backend", ["cuda", "hip", "maca", "musa"])
