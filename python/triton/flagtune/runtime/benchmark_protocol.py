@@ -17,7 +17,7 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-"""Resolve Ascend NPU event timing, retaining explicit replay fallback metadata."""
+"""Resolve Ascend NPU event and graph replay timing."""
 
 from __future__ import annotations
 
@@ -123,6 +123,44 @@ def _validate_request(
     return selected
 
 
+def _bench_npu_graph(device, kernel_call, rep, n_retries, quantiles):
+    from triton.testing import _summarize_statistics
+
+    caller_stream = device.current_stream()
+    stream = device.Stream()
+    stream.wait_stream(caller_stream)
+    with device.stream(stream):
+        kernel_call()
+        start = device.Event(enable_timing=True)
+        end = device.Event(enable_timing=True)
+        start.record()
+        for _ in range(5):
+            kernel_call()
+        end.record()
+        device.synchronize()
+        estimate_ms = start.elapsed_time(end) / 5
+        repeats = 1000 if estimate_ms == 0 else max(1, int(rep / estimate_ms))
+
+        graph = device.NPUGraph()
+        with device.graph(graph, stream=stream):
+            for _ in range(repeats):
+                kernel_call()
+        device.synchronize()
+
+        samples = []
+        try:
+            for _ in range(n_retries):
+                start.record()
+                graph.replay()
+                end.record()
+                device.synchronize()
+                samples.append(start.elapsed_time(end) / repeats)
+        finally:
+            graph.reset()
+    caller_stream.wait_stream(stream)
+    return _summarize_statistics(samples, quantiles, "mean")
+
+
 def resolve_benchmarker(
     mode: BenchmarkMode | str,
     *,
@@ -131,7 +169,7 @@ def resolve_benchmarker(
     n_retries: int = 10,
     allow_fallback: bool = True,
 ) -> ResolvedBenchmarker:
-    """Resolve NPU event timing; replay requests may fall back explicitly."""
+    """Resolve event timing or NPU Graph replay on the active Ascend device."""
     selected = _validate_request(mode, warmup_ms, measurement_ms, n_retries)
     active = driver.active
     backend = active.get_current_target().backend
@@ -139,6 +177,28 @@ def resolve_benchmarker(
         raise UnsupportedFlagTuneDeviceError(
             f"FlagTune on Triton 3.5 supports only Ascend backend 'npu', got {backend!r}")
     if selected is BenchmarkMode.REPLAY:
+        get_interface = getattr(active, "get_device_interface", None)
+        device = get_interface() if get_interface is not None else None
+        if callable(getattr(device, "NPUGraph", None)) and callable(getattr(device, "graph", None)):
+            per_replay_ms = measurement_ms / n_retries
+
+            def replay_benchmark(kernel_call, quantiles):
+                return _bench_npu_graph(device, kernel_call, per_replay_ms, n_retries, quantiles)
+
+            return ResolvedBenchmarker(
+                protocol=BenchmarkProtocol(
+                    requested_mode=selected,
+                    resolved_mode=BenchmarkMode.REPLAY,
+                    implementation="ascend_npu_graph_replay_v1",
+                    cache_policy="warm_l2",
+                    # Graph timing uses a primer and a short calibration, not a timed warmup.
+                    warmup_ms=0,
+                    measurement_ms=measurement_ms,
+                    n_retries=n_retries,
+                    per_replay_ms=per_replay_ms,
+                ),
+                benchmark=replay_benchmark,
+            )
         reason = "active Triton backend does not provide a registered replay benchmarker"
         if not allow_fallback:
             raise RuntimeError(reason)

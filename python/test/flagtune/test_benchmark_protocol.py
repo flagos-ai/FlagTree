@@ -129,6 +129,38 @@ def test_ascend_strict_replay_request_is_rejected(monkeypatch):
         benchmark_module.resolve_benchmarker("replay", warmup_ms=5, measurement_ms=20, allow_fallback=False)
 
 
+def test_ascend_replay_uses_npu_graph_and_preserves_budget(monkeypatch):
+    active = _driver_for("triton.backends.ascend.driver", "npu")
+    active.device_interface = SimpleNamespace(NPUGraph=object, graph=lambda: None)
+    monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
+    quantiles = (0.5, 0.2, 0.8)
+
+    def graph_benchmark(device, kernel_call, rep, n_retries, quantiles):
+        assert device is active.device_interface
+        assert (rep, n_retries, quantiles) == (5.0, 4, (0.5, 0.2, 0.8))
+        kernel_call()
+        return [1.0, 0.8, 1.2]
+
+    monkeypatch.setattr(benchmark_module, "_bench_npu_graph", graph_benchmark)
+    resolved = benchmark_module.resolve_benchmarker("replay", warmup_ms=5, measurement_ms=20, n_retries=4,
+                                                    allow_fallback=False)
+    calls = []
+    assert resolved.benchmark(lambda: calls.append(True), quantiles) == [1.0, 0.8, 1.2]
+    assert calls == [True]
+    assert not active.observed
+    assert resolved.protocol.as_dict() == {
+        "requested_mode": "replay",
+        "resolved_mode": "replay",
+        "implementation": "ascend_npu_graph_replay_v1",
+        "cache_policy": "warm_l2",
+        "warmup_ms": 0,
+        "measurement_ms": 20,
+        "n_retries": 4,
+        "per_replay_ms": 5.0,
+        "fallback_reason": None,
+    }
+
+
 @pytest.mark.parametrize("backend", ["cuda", "hip", "maca", "musa"])
 @pytest.mark.parametrize("mode", ["event", "replay"])
 def test_non_npu_benchmarkers_are_rejected(monkeypatch, backend, mode):
