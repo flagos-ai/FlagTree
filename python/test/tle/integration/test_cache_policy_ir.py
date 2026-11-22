@@ -9,6 +9,9 @@ from triton._flagtree_backend import FLAGTREE_BACKEND
 from triton.experimental.tle.language import gpu
 
 BACKEND = FLAGTREE_BACKEND or "nvidia"
+SUPPORTED_BACKENDS = ("nvidia", "mthreads", "hcu", "metax", "ppu")
+if BACKEND not in SUPPORTED_BACKENDS:
+    pytest.skip(f"native cache policy IR tests do not support backend {BACKEND}", allow_module_level=True)
 DEVICE = "musa" if BACKEND == "mthreads" else "cuda"
 if BACKEND == "mthreads":
     import torch_musa  # noqa: F401

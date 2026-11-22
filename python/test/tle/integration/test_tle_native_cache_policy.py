@@ -9,6 +9,9 @@ import triton.experimental.tle.language as tle
 from triton._flagtree_backend import FLAGTREE_BACKEND
 
 BACKEND = FLAGTREE_BACKEND or "nvidia"
+SUPPORTED_BACKENDS = ("nvidia", "mthreads", "hcu", "metax", "ppu")
+if BACKEND not in SUPPORTED_BACKENDS:
+    pytest.skip(f"TLE native cache policy tests do not support backend {BACKEND}", allow_module_level=True)
 HAS_TLE_SMEM = hasattr(triton._C.libtriton.ir.builder, "make_swizzled_shared_encoding_attr")
 DEVICE = "musa" if BACKEND == "mthreads" else "cuda"
 POLICY_ATTR = {

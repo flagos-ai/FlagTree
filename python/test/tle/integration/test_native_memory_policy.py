@@ -7,6 +7,9 @@ from triton.experimental.tle import language as tle
 from triton._flagtree_backend import FLAGTREE_BACKEND
 
 BACKEND = FLAGTREE_BACKEND or "nvidia"
+SUPPORTED_BACKENDS = ("nvidia", "mthreads", "hcu", "metax", "ppu")
+if BACKEND not in SUPPORTED_BACKENDS:
+    pytest.skip(f"native memory policy tests do not support backend {BACKEND}", allow_module_level=True)
 DEVICE = "musa" if BACKEND == "mthreads" else "cuda"
 POLICY_ATTR = {
     "nvidia": "evictionPolicy = l2_evict_first",

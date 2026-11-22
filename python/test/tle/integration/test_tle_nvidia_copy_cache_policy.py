@@ -24,10 +24,12 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 
+from triton._flagtree_backend import FLAGTREE_BACKEND
 from triton.experimental.tle.language.gpu import CachePolicy, FractionalEvictionPolicy
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 9,
+    FLAGTREE_BACKEND not in ("", "nvidia") or not torch.cuda.is_available()
+    or torch.cuda.get_device_capability()[0] < 9,
     reason="requires NVIDIA Hopper or newer",
 )
 
