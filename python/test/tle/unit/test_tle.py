@@ -524,6 +524,7 @@ class TestBufferedTensor:
             self.memdesc_type_args = None
             self.memdesc_index_args = None
             self.memdesc_subslice_args = None
+            self.tile_subview_args = None
             self.swizzled_encoding_args = None
             self.pipe_create_args = None
             self.tma_copy_args = None
@@ -560,6 +561,10 @@ class TestBufferedTensor:
         def create_memdesc_subslice(self, result_ty, src, offsets):
             self.memdesc_subslice_args = (result_ty, src, list(offsets))
             return "subslice_handle"
+
+        def create_tile_subview(self, src, offsets, shape, strides, layout):
+            self.tile_subview_args = (src, list(offsets), list(shape), list(strides), layout)
+            return "tile_subview_handle"
 
         def create_tma_copy(self, src, dst, offsets, barrier=None, expect_bytes=-1, eviction_policy=None):
             self.tma_copy_args = (src, dst, list(offsets), barrier, expect_bytes)
@@ -723,19 +728,17 @@ class TestBufferedTensor:
             buffer.subslice(start, length, dim, _semantic=semantic)
 
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
-    def test_buffered_tensor_subslice_preserves_allocation_shape(self):
+    def test_buffered_tensor_subslice_preserves_allocation_shape(self, monkeypatch):
+        from triton.experimental.tle.language.gpu import core
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
         buffer, semantic = self._make_buffer([32, 1024])
 
         view = buffer.subslice([16, 0], [8, 1024], _semantic=semantic)
 
-        assert view.handle == "subslice_handle"
+        assert view.handle == "tile_subview_handle"
         assert view.shape == [8, 1024]
         assert view.type.alloc_shape == [32, 1024]
-        assert semantic.builder.memdesc_subslice_args == (
-            ("memdesc", (8, 1024), "fp16", "fake_layout", "smem", (32, 1024)),
-            "base",
-            [16, 0],
-        )
+        assert semantic.builder.tile_subview_args == ("base", ["stage_16", "stage_0"], [8, 1024], [1, 1], "fake_layout")
 
     @pytest.mark.parametrize(
         ("offsets", "shape", "message"),
