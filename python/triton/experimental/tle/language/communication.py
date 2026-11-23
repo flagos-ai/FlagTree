@@ -156,7 +156,7 @@ def compile_flagcx_allocator():
         )
 
 
-def get_mem_pool():
+def get_mem_pool(*, backend=None):
     """Return a cached PyTorch MemPool backed by flagcxMemAlloc."""
     global _mem_pool, _flagcx_allocator_failed_to_compile
     if _mem_pool is None and not _flagcx_allocator_failed_to_compile:
@@ -164,7 +164,7 @@ def get_mem_pool():
         if _allocator is not None:
             _mem_pool = torch.cuda.MemPool(_allocator)
     if _mem_pool is not None:
-        init_communicator()
+        init_communicator(backend=backend)
     return _mem_pool
 
 
@@ -193,14 +193,13 @@ def cleanup_communicator():
     print(f"[Rank {rank}] Done")
 
 
-def init_communicator():
+def init_communicator(*, backend=None):
     global comm, rank, _init_communicator_
     if enabled and _init_communicator_:
         return
-    if FLAGTREE_BACKEND == "xpu":
-        dist.init_process_group(backend="kccl")
-    else:
-        dist.init_process_group(backend="nccl")
+    if backend is None:
+        backend = "kccl" if FLAGTREE_BACKEND == "xpu" else "nccl"
+    dist.init_process_group(backend=backend)
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     local_rank = int(os.environ.get("LOCAL_RANK", rank))
@@ -219,7 +218,7 @@ def init_communicator():
     # after xshmem is up, and a device broadcast would allocate through the
     # already-switched flagcx allocator too early.
     id_list = [id_bytes]
-    cpu_group = dist.new_group(backend="gloo")
+    cpu_group = dist.group.WORLD if backend == "gloo" else dist.new_group(backend="gloo")
     dist.broadcast_object_list(id_list, src=0, group=cpu_group)
     id_bytes = id_list[0]
 
