@@ -1,17 +1,16 @@
-"""CommonIR capability discovery must also work with vendor-only bindings."""
+"""Test CommonIR capability discovery and the runtime gate."""
 import importlib.util
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 
 def _load_capability(monkeypatch, binding):
-    from triton import _C
+    from triton import _C, _common_ir
 
-    # Keep the native package importable for knobs and mock only capability discovery.
+    # Mock capability discovery while retaining the native environment reader.
     monkeypatch.setattr(_C, "libtriton", binding)
-    path = Path(__file__).resolve().parents[2] / "triton" / "_common_ir.py"
+    path = _common_ir.__file__
     spec = importlib.util.spec_from_file_location("_test_common_ir_capability", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -24,7 +23,10 @@ def _load_capability(monkeypatch, binding):
     SimpleNamespace(iluvatar=SimpleNamespace()),
 ])
 def test_missing_common_ir_capability_is_disabled(monkeypatch, binding):
-    assert _load_capability(monkeypatch, binding).ENABLED is False
+    monkeypatch.setenv("FLAGTREE_COMMON_IR", "1")
+    module = _load_capability(monkeypatch, binding)
+    assert module.AVAILABLE is False
+    assert module.ENABLED is False
 
 
 @pytest.mark.parametrize("plugin", ["tle", "iluvatar"])
@@ -43,11 +45,12 @@ def test_common_ir_capability_is_queried_once(monkeypatch, plugin, enabled):
     assert len(calls) == 1
 
 
-def test_tle_capability_is_preferred_over_vendor(monkeypatch):
+@pytest.mark.parametrize("available", [False, True])
+def test_tle_capability_is_preferred_over_vendor(monkeypatch, available):
     monkeypatch.setenv("FLAGTREE_COMMON_IR", "1")
 
     def tle_query():
-        return True
+        return available
 
     def vendor_query():
         raise AssertionError("vendor query should not run when tle is present")
@@ -56,19 +59,21 @@ def test_tle_capability_is_preferred_over_vendor(monkeypatch):
         monkeypatch,
         SimpleNamespace(tle=SimpleNamespace(is_common_ir_enabled=tle_query),
                         iluvatar=SimpleNamespace(is_common_ir_enabled=vendor_query)))
-    assert module.ENABLED is True
+    assert module.ENABLED is available
 
 
-@pytest.mark.parametrize("setting, expected", [(None, False), ("0", False), ("1", True)])
-def test_common_ir_runtime_opt_in(monkeypatch, setting, expected):
+@pytest.mark.parametrize("plugin", ["tle", "iluvatar"])
+@pytest.mark.parametrize("available", [False, True])
+@pytest.mark.parametrize("setting, runtime_enabled", [(None, True), ("0", False), ("1", True)])
+def test_common_ir_runtime_gate(monkeypatch, plugin, available, setting, runtime_enabled):
     if setting is None:
         monkeypatch.delenv("FLAGTREE_COMMON_IR", raising=False)
     else:
         monkeypatch.setenv("FLAGTREE_COMMON_IR", setting)
-    binding = SimpleNamespace(tle=SimpleNamespace(is_common_ir_enabled=lambda: True))
+    binding = SimpleNamespace(**{plugin: SimpleNamespace(is_common_ir_enabled=lambda: available)})
     module = _load_capability(monkeypatch, binding)
-    assert module.AVAILABLE is True
-    assert module.ENABLED is expected
+    assert module.AVAILABLE is available
+    assert module.ENABLED is (available and runtime_enabled)
 
 
 @pytest.mark.parametrize("plugin", ["tle", "iluvatar"])
