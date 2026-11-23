@@ -2,6 +2,7 @@
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "triton/Target/LLVMIR/IntrinsicAttrTable.h"
+#include "triton/Target/LLVMIR/KL3GroupedExp.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/CodeGen/MIRParser/MIRParser.h"
@@ -867,8 +868,12 @@ void init_triton_llvm(py::module &&m) {
       [](llvm::Module *mod, const llvm::OptimizationLevel &opt,
          std::string arch, std::string features, std::vector<std::string> flags,
          bool enable_fp_fusion) {
-        if (mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT"))
+        if (mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT")) {
+          // KL3 exp lowering is part of instruction selection even at -O0.
+          llvm::ModuleAnalysisManager analyses;
+          llvm::KL3GroupedExpPass().run(*mod, analyses);
           return;
+        }
         auto options = llvm::cl::getRegisteredOptions();
         // Hack for the 3.6 release only. Vectorization of copyable elements
         // exposed a bug in ptxas. Manually disable it by modifying the command
@@ -1012,6 +1017,7 @@ void init_triton_llvm(py::module &&m) {
         pb.crossRegisterProxies(lam, fam, cgam, mam);
 
         ModulePassManager mpm;
+        mpm.addPass(llvm::KL3GroupedExpPass());
         pb.registerPipelineStartEPCallback(
             [](ModulePassManager &PM, OptimizationLevel) {
 #if TRITON_HAVE_XPU_PRINTF_ASSERT
