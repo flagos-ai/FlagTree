@@ -24,8 +24,7 @@ def test_burst4_domain_and_fallback(enabled, e5, rtz, block):
                      {"BLOCK": block, "E5": e5, "RTZ": rtz},
                      options={"num_warps": 4, "enable_fp8_burst2": True, "fp8_downcast_burst4": enabled})
     llir = k.asm["llir"]
-    assert ("call <4 x i8> @llvm.musa.f2e4m3.rn.bst4" in llir) == (
-        enabled and not e5 and not rtz and block >= 512)
+    assert ("call <4 x i8> @llvm.musa.f2e4m3.rn.bst4" in llir) == (enabled and not e5 and not rtz and block >= 512)
     assert " asm " not in llir
 
 

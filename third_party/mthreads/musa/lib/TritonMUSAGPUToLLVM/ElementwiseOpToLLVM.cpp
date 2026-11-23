@@ -387,13 +387,14 @@ struct FpToFpOpConversion
         // host-side MLIR builds without the MUSA intrinsic table.
         auto fnType = LLVM::LLVMFunctionType::get(bytesTy, {input.getType()});
         auto fn = appendOrGetExternFuncOp(rewriter, op,
-                                         "llvm.musa.f2e4m3.rn.bst4", fnType);
+                                          "llvm.musa.f2e4m3.rn.bst4", fnType);
         fn.setMemoryEffectsAttr(LLVM::MemoryEffectsAttr::get(
             rewriter.getContext(),
             SmallVector<LLVM::ModRefInfo>(6, LLVM::ModRefInfo::NoModRef)));
         fn.setNoUnwind(true);
-        Value bytes = LLVM::createLLVMCallOp(rewriter, loc, fn, ValueRange{input})
-                          .getResult();
+        Value bytes =
+            LLVM::createLLVMCallOp(rewriter, loc, fn, ValueRange{input})
+                .getResult();
         SmallVector<Value> result;
         for (unsigned i = 0; i < 4; ++i)
           result.push_back(b.extract_element(i8_ty, bytes, b.i32_val(i)));
