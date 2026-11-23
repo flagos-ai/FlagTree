@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
@@ -25,6 +26,14 @@ namespace {
 
 namespace tile = mlir::triton::tile;
 namespace ttg = mlir::triton::gpu;
+
+struct CommonIRInlinerInterface final : public DialectInlinerInterface {
+  using DialectInlinerInterface::DialectInlinerInterface;
+
+  bool isLegalToInline(Operation *op, Region *, bool, IRMapping &) const final {
+    return op->getNumRegions() == 0 && !op->hasTrait<OpTrait::IsTerminator>();
+  }
+};
 
 static FailureOr<ttg::MemDescType> getMemDescType(Operation *op,
                                                   tile::BufType bufferType) {
@@ -144,10 +153,27 @@ auto getWarpSpecializeExplicitCaptures(Op op, long)
 }
 } // namespace
 
+static WalkResult convertSubview(tile::SubViewOp op,
+                                 llvm::DenseMap<Value, Value> &mapped,
+                                 SmallVectorImpl<Operation *> &eraseOps);
+
+static FailureOr<Value>
+lookupOrConvertSubview(Operation *user, Value buffer,
+                       llvm::DenseMap<Value, Value> &mapped,
+                       SmallVectorImpl<Operation *> &eraseOps) {
+  if (!mapped.contains(buffer)) {
+    if (auto subview = buffer.getDefiningOp<tile::SubViewOp>())
+      if (convertSubview(subview, mapped, eraseOps).wasInterrupted())
+        return failure();
+  }
+  return lookupBuffer(user, buffer, mapped);
+}
+
 static LogicalResult convertWarpSpecializeCaptures(
     ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
     llvm::DenseMap<Value, Type> &convertedArgumentTypes,
-    SmallVectorImpl<UnrealizedConversionCastOp> &argumentCasts) {
+    SmallVectorImpl<UnrealizedConversionCastOp> &argumentCasts,
+    SmallVectorImpl<Operation *> &eraseOps) {
   bool failedConversion = false;
   module.walk([&](ttg::WarpSpecializeOp op) {
     if (failedConversion)
@@ -158,7 +184,7 @@ static LogicalResult convertWarpSpecializeCaptures(
         BlockArgument argument = region->getArgument(index);
         if (!isa<tile::BufType>(argument.getType()))
           continue;
-        auto converted = lookupBuffer(op, capture, mapped);
+        auto converted = lookupOrConvertSubview(op, capture, mapped, eraseOps);
         if (failed(converted)) {
           failedConversion = true;
           return;
@@ -250,6 +276,7 @@ static LogicalResult checkCopy(tile::CopyOp op, Value pointers,
 
 static LogicalResult
 convertAllocations(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
+                   llvm::SmallPtrSetImpl<Operation *> &foldedInitializers,
                    SmallVectorImpl<Operation *> &eraseOps) {
   WalkResult result = module.walk([&](tile::AllocOp op) {
     auto memDescType =
@@ -257,7 +284,20 @@ convertAllocations(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
     if (failed(memDescType))
       return WalkResult::interrupt();
     OpBuilder builder(op);
-    auto alloc = builder.create<ttg::LocalAllocOp>(op.getLoc(), *memDescType);
+    Value initialValue;
+    if (auto store = dyn_cast_or_null<tile::StoreTensorOp>(op->getNextNode());
+        op->hasAttr("tle.gpu_init") && store &&
+        store.getDst() == op.getResult()) {
+      initialValue = store.getSrc();
+      if (failed(checkTensorType(store, initialValue.getType(), *memDescType)))
+        return WalkResult::interrupt();
+      foldedInitializers.insert(store);
+    }
+    auto alloc =
+        initialValue
+            ? builder.create<ttg::LocalAllocOp>(op.getLoc(), *memDescType,
+                                                initialValue)
+            : builder.create<ttg::LocalAllocOp>(op.getLoc(), *memDescType);
     constexpr char autoSharedLayoutAttr[] = "musa_tle.auto_shared_layout";
     if (Attribute layout = op->getAttr(autoSharedLayoutAttr))
       alloc->setAttr(autoSharedLayoutAttr, layout);
@@ -266,6 +306,19 @@ convertAllocations(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
     return WalkResult::advance();
   });
   return failure(result.wasInterrupted());
+}
+
+static void recordNativeBufferBridges(ModuleOp module,
+                                      llvm::DenseMap<Value, Value> &mapped,
+                                      SmallVectorImpl<Operation *> &eraseOps) {
+  module.walk([&](UnrealizedConversionCastOp op) {
+    if (op.getInputs().size() == 1 && op->getNumResults() == 1 &&
+        isa<ttg::MemDescType>(op.getInputs().front().getType()) &&
+        isa<tile::BufType>(op.getResult(0).getType())) {
+      mapped[op.getResult(0)] = op.getInputs().front();
+      eraseOps.push_back(op);
+    }
+  });
 }
 
 static void
@@ -330,97 +383,112 @@ static void finalizeConvertedArguments(
   }
 }
 
-static LogicalResult convertSubviews(ModuleOp module,
-                                     llvm::DenseMap<Value, Value> &mapped,
-                                     SmallVectorImpl<Operation *> &eraseOps) {
-  WalkResult result = module.walk([&](tile::SubViewOp op) {
-    auto source = lookupBuffer(op, op.getSource(), mapped);
-    auto resultType =
-        getMemDescType(op, cast<tile::BufType>(op.getResult().getType()));
-    if (failed(source) || failed(resultType))
-      return WalkResult::interrupt();
+static WalkResult convertSubview(tile::SubViewOp op,
+                                 llvm::DenseMap<Value, Value> &mapped,
+                                 SmallVectorImpl<Operation *> &eraseOps) {
+  if (mapped.contains(op.getResult()))
+    return WalkResult::advance();
+  auto source = lookupOrConvertSubview(op, op.getSource(), mapped, eraseOps);
+  auto resultType =
+      getMemDescType(op, cast<tile::BufType>(op.getResult().getType()));
+  if (failed(source) || failed(resultType))
+    return WalkResult::interrupt();
 
-    OpBuilder builder(op);
-    auto sourceType = cast<ttg::MemDescType>((*source).getType());
-    if (op.getOffsets().size() != sourceType.getRank() ||
-        op.getSizes().size() != resultType->getRank() ||
-        op.getStrides().size() != resultType->getRank()) {
-      op.emitError("GPU tile.subview requires source-rank offsets and "
-                   "result-rank sizes and strides");
+  OpBuilder builder(op);
+  auto sourceType = cast<ttg::MemDescType>((*source).getType());
+  if (sourceType.getRank() == resultType->getRank() ||
+      sourceType.getAllocShape() != sourceType.getShape()) {
+    *resultType = ttg::MemDescType::get(
+        resultType->getShape(), resultType->getElementType(),
+        resultType->getEncoding(), resultType->getMemorySpace(),
+        resultType->getMutableMemory(), sourceType.getAllocShape());
+  }
+  if (op.getOffsets().size() != sourceType.getRank() ||
+      op.getSizes().size() != resultType->getRank() ||
+      op.getStrides().size() != resultType->getRank()) {
+    op.emitError("GPU tile.subview requires source-rank offsets and "
+                 "result-rank sizes and strides");
+    return WalkResult::interrupt();
+  }
+  for (auto [size, dim] : llvm::zip(op.getSizes(), resultType->getShape())) {
+    if (cast<IntegerAttr>(size).getInt() != dim) {
+      op.emitError("tile.subview sizes must match its result shape");
       return WalkResult::interrupt();
     }
-    for (auto [size, dim] : llvm::zip(op.getSizes(), resultType->getShape())) {
-      if (cast<IntegerAttr>(size).getInt() != dim) {
-        op.emitError("tile.subview sizes must match its result shape");
+  }
+  if (llvm::any_of(op.getStrides(), [](Attribute stride) {
+        return cast<IntegerAttr>(stride).getInt() != 1;
+      })) {
+    op.emitError("GPU tile.subview requires unit strides");
+    return WalkResult::interrupt();
+  }
+  Value converted;
+  if (sourceType.getRank() == resultType->getRank() + 1) {
+    if (sourceType.getShape().drop_front() != resultType->getShape()) {
+      op.emitError("rank-reducing tile.subview must preserve trailing shape");
+      return WalkResult::interrupt();
+    }
+    for (Value offset : op.getOffsets().drop_front()) {
+      auto constant = getConstantOffset(offset);
+      if (failed(constant) || *constant != 0) {
+        op.emitError(
+            "rank-reducing tile.subview requires zero trailing offsets");
         return WalkResult::interrupt();
       }
     }
-    if (llvm::any_of(op.getStrides(), [](Attribute stride) {
-          return cast<IntegerAttr>(stride).getInt() != 1;
-        })) {
-      op.emitError("GPU tile.subview requires unit strides");
+    auto leading = getConstantOffset(op.getOffsets().front());
+    if (succeeded(leading) &&
+        (*leading < 0 || *leading >= sourceType.getShape().front())) {
+      op.emitError("tile.subview offset is outside the source buffer");
       return WalkResult::interrupt();
     }
-    Value converted;
-    if (sourceType.getRank() == resultType->getRank() + 1) {
-      if (sourceType.getShape().drop_front() != resultType->getShape()) {
-        op.emitError("rank-reducing tile.subview must preserve trailing shape");
+    auto index = castToI32(builder, op.getLoc(), op.getOffsets().front());
+    if (failed(index))
+      return WalkResult::interrupt();
+    converted = builder.create<ttg::MemDescIndexOp>(op.getLoc(), *resultType,
+                                                    *source, *index);
+  } else if (sourceType.getRank() == resultType->getRank()) {
+    SmallVector<int32_t> offsets;
+    offsets.reserve(op.getOffsets().size());
+    for (auto [axis, offset] : llvm::enumerate(op.getOffsets())) {
+      auto constant = getConstantOffset(offset);
+      if (failed(constant)) {
+        op.emitError(
+            "same-rank tile.subview currently requires static offsets");
         return WalkResult::interrupt();
       }
-      for (Value offset : op.getOffsets().drop_front()) {
-        auto constant = getConstantOffset(offset);
-        if (failed(constant) || *constant != 0) {
-          op.emitError(
-              "rank-reducing tile.subview requires zero trailing offsets");
-          return WalkResult::interrupt();
-        }
-      }
-      auto leading = getConstantOffset(op.getOffsets().front());
-      if (succeeded(leading) &&
-          (*leading < 0 || *leading >= sourceType.getShape().front())) {
+      if (*constant < 0 || *constant > std::numeric_limits<int32_t>::max() ||
+          *constant >
+              sourceType.getShape()[axis] - resultType->getShape()[axis]) {
         op.emitError("tile.subview offset is outside the source buffer");
         return WalkResult::interrupt();
       }
-      auto index = castToI32(builder, op.getLoc(), op.getOffsets().front());
-      if (failed(index))
-        return WalkResult::interrupt();
-      converted = builder.create<ttg::MemDescIndexOp>(op.getLoc(), *resultType,
-                                                      *source, *index);
-    } else if (sourceType.getRank() == resultType->getRank()) {
-      SmallVector<int32_t> offsets;
-      offsets.reserve(op.getOffsets().size());
-      for (auto [axis, offset] : llvm::enumerate(op.getOffsets())) {
-        auto constant = getConstantOffset(offset);
-        if (failed(constant)) {
-          op.emitError(
-              "same-rank tile.subview currently requires static offsets");
-          return WalkResult::interrupt();
-        }
-        if (*constant < 0 || *constant > std::numeric_limits<int32_t>::max() ||
-            *constant >
-                sourceType.getShape()[axis] - resultType->getShape()[axis]) {
-          op.emitError("tile.subview offset is outside the source buffer");
-          return WalkResult::interrupt();
-        }
-        offsets.push_back(static_cast<int32_t>(*constant));
-      }
-      converted = builder.create<ttg::MemDescSubsliceOp>(
-          op.getLoc(), *resultType, *source,
-          builder.getDenseI32ArrayAttr(offsets));
-    } else {
-      op.emitError("unsupported tile.subview rank change");
-      return WalkResult::interrupt();
+      offsets.push_back(static_cast<int32_t>(*constant));
     }
+    converted = builder.create<ttg::MemDescSubsliceOp>(
+        op.getLoc(), *resultType, *source,
+        builder.getDenseI32ArrayAttr(offsets));
+  } else {
+    op.emitError("unsupported tile.subview rank change");
+    return WalkResult::interrupt();
+  }
 
-    mapped[op.getResult()] = converted;
-    eraseOps.push_back(op);
-    return WalkResult::advance();
-  });
+  mapped[op.getResult()] = converted;
+  eraseOps.push_back(op);
+  return WalkResult::advance();
+}
+
+static LogicalResult convertSubviews(ModuleOp module,
+                                     llvm::DenseMap<Value, Value> &mapped,
+                                     SmallVectorImpl<Operation *> &eraseOps) {
+  WalkResult result = module.walk(
+      [&](tile::SubViewOp op) { return convertSubview(op, mapped, eraseOps); });
   return failure(result.wasInterrupted());
 }
 
 static LogicalResult
 convertTileUsers(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
+                 const llvm::SmallPtrSetImpl<Operation *> &foldedInitializers,
                  SmallVectorImpl<Operation *> &eraseOps, bool enableAsyncCopy,
                  SmallVectorImpl<ttg::AsyncCopyGlobalToLocalOp> &copies) {
   bool failedConversion = false;
@@ -451,6 +519,10 @@ convertTileUsers(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
     }
 
     if (auto op = dyn_cast<tile::StoreTensorOp>(operation)) {
+      if (foldedInitializers.contains(op)) {
+        eraseOps.push_back(op);
+        return;
+      }
       auto destination = lookupBuffer(op, op.getDst(), mapped);
       if (failed(destination)) {
         failedConversion = true;
@@ -614,6 +686,15 @@ class CommonIRToTTGIRPass
 public:
   using TleCommonIRToTTGIRBase::TleCommonIRToTTGIRBase;
 
+  void getDependentDialects(DialectRegistry &registry) const override {
+    TleCommonIRToTTGIRBase::getDependentDialects(registry);
+    // Register the interface before the pipeline's inliner visits tile ops.
+    registry.addExtension(+[](MLIRContext *, tile::CommonIRDialect *dialect) {
+      if (!dialect->getRegisteredInterface<DialectInlinerInterface>())
+        dialect->addInterfaces<CommonIRInlinerInterface>();
+    });
+  }
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
     llvm::DenseMap<Value, Value> mapped;
@@ -621,16 +702,22 @@ public:
     SmallVector<Operation *> eraseOps;
     SmallVector<ttg::AsyncCopyGlobalToLocalOp> copies;
     SmallVector<UnrealizedConversionCastOp> argumentCasts;
+    llvm::SmallPtrSet<Operation *, 8> foldedInitializers;
 
-    if (failed(convertAllocations(module, mapped, eraseOps)) ||
-        failed(convertWarpSpecializeCaptures(
-            module, mapped, convertedArgumentTypes, argumentCasts)) ||
+    if (failed(
+            convertAllocations(module, mapped, foldedInitializers, eraseOps))) {
+      signalPassFailure();
+      return;
+    }
+    recordNativeBufferBridges(module, mapped, eraseOps);
+    if (failed(convertWarpSpecializeCaptures(
+            module, mapped, convertedArgumentTypes, argumentCasts, eraseOps)) ||
         failed(convertFunctionArguments(module, mapped, convertedArgumentTypes,
                                         argumentCasts)) ||
         failed(convertSubviews(module, mapped, eraseOps)) ||
         failed(convertBufferBridges(module, mapped, argumentCasts, eraseOps)) ||
-        failed(convertTileUsers(module, mapped, eraseOps, enableAsyncCopy,
-                                copies))) {
+        failed(convertTileUsers(module, mapped, foldedInitializers, eraseOps,
+                                enableAsyncCopy, copies))) {
       signalPassFailure();
       return;
     }

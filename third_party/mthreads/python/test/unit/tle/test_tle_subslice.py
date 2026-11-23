@@ -184,8 +184,13 @@ def test_tle_buffered_tensor_subslice_builds_native_memdesc_view(start, length, 
             "DIM": dim,
         },
     )
-    assert "ttg.memdesc_index" in ttir
-    assert "ttg.memdesc_subslice" in ttir
+    from triton._common_ir import ENABLED as common_ir_enabled
+
+    if common_ir_enabled:
+        assert ttir.count("tile.subview") == 2, ttir
+    else:
+        assert "ttg.memdesc_index" in ttir, ttir
+        assert "ttg.memdesc_subslice" in ttir, ttir
 
 
 def test_tle_buffered_tensor_subslice_lowers_to_llvm():

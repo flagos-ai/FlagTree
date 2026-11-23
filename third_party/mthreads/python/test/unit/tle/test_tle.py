@@ -140,9 +140,15 @@ def test_tle_gpu_alloc_emits_local_alloc_in_ttir():
 
     ttir = compile_to_ttir(kernel, {"out": "*fp32"})
 
-    assert "ttg.local_alloc" in ttir, ttir
-    assert "!ttg.memdesc<16xf32" in ttir, ttir
-    assert "#smem" in ttir, ttir
+    from triton._common_ir import ENABLED as common_ir_enabled
+
+    if common_ir_enabled:
+        assert "tile.alloc" in ttir, ttir
+        assert "!tile.buf<[16], f32, shared>" in ttir, ttir
+    else:
+        assert "ttg.local_alloc" in ttir, ttir
+        assert "!ttg.memdesc<16xf32" in ttir, ttir
+        assert "#smem" in ttir, ttir
 
 
 def test_tle_load_forwards_tl_load_options():

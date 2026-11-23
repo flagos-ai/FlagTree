@@ -152,6 +152,7 @@ def alloc(shape, dtype, storage, layout, layout_handle, init_value, _semantic):
         tile_ty = builder.tile_get_buffer_type(shape, element_type, memory_space)
         handle = builder.create_tile_alloc(tile_ty, layout_handle)
         if init_value is not None:
+            handle.set_attr("tle.gpu_init", builder.get_unit_attr())
             builder.create_tile_store_tensor(init_value.handle, handle)
     elif storage == tle.smem:
         if init_value is None:

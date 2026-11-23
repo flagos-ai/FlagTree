@@ -5,6 +5,7 @@ import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
+from triton._flagtree_backend import FLAGTREE_BACKEND
 
 
 @triton.jit
@@ -91,7 +92,8 @@ def dump_tileir(path):
     }
     module = _frontend_module(_matmul_gpu_kernel, signature, constants)
     text = str(module)
-    for needle in ("tile.alloc", "tile.copy", "tile.to_tensor", "tile.store_tensor"):
+    copy_op = "musa_tle.local_pointers" if FLAGTREE_BACKEND == "mthreads" else "tile.copy"
+    for needle in ("tile.alloc", copy_op, "tile.to_tensor", "tile.store_tensor"):
         if needle not in text:
             raise RuntimeError(f"expected {needle} in TileIR dump")
     Path(path).write_text(text, encoding="utf-8")

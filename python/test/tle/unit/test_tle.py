@@ -795,16 +795,16 @@ class TestCachePolicyFrontend:
         policy = tl.constexpr(None) if wrapped else None
         assert core.mthreads_copy.normalize_cache_policy(policy) is None
 
-    @pytest.mark.parametrize("enabled,common_ir", [(False, False), (False, True), (True, True)])
+    @pytest.mark.parametrize("common_ir", [False, True])
     @pytest.mark.parametrize("wrapped", [False, True])
-    def test_normalize_rejects_unsupported_backend(self, monkeypatch, enabled, common_ir, wrapped):
+    def test_copy_rejects_policy_on_other_backends(self, monkeypatch, common_ir, wrapped):
         from triton.experimental.tle.language.gpu import core
-        monkeypatch.setattr(core.mthreads_common, "enabled", lambda: enabled)
+        monkeypatch.setattr(core.mthreads_common, "enabled", lambda: False)
         monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", common_ir)
         policy = tle.gpu.mthreads.TMECachePolicy("once", "none")
         policy = tl.constexpr(policy) if wrapped else policy
-        with pytest.raises(ValueError, match="only supported by the MUSA TLE backend"):
-            core.mthreads_copy.normalize_cache_policy(policy)
+        with pytest.raises(ValueError, match="copy cache_policy is not supported by this backend"):
+            core.copy(None, None, (), cache_policy=policy, _semantic=object())
 
     @pytest.mark.parametrize("wrapped", [False, True])
     def test_normalize_accepts_musa_policy(self, monkeypatch, wrapped):

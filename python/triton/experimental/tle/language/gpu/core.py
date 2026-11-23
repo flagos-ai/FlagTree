@@ -470,12 +470,15 @@ def alloc(
 
     # Map scope to storage (backward compatibility)
     storage = scope
+    mthreads_enabled = mthreads_common.enabled()
     if tle_semantic.COMMON_IR_ENABLED:
         if storage is not tle.smem:
+            if mthreads_enabled:
+                raise ValueError("mthreads TLE alloc does not support tmem storage")
             raise ValueError("GPU CommonIR currently supports only shared-memory buffers")
-        if alias is not None:
+        if alias is not None and not mthreads_enabled:
             raise ValueError("GPU CommonIR alloc does not yet support alias buffers")
-    mthreads_auto_sqmma_shared_layout = (mthreads_common.enabled() and storage == tle.smem
+    mthreads_auto_sqmma_shared_layout = (mthreads_enabled and storage == tle.smem
                                          and mthreads_wgmma.use_auto_shared_layout(layout, nv_mma_shared_layout))
 
     try:
@@ -584,7 +587,7 @@ def alloc(
             # Use provided layout
             layout_handle = layout.to_ir(_semantic.builder)
 
-        if tle_semantic.COMMON_IR_ENABLED:
+        if tle_semantic.COMMON_IR_ENABLED and alias is None:
             buffer = tle_semantic.alloc(
                 unwrapped_shape,
                 dtype,
@@ -601,7 +604,8 @@ def alloc(
         if storage == tle.smem:
             if alias is not None:
                 alias_ty = _semantic.builder.get_memdesc_type(storage_shape, elem_type, layout_handle, "smem")
-                tensor_handle = _semantic.builder.create_memdesc_alias(alias_ty, alias.handle, alias_offset_bytes)
+                alias_handle = tle_semantic.get_memdesc(alias, _semantic)
+                tensor_handle = _semantic.builder.create_memdesc_alias(alias_ty, alias_handle, alias_offset_bytes)
             else:
                 if init_value is None:
                     tensor_handle = _semantic.builder.create_local_alloc(storage_shape, elem_type, layout_handle)
@@ -646,7 +650,7 @@ def alloc(
             raise ValueError(f"Storage type {storage} not yet supported")
 
         if use_mthreads_buffer:
-            return mthreads_buffer.create_buffered_tensor(
+            buffer = mthreads_buffer.create_buffered_tensor(
                 tensor_handle,
                 dtype,
                 unwrapped_shape,
@@ -654,7 +658,12 @@ def alloc(
                 layout,
                 _semantic,
             )
-        return tle.buffered_tensor(tensor_handle, dtype, storage_shape, storage, layout, _semantic)
+        else:
+            buffer = tle.buffered_tensor(tensor_handle, dtype, storage_shape, storage, layout, _semantic)
+        if tle_semantic.COMMON_IR_ENABLED:
+            buffer.handle = _semantic.builder.create_tile_buffer_from_memdesc(buffer.type.to_ir(_semantic.builder),
+                                                                              buffer.handle)
+        return buffer
 
     except Exception as e:
         raise RuntimeError(f"Memory allocation failed: {str(e)}") from e
@@ -1560,7 +1569,7 @@ def copy(
     if other is not None and mask is None:
         raise ValueError("copy other requires a mask: it is the fill value of the lanes the mask excludes")
 
-    if tle_semantic.COMMON_IR_ENABLED:
+    if tle_semantic.COMMON_IR_ENABLED and not mthreads_enabled:
         if is_async:
             raise ValueError("GPU CommonIR copy does not support explicit async transport")
         if eviction_policy:
