@@ -418,6 +418,10 @@ class HIPBackend(BaseBackend):
 
     @staticmethod
     def make_ttgir(mod, metadata, options):
+        # flagtree keep smem read order: imported here, the tle package needs triton.language, which
+        # is not yet loaded when the backends are discovered
+        from triton.experimental.tle.compiler_knobs import compilation as tle_knobs
+
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
         passes.ttir.add_convert_to_ttgpuir(pm, f"hip:{options.arch}", options.num_warps, options.warp_size,
@@ -443,7 +447,8 @@ class HIPBackend(BaseBackend):
         # begin flagtree tle
         tle.passes.add_select_encodings(pm)
         tle.passes.add_insert_local_pointer_barriers(pm)
-        tle.passes.add_optimize_local_pointer_loads(pm)
+        # flagtree keep smem read order
+        tle.passes.add_optimize_local_pointer_loads(pm, tle_knobs.keep_smem_read_order)
         tle.passes.add_optimize_local_pointer_stores(pm)
         # end flagtree tle
         hcu.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack,

@@ -151,20 +151,16 @@ void init_triton_passes_ttgpuir(py::module &&m) {
                      createTritonGPUMergeSegmentedDot);
 #endif // __FLAGTREE_CONCAT_DOT_OPERAND__
   ADD_PASS_WRAPPER_0("add_accelerate_matmul", createTritonGPUAccelerateMatmul);
-  // flagtree keep smem read order: same signature with or without the macro
-  m.def(
-      "add_reorder_instructions",
-      [](mlir::PassManager &pm, bool keep_smem_read_order) {
+  ADD_PASS_WRAPPER_0("add_reorder_instructions",
+                     createTritonGPUReorderInstructions);
 #ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
-        TritonGPUReorderInstructionsOptions options;
-        options.keepSmemReadOrder = keep_smem_read_order;
-        pm.addPass(createTritonGPUReorderInstructions(options));
-#else  // __FLAGTREE_KEEP_SMEM_READ_ORDER__
-        (void)keep_smem_read_order;
-        pm.addPass(createTritonGPUReorderInstructions());
+  m.def("add_reorder_instructions_keep_smem_read_order",
+        [](mlir::PassManager &pm) {
+          TritonGPUReorderInstructionsOptions options;
+          options.keepSmemReadOrder = true;
+          pm.addPass(createTritonGPUReorderInstructions(options));
+        });
 #endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
-      },
-      py::arg("pm"), py::arg("keep_smem_read_order") = false);
   ADD_PASS_OPTION_WRAPPER_1("add_f32_dot_tc", createTritonGPUF32DotTC, bool);
   ADD_PASS_OPTION_WRAPPER_1("add_optimize_dot_operands",
                             createTritonGPUOptimizeDotOperands, bool);
