@@ -227,6 +227,24 @@ GCUTritonGPUConversionTarget::GCUTritonGPUConversionTarget(
     MLIRContext &context, GCUTritonGPUTypeConverter &typeConverter)
     : ConversionTarget(context) {
   addLegalDialect<triton::gpu::TritonGPUDialect>();
+#ifdef __FLAGTREE_COMMON_IR__
+  // FlagTree CommonIR: CommonIRToTTGIR runs in make_ttir and lowers tile.*
+  // buffers to ttg.local_alloc/local_load/local_store while ranked tensors
+  // still carry no encoding. The dialect-wide legality above keeps those
+  // ops untouched, so their bare tensor types survive and the conversion
+  // dies on an unresolved materialization. Mark the two ops that
+  // produce/consume ranked tensors as dynamically legal so the patterns
+  // registered in GCUConvertTritonToTritonGPU attach blocked encodings.
+  addDynamicallyLegalOp<triton::gpu::LocalLoadOp,
+                        triton::gpu::LocalStoreOp>(
+      [&](Operation *op) {
+        bool hasLegalRegions = true;
+        for (auto &region : op->getRegions())
+          hasLegalRegions =
+              hasLegalRegions && typeConverter.isLegal(&region);
+        return hasLegalRegions && typeConverter.isLegal(op);
+      });
+#endif
 
   addIllegalOp<scf::ExecuteRegionOp, scf::ParallelOp, scf::ReduceOp,
                scf::ReduceReturnOp>();

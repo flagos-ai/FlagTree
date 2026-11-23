@@ -78,8 +78,12 @@ class TestAllocAlias:
         )
 
     @pytest.mark.skip_if_tle_unsupported("gpu.alloc")
-    def test_alloc_alias_creates_typed_memdesc_alias_view(self):
+    def test_alloc_alias_creates_typed_memdesc_alias_view(self, monkeypatch):
         """alloc(alias=...) returns a typed view without creating a new allocation."""
+        from triton.experimental.tle.language.gpu import core as gpu_core
+        # The CommonIR (tile) dialect has no byte-offset buffer alias op yet,
+        # so this legacy builder contract is only reachable without CommonIR.
+        monkeypatch.setattr(gpu_core.tle_semantic, "COMMON_IR_ENABLED", False)
         buffer, semantic = self._make_buffer([4, 16, 32])
         alias = tle.gpu.alloc(
             (2, 16, 16),
@@ -106,6 +110,8 @@ class TestAllocAlias:
         """The mthreads auto-layout marker only accepts local allocations."""
         from triton.experimental.tle.language.gpu import core as gpu_core
 
+        # The CommonIR (tile) dialect has no byte-offset buffer alias op yet.
+        monkeypatch.setattr(gpu_core.tle_semantic, "COMMON_IR_ENABLED", False)
         monkeypatch.setattr(gpu_core.mthreads_common, "enabled", lambda: True)
         buffer, semantic = self._make_buffer([4, 16, 32])
 

@@ -724,19 +724,18 @@ class TestBufferedTensor:
             buffer.subslice(start, length, dim, _semantic=semantic)
 
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
-    def test_buffered_tensor_subslice_preserves_allocation_shape(self):
+    def test_buffered_tensor_subslice_preserves_allocation_shape(self, monkeypatch):
+        from triton.experimental.tle.language.gpu import core
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
         buffer, semantic = self._make_buffer([32, 1024])
 
         view = buffer.subslice([16, 0], [8, 1024], _semantic=semantic)
 
-        assert view.handle == "subslice_handle"
+        assert view.handle == "tile_subview_handle"
         assert view.shape == [8, 1024]
         assert view.type.alloc_shape == [32, 1024]
-        assert semantic.builder.memdesc_subslice_args == (
-            ("memdesc", (8, 1024), "fp16", "fake_layout", "smem", (32, 1024)),
-            "base",
-            [16, 0],
-        )
+        assert semantic.builder.tile_subview_args == ("base", ["stage_16", "stage_0"], [8, 1024], [1, 1],
+                                                      "fake_layout")
 
     @pytest.mark.parametrize(
         ("offsets", "shape", "message"),
