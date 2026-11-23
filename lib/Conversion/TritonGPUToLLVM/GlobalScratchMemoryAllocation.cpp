@@ -26,6 +26,9 @@
 #include "mlir/Analysis/Liveness.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Transforms/GridBarrierScratch.h"
+#endif
 
 using namespace mlir;
 using namespace triton;
@@ -68,6 +71,10 @@ static void allocateGMem(Operation *parentOp,
     if (auto alloc = dyn_cast<triton::gpu::GlobalScratchAllocOp>(op)) {
       nbytes = alloc.getNbytes();
       align = alloc.getAlignment();
+#ifdef __TLE__
+    } else if ((nbytes = tle::getGridBarrierScratchBytes(op)) != 0) {
+      align = 4;
+#endif
     } else if (auto callOp = dyn_cast<triton::CallOp>(op)) {
       auto callable = callOp.resolveCallable();
       auto nbytes_attr = callable->getAttrOfType<IntegerAttr>(
