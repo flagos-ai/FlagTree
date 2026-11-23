@@ -300,6 +300,14 @@ void init_triton_iluvatar_tle_ir(py::module m) {
                      mlir::TypeRange{resultTy}, mlir::ValueRange{source})
                  .getResult(0);
            })
+      .def("create_tile_buffer_from_memdesc",
+           [](TritonOpBuilder &self, mlir::Type resultTy,
+              mlir::Value source) -> mlir::Value {
+             return self
+                 .create<mlir::UnrealizedConversionCastOp>(
+                     mlir::TypeRange{resultTy}, mlir::ValueRange{source})
+                 .getResult(0);
+           })
       .def("create_tile_subview",
            [](TritonOpBuilder &self, mlir::Value source,
               std::vector<mlir::Value> &offsets,
