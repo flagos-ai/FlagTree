@@ -65,3 +65,47 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32}
     tt.return
   }
 }
+
+// -----
+
+// A release gives the slot back to its writer, which may overwrite it: a load
+// of the slot is not sunk into a loop that releases a pipe over its buffer.
+// COMMON-LABEL: pipe_release_and_sinking
+//       ON: ttg.local_load
+//       ON: scf.for
+//       ON:   tle.pipe.reader_release
+//       ON:   ttg.local_load
+//   ON-NOT:   ttg.local_load
+//       ON:   tt.dot
+//  OFF-NOT: ttg.local_load
+//      OFF: scf.for
+//      OFF:   tle.pipe.reader_release
+//      OFF:   ttg.local_load
+//      OFF:   ttg.local_load
+//      OFF:   tt.dot
+#blocked = #ttg.blocked<{sizePerThread = [1, 1], threadsPerWarp = [32, 1], warpsPerCTA = [1, 4], order = [0, 1]}>
+#mma = #ttg.nvidia_mma<{versionMajor = 2, versionMinor = 0, warpsPerCTA = [2, 2], instrShape = [16, 8]}>
+#shared = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [0, 1]}>
+#shared3 = #ttg.swizzled_shared<{vec = 8, perPhase = 1, maxPhase = 4, order = [2, 1, 0]}>
+#smem = #ttg.shared_memory
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.threads-per-warp" = 32 : i32} {
+  tt.func public @pipe_release_and_sinking(%arg0: tensor<32x32x!tt.ptr<f32>, #blocked>, %n: i32) {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %cst = arith.constant dense<0.000000e+00> : tensor<32x32xf32, #mma>
+    %A = tt.load %arg0 : tensor<32x32x!tt.ptr<f32>, #blocked>
+    %P = ttg.local_alloc : () -> !ttg.memdesc<1x32x32xf32, #shared3, #smem, mutable>
+    %PS = ttg.memdesc_index %P[%c0] : !ttg.memdesc<1x32x32xf32, #shared3, #smem, mutable> -> !ttg.memdesc<32x32xf32, #shared, #smem, mutable>
+    ttg.local_store %A, %PS : tensor<32x32xf32, #blocked> -> !ttg.memdesc<32x32xf32, #shared, #smem, mutable>
+    %AD = ttg.local_load %PS : !ttg.memdesc<32x32xf32, #shared, #smem, mutable> -> tensor<32x32xf32, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 1}>>
+    %r = scf.for %i = %c0 to %n step %c1 iter_args(%acc = %cst) -> (tensor<32x32xf32, #mma>) : i32 {
+      tle.pipe.reader_release %P[%c0] {capacity = 1 : i32, field_names = ["data"], reader_name = "r", scope = "cta"} : !ttg.memdesc<1x32x32xf32, #shared3, #smem, mutable>
+      %BD = ttg.local_load %PS : !ttg.memdesc<32x32xf32, #shared, #smem, mutable> -> tensor<32x32xf32, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 1}>>
+      %d = tt.dot %AD, %BD, %acc, inputPrecision = tf32 : tensor<32x32xf32, #ttg.dot_op<{opIdx = 0, parent = #mma, kWidth = 1}>> * tensor<32x32xf32, #ttg.dot_op<{opIdx = 1, parent = #mma, kWidth = 1}>> -> tensor<32x32xf32, #mma>
+      scf.yield %d : tensor<32x32xf32, #mma>
+    }
+    %o = ttg.convert_layout %r : tensor<32x32xf32, #mma> -> tensor<32x32xf32, #blocked>
+    tt.store %arg0, %o : tensor<32x32x!tt.ptr<f32>, #blocked>
+    tt.return
+  }
+}

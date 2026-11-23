@@ -174,22 +174,53 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
 #smem = #ttg.shared_memory
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
-  // A store through pointers of tle.local_pointers writes shared memory; which
-  // buffer is not tracked through pointer arithmetic, so the conversion stays
-  // even though the pointers are of another allocation.
-  // COMMON-LABEL: tt.func @keep_convert_after_local_pointer_store_of_other_alloc
-  tt.func @keep_convert_after_local_pointer_store_of_other_alloc(%slot_scalar: i32, %v: tensor<64xi32, #blocked>) -> tensor<64xi32, #blocked_alt> {
+  // A store through the pointers of a tle.local_pointers of another allocation
+  // writes another buffer: the load is re-issued at the conversion either way,
+  // after the store.
+  // COMMON-LABEL: tt.func @rematerialize_past_local_pointer_store_of_other_alloc
+  tt.func @rematerialize_past_local_pointer_store_of_other_alloc(%slot_scalar: i32, %v: tensor<64xi32, #blocked>) -> tensor<64xi32, #blocked_alt> {
     %smem = ttg.local_alloc : () -> !ttg.memdesc<2x64xi32, #shared, #smem, mutable>
     %other = ttg.local_alloc : () -> !ttg.memdesc<2x64xi32, #shared, #smem, mutable>
     %slot = tt.splat %slot_scalar : i32 -> tensor<64xi32, #blocked>
     %offs = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #blocked>
     %ptr = "tle.local_pointers"(%smem, %slot, %offs) : (!ttg.memdesc<2x64xi32, #shared, #smem, mutable>, tensor<64xi32, #blocked>, tensor<64xi32, #blocked>) -> tensor<64x!tt.ptr<i32, 3>, #blocked>
     %other_ptr = "tle.local_pointers"(%other, %slot, %offs) : (!ttg.memdesc<2x64xi32, #shared, #smem, mutable>, tensor<64xi32, #blocked>, tensor<64xi32, #blocked>) -> tensor<64x!tt.ptr<i32, 3>, #blocked>
+    // COMMON-NOT: tt.load
+    %ids = tt.load %ptr : tensor<64x!tt.ptr<i32, 3>, #blocked>
+    // COMMON: tt.store
+    tt.store %other_ptr, %v : tensor<64x!tt.ptr<i32, 3>, #blocked>
+    // COMMON: tt.load
+    // COMMON-NOT: ttg.convert_layout
+    %out = ttg.convert_layout %ids : tensor<64xi32, #blocked> -> tensor<64xi32, #blocked_alt>
+    tt.return %out : tensor<64xi32, #blocked_alt>
+  }
+}
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [2], order = [0]}>
+#blocked_alt = #ttg.blocked<{sizePerThread = [2], threadsPerWarp = [32], warpsPerCTA = [2], order = [0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // A store through a pointer whose tle.local_pointers is not seen (here it
+  // goes through pointer arithmetic) may write any shared buffer, so the
+  // conversion stays even though the pointer is of another allocation.
+  // COMMON-LABEL: tt.func @keep_convert_after_store_through_pointer_arithmetic
+  tt.func @keep_convert_after_store_through_pointer_arithmetic(%slot_scalar: i32, %v: tensor<64xi32, #blocked>) -> tensor<64xi32, #blocked_alt> {
+    %smem = ttg.local_alloc : () -> !ttg.memdesc<2x64xi32, #shared, #smem, mutable>
+    %other = ttg.local_alloc : () -> !ttg.memdesc<2x64xi32, #shared, #smem, mutable>
+    %slot = tt.splat %slot_scalar : i32 -> tensor<64xi32, #blocked>
+    %offs = tt.make_range {end = 64 : i32, start = 0 : i32} : tensor<64xi32, #blocked>
+    %ptr = "tle.local_pointers"(%smem, %slot, %offs) : (!ttg.memdesc<2x64xi32, #shared, #smem, mutable>, tensor<64xi32, #blocked>, tensor<64xi32, #blocked>) -> tensor<64x!tt.ptr<i32, 3>, #blocked>
+    %other_ptr = "tle.local_pointers"(%other, %slot, %offs) : (!ttg.memdesc<2x64xi32, #shared, #smem, mutable>, tensor<64xi32, #blocked>, tensor<64xi32, #blocked>) -> tensor<64x!tt.ptr<i32, 3>, #blocked>
+    %moved_ptr = tt.addptr %other_ptr, %slot : tensor<64x!tt.ptr<i32, 3>, #blocked>, tensor<64xi32, #blocked>
     // ON: %[[IDS:.*]] = tt.load
     // OFF-NOT: tt.load
     %ids = tt.load %ptr : tensor<64x!tt.ptr<i32, 3>, #blocked>
     // COMMON: tt.store
-    tt.store %other_ptr, %v : tensor<64x!tt.ptr<i32, 3>, #blocked>
+    tt.store %moved_ptr, %v : tensor<64x!tt.ptr<i32, 3>, #blocked>
     // ON: ttg.convert_layout %[[IDS]]
     // OFF: tt.load
     // OFF-NOT: ttg.convert_layout
