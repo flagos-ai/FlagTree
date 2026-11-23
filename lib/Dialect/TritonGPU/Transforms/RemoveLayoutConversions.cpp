@@ -2603,20 +2603,33 @@ static int64_t maxLowPrecisionEpilogueBytes() {
   return limit;
 }
 
-// True if `value` feeds a low-precision -> f32 extension directly. The
-// extension's own width is what follows the layout, and a retag reaches it
-// through the operand, so one hop is enough.
+// True if `value` feeds a low-precision -> f32 extension, either directly or
+// through one convert_layout.
+//
+// The one-hop case is the common one: while RLC decides layouts the convert is
+// still in the IR, so the extension almost never shows the retagged value as a
+// direct operand. addmv's chain is load -> convert_layout -> extf, and the retag
+// under consideration is exactly the one that removes that convert.
 static bool feedsLowPrecisionExtension(Value value) {
-  for (Operation *user : value.getUsers()) {
-    auto ext = dyn_cast<arith::ExtFOp>(user);
+  auto isLowPrecisionExt = [](Operation *op) {
+    auto ext = dyn_cast<arith::ExtFOp>(op);
     if (!ext)
-      continue;
+      return false;
     auto srcType = dyn_cast<RankedTensorType>(ext.getIn().getType());
     if (!srcType)
-      continue;
+      return false;
     auto elemType = dyn_cast<FloatType>(srcType.getElementType());
-    if (elemType && elemType.getWidth() < 32)
+    return elemType && elemType.getWidth() < 32;
+  };
+  for (Operation *user : value.getUsers()) {
+    if (isLowPrecisionExt(user))
       return true;
+    auto cvt = dyn_cast<ConvertLayoutOp>(user);
+    if (!cvt)
+      continue;
+    for (Operation *cvtUser : cvt.getResult().getUsers())
+      if (isLowPrecisionExt(cvtUser))
+        return true;
   }
   return false;
 }
