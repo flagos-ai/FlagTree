@@ -31,7 +31,7 @@
 #include "ascend/include/TritonToLinalg/CanonicalizeDebugLocationsPass.h"
 #include "ascend/include/TritonToLinalg/DeduplicateDebugNopsPass.h"
 #include "ascend/include/TritonToLinalg/DescriptorConverter.h"
-#include "ascend/include/TritonToLinalg/DevicePrintOffsetRewrite.h"
+#include "triton-shared/Conversion/TritonToLinalgGeneric/DevicePrintOffsetRewrite.h"
 #include "triton-shared/Conversion/TritonToLinalgGeneric/FunctionConverter.h"
 #include "triton-shared/Conversion/TritonToLinalgGeneric/HoistBroadcast.h"
 #include "ascend/include/TritonToLinalg/ImplicitPermute.h"

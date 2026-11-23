@@ -6,7 +6,6 @@ add_triton_library(TritonToLinalg
         ImplicitPermute.cpp
         DescriptorConverter.cpp
         MarkTensorKindPass.cpp
-        DevicePrintOffsetRewrite.cpp
         DeduplicateDebugNopsPass.cpp
         CanonicalizeDebugLocationsPass.cpp
 
