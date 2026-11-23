@@ -110,6 +110,14 @@ def pipe(
     one_shot=True models a single ready/full edge. The writer still commits and
     readers still wait, but acquire/release/close are not part of the contract.
     """
+    # Ascend keeps the 3.5 workspace-backed pipe implementation. Dispatch before
+    # the GPU field validation below, which only accepts gpu.buffered_tensor.
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+    if FLAGTREE_BACKEND == "ascend":
+        from .dsa.ascend.pipe import _deferred_pipe
+        return _deferred_pipe(capacity=capacity, scope=scope, name=name, readers=readers, one_shot=one_shot,
+                              _semantic=_semantic, **fields)
+
     capacity = _unwrap_pipe_constexpr(capacity)
     scope = _unwrap_pipe_constexpr(scope)
     name = _unwrap_pipe_constexpr(name)

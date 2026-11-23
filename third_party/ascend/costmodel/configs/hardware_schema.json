@@ -1,0 +1,220 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "hardware_schema.json",
+  "title": "TritonSim Hardware Configuration",
+  "description": "Schema for defining NPU/accelerator hardware parameters",
+  "type": "object",
+  "required": [
+    "name",
+    "clock",
+    "memory_spaces",
+    "compute_units",
+    "data_movers"
+  ],
+
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Hardware name (e.g., Ascend 910B)"
+    },
+    "vendor": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
+
+    "clock": {
+      "type": "object",
+      "required": [
+        "frequency_ghz"
+      ],
+      "properties": {
+        "frequency_ghz": {
+          "type": "number",
+          "minimum": 0.1,
+          "description": "Core clock frequency in GHz"
+        },
+        "cycles_per_us": {
+          "type": "integer",
+          "description": "Derived: cycles per microsecond"
+        }
+      }
+    },
+
+    "memory_spaces": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "off_chip",
+              "on_chip_shared",
+              "on_chip_local",
+              "register_file"
+            ]
+          },
+          "size_gb": {
+            "type": "number"
+          },
+          "size_mb": {
+            "type": "number"
+          },
+          "size_kb": {
+            "type": "number"
+          },
+          "bandwidth_tbps": {
+            "type": "number"
+          },
+          "bandwidth_gbps": {
+            "type": "number"
+          },
+          "latency_cycles": {
+            "type": "integer"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      }
+    },
+
+    "compute_units": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "matrix_engine",
+              "simd_engine",
+              "scalar_engine"
+            ]
+          },
+          "tflops_fp16": {
+            "type": "number"
+          },
+          "tflops_fp32": {
+            "type": "number"
+          },
+          "tflops_int8": {
+            "type": "number"
+          },
+          "tile_m": {
+            "type": "integer"
+          },
+          "tile_n": {
+            "type": "integer"
+          },
+          "tile_k": {
+            "type": "integer"
+          },
+          "width_elements": {
+            "type": "integer"
+          },
+          "width_bytes": {
+            "type": "integer"
+          },
+          "input_spaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "output_space": {
+            "type": "string"
+          },
+          "compute_space": {
+            "type": "string"
+          },
+          "supported_ops": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "supported_dtypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+
+    "data_movers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "src_space"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "src_space": {
+            "type": "string"
+          },
+          "dst_space": {
+            "type": "string"
+          },
+          "dst_spaces": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "bandwidth_gbps": {
+            "type": "number"
+          },
+          "max_burst_bytes": {
+            "type": "integer"
+          },
+          "alignment_bytes": {
+            "type": "integer"
+          },
+          "supports_accumulate": {
+            "type": "boolean"
+          },
+          "supports_cast": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "stages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      }
+    },
+
+    "performance_model": {
+      "type": "object",
+      "description": "Custom performance estimation formulas"
+    }
+  }
+}

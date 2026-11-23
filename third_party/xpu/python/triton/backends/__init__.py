@@ -36,22 +36,15 @@ class Backend:
 
 
 # ===-------------------- For Triton XPU -----------------------===
-# nvidia/xpu and the alternate cluster backends all report is_active()==True on
-# CUDA-available systems, so exactly one backend group must be selected
-# explicitly.
-# TRITON_XPU_ARCH: 3 (default) -> xpu (KL2 / sdnn); 4 and 5 -> the alternate
-#                  cluster backends.
-_XPU_ARCH_BACKEND = {4: "xcn", 5: "jupiter"}
-_SELECTABLE_BACKENDS = ("nvidia", "amd", "xpu", "xcn", "jupiter")
+# nvidia and xpu both report is_active()==True on CUDA-available systems, so
+# exactly one backend group must be selected explicitly: the xpu (KL3 / sdnn)
+# backend.
+_SELECTABLE_BACKENDS = ("nvidia", "amd", "xpu")
 
 
 def _select_xpu_backend(backends: dict[str, Backend]) -> dict[str, Backend]:
-    arch = int(os.environ.get("TRITON_XPU_ARCH", "3"))
-    if os.environ.get("TRITON_ENABLE_XCN_BACKEND", False) and arch < 4:
-        arch = 4
-    keep = _XPU_ARCH_BACKEND.get(arch, "xpu")
     for name in _SELECTABLE_BACKENDS:
-        if name != keep:
+        if name != "xpu":
             backends.pop(name, None)
     return backends
 
@@ -70,7 +63,10 @@ def _discover_backends() -> dict[str, Backend]:
         for name in os.listdir(root):
             if not os.path.isdir(os.path.join(root, name)):
                 continue
-            if name.startswith('__'):
+            # Skip both dunder dirs and single-underscore helper packages
+            # (e.g. `_xtdk_llvm19`, the shared LLVM 19 lib symlink setup.py
+            # stages): they are not backends and have no compiler/driver.
+            if name.startswith('_'):
                 continue
             compiler = importlib.import_module(f"triton.backends.{name}.compiler")
             driver = importlib.import_module(f"triton.backends.{name}.driver")

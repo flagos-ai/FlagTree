@@ -1,0 +1,3 @@
+--extra-index-url https://ascend.devcloud.huaweicloud.com/cann/pypi/simple/
+
+cann-shmem

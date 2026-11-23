@@ -71,6 +71,9 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--login", default="", help="GitHub login(s) to resolve, space or comma separated")
+    parser.add_argument(
+        "--admins", action="store_true", help=("Resolve everyone marked is_admin instead of a login, for a "
+                                               "failure that belongs to the branch rather than to a change"))
     parser.add_argument("--workflow", default="", help="Workflow name to check against the skip list")
     parser.add_argument("--app-token", default=None, help="Bitable app token (default: $FEISHU_BITABLE_APP_TOKEN)")
     parser.add_argument("--contacts-table", default="", help="Override the contacts table name")
@@ -149,6 +152,35 @@ def lookup_login(token: str, app_token: str, table_id: str, login: str) -> Tuple
     return "", ""
 
 
+def lookup_admins(token: str, app_token: str, table_id: str) -> Tuple[List[str], List[str]]:
+    """(open_ids, names) of everyone marked is_admin and still enabled.
+
+    A scheduled run has no author to blame, so there has to be a standing
+    list. Reads the whole table rather than filtering server-side: it holds a
+    handful of rows, and reading a checkbox is less fragile than asking the
+    API to filter on one.
+    """
+    open_ids: List[str] = []
+    names: List[str] = []
+    for row in fc.all_records(token, app_token, table_id):
+        if not row.get("is_admin"):
+            continue
+        # Same pause switch as for authors: unchecking enabled stops the
+        # messages without losing the mapping.
+        enabled = row.get("enabled")
+        if enabled is not None and not enabled:
+            continue
+        open_id = fc.cell_text(row.get("open_id"))
+        if not open_id or open_id in open_ids:
+            continue
+        open_ids.append(open_id)
+        names.append(fc.cell_text(row.get("name")) or fc.cell_text(row.get("github_login")))
+    if not open_ids:
+        print("[INFO] No enabled admin in the contacts table, notifying nobody. "
+              "Check is_admin on whoever should hear about scheduled failures.")
+    return open_ids, names
+
+
 def check_skip(token: str, app_token: str, table_id: str, workflow: str) -> Tuple[bool, str]:
     """(skip, reason) for a workflow.
 
@@ -196,8 +228,8 @@ def emit(**outputs: str) -> None:
 def main() -> int:
     args = parse_args()
 
-    if not args.login and not args.workflow:
-        print("[ERROR] Nothing to look up: pass --login and/or --workflow.")
+    if not args.login and not args.workflow and not args.admins:
+        print("[ERROR] Nothing to look up: pass --login, --admins and/or --workflow.")
         return 1
 
     app_token = args.app_token or os.environ.get("FEISHU_BITABLE_APP_TOKEN", "").strip()
@@ -220,7 +252,12 @@ def main() -> int:
         open_ids: List[str] = []
         names: List[str] = []
         # No point resolving anyone for a notification that will not be sent.
-        if args.login and not skip:
+        if args.admins and not skip:
+            table_id = resolve_table(token, app_token, load_schema(CONTACTS_SCHEMA), args.contacts_table,
+                                     args.create_missing)
+            if table_id:
+                open_ids, names = lookup_admins(token, app_token, table_id)
+        elif args.login and not skip:
             table_id = resolve_table(token, app_token, load_schema(CONTACTS_SCHEMA), args.contacts_table,
                                      args.create_missing)
             if table_id:

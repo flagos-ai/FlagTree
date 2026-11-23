@@ -1271,10 +1271,8 @@ class CodeGenerator(ast.NodeVisitor):
         # flagtree tle
         try:
             from ..experimental.tle import language as tle
-            tle_pipeline = tle.gpu.pipeline
             tle_range = tle.range  # flagtree reorder-loop-loads
         except ImportError:
-            tle_pipeline = None
             tle_range = None
         # spacemit smt.parallel (only present when the spacemit backend is built)
         try:
@@ -1282,7 +1280,7 @@ class CodeGenerator(ast.NodeVisitor):
         except ImportError:
             smt_parallel = None
 
-        if IteratorClass in [language.range, tle_pipeline, tle_range, smt_parallel]:  # flagtree reorder-loop-loads
+        if IteratorClass in [language.range, tle_range, smt_parallel]:  # flagtree reorder-loop-loads
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
