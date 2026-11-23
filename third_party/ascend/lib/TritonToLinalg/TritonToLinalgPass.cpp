@@ -39,8 +39,8 @@
 #include "ascend/include/TritonToLinalg/MarkTensorKindPass.h"
 #include "ascend/include/TritonToLinalg/TritonOpConverter.h"
 #include "ascend/include/TritonToLinalg/TritonToLinalgPass.h"
-#include "ascend/include/TritonToLinalg/UseAnalysis.h"
 #include "triton-shared/Conversion/TritonToLinalgGeneric/GenericDebug.h"
+#include "triton-shared/Conversion/TritonToLinalgGeneric/UseAnalysis.h"
 #include "triton-shared/Conversion/TritonToLinalgGeneric/GenericOpConverter.h"
 #include "ascend/include/TritonToStructured/CannonicalizerConverter.h"
 #include "ascend/include/TritonToUnstructure/UnstructureConversionPass.h"
@@ -1540,7 +1540,7 @@ void TritonToLinalgPass::populateTritonToLinalgConversionPatterns(
   populateFunctionOpInterfaceTypeConversionPattern<triton::FuncOp>(
       patterns, typeConverter);
 
-  patterns.add<triton::MetaUseEraser>(patterns.getContext());
+  patterns.add<TTOpConverters::MetaUseEraser>(patterns.getContext());
   patterns.add<LoadStoreConverter::StoreConverter>(patterns.getContext());
   patterns.add<LoadStoreConverter::AddPtrConverter>(patterns.getContext());
   patterns
@@ -1805,6 +1805,80 @@ TritonToLinalgPass::processLegalStrideOperations(ModuleOp moduleOp) {
   return success();
 }
 
+static TTOpConverters::UseAnalysisHooks buildAscendUseAnalysisHooks() {
+  using TTOpConverters::OperandUse;
+  using TTOpConverters::UseType;
+
+  TTOpConverters::UseAnalysisHooks hooks;
+
+  hooks.classifyBackendUse =
+      [](Operation *op)
+      -> std::optional<llvm::SmallVector<OperandUse>> {
+    if (auto store = dyn_cast<triton::ascend::IndirectStoreOp>(op)) {
+      llvm::SmallVector<OperandUse> uses{{0, UseType::MetaUse},
+                                         {1, UseType::DataUse},
+                                         {2, UseType::DataUse}};
+      if (store.getMask())
+        uses.push_back({3, UseType::DataUse});
+      return uses;
+    }
+    if (isa<hivm::FixpipeOp, hivm::CopyOp>(op))
+      return llvm::SmallVector<OperandUse>{{0, UseType::DataUse}};
+    if (isa<hivm::CustomOp, hivm::CustomMacroOp>(op)) {
+      llvm::SmallVector<OperandUse> uses;
+      for (unsigned i = 0; i < op->getNumOperands(); ++i)
+        uses.push_back({i, UseType::MixUse});
+      return uses;
+    }
+    return std::nullopt;
+  };
+
+  hooks.forceMetaLoad = [](Operation *op) {
+    return op->hasAttr(ConverterUtils::discreteAttrName);
+  };
+
+  hooks.classifyMetaUser = [](Operation *user,
+                              Value result) -> std::optional<bool> {
+    if (auto indirectStore = dyn_cast<triton::ascend::IndirectStoreOp>(user)) {
+      return result == indirectStore.getSrc();
+    }
+    if (isa<hivm::CustomOp, hivm::CustomMacroOp>(user))
+      return false;
+    return std::nullopt;
+  };
+
+  hooks.isIndirectBoundary = [](Operation *op) {
+    return isa<triton::ascend::IndirectStoreOp>(op);
+  };
+
+  hooks.isMultiResultMetaOp = [](Operation *op) {
+    return isa<scope::ScopeOp>(op);
+  };
+
+  hooks.postProcessOp = [](Operation *op, const mlir::DataFlowSolver &) {
+    if (op->hasAttr(ConverterUtils::discreteAttrName))
+      TTOpConverters::setMixUseRecursively(op);
+    if (auto atomicRmwOp = dyn_cast<triton::AtomicRMWOp>(op)) {
+      auto mask = atomicRmwOp.getMask();
+      if (mask && op->hasAttr(ConverterUtils::discreteMaskAttrName))
+        TTOpConverters::setMixUseRecursively(mask.getDefiningOp());
+    }
+  };
+
+  hooks.postProcessFunc = [](triton::FuncOp funcOp) {
+    funcOp.walk([](hivm::CustomOp op) {
+      if (TTOpConverters::isMetaUse(op))
+        op->removeAttr("MetaUse");
+    });
+    funcOp.walk([](hivm::CustomMacroOp op) {
+      if (TTOpConverters::isMetaUse(op))
+        op->removeAttr("MetaUse");
+    });
+  };
+
+  return hooks;
+}
+
 void TritonToLinalgPass::runOnOperation() {
   compileOn91095Flag = this->compileOn91095;
   auto compileMode = triton::ascend::parseCompileMode(this->compileMode);
@@ -1961,8 +2035,9 @@ void TritonToLinalgPass::runOnOperation() {
   }
 
   // 2. Perform use analysis on FuncOp.
-  moduleOp.walk([this](triton::FuncOp op) {
-    if (failed(runUseAnalysis(op))) {
+  auto useAnalysisHooks = buildAscendUseAnalysisHooks();
+  moduleOp.walk([this, &useAnalysisHooks](triton::FuncOp op) {
+    if (failed(TTOpConverters::runUseAnalysis(op, &useAnalysisHooks))) {
       signalPassFailure();
     }
   });
