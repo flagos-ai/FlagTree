@@ -32,11 +32,14 @@ if TYPE_CHECKING:
 
 
 def is_backend_builder(builder) -> bool:
-    # The shared pipe model carries an SSA identity operand that the Iluvatar
-    # ``iluvatar_tle`` dialect does not have. Gate the backend-owned, field-only
-    # ABI on a capability only the Iluvatar TLE builder binds, so synthetic
-    # builders used by the portable frontend tests keep the shared model.
-    return hasattr(builder, "iluvatar_tle_field_only_pipe_version")
+    # The shared pipe model carries an SSA identity operand and a `pipe.drain`
+    # op that the Iluvatar ``iluvatar_tle`` dialect does not have. Detect the
+    # shared-ABI builder by that drain binding instead of a new marker: the
+    # frontend may be installed from a wheel built against a libtriton that
+    # predates this change, and then only the pipe signatures themselves tell
+    # the two ABIs apart. Synthetic builders used by the portable frontend
+    # tests also bind each pipe method, so they must not take this path.
+    return (hasattr(builder, "create_pipe_create") and not hasattr(builder, "create_pipe_drain"))
 
 
 def validate_pipe_options(scope, readers, one_shot, fields) -> None:

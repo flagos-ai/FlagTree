@@ -1338,8 +1338,24 @@ def test_musa_native_pipe_uses_existing_field_only_signature(monkeypatch):
     assert cursor == 1 and copied.fields["data"].handle == "base"
 
 
-class _IluvatarBuilder(TestBufferedTensor._FakeBuilder):
-    iluvatar_tle_field_only_pipe_version = 1
+class _IluvatarBuilder:
+    """Mirrors the Iluvatar TLE builder: field-only ``create_pipe_*`` signatures
+    and no shared-model ``create_pipe_drain`` binding.
+
+    It delegates everything else to the shared fake builder, but does not
+    subclass it: ``hasattr`` walks the MRO, so inheritance would keep the drain
+    method visible and the frontend would wrongly pick the shared ABI.
+    """
+
+    def __init__(self):
+        self._base = TestBufferedTensor._FakeBuilder()
+        self.pipe_ops = []
+        self.pipe_create_args = None
+
+    def __getattr__(self, name):
+        if name == "create_pipe_drain":
+            raise AttributeError(name)
+        return getattr(self._base, name)
 
     def create_pipe_create(self, fields, capacity, scope, pipe_name, field_names, readers, one_shot):
         self.pipe_create_args = (list(fields), capacity, scope, pipe_name, list(field_names), list(readers), one_shot)
