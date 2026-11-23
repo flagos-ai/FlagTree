@@ -382,15 +382,18 @@ struct FpToFpOpConversion
         for (unsigned i = 0; i < 4; ++i)
           input = b.insert_element(input.getType(), input, operands[i][0],
                                    b.i32_val(i));
-        Value word = LLVM::InlineAsmOp::create(
-                         rewriter, loc, i32_ty, ValueRange{input},
-                         "CVT.RTE.DENORM.BST4 $0.e4m3, $1.f32", "=R,R", false,
-                         false, LLVM::TailCallKind::None,
-                         LLVM::AsmDialectAttr::get(rewriter.getContext(),
-                                                   LLVM::AsmDialect::AD_ATT),
-                         ArrayAttr())
-                         ->getResult(0);
-        Value bytes = b.bitcast(word, vec_ty(i8_ty, 4));
+        auto bytesTy = vec_ty(i8_ty, 4);
+        // The device SDK recognizes the intrinsic. Declare it explicitly for
+        // host-side MLIR builds without the MUSA intrinsic table.
+        auto fnType = LLVM::LLVMFunctionType::get(bytesTy, {input.getType()});
+        auto fn = appendOrGetExternFuncOp(rewriter, op,
+                                         "llvm.musa.f2e4m3.rn.bst4", fnType);
+        fn.setMemoryEffectsAttr(LLVM::MemoryEffectsAttr::get(
+            rewriter.getContext(),
+            SmallVector<LLVM::ModRefInfo>(6, LLVM::ModRefInfo::NoModRef)));
+        fn.setNoUnwind(true);
+        Value bytes = LLVM::createLLVMCallOp(rewriter, loc, fn, ValueRange{input})
+                          .getResult();
         SmallVector<Value> result;
         for (unsigned i = 0; i < 4; ++i)
           result.push_back(b.extract_element(i8_ty, bytes, b.i32_val(i)));
