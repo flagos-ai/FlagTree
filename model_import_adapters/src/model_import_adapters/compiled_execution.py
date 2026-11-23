@@ -86,10 +86,14 @@ def run_exported_program_on_device(
     fullgraph: bool = True,
     atol: float = 1e-4,
     rtol: float = 1e-4,
+    memory_analysis: bool = False,
 ) -> dict[str, Any]:
     """回读统一图，在CPU与编译态XPU之间执行数值核对并索引产物。"""
 
     import torch
+
+    if type(memory_analysis) is not bool:
+        raise TypeError("memory_analysis must be Boolean")
 
     exported_program_path = Path(exported_program_path).resolve()
     example_inputs_path = Path(example_inputs_path).resolve()
@@ -122,6 +126,50 @@ def run_exported_program_on_device(
         input_schema,
         device=device,
     )
+    if memory_analysis:
+        from torch.fx import GraphModule
+
+        from flagtree.memory_planner.compiler_analysis import analyze_compiler_manifest
+        from flagtree.memory_planner.compiler_aliases import collect_operator_schemas
+
+        from .unified_ir import _graph_module_summary
+
+        memory_manifest = {
+            "schema_version": 1,
+            "format": "PyTorch FX GraphModule",
+            "analysis_stage": "model_ir_before_backend",
+            "source": {
+                "kind": "existing_compilation_input",
+                "exported_program_sha256": sha256_file(exported_program_path),
+                "origin": "device_module_after_existing_retarget",
+                # .to(device) 不保证 node.meta 同步更新；它不是运行期观测证据。
+                "metadata_scope": "compiler_metadata_not_runtime_observation",
+            },
+            "graphs": [
+                _graph_module_summary(name, module)
+                for name, module in device_module.named_modules()
+                if isinstance(module, GraphModule)
+            ],
+        }
+        # 仅读取 dispatcher schema；不执行算子、不读取设备指针。
+        # 保存实际编译输入摘要，后续可在 CPU 离线复算同一图的别名生命期。
+        operator_schemas = collect_operator_schemas(memory_manifest)
+        memory_analysis_report = analyze_compiler_manifest(
+            memory_manifest, enabled=True, operator_schemas=operator_schemas,
+        )
+        for filename, content in (("memory-manifest.json", memory_manifest),
+                                  ("operator-schemas.json", operator_schemas)):
+            (output_dir / filename).write_text(
+                json.dumps(content, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        if not isinstance(memory_analysis_report, dict):
+            raise TypeError("enabled compiler memory analysis must return a JSON report")
+        memory_analysis_path = output_dir / "memory-analysis.json"
+        memory_analysis_path.write_text(
+            json.dumps(memory_analysis_report, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     compiled_module = torch.compile(device_module, fullgraph=fullgraph)
     with torch.no_grad():
         device_output = compiled_module(*device_args, **device_kwargs)
@@ -178,6 +226,16 @@ def run_exported_program_on_device(
             ),
         },
     }
+    if memory_analysis:
+        report["memory_analysis"] = {
+            "enabled": True,
+            "analysis_stage": "model_ir_before_backend",
+            "report_path": str(memory_analysis_path),
+            "report_sha256": sha256_file(memory_analysis_path),
+            "allocation_or_runtime_changed": False,
+            "note": "编译 IR 分析，不是后端最终调度或设备显存收益证明。",
+        }
+
     report_path = output_dir / "compiled_xpu_report.json"
     report_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2),
