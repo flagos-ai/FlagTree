@@ -13,5 +13,6 @@ include CMakeLists.txt
 include LICENSE
 include Makefile
 include python/build_helpers.py
+include python/requirements-ascend.txt
 include python/requirements.txt
 include python/test-requirements.txt
