@@ -473,7 +473,7 @@ def alloc(
     if tle_semantic.COMMON_IR_ENABLED:
         if storage is not tle.smem:
             raise ValueError("GPU CommonIR currently supports only shared-memory buffers")
-        if alias is not None:
+        if alias is not None and not hasattr(_semantic.builder, "create_tile_buffer_from_memdesc"):
             raise ValueError("GPU CommonIR alloc does not yet support alias buffers")
     mthreads_auto_sqmma_shared_layout = (mthreads_common.enabled() and storage == tle.smem
                                          and mthreads_wgmma.use_auto_shared_layout(layout, nv_mma_shared_layout))
