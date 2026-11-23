@@ -5,15 +5,11 @@ A_rank is [M/world_size, K]; B_rank is [K, N/world_size]. M and N
 are global dimensions, while K is replicated. B may be contiguous or a
 transpose of contiguous [N/world_size, K] storage.
 
-The AllGather implementation is local to this tutorial. As in Triton-distributed,
-inter-node sends and intra-node distribution run on separate streams. Four
-intra-node CTAs cooperate on one destination at a time, first distributing local
-A, then relaying remote A. Each destination uses a separate copy kernel; an
-independent signal stream waits for that copy and publishes readiness. Only the
-first copy of a remote source waits for its arrival. Inter-node sends use one
-CTA per remote node. All communication uses TLE remote, signal, signal_wait, and
-distributed_barrier; intra-node copies use SM load/store rather than
-Triton-distributed's Copy Engine.
+The intra-node stream launches one persistent copy kernel per AllGather.
+Each CTA copies its chunks and increments a sender-local arrival counter for
+that source and destination. The last arrival signals the peer once. All other
+CTAs proceed immediately, including CTAs whose chunk range was empty. Both
+direct and forwarded segments use one remote increment per epoch.
 Context and stream organization follow tutorials 08/09. NVIDIA requires SM90 or
 newer. Both backends use tensor descriptors; HCU lowers them in its compiler.
 The async proxy fence is NVIDIA-only. On 64-lane hardware, use at most 16
@@ -56,7 +52,6 @@ import triton.experimental.tle.language as tle
 _rs = importlib.import_module("08-inter-node-reduce-scatter")
 _active_context = None
 MAX_NODE_TRANSFER_ELEMENTS = tl.TRITON_MAX_TENSOR_NUMEL
-INTRA_NODE_CTAS = 4
 
 
 def _debug(message):
@@ -65,7 +60,7 @@ def _debug(message):
 
 
 def _record_debug_event(ctx, kind, detail, stream):
-    if os.environ.get("TLE_AG_GEMM_DEBUG") == "1":
+    if ctx.record_benchmark_events or os.environ.get("TLE_AG_GEMM_DEBUG") == "1":
         event = torch.cuda.Event()
         event.record(stream)
         ctx.debug_events.append((kind, detail, event))
@@ -115,35 +110,46 @@ class _DebugSignalProgress:
             self.host_pointer = ctypes.c_void_p()
 
 
+def _wait_for_debug_events(ctx, message, log):
+    # Query the stream boundaries without waiting on a device-wide synchronize.
+    pending = list(ctx.debug_events)
+    last_report = time.monotonic()
+    while pending:
+        pending = [entry for entry in pending if not entry[2].query()]
+        now = time.monotonic()
+        if pending and now - last_report >= 5:
+            pending_ids = {id(entry[2]) for entry in pending}
+            for kind in dict.fromkeys(entry[0] for entry in ctx.debug_events):
+                entries = [entry for entry in ctx.debug_events if entry[0] == kind]
+                remaining = [entry for entry in entries if id(entry[2]) in pending_ids]
+                first = remaining[0][1] if remaining else "none"
+                log(f"{message}: {kind} completed={len(entries) - len(remaining)}/{len(entries)}, "
+                    f"first pending={first}")
+                if kind == "intra" and remaining and ctx.debug_signal_progress is not None:
+                    values = ctx.debug_signal_progress.values
+                    token = (ctx.epoch - 1) % 0x7FFFFFFF + 1
+                    for node_step in range(ctx.nnodes):
+                        node = (ctx.node_rank - node_step) % ctx.nnodes
+                        source = node * ctx.local_world_size + ctx.local_rank
+                        for peer in range(ctx.local_world_size):
+                            if peer == ctx.local_rank:
+                                continue
+                            start = (source * ctx.local_world_size + peer) * ctx.config.intra_node_ctas
+                            entries = range(start, start + ctx.config.intra_node_ctas)
+                            issued = sum(values[2 * i] == token for i in entries)
+                            returned = sum(values[2 * i + 1] == token for i in entries)
+                            log(f"{message}: source={source} peer={peer} CTAs arrived={issued}/{ctx.config.intra_node_ctas}, "
+                                f"remote signals returned={returned}/1")
+            last_report = now
+        if pending:
+            time.sleep(0.05)
+
+
 def _debug_sync(message, ctx=None):
     if os.environ.get("TLE_AG_GEMM_DEBUG") == "1":
         _debug(f"{message}: waiting for GPU completion")
         if ctx is not None:
-            # Query recorded stream boundaries on the host. A device-wide
-            # synchronize alone hides which communication step or GEMM stalled.
-            pending = list(ctx.debug_events)
-            last_report = time.monotonic()
-            while pending:
-                pending = [entry for entry in pending if not entry[2].query()]
-                now = time.monotonic()
-                if pending and now - last_report >= 5:
-                    pending_ids = {id(entry[2]) for entry in pending}
-                    for kind in dict.fromkeys(entry[0] for entry in ctx.debug_events):
-                        entries = [entry for entry in ctx.debug_events if entry[0] == kind]
-                        remaining = [entry for entry in entries if id(entry[2]) in pending_ids]
-                        first = remaining[0][1] if remaining else "none"
-                        _debug(f"{message}: {kind} completed={len(entries) - len(remaining)}/{len(entries)}, "
-                               f"first pending={first}")
-                        if kind == "signal" and remaining and ctx.debug_signal_progress is not None:
-                            index = ctx.debug_signal_indices[first]
-                            token = (ctx.epoch - 1) % 0x7FFFFFFF + 1
-                            values = ctx.debug_signal_progress.values
-                            _debug(f"{message}: first pending signal {first}, "
-                                   f"entered={values[2 * index] == token}, "
-                                   f"returned={values[2 * index + 1] == token}")
-                    last_report = now
-                if pending:
-                    time.sleep(0.05)
+            _wait_for_debug_events(ctx, message, _debug)
         torch.cuda.synchronize()
         _debug(f"{message}: completed")
 
@@ -166,6 +172,7 @@ class TleAllGatherGemmConfig:
     num_stages: int = 3
     ag_block: int = 4096
     ag_num_warps: int = 32
+    intra_node_ctas: int = 4
 
     def validate(self):
         for name in ("block_m", "block_n", "block_k", "ag_block"):
@@ -174,6 +181,8 @@ class TleAllGatherGemmConfig:
                 raise ValueError(f"{name} must be a power of two >= 16")
         if self.group_m < 1 or self.num_stages < 1:
             raise ValueError("group_m and num_stages must be positive")
+        if self.intra_node_ctas < 1:
+            raise ValueError("intra_node_ctas must be positive")
         if self.num_warps not in (4, 8) or self.ag_num_warps not in (4, 8, 16, 32):
             raise ValueError("num_warps must be 4/8; ag_num_warps must be 4/8/16/32")
 
@@ -212,15 +221,15 @@ class TleAllGatherGemmContext:
     dist_ctx: object
     ag_intranode_stream: torch.cuda.Stream
     ag_internode_stream: torch.cuda.Stream
-    ag_signal_stream: torch.cuda.Stream
+    arrival_counts: torch.Tensor
     compute_stream: torch.cuda.Stream
     num_gemm_sms: int
     config: TleAllGatherGemmConfig
     epoch: int = 0
     closed: bool = False
+    record_benchmark_events: bool = dataclasses.field(default=False, init=False, repr=False)
     debug_events: list = dataclasses.field(default_factory=list, repr=False)
     debug_signal_progress: object = dataclasses.field(default=None, repr=False)
-    debug_signal_indices: dict = dataclasses.field(default_factory=dict, repr=False)
     local_rank: int = dataclasses.field(init=False)
     node_rank: int = dataclasses.field(init=False)
     nnodes: int = dataclasses.field(init=False)
@@ -271,7 +280,7 @@ def create_ag_gemm_context(max_M: int, N: int, K: int, dtype: torch.dtype, rank:
     total_sms = torch.cuda.get_device_properties("cuda").multi_processor_count
     # Leave room for copies, notifications, and network sends to progress while
     # GEMM may wait for their signals. This is a CTA budget, not SM pinning.
-    ag_sms = world_size // local_world_size - 1 + (INTRA_NODE_CTAS + 1 if local_world_size > 1 else 0)
+    ag_sms = world_size // local_world_size - 1 + (config.intra_node_ctas if local_world_size > 1 else 0)
     available = total_sms - ag_sms
     if num_gemm_sms is None:
         num_gemm_sms = available
@@ -285,6 +294,8 @@ def create_ag_gemm_context(max_M: int, N: int, K: int, dtype: torch.dtype, rank:
     dist_ctx = tle.create_dist_tensor(workspace)
     dist_ctx.register_buffer(workspace)
     triton.set_allocator(lambda size, alignment, stream: torch.empty(size, device=workspace.device, dtype=torch.int8))
+    copy_stream = torch.cuda.Stream(priority=-1)
+    inter_node_stream = torch.cuda.Stream(priority=-1)
     ctx = TleAllGatherGemmContext(
         max_M,
         N,
@@ -295,15 +306,15 @@ def create_ag_gemm_context(max_M: int, N: int, K: int, dtype: torch.dtype, rank:
         local_world_size,
         workspace,
         dist_ctx,
-        torch.cuda.Stream(priority=-1),
-        torch.cuda.Stream(priority=-1),
-        torch.cuda.Stream(priority=-1),
+        copy_stream,
+        inter_node_stream,
+        torch.zeros((world_size, local_world_size), dtype=torch.int64, device=workspace.device),
         torch.cuda.current_stream(),
         num_gemm_sms,
         config,
     )
     if os.environ.get("TLE_AG_GEMM_DEBUG_SIGNAL") == "1" and local_world_size > 1:
-        ctx.debug_signal_progress = _DebugSignalProgress(2 * world_size * local_world_size)
+        ctx.debug_signal_progress = _DebugSignalProgress(2 * world_size * local_world_size * config.intra_node_ctas)
     _active_context = ctx
     return ctx
 
@@ -365,63 +376,50 @@ def _all_gather_inter_node_kernel(
     )
 
 
-@triton.jit(do_not_specialize=["epoch", "source_rank", "peer_local_rank"])
-def _all_gather_intra_node_kernel(
-    workspace,
-    dist_ctx: tl.constexpr,
-    epoch,
-    source_rank,
-    peer_local_rank,
-    ELEM_PER_RANK: tl.constexpr,
-    NUM_LOCAL_CHUNKS: tl.constexpr,
-    BLOCK: tl.constexpr,
-    WAIT_FOR_SOURCE: tl.constexpr,
+@triton.jit(do_not_specialize=["epoch", "progress_token"])
+def _persistent_intra_node_kernel(
+    workspace, arrival_counts, dist_ctx: tl.constexpr, epoch, progress_ptr, progress_token,
+    RANK: tl.constexpr, LOCAL_WORLD_SIZE: tl.constexpr, NNODES: tl.constexpr,
+    ELEM_PER_RANK: tl.constexpr, NUM_LOCAL_CHUNKS: tl.constexpr, BLOCK: tl.constexpr,
+    DEBUG_PROGRESS: tl.constexpr,
 ):
-    """Copy one source to one local peer; kernel completion joins all copy CTAs."""
     pid = tl.program_id(0)
-    if WAIT_FOR_SOURCE:
-        # Only direct inter-node arrivals need forwarding. Copies later in the
-        # same stream inherit this acquire and do not wait on the source again.
-        tle.signal_wait(
-            dist_ctx,
-            slot_id=source_rank,
-            wait_kind="signal",
-            target=epoch,
-            group_kind="block",
-            order="acquire",
-        )
-    segment_offset = source_rank.to(tl.int64) * ELEM_PER_RANK
-    remote_dst = tle.remote(
-        dist_ctx,
-        shard_id=peer_local_rank,
-        space="device",
-        dtype=workspace.dtype.element_ty,
-        offset=segment_offset,
-    )
+    nctas = tl.num_programs(0)
     offsets = tl.arange(0, BLOCK)
-    for chunk_id in tl.range(pid, NUM_LOCAL_CHUNKS, tl.num_programs(0)):
-        block_offset = chunk_id.to(tl.int64) * BLOCK
-        mask = block_offset + offsets < ELEM_PER_RANK
-        values = tl.load(workspace + segment_offset + block_offset + offsets, mask=mask)
-        tl.store(remote_dst + block_offset + offsets, values, mask=mask)
+    for node_step in range(NNODES):
+        source_node = (RANK // LOCAL_WORLD_SIZE + NNODES - node_step) % NNODES
+        source_rank = source_node * LOCAL_WORLD_SIZE + RANK % LOCAL_WORLD_SIZE
+        if node_step != 0:
+            # The network sender emits one increment per source per epoch.
+            tle.signal_wait(dist_ctx, slot_id=source_rank, wait_kind="signal", target=epoch,
+                            group_kind="block", order="acquire")
+        segment_offset = source_rank.to(tl.int64) * ELEM_PER_RANK
+        for peer_step in range(1, LOCAL_WORLD_SIZE):
+            peer = (RANK % LOCAL_WORLD_SIZE + LOCAL_WORLD_SIZE - peer_step) % LOCAL_WORLD_SIZE
+            dst = tle.remote(dist_ctx, shard_id=peer, space="device",
+                             dtype=workspace.dtype.element_ty, offset=segment_offset)
+            for chunk in tl.range(pid, NUM_LOCAL_CHUNKS, nctas):
+                indices = chunk.to(tl.int64) * BLOCK + offsets
+                mask = indices < ELEM_PER_RANK
+                data = tl.load(workspace + segment_offset + indices, mask=mask, other=0)
+                tl.store(dst + indices, data, mask=mask)
 
-
-@triton.jit(do_not_specialize=["source_rank", "peer_local_rank", "progress_index", "progress_token"])
-def _signal_all_gather_intra_node_kernel(dist_ctx: tl.constexpr, source_rank, peer_local_rank, progress_ptr=None,
-                                         progress_index=0, progress_token=0, DEBUG_PROGRESS: tl.constexpr = False):
-    """Publish one signal after the signal stream has waited for the copy kernel."""
-    if DEBUG_PROGRESS:
-        tl.atomic_xchg(progress_ptr + 2 * progress_index, progress_token, sem="release", scope="sys")
-    tle.signal(
-        dist_ctx,
-        peer_local_rank,
-        slot_id=source_rank,
-        op="inc",
-        space="intra_node",
-        group_kind="block",
-    )
-    if DEBUG_PROGRESS:
-        tl.atomic_xchg(progress_ptr + 2 * progress_index + 1, progress_token, sem="release", scope="sys")
+            # Every CTA contributes once, including CTAs with no chunks.
+            pair = source_rank * LOCAL_WORLD_SIZE + peer
+            tl.debug_barrier()
+            previous = tl.atomic_add(arrival_counts + pair, 1, sem="acq_rel", scope="sys")
+            # The cumulative count avoids clearing counters between launches.
+            # The last RMW acquires the preceding CTAs' publications.
+            last = previous == epoch.to(tl.int64) * nctas - 1
+            tl.debug_barrier()
+            if DEBUG_PROGRESS:
+                entry = (pair * nctas + pid) * 2
+                tl.atomic_xchg(progress_ptr + entry, progress_token, sem="release", scope="sys")
+            if last:
+                tle.signal(dist_ctx, peer, slot_id=source_rank, op="inc", space="intra_node",
+                           group_kind="block", scope="system")
+                if DEBUG_PROGRESS:
+                    tl.atomic_xchg(progress_ptr + entry + 1, progress_token, sem="release", scope="sys")
 
 
 @triton.jit(do_not_specialize=["epoch"])
@@ -551,7 +549,8 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
     current_stream = torch.cuda.current_stream(A.device)
     if current_stream != ctx.compute_stream:
         raise ValueError("reuse the context on its original compute stream")
-    if ctx.epoch >= (1 << 63) - 1:
+    max_increments = ctx.config.intra_node_ctas if ctx.local_world_size > 1 else 1
+    if ctx.epoch >= ((1 << 63) - 1) // max_increments:
         raise OverflowError("signal epoch exhausted")
 
     C = torch.empty((M, ctx.N // ctx.world_size), dtype=ctx.dtype, device=A.device)
@@ -559,6 +558,7 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
     _debug(f"epoch={ctx.epoch + 1} overlap={overlap}: submit prepare/local copy")
     if ctx.world_size > 1:
         _prepare_all_gather_kernel[(1, )](ctx.dist_ctx, ctx.world_mesh, num_warps=4)
+        _record_debug_event(ctx, "barrier", "world barrier", current_stream)
     row_begin = ctx.rank * A.shape[0]
     ctx.workspace[row_begin:row_begin + A.shape[0]].copy_(A)
     ctx.epoch += 1
@@ -586,54 +586,22 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
         _record_debug_event(ctx, "inter", f"send source={ctx.rank}", ctx.ag_internode_stream)
     if ctx.local_world_size > 1:
         ctx.ag_intranode_stream.wait_stream(current_stream)
-        for node_step in range(ctx.nnodes):
-            source_node = (ctx.node_rank + ctx.nnodes - node_step) % ctx.nnodes
-            source_rank = source_node * ctx.local_world_size + ctx.local_rank
-            for peer_step in range(1, ctx.local_world_size):
-                peer_local_rank = (ctx.local_rank + ctx.local_world_size - peer_step) % ctx.local_world_size
-                _debug(f"launch intra-node copy source={source_rank} peer={peer_local_rank}")
-                with torch.cuda.stream(ctx.ag_intranode_stream):
-                    _all_gather_intra_node_kernel[(INTRA_NODE_CTAS, )](
-                        ctx.workspace,
-                        ctx.dist_ctx,
-                        ctx.epoch,
-                        source_rank,
-                        peer_local_rank,
-                        ELEM_PER_RANK=A.numel(),
-                        NUM_LOCAL_CHUNKS=triton.cdiv(A.numel(), cfg.ag_block),
-                        BLOCK=cfg.ag_block,
-                        WAIT_FOR_SOURCE=node_step != 0 and peer_step == 1,
-                        num_warps=cfg.ag_num_warps,
-                    )
-                _debug(f"intra-node copy submitted source={source_rank} peer={peer_local_rank}")
-                _record_debug_event(ctx, "copy", f"source={source_rank} peer={peer_local_rank}",
-                                    ctx.ag_intranode_stream)
-                # Capture this copy's completion before queuing the next one.
-                # Notifications can overlap subsequent copies in the copy stream.
-                ctx.ag_signal_stream.wait_stream(ctx.ag_intranode_stream)
-                _debug(f"launch notification source={source_rank} peer={peer_local_rank}")
-                progress_index = source_rank * ctx.local_world_size + peer_local_rank
-                ctx.debug_signal_indices[f"source={source_rank} peer={peer_local_rank}"] = progress_index
-                with torch.cuda.stream(ctx.ag_signal_stream):
-                    _signal_all_gather_intra_node_kernel[(1, )](
-                        ctx.dist_ctx,
-                        source_rank,
-                        peer_local_rank,
-                        progress_ptr=ctx.debug_signal_progress,
-                        progress_index=progress_index,
-                        progress_token=(ctx.epoch - 1) % 0x7FFFFFFF + 1,
-                        DEBUG_PROGRESS=ctx.debug_signal_progress is not None,
-                        num_warps=cfg.ag_num_warps,
-                    )
-                _debug(f"notification submitted source={source_rank} peer={peer_local_rank}")
-                _record_debug_event(ctx, "signal", f"source={source_rank} peer={peer_local_rank}", ctx.ag_signal_stream)
+        with torch.cuda.stream(ctx.ag_intranode_stream):
+            _persistent_intra_node_kernel[(cfg.intra_node_ctas, )](
+                ctx.workspace, ctx.arrival_counts, ctx.dist_ctx, ctx.epoch, ctx.debug_signal_progress,
+                (ctx.epoch - 1) % 0x7FFFFFFF + 1,
+                RANK=ctx.rank, LOCAL_WORLD_SIZE=ctx.local_world_size, NNODES=ctx.nnodes,
+                ELEM_PER_RANK=A.numel(), NUM_LOCAL_CHUNKS=triton.cdiv(A.numel(), cfg.ag_block),
+                BLOCK=cfg.ag_block, DEBUG_PROGRESS=ctx.debug_signal_progress is not None,
+                num_warps=cfg.ag_num_warps,
+            )
+        _record_debug_event(ctx, "intra", "persistent copy and signal", ctx.ag_intranode_stream)
     if not overlap and ctx.world_size > 1:
         _debug("submit serial AllGather wait")
         if ctx.nnodes > 1:
             current_stream.wait_stream(ctx.ag_internode_stream)
         if ctx.local_world_size > 1:
             current_stream.wait_stream(ctx.ag_intranode_stream)
-            current_stream.wait_stream(ctx.ag_signal_stream)
         _wait_all_gather_kernel[(1, )](ctx.dist_ctx, ctx.epoch, RANK=ctx.rank, WORLD_SIZE=ctx.world_size,
                                        num_warps=cfg.ag_num_warps)
         _record_debug_event(ctx, "serial-ready", "all incoming sources ready", current_stream)
@@ -671,7 +639,6 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
         current_stream.wait_stream(ctx.ag_internode_stream)
     if ctx.local_world_size > 1:
         current_stream.wait_stream(ctx.ag_intranode_stream)
-        current_stream.wait_stream(ctx.ag_signal_stream)
     return C
 
 
@@ -682,7 +649,7 @@ def torch_ag_gemm(A, B, process_group=None):
     return full @ B
 
 
-def _time_ms(fn, warmup, iters, *, name, debug):
+def _time_ms(fn, warmup, iters, *, name, debug, trace_ctx=None):
     rank = dist.get_rank()
     device = torch.cuda.current_device()
 
@@ -705,13 +672,27 @@ def _time_ms(fn, warmup, iters, *, name, debug):
         dist.barrier(device_ids=[device])
         start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         log(f"{sample}: launch operator")
+        submit_start = time.perf_counter()
         start.record()
-        fn()
+        if trace_ctx is not None:
+            trace_ctx.record_benchmark_events = True
+        try:
+            fn()
+        finally:
+            if trace_ctx is not None:
+                trace_ctx.record_benchmark_events = False
         end.record()
-        log(f"{sample}: wait for GPU event")
+        host_submit_ms = (time.perf_counter() - submit_start) * 1000
+        log(f"{sample}: wait for GPU event (host_submit_ms={host_submit_ms:.3f})")
+        wait_start = time.perf_counter()
+        if trace_ctx is not None:
+            trace_ctx.debug_events.append(("completion", "joined streams", end))
+            _wait_for_debug_events(trace_ctx, sample, log)
         end.synchronize()
-        log(f"{sample}: reduce rank timings")
-        elapsed = torch.tensor(start.elapsed_time(end), device="cuda", dtype=torch.float64)
+        host_wait_ms = (time.perf_counter() - wait_start) * 1000
+        gpu_event_ms = start.elapsed_time(end)
+        log(f"{sample}: reduce rank timings (gpu_event_ms={gpu_event_ms:.3f}, host_wait_ms={host_wait_ms:.3f})")
+        elapsed = torch.tensor(gpu_event_ms, device="cuda", dtype=torch.float64)
         dist.all_reduce(elapsed, op=dist.ReduceOp.MAX)
         samples.append(elapsed.item())
     log("complete")
@@ -727,14 +708,14 @@ def _parse_args(argv=None):
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iters", type=int, default=50, help="Benchmark iterations; zero disables timing.")
     parser.add_argument("--bench-debug", action="store_true",
-                        help="Print each rank's benchmark progress for diagnosing stalls.")
+                        help="Print per-rank timings and pending GPU stages for stalled overlapped samples.")
     parser.add_argument("--trans-b", action="store_true", help="Back B with contiguous [N/world_size, K].")
     parser.add_argument("--gemm-sms", type=int)
     parser.add_argument("--serial-only", action="store_true", help="Check and benchmark only the serial TLE path.")
     parser.add_argument("--debug", action="store_true",
                         help="Print launch stages and synchronize check stages; use --iters 0.")
     parser.add_argument("--debug-signal", action="store_true",
-                        help="Track notification kernel entry/return in mapped host memory; implies --debug.")
+                        help="Track CTA arrivals and the last CTA returning from signal in mapped host memory; implies --debug.")
     defaults = _default_config()
     for field in dataclasses.fields(TleAllGatherGemmConfig):
         parser.add_argument("--" + field.name.replace("_", "-"), type=int, default=getattr(defaults, field.name))
@@ -793,7 +774,8 @@ def main():
                 f"PASS: {args.check_iters} changing-input checks, "
                 f"{'serial TLE' if args.serial_only else 'both overlapped and serial TLE'}; "
                 f"world={world_size}, local_world={local_world_size}, "
-                f"gemm_ctas={ctx.num_gemm_sms}, config={dataclasses.asdict(config)}", flush=True)
+                f"gemm_ctas={ctx.num_gemm_sms}, "
+                f"config={dataclasses.asdict(config)}", flush=True)
         if args.iters:
             torch_name = "torch AG + GEMM"
             serial_name = "serial TLE AG + GEMM"
@@ -808,15 +790,16 @@ def main():
                     continue
                 if rank == 0:
                     print(f"Benchmarking {name} (warmup={args.warmup}, iters={args.iters})", flush=True)
-                duration = _time_ms(fn, args.warmup, args.iters, name=name, debug=args.bench_debug)
+                trace_ctx = ctx if args.bench_debug and name == overlap_name else None
+                duration = _time_ms(fn, args.warmup, args.iters, name=name, debug=args.bench_debug, trace_ctx=trace_ctx)
                 timings[name] = duration
                 if rank == 0:
                     print(f"{name}: median(max-rank)={duration:.3f} ms", flush=True)
             if rank == 0:
                 tle_name = serial_name if args.serial_only else overlap_name
-                print(f"{tle_name}: speedup_vs_torch={timings[torch_name] / timings[tle_name]:.2f}x", flush=True)
+                print(f"{tle_name}: speedup_vs_torch={timings[torch_name] / timings[tle_name]:.4g}x", flush=True)
                 if not args.serial_only:
-                    print(f"{overlap_name}: speedup_vs_serial={timings[serial_name] / timings[overlap_name]:.2f}x",
+                    print(f"{overlap_name}: speedup_vs_serial={timings[serial_name] / timings[overlap_name]:.4g}x",
                           flush=True)
     finally:
         if ctx is not None:
