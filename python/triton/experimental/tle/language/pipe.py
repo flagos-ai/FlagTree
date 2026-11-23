@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 import triton.language.core as tl
 
 from .gpu import types as gpu_types
+from .gpu.iluvatar import pipe as iluvatar_pipe
 from .gpu.mthreads import common as mthreads_common
 from .gpu.mthreads import pipe as mthreads_pipe
 
@@ -138,6 +139,9 @@ def pipe(
     musa_pipe = mthreads_common.enabled() and mthreads_pipe.is_backend_builder(_semantic.builder)
     if musa_pipe:
         mthreads_pipe.validate_pipe_options(scope, reader_names, one_shot, fields)
+    iluvatar_edge = iluvatar_pipe.is_backend_builder(_semantic.builder)
+    if iluvatar_edge:
+        iluvatar_pipe.validate_pipe_options(scope, reader_names, one_shot, fields)
 
     for field_name, field in fields.items():
         _validate_public_name("field", field_name)
@@ -152,11 +156,16 @@ def pipe(
             raise ValueError(
                 f"tle.pipe field {field_name!r} leading dimension must equal capacity {capacity}, got {field.shape[0]}")
 
-    value_type = mthreads_pipe.pipe_value if musa_pipe else gpu_types.pipe_value
+    if musa_pipe:
+        value_type = mthreads_pipe.pipe_value
+    elif iluvatar_edge:
+        value_type = iluvatar_pipe.pipe_value
+    else:
+        value_type = gpu_types.pipe_value
     value = value_type(capacity, scope, name, fields, reader_names, one_shot=one_shot)
     identity = _semantic.builder.create_pipe_create(value._field_handles(_semantic), capacity, scope, name or "",
                                                     list(fields.keys()), list(reader_names or ()), one_shot)
-    if not musa_pipe:
+    if not musa_pipe and not iluvatar_edge:
         value.identity = identity
     return value
 

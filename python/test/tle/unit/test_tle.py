@@ -1336,3 +1336,60 @@ def test_musa_native_pipe_uses_existing_field_only_signature(monkeypatch):
     assert values == ["base"]
     copied, cursor = edge.type._unflatten_ir(values, 0)
     assert cursor == 1 and copied.fields["data"].handle == "base"
+
+
+class _IluvatarBuilder(TestBufferedTensor._FakeBuilder):
+    iluvatar_tle_field_only_pipe_version = 1
+
+    def create_pipe_create(self, fields, capacity, scope, pipe_name, field_names, readers, one_shot):
+        self.pipe_create_args = (list(fields), capacity, scope, pipe_name, list(field_names), list(readers), one_shot)
+
+    def create_pipe_writer_acquire(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("acquire", list(fields), stage, phase))
+
+    def create_pipe_writer_commit(self, fields, stage, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("commit", list(fields), stage))
+
+    def create_pipe_writer_close(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("close", list(fields), stage, phase))
+
+    def create_pipe_reader_wait(self, fields, stage, phase, capacity, scope, pipe_name, field_names, reader_name,
+                                reader_field_names):
+        self.pipe_ops.append(("wait", list(fields), stage, phase))
+        return "is_closed"
+
+    def create_pipe_reader_release(self, fields, stage, capacity, scope, pipe_name, field_names, reader_name,
+                                   reader_field_names):
+        self.pipe_ops.append(("release", list(fields), stage))
+
+
+def test_iluvatar_native_pipe_uses_field_only_signature():
+    from triton.experimental.tle.language.gpu import types
+    semantic = TestBufferedTensor._FakeSemantic()
+    semantic.builder = _IluvatarBuilder()
+    field = types.buffered_tensor("base", tl.float16, [2, 16], types.smem,
+                                  tle.gpu.swizzled_shared_layout.make_default(rank=2), semantic)
+    edge = tle.pipe(capacity=2, data=field, _semantic=semantic)
+    writer, reader = edge.writer(_semantic=semantic), edge.reader(_semantic=semantic)
+    writer.acquire(0, _semantic=semantic)
+    writer.commit(0, _semantic=semantic)
+    writer.close(1, _semantic=semantic)
+    reader.wait(0, _semantic=semantic)
+    reader.release(0, _semantic=semantic)
+
+    # iluvatar_tle keeps the field-only ABI: no SSA identity is threaded through.
+    assert semantic.builder.pipe_create_args == (["base"], 2, "cta", "", ["data"], [], False)
+    assert [x[0] for x in semantic.builder.pipe_ops] == ["acquire", "commit", "close", "wait", "release"]
+    # The first operand after the op name is the pipe's field handle list.
+    assert all(isinstance(x[1], list) and x[1] == ["base"] for x in semantic.builder.pipe_ops)
+    assert edge.identity is None
+    values = []
+    edge._flatten_ir(values)
+    assert values == ["base"]
+    copied, cursor = edge.type._unflatten_ir(values, 0)
+    assert cursor == 1 and copied.fields["data"].handle == "base"
+
+    with pytest.raises(NotImplementedError, match="wait_drained"):
+        edge.wait_drained(_semantic=semantic)
+    with pytest.raises(ValueError, match="at least one payload field"):
+        tle.pipe(capacity=1, name="p", one_shot=True, _semantic=semantic)

@@ -78,6 +78,12 @@ void init_triton_iluvatar_tle_ir(py::module m) {
     throw std::runtime_error("triton IR builder class is not initialized");
 
   auto &builderCls = *builderClsPtr;
+  // Capability probe for the TLE frontend. iluvatar_tle pipe ops keep the
+  // field-only operand list; the shared pipe model threads an SSA identity
+  // operand first. Bind this before any pipe method so a frontend running
+  // against an older libtriton takes the portable path instead of calling a
+  // signature mismatch.
+  builderCls.attr("iluvatar_tle_field_only_pipe_version") = py::int_(1);
   builderCls
       .def("get_blocked_encoding",
            [](TritonOpBuilder &self, std::vector<unsigned> &sizePerThread,
