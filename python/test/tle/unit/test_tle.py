@@ -648,23 +648,19 @@ class TestBufferedTensor:
     def test_buffered_tensor_slot_indexes_leading_dimension(self, monkeypatch):
         """slot(stage) returns a typed view with the leading stage dimension removed."""
         from triton.experimental.tle.language.gpu import core
-        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", False)
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
         buffer, semantic = self._make_buffer([4, 16, 32])
 
         slot = buffer.slot(1, _semantic=semantic)
 
         assert isinstance(slot, tle.gpu.buffered_tensor)
-        assert slot.handle == "slot_handle"
+        assert slot.handle == "tile_subview_handle"
         assert slot.shape == [16, 32]
         assert slot.dtype == tl.float16
         assert slot.type.storage is tle.gpu.smem
         assert semantic.builder.swizzled_encoding_args == (1, 1, 1, [1, 0], [1, 1], [1, 1], [1, 0])
-        assert semantic.builder.memdesc_type_args == ([16, 32], "fp16", "fake_layout", "smem", [16, 32])
-        assert semantic.builder.memdesc_index_args == (
-            ("memdesc", (16, 32), "fp16", "fake_layout", "smem", (16, 32)),
-            "base",
-            "stage_1",
-        )
+        assert semantic.builder.tile_subview_args == ("base", ["stage_1", "stage_0", "stage_0"], [16, 32], [1, 1],
+                                                      "fake_layout")
 
     def test_buffered_tensor_slot_rejects_rank_zero_buffer(self):
         """slot(stage) only indexes a real leading stage dimension."""
@@ -694,37 +690,31 @@ class TestBufferedTensor:
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
     def test_buffered_tensor_subslice_preserves_rank_layout_and_alloc_shape(self, monkeypatch):
         from triton.experimental.tle.language.gpu import core
-        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", False)
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
         buffer, semantic = self._make_buffer([4, 16, 32])
 
         subslice = buffer.subslice(4, 8, 1, _semantic=semantic)
 
         assert isinstance(subslice, tle.gpu.buffered_tensor)
-        assert subslice.handle == "subslice_handle"
+        assert subslice.handle == "tile_subview_handle"
         assert subslice.shape == [4, 8, 32]
         assert subslice.type.layout is buffer.type.layout
         assert subslice.type.alloc_shape == [4, 16, 32]
-        assert semantic.builder.memdesc_subslice_args == (
-            ("memdesc", (4, 8, 32), "fp16", "fake_layout", "smem", (4, 16, 32)),
-            "base",
-            [0, 4, 0],
-        )
+        assert semantic.builder.tile_subview_args == ("base", ["stage_0", "stage_4", "stage_0"], [4, 8, 32], [1, 1, 1],
+                                                      "fake_layout")
 
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot", "gpu.buffered_tensor.subslice")
     def test_buffered_tensor_subslice_slot_preserves_backing_allocation_shape(self, monkeypatch):
         from triton.experimental.tle.language.gpu import core
-        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", False)
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
         buffer, semantic = self._make_buffer([4, 16, 32])
 
         slot = buffer.subslice(4, 8, 1, _semantic=semantic).slot(1, _semantic=semantic)
 
         assert slot.shape == [8, 32]
         assert slot.type.alloc_shape == [4, 16, 32]
-        assert semantic.builder.memdesc_index_args == (
-            ("memdesc", (8, 32), "fp16", "fake_layout", "smem", (4, 16, 32)),
-            "subslice_handle",
-            "stage_1",
-        )
+        assert semantic.builder.tile_subview_args == ("tile_subview_handle", ["stage_1", "stage_0", "stage_0"], [8, 32],
+                                                      [1, 1], "fake_layout")
 
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot", "gpu.buffered_tensor.subslice")
     def test_common_ir_buffered_tensor_subviews_preserve_metadata(self, monkeypatch):
@@ -907,7 +897,7 @@ class TestTmaCopyBarrierFrontend:
     @pytest.mark.parametrize("eviction_policy", ["", "evict_first", "evict_last"])
     def test_copy_accepts_explicit_tma_completion_barrier(self, monkeypatch, eviction_policy):
         from triton.experimental.tle.language.gpu import core
-        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", False)
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
         desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
         barrier = self._make_barrier(semantic, 512, shape=[1, 1])
 
@@ -1110,7 +1100,7 @@ class TestPipeFrontend:
     @pytest.mark.skip_if_tle_unsupported("pipe")
     def test_pipe_reader_field_subset_is_endpoint_type_view_only(self, monkeypatch):
         from triton.experimental.tle.language.gpu import core
-        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", False)
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
         a, semantic = self._make_buffer([4, 16, 32])
         b, _ = self._make_buffer([4, 32, 16])
         pipe = tle.pipe(capacity=4, readers=("left", "right"), a=a, b=b, _semantic=semantic)
@@ -1152,7 +1142,7 @@ class TestPipeFrontend:
     )
     def test_pipe_lifecycle_emits_pipe_ir_ops(self, monkeypatch):
         from triton.experimental.tle.language.gpu import core
-        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", False)
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
         a, semantic = self._make_buffer([4, 16])
         pipe = tle.pipe(capacity=4, scope="cta", name="a", a=a, _semantic=semantic)
         writer = pipe.writer(_semantic=semantic)
@@ -1189,7 +1179,7 @@ class TestPipeFrontend:
     @pytest.mark.skip_if_tle_unsupported("pipe")
     def test_pipe_one_shot_keeps_frontend_contract(self, monkeypatch):
         from triton.experimental.tle.language.gpu import core
-        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", False)
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
         a, semantic = self._make_buffer([1, 16])
         pipe = tle.pipe(capacity=1, readers=("left", "right"), one_shot=True, a=a, _semantic=semantic)
         writer = pipe.writer(_semantic=semantic)
