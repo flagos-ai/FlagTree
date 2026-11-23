@@ -21,8 +21,7 @@ def _probe(X, O, BLOCK: tl.constexpr, USED: tl.constexpr):
 @pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("used", [False, True])
 def test_only_unused_identity_result_is_removed(enabled, used):
-    k = compile_musa(_probe,
-                     {"X": "*fp32", "O": "*fp32", "BLOCK": "constexpr", "USED": "constexpr"},
+    k = compile_musa(_probe, {"X": "*fp32", "O": "*fp32", "BLOCK": "constexpr", "USED": "constexpr"},
                      {"BLOCK": 1024, "USED": used},
                      options={"num_warps": 4, "lower_dead_tied_register_fences": enabled})
     expected = enabled and not used
