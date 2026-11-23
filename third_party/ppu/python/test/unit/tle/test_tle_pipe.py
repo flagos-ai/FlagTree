@@ -560,6 +560,9 @@ def test_pipe_software_barrier_fallback(n_tiles):
     # so the other three spin on shared-memory counters.
     assert "ttng.wait_barrier_named" in ttgir
     assert "scf.while" in ttgir
+    # A counter update publishes the group's stage accesses: it is a release, never a relaxed add.
+    assert "tt.atomic_rmw add, release, cta" in ttgir
+    assert "tt.atomic_rmw add, relaxed" not in ttgir
 
 
 # ---------------------------------------------------------------- endpoints outside the warp_specialize

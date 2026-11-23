@@ -1439,14 +1439,17 @@ private:
     if (full)
       readerIndex = -1;
     // The group's accesses to the stage are complete before the counter
-    // advances. A scalar atomic executes once per group, not per thread.
+    // advances: the group barrier orders the group's own warps, and the
+    // release of the update orders this warp's accesses to the stage before
+    // the counter becomes visible to the other group. A scalar atomic executes
+    // once per group, not per thread.
     ttg::LocalBarrierOp::create(b, loc);
     MLIRContext *ctx = b.getContext();
     tt::AtomicRMWOp::create(
         b, loc, b.getI32Type(), tt::RMWOpAttr::get(ctx, tt::RMWOp::ADD),
         counterPointer(b, loc, full, stage, readerIndex), i32Const(b, loc, 1),
         /*mask=*/Value(),
-        tt::MemSemanticAttr::get(ctx, tt::MemSemantic::RELAXED),
+        tt::MemSemanticAttr::get(ctx, tt::MemSemantic::RELEASE),
         tt::MemSyncScopeAttr::get(ctx, tt::MemSyncScope::CTA));
   }
 
@@ -1467,12 +1470,16 @@ private:
     // resolve with a barrier in front of the load inside the loop.
     //
     // No fence follows the loop. The peer's stage accesses completed before
-    // its counter advanced (the group barrier in arrive), and this warp's
-    // accesses to the stage are control dependent on the counter value: a
-    // warp issues its shared-memory accesses in order, so none of them starts
-    // before the volatile load that ends the spin has returned. The hardware
-    // path gets the same ordering from the shared-memory fence bit of the
-    // named barriers (BarrierUtility.h).
+    // its counter advanced (the group barrier and the release in arrive), and
+    // this warp's accesses to the stage are control dependent on the counter
+    // value: the loop exits on the value the volatile load returned, and the
+    // load is a shared-memory access that the compiler does not reorder with
+    // the accesses after the loop. This rests on the order of one warp's
+    // shared-memory accesses, as the shared-memory fence of the hardware
+    // barriers (BarrierUtility.h) does, and on the SDK's cp.async and tsm
+    // counter model, which the PPU runtime tests of the software-barrier
+    // pipes cover (test_pipe_software_barrier_fallback and the three-group
+    // topology); the SDK documents no memory model to cite.
     ttg::LocalBarrierOp::create(b, loc);
     Value wanted = arith::ExtUIOp::create(b, loc, b.getI32Type(), currentPhase);
     if (invertPhase)
