@@ -1572,8 +1572,6 @@ def copy(
     if tle_semantic.COMMON_IR_ENABLED and not mthreads_enabled:
         if is_async:
             raise ValueError("GPU CommonIR copy does not support explicit async transport")
-        if eviction_policy:
-            raise ValueError("GPU CommonIR copy does not support eviction policies")
         if other is not None:
             raise ValueError("GPU CommonIR copy does not yet support other")
         if mask is not None:
@@ -1595,8 +1593,11 @@ def copy(
                     raise ValueError(f"Offsets must be tuple or list, but got {type(offsets)}")
             if len(offsets) != len(descriptor.shape):
                 raise ValueError("Offsets and descriptor shape must have the same rank")
-        elif tl._unwrap_if_constexpr(offsets) is not None:
-            raise ValueError("GPU CommonIR normal copy does not support offsets; offset the global pointers instead")
+        else:
+            if eviction_policy:
+                raise ValueError("GPU CommonIR copy does not support eviction policies")
+            if tl._unwrap_if_constexpr(offsets) is not None:
+                raise ValueError("GPU CommonIR normal copy does not support offsets; offset the global pointers instead")
         return tle_semantic.copy(
             src,
             dst,
@@ -1605,6 +1606,7 @@ def copy(
             direction,
             _semantic,
             completion_barrier=barrier_slot,
+            eviction_policy=eviction_policy,
         )
     if is_normcopy:
         if barrier is not None:
