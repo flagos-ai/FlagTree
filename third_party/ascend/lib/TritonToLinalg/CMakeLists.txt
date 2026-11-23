@@ -1,8 +1,6 @@
 add_triton_library(TritonToLinalg
         TritonToLinalgPass.cpp
         LoadStoreConverter.cpp
-        FunctionConverter.cpp
-        ArgMinMaxConverter.cpp
         TritonOpConverter.cpp
         HoistBroadcast.cpp
         BlockPtrAnalysis.cpp
