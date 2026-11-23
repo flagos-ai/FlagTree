@@ -25,7 +25,7 @@
 #include "ascend/include/TritonToLinalg/BlockPtrAnalysis.h"
 #include "ascend/include/TritonToLinalg/MaskAnalysis.h"
 #include "ascend/include/TritonToLinalg/TritonToLinalgPass.h"
-#include "ascend/include/Utils/DebugUtils.h"
+#include "triton-shared/Conversion/TritonToLinalgGeneric/DebugUtils.h"
 #include "ascend/include/Utils/Utils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 

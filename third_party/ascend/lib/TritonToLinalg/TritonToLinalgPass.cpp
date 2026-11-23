@@ -44,7 +44,7 @@
 #include "triton-shared/Conversion/TritonToLinalgGeneric/GenericOpConverter.h"
 #include "ascend/include/TritonToStructured/CannonicalizerConverter.h"
 #include "ascend/include/TritonToUnstructure/UnstructureConversionPass.h"
-#include "ascend/include/Utils/DebugUtils.h"
+#include "triton-shared/Conversion/TritonToLinalgGeneric/DebugUtils.h"
 #include "ascend/include/Utils/InterleaveOptimization.h"
 
 #include "bishengir/Dialect/HFusion/IR/HFusion.h"

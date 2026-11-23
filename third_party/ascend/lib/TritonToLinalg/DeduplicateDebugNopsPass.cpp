@@ -35,7 +35,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "TritonToLinalg/DeduplicateDebugNopsPass.h"
-#include "Utils/DebugUtils.h"
+#include "triton-shared/Conversion/TritonToLinalgGeneric/DebugUtils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
