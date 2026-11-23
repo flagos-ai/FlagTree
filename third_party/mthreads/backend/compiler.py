@@ -641,6 +641,65 @@ def _drop_unsupported_attrs(ir_text: str, llc_major: Optional[int]) -> str:
     return out
 
 
+def _sdk_sqmma_descriptor_compat(ir_text: str, volatile: bool = False) -> str:
+    """Adapt the pointer descriptor ABI to the SDK LLVM-14 scalar ABI.
+
+    SDK crt/sqmma.h emits a load consumed by sqmma.desc, rather than a
+    pointer argument. This must run after LLVM optimization: FlagTree's LLVM
+    intrinsic table uses the pointer ABI. New named values leave numeric SSA
+    numbering intact. This adapter is opt-in because bundled and SDK llc can
+    report the same version while accepting different intrinsic signatures.
+    """
+    scalar_types = {"i8": ("i8", 1), "half": ("i16", 2), "fp32": ("float", 4)}
+    pattern = re.compile(r"@llvm\.musa\.sqmma\.desc\.(i8|half|fp32)\(")
+    counter = 0
+    output = []
+    for line in ir_text.splitlines(keepends=True):
+        match = pattern.search(line)
+        if not match:
+            output.append(line)
+            continue
+        # Find the first top-level comma, accounting for address-space types
+        # and constant GEP expressions (whose operands also contain commas).
+        start = match.end()
+        depth = 0
+        end = start
+        for end in range(start, len(line)):
+            c = line[end]
+            if c in "([<{":
+                depth += 1
+            elif c in ")]>}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif c == "," and depth == 0:
+                break
+        first = line[start:end].strip()
+        scalar, alignment = scalar_types[match.group(1)]
+        if first == scalar or first.startswith(scalar + " "):
+            output.append(line)  # Already SDK ABI; make the adapter idempotent.
+            continue
+        if not first.startswith("ptr addrspace(3)"):
+            raise ValueError(f"Unsupported SQMMA descriptor operand: {first!r}")
+        if line.lstrip().startswith("declare "):
+            first = scalar
+        else:
+            pointer = first[len("ptr addrspace(3)"):].strip()
+            if not (pointer.startswith("%") or pointer.startswith("@") or pointer.startswith("getelementptr ")):
+                raise ValueError(f"Unsupported SQMMA descriptor pointer: {pointer!r}")
+            while True:
+                name = f"%musa.sdk.desc.{counter}"
+                counter += 1
+                if not re.search(re.escape(name) + r"(?![\w.])", ir_text):
+                    break
+            indent = line[:len(line) - len(line.lstrip())]
+            qualifier = "volatile " if volatile else ""
+            output.append(f"{indent}{name} = load {qualifier}{scalar}, ptr addrspace(3) {pointer}, align {alignment}\n")
+            first = f"{scalar} {name}"
+        output.append(line[:start] + first + line[end:])
+    return "".join(output)
+
+
 def _llvm_compat(ir_text: str) -> str:
     replacements = [
         ("memory\\(none\\)", "readnone"),
@@ -779,6 +838,7 @@ def _llc_opt_level(options: "MUSAOptions") -> str:
 
 @dataclass(frozen=True)
 class MUSAOptions:
+    sqmma_descriptor_abi: str = "pointer"
     # Opt-in: TME transaction issuers must supply warp-uniform inputs.
     tme_issue_warp: bool = False
     num_warps: int = 4
@@ -982,6 +1042,12 @@ class MUSABackend(BaseBackend):
         arch = knobs.runtime.override_arch or opts.get("arch", None) or self.target.arch
         args = {"arch": _normalize_arch(arch)}
         capability = _capability_from_arch(args["arch"])
+        if opts.get("sqmma_descriptor_abi", "pointer") not in ("pointer", "sdk_scalar", "sdk_scalar_volatile",
+                                                               "native_mp31_sg16", "native_mp31_shared"):
+            raise ValueError("sqmma_descriptor_abi must be pointer, sdk_scalar, sdk_scalar_volatile, "
+                             "native_mp31_sg16, or native_mp31_shared")
+        if opts.get("sqmma_descriptor_abi") in ("native_mp31_sg16", "native_mp31_shared") and capability != 31:
+            raise ValueError("native MP31 descriptors require MP31")
         if type(opts.get("tme_issue_warp", False)) is not bool:
             raise ValueError("tme_issue_warp must be a bool")
         if opts.get("tme_issue_warp", False) and capability != 31:
@@ -1225,6 +1291,10 @@ class MUSABackend(BaseBackend):
         src.set_attr("musa.tme_issue_warp", ir.builder(src.context).get_int32_attr(int(options.tme_issue_warp)))
         from triton._C.libtriton import llvm
 
+        src.set_attr("musa.sqmma_native_sg16",
+                     ir.builder(src.context).get_int32_attr(int(options.sqmma_descriptor_abi == "native_mp31_sg16")))
+        src.set_attr("musa.sqmma_native_shared",
+                     ir.builder(src.context).get_int32_attr(int(options.sqmma_descriptor_abi == "native_mp31_shared")))
         src.set_attr("musa.exp2_vector_width", ir.builder(src.context).get_int32_attr(options.exp2_vector_width))
         src.set_attr("musa.exp2_native", ir.builder(src.context).get_int32_attr(int(options.exp2_native)))
         src.set_attr("musa.fp8_downcast_burst4",
@@ -1336,6 +1406,8 @@ class MUSABackend(BaseBackend):
                                f"(default {_DEFAULT_MUSA_PREFIX}).")
 
         ir_text = src
+        if opt.sqmma_descriptor_abi in ("sdk_scalar", "sdk_scalar_volatile"):
+            ir_text = _sdk_sqmma_descriptor_compat(ir_text, volatile=opt.sqmma_descriptor_abi.endswith("_volatile"))
         llc_major = _detect_llvm_major_version(llc_path)
         if opt.enable_llvm_compat:
             ir_text = _drop_unsupported_attrs(ir_text, llc_major)
