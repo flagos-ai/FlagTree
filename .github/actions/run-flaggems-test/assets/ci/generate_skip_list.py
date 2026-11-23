@@ -231,6 +231,7 @@ _YAML_HEADER = """\
 # Skip operators that cause GPU state corruption
 skip_operators:
 {ops}
+
 # Skip specific test functions
 skip_test_patterns:
   #- test_example_pattern
@@ -680,85 +681,6 @@ def phase0_setup(
         return under_test, flaggems_path
 
     return flaggems_path, None
-
-
-# ---------------------------------------------------------------------------
-# Running ci_run_tests.py
-# ---------------------------------------------------------------------------
-
-
-def warn(msg: str) -> None:
-    print(f"{YELLOW}[WARN]{NC} {msg}", flush=True)
-
-
-def error(msg: str) -> None:
-    print(f"{RED}[ERROR]{NC} {msg}", flush=True)
-
-
-def section(msg: str) -> None:
-    print(f"\n{BOLD}{CYAN}{'='*70}{NC}", flush=True)
-    print(f"{BOLD}{CYAN}  {msg}{NC}", flush=True)
-    print(f"{BOLD}{CYAN}{'='*70}{NC}\n", flush=True)
-
-
-# ---------------------------------------------------------------------------
-# Skip list YAML I/O
-# ---------------------------------------------------------------------------
-
-_YAML_HEADER = """\
-# Skip operators that cause GPU state corruption
-skip_operators:
-{ops}
-# Skip specific test functions
-skip_test_patterns:
-  #- test_example_pattern
-
-# Skip entire test files
-skip_test_files:
-  #- test_example.py
-"""
-
-
-def write_skip_yaml(skip_operators: List[str], path: Path) -> None:
-    """Write a skip list YAML in the canonical FlagTree format."""
-    if skip_operators:
-        ops_lines = "\n".join(f"  - {op}" for op in sorted(skip_operators))
-    else:
-        ops_lines = "  #- example_operator"
-    path.write_text(_YAML_HEADER.format(ops=ops_lines), encoding="utf-8")
-    info(f"Wrote skip list ({len(skip_operators)} ops) → {path}")
-
-
-def read_skip_yaml(path: Path) -> List[str]:
-    """Read skip_operators from a YAML skip list file."""
-    try:
-        import yaml
-        data = yaml.safe_load(path.read_text())
-        if isinstance(data, dict):
-            return list(data.get("skip_operators") or [])
-    except Exception:
-        pass
-    return []
-
-
-# ---------------------------------------------------------------------------
-# State persistence (resumability)
-# ---------------------------------------------------------------------------
-
-
-def load_state(state_path: Path) -> dict:
-    if state_path.exists():
-        try:
-            return json.loads(state_path.read_text())
-        except Exception:
-            warn(f"Could not parse state file {state_path}; starting fresh.")
-    return {}
-
-
-def save_state(state_path: Path, state: dict) -> None:
-    tmp = state_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2))
-    tmp.replace(state_path)
 
 
 # ---------------------------------------------------------------------------
