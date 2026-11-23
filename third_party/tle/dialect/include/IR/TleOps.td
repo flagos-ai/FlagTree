@@ -359,6 +359,13 @@ def Tle_WGMMAWaitOp : Tle_Op<"wgmma_wait", [
 
 def Tle_BarrierAllocOp : Tle_Op<"barrier.alloc"> {
   let summary = "create a typed TLE GPU barrier array";
+  let description = [{
+    The allocation owns its mbarrier objects for the defining structured region.
+    The lowering publishes initialization and invalidates owned objects before
+    leaving that region. The descriptor must not escape the region; allocate in
+    an enclosing region or caller when later users need a longer lifetime.
+    A barrier passed to another function is borrowed by that function.
+  }];
   let arguments = (ins
     I32Attr:$num_barriers,
     I32Attr:$arrive_count,

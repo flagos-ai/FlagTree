@@ -171,6 +171,14 @@ def _enable_i64_pass_option(options):
 
 
 def make_ttir(mod, metadata, options):
+    # flagtree tle raw: post-compile kernel init hooks (e.g. efshmem cumodule
+    # init), stamped by the TOPS EDSL via tle.raw.kernel_init_hooks. Without
+    # this, run_kernel_init_hooks() silently no-ops on TOPS.
+    kernel_init_hooks = mod.get_operation().get_str_attr("tle.raw.kernel_init_hooks")
+    metadata['kernel_init_hooks'] = kernel_init_hooks.split(",") if kernel_init_hooks else []
+    # flagtree tle raw: efshmem device bitcode is a per-kernel decision, stamped
+    # by the TOPS EDSL as `tle.raw.efshmem_device_bc`; make_llir attaches it.
+    metadata['tle_raw_efshmem'] = bool(mod.get_operation().get_str_attr("tle.raw.efshmem_device_bc"))
     metadata['ptr_int_args'] = sorted(collect_ptr_int_args(str(mod)))
     # Validate num_warps constraints
     if options.arch in ("gcu400", "gcu410") and options.num_warps > 4:
@@ -343,6 +351,16 @@ def make_gcuir(mod, metadata, options):
 
 def make_llir(mod, metadata, options):
     mod = _patch_kernel_for_llir(str(mod), options.arch)
+    # flagtree tle raw: attach the efshmem device bitcode only to kernels that
+    # stamped `tle.raw.efshmem_device_bc` (see TOPSJITFunction.mark_kernel_init_hook).
+    extern_libs = list(options.extern_libs or [])
+    if metadata.get('tle_raw_efshmem'):
+        from triton.experimental.tle.raw.tops.efshmem.utils import get_efshmem_extern_libs
+        efshmem_libs = get_efshmem_extern_libs()
+        if not efshmem_libs:
+            raise RuntimeError("efshmem kernel requires libefshmem_device.bc: set EFSHMEM_HOME "
+                               "(or EFSHMEM_LIBDEVICE_PATH) to the efshmem install")
+        extern_libs += list(efshmem_libs.items())
     passes = []
     if toolkit.get_bool_env("MLIR_ENABLE_DUMP"):
         passes.append('-mlir-print-ir-after-all')
@@ -360,9 +378,8 @@ def make_llir(mod, metadata, options):
         '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
         '--expand-strided-metadata', '-lower-affine', '-canonicalize', '-cse', '--convert-gpu-to-gcu=chipset=' +
         options.arch + ' vector-bit-width=' + str(options.vector_length * 8) + _enable_i64_pass_option(options),
-        '--gcu-attach-target=arch=' + options.arch +
-        ''.join([f' l={path}' for name, path in (options.extern_libs or []) if path]), '-convert-index-to-llvm',
-        '-gpu-to-llvm', '-convert-llvm-to-gcu', '-alloca-to-entry', '-canonicalize'
+        '--gcu-attach-target=arch=' + options.arch + ''.join([f' l={path}' for name, path in extern_libs if path]),
+        '-convert-index-to-llvm', '-gpu-to-llvm', '-convert-llvm-to-gcu', '-alloca-to-entry', '-canonicalize'
     ]
 
     # Get some metadata

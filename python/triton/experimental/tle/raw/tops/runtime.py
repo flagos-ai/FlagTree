@@ -27,26 +27,21 @@ from typing import Any, Final, List, Optional
 import hashlib
 from triton._C.libtriton import llvm
 from triton._C.libtriton.tle.llvm import parse_llvm_ir
+from triton.experimental.tle.raw.kernel_hooks import KERNEL_INIT_HOOK_ATTR as _KERNEL_INIT_HOOK_ATTR
 from triton.experimental.tle.raw.runtime import RawJITFunction
 
 # `library=` values a TOPS EDSL may request. efshmem is the Enflame GCU port of
 # NVSHMEM (same API, `tops*` runtime), so "nvshmem" is accepted as an alias.
 EFSHMEM_LIBRARIES: Final[tuple[str, ...]] = ("efshmem", "nvshmem")
-EFSHMEM_CUMODULE_INIT_HOOK: Final[str] = "efshmem_cumodule_init"
-# Set by CUDAJITFunction.mark_kernel_init_hook and read by run_kernel_init_hooks.
-_KERNEL_INIT_HOOK_ATTR: Final[str] = "tle.raw.kernel_init_hooks"
+# Per-kernel request for the efshmem device bitcode. Stamped by
+# `mark_kernel_init_hook` and read back by the GCU backend; process-global state
+# cannot express "this kernel wants it", because one process may hold both
+# efshmem and plain TOPS kernels.
+EFSHMEM_DEVICE_BC_ATTR: Final[str] = "tle.raw.efshmem_device_bc"
 
 
 def uses_efshmem(library: str) -> bool:
     return library in EFSHMEM_LIBRARIES
-
-
-def enable_efshmem_for_library(library: str) -> None:
-    """Turn on the efshmem device bitcode for this kernel."""
-    if not uses_efshmem(library):
-        return
-    from triton.experimental.tle.raw.tops.efshmem.utils import enable_efshmem_device_bc
-    enable_efshmem_device_bc(True)
 
 
 def get_efshmem_compile_flags(library: str) -> list[str]:
@@ -104,9 +99,6 @@ class TOPSJITFunction(RawJITFunction):
                  extra_flags: Optional[List[str]] = None, *args, **kwargs) -> None:
         super().__init__(fn, **kwargs)
         self.arch: Final[str] = arch or _get_gcu_arch()
-        # `library="efshmem"` (or its "nvshmem" alias) brings in the efshmem
-        # device bitcode; the GCU backend picks it up through extern_libs.
-        enable_efshmem_for_library(self.library)
         self.extra_flags: Final[List[str]] = [*get_efshmem_compile_flags(self.library), *(extra_flags or [])]
         self.region_dialect: Final[str] = "tops"
         self.arg_dialect: Final[str] = "llvm"
@@ -146,6 +138,9 @@ class TOPSJITFunction(RawJITFunction):
         # picks it up after the kernel is compiled and loaded.
         if not uses_efshmem(self.library):
             return
+        from triton.experimental.tle.raw.tops.efshmem.utils import EFSHMEM_CUMODULE_INIT_HOOK
+        # The GCU backend reads this to attach only this kernel's efshmem bitcode.
+        generator.module.set_attr(EFSHMEM_DEVICE_BC_ATTR, semantic.builder.get_string_attr("1"))
         operation = generator.module.get_operation()
         hooks = operation.get_str_attr(_KERNEL_INIT_HOOK_ATTR)
         hook_names = set(hooks.split(",")) if hooks else set()
@@ -271,14 +266,13 @@ class TOPSJITFunction(RawJITFunction):
         return f"{module}"
 
 
-# # Post-compile efshmem cumodule init hook. Registered at import time, mirroring
-# # how `cuda.runtime` registers its own nvshmem hook; the idempotent wrapper
-# # lives in the efshmem utils module that owns `efshmem_module()`.
-# try:
-#     from triton.experimental.tle.raw.tops.efshmem.utils import (
-#         register_efshmem_cumodule_init_hook,
-#     )
-# except ImportError:
-#     pass
-# else:
-#     register_efshmem_cumodule_init_hook()
+# Post-compile efshmem cumodule init hook. Registered at import time, mirroring
+# how `cuda.runtime` registers its own nvshmem hook; the idempotent wrapper
+# lives in the efshmem utils module that owns `efshmem_module()`.
+try:
+    from triton.experimental.tle.raw.tops.efshmem.utils import (
+        register_efshmem_cumodule_init_hook, )
+except ImportError:
+    pass
+else:
+    register_efshmem_cumodule_init_hook()
