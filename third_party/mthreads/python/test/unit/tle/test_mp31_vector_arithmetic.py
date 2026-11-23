@@ -40,8 +40,8 @@ def test_compile_cast(source, dest, rounding, pattern):
             assert re.search(pattern, text)
         if source != "i32":
             assert "sitofp <4 x i32>" not in text
-        assert ("call <4 x i8> @llvm.musa.f2e4m3.rn.bst4" in text) == (
-            enabled and dest == "fp8e4nv" and rounding == "rtne")
+        assert ("call <4 x i8> @llvm.musa.f2e4m3.rn.bst4" in text) == (enabled and dest == "fp8e4nv"
+                                                                       and rounding == "rtne")
 
 
 def test_option_scope():
@@ -72,8 +72,12 @@ def _lower(tmp_path, source):
 
 
 @pytest.mark.parametrize("kind,width,early_wait,strict", [
-    ("e4m3", 1, False, False), ("e4m3", 2, False, False), ("e5m2", 4, False, False),
-    ("s8", 4, False, False), ("e4m3", 4, True, False), ("e4m3", 2, False, True),
+    ("e4m3", 1, False, False),
+    ("e4m3", 2, False, False),
+    ("e5m2", 4, False, False),
+    ("s8", 4, False, False),
+    ("e4m3", 4, True, False),
+    ("e4m3", 2, False, True),
 ])
 def test_overlap_keeps_wait_and_rounding(tmp_path, kind, width, early_wait, strict):
     mma = f"llvm.musa.sqmma.{kind}.m32n128k128.mma"
@@ -82,7 +86,8 @@ def test_overlap_keeps_wait_and_rounding(tmp_path, kind, width, early_wait, stri
     ty = "f32" if width == 1 else f"vector<{width}xf32>"
     wait = "llvm.call @llvm.musa.sqmma.wait() : () -> ()"
     attrs = 'attributes {passthrough = ["strictfp"]}' if strict else ""
-    n, before, after = _lower(tmp_path, f"""
+    n, before, after = _lower(
+        tmp_path, f"""
       llvm.func @{mma}({types}) -> vector<32xi32>
       llvm.func @llvm.musa.sqmma.wait()
       llvm.func @test(%d: i32, %acc: vector<32xi32>, %a: {ty}, %b: {ty}) -> {ty} {attrs} {{
@@ -103,7 +108,8 @@ def test_overlap_keeps_wait_and_rounding(tmp_path, kind, width, early_wait, stri
 
 @pytest.mark.parametrize("mask,changed", [("1, -1, -1, -1", True), ("1, 0, -1, -1", False)])
 def test_pack_pair_uses_only_single_defined_lane(tmp_path, mask, changed):
-    n, before, after = _lower(tmp_path, f"""
+    n, before, after = _lower(
+        tmp_path, f"""
       llvm.func @llvm.musa.f2e4m3.rn.bst4(vector<4xf32>) -> vector<4xi8>
       llvm.func @save(vector<4xi8>)
       llvm.func @probe(%v: vector<4xf32>) -> vector<4xf32> {{
@@ -128,31 +134,36 @@ def test_device_cast_graph_refresh(kind):
     torch = pytest.importorskip("torch")
     pytest.importorskip("torch_musa")
     if kind == "i32":
-        values = torch.tensor([0, -1, 1, 2**24-1, 2**24+1, -2**24-1, 2**31-1, -2**31], dtype=torch.int32)
+        values = torch.tensor([0, -1, 1, 2**24 - 1, 2**24 + 1, -2**24 - 1, 2**31 - 1, -2**31], dtype=torch.int32)
         dest, rounding = torch.float32, ""
     else:
-        values = torch.tensor([0., -0., 2**-10, -2**-10, 3*2**-10, 2**-9, 1.0625, 1.1875, -1.1875, 448., -448.])
+        values = torch.tensor([0., -0., 2**-10, -2**-10, 3 * 2**-10, 2**-9, 1.0625, 1.1875, -1.1875, 448., -448.])
         dest, rounding = torch.float8_e4m3fn, "rtne"
         codes = torch.arange(256, dtype=torch.uint8).view(dest).float()
         finite = torch.unique(codes[codes.isfinite()]).sort().values
         mid = (finite[:-1] + finite[1:]) * 0.5
-        values = torch.cat([values, codes, mid, torch.nextafter(mid, torch.full_like(mid, -float("inf"))),
-                            torch.nextafter(mid, torch.full_like(mid, float("inf"))),
-                            torch.tensor([464., -464., 465., -465., float("inf"), -float("inf")])])
+        values = torch.cat([
+            values, codes, mid,
+            torch.nextafter(mid, torch.full_like(mid, -float("inf"))),
+            torch.nextafter(mid, torch.full_like(mid, float("inf"))),
+            torch.tensor([464., -464., 465., -465., float("inf"), -float("inf")])
+        ])
     # Include a partial last CTA. The tail after n is caller-owned.
     x = torch.empty(2051, dtype=values.dtype, device="musa")
     y = torch.zeros(2055, dtype=dest, device="musa")
     control = torch.zeros_like(y)
     n = x.numel()
+
     def run():
-        _cast[(3,)](x, y, n, 1024, rounding, mp31_vector_arithmetic=True)
-        _cast[(3,)](x, control, n, 1024, rounding)
+        _cast[(3, )](x, y, n, 1024, rounding, mp31_vector_arithmetic=True)
+        _cast[(3, )](x, control, n, 1024, rounding)
+
     run()
     g = torch.musa.MUSAGraph()
     with torch.musa.graph(g):
         run()
     for roll in (0, 3, 1, 0):
-        raw = values.roll(roll).repeat((n + values.numel() - 1)//values.numel())[:n]
+        raw = values.roll(roll).repeat((n + values.numel() - 1) // values.numel())[:n]
         x.copy_(raw)
         g.replay()
         torch.musa.synchronize()
@@ -163,11 +174,10 @@ def test_device_cast_graph_refresh(kind):
             assert torch.equal(y[:n].cpu().view(torch.uint8)[defined], raw[defined].to(dest).view(torch.uint8))
         else:
             assert torch.equal(y[:n].cpu().view(torch.uint8), raw.to(dest).view(torch.uint8))
-        assert not actual[n*y.element_size():].any()
+        assert not actual[n * y.element_size():].any()
 
 
-def packed_transform(tmp_path, width=4, dependent=False, memory=False, strict=False, int8=False,
-                     late_view=False):
+def packed_transform(tmp_path, width=4, dependent=False, memory=False, strict=False, int8=False, late_view=False):
     suffix = 's8' if int8 else 'e4m3'
     attrs = 'attributes {passthrough = ["strictfp"]}' if strict else ''
     dtype = f'vector<{width}xf32>'
@@ -204,7 +214,7 @@ def packed_transform(tmp_path, width=4, dependent=False, memory=False, strict=Fa
     return _lower(tmp_path, source)
 
 
-@pytest.mark.parametrize("width,burst", [(2,2), (3,2), (4,4), (8,4)])
+@pytest.mark.parametrize("width,burst", [(2, 2), (3, 2), (4, 4), (8, 4)])
 def test_packs_independent_sums(tmp_path, width, burst):
     _, _, result = packed_transform(tmp_path, width=width)
     assert f"call <{burst} x float> @llvm.musa.add.f.bst{burst}.src01" in result
@@ -213,9 +223,9 @@ def test_packs_independent_sums(tmp_path, width, burst):
 
 @pytest.mark.parametrize("case", ["dependent", "late_view", "strict", "int8"])
 def test_respects_add_dependencies(tmp_path, case):
-    _, before, result = packed_transform(tmp_path, **{case:True})
+    _, before, result = packed_transform(tmp_path, **{case: True})
     assert "@llvm.musa.add.f.bst" not in result
-    if case in ("strict","int8"):
+    if case in ("strict", "int8"):
         assert before == result
 
 
