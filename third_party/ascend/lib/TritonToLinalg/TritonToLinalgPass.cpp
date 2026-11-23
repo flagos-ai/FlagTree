@@ -40,9 +40,11 @@
 #include "ascend/include/TritonToLinalg/TritonOpConverter.h"
 #include "ascend/include/TritonToLinalg/TritonToLinalgPass.h"
 #include "ascend/include/TritonToLinalg/UseAnalysis.h"
+#include "triton-shared/Conversion/TritonToLinalgGeneric/GenericDebug.h"
 #include "triton-shared/Conversion/TritonToLinalgGeneric/GenericOpConverter.h"
 #include "ascend/include/TritonToStructured/CannonicalizerConverter.h"
 #include "ascend/include/TritonToUnstructure/UnstructureConversionPass.h"
+#include "ascend/include/Utils/DebugUtils.h"
 #include "ascend/include/Utils/InterleaveOptimization.h"
 
 #include "bishengir/Dialect/HFusion/IR/HFusion.h"
@@ -1813,6 +1815,13 @@ void TritonToLinalgPass::runOnOperation() {
     return;
   }
   compileModeFlag = *compileMode;
+  TTOpConverters::setDebugNopHooks(
+      [](Location loc, ConversionPatternRewriter &rewriter) {
+        insertDebugNop(loc, rewriter);
+      },
+      [](Location loc, ConversionPatternRewriter &rewriter) {
+        insertDebugNopForAllLines(loc, rewriter);
+      });
 
   auto moduleOp = getOperation();
 

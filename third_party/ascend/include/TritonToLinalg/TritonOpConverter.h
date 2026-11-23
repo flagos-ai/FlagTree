@@ -170,23 +170,7 @@ public:
 };
 
 
-class MakeRangeConverter : public OpConversionPattern<triton::MakeRangeOp> {
-public:
-  using OpConversionPattern<triton::MakeRangeOp>::OpConversionPattern;
 
-  LogicalResult
-  matchAndRewrite(triton::MakeRangeOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
-
-class SplatConverter : public OpConversionPattern<triton::SplatOp> {
-public:
-  using OpConversionPattern<triton::SplatOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::SplatOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
 
 class UnsplatConverter : public OpConversionPattern<triton::UnsplatOp> {
 public:
@@ -197,33 +181,9 @@ public:
                   ConversionPatternRewriter &rewriter) const override;
 };
 
-class ReshapeConverter : public OpConversionPattern<triton::ReshapeOp> {
-public:
-  using OpConversionPattern<triton::ReshapeOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::ReshapeOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
-
-class ExpandDimsConverter : public OpConversionPattern<triton::ExpandDimsOp> {
-public:
-  using OpConversionPattern<triton::ExpandDimsOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::ExpandDimsOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
 
 
-class BroadcastConverter : public OpConversionPattern<triton::BroadcastOp> {
-public:
-  using OpConversionPattern<triton::BroadcastOp>::OpConversionPattern;
 
-  LogicalResult
-  matchAndRewrite(triton::BroadcastOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
 
 template <typename OpTy>
 class ReductionOpBaseConverter : public OpConversionPattern<OpTy> {
@@ -646,23 +606,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override;
 };
 
-class TransposeConverter : public OpConversionPattern<triton::TransOp> {
-public:
-  using OpConversionPattern<triton::TransOp>::OpConversionPattern;
 
-  LogicalResult
-  matchAndRewrite(triton::TransOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
-
-class BitcastConverter : public OpConversionPattern<triton::BitcastOp> {
-public:
-  using OpConversionPattern<triton::BitcastOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(triton::BitcastOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
 
 
 

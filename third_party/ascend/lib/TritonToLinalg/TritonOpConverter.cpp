@@ -168,55 +168,6 @@ static bool isVolatileBitcastScalarPointer(Value value) {
   return sawBitcast;
 }
 
-LogicalResult
-BitcastConverter::matchAndRewrite(triton::BitcastOp op, OpAdaptor adaptor,
-                                  ConversionPatternRewriter &rewriter) const {
-  Value result;
-  auto loc = op.getLoc();
-
-  if (auto dstPtrTy = dyn_cast<triton::PointerType>(op.getType())) {
-    auto srcPtrTy = cast<triton::PointerType>(op.getSrc().getType());
-    auto resType =
-        MemRefType::get({ShapedType::kDynamic}, dstPtrTy.getPointeeType());
-
-    auto i1Ty = rewriter.getIntegerType(1);
-    auto i8Ty = rewriter.getIntegerType(8);
-    bool isI1toI8 = (srcPtrTy.getPointeeType() == i1Ty) &&
-                    (dstPtrTy.getPointeeType() == i8Ty);
-    // handling special case: ptr<i1> -> ptr<i8>, directly forward without
-    // arith.bitcast
-    if (isI1toI8) {
-      // TypeConverter has already converted i1 to i8 memref,
-      LLVM_DEBUG({
-        llvm::dbgs()
-            << "[BitcastConverter] Special i1->i8 pointer bitcast. Forward "
-               "without arith.bitcast. srcConvertedTy="
-            << adaptor.getSrc().getType() << "\n";
-      });
-      rewriter.replaceOp(op, adaptor.getSrc());
-      return success();
-    }
-    result = rewriter.create<arith::BitcastOp>(loc, resType, adaptor.getSrc());
-  } else {
-    // handling normal case: bitcast between tensors/memrefs
-    result =
-        rewriter.create<arith::BitcastOp>(loc, op.getType(), adaptor.getSrc());
-  }
-  rewriter.replaceOp(op, result);
-  return success();
-}
-
-LogicalResult
-TransposeConverter::matchAndRewrite(triton::TransOp op, OpAdaptor adaptor,
-                                    ConversionPatternRewriter &rewriter) const {
-  insertDebugNop(op.getLoc(), rewriter);
-  auto src = adaptor.getSrc();
-  auto res = ConverterUtils::getTransposedValue(src, op.getLoc(), rewriter,
-                                                op.getOrder());
-  rewriter.replaceOp(op, res);
-  return success();
-}
-
 bool hasScalarPointerResult(scf::IfOp op) {
   bool hasPointerResult = false;
   for (Type resultType : op.getResultTypes()) {
@@ -1105,88 +1056,6 @@ ReduceSingleCanonicalizer::matchAndRewrite(triton::ReduceOp reduceOp,
 }
 
 LogicalResult
-MakeRangeConverter::matchAndRewrite(triton::MakeRangeOp op, OpAdaptor adaptor,
-                                    ConversionPatternRewriter &rewriter) const {
-  auto loc = op.getLoc();
-  insertDebugNop(loc, rewriter);
-  auto type = cast<TensorType>(op.getResult().getType());
-  auto shape = type.getShape();
-  auto elementType = type.getElementType();
-  auto context = op.getContext();
-
-  assert(type.getShape().size() == 1 &&
-         isa<IntegerType>(type.getElementType()) &&
-         type.getElementType().getIntOrFloatBitWidth() == 32 &&
-         "make range can only return 1D int32 tensor");
-
-  SmallVector<AffineMap> indexingMaps{AffineMap::get(
-      /* dimCount */ 1, /* symbolCount */ 0,
-      {mlir::getAffineDimExpr(0, context)}, context)};
-
-  auto init = rewriter.create<tensor::EmptyOp>(loc, shape, elementType);
-
-  auto nestedBody = [&](OpBuilder &nestedBuilder, Location nestedLoc,
-                        ValueRange blockArgs) {
-    Value index = nestedBuilder.create<linalg::IndexOp>(loc, 0);
-    Value res =
-        nestedBuilder.create<arith::IndexCastOp>(loc, elementType, index);
-    nestedBuilder.create<linalg::YieldOp>(loc, res);
-  };
-
-  auto linalgOp = rewriter.create<linalg::GenericOp>(
-      loc, op->getResultTypes(), /* operands */ ValueRange{}, ValueRange{init},
-      indexingMaps, ConverterUtils::getNParallelLoopsAttrs(1), nestedBody);
-
-  linalgOp->setAttr("tt.from_make_range", mlir::UnitAttr::get(context));
-  linalgOp->setAttr("tt.make_range_offset",
-                    mlir::IntegerAttr::get(mlir::IndexType::get(context), 0));
-  linalgOp->setAttr(
-      "tt.make_range_size",
-      mlir::IntegerAttr::get(mlir::IndexType::get(context), shape[0]));
-
-  int32_t startVal = op.getStartAttr().getInt();
-  if (startVal == 0) {
-    rewriter.replaceOp(op, linalgOp->getResults());
-    return success();
-  }
-
-  // Apply start offset
-  Value startScaler = rewriter.create<arith::ConstantOp>(
-      loc, rewriter.getI32IntegerAttr(static_cast<int32_t>(startVal)));
-  auto startInit = rewriter.create<tensor::EmptyOp>(loc, shape, elementType);
-  Value startTensor = rewriter
-                          .create<linalg::FillOp>(loc, ValueRange{startScaler},
-                                                  ValueRange{startInit})
-                          .getResult(0);
-  auto addOp =
-      rewriter.create<arith::AddIOp>(loc, linalgOp->getResult(0), startTensor);
-  rewriter.replaceOp(op, addOp);
-  return success();
-}
-
-LogicalResult
-SplatConverter::matchAndRewrite(triton::SplatOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const {
-  auto loc = op.getLoc();
-  // These NOPs are transient debug anchors: DeduplicateDebugNopsPass collapses
-  // them to one per source line before codegen.
-  insertDebugNopForAllLines(loc, rewriter);
-  auto shape = op.getType().getShape();
-  auto init = rewriter.create<tensor::EmptyOp>(loc, shape,
-                                               op.getType().getElementType());
-  if (llvm::all_of(shape, [](int64_t dim) { return dim == 1; })) {
-    SmallVector<Value> idx(shape.size(), rewriter.create<arith::ConstantOp>(
-                                             loc, rewriter.getIndexAttr(0)));
-    rewriter.replaceOpWithNewOp<tensor::InsertOp>(op, adaptor.getSrc(), init,
-                                                  idx);
-  } else {
-    rewriter.replaceOpWithNewOp<linalg::FillOp>(
-        op, ValueRange{adaptor.getSrc()}, ValueRange{init});
-  }
-  return success();
-}
-
-LogicalResult
 UnsplatConverter::matchAndRewrite(triton::UnsplatOp op, OpAdaptor adaptor,
                                   ConversionPatternRewriter &rewriter) const {
   auto loc = op.getLoc();
@@ -1210,52 +1079,6 @@ UnsplatConverter::matchAndRewrite(triton::UnsplatOp op, OpAdaptor adaptor,
   return success();
 }
 
-LogicalResult
-ReshapeConverter::matchAndRewrite(triton::ReshapeOp op, OpAdaptor adaptor,
-                                  ConversionPatternRewriter &rewriter) const {
-  auto loc = op.getLoc();
-  insertDebugNop(loc, rewriter);
-  auto src = op.getSrc();
-  auto dst = op.getResult();
-  Value shape = rewriter.create<arith::ConstantOp>(
-      loc,
-      rewriter.getI64TensorAttr(cast<ShapedType>(dst.getType()).getShape()));
-  auto reshapeOp =
-      rewriter.create<tensor::ReshapeOp>(loc, dst.getType(), src, shape);
-  rewriter.replaceOp(op, reshapeOp.getResult());
-  return success();
-}
-
-LogicalResult ExpandDimsConverter::matchAndRewrite(
-    triton::ExpandDimsOp op, OpAdaptor adaptor,
-    ConversionPatternRewriter &rewriter) const {
-  auto loc = op.getLoc();
-  insertDebugNop(loc, rewriter);
-  auto src = op.getSrc();
-  auto resShape = cast<ShapedType>(op.getResult().getType()).getShape();
-  auto axis = op.getAxis();
-
-  SmallVector<ReassociationIndices> reassociation;
-
-  auto src_last_dim = resShape.size() - 2;
-  auto map_func = [&](unsigned i) -> ReassociationIndices {
-    if (i < axis) {
-      return i == src_last_dim ? ReassociationIndices{i, i + 1}
-                               : ReassociationIndices{i};
-    }
-    return i == axis ? ReassociationIndices{i, i + 1}
-                     : ReassociationIndices{i + 1};
-  };
-
-  reassociation = llvm::to_vector(
-      llvm::map_range(llvm::seq<unsigned>(0, src_last_dim + 1), map_func));
-
-  auto expandShapeOp = rewriter.create<tensor::ExpandShapeOp>(
-      op.getLoc(), op.getResult().getType(), src, reassociation);
-  rewriter.replaceOp(op, expandShapeOp.getResult());
-  return success();
-}
-
 // Here convert tt.broadcast to linalg.broadcast
 //
 // before
@@ -1266,49 +1089,6 @@ LogicalResult ExpandDimsConverter::matchAndRewrite(
 //                                    tensor<1x4x8xf32> into tensor<4x8xf32>
 // %out = linalg.broadcast ins(%collpased : tensor<4x8xf32>)
 //                         outs(%empty : tensor<128x4x8xf32>) dimensions = [0]
-LogicalResult
-BroadcastConverter::matchAndRewrite(triton::BroadcastOp op, OpAdaptor adaptor,
-                                    ConversionPatternRewriter &rewriter) const {
-  assert(op->getNumResults() == 1 && "BroadcastOp assumes single result");
-
-  RankedTensorType sourceType =
-      cast<RankedTensorType>(adaptor.getSrc().getType());
-  RankedTensorType resultType = cast<RankedTensorType>(op.getType());
-  auto elementType = resultType.getElementType();
-  auto loc = op.getLoc();
-  insertDebugNopForAllLines(loc, rewriter);
-  auto initEmpty =
-      rewriter.create<tensor::EmptyOp>(loc, resultType.getShape(), elementType);
-
-  SmallVector<int64_t> broadcastDims =
-      ConverterUtils::getBroadcastDims(sourceType, resultType);
-  SmallVector<int64_t> unbroadcastDims =
-      ConverterUtils::getUnbroadcastDims(sourceType, resultType);
-
-  SmallVector<ReassociationIndices> collapseReassociationIndices;
-  auto collapseReassociationIndicesOptional =
-      getReassociationIndicesForCollapse(sourceType.getShape(),
-                                         unbroadcastDims);
-  if (!collapseReassociationIndicesOptional.has_value()) {
-    return rewriter.notifyMatchFailure(
-        op, "Failure with getReassociationIndicesForCollapse call");
-  }
-  collapseReassociationIndices = collapseReassociationIndicesOptional.value();
-
-  RankedTensorType collapseResultType =
-      RankedTensorType::get(unbroadcastDims, sourceType.getElementType());
-
-  auto collpasedOp = rewriter.create<tensor::CollapseShapeOp>(
-      loc, collapseResultType, adaptor.getSrc(), collapseReassociationIndices);
-
-  auto broadcastOp = rewriter.create<linalg::BroadcastOp>(
-      loc, collpasedOp, initEmpty,
-      rewriter.getDenseI64ArrayAttr(broadcastDims));
-
-  rewriter.replaceOp(op, broadcastOp.getResults());
-  return success();
-}
-
 // Reduce Converter
 bool ReduceConverter::isReductionOpSupported(Operation *redOp) const {
   return isa<arith::AddFOp, arith::AddIOp, arith::MulFOp, arith::MulIOp,
