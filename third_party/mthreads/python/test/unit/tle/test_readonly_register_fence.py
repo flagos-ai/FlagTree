@@ -8,11 +8,10 @@ require_mthreads_libtriton()
 
 
 @triton.jit
-def _probe(X, O, BLOCK: tl.constexpr, USED: tl.constexpr, REAL: tl.constexpr):
+def _probe(X, O, BLOCK: tl.constexpr, USED: tl.constexpr):
     i = tl.arange(0, BLOCK)
     x = tl.load(X + i)
-    asm: tl.constexpr = "FOP.MOV $0, $1" if REAL else ""
-    y = tl.inline_asm_elementwise(asm, constraints="=R,0", args=[x], dtype=tl.float32, is_pure=False, pack=1)
+    y = tl.inline_asm_elementwise("", constraints="=R,0", args=[x], dtype=tl.float32, is_pure=False, pack=1)
     if USED:
         tl.store(O + i, y)
     else:
@@ -23,8 +22,8 @@ def _probe(X, O, BLOCK: tl.constexpr, USED: tl.constexpr, REAL: tl.constexpr):
 @pytest.mark.parametrize("used", [False, True])
 def test_only_unused_identity_result_is_removed(enabled, used):
     k = compile_musa(_probe,
-                     {"X": "*fp32", "O": "*fp32", "BLOCK": "constexpr", "USED": "constexpr", "REAL": "constexpr"},
-                     {"BLOCK": 1024, "USED": used, "REAL": False},
+                     {"X": "*fp32", "O": "*fp32", "BLOCK": "constexpr", "USED": "constexpr"},
+                     {"BLOCK": 1024, "USED": used},
                      options={"num_warps": 4, "lower_dead_tied_register_fences": enabled})
     expected = enabled and not used
     assert bool(k.metadata.readonly_register_fence_count) == expected
@@ -32,15 +31,6 @@ def test_only_unused_identity_result_is_removed(enabled, used):
     assert ('call void asm sideeffect "", "R"' in text) == expected
     assert "store" in text and "load" in text
     assert "sideeffect" in text
-
-
-def test_nonempty_register_instruction_is_retained():
-    k = compile_musa(_probe,
-                     {"X": "*fp32", "O": "*fp32", "BLOCK": "constexpr", "USED": "constexpr", "REAL": "constexpr"},
-                     {"BLOCK": 1024, "USED": False, "REAL": True},
-                     options={"num_warps": 4, "lower_dead_tied_register_fences": True})
-    assert k.metadata.readonly_register_fence_count == 0
-    assert 'asm sideeffect "FOP.MOV $0, $1", "=R,0"' in k.asm["llir"]
 
 
 def test_option_validation_and_cache():
@@ -53,15 +43,16 @@ def test_option_validation_and_cache():
 
 
 @pytest.mark.parametrize("optimize", [False, True])
-@pytest.mark.parametrize("constraints,side_effects,dtype,used,expected", [
-    ("=R,0", True, "f32", False, 1),
-    ("=R,0", True, "f32", True, 0),
-    ("=R,0,~{memory}", True, "f32", False, 0),
-    ("=R,R", True, "f32", False, 0),
-    ("=R,0", False, "f32", False, 0),
-    ("=R,0", True, "i32", False, 0),
+@pytest.mark.parametrize("template,constraints,side_effects,dtype,used,expected", [
+    ("", "=R,0", True, "f32", False, 1),
+    ("", "=R,0", True, "f32", True, 0),
+    ("", "=R,0,~{memory}", True, "f32", False, 0),
+    ("", "=R,R", True, "f32", False, 0),
+    ("", "=R,0", False, "f32", False, 0),
+    ("", "=R,0", True, "i32", False, 0),
+    (" ", "=R,0", True, "f32", False, 0),
 ])
-def test_exact_llvm_fence_contract(tmp_path, constraints, side_effects, dtype, used, expected, optimize):
+def test_exact_llvm_fence_contract(tmp_path, template, constraints, side_effects, dtype, used, expected, optimize):
     """Test the helper before target codegen, including memory-clobber negatives."""
     from triton._C import libtriton
     from triton._C.libtriton import ir, llvm
@@ -76,7 +67,7 @@ def test_exact_llvm_fence_contract(tmp_path, constraints, side_effects, dtype, u
     ret = f"llvm.return %out : {dtype}" if used else "llvm.return"
     path.write_text(f'''module {{
       llvm.func @probe(%arg: {dtype}){result} {{
-        %out = llvm.inline_asm {effects} "", "{constraints}" %arg : ({dtype}) -> {dtype}
+        %out = llvm.inline_asm {effects} "{template}", "{constraints}" %arg : ({dtype}) -> {dtype}
         {ret}
       }}
     }}''')
@@ -86,6 +77,8 @@ def test_exact_llvm_fence_contract(tmp_path, constraints, side_effects, dtype, u
     if optimize:
         llvm.optimize_module(llvm_module, llvm.OPTIMIZE_O3)
     before = str(llvm_module)
+    if template:
+        assert f'asm sideeffect "{template}", "{constraints}"' in before
     if optimize and expected:
         assert 'tail call float asm sideeffect "", "=R,0"' in before
     assert libtriton.mthreads.lower_dead_tied_register_fences(llvm_module) == expected
