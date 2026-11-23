@@ -199,6 +199,22 @@ jobs:
           candidate-dir: '${{ steps.run-flaggems-test.outputs.test-output-dir }}'
           fail-on-missing-baseline: 'true'
 
+      - name: Upload FlagGems test diagnostics
+        if: ${{ always() && steps.run-flaggems-test.outputs.test-output-dir != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: flaggems-test-${{ inputs.backend }}-${{ inputs.variant || 'default' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.run-flaggems-test.outputs.test-output-dir }}/pytest_stdout*.log
+            ${{ steps.run-flaggems-test.outputs.test-output-dir }}/pytest_stderr*.log
+            ${{ steps.run-flaggems-test.outputs.test-output-dir }}/accuracy_all.json
+            ${{ steps.run-flaggems-test.outputs.test-output-dir }}/summary.json
+            ${{ steps.run-flaggems-test.outputs.test-output-dir }}/compare_report.json
+            ${{ steps.run-flaggems-test.outputs.test-output-dir }}/compare_report.md
+          if-no-files-found: warn
+          retention-days: 7
+
       # Runs even when the build or the test failed: those runs are exactly the
       # ones worth recording. Never allowed to fail this PR gate.
       - name: Collect FlagGems Record
