@@ -34,6 +34,7 @@ add_triton_library(TritonToLinalg
   TritonAnalysis
   TritonMemoryAccessAnalysis
   TritonToGraph
+  TritonToLinalgGeneric
   MLIRTritonNPUUtils
   MLIRSCFTransforms
   MLIRLinalgTransforms

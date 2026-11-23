@@ -40,6 +40,7 @@
 #include "ascend/include/TritonToLinalg/TritonOpConverter.h"
 #include "ascend/include/TritonToLinalg/TritonToLinalgPass.h"
 #include "ascend/include/TritonToLinalg/UseAnalysis.h"
+#include "triton-shared/Conversion/TritonToLinalgGeneric/GenericOpConverter.h"
 #include "ascend/include/TritonToStructured/CannonicalizerConverter.h"
 #include "ascend/include/TritonToUnstructure/UnstructureConversionPass.h"
 #include "ascend/include/Utils/InterleaveOptimization.h"

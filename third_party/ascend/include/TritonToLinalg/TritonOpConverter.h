@@ -63,13 +63,6 @@ converts to:
   %11 = arith.divf %7, %10 : tensor<100xf32>
 ```
 */
-struct PreciseDivConverter : public OpConversionPattern<triton::PreciseDivFOp> {
-public:
-  using OpConversionPattern<triton::PreciseDivFOp>::OpConversionPattern;
-  LogicalResult
-  matchAndRewrite(triton::PreciseDivFOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
 
 /*
 Convert `tt.fp_to_fp` operation with RTNE (default) rounding mode to
@@ -176,13 +169,6 @@ public:
                                 PatternRewriter &rewriter) const override;
 };
 
-class DenseConstantConverter : public OpConversionPattern<arith::ConstantOp> {
-public:
-  using OpConversionPattern<arith::ConstantOp>::OpConversionPattern;
-  LogicalResult
-  matchAndRewrite(arith::ConstantOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
 
 class MakeRangeConverter : public OpConversionPattern<triton::MakeRangeOp> {
 public:
@@ -229,13 +215,6 @@ public:
                   ConversionPatternRewriter &rewriter) const override;
 };
 
-class ClampFConverter : public OpConversionPattern<triton::ClampFOp> {
-public:
-  using OpConversionPattern<triton::ClampFOp>::OpConversionPattern;
-  LogicalResult
-  matchAndRewrite(triton::ClampFOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
 
 class BroadcastConverter : public OpConversionPattern<triton::BroadcastOp> {
 public:
@@ -541,30 +520,8 @@ public:
                   ConversionPatternRewriter &rewriter) const override;
 };
 
-class JoinConverter : public OpConversionPattern<triton::JoinOp> {
-public:
-  using OpConversionPattern<triton::JoinOp>::OpConversionPattern;
-  LogicalResult
-  matchAndRewrite(triton::JoinOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
 
-class SplitConverter : public OpConversionPattern<triton::SplitOp> {
-public:
-  using OpConversionPattern<triton::SplitOp>::OpConversionPattern;
 
-  LogicalResult
-  matchAndRewrite(triton::SplitOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
-
-class CatConverter : public OpConversionPattern<triton::CatOp> {
-public:
-  using OpConversionPattern<triton::CatOp>::OpConversionPattern;
-  LogicalResult
-  matchAndRewrite(triton::CatOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
 
 class GatherConverter : public OpConversionPattern<triton::GatherOp> {
 private:
@@ -707,22 +664,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override;
 };
 
-class TritonMulhiuiConverter : public OpConversionPattern<triton::MulhiUIOp> {
-public:
-  using OpConversionPattern<triton::MulhiUIOp>::OpConversionPattern;
-  LogicalResult
-  matchAndRewrite(triton::MulhiUIOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
 
-class TritonPreciseSqrtConverter
-    : public OpConversionPattern<triton::PreciseSqrtOp> {
-public:
-  using OpConversionPattern<triton::PreciseSqrtOp>::OpConversionPattern;
-  LogicalResult
-  matchAndRewrite(triton::PreciseSqrtOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override;
-};
 
 class DeviceAssertConverter : public OpConversionPattern<triton::AssertOp> {
   using OpConversionPattern<triton::AssertOp>::OpConversionPattern;
