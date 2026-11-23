@@ -2,7 +2,6 @@ add_triton_library(TritonToLinalg
         TritonToLinalgPass.cpp
         LoadStoreConverter.cpp
         TritonOpConverter.cpp
-        HoistBroadcast.cpp
         BlockPtrAnalysis.cpp
         ImplicitPermute.cpp
         DescriptorConverter.cpp

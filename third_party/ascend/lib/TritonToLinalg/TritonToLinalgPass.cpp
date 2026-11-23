@@ -33,7 +33,7 @@
 #include "ascend/include/TritonToLinalg/DescriptorConverter.h"
 #include "ascend/include/TritonToLinalg/DevicePrintOffsetRewrite.h"
 #include "triton-shared/Conversion/TritonToLinalgGeneric/FunctionConverter.h"
-#include "ascend/include/TritonToLinalg/HoistBroadcast.h"
+#include "triton-shared/Conversion/TritonToLinalgGeneric/HoistBroadcast.h"
 #include "ascend/include/TritonToLinalg/ImplicitPermute.h"
 #include "ascend/include/TritonToLinalg/LoadStoreConverter.h"
 #include "ascend/include/TritonToLinalg/MarkTensorKindPass.h"
@@ -1706,14 +1706,14 @@ TritonToLinalgPass::processPtrBroadcastOperations(ModuleOp moduleOp) {
       return true;
     }
     auto resultType = dyn_cast<RankedTensorType>(op.getType());
-    HoistBroadcast::BroadcastHoister hoister(op);
+    TTOpConverters::HoistBroadcast::BroadcastHoister hoister(op);
     return !(isa<triton::PointerType>(resultType.getElementType()) &&
              hoister.canBroadcast());
   });
 
   // --- Patterns ---
   mlir::RewritePatternSet patterns(&getContext());
-  patterns.add<HoistBroadcast::BroadcastConverter>(patterns.getContext());
+  patterns.add<TTOpConverters::HoistBroadcast::BroadcastConverter>(patterns.getContext());
 
   if (failed(applyPartialConversion(moduleOp, target, std::move(patterns)))) {
     moduleOp->emitError("failed to convert ptr broadcast operations");
