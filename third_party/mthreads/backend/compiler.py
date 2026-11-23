@@ -839,6 +839,8 @@ def _llc_opt_level(options: "MUSAOptions") -> str:
 @dataclass(frozen=True)
 class MUSAOptions:
     sqmma_descriptor_abi: str = "pointer"
+    # Opt-in: TME transaction issuers must supply warp-uniform inputs.
+    tme_issue_warp: bool = False
     num_warps: int = 4
     num_ctas: int = 1
     num_stages: int = 1
@@ -1041,6 +1043,10 @@ class MUSABackend(BaseBackend):
                              "native_mp31_sg16, or native_mp31_shared")
         if opts.get("sqmma_descriptor_abi") in ("native_mp31_sg16", "native_mp31_shared") and capability != 31:
             raise ValueError("native MP31 descriptors require MP31")
+        if type(opts.get("tme_issue_warp", False)) is not bool:
+            raise ValueError("tme_issue_warp must be a bool")
+        if opts.get("tme_issue_warp", False) and capability != 31:
+            raise ValueError("tme_issue_warp is currently supported only on MP31")
         # The bundled MTGPU llc currently only provides processors through
         # mp_32. Reject future numeric capabilities here rather than letting
         # instruction selection terminate the compiler process.
@@ -1258,6 +1264,7 @@ class MUSABackend(BaseBackend):
 
     @staticmethod
     def make_llir(src, metadata, options, arch):
+        src.set_attr("musa.tme_issue_warp", ir.builder(src.context).get_int32_attr(int(options.tme_issue_warp)))
         from triton._C.libtriton import llvm
 
         src.set_attr("musa.sqmma_native_sg16",
