@@ -45,6 +45,7 @@ jobs:
       backend: iluvatar
       gpu-env-var: CUDA_VISIBLE_DEVICES
       flaggems-tag: 'v5.3.5'
+      flaggems-vllm-tag: 'v0.2.1.dev1'
       flagtree-build-command: |-
         set -x
         export FLAGTREE_BACKEND=iluvatar
@@ -53,6 +54,16 @@ jobs:
         export TRITON_ILU_BUILD_GLUON=OFF
         MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
       flaggems-pre-command: |-
+        source ~/env.sh
+        export LD_LIBRARY_PATH=/usr/local/corex-4.5.0/lib64/:${LD_LIBRARY_PATH}
+
+        if [[ "$(uname -m)" == "aarch64" ]]; then
+          libgomp_path=$(find /usr/lib /usr/lib64 /lib /lib64 -type f -name 'libgomp.so*' 2>/dev/null | head -n 1)
+          if [[ -n "$libgomp_path" ]]; then
+            export LD_PRELOAD="$libgomp_path${LD_PRELOAD:+:$LD_PRELOAD}"
+          fi
+        fi
+      flaggems-vllm-pre-command: |-
         source ~/env.sh
         export LD_LIBRARY_PATH=/usr/local/corex-4.5.0/lib64/:${LD_LIBRARY_PATH}
 

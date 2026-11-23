@@ -84,6 +84,11 @@ add_dependencies(triton_gcu400_core triton_gcu400)
 if(TARGET MathExtTableGen_gcu400)
   add_dependencies(triton_gcu400_core MathExtTableGen_gcu400 MemrefExtTableGen_gcu400)
 endif()
+# triton_gcu400_core.cpp includes "Dialect/GCUWS/IR/Dialect.h"; make sure the
+# generated GCUWS headers exist before this translation unit is compiled.
+if(TARGET GCUWSTableGen_gcu400)
+  add_dependencies(triton_gcu400_core GCUWSTableGen_gcu400 GCUWSAttrDefsIncGen_gcu400)
+endif()
 
 set_target_properties(triton_gcu400_core PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"

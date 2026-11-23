@@ -75,6 +75,9 @@ def ThvTile_Scalar : AnyTypeOf<[ThvTile_Float, ThvTile_Int]>;
 // Tensor of FP or Int elements
 def ThvTile_FpIntTensor : RankedTensorOf<[ThvTile_Float, ThvTile_Int]>;
 
+// Tensor of any element type
+def ThvTile_AnyTensor : RankedTensorOf<[AnyType]>;
+
 // Integer scalar or tensor value
 def ThvTile_IntTensor : RankedTensorOf<[ThvTile_Int]>;
 def ThvTile_IntLike : AnyTypeOf<[ThvTile_Int, ThvTile_IntTensor],

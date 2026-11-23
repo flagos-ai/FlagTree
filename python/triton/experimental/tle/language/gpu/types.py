@@ -159,7 +159,12 @@ class MmaEncoding(distributed_encoding):
         rank = len(self.warps_per_cta)
         if len(self.version) != 2:
             raise ValueError("MmaEncoding version must contain major and minor")
-        if len(self.instr_shape) != rank:
+        # Hopper describes its instruction in M/N/K dimensions even for a
+        # two-dimensional result; warp and CGA layouts still use tensor rank.
+        if self.version[0] == 3:
+            if len(self.instr_shape) != 3:
+                raise ValueError("Hopper MmaEncoding instr_shape must have three M/N/K dimensions")
+        elif len(self.instr_shape) != rank:
             raise ValueError("MmaEncoding instr_shape rank must match warps_per_cta")
         for basis in self.cga_layout:
             if len(basis) != rank:

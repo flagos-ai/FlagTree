@@ -614,6 +614,17 @@ std::optional<LLVM::AtomicBinOp> matchAtomicOp(RMWOp atomicOp);
 
 std::optional<LLVM::AtomicOrdering> getMemoryOrdering(MemSemantic memOrdering);
 
+// port triton v3.9 (triton-lang/triton#10816): insert a CTA barrier before a
+// release/acq_rel atomic and after an acquire/acq_rel one, so that the
+// release is not satisfied by a single thread's buffer_wbl2/waitcnt alone
+// (which only covers that thread's own wave) and the acquire is visible to
+// every wave in the CTA. `emitBarrierAfter` should be false when the caller
+// already emits an equivalent barrier after the atomic (e.g. to broadcast a
+// scalar result through shared memory).
+void insertAtomicOrderingBarriers(Operation *op, MemSemantic memOrdering,
+                                  bool emitBarrierAfter, RewriterBase &rewriter,
+                                  const TargetInfoBase &targetInfo);
+
 llvm::MapVector<StringAttr, int32_t> getAllFreeVarMasks(MLIRContext *ctx);
 
 llvm::MapVector<StringAttr, int32_t> getFreeVariableMasks(Type type);

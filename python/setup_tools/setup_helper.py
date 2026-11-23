@@ -34,6 +34,7 @@ import importlib.metadata
 from typing import List, Tuple
 from importlib.machinery import PathFinder
 from setuptools import find_packages
+from urllib.parse import unquote, urlparse
 from .utils.tools import flagtree_configs as configs
 
 downloader = utils.tools.DownloadManager()
@@ -68,7 +69,8 @@ def get_long_description():
 
 def init_backends(backend_installer):
     if flagtree_backend:
-        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu", "amd"):
+        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu", "amd",
+                                "ascend"):
             backends = [
                 *backend_installer.copy(configs.default_backends + tuple(configs.extend_backends)),
                 *backend_installer.copy_externals(),
@@ -231,6 +233,12 @@ def get_hook_instance(hook_name):
         return None
     hook_instance = getattr(configs.activated_module, hook_name, None)
     return hook_instance if callable(hook_instance) else None
+
+
+def finalize_backend_build_tree(build_lib):
+    hook = get_hook_instance("finalize_build_tree")
+    if hook:
+        hook(build_lib)
 
 
 def enable_flagtree_third_party(name):
@@ -502,7 +510,7 @@ class FlagTreeCache:
         return False
 
     def store(self, file=None, condition=None, url=None, copy_src_path=None, copy_dst_path=None, files=None,
-              md5_digest=None, pre_hook=None, post_hook=None, version=None):
+              md5_digest=None, pre_hook=None, post_hook=None, version=None, decompress=True):
 
         if not condition or (pre_hook and pre_hook()):
             return
@@ -520,33 +528,48 @@ class FlagTreeCache:
             if copy_dst_path is not None:
                 dst_path_root = Path(self.flagtree_dir) / copy_dst_path
                 dst_path = Path(dst_path_root) / file
-                if self.reverse_copy(dst_path, self.cache_files[file], md5_digest):
+                if decompress and self.reverse_copy(dst_path, self.cache_files[file], md5_digest):
                     return
 
         if is_url:
             cache_path = self.cache_files[file]
             need_download = not self.check_file(file_name=file, url=url, md5_digest=md5_digest)
-            # Marker is a sibling dotfile: packages ship their own version.txt; a cache without one is staged -> adopt
+            if not decompress and not cache_path.is_file():
+                need_download = True
+            archive_name = Path(unquote(urlparse(url).path)).name
+            local_archive = Path(path) / archive_name
+            # A cache without this sibling marker is adopted and the marker is written.
             marker_file = Path(path) / f".{file}.version"
             if not need_download and version is not None:
                 if marker_file.exists():
                     cached_ver = marker_file.read_text().strip()
                     if cached_ver != version:
-                        print(
-                            f"[cache] version mismatch for '{file}': cached='{cached_ver}', expected='{version}', re-downloading..."
-                        )
-                        shutil.rmtree(cache_path)
+                        print(f"[cache] version mismatch for '{file}': cached='{cached_ver}', "
+                              f"expected='{version}', refreshing...")
+                        if cache_path.is_dir():
+                            shutil.rmtree(cache_path)
+                        else:
+                            cache_path.unlink()
                         need_download = True
                 else:
-                    legacy_file = Path(cache_path) / "version.txt"
-                    legacy_ver = legacy_file.read_text().strip() if legacy_file.exists() else None
-                    if legacy_ver != version:
-                        note = f" (its version.txt says '{legacy_ver}')" if legacy_ver else ""
-                        print(f"[cache] no version marker for '{file}': adopting the cache as "
-                              f"'{version}'{note}; remove {cache_path} to force a re-download")
                     marker_file.write_text(version)
             if need_download:
-                downloader.download(url=url, path=path, file_name=file)
+                if cache_path.exists():
+                    if cache_path.is_dir():
+                        shutil.rmtree(cache_path)
+                    else:
+                        cache_path.unlink()
+                if decompress and local_archive.is_file():
+                    print(f"[cache] extracting local archive {local_archive}")
+                    utils.tools.decompress_file(url=url, archive_path=local_archive, dst_path=path, file_name=file)
+                else:
+                    downloader.download(url=url, path=path, file_name=file, is_decompress=decompress)
+                # md5_digest identifies the extracted result. Directory results are
+                # version-checked above; a file result that still mismatches is left
+                # in place so the failure can be inspected.
+                if md5_digest is not None and not self.check_file(path=cache_path, md5_digest=md5_digest):
+                    raise RuntimeError(f"[cache] extracted digest mismatch for '{cache_path}': "
+                                       f"expected '{md5_digest}'")
                 if version is not None:
                     marker_file.write_text(version)
 
@@ -892,7 +915,14 @@ else:
 
 cache = FlagTreeCache()
 
-download_flagtree_third_party("flir", condition=(flagtree_backend == "tsingmicro"), required=True)
+# FLIR supplies the CommonIR dialect, which the ascend backend requires for its
+# CommonIRToHIVM lowering and FLIR's triton-lane-vectorize pass.
+download_flagtree_third_party("flir", condition=(flagtree_backend in ("tsingmicro", "ascend")), required=True)
+
+# The ascend backend links the BiShengIR dialects built from AscendNPU-IR.
+if flagtree_backend == "ascend":
+    configs.activated_module.warn_stale_ascend_npu_ir_checkout(utils.flagtree_submodules["AscendNPU-IR"])
+    download_flagtree_third_party("AscendNPU-IR", condition=True, required=True)
 '''
    FlagCX is a third-party library adopted by the tle distributed system,
    refer to https://github.com/flagos-ai/FlagCX

@@ -163,6 +163,50 @@ struct TritonXPUDtypeConvert
       }
     }
 
+    // A tt.scan's combine region rides the scanned element type, but the loop
+    // above widens only the scan op's operands/results -- getOpTreeBwd stops at
+    // region boundaries, so it never descends into the combine. Left alone, a
+    // promoted bf16 scan ends up with f32 operands/result but bf16 combine
+    // block args -> "tt.scan type mismatch on combine operation". Re-type each
+    // combine to agree with the (now possibly promoted) scanned operands, then
+    // widen the straight-line arith chain inside it to match.
+    m.walk([&](triton::ScanOp scanOp) {
+      Region &region = scanOp.getCombineOp();
+      if (region.empty())
+        return;
+      Block &body = region.front();
+      auto scanned = scanOp.getOperands();
+      unsigned n = scanned.size();
+      if (n == 0)
+        return;
+      bool changed = false;
+      for (auto [i, arg] : llvm::enumerate(body.getArguments())) {
+        // combine arg i pairs with scanned operand (i % n): args are all-lhs
+        // then all-rhs, so both halves map back to the same operand element.
+        Type want = getElementTypeOrSelf(scanned[i % n].getType());
+        if (arg.getType() != want) {
+          arg.setType(want);
+          changed = true;
+        }
+      }
+      if (!changed)
+        return; // operands were not promoted -> region already consistent
+      auto isLowPrec = [&](Type t) {
+        Type e = getElementTypeOrSelf(t);
+        return (xpuArch == 2 && mlir::isa<mlir::Float16Type>(e)) ||
+               (xpuArch == 3 && mlir::isa<mlir::BFloat16Type>(e));
+      };
+      body.walk([&](Operation *inner) {
+        // constants would need their attribute rebuilt, not just retyped; the
+        // real scan combines (add/max/min, value+index tie-break) carry none.
+        if (mlir::isa<arith::ConstantOp>(inner))
+          return;
+        for (auto res : inner->getResults())
+          if (isLowPrec(res.getType()))
+            res.setType(Float32Type::get(res.getContext()));
+      });
+    });
+
     m.walk([&](arith::ExtFOp extfOp) {
       auto inTy = extfOp.getIn().getType();
       auto resTy = extfOp.getType();
@@ -182,6 +226,15 @@ struct TritonXPUDtypeConvert
     });
 
     if (this->fp16Fast) {
+      // Collect the extf ops to strip DURING the walk, but do not mutate the
+      // IR inside the walk: the extf that consumes a fp16 load is the very
+      // next op after the load in the block, and m.walk uses an
+      // early-increment iterator that has already advanced to that extf before
+      // invoking the load's callback. Erasing the extf from inside the walk
+      // frees the op the iterator is about to dereference -> use-after-free
+      // segfault (the python layer reports this generically as "uni_sram").
+      // So gather first, mutate after.
+      SmallVector<arith::ExtFOp> stripExtfs;
       m.walk([&](triton::xpu::LoadOp loadOp) {
         auto res = loadOp.getResult();
         auto resElemTy = getElementTypeOrSelf(res.getType());
@@ -189,11 +242,50 @@ struct TritonXPUDtypeConvert
           if (res.hasOneUse()) {
             auto userBegin = res.user_begin();
             if (auto extfOp = dyn_cast<arith::ExtFOp>(*userBegin)) {
-              extfOp.getOut().replaceAllUsesWith(extfOp.getIn());
+              stripExtfs.push_back(extfOp);
             }
           }
         }
       });
+
+      // Phase 1: strip every candidate extf (keep the load in f16), recording
+      // the compares they fed so any residual operand-type mismatch can be
+      // reconciled once all strips are done.
+      llvm::SetVector<Operation *> cmpsToReconcile;
+      for (auto extfOp : stripExtfs) {
+        for (auto *user : extfOp.getOut().getUsers()) {
+          if (isa<arith::CmpFOp>(user))
+            cmpsToReconcile.insert(user);
+        }
+        extfOp.getOut().replaceAllUsesWith(extfOp.getIn());
+        extfOp.erase();
+      }
+
+      // Phase 2: a fused scalar compare (`x.to(f32) == scalar_f32`) now has one
+      // f16 operand (the stripped load) and one surviving f32 operand, which
+      // 'arith.cmpf' rejects ("all operands must have the same type"), so
+      // truncate the f32 side to f16. A tensor-tensor compare had both extf
+      // ops stripped, so both operands are already f16 and this loop is a
+      // no-op for it -- reconciling only AFTER all strips avoids ever creating
+      // an invalid f16->f16 truncf. Scoped to arith::CmpFOp so no other op's
+      // result type can cascade (cmpf yields i1 regardless).
+      for (auto *consumer : cmpsToReconcile) {
+        for (auto [i, operand] : llvm::enumerate(consumer->getOperands())) {
+          if (getElementTypeOrSelf(operand.getType()).isF32()) {
+            OpBuilder b(consumer);
+            Type truncTy;
+            if (auto tt = dyn_cast<RankedTensorType>(operand.getType())) {
+              truncTy = RankedTensorType::get(tt.getShape(), b.getF16Type(),
+                                              tt.getEncoding());
+            } else {
+              truncTy = b.getF16Type();
+            }
+            auto truncf =
+                b.create<arith::TruncFOp>(consumer->getLoc(), truncTy, operand);
+            consumer->setOperand(i, truncf.getResult());
+          }
+        }
+      }
     }
   }
 
