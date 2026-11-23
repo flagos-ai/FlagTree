@@ -224,11 +224,16 @@ def linalg_to_bc_by_triton_mlir_opt(linalg: str, metadata, opt):
 
         triton_mlir_opt_path = _get_triton_mlir_opt_path()
 
-        # The --emit-bytecode flag ensures output is in BC format
+        # The --emit-bytecode flag ensures output is in BC format.
+        #
+        # Pin the writer below bytecode v5, which encodes op properties by field
+        # position and so requires reader and writer to share the exact field
+        # layout.
         subprocess.run([
             triton_mlir_opt_path,
             ttadapter_path,
             "--emit-bytecode",
+            "--emit-bytecode-version=4",
             "-o",
             bc_path,
         ], check=True, capture_output=True, text=True)
