@@ -378,9 +378,18 @@ def _all_gather_inter_node_kernel(
 
 @triton.jit(do_not_specialize=["epoch", "progress_token"])
 def _persistent_intra_node_kernel(
-    workspace, arrival_counts, dist_ctx: tl.constexpr, epoch, progress_ptr, progress_token,
-    RANK: tl.constexpr, LOCAL_WORLD_SIZE: tl.constexpr, NNODES: tl.constexpr,
-    ELEM_PER_RANK: tl.constexpr, NUM_LOCAL_CHUNKS: tl.constexpr, BLOCK: tl.constexpr,
+    workspace,
+    arrival_counts,
+    dist_ctx: tl.constexpr,
+    epoch,
+    progress_ptr,
+    progress_token,
+    RANK: tl.constexpr,
+    LOCAL_WORLD_SIZE: tl.constexpr,
+    NNODES: tl.constexpr,
+    ELEM_PER_RANK: tl.constexpr,
+    NUM_LOCAL_CHUNKS: tl.constexpr,
+    BLOCK: tl.constexpr,
     DEBUG_PROGRESS: tl.constexpr,
 ):
     pid = tl.program_id(0)
@@ -391,13 +400,13 @@ def _persistent_intra_node_kernel(
         source_rank = source_node * LOCAL_WORLD_SIZE + RANK % LOCAL_WORLD_SIZE
         if node_step != 0:
             # The network sender emits one increment per source per epoch.
-            tle.signal_wait(dist_ctx, slot_id=source_rank, wait_kind="signal", target=epoch,
-                            group_kind="block", order="acquire")
+            tle.signal_wait(dist_ctx, slot_id=source_rank, wait_kind="signal", target=epoch, group_kind="block",
+                            order="acquire")
         segment_offset = source_rank.to(tl.int64) * ELEM_PER_RANK
         for peer_step in range(1, LOCAL_WORLD_SIZE):
             peer = (RANK % LOCAL_WORLD_SIZE + LOCAL_WORLD_SIZE - peer_step) % LOCAL_WORLD_SIZE
-            dst = tle.remote(dist_ctx, shard_id=peer, space="device",
-                             dtype=workspace.dtype.element_ty, offset=segment_offset)
+            dst = tle.remote(dist_ctx, shard_id=peer, space="device", dtype=workspace.dtype.element_ty,
+                             offset=segment_offset)
             for chunk in tl.range(pid, NUM_LOCAL_CHUNKS, nctas):
                 indices = chunk.to(tl.int64) * BLOCK + offsets
                 mask = indices < ELEM_PER_RANK
@@ -416,8 +425,8 @@ def _persistent_intra_node_kernel(
                 entry = (pair * nctas + pid) * 2
                 tl.atomic_xchg(progress_ptr + entry, progress_token, sem="release", scope="sys")
             if last:
-                tle.signal(dist_ctx, peer, slot_id=source_rank, op="inc", space="intra_node",
-                           group_kind="block", scope="system")
+                tle.signal(dist_ctx, peer, slot_id=source_rank, op="inc", space="intra_node", group_kind="block",
+                           scope="system")
                 if DEBUG_PROGRESS:
                     tl.atomic_xchg(progress_ptr + entry + 1, progress_token, sem="release", scope="sys")
 
@@ -588,11 +597,19 @@ def ag_gemm(A: torch.Tensor, B: torch.Tensor, ctx: TleAllGatherGemmContext, *, o
         ctx.ag_intranode_stream.wait_stream(current_stream)
         with torch.cuda.stream(ctx.ag_intranode_stream):
             _persistent_intra_node_kernel[(cfg.intra_node_ctas, )](
-                ctx.workspace, ctx.arrival_counts, ctx.dist_ctx, ctx.epoch, ctx.debug_signal_progress,
+                ctx.workspace,
+                ctx.arrival_counts,
+                ctx.dist_ctx,
+                ctx.epoch,
+                ctx.debug_signal_progress,
                 (ctx.epoch - 1) % 0x7FFFFFFF + 1,
-                RANK=ctx.rank, LOCAL_WORLD_SIZE=ctx.local_world_size, NNODES=ctx.nnodes,
-                ELEM_PER_RANK=A.numel(), NUM_LOCAL_CHUNKS=triton.cdiv(A.numel(), cfg.ag_block),
-                BLOCK=cfg.ag_block, DEBUG_PROGRESS=ctx.debug_signal_progress is not None,
+                RANK=ctx.rank,
+                LOCAL_WORLD_SIZE=ctx.local_world_size,
+                NNODES=ctx.nnodes,
+                ELEM_PER_RANK=A.numel(),
+                NUM_LOCAL_CHUNKS=triton.cdiv(A.numel(), cfg.ag_block),
+                BLOCK=cfg.ag_block,
+                DEBUG_PROGRESS=ctx.debug_signal_progress is not None,
                 num_warps=cfg.ag_num_warps,
             )
         _record_debug_event(ctx, "intra", "persistent copy and signal", ctx.ag_intranode_stream)
@@ -714,8 +731,9 @@ def _parse_args(argv=None):
     parser.add_argument("--serial-only", action="store_true", help="Check and benchmark only the serial TLE path.")
     parser.add_argument("--debug", action="store_true",
                         help="Print launch stages and synchronize check stages; use --iters 0.")
-    parser.add_argument("--debug-signal", action="store_true",
-                        help="Track CTA arrivals and the last CTA returning from signal in mapped host memory; implies --debug.")
+    parser.add_argument(
+        "--debug-signal", action="store_true",
+        help="Track CTA arrivals and the last CTA returning from signal in mapped host memory; implies --debug.")
     defaults = _default_config()
     for field in dataclasses.fields(TleAllGatherGemmConfig):
         parser.add_argument("--" + field.name.replace("_", "-"), type=int, default=getattr(defaults, field.name))
