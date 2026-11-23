@@ -15,7 +15,6 @@ flagtree_submodules = {
                  dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "flir")),
     "flagprism":
     tools.Module(name="FlagPrism", url="https://github.com/flagos-ai/FlagPrism.git",
-                 commit_id="8541d6761805bd9d3c54d1bc53da4a1939ffd6c2",
                  dst_path=os.path.join(flagtree_configs.flagtree_submodule_dir, "FlagPrism")),
 }
 

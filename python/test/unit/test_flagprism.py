@@ -404,12 +404,15 @@ def test_build_tree_cleanup_prevents_split_wheel_artifacts(build_helper, tmp_pat
     assert not (flagtree_root / "debugger").exists()
     assert not list(native_root.glob("libproton*"))
 
-    expected_native = flagtree_root / "profiler" / ("_native" + (sysconfig.get_config_var("EXT_SUFFIX") or ".so"))
+    native_name = "_native" + (sysconfig.get_config_var("EXT_SUFFIX") or ".so")
+    profiler_native = flagtree_root / "profiler" / native_name
+    debugger_native = flagtree_root / "debugger" / native_name
     if enabled:
         for path in (
                 flagtree_root / "debugger" / "__init__.py",
                 flagtree_root / "profiler" / "__init__.py",
-                expected_native,
+                debugger_native,
+                profiler_native,
         ):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"current")
@@ -425,7 +428,8 @@ def test_build_tree_cleanup_prevents_split_wheel_artifacts(build_helper, tmp_pat
     config.finalize_build_tree(str(build_lib))
     assert not (cache_root / "_components.cpython-311.pyc").exists()
     if enabled:
-        assert expected_native.is_file()
+        assert debugger_native.is_file()
+        assert profiler_native.is_file()
         assert not list(native_root.glob("libproton*"))
         assert (flagtree_root / "debugger").is_dir()
         assert (flagtree_root / "profiler").is_dir()
