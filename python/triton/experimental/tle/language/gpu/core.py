@@ -585,7 +585,7 @@ def alloc(
             layout_handle = layout.to_ir(_semantic.builder)
 
         if tle_semantic.COMMON_IR_ENABLED:
-            return tle_semantic.alloc(
+            buffer = tle_semantic.alloc(
                 unwrapped_shape,
                 dtype,
                 storage,
@@ -594,6 +594,9 @@ def alloc(
                 init_value,
                 _semantic,
             )
+            if mthreads_auto_sqmma_shared_layout:
+                buffer.handle.set_attr("musa_tle.auto_shared_layout", _semantic.builder.get_unit_attr())
+            return buffer
 
         if storage == tle.smem:
             if alias is not None:

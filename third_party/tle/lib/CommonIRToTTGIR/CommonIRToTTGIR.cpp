@@ -257,8 +257,11 @@ convertAllocations(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
     if (failed(memDescType))
       return WalkResult::interrupt();
     OpBuilder builder(op);
-    mapped[op.getResult()] =
-        builder.create<ttg::LocalAllocOp>(op.getLoc(), *memDescType);
+    auto alloc = builder.create<ttg::LocalAllocOp>(op.getLoc(), *memDescType);
+    constexpr char autoSharedLayoutAttr[] = "musa_tle.auto_shared_layout";
+    if (Attribute layout = op->getAttr(autoSharedLayoutAttr))
+      alloc->setAttr(autoSharedLayoutAttr, layout);
+    mapped[op.getResult()] = alloc;
     eraseOps.push_back(op);
     return WalkResult::advance();
   });
