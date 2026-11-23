@@ -83,11 +83,31 @@ namespace {
 // Deliberately NOT the trace framework: no IR attributes, no phase records, no
 // extra pass options. Just lines that can be grepped out of a build log, e.g.
 //   RLC_DEBUG=2 ... bash run_pytest.sh 2>&1 | grep '\[rlc\]'
+//
+// FLAGTREE_RLC_DEBUG_FIX=1 narrows that down to the diagnostics of the current
+// layout fixes (rlcFixDbgLevel below). The rest of the chatter is what dominates
+// a matrix run, so this keeps gen_combination_ttgir.sh usable while iterating.
+static int rlcReadDbgLevel() {
+  const char *env = std::getenv("RLC_DEBUG");
+  return env ? std::atoi(env) : 0;
+}
+
 static int rlcDbgLevel() {
   static const int level = [] {
-    const char *env = std::getenv("RLC_DEBUG");
-    return env ? std::atoi(env) : 0;
+    if (std::getenv("FLAGTREE_RLC_DEBUG_FIX"))
+      return 0;
+    return rlcReadDbgLevel();
   }();
+  return level;
+}
+
+// Level for the diagnostics that belong to the layout-fix work: the per-thread
+// copy guard, the low-precision epilogue guard and the reduce-axis pruning.
+// Unaffected by FLAGTREE_RLC_DEBUG_FIX, so
+//   FLAGTREE_RLC_DEBUG_FIX=1 RLC_DEBUG=1 ...
+// prints exactly those lines and nothing else.
+static int rlcFixDbgLevel() {
+  static const int level = rlcReadDbgLevel();
   return level;
 }
 
@@ -2522,7 +2542,7 @@ static bool sliceRetagMultipliesPerThreadCopies(Value value, Attribute target,
   int64_t after = getTotalElemsPerThread(type.cloneWithEncoding(target));
   if (after <= before)
     return false;
-  if (rlcDbgLevel() >= 1)
+  if (rlcFixDbgLevel() >= 1)
     llvm::errs() << "[rlc] " << what << ": " << def->getName()
                  << " per-thread " << before << " -> " << after << " (delta "
                  << (after - before) << ") ("
@@ -2619,14 +2639,20 @@ static bool proposalWidensLowPrecisionEpilogue(
       continue;
     if (!hasLowPrecisionExt && feedsLowPrecisionExtension(it.first)) {
       hasLowPrecisionExt = true;
-      if (rlcDbgLevel() >= 2)
+      if (rlcFixDbgLevel() >= 2)
         llvm::errs() << "[rlc]   low-precision extf fed by " << it.first << " ("
                      << rlcDbgEnc(type.getEncoding()) << ")\n";
     }
     // The footprint after the retag is what competes with the widened unpack.
+    // Pointer tensors are skipped: they travel in the same proposal (the ptr and
+    // mask chains are producers of the load) but they carry no low-precision
+    // payload, and Type::getElementTypeBitWidth() asserts on them.
+    if (!type.getElementType().isIntOrFloat())
+      continue;
     auto retagged = type.cloneWithEncoding(it.second);
     int64_t elems = getTotalElemsPerThread(retagged);
-    int64_t bytes = elems * type.getElementTypeBitWidth() / 8;
+    int64_t bytes =
+        elems * type.getElementType().getIntOrFloatBitWidth() / 8;
     if (bytes > widestBytes) {
       widestBytes = bytes;
       widestElems = elems;
@@ -2636,7 +2662,7 @@ static bool proposalWidensLowPrecisionEpilogue(
   }
   if (!hasLowPrecisionExt || widestBytes < maxLowPrecisionEpilogueBytes())
     return false;
-  if (rlcDbgLevel() >= 1) {
+  if (rlcFixDbgLevel() >= 1) {
     auto type = cast<RankedTensorType>(widestValue.getType());
     Operation *def = widestValue.getDefiningOp();
     llvm::errs() << "[rlc] producerSide reject: low-precision epilogue on a "
@@ -2644,8 +2670,9 @@ static bool proposalWidensLowPrecisionEpilogue(
                  << maxLowPrecisionEpilogueBytes() << ") at "
                  << (def ? def->getName().getStringRef() : "<block arg>")
                  << " " << widestElems << " elem x "
-                 << type.getElementTypeBitWidth() << " bit\n";
-    if (rlcDbgLevel() >= 2)
+                 << type.getElementType().getIntOrFloatBitWidth()
+                 << " bit\n";
+    if (rlcFixDbgLevel() >= 2)
       llvm::errs() << "[rlc]   widest " << widestValue << " enc "
                    << rlcDbgEnc(type.getEncoding()) << " -> "
                    << rlcDbgEnc(widestEncoding) << "\n";
@@ -3748,7 +3775,7 @@ void LayoutPropagation::resolveConflicts() {
         info.encodings.clear();
         for (Attribute enc : keep)
           info.encodings.insert(enc);
-        if (rlcDbgLevel() >= 1)
+        if (rlcFixDbgLevel() >= 1)
           llvm::errs() << "[rlc] rc drop " << dropped
                        << " reduce-axis candidate(s) with warpsPerCTA[" << axis
                        << "] > " << fewestWarps << " from " << it.first
@@ -4854,7 +4881,7 @@ LogicalResult LayoutRematerialization::getRematerializableSlice(
     // Phase 2 is walked straight back into here and retagged anyway; guarding
     // only one of the two leaves the regression on the default pipeline.
     if (sliceMultipliesPerThreadCopies(slice, layout)) {
-      if (rlcDbgLevel() >= 1)
+      if (rlcFixDbgLevel() >= 1)
         llvm::errs() << "[rlc] remat slice rejected (per-thread)\n";
       return failure();
     }
