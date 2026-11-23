@@ -40,6 +40,10 @@ struct MaskState {
   OpFoldResult start;
   OpFoldResult end;
   SmallVector<OpFoldResult> dims;
+  // Same length as dims; the start of the kept window in each dimension.  A
+  // state that never parsed a lower bound leaves this empty, and
+  // getWindowOffsets() zero-pads it.
+  SmallVector<OpFoldResult> offsets;
   OpFoldResult scalar;
 
   int64_t getRank() const { return dims.size(); }
@@ -47,6 +51,9 @@ struct MaskState {
   bool isEmpty() const { return getRank() == 0 && !scalar && !start && !end; }
 
   bool isMask() const { return !start && !end && !scalar && dims.size() != 0; }
+
+  // dims-length window starts, zero-padded for states that never set one.
+  SmallVector<OpFoldResult> getWindowOffsets(OpBuilder &builder) const;
 
   // Recursively parse a Value; call the coresponding function based on the
   // defining operation and Value type
@@ -106,12 +113,29 @@ private:
   LogicalResult parseAnd(arith::AndIOp andOp, const Location loc,
                          OpBuilder &builder);
 
-  // Operand is the result of cmpi
-  // Assume only of the dimensions have size > 1. Only support slt for now.
-  // For that dimension, calculate this new dim as: dim = min(end, value) -
-  // start
+  // Operand is the result of cmpi / cmpf
+  // Assume only one of the dimensions has size > 1. Every ordered comparison
+  // is normalised onto a single range operand and a single scalar bound; see
+  // parseOrderedCmp. For the compared dimension the new dim is
+  //   upper bound:  dim = min(end, bound) - start
+  //   lower bound:  dim = end - max(start, bound)
   LogicalResult parseCmp(arith::CmpIOp cmpOp, const Location loc,
                          OpBuilder &builder);
+  LogicalResult parseCmp(arith::CmpFOp cmpOp, const Location loc,
+                         OpBuilder &builder);
+
+  // Shared body of the two parseCmp overloads. The predicate has already been
+  // normalised: `upperBound` says the scalar is an upper bound of the range
+  // (`range < bound`) rather than a lower one (`range > bound`), and
+  // `adjustBound` says the original comparison was strict in the direction
+  // that moves the window edge one past the bound, so the bound is `bound + 1`.
+  //
+  // Which operand is the range is decided by the operand itself, never by the
+  // predicate: `idx > N` puts the range on the left exactly like `idx < N`
+  // does. The predicate only says which side of the range the bound is on.
+  LogicalResult parseOrderedCmp(Value lowerValue, Value upperValue,
+                                bool upperBound, bool adjustBound,
+                                const Location loc, OpBuilder &builder);
   // Operand is the result of make_range
   // Set start and end accordingly; step size must be 1.
   LogicalResult parseMakeRange(triton::MakeRangeOp rangeOp, const Location loc,

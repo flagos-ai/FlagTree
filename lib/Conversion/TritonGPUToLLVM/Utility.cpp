@@ -812,6 +812,28 @@ std::optional<LLVM::AtomicOrdering> getMemoryOrdering(MemSemantic memOrdering) {
   }
 }
 
+// port triton v3.9 (triton-lang/triton#10816)
+void insertAtomicOrderingBarriers(Operation *op, MemSemantic memOrdering,
+                                  bool emitBarrierAfter, RewriterBase &rewriter,
+                                  const TargetInfoBase &targetInfo) {
+  // AMD has no concept of clusters distinct from a single CTA, so this always
+  // issues a block-level barrier; `isWarpSync` stays at its default (false).
+  auto emitBarrier = [&] { targetInfo.barrier(op->getLoc(), rewriter); };
+
+  if (memOrdering == MemSemantic::RELEASE ||
+      memOrdering == MemSemantic::ACQUIRE_RELEASE) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(op);
+    emitBarrier();
+  }
+  if (emitBarrierAfter && (memOrdering == MemSemantic::ACQUIRE ||
+                           memOrdering == MemSemantic::ACQUIRE_RELEASE)) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointAfter(op);
+    emitBarrier();
+  }
+}
+
 llvm::MapVector<StringAttr, int32_t> getAllFreeVarMasks(MLIRContext *ctx) {
   // Mask where all elements are redundant
   auto kReg = str_attr("reg");
@@ -1129,6 +1151,7 @@ Value getGlobalScratchPtr(Location loc, RewriterBase &rewriter,
                           const TargetInfoBase &targetInfo,
                           FunctionOpInterface funcOp, Value allocOffset = {}) {
   // See NOTE: [Additional Function Arguments]
+#ifndef __TLE__
   if (!isKernel(funcOp)) {
     // Base for this function
     auto gmemBase = funcOp.getArgument(funcOp.getNumArguments() +
@@ -1141,6 +1164,7 @@ Value getGlobalScratchPtr(Location loc, RewriterBase &rewriter,
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     return b.gep(ptrTy, i8_ty, gmemBase, allocOffset);
   }
+#endif
 
   // Base for entire kernel
   auto gmemBase =

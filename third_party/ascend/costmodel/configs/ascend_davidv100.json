@@ -1,0 +1,305 @@
+{
+  "$schema": "./hardware_schema.json",
+  "name": "Ascend davidV100",
+  "vendor": "Huawei",
+  "version": "1.0",
+
+  "clock": {
+    "frequency_ghz": 1.65,
+    "cycles_per_us": 1650
+  },
+
+  "memory_spaces": {
+    "hbm": {
+      "type": "off_chip",
+      "size_gb": 32,
+      "bandwidth_tbps": 1.6,
+      "latency_cycles": 200
+    },
+    "l2": {
+      "type": "on_chip_shared",
+      "size_mb": 192,
+      "bandwidth_gbps": 3200,
+      "latency_cycles": 50
+    },
+    "l1": {
+      "type": "on_chip_local",
+      "size_kb": 512,
+      "bandwidth_gbps": 6400,
+      "latency_cycles": 10,
+      "description": "Cube data staging buffer"
+    },
+    "l0a": {
+      "type": "register_file",
+      "size_kb": 64,
+      "description": "Left matrix input for Cube"
+    },
+    "l0b": {
+      "type": "register_file",
+      "size_kb": 64,
+      "description": "Right matrix input for Cube"
+    },
+    "l0c": {
+      "type": "register_file",
+      "size_kb": 128,
+      "description": "Cube output accumulator"
+    },
+    "ub": {
+      "type": "on_chip_local",
+      "size_kb": 512,
+      "bandwidth_gbps": 3200,
+      "latency_cycles": 5,
+      "description": "Unified Buffer for Vector compute"
+    }
+  },
+
+  "compute_units": {
+    "cube": {
+      "type": "matrix_engine",
+      "tflops_fp16": 448,
+      "tflops_fp32": 224,
+      "tflops_int8": 896,
+      "fractal_sizes": {
+        "fp16": {
+          "m": 16,
+          "k": 16,
+          "n": 16
+        },
+        "bf16": {
+          "m": 16,
+          "k": 16,
+          "n": 16
+        },
+        "fp32": {
+          "m": 16,
+          "k": 8,
+          "n": 16
+        },
+        "int8": {
+          "m": 16,
+          "k": 32,
+          "n": 16
+        }
+      },
+      "tile_m": 16,
+      "tile_n": 16,
+      "tile_k": 16,
+      "input_spaces": [
+        "l0a",
+        "l0b"
+      ],
+      "output_space": "l0c",
+      "supported_dtypes": [
+        "fp16",
+        "bf16",
+        "fp32",
+        "int8"
+      ]
+    },
+    "vector": {
+      "type": "simd_engine",
+      "width_elements": 128,
+      "width_bytes": 256,
+      "tflops_fp32": 14,
+      "tflops_fp16": 28,
+      "compute_space": "ub",
+      "supported_ops": [
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "max",
+        "min",
+        "exp",
+        "log",
+        "sqrt",
+        "rsqrt",
+        "tanh",
+        "sigmoid",
+        "relu",
+        "reduce_sum",
+        "reduce_max",
+        "reduce_min",
+        "cast",
+        "broadcast"
+      ],
+      "supported_dtypes": [
+        "fp32",
+        "fp16",
+        "bf16",
+        "int32",
+        "int8"
+      ]
+    }
+  },
+
+  "data_movers": {
+    "cube_mte2": {
+      "description": "Cube input: HBM to L1",
+      "src_space": "hbm",
+      "dst_space": "l1",
+      "bandwidth_gbps": 200,
+      "max_burst_bytes": 65536,
+      "alignment_bytes": 32
+    },
+    "mte1": {
+      "description": "Cube input: L1 to L0A/L0B",
+      "src_space": "l1",
+      "dst_spaces": [
+        "l0a",
+        "l0b"
+      ],
+      "bandwidth_gbps": 400,
+      "max_burst_bytes": 32768,
+      "alignment_bytes": 32
+    },
+    "fixpipe": {
+      "description": "Cube output: L0C to HBM",
+      "src_space": "l0c",
+      "dst_space": "hbm",
+      "bandwidth_gbps": 200,
+      "max_burst_bytes": 65536,
+      "alignment_bytes": 32,
+      "supports_accumulate": true,
+      "supports_cast": true
+    },
+    "vector_mte2": {
+      "description": "Vector input: HBM to UB",
+      "src_space": "hbm",
+      "dst_space": "ub",
+      "bandwidth_gbps": 75,
+      "max_burst_bytes": 65536,
+      "alignment_bytes": 32
+    },
+    "mte3": {
+      "description": "Vector output: UB to HBM",
+      "src_space": "ub",
+      "dst_space": "hbm",
+      "bandwidth_gbps": 71,
+      "max_burst_bytes": 65536,
+      "alignment_bytes": 32
+    }
+  },
+
+  "pipeline": {
+    "cube_path": {
+      "stages": [
+        "cube_mte2",
+        "mte1",
+        "cube",
+        "fixpipe"
+      ],
+      "description": "Matrix multiplication data flow",
+      "fully_pipelined": true
+    },
+    "vector_path": {
+      "stages": [
+        "vector_mte2",
+        "vector",
+        "mte3"
+      ],
+      "description": "Vector computation data flow",
+      "fully_pipelined": true
+    },
+    "hardware_units": {
+      "cube_mte2": {
+        "path": "cube",
+        "can_overlap": true
+      },
+      "mte1": {
+        "path": "cube",
+        "can_overlap": true
+      },
+      "cube": {
+        "path": "cube",
+        "can_overlap": true
+      },
+      "fixpipe": {
+        "path": "cube",
+        "can_overlap": true
+      },
+      "vector_mte2": {
+        "path": "vector",
+        "can_overlap": true
+      },
+      "vector": {
+        "path": "vector",
+        "can_overlap": true
+      },
+      "mte3": {
+        "path": "vector",
+        "can_overlap": true
+      }
+    },
+    "parallelism": {
+      "inter_path": {
+        "cube_path_and_vector_path": true,
+        "description": "Cube and Vector paths execute in parallel"
+      },
+      "intra_path": {
+        "cube_mte2_mte1_cube_fixpipe": true,
+        "vector_mte2_vector_mte3": true,
+        "description": "All units within each path can execute in parallel (pipelined)"
+      }
+    }
+  },
+
+  "performance_model": {
+    "cube_cycles_per_tile": {
+      "formula": "ceil(M/16) * ceil(N/16) * ceil(K/16)",
+      "base_cycles": 1
+    },
+    "vector_cycles_per_op": {
+      "formula": "ceil(elements / 128)",
+      "base_cycles": 1
+    },
+    "memory_cycles": {
+      "formula": "bytes / bandwidth_per_cycle",
+      "include_latency": true
+    }
+  },
+
+  "calibration": {
+    "description": "davidV100 profile adapted from tilesim arc_config (clock=1650MHz, UB=512KB, core_config: cube=28, vector=56). Remaining model parameters follow Ascend 910B baseline and should be re-calibrated with davidV100 profiling data.",
+
+    "startup_latencies": {
+      "vector_startup_cycles": 35,
+      "mte2_startup_cycles": 50,
+      "mte3_startup_cycles": 40,
+      "cube_startup_cycles": 20,
+      "fixpipe_startup_cycles": 30
+    },
+
+    "vector_op_cycles_per_vec_instruction": {
+      "exp": 4,
+      "log": 3,
+      "tanh": 3,
+      "sigmoid": 3,
+      "sqrt": 2,
+      "rsqrt": 2,
+      "div": 3,
+      "simple_ops_add_sub_mul_etc": 1
+    },
+
+    "scalar_overhead": {
+      "aiv_scalar_to_vec_ratio_steady_state": 1.27,
+      "aic_scalar_to_mac_ratio_steady_state": 8.4,
+      "aiv_vec_ratio_observed": 0.211,
+      "aiv_scalar_overhead_factor": 3.74
+    },
+
+    "parallelism": {
+      "num_aic_cores": 28,
+      "num_aiv_cores": 56,
+      "description": "From tilesim davidV100 core_config"
+    },
+
+    "pipe_barrier": {
+      "cycles_per_inner_iteration": 7500
+    },
+
+    "wave_overhead": {
+      "description": "Baseline wave-overhead model inherited from 910B; requires davidV100 calibration"
+    }
+  }
+}

@@ -18,35 +18,70 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+# Checkout with retries, tuned for a link that is usually fast but drops.
+#
+# The failure this exists for is `RPC failed; curl 56 GnuTLS recv error (-110)`
+# / "The TLS connection was non-properly terminated" partway through a fetch --
+# a transport-level break, not an auth or capacity problem. Those come and go
+# within seconds, so the answer is to try again immediately rather than to back
+# off: on this network a retry frequently comes back at full speed. A retry is
+# also cheap, because the workspace .git is reused across attempts and git only
+# transfers what the previous attempt did not land.
+#
+# No sleep between attempts. A dropped connection is not a rate limit, and
+# waiting costs time that a fast retry would spend making progress.
+
 name: 'Smart Checkout with Retry'
-description: 'Attempts to checkout code with multiple retries and sleep intervals'
+description: 'Checkout with retries and transport settings tuned for an unreliable link'
 inputs:
+  # Declared for documentation only: a composite action cannot vary the ref of
+  # a `uses:` step, so the version below is fixed. Kept so the callers already
+  # passing it do not break.
   checkout_version:
-    description: 'The version of actions/checkout to use'
+    description: 'Ignored: composite actions cannot parameterise `uses:`. Pinned to v6.'
     required: false
     default: 'v6'
 
 runs:
   using: 'composite'
   steps:
+    - name: Tune Git for an unreliable link
+      shell: bash
+      # HTTP/1.1 because the multiplexed HTTP/2 connection dies as a whole on a
+      # single lost packet, which is exactly the error above; HTTP/1.1 requests
+      # are independent. postBuffer keeps a large pack from falling back to
+      # chunked encoding, which some proxies mishandle. The low-speed cut-off
+      # turns a stalled transfer into a fast failure the retry loop can act on,
+      # instead of a job that sits until the timeout -- without it, an attempt
+      # that hangs rather than errors would stall the whole sequence.
+      #
+      # --global because this step runs before there is a .git to configure in,
+      # so these apply to the runner as a whole. That is intended: both
+      # settings are right for any repository fetched from this machine.
+      run: |
+        set -uo pipefail
+        git config --global http.version HTTP/1.1
+        git config --global http.postBuffer 524288000
+        git config --global http.lowSpeedLimit 1000
+        git config --global http.lowSpeedTime 60
+
     - name: Remove stale Git lock files
       shell: bash
       run: |
         find . -type f -name '*.lock' -delete || true
 
+    # Each attempt is gated on the one before it, so checking just the previous
+    # outcome is enough: if attempt N succeeded, attempt N+1 never runs.
+    #
+    # fetch-depth 0 is required rather than incidental: check-backend-changed
+    # runs `git merge-base origin/<base> <pr head>` to scope a PR to the files
+    # it touches, which needs the base branch's history locally.
     - name: Checkout code (attempt 1)
       id: checkout1
       uses: actions/checkout@v6
       with:
         fetch-depth: 0
       continue-on-error: true
-
-    - name: Sleep before checkout2
-      if: steps.checkout1.outcome == 'failure'
-      shell: bash
-      run: |
-        echo "First checkout attempt failed. Sleeping for 60 seconds before retry..."
-        sleep 60
 
     - name: Checkout code (attempt 2)
       id: checkout2
@@ -56,20 +91,77 @@ runs:
         fetch-depth: 0
       continue-on-error: true
 
-    - name: Sleep before final checkout
-      if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
-      shell: bash
-      run: |
-        echo "Second checkout attempt failed. Sleeping for 120 seconds before final retry..."
-        sleep 120
+    - name: Checkout code (attempt 3)
+      id: checkout3
+      if: steps.checkout2.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      continue-on-error: true
 
-    - name: Checkout code (final attempt)
-      if: steps.checkout1.outcome == 'failure' && steps.checkout2.outcome == 'failure'
+    - name: Checkout code (attempt 4)
+      id: checkout4
+      if: steps.checkout3.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      continue-on-error: true
+
+    - name: Checkout code (attempt 5)
+      id: checkout5
+      if: steps.checkout4.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      continue-on-error: true
+
+    - name: Checkout code (attempt 6)
+      id: checkout6
+      if: steps.checkout5.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      continue-on-error: true
+
+    - name: Checkout code (attempt 7)
+      id: checkout7
+      if: steps.checkout6.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      continue-on-error: true
+
+    - name: Checkout code (attempt 8)
+      id: checkout8
+      if: steps.checkout7.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      continue-on-error: true
+
+    - name: Checkout code (attempt 9)
+      id: checkout9
+      if: steps.checkout8.outcome == 'failure'
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      continue-on-error: true
+
+    - name: Checkout code (attempt 10)
+      # Fails the job if this one fails too: no continue-on-error here.
+      if: steps.checkout9.outcome == 'failure'
       uses: actions/checkout@v6
       with:
         fetch-depth: 0
 
-    - name: Verify checkout success
+    - name: Report the failed checkout
+      if: failure()
       shell: bash
+      run: |
+        echo "::error::Smart checkout failed after 10 attempts."
+        exit 1
+
+    - name: Verify checkout success
       if: success()
-      run: echo "Checkout completed successfully"
+      shell: bash
+      run: echo "Smart checkout completed successfully."

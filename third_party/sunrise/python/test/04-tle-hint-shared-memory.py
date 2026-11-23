@@ -39,7 +39,6 @@ def hinted_add_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
 
 @pytest.mark.parametrize("n_elements", [128, 256, 512])
 def test_hint_shared_memory(n_elements):
-    torch.manual_seed(0)
     BLOCK = 128
     x = torch.randn(n_elements, device=DEVICE, dtype=torch.float32)
     y = torch.randn(n_elements, device=DEVICE, dtype=torch.float32)
