@@ -779,6 +779,8 @@ def _llc_opt_level(options: "MUSAOptions") -> str:
 
 @dataclass(frozen=True)
 class MUSAOptions:
+    # Opt-in: TME transaction issuers must supply warp-uniform inputs.
+    tme_issue_warp: bool = False
     num_warps: int = 4
     num_ctas: int = 1
     num_stages: int = 1
@@ -980,6 +982,10 @@ class MUSABackend(BaseBackend):
         arch = knobs.runtime.override_arch or opts.get("arch", None) or self.target.arch
         args = {"arch": _normalize_arch(arch)}
         capability = _capability_from_arch(args["arch"])
+        if type(opts.get("tme_issue_warp", False)) is not bool:
+            raise ValueError("tme_issue_warp must be a bool")
+        if opts.get("tme_issue_warp", False) and capability != 31:
+            raise ValueError("tme_issue_warp is currently supported only on MP31")
         exp2_width = opts.get("exp2_vector_width", 1)
         if isinstance(exp2_width, bool) or not isinstance(exp2_width, int) or exp2_width not in (1, 2, 4):
             raise ValueError(f"exp2_vector_width must be 1, 2, or 4, got {exp2_width!r}")
@@ -1216,6 +1222,7 @@ class MUSABackend(BaseBackend):
 
     @staticmethod
     def make_llir(src, metadata, options, arch):
+        src.set_attr("musa.tme_issue_warp", ir.builder(src.context).get_int32_attr(int(options.tme_issue_warp)))
         from triton._C.libtriton import llvm
 
         src.set_attr("musa.exp2_vector_width", ir.builder(src.context).get_int32_attr(options.exp2_vector_width))

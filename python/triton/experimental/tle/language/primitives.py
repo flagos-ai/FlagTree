@@ -33,6 +33,8 @@ TLE_PRIMITIVES = frozenset({
     "shard_id",
     "distributed_barrier",
     "remote",
+    "signal",
+    "signal_wait",
     "cumsum",
     "pipe",
     "pipe.reader",
@@ -43,26 +45,19 @@ TLE_PRIMITIVES = frozenset({
     "pipe.writer.commit",
     "pipe.writer.close",
 
-    # TLE-Lite: tileir view
-    "create_mem_token",
-    "join_mem_tokens",
-    "load_view_tko",
-    "store_view_tko",
-
-    # TLE-Lite: tileir token/tko
-    "dim",
-    "make_tensor_view",
-    "make_partition_view",
-    "make_view",
-
     ## TLE-Struct GPU
+    "gpu.buffered_tensor.load",  # CommonIR
+    "gpu.buffered_tensor.store",  # CommonIR
+    "gpu.buffered_tensor.slot",
+    "gpu.buffered_tensor.reshape",
+    "gpu.buffered_tensor.subslice",
     "gpu.alloc",
     "gpu.copy",
-    "gpu.buffered_tensor.load",
-    "gpu.buffered_tensor.store",
     "gpu.local_ptr",
     "gpu.memory_space",
     "gpu.set_layout",
+    "gpu.tensor_map_fenceproxy_acquire",
+    "gpu.reinterpret_tensor_map",
     "gpu.warp_specialize",
     "gpu.alloc_barrier",
     "gpu.alloc_barriers",
@@ -70,28 +65,40 @@ TLE_PRIMITIVES = frozenset({
     "gpu.barrier_arrive",
     "gpu.wgmma",
     "gpu.wgmma_wait",
-    "gpu.buffered_tensor.reshape",
-    "gpu.buffered_tensor.slot",
-    "gpu.buffered_tensor.subslice",
-    "gpu.range",  # TODO: del
-    "gpu.pipeline",  # TODO: del
 
-    ## TLE-Struct DSA (tsingmicro)
-    "dsa.pipeline",
+    ## TLE-Struct DSA
     "dsa.alloc",
     "dsa.copy",
-    "dsa.memory_space",
     "dsa.local_ptr",
+    "dsa.memory_space",
     "dsa.to_tensor",
     "dsa.to_buffer",
     "dsa.add",
     "dsa.sub",
     "dsa.mul",
+    "dsa.div",
     "dsa.max",
     "dsa.min",
-    "dsa.div",
+    "dsa.pipeline",
+    "dsa.parallel",
+    "dsa.hint",
     "dsa.extract_slice",
     "dsa.insert_slice",
+    "dsa.extract_element",
+    "dsa.subview",
+    "dsa.tile_alloc",
+    "dsa.tile_copy",
+    "dsa.tile_subview",
+    "dsa.tile_to_tensor",
+    "dsa.tile_set_flag",
+    "dsa.tile_wait_flag",
+    "dsa.tile_pipe_barrier",
+    "dsa.tile_gm_offset",
+    "dsa.tile_cube_launch",
+    "dsa.tile_cube_wait",
+    "dsa.workspace",
+
+    ## TLE-Struct DSA (tsingmicro)
     "dsa.tsingmicro.randgen",
     "dsa.tsingmicro.rand",
     "dsa.tsingmicro.randn",
@@ -103,6 +110,22 @@ TLE_PRIMITIVES = frozenset({
     "dsa.thrive.notify",
     "dsa.thrive.fence",
     "dsa.thrive.sync",
+
+    # TLE-Lite (tileir): token/tko
+    "create_mem_token",
+    "join_mem_tokens",
+    "load_view_tko",
+    "store_view_tko",
+    "load_tko",
+    "store_tko",
+    "atomic_cas_tko",
+    "atomic_xchg_tko",
+
+    # TLE-Lite (tileir): view
+    "dim",
+    "make_tensor_view",
+    "make_partition_view",
+    "make_view",
 })
 
 __all__ = ["TLE_PRIMITIVES"]

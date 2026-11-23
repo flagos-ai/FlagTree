@@ -164,7 +164,6 @@ LogicalResult lowerPPULdMatrix(
   assert(llvmOpCount == nullptr && "NYI");
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   auto *ctx = tensorTy.getContext();
-  auto regL = toLinearLayout(tensorTy.getShape(), tensorTy.getEncoding());
   auto memL = toLinearLayout(memDescType.getShape(), memDescType.getEncoding());
   auto cvt = minimalCvtLayout(memDescType, tensorTy);
 
@@ -196,10 +195,6 @@ LogicalResult lowerPPULdMatrix(
     return failure();
 
   auto srcVals = SmallVector<Value>{};
-
-  // Remove broadcasting on the register dimension
-  auto removeBroadcast = actionRemoveBroadcastedRegs(cvt);
-  cvt = removeBroadcast.apply(cvt);
 
   std::optional<ColumnAction> maybePermutation;
   LinearLayout tile;
@@ -344,12 +339,6 @@ LogicalResult lowerPPULdMatrix(
     }
   }
 
-  // Undo the permutation and the removeBroadcast
-  if (maybePermutation.has_value()) {
-    auto invPerm = maybePermutation.value().inverse();
-    srcVals = invPerm.apply(srcVals);
-  }
-  srcVals = broadcastAs(srcVals, regL);
   auto structTy = LLVM::LLVMStructType::getLiteral(
       ctx, SmallVector<Type>(srcVals.size(), llvmElemTy));
   src = packLLElements(loc, typeConverter, srcVals, rewriter, structTy);

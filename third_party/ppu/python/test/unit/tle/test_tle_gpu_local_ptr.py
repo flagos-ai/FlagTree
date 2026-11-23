@@ -10,8 +10,7 @@ that the upstream tests use to pin down lowering invariants.
 
 The two fp16 kernels (tiled_matmul, full_view_dot) currently xfail on PPU
 because their ``tle.gpu.copy`` is rewritten into a ``cp.async`` shorter
-than 4 bytes — the same upstream-Triton constraint that
-test_tle_pipeline_e2e.py's fp16 case hits.
+than 4 bytes due to an upstream Triton constraint.
 """
 
 import os
