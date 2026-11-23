@@ -42,6 +42,7 @@ from . import _async_compile
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
 from .cache import get_cache_key
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl, ir
+from ._distributed import DistributedRtContext, validate_node_launch_bindings
 
 TRITON_MODULE = "triton.language"
 GLUON_MODULE = "triton.experimental.gluon.language"
@@ -143,6 +144,12 @@ class DependenciesFinder(ast.NodeVisitor):
         # helps keep the list of vars we have to check small.
         if val is None or type(val) is ModuleType:
             return
+
+        # flagtree tle raw
+        tle_raw_source_cache_key = getattr(val, "__triton_tle_raw_source_cache_key__", None)
+        if tle_raw_source_cache_key is not None:
+            part = (tle_raw_source_cache_key() if callable(tle_raw_source_cache_key) else tle_raw_source_cache_key)
+            self.hasher.update(str(part).encode("utf-8"))
 
         if getattr(val, "__triton_aggregate__", False):
             for attr in val.hash_attrs:
@@ -436,7 +443,10 @@ def create_function_from_signature(sig, kparams, backend):
                         # we do not specialize non-constexpr floats and bools:
                         specialize = False
                 if specialize:
-                    specialization.append(f'("{kp.annotation_type}",) + {ret}[1:]')
+                    # Prefer constexpr over annotation type to avoid downgrading
+                    # compile-time constants to runtime-specialized types
+                    specialization.append(
+                        f'({ret} if {ret}[0] == "constexpr" else ("{kp.annotation_type}",) + {ret}[1:])')
                 else:
                     # skip runtime specialization:
                     specialization.append(f'("{kp.annotation_type}", None)')
@@ -548,10 +558,19 @@ class JITCallable:
     # the user might want to monkey-patch self.src dynamically.
     # Our unit tests do this, for example.
     def parse(self):
+        from ..compiler.hint_manager import hint_trigger
+        # Maps line numbers to comment hints
+        line_flagtree_hints = hint_trigger("maps_line_numbers_to_comment_hints", self)
+        if line_flagtree_hints is None:
+            line_flagtree_hints = {}
+
         tree = ast.parse(self._src)
         assert isinstance(tree, ast.Module)
         assert len(tree.body) == 1
         assert isinstance(tree.body[0], ast.FunctionDef)
+
+        # Attach the line number to comment mapping to the function definition node
+        hint_trigger("attach_line_number_to_comment_mapping", tree, line_flagtree_hints)
         return tree
 
     @property
@@ -695,7 +714,9 @@ class JITFunction(JITCallable, KernelInterface[T]):
         Precompute as much as possible.
         """
         from ..compiler import CompiledKernel, compile, ASTSource, make_backend
+        from ..backends import route_target
         target = driver.active.get_current_target()
+        target = route_target(target, self)  # flagtree tileir: support target routing
         backend = make_backend(target)
         self.CompiledKernel = CompiledKernel
         self.compile = compile
@@ -778,10 +799,20 @@ class JITFunction(JITCallable, KernelInterface[T]):
             grid_0 = grid[0]
             grid_1 = grid[1] if grid_size > 1 else 1
             grid_2 = grid[2] if grid_size > 2 else 1
+            if hasattr(kernel, "result"):
+                kernel = kernel.result()
+            validate_node_launch_bindings(kernel, bound_args, specialization)
             # launch kernel
             launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
-            kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
-                       knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *bound_args.values())
+            # flagtree tle distributed: Add dist_param to kernel.run
+            dist_param = []
+            ctx = DistributedRtContext()
+            if ctx.is_lite_mode:
+                dist_param += [ctx.comm_ptr, ctx.mem_ptr]
+            kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata,
+                       launch_metadata, knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *dist_param,
+                       *bound_args.values())
+
         return kernel
 
     def repr(self, _):
@@ -897,6 +928,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
             def finalize_compile(kernel):
                 kernel_cache[key] = kernel
+                # flagtree tle raw
+                try:
+                    from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
+                except ImportError:
+                    pass
+                else:
+                    run_kernel_init_hooks(kernel)
                 self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, target, device, constexprs,
                                 options, [attrs], warmup)
 
@@ -905,6 +943,13 @@ class JITFunction(JITCallable, KernelInterface[T]):
         else:
             kernel = self.compile(src, target=target, options=options.__dict__)
             kernel_cache[key] = kernel
+            # flagtree tle raw
+            try:
+                from triton.experimental.tle.raw.cuda.runtime import run_kernel_init_hooks
+            except ImportError:
+                pass
+            else:
+                run_kernel_init_hooks(kernel)
             self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, target, device, constexprs, options,
                             [attrs], warmup)
         return kernel

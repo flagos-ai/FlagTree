@@ -22,6 +22,9 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 option(TRITON_BUILD_PYTHON_MODULE "Build Python Triton bindings" OFF)
 option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ${FLAGTREE_DEFAULT_OPTION})
 option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ${FLAGTREE_DEFAULT_OPTION})
+# FlagPrism: configure the external profiler/debugger in the options module.
+flagtree_configure_flagprism()
+
 option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
 option(TRITON_OFFLINE_BUILD "Build without downloading dependencies" OFF)
 option(TRITON_EXT_ENABLED "Build with default visibility for Triton+LLVM symbol exposure to plugin extensions" OFF)
@@ -170,11 +173,17 @@ if(NOT MSVC)
     # crash a Triton not compiled with visibility due to missing symbols.
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DTRITON_EXT_ENABLED=1")
   endif()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default ")
+  if(FLAGTREE_BACKEND)
+    flagtree_configure_backend_cxx_flags()
+  else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror -Wno-covered-switch-default ")
+  endif()
 
 else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /wd4244 /wd4624 /wd4715 /wd4530")
 endif()
+
+flagtree_configure_backend_llvm_compat()
 
 include_directories(".")
 include_directories(${MLIR_INCLUDE_DIRS})
@@ -219,6 +228,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
   find_package(Python3 REQUIRED COMPONENTS Development.Module Interpreter)
   find_package(pybind11 CONFIG REQUIRED HINTS "${Python3_SITELIB}")
   flagtree_python_link_libraries()
+
+  # FlagPrism: register component targets before backend codegen captures TRITON_LIBS.
+  flagtree_add_flagprism_components()
+  flagtree_configure_flir_dependency()
+  flagtree_configure_ascend_npu_ir_dependency()
 
   foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
     add_subdirectory(third_party/${CODEGEN_BACKEND})
@@ -317,6 +331,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
         LLVMPowerPCAsmParser
         LLVMPowerPCCodeGen
       )
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64")
+      list(APPEND TRITON_LIBRARIES
+        LLVMRISCVAsmParser
+        LLVMRISCVCodeGen
+      )
   else()
     message(FATAL_ERROR "LLVM codegen/ASM parser libs: This HW architecture (${CMAKE_SYSTEM_PROCESSOR}) is not configured in cmake lib dependencies.")
   endif()
@@ -350,6 +369,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
   # copies of core Triton code and LLVM.
   set_target_properties(triton PROPERTIES INTERFACE_LINK_LIBRARIES "")
 
+  flagtree_configure_backend_triton_target(triton)
   if(WIN32)
     target_link_libraries(triton PRIVATE ${CMAKE_DL_LIBS})
     set_target_properties(triton PROPERTIES SUFFIX ".pyd")
@@ -393,10 +413,17 @@ if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
 endif()
 
 if(NOT TRITON_BUILD_PYTHON_MODULE)
+  # FlagPrism: component registration is defined in cmake/FlagTreeOptions.cmake.
+  flagtree_add_flagprism_components()
+  flagtree_configure_flir_dependency()
   foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
     add_subdirectory(third_party/${CODEGEN_BACKEND})
   endforeach()
-  add_subdirectory(third_party/proton/Dialect)
+  # FlagPrism: keep Proton dialect out of builds where FlagPrism owns it.
+  # add_subdirectory(third_party/proton/Dialect)
+  if(NOT TRITON_BUILD_FLAGPRISM)
+    add_subdirectory(third_party/proton/Dialect)
+  endif()
   flagtree_configure_tle_plugin(FALSE)
 endif()
 

@@ -24,6 +24,8 @@ import os
 import platform
 import re
 import contextlib
+import functools  # FlagPrism
+import importlib.machinery
 import shlex
 import shutil
 import subprocess
@@ -65,6 +67,25 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(__file__))
 from python.setup_tools import setup_helper as helper
+# flagtree: stubgen import
+from python.setup_tools.stubgen import auto_generate_stubs_from_install_extension
+
+# flagtree: restore installer
+# Regenerate .pyi stubs for the compiled _C extension modules right after the
+# cmake-built .so is installed into the build tree (helper.install_extension).
+# Runs exactly once per build. See python/setup_tools/stubgen.py.
+_orig_install_extension = helper.install_extension
+
+
+# flagtree: stubgen wrapper
+def _install_extension_with_stubs(build_ext=None, *args, **kwargs):
+    result = _orig_install_extension(build_ext=build_ext, *args, **kwargs)
+    auto_generate_stubs_from_install_extension(build_ext)
+    return result
+
+
+# flagtree: apply stubgen wrapper
+helper.install_extension = _install_extension_with_stubs
 
 from python.build_helpers import get_base_dir, get_cmake_dir
 
@@ -121,7 +142,14 @@ class BackendInstaller:
             tools_dir = None
 
         for file in ["compiler.py", "driver.py"]:
-            assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
+            # The XPU backend ships its Python implementation compiled, so the
+            # backend entry points may be extension modules rather than sources.
+            stem = file[:-len(".py")]
+            found = any(
+                os.path.exists(os.path.join(backend_path, stem + suffix))
+                for suffix in (".py", *importlib.machinery.EXTENSION_SUFFIXES))
+            assert found, f"${file} does not exist in ${backend_path}"
+            # assert os.path.exists(os.path.join(backend_path, file)), f"${file} does not exist in ${backend_path}"
 
         install_dir = os.path.join(os.path.dirname(__file__), "python", "triton", "backends", backend_name)
 
@@ -361,6 +389,17 @@ def get_thirdparty_packages(packages: list):
     return thirdparty_cmake_args
 
 
+# FlagPrism: bind the existing dependency resolver without duplicating setup logic.
+FLAGPRISM_SETUP = helper.FlagPrismSetup(
+    get_base_dir(),
+    functools.partial(
+        helper.get_flagprism_dependency_cmake_args,
+        get_thirdparty_packages=get_thirdparty_packages,
+        get_json_package_info=get_json_package_info,
+    ),
+)  # FlagPrism
+
+
 def download_and_copy(name, src_func, dst_path, variable, version, url_func):
     if is_offline_build():
         return
@@ -412,12 +451,31 @@ class CMakeClean(clean):
         clean.initialize_options(self)
         self.build_temp = get_cmake_dir()
 
+    # flagtree: remove stable symlink before clean
+    def run(self):
+        # Remove stable symlink before cleaning build directory
+        link_path = os.path.join("build", "lib.current")
+        if os.path.islink(link_path):
+            os.unlink(link_path)
+        super().run()
+
 
 class CMakeBuildPy(build_py):
 
     def run(self) -> None:
+        # FlagPrism: prepare the external component tree before compiling.
+        FLAGPRISM_SETUP.prepare_build_tree(self.build_lib)
         self.run_command('build_ext')
-        return super().run()
+        helper.generate_backend_intrinsic_tables()
+        helper.overlay_backend_runtime_so(self, backends)  # flagtree
+        helper.refresh_generated_backend_packages(self, backends)  # flagtree
+        ret = super().run()
+        helper.write_backend_file_to_build_lib(self.build_lib)  # flagtree
+        helper.write_backend_site_pth(self.build_lib)  # flagtree
+        # FlagPrism: finalize external component packaging after build_py.
+        FLAGPRISM_SETUP.finalize_build_tree(self.build_lib)
+        helper.finalize_backend_build_tree(self.build_lib)
+        return ret
 
 
 class CMakeExtension(Extension):
@@ -447,7 +505,7 @@ class CMakeBuild(build_ext):
         # with an actionable message otherwise. Done here (build_ext) rather than at
         # import so non-build commands don't run the check.
         helper.check_pybind11_abi()
-        if active_backend not in ("xpu", ):
+        if active_backend not in ("xpu", "spacemit"):
             download_and_copy_dependencies()
 
         try:
@@ -570,6 +628,13 @@ class CMakeBuild(build_ext):
 
         if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
             cmake_args += self.get_proton_cmake_args()
+        # FlagPrism: the NVIDIA profiler requires CUPTI, so reuse Proton's
+        # existing dependency discovery only for the NVIDIA backend.
+        elif (FLAGPRISM_SETUP.enabled and os.getenv("FLAGPRISM_BACKEND", "").strip().lower() == "nvidia"):
+            cmake_args += self.get_proton_cmake_args()
+        # end FlagPrism
+        cmake_args += FLAGPRISM_SETUP.cmake_args(self.build_lib)  # FlagPrism
+        cmake_args += FLAGPRISM_SETUP.dependency_cmake_args(self)  # FlagPrism
 
         cmake_args += helper.customize_gluon_cmake_args()
 
@@ -682,6 +747,11 @@ backends = helper.init_backends(BackendInstaller)  # flagtree
 
 def get_package_dirs():
     yield ("", "python")
+    # FlagPrism: keep top-level packages anchored to the main Python tree when
+    # a backend overrides the default package root.
+    for package in find_packages(where="python", include=["flagtree", "flagtree.*"]):
+        yield (package, os.path.join("python", package.replace(".", os.sep)))
+    yield from FLAGPRISM_SETUP.package_dirs()  # FlagPrism
 
     # flagtree backend specialization
     yield from helper.SpecPackageHelper.get_spec_packages()
@@ -713,6 +783,9 @@ def get_package_dirs():
 
 def get_packages():
     # flagtree backend specialization: add excluded packages
+    # FlagPrism: package the canonical host gateway and registered components.
+    yield from find_packages(where="python", include=["flagtree", "flagtree.*"])
+    yield from FLAGPRISM_SETUP.packages()  # FlagPrism
     yield from helper.get_spec_packages()
 
     for backend in backends:
@@ -834,6 +907,8 @@ class plugin_sdist(sdist):
 
 def get_entry_points():
     entry_points = {}
+    if console_scripts := FLAGPRISM_SETUP.console_scripts():  # FlagPrism
+        entry_points["console_scripts"] = console_scripts
     if check_env_flag("TRITON_BUILD_PROTON", "ON"):  # Default ON
         entry_points["console_scripts"] = [
             "proton-viewer = triton.profiler.viewer:main",
@@ -904,6 +979,8 @@ setup(
     version=helper.get_flagtree_version(get_git_commit_hash),
     author="FlagOS",
     author_email="contact@flagos.io",
+    license="MIT",
+    license_files=["LICENSE"],
     description=
     "A unified compiler supporting multiple AI chip backends for custom Deep Learning operations, which is forked from triton-lang/triton.",
     long_description=helper.get_long_description(),

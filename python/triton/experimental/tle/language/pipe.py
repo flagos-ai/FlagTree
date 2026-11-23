@@ -1,0 +1,166 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+# flagtree tle
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import triton.language.core as tl
+
+from .gpu import types as gpu_types
+from .gpu.mthreads import common as mthreads_common
+from .gpu.mthreads import pipe as mthreads_pipe
+
+if TYPE_CHECKING:
+    from . import TLESemantic
+
+
+def _unwrap_pipe_constexpr(value):
+    if isinstance(value, tl.constexpr):
+        value = value.value
+    if isinstance(value, tl.tuple):
+        return tuple(_unwrap_pipe_constexpr(item) for item in value.values)
+    if isinstance(value, (tuple, list)):
+        return type(value)(_unwrap_pipe_constexpr(item) for item in value)
+    if value is None or isinstance(value, str):
+        return value
+    value = tl._unwrap_if_constexpr(value)
+    if isinstance(value, (tuple, list)):
+        return type(value)(_unwrap_pipe_constexpr(item) for item in value)
+    return value
+
+
+def _validate_public_name(kind, value):
+    if not isinstance(value, str) or not value.isidentifier():
+        raise ValueError(f"tle.pipe {kind} name must be a Python identifier, got {value!r}")
+    if value.startswith("_"):
+        raise ValueError(f"tle.pipe {kind} name must not start with '_', got {value!r}")
+    if value in {"fields", "readers"}:
+        raise ValueError(f"tle.pipe {kind} name {value!r} is reserved")
+
+
+def _validate_reader_names(readers):
+    readers = _unwrap_pipe_constexpr(readers)
+    if readers is None:
+        return None
+    if isinstance(readers, str) or not isinstance(readers, (tuple, list)):
+        raise ValueError("tle.pipe readers must be a compile-time tuple/list of strings")
+    if not readers:
+        raise ValueError("tle.pipe readers must not be empty")
+    names = []
+    seen = set()
+    for reader in readers:
+        reader = _unwrap_pipe_constexpr(reader)
+        _validate_public_name("reader", reader)
+        if reader in seen:
+            raise ValueError(f"tle.pipe readers must be unique, got duplicate {reader!r}")
+        seen.add(reader)
+        names.append(reader)
+    return tuple(names)
+
+
+@tl.builtin
+def pipe(
+    *,
+    capacity,
+    scope="cta",
+    name=None,
+    readers=None,
+    one_shot=False,
+    _semantic: TLESemantic | None = None,
+    **fields,
+) -> gpu_types.pipe_value:
+    """
+    Create a typed pipe descriptor.
+
+    Pipe is a hardware-independent TLE dataflow edge. Without readers= it has
+    one default reader. With readers=("name", ...) it is an explicit SPMC pipe
+    with named reader endpoints. The current MVP accepts GPU shared-memory
+    buffered tensors as fields and lowers CTA-scoped pipes to the GPU NVWS
+    backend.
+
+    The NVIDIA backend also recognizes a restricted multi-producer form after
+    warp specialization. Each producer must use only TMA copies, producers must
+    write disjoint field sets whose union covers the complete stage, and every
+    producer must acquire and commit the same stage sequence. The backend then
+    makes the reader's full barrier wait for one contribution from each
+    producer. Distinct fields may be static non-overlapping subslices of one
+    shared-memory allocation; overlapping fields, or aliasing that cannot be
+    proven disjoint, are rejected. A single producer continues to use the
+    ordinary SPSC lowering.
+
+    one_shot=True models a single ready/full edge. The writer still commits and
+    readers still wait, but acquire/release/close are not part of the contract.
+    """
+    # Ascend keeps the 3.5 workspace-backed pipe implementation. Dispatch before
+    # the GPU field validation below, which only accepts gpu.buffered_tensor.
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+    if FLAGTREE_BACKEND == "ascend":
+        from .dsa.ascend.pipe import _deferred_pipe
+        return _deferred_pipe(capacity=capacity, scope=scope, name=name, readers=readers, one_shot=one_shot,
+                              _semantic=_semantic, **fields)
+
+    capacity = _unwrap_pipe_constexpr(capacity)
+    scope = _unwrap_pipe_constexpr(scope)
+    name = _unwrap_pipe_constexpr(name)
+    one_shot = _unwrap_pipe_constexpr(one_shot)
+    reader_names = _validate_reader_names(readers)
+
+    if not isinstance(capacity, int):
+        raise ValueError(f"tle.pipe capacity must be a compile-time int, got {type(capacity).__name__}")
+    if capacity <= 0:
+        raise ValueError(f"tle.pipe capacity must be positive, got {capacity}")
+    if scope != "cta":
+        raise ValueError(f"tle.pipe MVP supports only scope='cta', got {scope!r}")
+    if name is not None and not isinstance(name, str):
+        raise ValueError(f"tle.pipe name must be a string or None, got {type(name).__name__}")
+    if not isinstance(one_shot, bool):
+        raise ValueError(f"tle.pipe one_shot must be a compile-time bool, got {type(one_shot).__name__}")
+    if not fields:
+        raise ValueError("tle.pipe requires at least one payload field")
+
+    if mthreads_common.enabled() and mthreads_pipe.is_backend_builder(_semantic.builder):
+        mthreads_pipe.validate_pipe_options(scope, reader_names, one_shot, fields)
+
+    for field_name, field in fields.items():
+        _validate_public_name("field", field_name)
+        if not isinstance(field, gpu_types.buffered_tensor):
+            raise ValueError(
+                f"tle.pipe field {field_name!r} must be tle.gpu.buffered_tensor, got {type(field).__name__}")
+        if field.type.storage is not gpu_types.smem:
+            raise ValueError(f"tle.pipe field {field_name!r} must use tle.gpu.smem storage, got {field.type.storage}")
+        if len(field.shape) < 2:
+            raise ValueError(f"tle.pipe field {field_name!r} must have rank >= 2, got {len(field.shape)}")
+        if field.shape[0] != capacity:
+            raise ValueError(
+                f"tle.pipe field {field_name!r} leading dimension must equal capacity {capacity}, got {field.shape[0]}")
+
+    value = gpu_types.pipe_value(capacity, scope, name, fields, reader_names, one_shot=one_shot)
+    _semantic.builder.create_pipe_create(value._field_handles(_semantic), capacity, scope, name or "",
+                                         list(fields.keys()), list(reader_names or ()), one_shot)
+    return value
+
+
+pipe_slot = gpu_types.pipe_slot
+pipe_value = gpu_types.pipe_value
+pipe_reader = gpu_types.pipe_reader
+pipe_writer = gpu_types.pipe_writer
+pipe_wait_result = gpu_types.pipe_wait_result

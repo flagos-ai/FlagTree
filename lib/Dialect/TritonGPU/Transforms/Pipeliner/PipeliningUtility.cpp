@@ -40,6 +40,10 @@
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
+#ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
+#endif
 #include "triton/Tools/LayoutUtils.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
@@ -192,18 +196,56 @@ bool mlir::triton::isOuterLoop(scf::ForOp forOp) {
   });
 }
 
+#ifdef __TLE__
+static Operation *predicateWarpGroupDotWithIf(RewriterBase &rewriter,
+                                              ttng::WarpGroupDotOp dotOp,
+                                              Value pred) {
+  Location loc = dotOp.getLoc();
+  rewriter.setInsertionPoint(dotOp);
+  auto ifOp =
+      scf::IfOp::create(rewriter, loc, dotOp.getResult().getType(), pred,
+                        /*withElseRegion=*/true);
+
+  OpBuilder thenBuilder = ifOp.getThenBodyBuilder();
+  auto thenYield = scf::YieldOp::create(thenBuilder, loc, dotOp.getResult());
+  dotOp->moveBefore(thenYield);
+
+  OpBuilder elseBuilder = ifOp.getElseBodyBuilder();
+  scf::YieldOp::create(elseBuilder, loc, dotOp.getC());
+
+  dotOp.getResult().replaceUsesWithIf(ifOp.getResult(0), [&](OpOperand &use) {
+    return use.getOwner() != thenYield;
+  });
+  return ifOp;
+}
+#endif
+
 // Function to mask operations during scheduling.
 Operation *mlir::triton::predicateOp(RewriterBase &rewriter, Operation *op,
                                      Value pred) {
   OpBuilder::InsertionGuard guard(rewriter);
+#ifdef __TLE__
+  if (!isConstantIntValue(pred, 1)) {
+    if (auto dotOp = dyn_cast<ttng::WarpGroupDotOp>(op))
+      return predicateWarpGroupDotWithIf(rewriter, dotOp, pred);
+  }
+#endif
   if (mlir::isMemoryEffectFree(op))
     return op;
   if (isConstantIntValue(pred, 1))
     return op;
+#ifdef __TLE__
+  if (isa<tt::tle::WGMMASharedOperandFenceOp>(op))
+    return op;
+#endif
   if (isa<LLVM::AssumeOp, ttng::FenceAsyncSharedOp>(op))
     return op;
   if (isa<ttg::AsyncCommitGroupOp, ttg::AsyncWaitOp>(op))
     return op;
+#ifdef __TLE__
+  if (op->getName().getStringRef() == "tle.distributed_barrier")
+    return op;
+#endif
   if (op->hasTrait<OpTrait::LocalLoadTrait>())
     return op;
   if (isa<ttg::LocalStoreOp>(op))
@@ -551,6 +593,13 @@ void mlir::triton::combineRedundantWaitOps(
     // or a branching op (forOp, ifOp, whileOp) in between the waits
     while (next &&
            !isa<ttg::AsyncCommitGroupOp, RegionBranchOpInterface>(next)) {
+#ifdef __TLE__
+      // Keep a user transport wait's group-count ownership across cleanup.
+      if (auto explicitWait = dyn_cast<ttg::AsyncWaitOp>(next);
+          explicitWait &&
+          explicitWait->hasAttr(triton::tle::kTleExplicitAsyncWaitGroupAttr))
+        break;
+#endif
       if (auto nextWait = dyn_cast<ttg::AsyncWaitOp>(next)) {
         waitGroup.push_back(nextWait);
         minWaitNumber = std::min(minWaitNumber, nextWait.getNum());

@@ -65,6 +65,10 @@ class FlagtreeConfigs:
         "sunrise": "sunrise",
     }))
 
+    def set_extend_backends(self, backend):
+        if backend not in self.default_backends:
+            self.extend_backends.append(backend)
+
     def __post_init__(self):
         backends = list(self.default_backends)
         _backends = [backend for backend in backends if os.environ.get(f"USE_{backend.upper()}", "ON").upper() != "OFF"]
@@ -123,18 +127,26 @@ def remove_triton_in_modules(model):
         shutil.rmtree(triton_path)
 
 
-def decompress(url, content, dst_path, file_name=None):
-    file_bytes = BytesIO(content)
+def _decompress(url, source, dst_path, file_name=None, source_is_path=False):
     file_names = []
     if url.endswith(".zip"):
-        with zipfile.ZipFile(file_bytes, "r") as file:
+        with zipfile.ZipFile(source, "r") as file:
             file.extractall(path=dst_path)
             file_names = file.namelist()
     else:
-        with tarfile.open(fileobj=file_bytes, mode="r|*") as file:
+        open_args = {"name": source, "mode": "r:*"} if source_is_path else {"fileobj": source, "mode": "r|*"}
+        with tarfile.open(**open_args) as file:
             file.extractall(path=dst_path)
             file_names = file.getnames()
     os.rename(Path(dst_path) / file_names[0], Path(dst_path) / file_name)
+
+
+def decompress(url, content, dst_path, file_name=None):
+    _decompress(url, BytesIO(content), dst_path, file_name)
+
+
+def decompress_file(url, archive_path, dst_path, file_name=None):
+    _decompress(url, archive_path, dst_path, file_name, source_is_path=True)
 
 
 def get_triton_cache_path():
@@ -154,7 +166,7 @@ class DownloadManager:
         self.module_offline_handler = OfflineBuildManager()
         NetConfig.headers = {'User-Agent': NetConfig.user_agent}
 
-    def download(self, url=None, path=None, file_name=None, mode=None, module=None, required=False):
+    def download(self, url=None, path=None, file_name=None, mode=None, module=None, required=False, is_decompress=True):
         if self.module_offline_handler.is_offline_build():
             self.offline_copy(module, required)
             return
@@ -164,7 +176,7 @@ class DownloadManager:
         if mode == "git" or module:
             return self.git_clone(module, required)
         else:
-            return self.general_download(is_decompress=True)
+            return self.general_download(is_decompress=is_decompress)
 
     def offline_copy(self, module, required):
         src_path = os.path.join(self.module_offline_handler.offline_build_dir, module.name)
@@ -268,7 +280,14 @@ class DownloadManager:
             except Exception:
                 current_retry_count -= 1
                 residue = NetConfig.max_retry - current_retry_count
-                print(f"\n [Note]: [{residue}] retry to downloading and extracting {self.current_url}")
+                if current_retry_count == 0:
+                    break
+                # Transient network errors (connection reset, BOS hiccups) are
+                # common for the multi-GB toolchain artifacts; retrying them
+                # back-to-back just burns all attempts within seconds.
+                delay = min(120, 10 * 2**(residue - 1))
+                print(f"\n [Note]: [{residue}] retry to download {self.current_url} in {delay}s...")
+                time.sleep(delay)
         if current_retry_count == 0:
             self.set_status(status='fail', content=None)
             raise RuntimeError("The download failed, probably due to network problems!")
@@ -278,6 +297,10 @@ class DownloadManager:
         if is_decompress:
             decompress(self.current_url, content=content, dst_path=self.current_dst_path,
                        file_name=self.current_file_name)
+        else:
+            output_path = Path(self.current_dst_path) / self.current_file_name
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(content)
 
 
 class OfflineBuildManager:

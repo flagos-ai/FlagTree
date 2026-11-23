@@ -38,6 +38,12 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/Twine.h"
+#endif
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "ttg-utility"
@@ -50,6 +56,103 @@ namespace ttng = mlir::triton::nvidia_gpu;
 namespace mlir {
 
 using namespace triton;
+
+#ifdef __TLE__
+static constexpr const char *kTleExplicitEncodingAttrPrefix =
+    "tle.explicit_encoding.";
+static constexpr const char *kTleExplicitMemoryEncodingAttrName =
+    "tle.explicit_memory_encoding";
+
+std::string getTleExplicitEncodingAttrName(unsigned resultNumber) {
+  return (llvm::Twine(kTleExplicitEncodingAttrPrefix) +
+          llvm::Twine(resultNumber))
+      .str();
+}
+
+const char *getTleExplicitMemoryEncodingAttrName() {
+  return kTleExplicitMemoryEncodingAttrName;
+}
+
+Attribute getTleExplicitResultEncoding(Operation *op, unsigned resultNumber) {
+  return op->getAttr(getTleExplicitEncodingAttrName(resultNumber));
+}
+
+void setTleExplicitResultEncoding(Operation *op, unsigned resultNumber,
+                                  Attribute encoding) {
+  op->setAttr(getTleExplicitEncodingAttrName(resultNumber), encoding);
+}
+
+void setTleExplicitResultEncoding(OpResult result, Attribute encoding) {
+  setTleExplicitResultEncoding(result.getOwner(), result.getResultNumber(),
+                               encoding);
+}
+
+Attribute getTleExplicitMemoryEncoding(Operation *op) {
+  return op->getAttr(kTleExplicitMemoryEncodingAttrName);
+}
+
+void setTleExplicitMemoryEncoding(Operation *op, Attribute encoding) {
+  op->setAttr(kTleExplicitMemoryEncodingAttrName, encoding);
+}
+
+Attribute getTleExplicitValueEncoding(Value value) {
+  if (auto result = dyn_cast<OpResult>(value))
+    return getTleExplicitResultEncoding(result.getOwner(),
+                                        result.getResultNumber());
+  return nullptr;
+}
+
+static LogicalResult mergeTleExplicitMemoryEncoding(Operation *op, Value value,
+                                                    Attribute candidate,
+                                                    Attribute &encoding) {
+  if (!candidate)
+    return success();
+
+  if (auto tensorType = dyn_cast<RankedTensorType>(value.getType())) {
+    if (tensorType.getEncoding() != candidate)
+      return op->emitOpError("has explicit TLE encoding that does not match "
+                             "the tensor type encoding");
+  }
+
+  if (!encoding) {
+    encoding = candidate;
+    return success();
+  }
+
+  if (encoding == candidate)
+    return success();
+
+  op->emitOpError("has conflicting explicit TLE memory encodings:\n  ")
+      << encoding << "\nand\n  " << candidate;
+  return failure();
+}
+
+LogicalResult inferTleExplicitMemoryEncoding(Operation *op,
+                                             Attribute &encoding) {
+  encoding = getTleExplicitMemoryEncoding(op);
+
+  for (OpResult result : op->getResults()) {
+    if (failed(mergeTleExplicitMemoryEncoding(
+            op, result,
+            getTleExplicitResultEncoding(op, result.getResultNumber()),
+            encoding)))
+      return failure();
+  }
+
+  for (OpOperand &operand : op->getOpOperands()) {
+    if (failed(mergeTleExplicitMemoryEncoding(
+            op, operand.get(), getTleExplicitValueEncoding(operand.get()),
+            encoding)))
+      return failure();
+  }
+
+  return success();
+}
+
+bool isTleExplicitConvertLayoutOp(Operation *op) {
+  return isa<ttg::ConvertLayoutOp>(op) && getTleExplicitResultEncoding(op, 0);
+}
+#endif
 
 SmallVector<unsigned, 3> mmaVersionToInstrShape(int version,
                                                 const ArrayRef<int64_t> &shape,
@@ -427,6 +530,29 @@ static Attribute inferSrcEncoding(GatherOp op, Attribute dstEnc) {
   return dstEnc;
 }
 
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+// The op is absent from RemoveLayoutConversions' propagateToUsers and rewriteOp
+// lists, which assume a shape-preserving op and would report a fatal error on
+// this one. These two only answer what encoding crosses the op, which is dot_op
+// or nothing in either direction.
+static Attribute inferSrcEncoding(ttg::ConcatDotOperandOp op,
+                                  Attribute dstEnc) {
+  // dot_op carries no K extent, so it is the only encoding a concat shares
+  // unchanged with its fragments; shape-coupled ones take the generic path.
+  if (isa<ttg::DotOperandEncodingAttr>(dstEnc))
+    return dstEnc;
+  return {};
+}
+
+static Attribute inferDstEncoding(ttg::ConcatDotOperandOp op,
+                                  Attribute srcEnc) {
+  // Symmetric to inferSrcEncoding above.
+  if (isa<ttg::DotOperandEncodingAttr>(srcEnc))
+    return srcEnc;
+  return {};
+}
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
+
 static Attribute inferTransOpDstEncoding(Attribute srcEnc,
                                          ArrayRef<int64_t> shape,
                                          ArrayRef<int32_t> order) {
@@ -577,6 +703,11 @@ Attribute inferSrcEncoding(Operation *op, Attribute encoding) {
   if (auto fp4ToFp = dyn_cast<triton::gpu::Fp4ToFpOp>(op))
     return inferSrcEncoding(fp4ToFp, encoding);
 
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+  if (auto concat = dyn_cast<ttg::ConcatDotOperandOp>(op))
+    return inferSrcEncoding(concat, encoding);
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
+
   return {};
 }
 
@@ -610,6 +741,11 @@ Attribute inferDstEncoding(Operation *op, Attribute encoding) {
     return inferDstEncoding(gather, encoding);
   if (auto fp4ToFp = dyn_cast<triton::gpu::Fp4ToFpOp>(op))
     return inferDstEncoding(fp4ToFp, encoding);
+
+#ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
+  if (auto concat = dyn_cast<ttg::ConcatDotOperandOp>(op))
+    return inferDstEncoding(concat, encoding);
+#endif // __FLAGTREE_CONCAT_DOT_OPERAND__
 
   return {};
 }
@@ -1257,8 +1393,13 @@ Operation *convertDistributedOpEncoding(Attribute encoding, Operation *op) {
   for (size_t i = 0; i < op->getNumResults(); i++) {
     Value newResult = newOp->getResult(i);
     if (newTypes[i] != op->getResultTypes()[i]) {
-      newResult = triton::gpu::ConvertLayoutOp::create(
+      auto convert = triton::gpu::ConvertLayoutOp::create(
           builder, op->getLoc(), op->getResult(i).getType(), newResult);
+      newResult = convert.getResult();
+#ifdef __TLE__
+      if (Attribute explicitEncoding = getTleExplicitResultEncoding(op, i))
+        convert->setAttr(getTleExplicitEncodingAttrName(0), explicitEncoding);
+#endif
     }
     op->getResult(i).replaceAllUsesWith(newResult);
   }
@@ -1405,10 +1546,18 @@ ttg::LocalAllocOp findShmemAlloc(Value operand) {
   // come from an MemDescIndex op. Only ConvertLayout and MemdescView ops are
   // allowed in between.
   Value transitiveOperand = operand;
+#ifdef __TLE__
+  while (
+      isa_and_nonnull<ttg::ConvertLayoutOp, tt::TransOp, ttg::MemDescTransOp,
+                      ttg::MemDescReshapeOp, ttg::MemDescSubsliceOp,
+                      tle::MemDescAliasOp>(transitiveOperand.getDefiningOp()) ||
+      isa<BlockArgument>(transitiveOperand)) {
+#else
   while (isa_and_nonnull<ttg::ConvertLayoutOp, tt::TransOp, ttg::MemDescTransOp,
                          ttg::MemDescReshapeOp, ttg::MemDescSubsliceOp>(
              transitiveOperand.getDefiningOp()) ||
          isa<BlockArgument>(transitiveOperand)) {
+#endif
     if (auto blockArg = dyn_cast<BlockArgument>(transitiveOperand)) {
       assert(isa<scf::ForOp>(blockArg.getOwner()->getParentOp()) &&
              "Block argument must come from a for loop");
@@ -1601,9 +1750,41 @@ void replaceUsesAndPropagateType(
           oldType.getMemorySpace(), isMutable, oldType.getAllocShape());
       newVal = ttg::MemDescSubsliceOp::create(
           builder, subslice.getLoc(), newDstType, val, subslice.getOffsets());
+#ifdef __TLE__
+    } else if (auto alias = dyn_cast<tle::MemDescAliasOp>(user)) {
+      ttg::MemDescType oldType = alias.getType();
+      bool isMutable = cast<ttg::MemDescType>(val.getType()).getMutableMemory();
+      Type newDstType = ttg::MemDescType::get(
+          oldType.getShape(), oldType.getElementType(), oldType.getEncoding(),
+          oldType.getMemorySpace(), isMutable, oldType.getAllocShape());
+      newVal = tle::MemDescAliasOp::create(builder, alias.getLoc(), newDstType,
+                                           val, alias.getOffsetBytesAttr());
+#endif
     } else if (auto trans = dyn_cast<ttg::MemDescTransOp>(user)) {
       newVal = ttg::MemDescTransOp::create(builder, trans.getLoc(), val,
                                            trans.getOrder());
+#ifdef __TLE__
+    } else if (auto reinterpret = dyn_cast<ttg::MemDescReinterpretOp>(user);
+               reinterpret && reinterpret->hasAttr(tle::kExactSMEMStageAttr)) {
+      ttg::MemDescType oldType = reinterpret.getType();
+      bool isMutable = cast<ttg::MemDescType>(val.getType()).getMutableMemory();
+      Type newDstType = ttg::MemDescType::get(
+          oldType.getShape(), oldType.getElementType(), oldType.getEncoding(),
+          oldType.getMemorySpace(), isMutable, oldType.getAllocShape());
+      newVal = ttg::MemDescReinterpretOp::create(builder, reinterpret.getLoc(),
+                                                 newDstType, val);
+      newVal.getDefiningOp()->setAttr(tle::kExactSMEMStageAttr,
+                                      builder.getUnitAttr());
+    } else if (auto view = dyn_cast<triton::tle::MemDescWGMMAViewOp>(user)) {
+      ttg::MemDescType oldType = view.getType();
+      bool isMutable = cast<ttg::MemDescType>(val.getType()).getMutableMemory();
+      Type newDstType = ttg::MemDescType::get(
+          oldType.getShape(), oldType.getElementType(), oldType.getEncoding(),
+          oldType.getMemorySpace(), isMutable, oldType.getAllocShape());
+      builder.getContext()->getOrLoadDialect<triton::tle::TleDialect>();
+      newVal = triton::tle::MemDescWGMMAViewOp::create(
+          builder, view.getLoc(), newDstType, val, view.getOrder());
+#endif
     } else if (auto reshape = dyn_cast<ttg::MemDescReshapeOp>(user)) {
       auto shape = reshape.getType().getShape();
       newVal =
@@ -1619,6 +1800,40 @@ void replaceUsesAndPropagateType(
   }
 
   // Perform late replacement.
+#ifdef __TLE__
+  SmallVector<OpOperand *> nonWaitOperandsToReplace;
+  SmallVector<std::pair<ttng::WarpGroupDotWaitOp, SmallVector<unsigned>>>
+      waitOperandsToReplace;
+  for (OpOperand *operand : operandsToReplace) {
+    if (auto wait = dyn_cast<ttng::WarpGroupDotWaitOp>(operand->getOwner())) {
+      auto existing = llvm::find_if(waitOperandsToReplace, [&](auto &entry) {
+        return entry.first == wait;
+      });
+      if (existing == waitOperandsToReplace.end()) {
+        waitOperandsToReplace.push_back({wait, {}});
+        waitOperandsToReplace.back().second.push_back(
+            operand->getOperandNumber());
+        continue;
+      }
+      existing->second.push_back(operand->getOperandNumber());
+    } else {
+      nonWaitOperandsToReplace.push_back(operand);
+    }
+  }
+  for (OpOperand *operand : nonWaitOperandsToReplace)
+    operand->set(val);
+  for (auto &[wait, operandNumbers] : waitOperandsToReplace) {
+    // Need to update the return type on the wait op as well.
+    builder.setInsertionPointAfter(wait);
+    auto operands = llvm::to_vector(wait.getOperands());
+    for (unsigned operandNumber : operandNumbers)
+      operands[operandNumber] = val;
+    auto newWait = ttng::WarpGroupDotWaitOp::create(
+        builder, wait.getLoc(), operands, wait.getPendings());
+    wait.replaceAllUsesWith(newWait.getResults());
+    wait.erase();
+  }
+#else
   for (OpOperand *operand : operandsToReplace) {
     if (auto wait = dyn_cast<ttng::WarpGroupDotWaitOp>(operand->getOwner())) {
       // Need to update the return type on the wait op as well
@@ -1633,6 +1848,7 @@ void replaceUsesAndPropagateType(
       operand->set(val);
     }
   }
+#endif
 
   // Perform late op erasure.
   for (Operation *op : opsToDelete)
@@ -1694,9 +1910,17 @@ bool comesFromLoadOrBlockArg(Value v) {
   }
   // We also accept block arguments as they appear in many MLIR tests
   // If this is problematic we can totally drop them
-  return isa<BlockArgument>(v) ||
-         (v.getDefiningOp() &&
-          isa<LoadOp, DescriptorLoadOp, DescriptorGatherOp>(v.getDefiningOp()));
+  Operation *def = v.getDefiningOp();
+  bool fromLoad = def && isa<LoadOp, DescriptorLoadOp, DescriptorGatherOp>(def);
+#ifdef __TLE__
+  bool fromSharedMemory =
+      def && def->hasAttrOfType<StringAttr>("tt.memory_space") &&
+      def->getAttrOfType<StringAttr>("tt.memory_space").getValue() ==
+          "shared_memory";
+  return isa<BlockArgument>(v) || fromLoad || fromSharedMemory;
+#else
+  return isa<BlockArgument>(v) || fromLoad;
+#endif
 }
 
 SmallVector<Value> getTiedArgs(Operation *op, int resultIdx) {

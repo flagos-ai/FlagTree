@@ -19,6 +19,7 @@
 # SOFTWARE.
 
 import os
+import runpy  # FlagPrism: load the external build policy.
 import platform
 import shutil
 import sys
@@ -31,12 +32,15 @@ from . import utils
 import importlib.util
 import importlib.metadata
 from typing import List, Tuple
+from importlib.machinery import PathFinder
 from setuptools import find_packages
+from urllib.parse import unquote, urlparse
 from .utils.tools import flagtree_configs as configs
 
 downloader = utils.tools.DownloadManager()
 configs = configs
 flagtree_backend = configs.flagtree_backend
+FLAGCX_SUPPORT_BACKENDS = {"nvidia", "iluvatar"}
 
 
 def get_console_colors() -> Tuple[str, str]:
@@ -54,8 +58,8 @@ def get_flagtree_version(git_commit_hash_fn):
             return flagtree_ver
         return flagtree_ver + git_commit_hash_fn().replace("+", ".")
     if flagtree_backend:
-        return "0.6.0+" + flagtree_backend + git_commit_hash_fn().replace("+", ".")
-    return "0.6.0" + git_commit_hash_fn()
+        return "0.7.0+" + flagtree_backend + git_commit_hash_fn().replace("+", ".")
+    return "0.7.0" + git_commit_hash_fn()
 
 
 def get_long_description():
@@ -65,7 +69,8 @@ def get_long_description():
 
 def init_backends(backend_installer):
     if flagtree_backend:
-        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu"):
+        if flagtree_backend in ("aipu", "tsingmicro", "enflame", "rpu", "thrive", "sunrise", "tileir", "ppu", "amd",
+                                "ascend"):
             backends = [
                 *backend_installer.copy(configs.default_backends + tuple(configs.extend_backends)),
                 *backend_installer.copy_externals(),
@@ -117,6 +122,11 @@ def get_generated_backend_packages(backend):
             "include.cooperative_groups.details",
             "include.crt",
             "lib.cupti",
+            "tileir_cuda",
+            "tileir_cuda.bin",
+            "tileir_cuda.nvvm",
+            "tileir_cuda.nvvm.lib64",
+            "tileir_cuda.nvvm.libdevice",
         ),
         "xpu": (
             "xpu3",
@@ -180,14 +190,13 @@ def get_backend_cmake_args(*args, **kargs):
         cmake_args = []
     if editable:
         cmake_args += ["-DEDITABLE_MODE=ON"]
+    if flagtree_backend not in configs.default_backends:
+        cmake_args += ["-DFLAGTREE_BACKEND={}".format(flagtree_backend)]
     return cmake_args
 
 
 def customize_gluon_cmake_args():
-    if flagtree_backend != "iluvatar":
-        return []
-    enabled = os.getenv("TRITON_ILU_BUILD_GLUON", "").upper() in ["ON", "1", "YES", "TRUE", "Y"]
-    return [f"-DTRITON_BUILD_GLUON={'ON' if enabled else 'OFF'}"]
+    return []
 
 
 def get_device_name():
@@ -226,11 +235,14 @@ def get_hook_instance(hook_name):
     return hook_instance if callable(hook_instance) else None
 
 
+def finalize_backend_build_tree(build_lib):
+    hook = get_hook_instance("finalize_build_tree")
+    if hook:
+        hook(build_lib)
+
+
 def enable_flagtree_third_party(name):
-    if name in ["triton_shared", "flagcx"]:
-        return os.environ.get(f"USE_{name.upper()}", 'OFF') == 'ON'
-    else:
-        return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
+    return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
 
 
 def download_flagtree_third_party(name, condition, required=False, hook=None):
@@ -246,6 +258,135 @@ def download_flagtree_third_party(name, condition, required=False, hook=None):
             print(f"\033[1;33m[Note] Skip downloading {name} since USE_{name.upper()} is set to OFF\033[0m")
 
 
+# FlagPrism: resolve its dependency through FlagTree's existing package helpers.
+def get_flagprism_dependency_cmake_args(_build_ext, get_thirdparty_packages, get_json_package_info):
+    # FlagPrism: reuse the preloaded nlohmann/json tree in offline builds.
+    if not os.getenv("JSON_SYSPATH", "").strip():
+        user_home = os.getenv("TRITON_HOME") or os.getenv("HOME") or os.getenv("USERPROFILE") or os.getenv("HOMEPATH")
+        cache_root = Path(user_home or Path.home()) / ".triton"
+        json_path = cache_root / "json"
+        if (json_path / "include" / "nlohmann" / "json.hpp").is_file():
+            os.environ["JSON_SYSPATH"] = str(json_path)
+    return get_thirdparty_packages([get_json_package_info()])
+
+
+class FlagPrismSetup:
+    """FlagPrism: manage optional component build and package integration."""
+
+    def __init__(self, project_root, dependency_cmake_args):
+        # FlagPrism: use one source-root base regardless of the caller's cwd.
+        self.project_root = Path(project_root).resolve()
+        backend = configs.flagtree_backend or ""
+        # FlagPrism: register all supported integration backends together.
+        supported_backends = {"ascend", "iluvatar", "mthreads", "enflame", "metax"}
+        default = "ON" if backend in supported_backends else "OFF"
+        self.enabled = self._check_env_flag("TRITON_BUILD_FLAGPRISM", default)
+        self.build_config = None
+        self._dependency_cmake_args = dependency_cmake_args
+
+        # FlagPrism: allow the default NVIDIA build and supported named backends.
+        if self.enabled and backend and backend not in supported_backends:
+            raise RuntimeError("TRITON_BUILD_FLAGPRISM is only supported when "
+                               "FLAGTREE_BACKEND=ascend, iluvatar, mthreads, enflame, or metax.")
+        if not self.enabled:
+            return
+        if self._check_env_flag("TRITON_BUILD_PROTON"):
+            raise RuntimeError("TRITON_BUILD_FLAGPRISM and TRITON_BUILD_PROTON cannot both be enabled. "
+                               "Set one of them to OFF.")
+
+        # FlagPrism replaces Proton for the supported backend builds.
+        os.environ["TRITON_BUILD_PROTON"] = "OFF"
+        # FlagPrism: resolve external checkouts relative to the project root.
+        source_override = os.environ.get("FLAGPRISM_SOURCE_DIR", "").strip()
+        source_root = Path(source_override) if source_override else Path("third_party") / "FlagPrism"
+        if not source_root.is_absolute():
+            source_root = self.project_root / source_root
+        source_root = source_root.resolve()
+        # FlagPrism: never download a different checkout for an invalid override.
+        if source_override and not source_root.is_dir():
+            raise RuntimeError(f"FLAGPRISM_SOURCE_DIR must point to an existing directory: {source_root}")
+        # Keep FlagPrism as an external checkout. A local directory or symlink
+        # is authoritative; only bootstrap the registered dependency when it
+        # is absent.
+        if not source_root.exists():
+            download_flagtree_third_party("FlagPrism", condition=True, required=True)
+
+        helper_path = source_root / "python" / "flagprism_build.py"
+        if not helper_path.is_file():
+            # FlagPrism: identify incomplete overrides instead of suggesting a download.
+            if source_override:
+                raise RuntimeError(f"FLAGPRISM_SOURCE_DIR does not contain python/flagprism_build.py: {source_root}")
+            raise RuntimeError("FlagPrism sources are missing. Run the Python package build "
+                               "to download third-party dependencies.")
+        policy = runpy.run_path(str(helper_path), run_name="_flagprism_build")
+        # FlagPrism: keep CMake and setuptools on the same external source tree.
+        self.build_config = policy["create_build_config"](self.project_root, source_root)
+
+        legacy_link = self.project_root / "python" / "triton" / "profiler"
+        if legacy_link.is_symlink():
+            legacy_link.unlink()
+
+    @staticmethod
+    def _check_env_flag(name: str, default: str = "") -> bool:
+        return os.getenv(name, default).upper() in ("ON", "1", "YES", "TRUE", "Y")
+
+    @staticmethod
+    def _remove_path(path: Path) -> None:
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+        elif path.is_dir():
+            shutil.rmtree(path)
+
+    def _remove_legacy_gateway(self, build_lib: str) -> None:
+        triton_root = Path(build_lib) / "triton"
+        self._remove_path(triton_root / "_flagprism.py")
+        for artifact in (triton_root / "__pycache__").glob("_flagprism.*.pyc"):
+            self._remove_path(artifact)
+
+    def cmake_args(self, build_lib: str) -> list[str]:
+        if self.build_config is None:
+            return ["-DTRITON_BUILD_FLAGPRISM=OFF"]
+        return self.build_config.cmake_args(build_lib)
+
+    def dependency_cmake_args(self, build_ext) -> list[str]:
+        if not self.enabled:
+            return []
+        return self._dependency_cmake_args(build_ext)
+
+    def prepare_build_tree(self, build_lib: str) -> None:
+        # The gateway now belongs to flagtree; reused build trees must not
+        # repackage the former triton._flagprism module.
+        self._remove_legacy_gateway(build_lib)
+        if self.build_config is not None:
+            self.build_config.prepare_build_tree(build_lib)
+            return
+        build_root = Path(build_lib) / "flagtree"
+        self._remove_path(build_root / "debugger")
+        self._remove_path(build_root / "profiler")
+
+    def finalize_build_tree(self, build_lib: str) -> None:
+        if self.build_config is not None:
+            self.build_config.finalize_build_tree(build_lib)
+        else:
+            self.prepare_build_tree(build_lib)
+        self._remove_legacy_gateway(build_lib)
+
+    def packages(self) -> tuple[str, ...]:
+        if self.build_config is None:
+            return ()
+        return self.build_config.packages()
+
+    def package_dirs(self) -> tuple[tuple[str, str], ...]:
+        if self.build_config is None:
+            return ()
+        return self.build_config.package_dirs()
+
+    def console_scripts(self) -> list[str]:
+        if self.build_config is None:
+            return []
+        return self.build_config.console_scripts()
+
+
 def post_install():
     backend_spec_post_install_fn = get_hook_instance("post_install")
     if backend_spec_post_install_fn:
@@ -257,16 +398,20 @@ def write_flagtree_backend_file(triton_pkg_dir=None):
         triton_pkg_dir = Path(__file__).resolve().parents[1] / "triton"
     os.makedirs(triton_pkg_dir, exist_ok=True)
     dest_file = Path(triton_pkg_dir) / "FLAGTREE_BACKEND"
-    dest_file.write_text(flagtree_backend)
+    # FLAGTREE_BACKEND=tileir selects the multi-backend build configuration.
+    # An empty runtime marker lets FlagTree detect NVIDIA as the active hardware
+    # backend; eligible kernels are then routed to TileIR individually.
+    runtime_backend = "" if flagtree_backend == "tileir" else flagtree_backend
+    dest_file.write_text(runtime_backend)
 
 
 def write_backend_file_to_build_lib(build_lib):
-    # xpu-only: ensure triton/FLAGTREE_BACKEND lands in the wheel: build_py only
+    # xpu/iluvatar: ensure triton/FLAGTREE_BACKEND lands in the wheel: build_py only
     # copies .py by default, so this extension-less marker (read by
     # triton._flagtree_backend to make XPUDriver.is_active() return True
     # without any env var) was missing from the install, causing
     # "0 active drivers". Write it into build_lib/triton so it is packaged.
-    if flagtree_backend == "xpu":
+    if flagtree_backend in ("xpu", "iluvatar"):
         try:
             write_flagtree_backend_file(os.path.join(build_lib, "triton"))
         except Exception as exc:  # noqa: BLE001
@@ -327,6 +472,13 @@ class FlagTreeCache:
         empty = (not os.path.exists(_path)) or (origin_file_path and not os.path.exists(origin_file_path))
         if empty:
             return False
+        # A cache entry may be a **directory**: `store()` downloads to the same
+        # path it later unpacks into, so a staged package stays unpacked.  That
+        # is a cache hit -- but `_md5()` on a directory raises
+        # `IsADirectoryError`, which made every install *after the first one*
+        # fail.  Directory entries are version-checked by the caller, so report the hit.
+        if os.path.isdir(_path):
+            return True
         if md5_digest is None:
             return True
         else:
@@ -354,7 +506,7 @@ class FlagTreeCache:
         return False
 
     def store(self, file=None, condition=None, url=None, copy_src_path=None, copy_dst_path=None, files=None,
-              md5_digest=None, pre_hook=None, post_hook=None, version=None):
+              md5_digest=None, pre_hook=None, post_hook=None, version=None, decompress=True):
 
         if not condition or (pre_hook and pre_hook()):
             return
@@ -372,31 +524,50 @@ class FlagTreeCache:
             if copy_dst_path is not None:
                 dst_path_root = Path(self.flagtree_dir) / copy_dst_path
                 dst_path = Path(dst_path_root) / file
-                if self.reverse_copy(dst_path, self.cache_files[file], md5_digest):
+                if decompress and self.reverse_copy(dst_path, self.cache_files[file], md5_digest):
                     return
 
         if is_url:
             cache_path = self.cache_files[file]
             need_download = not self.check_file(file_name=file, url=url, md5_digest=md5_digest)
-            # Version check: re-download if cached version doesn't match expected
+            if not decompress and not cache_path.is_file():
+                need_download = True
+            archive_name = Path(unquote(urlparse(url).path)).name
+            local_archive = Path(path) / archive_name
+            # A cache without this sibling marker is adopted and the marker is written.
+            marker_file = Path(path) / f".{file}.version"
             if not need_download and version is not None:
-                version_file = Path(cache_path) / "version.txt"
-                if version_file.exists():
-                    cached_ver = version_file.read_text().strip()
+                if marker_file.exists():
+                    cached_ver = marker_file.read_text().strip()
                     if cached_ver != version:
-                        print(
-                            f"[cache] version mismatch for '{file}': cached='{cached_ver}', expected='{version}', re-downloading..."
-                        )
-                        shutil.rmtree(cache_path)
+                        print(f"[cache] version mismatch for '{file}': cached='{cached_ver}', "
+                              f"expected='{version}', refreshing...")
+                        if cache_path.is_dir():
+                            shutil.rmtree(cache_path)
+                        else:
+                            cache_path.unlink()
                         need_download = True
-                # If no version.txt (legacy cache), keep using it
+                else:
+                    marker_file.write_text(version)
             if need_download:
-                downloader.download(url=url, path=path, file_name=file)
+                if cache_path.exists():
+                    if cache_path.is_dir():
+                        shutil.rmtree(cache_path)
+                    else:
+                        cache_path.unlink()
+                if decompress and local_archive.is_file():
+                    print(f"[cache] extracting local archive {local_archive}")
+                    utils.tools.decompress_file(url=url, archive_path=local_archive, dst_path=path, file_name=file)
+                else:
+                    downloader.download(url=url, path=path, file_name=file, is_decompress=decompress)
+                # md5_digest identifies the extracted result. Directory results are
+                # version-checked above; a file result that still mismatches is left
+                # in place so the failure can be inspected.
+                if md5_digest is not None and not self.check_file(path=cache_path, md5_digest=md5_digest):
+                    raise RuntimeError(f"[cache] extracted digest mismatch for '{cache_path}': "
+                                       f"expected '{md5_digest}'")
                 if version is not None:
-                    cache_path = self.cache_files[file]
-                    version_file = Path(cache_path) / "version.txt"
-                    if os.path.isdir(cache_path):
-                        version_file.write_text(version)
+                    marker_file.write_text(version)
 
         if copy_dst_path is not None:
             file_lists = [file] if files is None else list(files)
@@ -550,6 +721,12 @@ def get_spec_packages():
         yield "triton.language.extra.xpu"
 
 
+def generate_backend_intrinsic_tables():
+    hook_call = get_hook_instance("generate_intrinsic_tables")
+    if hook_call:
+        hook_call()
+
+
 def get_package_data(backends):
     hook_call = get_hook_instance("get_package_data")
     if not hook_call:
@@ -637,7 +814,7 @@ def handle_flagtree_backend():
     global ext_sourcedir
     if flagtree_backend:
         print(f"\033[1;32m[INFO] FlagtreeBackend is {flagtree_backend}\033[0m")
-        configs.extend_backends.append(flagtree_backend)
+        configs.set_extend_backends(flagtree_backend)
         if "editable_wheel" in sys.argv and flagtree_backend not in configs.plugin_backends:
             ext_sourcedir = os.path.abspath(f"./third_party/{flagtree_backend}/python/{configs.ext_sourcedir}") + "/"
 
@@ -722,22 +899,41 @@ def uninstall_triton():
 
 offline_handler = utils.OfflineBuildManager()
 if offline_handler.is_offline:
-    print("[INFO] FlagTree Offline Build: Use offline build for triton origin toolkits")
-    offline_handler.handle_triton_origin_toolkits()
+    if utils.is_skip_cuda_toolkits():
+        print(f"[INFO] Skipping CUDA toolkits for {flagtree_backend} backend in offline build.")
+    else:
+        print("[INFO] FlagTree Offline Build: Use offline build for triton origin toolkits")
+        offline_handler.handle_triton_origin_toolkits()
     offline_build = True
 else:
     print('[INFO] FlagTree Offline Build: No offline build for triton origin toolkits')
     offline_build = False
 
 cache = FlagTreeCache()
+
+# FLIR supplies the CommonIR dialect, which the ascend backend requires for its
+# CommonIRToHIVM lowering and FLIR's triton-lane-vectorize pass.
+download_flagtree_third_party("flir", condition=(flagtree_backend in ("tsingmicro", "ascend")), required=True)
+
+# The ascend backend links the BiShengIR dialects built from AscendNPU-IR.
+if flagtree_backend == "ascend":
+    configs.activated_module.warn_stale_ascend_npu_ir_checkout(utils.flagtree_submodules["AscendNPU-IR"])
+    download_flagtree_third_party("AscendNPU-IR", condition=True, required=True)
 '''
    FlagCX is a third-party library adopted by the tle distributed system,
    refer to https://github.com/flagos-ai/FlagCX
 '''
 
-download_flagtree_third_party("flagcx", condition=(not flagtree_backend), hook="handle_flagcx", required=True)
+relocate_flagcx = get_hook_instance("relocate_flagcx")
+if relocate_flagcx:
+    relocate_flagcx()
 
-download_flagtree_third_party("tileir", condition=(flagtree_backend == "tileir"), required=True)
+flagcx_wheel = PathFinder.find_spec("flagcx", sys.path)
+download_flagtree_third_party("flagcx", condition=not flagcx_wheel
+                              and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS, hook="handle_flagcx",
+                              required=True)
+
+download_flagtree_third_party("cuda-tile", condition=(flagtree_backend == "tileir"), required=True)
 
 handle_flagtree_backend()
 

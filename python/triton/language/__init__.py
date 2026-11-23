@@ -22,8 +22,15 @@
 """isort:skip_file"""
 # Import order is significant here.
 
+from triton._flagtree_spec import spec_call, spec_path
+
+# flagtree backend path specialization
+spec_path(__path__)
+
 from . import math
 from . import extra
+from ..backends import language_extensions as ext
+
 from .standard import (
     argmax,
     argmin,
@@ -159,6 +166,9 @@ from .random import (
 )
 from . import target_info
 
+# flagtree backend call specialization
+spec_call("language_extend_globals", globals())
+
 __all__ = [
     "PropagateNan",
     "TRITON_MAX_TENSOR_NUMEL",
@@ -211,6 +221,7 @@ __all__ = [
     "exp2",
     "expand_dims",
     "extra",
+    "ext",
     "fdiv",
     "flip",
     "float16",

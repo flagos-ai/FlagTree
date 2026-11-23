@@ -15,6 +15,7 @@ config.mlir_binary_dir = "@MLIR_BINARY_DIR@"
 config.python_executable = "@Python3_EXECUTABLE@"
 config.enable_bindings_python = @MLIR_ENABLE_BINDINGS_PYTHON@
 config.triton_ext_enabled = @TRITON_EXT_ENABLED@
+config.flagtree_common_ir_enabled = @FLAGTREE_COMMON_IR_ENABLED@
 
 
 import lit.llvm

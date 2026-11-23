@@ -1,0 +1,128 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "tle/dialect/include/IR/Dialect.h"
+#include "mlir/Support/LLVM.h"
+#include "mlir/Transforms/InliningUtils.h"
+#include "tle/dialect/include/IR/Dialect.cpp.inc"
+#include "tle/dialect/include/IR/ExactSMEM.h"
+#include "llvm/ADT/StringSwitch.h"
+
+#define GET_ATTRDEF_CLASSES
+#include "tle/dialect/include/IR/TleAttrDefs.cpp.inc"
+
+#define GET_OP_CLASSES
+#include "tle/dialect/include/IR/Ops.cpp.inc"
+#include "tle/dialect/include/IR/OpsEnums.cpp.inc"
+
+#ifdef FLAGCX_ENABLED
+#define GET_OP_CLASSES
+#include "tle/dialect/include/IR/FlagCxOps.cpp.inc"
+#endif
+
+namespace mlir::triton::tle {
+
+namespace {
+struct TleInlinerInterface final : public DialectInlinerInterface {
+  using DialectInlinerInterface::DialectInlinerInterface;
+
+  bool isLegalToInline(Operation *op, Region *, bool, IRMapping &) const final {
+    // TLE regions and terminators have their own semantics. Only allow
+    // ordinary operations to be cloned with a containing Triton function.
+    return op->getNumRegions() == 0 && !op->hasTrait<OpTrait::IsTerminator>();
+  }
+};
+} // namespace
+
+void TleDialect::initialize() {
+  addAttributes<
+#define GET_ATTRDEF_LIST
+#include "tle/dialect/include/IR/TleAttrDefs.cpp.inc"
+      >();
+  addOperations<
+#define GET_OP_LIST
+#include "tle/dialect/include/IR/Ops.cpp.inc"
+      >();
+
+#ifdef FLAGCX_ENABLED
+  addOperations<
+#define GET_OP_LIST
+#include "tle/dialect/include/IR/FlagCxOps.cpp.inc"
+      >();
+#endif
+
+  addInterfaces<TleInlinerInterface>();
+}
+
+LogicalResult TleDialect::verifyOperationAttribute(Operation *op,
+                                                   NamedAttribute attr) {
+  StringRef name = attr.getName().getValue();
+#ifndef __TLE_TILED_SMEM__
+  // A disabled planner must not silently ignore logical domains carried by
+  // otherwise ordinary power-of-two memdescs and tensor descriptors.
+  if (name.starts_with("tle.logical_") || name.starts_with("tle.exact_smem_") ||
+      name == "tle.storage_plan" || name == "tle.smem_plan")
+    return op->emitOpError()
+           << name << " requires a build with __TLE_TILED_SMEM__ enabled";
+#endif
+  if (name == kExactSMEMShapeAttr) {
+    auto alloc = dyn_cast<gpu::LocalAllocOp>(op);
+    if (!alloc)
+      return op->emitOpError(kExactSMEMShapeAttr)
+             << " is valid only on ttg.local_alloc";
+    return verifyExactSMEMRoot(op, getExactSMEMRoot(alloc.getResult()));
+  }
+  if (name == kExactSMEMStageAttr) {
+    auto view = dyn_cast<gpu::MemDescReinterpretOp>(op);
+    if (!view)
+      return op->emitOpError(kExactSMEMStageAttr)
+             << " is valid only on ttg.memdesc_reinterpret";
+    return verifyExactSMEMStage(op, getExactSMEMStage(view.getResult()));
+  }
+  if (name == kExactSMEMTileAttr) {
+    auto view = dyn_cast<gpu::MemDescIndexOp>(op);
+    if (!view)
+      return op->emitOpError(kExactSMEMTileAttr)
+             << " is valid only on ttg.memdesc_index";
+    return verifyExactSMEMTile(op, getExactSMEMTile(view.getResult()));
+  }
+  if (name == kExactSMEMTileSpanAttr) {
+    auto view = dyn_cast<gpu::MemDescIndexOp>(op);
+    if (!view || !op->hasAttr(kExactSMEMTileAttr))
+      return op->emitOpError(kExactSMEMTileSpanAttr)
+             << " requires " << kExactSMEMTileAttr << " on ttg.memdesc_index";
+    return verifyExactSMEMTile(op, getExactSMEMTile(view.getResult()));
+  }
+  return success();
+}
+std::optional<MemoryOrder> parseMemoryOrder(llvm::StringRef str) {
+  return llvm::StringSwitch<std::optional<MemoryOrder>>(str)
+      .Case("relaxed", MemoryOrder::RELAXED)
+      .Case("acquire", MemoryOrder::ACQUIRE)
+      .Case("release", MemoryOrder::RELEASE)
+      .Case("acq_rel", MemoryOrder::ACQ_REL)
+      .Case("acqrel", MemoryOrder::ACQ_REL)
+      .Default(std::nullopt);
+}
+
+} // namespace mlir::triton::tle

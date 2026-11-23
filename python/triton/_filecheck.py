@@ -32,13 +32,17 @@ from triton.backends.compiler import GPUTarget
 from triton.experimental.gluon._runtime import GluonASTSource
 from triton.runtime.jit import create_function_from_signature
 from triton._C.libtriton import ir
+from triton._flagtree_spec import spec_call
 
 # ===-----------------------------------------------------------------------===#
 # filecheck_test
 # ===-----------------------------------------------------------------------===#
 
 # Stub target for testing the frontend.
-stub_target = GPUTarget("cuda", 100, 32)
+# flagtree backend call specialization
+stub_target = spec_call("spec_get_stub_target")
+if not stub_target:
+    stub_target = GPUTarget("cuda", 100, 32)
 
 triton_dir = os.path.dirname(__file__)
 filecheck_path = os.path.join(triton_dir, "FileCheck")
@@ -77,6 +81,8 @@ def run_parser(kernel_fn, args=(), kwargs={}, target=stub_target):
     if "sanitize_overflow" not in kwargs:
         kwargs = dict(kwargs)
         kwargs["sanitize_overflow"] = False
+    # flagtree backend call specialization
+    kwargs = spec_call("filecheck_default_kwargs", kwargs, target) or kwargs
     backend = make_backend(target)
     binder = create_function_from_signature(
         kernel_fn.signature,
@@ -95,7 +101,9 @@ def run_parser(kernel_fn, args=(), kwargs={}, target=stub_target):
 
     codegen_fns = backend.get_codegen_implementation(options)
     module_map = backend.get_module_map()
-    module = src.make_ir(target, options, codegen_fns, module_map, context)
+    module = spec_call("filecheck_make_ir", src, target, options, codegen_fns, module_map, context)
+    if module is None:
+        module = backend.make_ir(src, options, codegen_fns, module_map, context)
     return module
 
 
@@ -106,7 +114,10 @@ def run_filecheck_test(kernel_fn):
         raise ValueError("kernel function must have a docstring with FileCheck template")
     mlir_module = run_parser(kernel_fn)
 
-    run_filecheck("placeholder", mlir_module.str_nodebug(), check_template)
+    module_str = mlir_module.str_nodebug()
+    # flagtree backend call specialization
+    module_str = spec_call("filecheck_anonymize_ir", module_str) or module_str
+    run_filecheck("placeholder", module_str, check_template)
 
 
 def filecheck_test(fn):

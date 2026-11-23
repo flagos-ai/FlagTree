@@ -239,6 +239,59 @@ class env_nvidia_tool(env_base[str, NvidiaTool]):
         raise RuntimeError(f"Cannot find {self.binary}")
 
 
+# flagtree mthreads
+@dataclass
+class MUSATool:
+    path: str
+    version: str
+
+    @staticmethod
+    @functools.lru_cache
+    def from_path(path: str) -> Optional["MUSATool"]:
+        import shutil
+        if not path:
+            return None
+        resolved = pathlib.Path(path).expanduser()
+        if not resolved.is_file():
+            which = shutil.which(str(resolved))
+            if which is None:
+                return None
+            resolved = pathlib.Path(which)
+        try:
+            result = subprocess.check_output([str(resolved), "--version"], stderr=subprocess.STDOUT)
+        except (subprocess.CalledProcessError, FileNotFoundError, PermissionError, OSError):
+            return None
+        version_lines = result.decode("utf-8", errors="replace").splitlines()
+        version = next((line.strip() for line in version_lines if line.strip()), "")
+        return MUSATool(str(resolved), version)
+
+
+class env_musa_tool(env_base[str, MUSATool]):
+    _DEFAULT_MUSA_PREFIX = "/usr/local/musa"
+
+    def __init__(self, key: str, binary: str) -> None:
+        self.binary = binary + sysconfig.get_config_var("EXE")
+        super().__init__(key)
+
+    def _candidate_paths(self, path: Optional[str]) -> list[str]:
+        candidates = []
+        if path:
+            candidates.append(path)
+
+        candidates.append(os.path.join(self._DEFAULT_MUSA_PREFIX, "bin", self.binary))
+
+        return candidates
+
+    def get(self) -> MUSATool:
+        return self.transform(getenv(self.key))
+
+    def transform(self, path: Optional[str]) -> MUSATool:
+        for candidate in self._candidate_paths(path):
+            if tool := MUSATool.from_path(candidate):
+                return tool
+        raise RuntimeError(f"Cannot find {self.binary}")
+
+
 # Separate classes so that types are correct
 class env_opt_str(env_base[Optional[str], Optional[str]]):
 
@@ -387,6 +440,8 @@ class compilation_knobs(base_knobs):
     disable_line_info: env_bool = env_bool("TRITON_DISABLE_LINE_INFO")
     front_end_debugging: env_bool = env_bool("TRITON_FRONT_END_DEBUGGING")
     allow_non_constexpr_globals: env_bool = env_bool("TRITON_ALLOW_NON_CONSTEXPR_GLOBALS")
+    # flagtree same warp layout shuffle; read by the layout analysis (Analysis/Utility.cpp)
+    same_warp_layout_shuffle: env_bool = env_bool("FLAGTREE_SAME_WARP_LAYOUT_SHUFFLE", True)
     # Instrumentation mode is checked on every run, which is expensive.
     # We cache the value here to avoid the expensive check on every run.
     instrumentation_mode: str = env_str("TRITON_INSTRUMENTATION_MODE", "").get()
@@ -506,6 +561,10 @@ class runtime_knobs(base_knobs):
 class language_knobs(base_knobs):
     fp32_default: env_opt_str = env_opt_str("TRITON_F32_DEFAULT")
     default_fp_fusion: env_bool = env_bool("TRITON_DEFAULT_FP_FUSION", True)
+    # flagtree low-precision float (fp8/fp4) support; 0 falls back to the upstream
+    # interpreter float conversion and drops the backend opt-ins
+    low_precision_float: env_bool = env_bool("FLAGTREE_LOW_PRECISION_FLOAT", True)
+    reorder_loop_loads: env_bool = env_bool("FLAGTREE_REORDER_LOOP_LOADS", True)  # flagtree reorder loop loads
 
 
 class nvidia_knobs(base_knobs):
@@ -519,9 +578,34 @@ class nvidia_knobs(base_knobs):
     ptxas_options: env_opt_str = env_opt_str("PTXAS_OPTIONS")
     mock_ptx_version: env_opt_str = env_opt_str("TRITON_MOCK_PTX_VERSION")
     dump_ptxas_log: env_bool = env_bool("TRITON_DUMP_PTXAS_LOG")
+    rlc_enhance: env_bool = env_bool("FLAGTREE_RLC_ENHANCE", True)  # flagtree rlc enhance
+    # flagtree pipeline enhance: TTGIR pipelining only (CUDABackend._add_assign_latencies);
+    # the cp.async lowering fixes behind the same macro have no run-time switch.
+    pipeline_enhance: env_bool = env_bool("FLAGTREE_PIPELINE_ENHANCE", True)  # flagtree pipeline enhance
+    concat_dot_operand: env_bool = env_bool("FLAGTREE_CONCAT_DOT_OPERAND", True)  # flagtree concat dot operand
 
     libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
     libcuda_path: env_opt_str = env_opt_str("TRITON_LIBCUDA_PATH")
+
+    # flagtree tle-raw cuda nvshmem
+    nvshmem_home: env_opt_str = env_opt_str("NVSHMEM_HOME")
+    tle_raw_clang: env_opt_str = env_opt_str("CLANG")
+    tle_raw_clang_flags: env_opt_str = env_opt_str("CLANG_FLAGS")
+
+
+# flagtree iluvatar
+class iluvatar_knobs(base_knobs):
+
+    @staticmethod
+    @functools.lru_cache()
+    def _corex_home_default() -> str:
+        import shutil
+        if ixsmi := shutil.which("ixsmi"):
+            return os.path.dirname(os.path.dirname(os.path.realpath(ixsmi)))
+        return "/usr/local/corex"
+
+    libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
+    libcuda_path: env_str_callable_default = env_str_callable_default("TRITON_LIBCUDA_PATH", _corex_home_default)
 
 
 class amd_knobs(base_knobs):
@@ -530,6 +614,9 @@ class amd_knobs(base_knobs):
     use_buffer_atomics: env_bool = env_bool("AMDGCN_USE_BUFFER_ATOMICS", True)
     # Note: This requires use_buffer_ops be true to have any effect
     buffer_ops_analyze_small_tensor_range: env_bool = env_bool("AMDGCN_ANALYZE_SMALL_TENSOR_RANGE", False)
+
+    # flagtree hcu
+    optimize_epilogue: env_bool = env_bool("OPTIMIZE_EPILOGUE", False)
     dump_amdgcn: env_bool = env_bool("AMDGCN_ENABLE_DUMP")
     libhip_path: env_opt_str = env_opt_str("TRITON_LIBHIP_PATH")
 
@@ -544,6 +631,65 @@ class amd_knobs(base_knobs):
     dump_mir: env_opt_str = env_opt_str("TRITON_DUMP_MIR")
     # Path to externally-provided MIR files to use instead of generated ones
     swap_mir: env_opt_str = env_opt_str("TRITON_SWAP_MIR")
+
+
+# flagtree hcu
+class hcu_knobs(base_knobs):
+    use_buffer_ops: env_bool = env_bool("AMDGCN_USE_BUFFER_OPS", True)
+    # Note: This requires use_buffer_ops be true to have any effect
+    use_buffer_atomics: env_bool = env_bool("AMDGCN_USE_BUFFER_ATOMICS", True)
+    # Note: This requires use_buffer_ops be true to have any effect
+    buffer_ops_analyze_small_tensor_range: env_bool = env_bool("AMDGCN_ANALYZE_SMALL_TENSOR_RANGE", False)
+    optimize_epilogue: env_bool = env_bool("OPTIMIZE_EPILOGUE", False)
+    dump_amdgcn: env_bool = env_bool("AMDGCN_ENABLE_DUMP")
+    libhip_path: env_opt_str = env_opt_str("TRITON_LIBHIP_PATH")
+
+    # We use strs so that we can have a default value based on other runtime info
+    use_block_pingpong: env_opt_bool = env_opt_bool("TRITON_HIP_USE_BLOCK_PINGPONG")
+    use_in_thread_transpose: env_opt_bool = env_opt_bool("TRITON_HIP_USE_IN_THREAD_TRANSPOSE")
+
+    use_async_copy: env_bool = env_bool("TRITON_HIP_USE_ASYNC_COPY")
+    scalarize_packed_fops: env_bool = env_bool("AMDGCN_SCALARIZE_PACKED_FOPS")
+
+
+# flagtree metax
+class metax_knobs(base_knobs):
+    maca_path = env_str("MACA_PATH", "/opt/maca/").get()
+    use_maca: bool = maca_path is not None and os.path.exists(maca_path)
+    # compiler related path
+    mxgpu_llvm_path = os.path.join(maca_path, "mxgpu_llvm", "bin") if maca_path else None
+    mlir_translate_path = os.path.join(mxgpu_llvm_path, "mlir-translate") if mxgpu_llvm_path and use_maca else None
+    mxcc_path = os.path.join(mxgpu_llvm_path, "mxcc") if mxgpu_llvm_path and use_maca else None
+    mlir_opt_path = os.path.join(maca_path, "mxgpu_llvm", "bin", "mlir-opt") if use_maca else None
+
+
+# flagtree mthreads
+class musa_knobs(base_knobs):
+    llc_path: env_opt_str = env_opt_str("TRITON_MUSA_LLC_PATH")
+    lld_path: env_opt_str = env_opt_str("TRITON_MUSA_LLD_PATH")
+    llc_asm_path: env_opt_str = env_opt_str("TRITON_MUSA_LLC_ASM_PATH")
+    llc: env_musa_tool = env_musa_tool("TRITON_MUSA_LLC_PATH", "llc")
+    lld: env_musa_tool = env_musa_tool("TRITON_MUSA_LLD_PATH", "ld.lld")
+    llc_asm: env_musa_tool = env_musa_tool("TRITON_MUSA_LLC_ASM_PATH", "llc")
+    llc_options: env_opt_str = env_opt_str("TRITON_MUSA_LLC_OPTIONS")
+    enable_llc_opt: env_bool = env_bool("TRITON_MUSA_ENABLE_LLC_OPT")
+    enable_fp8_burst2: env_bool = env_bool("TRITON_MUSA_ENABLE_FP8_BURST2")
+    enable_llvm_compat: env_bool = env_bool("TRITON_MUSA_ENABLE_LLVM_COMPAT", True)
+    dump_llir: env_bool = env_bool("TRITON_MUSA_DUMP_LLIR")
+    dump_muasm: env_bool = env_bool("TRITON_MUSA_DUMP_MUASM")
+    dump_toolchain_log: env_bool = env_bool("TRITON_MUSA_DUMP_TOOLCHAIN_LOG")
+    replace_llir: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_LLIR")
+    replace_mubin: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_MUBIN")
+    libdevice_path: env_opt_str = env_opt_str("TRITON_MUSA_LIBDEVICE_PATH")
+    libprintf_path: env_opt_str = env_opt_str("TRITON_MUSA_LIBPRINTF_PATH")
+
+
+# flagtree ppu
+class ppu_knobs(base_knobs):
+    disable_ppu_llc_opt: env_bool = env_bool("DISABLE_PPU_LLC_OPT")
+    ppu_llc_options: env_opt_str = env_opt_str("PPU_LLC_OPTIONS")
+    dump_compile_log: env_bool = env_bool("TRITON_DUMP_COMPILE_LOG")
+    libdevice_path: env_opt_str = env_opt_str("TRITON_LIBDEVICE_PATH")
 
 
 class proton_knobs(base_knobs):
@@ -582,6 +728,11 @@ runtime = runtime_knobs()
 language = language_knobs()
 nvidia = nvidia_knobs()
 amd = amd_knobs()
+hcu = hcu_knobs()  # flagtree hcu
+metax = metax_knobs()  # flagtree metax
+musa = musa_knobs()  # flagtree mthreads
+ppu = ppu_knobs()  # flagtree ppu
+iluvatar = iluvatar_knobs()  # flagtree iluvatar
 proton = proton_knobs()
 
 

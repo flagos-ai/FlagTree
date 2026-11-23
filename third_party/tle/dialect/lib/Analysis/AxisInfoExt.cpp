@@ -1,0 +1,416 @@
+/*
+ * Copyright 2025-     FlagOS Contributors
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files
+ * (the "Software"), to deal in the Software without restriction,
+ * including without limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of the Software,
+ * and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+#include "tle/dialect/include/Analysis/AxisInfoExt.h"
+
+#include "tle/dialect/include/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Types.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "triton/Tools/LayoutUtils.h"
+
+#include <cstdlib>
+#include <numeric>
+
+namespace mlir::triton::tle {
+
+namespace {
+
+template <typename... Args> int64_t gcd(int64_t a, int64_t b, Args... args) {
+  if constexpr (sizeof...(args) == 0) {
+    return std::gcd(a, b);
+  } else {
+    return gcd(std::gcd(a, b), args...);
+  }
+}
+
+int64_t multiplyDivisor(int64_t lhs, int64_t rhs) {
+  // Safe as lhs and rhs are powers of 2.
+  return std::abs(lhs * rhs);
+}
+
+int64_t saturatingMultiplyDivisor(int64_t lhs, int64_t rhs) {
+  constexpr int64_t kMax = (int64_t(1) << (sizeof(int64_t) * 8 - 2));
+  if (lhs == 0 || rhs == 0)
+    return 0;
+  if (lhs > kMax / rhs)
+    return kMax;
+  return multiplyDivisor(lhs, rhs);
+}
+
+int64_t getPhysicalOffsetIdentityBound(triton::gpu::MemDescType type) {
+  // AxisInfo below linearizes logical indices in row-major order. Its proofs
+  // also describe physical addresses only within the low bits left unchanged
+  // by the shared-memory mapping used by LocalPointersOpConversion.
+  int64_t bound = highestPowOf2Divisor<int64_t>(0);
+  auto shape = type.getShape();
+  SmallVector<int64_t> logicalStrides(shape.size(), 1);
+  for (int d = static_cast<int>(shape.size()) - 2; d >= 0; --d)
+    logicalStrides[d] = logicalStrides[d + 1] * shape[d + 1];
+
+  if (auto padded =
+          dyn_cast<triton::gpu::PaddedSharedEncodingAttr>(type.getEncoding())) {
+    // Padded local-pointer lowering first linearizes in encoding order, then
+    // adds each interval's padding. Account for both reorderings and gaps.
+    auto order = triton::gpu::getOrder(padded, shape);
+    int64_t physicalStride = 1;
+    for (unsigned dim : order) {
+      bound = std::gcd(bound, highestPowOf2Divisor<int64_t>(
+                                  physicalStride ^ logicalStrides[dim]));
+      physicalStride *= shape[dim];
+    }
+    for (auto [interval, padding] :
+         llvm::zip_equal(padded.getIntervals(), padded.getPaddings()))
+      bound = gcd(bound, interval, padding);
+    return bound;
+  }
+
+  auto *ctx = type.getContext();
+  auto offset = StringAttr::get(ctx, "offset");
+  auto dims = triton::standardOutDimNames(ctx, shape.size());
+  auto physical =
+      triton::gpu::toLinearLayout(type).sublayout({offset}, dims).invert();
+  for (auto [dim, name] : llvm::enumerate(dims)) {
+    for (int bit = 0; bit < physical.getInDimSizeLog2(name); ++bit) {
+      int64_t logicalBasis = logicalStrides[dim] * (int64_t(1) << bit);
+      int64_t physicalBasis = physical.getBasis(name, bit, offset);
+      bound = std::gcd(
+          bound, highestPowOf2Divisor<int64_t>(logicalBasis ^ physicalBasis));
+    }
+  }
+  return bound;
+}
+
+class TleExtractTileOpAxisInfoVisitor final : public AxisInfoVisitor {
+public:
+  AxisInfo
+  getAxisInfo(Operation *op,
+              ArrayRef<const dataflow::Lattice<AxisInfo> *> operands) override {
+    auto extract = dyn_cast<triton::tle::ExtractTileOp>(op);
+    if (!extract || operands.empty())
+      return AxisInfo();
+
+    const AxisInfo &srcInfo = operands[0]->getValue();
+    auto srcTy = dyn_cast<RankedTensorType>(extract.getSrc().getType());
+    auto resultTy = dyn_cast<RankedTensorType>(extract.getResult().getType());
+    if (!srcTy || !resultTy || srcInfo.getRank() != resultTy.getRank())
+      return AxisInfo();
+
+    AxisInfo::DimVectorT contiguity, divisibility, constancy;
+    contiguity.reserve(resultTy.getRank());
+    divisibility.reserve(resultTy.getRank());
+    constancy.reserve(resultTy.getRank());
+
+    auto resultShape = resultTy.getShape();
+    auto elementPtrTy = dyn_cast<PointerType>(srcTy.getElementType());
+    const int64_t contiguousStep =
+        elementPtrTy
+            ? std::max<int64_t>(1, getPointeeBitWidth(elementPtrTy) / 8)
+            : 1;
+    for (int d = 0; d < resultTy.getRank(); ++d) {
+      const int64_t resultExtent = resultShape[d];
+      const int64_t srcContiguity = srcInfo.getContiguity(d);
+      const int64_t resultContiguity = std::min(srcContiguity, resultExtent);
+      contiguity.push_back(resultContiguity);
+      constancy.push_back(std::min(srcInfo.getConstancy(d), resultExtent));
+
+      int64_t resultDivisibility = srcInfo.getDivisibility(d);
+      if (resultContiguity < srcContiguity) {
+        // Extracting an aligned sub-tile may split a contiguous source run.
+        // The new run starts every resultExtent elements, so retain only the
+        // alignment guaranteed by both the source and that step. Pointer
+        // divisibility is expressed in bytes; scalar divisibility is in
+        // elements.
+        resultDivisibility =
+            std::gcd(resultDivisibility,
+                     saturatingMultiplyDivisor(resultExtent, contiguousStep));
+      }
+      divisibility.push_back(resultDivisibility);
+    }
+
+    // extract_tile selects a subset without changing any values. A uniform
+    // source therefore keeps the same known constant value.
+    return AxisInfo(contiguity, divisibility, constancy,
+                    srcInfo.getConstantValue());
+  }
+
+  bool match(Operation *op) override {
+    return isa<triton::tle::ExtractTileOp>(op) &&
+           op->hasAttr(triton::tle::kPlannedTileAttr);
+  }
+};
+
+class TleLocalPointersOpAxisInfoVisitor final : public AxisInfoVisitor {
+public:
+  AxisInfo
+  getAxisInfo(Operation *op,
+              ArrayRef<const dataflow::Lattice<AxisInfo> *> operands) override {
+    auto local = dyn_cast<triton::tle::LocalPointersOp>(op);
+    if (!local || operands.size() < 2)
+      return AxisInfo();
+
+    auto memDescTy =
+        dyn_cast<triton::gpu::MemDescType>(local.getSrc().getType());
+    if (!memDescTy)
+      return AxisInfo();
+
+    const int64_t physicalBound = getPhysicalOffsetIdentityBound(memDescTy);
+
+    auto resultTensorTy =
+        dyn_cast<RankedTensorType>(local.getResult().getType());
+    auto resultPtrTy = dyn_cast<PointerType>(local.getResult().getType());
+
+    // Scalar pointer result: preserve base shared-memory alignment so later
+    // `tt.splat + tt.addptr` can still infer vectorization width.
+    if (!resultTensorTy && resultPtrTy) {
+      const int rank = 1;
+      int64_t elemBytes =
+          std::max<int64_t>(1, getPointeeBitWidth(resultPtrTy) / 8);
+      int64_t baseAlignBytes = elemBytes;
+      if (auto sharedEnc = dyn_cast<triton::gpu::SharedEncodingTrait>(
+              memDescTy.getEncoding()))
+        baseAlignBytes =
+            std::max<int64_t>(baseAlignBytes, sharedEnc.getAlignment());
+
+      int64_t offsetDivElems = highestPowOf2Divisor<int64_t>(0);
+      bool hasConstOffset = true;
+      int64_t constOffsetElems = 0;
+      const auto memShape = memDescTy.getShape();
+      const size_t maxTerms = std::min(memShape.size(), operands.size() - 1);
+      for (size_t i = 0; i < maxTerms; ++i) {
+        const AxisInfo &idxInfo = operands[i + 1]->getValue();
+        if (idxInfo.getRank() == 0)
+          continue;
+        int64_t stride = 1;
+        for (size_t j = i + 1; j < memShape.size(); ++j)
+          stride *= memShape[j];
+        int64_t strideDiv = highestPowOf2Divisor<int64_t>(stride);
+        int64_t idxDiv = idxInfo.getDivisibility(0);
+        if (idxInfo.getContiguity(0) > 1 && strideDiv != 1)
+          idxDiv = 1;
+        int64_t termDiv = multiplyDivisor(idxDiv, strideDiv);
+        offsetDivElems = std::gcd(offsetDivElems, termDiv);
+
+        if (hasConstOffset && idxInfo.getConstantValue().has_value())
+          constOffsetElems += idxInfo.getConstantValue().value() * stride;
+        else
+          hasConstOffset = false;
+      }
+
+      int64_t offsetDivBytes =
+          saturatingMultiplyDivisor(offsetDivElems, elemBytes);
+      int64_t ptrDivBytes = std::gcd(baseAlignBytes, offsetDivBytes);
+      ptrDivBytes = std::gcd(
+          ptrDivBytes, saturatingMultiplyDivisor(physicalBound, elemBytes));
+      std::optional<int64_t> constantValue = std::nullopt;
+      if (hasConstOffset && physicalBound == highestPowOf2Divisor<int64_t>(0))
+        constantValue = constOffsetElems * elemBytes;
+      return AxisInfo(/*contiguity=*/{1},
+                      /*divisibility=*/{ptrDivBytes},
+                      /*constancy=*/{1}, constantValue);
+    }
+
+    if (!resultTensorTy)
+      return AxisInfo();
+    const int rank = resultTensorTy.getRank();
+    if (rank == 0)
+      return AxisInfo();
+
+    auto scaleAxisInfoByConstant = [&](const AxisInfo &src, int64_t scale) {
+      AxisInfo::DimVectorT contiguity, divisibility, constancy;
+      contiguity.reserve(rank);
+      divisibility.reserve(rank);
+      constancy.reserve(rank);
+      for (int d = 0; d < rank; ++d) {
+        const int64_t srcContig = src.getContiguity(d);
+        const int64_t srcDiv = src.getDivisibility(d);
+        const int64_t srcConstancy = src.getConstancy(d);
+        // Mirror MulIOp behavior for x * C where C is compile-time constant.
+        contiguity.push_back(scale == 1 ? srcContig : 1);
+        constancy.push_back(srcConstancy);
+        int64_t srcDivAdjusted = srcDiv;
+        if (srcContig > 1 && scale != 1) {
+          // Treat [2^n,2^n+1,...]'s divisibility as 1 if contiguity > 1.
+          srcDivAdjusted = 1;
+        }
+        const int64_t scaleDiv = highestPowOf2Divisor<int64_t>(scale);
+        divisibility.push_back(multiplyDivisor(srcDivAdjusted, scaleDiv));
+      }
+      std::optional<int64_t> constantValue = std::nullopt;
+      if (src.getConstantValue().has_value())
+        constantValue = src.getConstantValue().value() * scale;
+      return AxisInfo(contiguity, divisibility, constancy, constantValue);
+    };
+
+    auto addAxisInfo = [&](const AxisInfo &lhs, const AxisInfo &rhs) {
+      AxisInfo::DimVectorT contiguity, divisibility, constancy;
+      contiguity.reserve(rank);
+      divisibility.reserve(rank);
+      constancy.reserve(rank);
+      for (int d = 0; d < rank; ++d) {
+        // Mirror AddSubOpAxisInfoVisitor<arith::AddIOp>.
+        contiguity.push_back(
+            std::max(gcd(lhs.getConstancy(d), rhs.getContiguity(d)),
+                     gcd(lhs.getContiguity(d), rhs.getConstancy(d))));
+        divisibility.push_back(
+            gcd(lhs.getDivisibility(d), rhs.getDivisibility(d)));
+        constancy.push_back(gcd(lhs.getConstancy(d), rhs.getConstancy(d)));
+      }
+      std::optional<int64_t> constantValue = std::nullopt;
+      if (lhs.getConstantValue().has_value() &&
+          rhs.getConstantValue().has_value())
+        constantValue =
+            lhs.getConstantValue().value() + rhs.getConstantValue().value();
+      return AxisInfo(contiguity, divisibility, constancy, constantValue);
+    };
+
+    // Build flattened offset axis info from row-major linearization:
+    // offset = sum_i index_i * stride_i, where stride_i = prod(shape[i+1:]).
+    AxisInfo offsetInfo;
+    bool initialized = false;
+    const auto memShape = memDescTy.getShape();
+    const size_t maxTerms = std::min(memShape.size(), operands.size() - 1);
+    for (size_t i = 0; i < maxTerms; ++i) {
+      const AxisInfo &idxInfo = operands[i + 1]->getValue();
+      if (idxInfo.getRank() != rank)
+        return AxisInfo();
+
+      int64_t stride = 1;
+      for (size_t j = i + 1; j < memShape.size(); ++j)
+        stride = multiplyDivisor(stride, memShape[j]);
+
+      AxisInfo termInfo = scaleAxisInfoByConstant(idxInfo, stride);
+      if (!initialized) {
+        offsetInfo = termInfo;
+        initialized = true;
+      } else {
+        offsetInfo = addAxisInfo(offsetInfo, termInfo);
+      }
+    }
+
+    if (!initialized)
+      return AxisInfo();
+
+    // Pointer divisibility is tracked in bytes for alignment queries.
+    auto ptrTy = dyn_cast<PointerType>(resultTensorTy.getElementType());
+    int64_t elemBytes = 1;
+    if (ptrTy)
+      elemBytes = std::max<int64_t>(1, getPointeeBitWidth(ptrTy) / 8);
+    AxisInfo::DimVectorT byteDivisibility = offsetInfo.getDivisibility();
+    AxisInfo::DimVectorT contiguity = offsetInfo.getContiguity();
+    for (int d = 0; d < rank; ++d) {
+      contiguity[d] = std::min(contiguity[d], physicalBound);
+      byteDivisibility[d] =
+          saturatingMultiplyDivisor(byteDivisibility[d], elemBytes);
+      byteDivisibility[d] =
+          std::gcd(byteDivisibility[d],
+                   saturatingMultiplyDivisor(physicalBound, elemBytes));
+    }
+
+    std::optional<int64_t> constantValue = std::nullopt;
+    if (offsetInfo.getConstantValue().has_value() &&
+        physicalBound == highestPowOf2Divisor<int64_t>(0))
+      constantValue = offsetInfo.getConstantValue().value() * elemBytes;
+
+    return AxisInfo(contiguity, byteDivisibility, offsetInfo.getConstancy(),
+                    constantValue);
+  }
+
+  bool match(Operation *op) override {
+    return isa<triton::tle::LocalPointersOp>(op);
+  }
+};
+
+class TleRemotePointersOpAxisInfoVisitor final : public AxisInfoVisitor {
+public:
+  AxisInfo
+  getAxisInfo(Operation *op,
+              ArrayRef<const dataflow::Lattice<AxisInfo> *> operands) override {
+    auto remote = dyn_cast<triton::tle::RemotePointersOp>(op);
+    if (!remote || remote.getSpace() == "node" || operands.empty())
+      return AxisInfo();
+
+    const AxisInfo &baseInfo = operands[0]->getValue();
+    if (baseInfo.getRank() == 0)
+      return AxisInfo();
+
+    // shard_id is expected to be a scalar/splat across the pointer tensor.
+    // In this common case, keep the source pointer axis info unchanged.
+    if (operands.size() < 2)
+      return baseInfo;
+    const AxisInfo &shardInfo = operands[1]->getValue();
+    if (shardInfo.getRank() == 0)
+      return baseInfo;
+
+    const int rank = baseInfo.getRank();
+    if (shardInfo.getRank() != rank)
+      return baseInfo;
+    bool shardIsUniform = true;
+    for (int d = 0; d < rank; ++d) {
+      if (shardInfo.getConstancy(d) <= 1) {
+        shardIsUniform = false;
+        break;
+      }
+    }
+    if (shardIsUniform)
+      return baseInfo;
+
+    // Fallback to Add-style composition when shard tensor is non-uniform.
+    AxisInfo::DimVectorT contiguity, divisibility, constancy;
+    contiguity.reserve(rank);
+    divisibility.reserve(rank);
+    constancy.reserve(rank);
+    for (int d = 0; d < rank; ++d) {
+      contiguity.push_back(
+          std::max(gcd(baseInfo.getConstancy(d), shardInfo.getContiguity(d)),
+                   gcd(baseInfo.getContiguity(d), shardInfo.getConstancy(d))));
+      divisibility.push_back(
+          gcd(baseInfo.getDivisibility(d), shardInfo.getDivisibility(d)));
+      constancy.push_back(
+          gcd(baseInfo.getConstancy(d), shardInfo.getConstancy(d)));
+    }
+    std::optional<int64_t> constantValue = std::nullopt;
+    if (baseInfo.getConstantValue().has_value() &&
+        shardInfo.getConstantValue().has_value()) {
+      constantValue = baseInfo.getConstantValue().value() +
+                      shardInfo.getConstantValue().value();
+    }
+    return AxisInfo(contiguity, divisibility, constancy, constantValue);
+  }
+
+  bool match(Operation *op) override {
+    auto remote = dyn_cast<triton::tle::RemotePointersOp>(op);
+    return remote && remote.getSpace() != "node";
+  }
+};
+
+} // namespace
+
+void AxisInfoExt::addVisitors(mlir::triton::AxisInfoVisitorList &visitors) {
+  visitors.append<TleExtractTileOpAxisInfoVisitor>();
+  visitors.append<TleLocalPointersOpAxisInfoVisitor>();
+  visitors.append<TleRemotePointersOpAxisInfoVisitor>();
+}
+
+} // namespace mlir::triton::tle

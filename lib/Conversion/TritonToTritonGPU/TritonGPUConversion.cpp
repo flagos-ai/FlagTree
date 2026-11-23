@@ -27,10 +27,17 @@
 
 #include <algorithm>
 #include <numeric>
+#ifdef __TLE__
+#include <optional>
+#endif
 
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Support/LLVM.h"
+#ifdef __TLE__
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "tle/dialect/include/IR/Dialect.h" // flagtree tle raw
+#endif
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -51,6 +58,9 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
 
   // Add encoding for tensor
   addConversion([this](RankedTensorType tensorType) -> RankedTensorType {
+#ifdef __TLE__
+    return convertRankedTensorType(tensorType, this->numWarps);
+#else
     // types with encoding are already in the right format
     // TODO: check for layout encodings more specifically
     if (tensorType.getEncoding())
@@ -60,6 +70,7 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
         getDefaultBlockedEncoding(this->context, shape, this->numWarps,
                                   this->threadsPerWarp, this->numCTAs);
     return tensorType.cloneWithEncoding(encoding);
+#endif
   });
 
   // Add encoding for tensor pointer
@@ -75,6 +86,26 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
     return triton::PointerType::get(convertedTensorType,
                                     ptrType.getAddressSpace());
   });
+
+#ifdef __TLE__
+  addConversion([this](Value value) -> std::optional<Type> {
+    Type type = value.getType();
+    int valueNumWarps = getNumWarps(value);
+    if (auto tensorType = dyn_cast<RankedTensorType>(type))
+      return convertRankedTensorType(tensorType, valueNumWarps);
+
+    if (auto ptrType = dyn_cast<triton::PointerType>(type)) {
+      auto pointeeTensorType =
+          dyn_cast<RankedTensorType>(ptrType.getPointeeType());
+      if (pointeeTensorType)
+        return triton::PointerType::get(
+            convertRankedTensorType(pointeeTensorType, valueNumWarps),
+            ptrType.getAddressSpace());
+    }
+
+    return std::nullopt;
+  });
+#endif
 
   // If the origValue still has live user(s), use this to
   // convert origValue to newValue
@@ -98,6 +129,57 @@ TritonGPUTypeConverter::TritonGPUTypeConverter(MLIRContext *context,
   });
 }
 
+#ifdef __TLE__
+void TritonGPUTypeConverter::snapshotNumWarps(Operation *root) {
+  // Signature conversion temporarily detaches original blocks. Preserve the
+  // SSA values' scopes before the conversion rewriter starts moving regions.
+  root->walk([&](Operation *op) {
+    for (Value result : op->getResults())
+      originalNumWarps.try_emplace(result, lookupNumWarps(op));
+    for (Region &region : op->getRegions()) {
+      for (Block &block : region) {
+        if (block.getNumArguments() == 0)
+          continue;
+        int regionNumWarps = lookupNumWarps(&region);
+        for (BlockArgument argument : block.getArguments())
+          originalNumWarps.try_emplace(argument, regionNumWarps);
+      }
+    }
+  });
+}
+
+int TritonGPUTypeConverter::getNumWarps(Value value) const {
+  if (auto it = originalNumWarps.find(value); it != originalNumWarps.end())
+    return it->second;
+  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+    if (Block *owner = blockArg.getOwner()) {
+      if (Region *region = owner->getParent()) {
+        if (region->getParentOp())
+          return lookupNumWarps(region);
+      }
+    }
+  }
+  if (Operation *op = value.getDefiningOp()) {
+    if (std::optional<int> contextualNumWarps = maybeLookupNumWarps(op))
+      return *contextualNumWarps;
+  }
+  return numWarps;
+}
+
+RankedTensorType
+TritonGPUTypeConverter::convertRankedTensorType(RankedTensorType tensorType,
+                                                int contextualNumWarps) const {
+  // Types with encoding are already in the right format.
+  // TODO: check for layout encodings more specifically.
+  if (tensorType.getEncoding())
+    return tensorType;
+  ArrayRef<int64_t> shape = tensorType.getShape();
+  triton::gpu::BlockedEncodingAttr encoding = getDefaultBlockedEncoding(
+      context, shape, contextualNumWarps, threadsPerWarp, numCTAs);
+  return tensorType.cloneWithEncoding(encoding);
+}
+#endif
+
 //
 // TritonGPUConversion
 //
@@ -111,9 +193,21 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
   addIllegalOp<scf::ExecuteRegionOp, scf::ParallelOp, scf::ReduceOp,
                scf::ReduceReturnOp>();
 
+#ifdef __TLE__
+  // flagtree tle raw
+  addDynamicallyLegalOp<triton::gpu::LocalAllocOp, triton::gpu::LocalStoreOp,
+                        triton::gpu::LocalLoadOp,
+                        triton::gpu::AsyncCopyGlobalToLocalOp>(
+      [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
+#endif
   addDynamicallyLegalDialect<arith::ArithDialect, math::MathDialect,
                              triton::TritonDialect, cf::ControlFlowDialect,
-                             scf::SCFDialect, ub::UBDialect>(
+                             scf::SCFDialect, ub::UBDialect
+#ifdef __TLE__
+                             ,
+                             LLVM::LLVMDialect // flagtree tle raw
+#endif
+                             >(
       [&](Operation *op) { return isDynamicallyLegal(op, typeConverter); });
 
   // We have requirements for the data layouts
@@ -136,10 +230,97 @@ TritonGPUConversionTarget::TritonGPUConversionTarget(
     }
     return true;
   });
+
+#ifdef __TLE__
+  // flagtree tle raw
+  addIllegalOp<triton::tle::SetLayoutOp>();
+  // Encoded types alone do not make an access legal. Its selected layout
+  // must agree with the entire pointer, mask, and data tuple.
+  addDynamicallyLegalOp<triton::LoadOp, triton::StoreOp>([&](Operation *op) {
+    if (!isDynamicallyLegal(op, typeConverter))
+      return false;
+    if (Attribute encoding = getTleExplicitMemoryEncoding(op))
+      for (Type type :
+           llvm::concat<Type>(op->getOperandTypes(), op->getResultTypes()))
+        if (auto tensor = dyn_cast<RankedTensorType>(type))
+          if (tensor.getEncoding() != encoding)
+            return false;
+    return true;
+  });
+  // An explicit consumer layout can pre-encode a transpose result during
+  // propagation. Encoded types alone do not make this view operation legal:
+  // its result must still be inferred from the source and permutation.
+  addDynamicallyLegalOp<triton::TransOp>([](triton::TransOp op) {
+    Attribute sourceEncoding = op.getSrc().getType().getEncoding();
+    Attribute resultEncoding = op.getType().getEncoding();
+    return sourceEncoding && resultEncoding &&
+           inferDstEncoding(op, sourceEncoding) == resultEncoding;
+  });
+  // A hinted reshape also has an intrinsic view layout. In particular,
+  // removing size-one dimensions need not preserve a SliceEncodingAttr.
+  addDynamicallyLegalOp<triton::ReshapeOp>([&](triton::ReshapeOp op) {
+    if (!isDynamicallyLegal(op, typeConverter))
+      return false;
+    if (op.getAllowReorder() || !op->hasAttr(getTleExplicitEncodingAttrName(0)))
+      return true;
+    return inferDstEncoding(op, op.getSrc().getType().getEncoding()) ==
+           op.getType().getEncoding();
+  });
+  // A shared computed index may require different slices at different uses.
+  // Keep mismatched views illegal so conversion materializes each edge.
+  addDynamicallyLegalOp<triton::ExpandDimsOp>([&](triton::ExpandDimsOp op) {
+    if (!isDynamicallyLegal(op, typeConverter))
+      return false;
+    auto source = dyn_cast_or_null<triton::gpu::SliceEncodingAttr>(
+        op.getSrc().getType().getEncoding());
+    return source && source.getDim() == op.getAxis() &&
+           source.getParent() == op.getType().getEncoding();
+  });
+  addDynamicallyLegalOp<triton::ReduceOp>([&](triton::ReduceOp op) {
+    if (!isDynamicallyLegal(op, typeConverter))
+      return false;
+    for (auto [operand, result] :
+         llvm::zip(op.getOperands(), op.getResults())) {
+      auto resultType = dyn_cast<RankedTensorType>(result.getType());
+      if (!resultType)
+        continue;
+      auto sourceType = cast<RankedTensorType>(operand.getType());
+      auto source =
+          cast<triton::gpu::DistributedEncodingTrait>(sourceType.getEncoding());
+      auto expected = triton::gpu::SliceEncodingAttr::get(op.getContext(),
+                                                          op.getAxis(), source);
+      if (resultType.getEncoding() != expected)
+        return false;
+    }
+    return true;
+  });
+  addDynamicallyLegalDialect<triton::tle::TleDialect>([&](Operation *op) {
+    bool hasLegalRegions = true;
+    for (auto &region : op->getRegions()) {
+      hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
+    }
+    return hasLegalRegions && typeConverter.isLegal(op);
+  });
+#endif
 }
 
 bool TritonGPUConversionTarget::isDynamicallyLegal(
     Operation *op, const TypeConverter &typeConverter) {
+#ifdef __TLE__
+  // Propagation may encode independent SSA producers differently. An
+  // elementwise operation still requires a common operand/result encoding,
+  // even when the type converter considers every individual type legal.
+  if (op->hasTrait<OpTrait::Elementwise>()) {
+    Attribute encoding;
+    for (Type type :
+         llvm::concat<Type>(op->getOperandTypes(), op->getResultTypes()))
+      if (auto tensor = dyn_cast<RankedTensorType>(type)) {
+        if (encoding && tensor.getEncoding() != encoding)
+          return false;
+        encoding = tensor.getEncoding();
+      }
+  }
+#endif
   bool hasLegalRegions = true;
   for (auto &region : op->getRegions()) {
     hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
@@ -204,7 +385,11 @@ LogicalResult impl::convertGatherScatterOp(
     for (auto [operand, value] : llvm::zip(op->getOpOperands(), operands))
       operand.set(value);
     for (OpResult result : op->getOpResults())
+#ifdef __TLE__
+      result.setType(typeConverter.convertType(result));
+#else
       result.setType(typeConverter.convertType(result.getType()));
+#endif
     result = convertGatherScatterIndices(op, xOffsetsMutable, rewriter);
   });
   return result;
