@@ -3,7 +3,6 @@
 import os
 import torch
 import torch.distributed as dist
-import shmem as ash
 
 _g_pe = None
 _g_world_size = None
@@ -19,6 +18,8 @@ def _get_ash_ip_port():
 
 
 def init_communicator(ip_port=None, ash_size=None, engine_type=None):
+    import shmem as ash
+
     global _g_pe, _g_world_size, _g_mem_count
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.npu.set_device(local_rank)
@@ -50,6 +51,8 @@ def create_dist_tensor(buf_tensor):
     The communicator is finalized only when `cleanup_communicator` brings the
     count back to 0.
     """
+    import shmem as ash
+
     global _g_mem_count
     if isinstance(buf_tensor, torch.Tensor):
         peer_mem = ash.aclshmem_create_tensor([buf_tensor.numel()], dtype=buf_tensor.dtype, device_id=_g_pe)
@@ -66,6 +69,8 @@ def cleanup_communicator(peer_mem):
     (i.e. all tensors created by `create_dist_tensor` have been freed) is
     `aclshmem_finalize()` called.
     """
+    import shmem as ash
+
     global _g_mem_count
     torch.npu.synchronize()
     dist.barrier()
