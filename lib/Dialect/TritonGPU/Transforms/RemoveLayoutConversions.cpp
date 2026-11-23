@@ -2550,6 +2550,108 @@ static bool sliceMultipliesPerThreadCopies(
       return true;
   return false;
 }
+
+// --- Low-precision epilogue ------------------------------------------------
+//
+// A low-precision -> f32 extension is the one op whose vectorisation width
+// follows sizePerThread along the fastest dimension, and PPU's unpack of a wide
+// bf16/f16 vector does not scale with it. addmv (1024x65536, bf16/f16) shows
+// the failure: retagging the loop body from spt[1,2] wpc[1,8] to spt[1,8]
+// wpc[4,2] removes a 64 KiB per-iteration convert and widens extf from 2 to 8
+// lanes, yet the kernel runs 11-13% slower -- while f32, which has no extf,
+// runs 238% faster on the same shape.
+//
+// Widening alone is not the signal: 256x256 and 1024x1024 widen extf 1 -> 8 and
+// gain 140% / 115%. What separates them is the loop body's per-thread
+// footprint. At 64 B/thread the retag is a clear win; at 256 B/thread the
+// carried accumulator already sits at the register-pressure edge, so the
+// widened unpack competes with it instead of hiding behind it.
+//
+// 4096x4096 carries the same 256 B/thread as 1024x65536 and loses its small
+// +12%/+27% gain as collateral. Accepted: that gain is an order of magnitude
+// below the regression it buys protection from.
+//
+// Override the limit with FLAGTREE_RLC_ENHANCE_MAX_LOW_PREC_BYTES=<bytes>.
+static int64_t maxLowPrecisionEpilogueBytes() {
+  static const int64_t limit = [] {
+    if (const char *env =
+            std::getenv("FLAGTREE_RLC_ENHANCE_MAX_LOW_PREC_BYTES"))
+      if (int64_t parsed = std::strtoll(env, nullptr, 10); parsed > 0)
+        return parsed;
+    return int64_t{128};
+  }();
+  return limit;
+}
+
+// True if `value` feeds a low-precision -> f32 extension directly. The
+// extension's own width is what follows the layout, and a retag reaches it
+// through the operand, so one hop is enough.
+static bool feedsLowPrecisionExtension(Value value) {
+  for (Operation *user : value.getUsers()) {
+    auto ext = dyn_cast<arith::ExtFOp>(user);
+    if (!ext)
+      continue;
+    auto srcType = dyn_cast<RankedTensorType>(ext.getIn().getType());
+    if (!srcType)
+      continue;
+    auto elemType = dyn_cast<FloatType>(srcType.getElementType());
+    if (elemType && elemType.getWidth() < 32)
+      return true;
+  }
+  return false;
+}
+
+// True if `proposal` retags a low-precision epilogue whose loop body is already
+// too wide per thread for the widened unpack to pay off.
+//
+// `Proposal` is a private member type of LayoutPropagation, so the full type is
+// spelled out here the same way proposalMultipliesPerThreadCopies does.
+static bool proposalWidensLowPrecisionEpilogue(
+    const llvm::MapVector<Value, Attribute> &proposal) {
+  int64_t widestBytes = 0;
+  int64_t widestElems = 0;
+  Value widestValue;
+  Attribute widestEncoding;
+  bool hasLowPrecisionExt = false;
+  for (auto &it : proposal) {
+    auto type = dyn_cast<RankedTensorType>(it.first.getType());
+    if (!type || !it.second)
+      continue;
+    if (!hasLowPrecisionExt && feedsLowPrecisionExtension(it.first)) {
+      hasLowPrecisionExt = true;
+      if (rlcDbgLevel() >= 2)
+        llvm::errs() << "[rlc]   low-precision extf fed by " << it.first << " ("
+                     << rlcDbgEnc(type.getEncoding()) << ")\n";
+    }
+    // The footprint after the retag is what competes with the widened unpack.
+    auto retagged = type.cloneWithEncoding(it.second);
+    int64_t elems = getTotalElemsPerThread(retagged);
+    int64_t bytes = elems * type.getElementTypeBitWidth() / 8;
+    if (bytes > widestBytes) {
+      widestBytes = bytes;
+      widestElems = elems;
+      widestValue = it.first;
+      widestEncoding = it.second;
+    }
+  }
+  if (!hasLowPrecisionExt || widestBytes < maxLowPrecisionEpilogueBytes())
+    return false;
+  if (rlcDbgLevel() >= 1) {
+    auto type = cast<RankedTensorType>(widestValue.getType());
+    Operation *def = widestValue.getDefiningOp();
+    llvm::errs() << "[rlc] producerSide reject: low-precision epilogue on a "
+                 << widestBytes << " B/thread tile (limit "
+                 << maxLowPrecisionEpilogueBytes() << ") at "
+                 << (def ? def->getName().getStringRef() : "<block arg>")
+                 << " " << widestElems << " elem x "
+                 << type.getElementTypeBitWidth() << " bit\n";
+    if (rlcDbgLevel() >= 2)
+      llvm::errs() << "[rlc]   widest " << widestValue << " enc "
+                   << rlcDbgEnc(type.getEncoding()) << " -> "
+                   << rlcDbgEnc(widestEncoding) << "\n";
+  }
+  return true;
+}
 #endif // __PPU__
 
 bool LayoutPropagation::solveSmallComponents() {
@@ -3077,8 +3179,13 @@ bool LayoutPropagation::solveSmallComponents() {
     // is what the seven kernels that broke on the broader version needed.
     if (proposalMultipliesPerThreadCopies(proposal))
       return;
+    // Same scope, different failure mode: a retag that widens a low-precision
+    // -> f32 extension on a loop body that is already large per thread. See
+    // proposalWidensLowPrecisionEpilogue for the addmv measurements.
+    if (proposalWidensLowPrecisionEpilogue(proposal))
+      return;
 #endif // __PPU__
-      producerSideProposals.push_back(std::move(proposal));
+    producerSideProposals.push_back(std::move(proposal));
   });
   if (rlcDbgLevel() >= 1)
     llvm::errs() << "[rlc] entry=producerSide n=" << producerSideProposals.size()
