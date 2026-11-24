@@ -20,5 +20,6 @@
 
 from . import copy
 from . import layout
+from . import pipe
 
-__all__ = ["copy", "layout"]
+__all__ = ["copy", "layout", "pipe"]
