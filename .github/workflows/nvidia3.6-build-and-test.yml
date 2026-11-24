@@ -99,15 +99,6 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           backend: nvidia
 
-      - name: CommonIR smoke test
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
-        shell: bash
-        run: |
-          source ~/env.sh
-          python3 -m pytest -q python/test/unit/test_common_ir.py
-          FLAGTREE_COMMON_IR=1 python3 -m pytest -q test/CommonIR/test_gpu_semantics.py test/CommonIR/test_gpu_wgmma_bridge.py
-          FLAGTREE_COMMON_IR=1 python3 test/CommonIR/native_matmul_gpu.py
-
       - name: Unit Test
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash

@@ -916,7 +916,7 @@ cache = FlagTreeCache()
 # Match the build-time CommonIR default and CMake's false constants.
 common_ir = os.environ.get("FLAGTREE_COMMON_IR")
 if common_ir is None:
-    common_ir_enabled = flagtree_backend in ("", "nvidia", "enflame", "hcu", "iluvatar", "metax", "mthreads")
+    common_ir_enabled = flagtree_backend in ("enflame", "hcu", "iluvatar", "metax", "mthreads")
 else:
     common_ir = common_ir.upper()
     common_ir_enabled = common_ir not in ("", "0", "OFF", "NO", "FALSE", "N", "IGNORE",

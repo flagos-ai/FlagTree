@@ -107,19 +107,26 @@ final NVIDIA backend contract. The `CommonIRToTTGIR` pass must eliminate all
 `tile.*`, `!tile.buf`, and temporary buffer-to-memdesc bridges before the
 remaining TTGIR pipeline runs.
 
-For the default NVIDIA build, the installer automatically downloads
-[FLIR](https://github.com/flagos-ai/flir) to `third_party/flir` and builds
-CommonIR support. Enable the CommonIR path before launching Python:
+By default the `enflame` / `hcu` / `iluvatar` / `metax` / `mthreads` builds
+automatically download [FLIR](https://github.com/flagos-ai/flir) into
+`third_party/flir` and compile CommonIR support (`ascend` always includes it).
+The NVIDIA and AMD builds do not compile CommonIR by default; to enable it on
+NVIDIA, opt in at install time:
 
 ```bash
-python -m pip install -e . --no-build-isolation
-FLAGTREE_COMMON_IR=1 python test/CommonIR/native_matmul_gpu.py
+FLAGTREE_COMMON_IR=1 python -m pip install -e . --no-build-isolation
+python test/CommonIR/native_matmul_gpu.py
 ```
 
-Set `FLAGTREE_COMMON_IR=0` during installation to build without CommonIR
-support. A build with CommonIR support uses the native path at runtime by
-default. Set `FLAGTREE_COMMON_IR=1` before starting a process to enable CommonIR
-in that process.
+- **Build time**: `FLAGTREE_COMMON_IR=0` skips compiling CommonIR (already the
+  default for NVIDIA / AMD).
+- **Runtime**: a build that includes CommonIR support uses the **CommonIR path by
+  default**. Set `FLAGTREE_COMMON_IR=0` before starting a process to fall back to
+  the native TTGIR path. A build without CommonIR support always uses the native
+  path and this variable has no effect.
+
+> Note: NVIDIA's CommonIR adaptation is still in progress; it is currently not
+> enabled by default and a follow-up PR will restore it.
 
 Supported GPU buffer forms are:
 
