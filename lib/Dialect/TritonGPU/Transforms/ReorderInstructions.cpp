@@ -46,7 +46,11 @@
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
+#ifdef __TLE__
 #include "tle/dialect/include/Analysis/SmemReadOrder.h"
+#else
+#include "tle/dialect/include/Analysis/SmemReadOrderCore.h"
+#endif // __TLE__
 #endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
 
 namespace mlir {
@@ -99,21 +103,27 @@ static bool crossWriteSideEffectingOp(Operation *start, Operation *end) {
 }
 
 #ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
-using mlir::triton::tle::findViewedAlloc;
-using mlir::triton::tle::mayWriteReadBuffer;
+// A build with the TLE dialect knows its pipe ops and stores; one without it
+// judges every op by its memory effects.
+#ifdef __TLE__
+using SmemReadOrder = tle::SmemReadOrderAnalysis;
+#else
+using SmemReadOrder = tle::EffectsSmemReadOrderAnalysis;
+#endif // __TLE__
 
 // Whether an op between `start` and `end` (start dominates end) may write the
 // shared memory that the load `start` of `readSrc` reads, with an op whose
 // effects are unknown counted as a write: a load of mutable shared memory must
 // not move past anything that may write the buffer it reads.
 static bool crossMayWriteSideEffectingOp(Operation *start, Operation *end,
-                                         Value readSrc) {
+                                         Value readSrc,
+                                         SmemReadOrder &analysis) {
   auto ancestor = start->getBlock()->findAncestorOpInBlock(*end);
   if (!ancestor)
     return true;
-  triton::gpu::LocalAllocOp alloc = findViewedAlloc(readSrc);
+  tle::SmemRead read = tle::getSmemRead(readSrc);
   for (Operation *op = start->getNextNode(); op; op = op->getNextNode()) {
-    if (mayWriteReadBuffer(op, readSrc, alloc))
+    if (analysis.mayWriteReadBuffer(op, read))
       return true;
     if (op == ancestor)
       return false;
@@ -150,6 +160,9 @@ public:
   void runOnOperation() override {
     ModuleOp m = getOperation();
     mlir::DominanceInfo dom(m);
+#ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
+    SmemReadOrder smemReadOrder(m);
+#endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
     // sink conversion after the last dealloc
     // before the first use ancestor in its block
     m.walk([&](triton::gpu::ConvertLayoutOp op) {
@@ -181,7 +194,8 @@ public:
       if (keepSmemReadOrder)
         if (auto load = dyn_cast<triton::gpu::LocalLoadOp>(op))
           if (load.getSrc().getType().getMutableMemory() &&
-              crossMayWriteSideEffectingOp(op, *user_begin, load.getSrc()))
+              crossMayWriteSideEffectingOp(op, *user_begin, load.getSrc(),
+                                           smemReadOrder))
             return;
 #endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
       opToMove.insert({op, *user_begin});

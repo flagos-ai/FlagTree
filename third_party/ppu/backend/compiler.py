@@ -425,16 +425,25 @@ class PPUBackend(BaseBackend):
         passes.ttgpuir.add_f32_dot_tc(pm, emuTF32)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_optimize_thread_locality(pm)
+        keep_smem_read_order = False
         if tle is not None:
             # flagtree keep smem read order: imported here, the tle package needs triton.language, which
-            # is not yet loaded when the backends are discovered
-            from triton.experimental.tle.compiler_knobs import compilation as tle_knobs
+            # is not yet loaded when the backends are discovered. Without the TLE knobs the original
+            # passes run.
+            try:
+                from triton.experimental.tle.compiler_knobs import compilation as tle_knobs
+                keep_smem_read_order = tle_knobs.keep_smem_read_order
+            except ImportError:
+                pass
 
             tle.passes.add_early_assign_memory_space(pm)
             tle.passes.add_select_encodings(pm)
             tle.passes.add_insert_local_pointer_barriers(pm)
             # flagtree keep smem read order
-            tle.passes.add_optimize_local_pointer_loads(pm, tle_knobs.keep_smem_read_order)
+            if keep_smem_read_order:
+                tle.passes.add_optimize_local_pointer_loads(pm, keep_smem_read_order)
+            else:
+                tle.passes.add_optimize_local_pointer_loads(pm)
             tle.passes.add_optimize_local_pointer_stores(pm)
         ppu.passes.ttgpuir.add_accelerate_matmul(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
@@ -470,8 +479,7 @@ class PPUBackend(BaseBackend):
         passes.ttgpuir.add_reduce_data_duplication(pm)
         # flagtree keep smem read order: the option has its own binding, which exists only in a build that
         # defines __FLAGTREE_KEEP_SMEM_READ_ORDER__; any other build runs the original pass
-        if tle is not None and tle_knobs.keep_smem_read_order and hasattr(
-                passes.ttgpuir, "add_reorder_instructions_keep_smem_read_order"):
+        if keep_smem_read_order and hasattr(passes.ttgpuir, "add_reorder_instructions_keep_smem_read_order"):
             passes.ttgpuir.add_reorder_instructions_keep_smem_read_order(pm)
         else:
             passes.ttgpuir.add_reorder_instructions(pm)

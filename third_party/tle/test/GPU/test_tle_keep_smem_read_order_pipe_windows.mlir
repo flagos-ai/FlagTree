@@ -30,14 +30,14 @@
 // not stop the load from being re-issued later. A reader_release gives the slot
 // back to its writer, which may overwrite it from then on: the load stays
 // before it, unless the field the release names is a window of the buffer that
-// is provably apart from the window the load reads. Two pipes over the left and
-// the right half of one allocation, as the sparse-MLA tutorial declares its sK1
-// pipes, are such a pair; two pipes over the whole buffer are not.
+// is provably apart from the window the load reads. Here the two fields are the
+// left and the right half of one allocation, declared as such (subslices of the
+// buffer). When the fields are the whole buffer and only the writers fill the
+// halves, test_tle_keep_smem_read_order_pipe_writers.mlir has the decision.
 //
 // The held load is also what costs shared memory: a load kept in registers
 // across the release is staged by accelerate-matmul in a second buffer for the
-// dot (a 64x256 bf16 tile, 32768 bytes, which made the sparse-MLA kernel need
-// 263920 bytes against 232448 on sm_90). The STAGE run pins that the load of the
+// dot (a 64x256 bf16 tile, 32768 bytes). The STAGE run pins that the load of the
 // other half is not held and the dot reads the slot, and that the load of the
 // released half is held and staged.
 

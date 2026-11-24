@@ -28,7 +28,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -64,8 +63,10 @@ struct RematerializationCacheEntry {
 struct RematerializationState {
   SmallVector<RematerializationCacheEntry> cache;
   // Re-issue a local pointer load only within its block and with nothing in
-  // between that may write its buffer (keep-smem-read-order).
+  // between that may write its buffer (keep-smem-read-order). The analysis
+  // that tells which ops may write it is made for the module the pass runs on.
   bool keepSmemReadOrder = false;
+  SmemReadOrderAnalysis *smemReadOrder = nullptr;
 };
 
 static Value stripConvertLayouts(Value value) {
@@ -440,10 +441,16 @@ rematerializeLocalPointerLoad(triton::LoadOp load, RankedTensorType targetTy,
     Block *insertBlock = builder.getInsertionBlock();
     if (!insertBlock || insertBlock != load->getBlock())
       return std::nullopt;
-    ttg::LocalAllocOp alloc = findViewedAlloc(localPointers.getSrc());
+    SmemRead read = getSmemRead(localPointers.getSrc());
+    // The load reads the part of its descriptor that its indices name, when
+    // they are a static window of it; otherwise all of it.
+    if (read.window)
+      if (auto match = matchStaticSubviewMemDesc(load))
+        narrowSmemWindow(*read.window, match->offsets,
+                         match->valueType.getShape());
     for (Operation *op = load->getNextNode();
          op && op != &*builder.getInsertionPoint(); op = op->getNextNode())
-      if (mayWriteReadBuffer(op, localPointers.getSrc(), alloc))
+      if (state.smemReadOrder->mayWriteReadBuffer(op, read))
         return std::nullopt;
   }
 
@@ -734,6 +741,7 @@ public:
     };
     SmallVector<ConvertRewriteItem> convertRewrites;
     SmallVector<RewriteItem> rewrites;
+    SmemReadOrderAnalysis smemReadOrder(module);
 
     module.walk([&](ttg::ConvertLayoutOp convert) {
       auto targetTy = dyn_cast<RankedTensorType>(convert.getType());
@@ -744,6 +752,7 @@ public:
       OpBuilder builder(convert);
       RematerializationState state;
       state.keepSmemReadOrder = keepSmemReadOrder;
+      state.smemReadOrder = &smemReadOrder;
       auto rematerialized =
           rematerializeForLayout(convert.getSrc(), targetTy, builder, state);
       if (!rematerialized || !rematerialized->usesLocalPointerLoad)

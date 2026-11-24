@@ -23,30 +23,29 @@
 // RUN: triton-opt %s -split-input-file --triton-tle-optimize-local-pointer-loads=keep-smem-read-order=true --tritongpu-accelerate-matmul | FileCheck %s --check-prefixes=COMMON,ON
 // RUN: triton-opt %s -split-input-file --triton-tle-optimize-local-pointer-loads --tritongpu-accelerate-matmul | FileCheck %s --check-prefixes=COMMON,OFF
 
-// The shared-memory cost of keep-smem-read-order in
-// _tle_flashmla_prefill_consumer1 (python/tutorials/tle/deepseek_v32/
-// 02-sparse-mla.py): inside a warp_specialize partition, a local pointer load of
-// a pipe slot, a tle.pipe.reader_release between the load and the dot, and a
-// dot whose B operand is the loaded value. The buffer is a warp_specialize
-// capture, so in the partition it is a block argument.
+// What keep-smem-read-order does when it cannot tell what a release gives back:
+// the load stays before it, and accelerate-matmul stages the register value for
+// the dot. The shape is the one of _tle_flashmla_prefill_consumer1
+// (python/tutorials/tle/deepseek_v32/02-sparse-mla.py): inside a warp_specialize
+// partition, a local pointer load of a pipe slot, a tle.pipe.reader_release
+// between the load and the dot, and a dot whose B operand is the loaded value.
+// The buffer is a warp_specialize capture, so in the partition it is a block
+// argument.
 //
-// Here the pipe of the release is over the whole buffer the load reads, so the
-// release may hand the bytes back to the writer and the load stays where it is.
-// accelerate-matmul then stages the loaded register value in a second shared
-// memory buffer: a ttg.local_alloc of tensor<64x256xbf16>, 32768 bytes in the
-// kernel (263920 bytes of shared memory against 231824 without the option; sm_90
-// allows 232448). Without the option the load is re-issued at the dot and the dot
-// reads the pipe slot. The test pins that cost for this case, which is the
-// intended behaviour: the release is a write of the buffer.
+// Here the module holds no writer region of the released pipe, so what that
+// writer fills is not known, and the release may hand back the bytes the load
+// reads: the load stays where it is. accelerate-matmul then stages the loaded
+// register value in a second shared memory buffer, a ttg.local_alloc of
+// tensor<64x256xbf16> (32768 bytes). Without the option the load is re-issued at
+// the dot and the dot reads the pipe slot. That the load is held here is the
+// guard working: holding it is the only safe choice when the writer is not
+// known, and the cost is what a kernel pays for hiding its writer.
 //
-// The cost goes away when the pipes are declared over windows of the buffer that
-// do not overlap: test_tle_keep_smem_read_order_pipe_windows.mlir holds the same
-// kernel shape with the release of the other half, where the load is not held and
-// nothing is staged. The tutorial's sK1_l and sK1_r are pipes over one buffer;
-// declaring them over its two column halves (sK1_smem.subslice) gives the kernel
-// that form, but the PPU build rejects a memdesc_index of a subview and the
-// tutorial builds there too. It reads the slot again before the dot instead, as
-// consumer0 does.
+// test_tle_keep_smem_read_order_pipe_writers.mlir has the same kernel shape with
+// the writers present: the release of a pipe whose writer fills the other half
+// does not hold the load, and nothing is staged. That is the form of the
+// sparse-MLA kernel, whose sK1_l and sK1_r pipes are declared over one buffer
+// and filled in halves.
 //
 // The register layout of the load has order [0, 1], as the kernel's sK copy has
 // when it is an async copy. With order [1, 0] the staged encoding equals the

@@ -1,4 +1,5 @@
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -75,17 +76,21 @@ def _compile_prefill_for_sm90(module):
                           options={"num_warps": 4, "num_stages": 1})
 
 
-def test_tle_flashmla_prefill_fits_sm90_shared_memory_with_read_order_guard_on():
-    """With the read-order guard on, a load of a pipe slot is held across the release of a pipe over the same
-    buffer, and accelerate-matmul then stages it in a second 32 KiB buffer. The sK1_l and sK1_r pipes are over
-    one allocation, so the first load of k1_r_blk in the second consumer would be held across the release of
-    sK1_l and need 263920 bytes of shared memory against the 232448 of sm_90. The tutorial reads the slot again
-    before the dot, which keeps the first load out of the held path: the kernel fits with the guard on.
+# A load of a pipe slot that is held in registers and used as a dot operand is staged in a second shared memory
+# buffer by accelerate-matmul: a tensor<64x256xbf16> local_alloc in the kernel.
+STAGED_B_OPERAND = re.compile(r"ttg\.local_alloc %\S+ : \(tensor<64x256xbf16")
 
-    This catches the removal of that second read only where the sK copy is still an async copy. Where
-    tritongpu-coalesce downgrades it to a load and a store (main since #1534), the held load is not staged and the
-    kernel fits either way; the lit tests test_tle_keep_smem_read_order_{dot_staging,pipe_windows}.mlir pin the
-    two cases at the IR level on every tree."""
+
+@pytest.mark.parametrize("keep_smem_read_order", [True, False])
+def test_tle_flashmla_prefill_does_not_stage_the_k_operand(keep_smem_read_order):
+    """The sparse-MLA prefill kernel fits the shared memory of sm_90 with the read-order guard on and off.
+
+    The sK1_l and sK1_r pipes are declared over one buffer, but the writer of each fills one half of it. If the
+    release of sK1_l were taken to give back the whole buffer, the guard would hold the load of the right half in
+    registers across it, and accelerate-matmul would stage that value in a second 32 KiB buffer for the dot: 263920
+    bytes of shared memory against the 232448 of sm_90. The staging buffer is what the test looks for, so that it
+    fails on a tree where the sK copy has become a load and a store too (main since #1534), where the kernel fits
+    for the wrong reason. The lit test test_tle_keep_smem_read_order_pipe_writers.mlir pins the decision on IR."""
     if not _cuda_backend_available():
         pytest.skip("requires cuda backend")
     if is_ppu():
@@ -99,9 +104,12 @@ def test_tle_flashmla_prefill_fits_sm90_shared_memory_with_read_order_guard_on()
 
     module = _load_sparse_mla_module()
     with knobs.cache.scope(), knobs.runtime.scope(), tle_knobs.scope():
-        tle_knobs.keep_smem_read_order = True
+        tle_knobs.keep_smem_read_order = keep_smem_read_order
         compiled = _compile_prefill_for_sm90(module)
 
+    knob = f"keep_smem_read_order={keep_smem_read_order}"
+    staged = STAGED_B_OPERAND.search(compiled.asm["ttgir"])
+    assert not staged, f"the K operand of the second consumer is staged in shared memory with {knob}"
     assert compiled.metadata.shared <= SM90_MAX_SHARED_MEMORY, (
-        f"tle_flashmla_prefill_fwd needs {compiled.metadata.shared} bytes of shared memory with "
-        f"keep_smem_read_order on; sm_90 allows {SM90_MAX_SHARED_MEMORY}")
+        f"tle_flashmla_prefill_fwd needs {compiled.metadata.shared} bytes of shared memory with {knob}; "
+        f"sm_90 allows {SM90_MAX_SHARED_MEMORY}")
