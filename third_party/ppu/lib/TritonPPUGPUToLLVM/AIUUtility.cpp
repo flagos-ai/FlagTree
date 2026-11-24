@@ -177,6 +177,13 @@ Value getSliceKOffset(ConversionPatternRewriter &rewriter, Location loc,
   }
 }
 
+// The swizzle chunk of a PPU0010 AIU buffer, in elements: 16 bytes (16 elems
+// for b8, 8 for b16, 4 for b32). The rotation of the swizzle works on whole
+// chunks.
+static unsigned getAIUSwizzleChunkElems(unsigned elemBytes) {
+  return 32 / elemBytes / 2;
+}
+
 // The address in a PPU0010 AIU buffer of the element at `idxCol` of the
 // contiguous dimension and `idxRow` of the other one, which are i32 values.
 static Value getPPUAIUV1SwizzledSharedPtr(
@@ -188,9 +195,7 @@ static Value getPPUAIUV1SwizzledSharedPtr(
   auto elemBytes = resElemTy.getIntOrFloatBitWidth() / 8;
   // number of elements in one 32-byte channel slice
   unsigned sliceElems = 32 / elemBytes;
-  // swizzle chunk is 16 bytes (16 elems for b8, 8 for b16, 4 for b32); the
-  // rotation below works on 16-byte chunks and is independent of elemBytes
-  unsigned outVec = sliceElems / 2;
+  unsigned outVec = getAIUSwizzleChunkElems(elemBytes);
   auto aiuLoad = resSharedLayout.getAIUStrategy();
   unsigned cubeC = aiuLoad[0];
   unsigned cubeW = aiuLoad[1];
@@ -294,8 +299,7 @@ DenseMap<unsigned, Value> getPPUAIUV1SwizzledSharedPtrs(
   auto srcEncoding = srcTy.getEncoding();
   unsigned numElems = triton::gpu::getTotalElemsPerThread(srcTy);
   auto elemBytes = resElemTy.getIntOrFloatBitWidth() / 8;
-  // The swizzle chunk, see getPPUAIUV1SwizzledSharedPtr.
-  unsigned outVec = 32 / elemBytes / 2;
+  unsigned outVec = getAIUSwizzleChunkElems(elemBytes);
   auto outOrder = resSharedLayout.getOrder();
 
   // Return values

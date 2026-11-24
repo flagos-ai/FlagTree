@@ -199,6 +199,11 @@ def test_reduction_in_noinline_helper():
 
 
 @triton.jit
+def _idle():
+    pass
+
+
+@triton.jit
 def _capture_partition(v, y, BLOCK: tl.constexpr):
     tl.store(y + tl.arange(0, BLOCK), tl.zeros([BLOCK], dtype=tl.float32) + v)
 
@@ -239,11 +244,6 @@ def test_warp_specialize_in_a_loop():
     torch.cuda.synchronize()
     torch.testing.assert_close(y, x.sum(1))
     torch.testing.assert_close(z, x.sum(1))
-
-
-@triton.jit
-def _idle():
-    pass
 
 
 @triton.jit

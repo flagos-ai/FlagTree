@@ -82,11 +82,6 @@ void createPPUBarrierArrive(OpBuilder &b, Location loc, Value id,
                     fence);
 }
 
-void createPPUBarrierArrive(OpBuilder &b, Location loc, unsigned id,
-                            unsigned numThreads, unsigned fence) {
-  createPPUBarrierArrive(b, loc, constId(b, loc, id), numThreads, fence);
-}
-
 void createPPUSharedMemoryBarrier(OpBuilder &b, Location loc,
                                   unsigned numThreads) {
   createPPUBarrierSync(b, loc, /*id=*/0u, numThreads, kPPUBarrierFenceShared);

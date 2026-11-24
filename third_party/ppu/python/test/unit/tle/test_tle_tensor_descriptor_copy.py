@@ -54,8 +54,9 @@ def _reference(x, n_tiles, block):
 def test_descriptor_copy_to_shared(rows, cols, is_async):
     block = [64, 64]
     n_tiles = (rows + block[0] - 1) // block[0]
-    # A column count that is not a multiple of 16 elements needs a padded allocation:
-    # the base and the row pitch stay 16-byte aligned, as the descriptor requires.
+    # A column count that is not a multiple of 8 bf16 elements (16 bytes) needs a
+    # padded allocation: the base and the row pitch stay 16-byte aligned, as the
+    # descriptor requires.
     padded = (cols + 7) // 8 * 8
     storage = torch.randn(rows, padded, dtype=torch.bfloat16, device="cuda")
     x = storage[:, :cols]

@@ -37,7 +37,6 @@
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
-#include "llvm/ADT/DenseSet.h"
 
 namespace mlir::triton {
 #define GEN_PASS_DEF_CONVERTWARPSPECIALIZETOLLVMPPU
@@ -153,8 +152,9 @@ static void retargetCtaBarrier(Operation *op, unsigned barIdx,
 }
 
 // Barrier of all warps of the CTA used to hand over the partition state and
-// captures through shared memory. It runs once per region and, like bar.sync,
-// also orders the global accesses of the warps before and after the region.
+// captures through shared memory, at every entry into and exit from a region.
+// Like bar.sync, it also orders the global accesses of the warps before and
+// after it.
 static void createAllBarrier(TritonLLVMIRRewriter &b, unsigned barIdx,
                              unsigned totalNumThreads) {
   assert(barIdx < kNumBarriers && "not enough barriers");

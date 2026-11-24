@@ -79,8 +79,6 @@ void createPPUBarrierSync(OpBuilder &b, Location loc, unsigned id,
                           unsigned numThreads, unsigned fence);
 void createPPUBarrierArrive(OpBuilder &b, Location loc, Value id,
                             unsigned numThreads, unsigned fence);
-void createPPUBarrierArrive(OpBuilder &b, Location loc, unsigned id,
-                            unsigned numThreads, unsigned fence);
 
 // A CTA-wide barrier (id 0) that the lowering inserts to order shared memory:
 // Membar hazards and the scratch buffers synchronized through

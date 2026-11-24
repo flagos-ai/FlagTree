@@ -152,8 +152,8 @@ LogicalResult lowerPPULdMatrix(
   if (rank > 2)
     return failure();
 
-  // Limitation: a subslice is addressed by lowerLdStMatrix, not from its own
-  // shape.
+  // Limitation: a subslice (a view smaller than its allocation) is not
+  // supported.
   if (memDescType.getAllocShape().take_back(rank) != memDescType.getShape())
     return failure();
 

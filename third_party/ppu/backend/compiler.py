@@ -270,7 +270,7 @@ class PPUBackend(BaseBackend):
     # 16-byte aligned base, and the dimensions whose extent is a multiple of
     # 16 elements, whose bounds mask is then constant over every vector. The
     # padding is a kernel argument; a copy to shared memory traps on NaN
-    # padding (TleZeroPadDescriptorCopies), a descriptor load keeps it.
+    # padding (tritonppu-tle-zero-pad-descriptor-copies), a descriptor load keeps it.
     @staticmethod
     def get_tensor_descriptor_specialization(arg):
         # A fake tensor has no storage to be aligned (TensorDescriptor skips it too).

@@ -247,7 +247,8 @@ _REMARK_SCRIPT = textwrap.dedent("""
 
     x = torch.randn(7 * 256, device="cuda")
     out = torch.zeros_like(x)
-    # Four stages of 256 floats per thread: the stage queue stays.
+    # Four stages of 256 floats for 128 writer threads: under the 16 bytes per
+    # writer thread the FIFO form needs, so the stage queue stays.
     _mixed_copy_kernel.warmup(x, out, out, 7, 4, 3, 256, grid=(1, ), num_warps=4)
     # The writer waits on a user barrier inside its loop: the queue drains there.
     _mixed_copy_kernel.warmup(x, out, out, 7, 3, 2, 512, MODE=1, grid=(1, ), num_warps=4)

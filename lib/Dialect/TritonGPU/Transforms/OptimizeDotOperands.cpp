@@ -120,7 +120,8 @@ static bool isBackedByLocalAlloc(Value value, llvm::DenseSet<Value> &active);
 // transposed operand from any swizzled layout, so a retag is only worth it for
 // a buffer nothing else shares: a local_alloc with the plain default layout
 // (max phase 1) and no views. A non-trivial swizzle (max phase > 1) was chosen
-// by the kernel for its stores or async copies and is kept. A view, a captured
+// by the kernel for its stores or async copies and is kept, unless the
+// allocation is initialized from a value, which retags it. A view, a captured
 // or loop-carried value, or an allocation with views is kept too: retagging
 // would leave the other users on the old encoding for the same bytes. A PPU
 // build still compiles kernels for other targets, so the answer is keyed on

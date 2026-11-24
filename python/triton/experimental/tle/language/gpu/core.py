@@ -762,9 +762,10 @@ def alloc_barriers(
     ``phaseIdx``); ``init=READY`` or ``expect_bytes`` select the mbarrier
     forms.
 
-    PPU: only the named form exists; the compiler rejects an allocation with
-    ``init=READY`` or ``expect_bytes``. See ``barrier_wait`` for what a named
-    barrier orders on PPU.
+    PPU: only the named form exists. The compiler rejects a phased
+    ``barrier_wait``/``barrier_arrive``, and a barrier allocated with
+    ``init=READY`` or ``expect_bytes`` cannot be used as a named one. See
+    ``barrier_wait`` for what a named barrier orders on PPU.
     """
     _mark_wgmma_user_promise(_semantic, _generator)
 
