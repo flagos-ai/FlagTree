@@ -48,7 +48,7 @@ Some backends support multiple Triton versions; only the latest version is shown
 |[triton_v3.8.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.8.x)|Intellifusion（云天励飞）|[intellifusion](https://github.com/flagos-ai/FlagTree/blob/triton_v3.8.x/third_party/intellifusion/)|3.8|-|
 |[triton_v3.5.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.5.x)|Huawei Ascend（华为昇腾）|[ascend](https://github.com/flagos-ai/FlagTree/blob/triton_v3.5.x/third_party/ascend/)|3.5|[ascend guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-ascend)|
 |[triton_v3.3.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.3.x)|ARM China（安谋科技）<br>ARM64 cpu<br>x86_64 cpu|[aipu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/aipu/)<br>[cpu](https://github.com/flagos-ai/FlagTree/tree/triton_v3.3.x/third_party/cpu/)<br>[triton-shared](https://github.com/microsoft/triton-shared)|3.3|[aipu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-aipu)<br>[cpu guide](https://github.com/flagos-ai/FlagTree/wiki/User-manual-for-cpu)<br>-|
-|[triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x)|Cambricon（寒武纪）|[cambricon](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/cambricon/)|3.2|-|
+|[triton_v3.2.x](https://github.com/flagos-ai/flagtree/tree/triton_v3.2.x)|Cambricon（寒武纪）<br>Kunpeng ARM64 cpu|[cambricon](https://github.com/flagos-ai/FlagTree/tree/triton_v3.2.x/third_party/cambricon/)<br>[triton-cpu](https://atomgit.com/openeuler/triton-cpu)|3.2|[triton-cpu guide](/documents/install_triton_cpu.md)|
 
 FlagTree extension components are currently available on some backends:
 
