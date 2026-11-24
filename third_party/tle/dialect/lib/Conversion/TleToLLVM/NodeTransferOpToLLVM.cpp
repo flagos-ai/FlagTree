@@ -40,24 +40,10 @@ using namespace mlir::triton;
 
 enum class NodeTransferKind { Put, Get };
 
-static LLVM::LLVMFuncOp getOrInsertNetFromComm(ModuleOp module,
-                                               MLIRContext *ctx) {
-  const char *funcName = "flagcxDevNetGetFromCommS";
-  if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
-    return func;
-
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-  auto i32Ty = IntegerType::get(ctx, 32);
-  auto funcTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, i32Ty}, false);
-  OpBuilder builder(module.getBodyRegion());
-  auto func =
-      builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName, funcTy);
-  func.setLinkage(LLVM::Linkage::External);
-  return func;
-}
-
-static LLVM::LLVMFuncOp getOrInsertNetPut(ModuleOp module, MLIRContext *ctx) {
-  const char *funcName = "flagcxDevNetPutS";
+static LLVM::LLVMFuncOp getOrInsertTransfer(ModuleOp module, MLIRContext *ctx,
+                                            NodeTransferKind kind) {
+  const char *funcName =
+      kind == NodeTransferKind::Put ? "flagcxDevPut" : "flagcxDevGet";
   if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
     return func;
 
@@ -65,27 +51,8 @@ static LLVM::LLVMFuncOp getOrInsertNetPut(ModuleOp module, MLIRContext *ctx) {
   auto ptrTy = LLVM::LLVMPointerType::get(ctx);
   auto i32Ty = IntegerType::get(ctx, 32);
   auto i64Ty = IntegerType::get(ctx, 64);
-  SmallVector<Type> argTypes{ptrTy, ptrTy, i32Ty, i32Ty, ptrTy,
-                             i64Ty, ptrTy, i64Ty, i64Ty, i32Ty};
-  auto funcTy = LLVM::LLVMFunctionType::get(voidTy, argTypes, false);
-  OpBuilder builder(module.getBodyRegion());
-  auto func =
-      builder.create<LLVM::LLVMFuncOp>(module.getLoc(), funcName, funcTy);
-  func.setLinkage(LLVM::Linkage::External);
-  return func;
-}
-
-static LLVM::LLVMFuncOp getOrInsertNetGet(ModuleOp module, MLIRContext *ctx) {
-  const char *funcName = "flagcxDevNetGetS";
-  if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
-    return func;
-
-  auto voidTy = LLVM::LLVMVoidType::get(ctx);
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
-  auto i32Ty = IntegerType::get(ctx, 32);
-  auto i64Ty = IntegerType::get(ctx, 64);
-  SmallVector<Type> argTypes{ptrTy, ptrTy, i32Ty, i32Ty, ptrTy,
-                             i64Ty, ptrTy, i64Ty, i64Ty, i32Ty};
+  SmallVector<Type> argTypes{ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty,
+                             i32Ty, i32Ty, i32Ty, i32Ty, i32Ty, i32Ty};
   auto funcTy = LLVM::LLVMFunctionType::get(voidTy, argTypes, false);
   OpBuilder builder(module.getBodyRegion());
   auto func =
@@ -108,7 +75,8 @@ static LogicalResult
 lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
                   Value commHandle, Value peer, Value srcOffset,
                   Value dstOffset, Value nelems, int32_t contextId,
-                  int64_t elemBytes, int64_t coopKindValue,
+                  int64_t elemBytes, tle::FlagCXTeamKind teamKind,
+                  tle::FlagCXCoopKind coopKind,
                   NodeTransferKind kind, std::optional<int64_t> constantNelems,
                   ConversionPatternRewriter &rewriter) {
   ModuleOp module = op->getParentOfType<ModuleOp>();
@@ -135,35 +103,6 @@ lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
     byteCount = rewriter.create<arith::MulIOp>(loc, nelems, elemBytesValue);
   }
 
-  auto emitTransfer = [&]() {
-    LLVM::LLVMFuncOp getNet = getOrInsertNetFromComm(module, ctx);
-    Value contextIdValue = rewriter.create<LLVM::ConstantOp>(
-        loc, i32Ty, rewriter.getI32IntegerAttr(contextId));
-    auto getNetCall = rewriter.create<LLVM::CallOp>(
-        loc, TypeRange{ptrTy}, FlatSymbolRefAttr::get(getNet),
-        ValueRange{comm, contextIdValue});
-    Value teamKind = rewriter.create<LLVM::ConstantOp>(
-        loc, i32Ty, rewriter.getI32IntegerAttr(2));
-    Value coopKind = rewriter.create<LLVM::ConstantOp>(
-        loc, i32Ty, rewriter.getI32IntegerAttr(coopKindValue));
-
-    if (kind == NodeTransferKind::Put) {
-      LLVM::LLVMFuncOp put = getOrInsertNetPut(module, ctx);
-      rewriter.create<LLVM::CallOp>(
-          loc, TypeRange{}, FlatSymbolRefAttr::get(put),
-          ValueRange{getNetCall.getResult(), comm, teamKind, peer, dstMem,
-                     dstByteOffset, srcMem, srcByteOffset, byteCount,
-                     coopKind});
-      return;
-    }
-
-    LLVM::LLVMFuncOp get = getOrInsertNetGet(module, ctx);
-    rewriter.create<LLVM::CallOp>(
-        loc, TypeRange{}, FlatSymbolRefAttr::get(get),
-        ValueRange{getNetCall.getResult(), comm, teamKind, peer, srcMem,
-                   srcByteOffset, dstMem, dstByteOffset, byteCount, coopKind});
-  };
-
   if (!constantNelems) {
     Value zero = rewriter.create<LLVM::ConstantOp>(
         loc, rewriter.getI64Type(), rewriter.getI64IntegerAttr(0));
@@ -177,7 +116,24 @@ lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
             "<= N"));
   }
 
-  emitTransfer();
+  auto makeI32 = [&](int32_t value) {
+    return rewriter.create<LLVM::ConstantOp>(
+        loc, i32Ty, rewriter.getI32IntegerAttr(value));
+  };
+  Value teamKindValue = makeI32(static_cast<int32_t>(teamKind));
+  Value contextIdValue = makeI32(contextId);
+  Value coopKindValue = makeI32(static_cast<int32_t>(coopKind));
+  Value scope = makeI32(static_cast<int32_t>(tle::SyncScope::SYSTEM));
+  Value order = makeI32(static_cast<int32_t>(tle::MemoryOrder::RELAXED));
+
+  LLVM::LLVMFuncOp transfer = getOrInsertTransfer(module, ctx, kind);
+  bool isPut = kind == NodeTransferKind::Put;
+  rewriter.create<LLVM::CallOp>(
+      loc, TypeRange{}, FlatSymbolRefAttr::get(transfer),
+      ValueRange{comm, isPut ? dstMem : srcMem,
+                 isPut ? dstByteOffset : srcByteOffset, isPut ? srcMem : dstMem,
+                 isPut ? srcByteOffset : dstByteOffset, byteCount, teamKindValue,
+                 peer, contextIdValue, coopKindValue, scope, order});
   return success();
 }
 
@@ -193,8 +149,8 @@ struct NodePutOpConversion : public ConvertOpToLLVMPattern<tle::NodePutOp> {
             adaptor.getDstMem(), adaptor.getComm(), adaptor.getPeer(),
             adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
             static_cast<int32_t>(op.getContextIdAttr().getInt()),
-            op.getElemBytesAttr().getInt(),
-            static_cast<int32_t>(op.getCoopKind()), NodeTransferKind::Put,
+            op.getElemBytesAttr().getInt(), op.getTeamKind(), op.getCoopKind(),
+            NodeTransferKind::Put,
             getConstantInt(op.getNelems()), rewriter)))
       return failure();
     rewriter.eraseOp(op);
@@ -214,8 +170,8 @@ struct NodeGetOpConversion : public ConvertOpToLLVMPattern<tle::NodeGetOp> {
             adaptor.getDstMem(), adaptor.getComm(), adaptor.getPeer(),
             adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
             static_cast<int32_t>(op.getContextIdAttr().getInt()),
-            op.getElemBytesAttr().getInt(),
-            static_cast<int32_t>(op.getCoopKind()), NodeTransferKind::Get,
+            op.getElemBytesAttr().getInt(), op.getTeamKind(), op.getCoopKind(),
+            NodeTransferKind::Get,
             getConstantInt(op.getNelems()), rewriter)))
       return failure();
     rewriter.eraseOp(op);

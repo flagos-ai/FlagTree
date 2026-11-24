@@ -497,11 +497,15 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [
     StrAttr:$space,
     Optional<TT_IntLike>:$offset,
     OptionalAttr<I32Attr>:$context_id,
-    OptionalAttr<Tle_FlagCXCoopKindAttr>:$coop_kind
+    OptionalAttr<Tle_FlagCXCoopKindAttr>:$coop_kind,
+    UnitAttr:$transfer
   );
 
   let results = (outs Tle_LocalPointerResultType:$result);
   let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    bool isTransferMarker() { return getSpace() == "node" || getTransfer(); }
+  }];
 }
 
 def Tle_GetNumPesOp : Tle_Op<"get_num_pes"> {
@@ -516,14 +520,15 @@ def Tle_GetNumPesOp : Tle_Op<"get_num_pes"> {
 class Tle_NodeTransferOp<string mnemonic> : Tle_Op<mnemonic, [
     MemoryEffects<[MemRead, MemWrite]>
 ]> {
-  let summary = "execute a fused inter-node memory transfer";
+  let summary = "execute a fused FlagCX memory transfer";
   let description = [{
-    Represents an explicit inter-node transfer after a node-space
-    tle.remote_pointers marker and its load/store users have been fused.
+    Represents a transfer after a tle.remote_pointers marker and its
+    load/store users have been fused. team_kind selects the rank domain
+    for peer and defaults to WORLD for existing IR.
     Offsets and nelems are expressed in elements; elem_bytes is applied during
     lowering to form byte offsets and the byte count passed to FlagCX. Nelems
     must be greater than zero. context_id must be an i32 attribute in
-    [0, INT32_MAX] selecting an existing network context.
+    [0, INT32_MAX] selecting a context when FlagCX uses the network path.
   }];
 
   let arguments = (ins
@@ -536,18 +541,19 @@ class Tle_NodeTransferOp<string mnemonic> : Tle_Op<mnemonic, [
     I64:$nelems,
     I32Attr:$context_id,
     I64Attr:$elem_bytes,
-    Tle_FlagCXCoopKindAttr:$coop_kind
+    Tle_FlagCXCoopKindAttr:$coop_kind,
+    DefaultValuedAttr<Tle_FlagCXTeamKindAttr, "::mlir::triton::tle::FlagCXTeamKind::WORLD">:$team_kind
   );
 
   let hasVerifier = 1;
 }
 
 def Tle_NodePutOp : Tle_NodeTransferOp<"node_put"> {
-  let summary = "put data from local registered memory to a remote node";
+  let summary = "put data from local registered memory to a peer";
 }
 
 def Tle_NodeGetOp : Tle_NodeTransferOp<"node_get"> {
-  let summary = "get data from a remote node into local registered memory";
+  let summary = "get data from a peer into local registered memory";
 }
 
 def Tle_GetDeviceIdOp : Tle_Op<"get_device_id"> {

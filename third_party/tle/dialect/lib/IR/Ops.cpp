@@ -1277,6 +1277,9 @@ LogicalResult NodeGetOp::verify() {
 LogicalResult RemotePointersOp::verify() {
   StringRef spaceAttr = getSpace();
 
+  if (getTransfer() && spaceAttr != "device")
+    return emitOpError() << "transfer marker attribute requires device space";
+
   if (spaceAttr == "chiplet") {
     if (!getShardId().getType().isInteger(32))
       return emitOpError() << "expects shard_id to be i32";
@@ -1290,8 +1293,8 @@ LogicalResult RemotePointersOp::verify() {
   if (!getShardId().getType().isInteger(32))
     return emitOpError() << "expects shard_id to be i32";
 
-  if (spaceAttr == "node")
-    return RemotePointers::verifyNodeSpace(*this);
+  if (isTransferMarker())
+    return RemotePointers::verifyTransferMarker(*this);
 
   auto coopKindAttr = getCoopKindAttr();
   if (getComm() || getContextIdAttr() || coopKindAttr)

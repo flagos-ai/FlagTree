@@ -119,7 +119,7 @@ static bool decomposePointer(Value value, PointerExpr &expr) {
 
   expr.root = current;
   if (auto marker = current.getDefiningOp<tle::RemotePointersOp>()) {
-    if (marker.getSpace() != "node" || !marker.getResult())
+    if (!marker.isTransferMarker() || !marker.getResult())
       return false;
     expr.remote = marker;
   } else if (auto arg = dyn_cast<BlockArgument>(current)) {
@@ -133,35 +133,35 @@ static bool decomposePointer(Value value, PointerExpr &expr) {
   return true;
 }
 
-static tle::RemotePointersOp findNodeRemoteMarker(Value value,
-                                                  unsigned depth = 0) {
+static tle::RemotePointersOp findTransferMarker(Value value,
+                                                unsigned depth = 0) {
   if (!value || depth > 32)
     return {};
 
   if (auto marker = value.getDefiningOp<tle::RemotePointersOp>())
-    return marker.getSpace() == "node" && marker.getResult() ? marker : nullptr;
+    return marker.isTransferMarker() && marker.getResult() ? marker : nullptr;
   if (auto addPtr = value.getDefiningOp<tt::AddPtrOp>())
-    return findNodeRemoteMarker(addPtr.getPtr(), depth + 1);
+    return findTransferMarker(addPtr.getPtr(), depth + 1);
 
   if (auto splat = value.getDefiningOp<tt::SplatOp>())
-    return findNodeRemoteMarker(splat.getSrc(), depth + 1);
+    return findTransferMarker(splat.getSrc(), depth + 1);
   return {};
 }
 
-static tle::RemotePointersOp findNodeRemoteMarkerInValue(Value value,
-                                                         unsigned depth = 0) {
+static tle::RemotePointersOp findTransferMarkerInValue(Value value,
+                                                       unsigned depth = 0) {
   if (!value || depth > 32)
     return {};
 
   if (auto load = value.getDefiningOp<tt::LoadOp>())
-    return findNodeRemoteMarker(load.getPtr());
+    return findTransferMarker(load.getPtr());
 
   Operation *def = value.getDefiningOp();
   if (!def)
     return {};
 
   for (Value operand : def->getOperands())
-    if (auto marker = findNodeRemoteMarkerInValue(operand, depth + 1))
+    if (auto marker = findTransferMarkerInValue(operand, depth + 1))
       return marker;
 
   return {};
@@ -413,7 +413,7 @@ static bool haveMatchingAccessTypes(tt::LoadOp load, tt::StoreOp store,
 
 static bool isFusionAddressOp(Operation *op) {
   if (auto remote = dyn_cast<tle::RemotePointersOp>(op))
-    return remote.getSpace() == "node" && remote.getResult();
+    return remote.isTransferMarker() && remote.getResult();
   return isa<tt::AddPtrOp, tt::SplatOp, tt::MakeRangeOp, arith::CmpIOp,
              arith::AddIOp, arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
              arith::IndexCastOp, arith::ConstantOp>(op);
@@ -526,8 +526,8 @@ struct TritonTleFuseNodeRemoteTransfers
       if (!store)
         continue;
 
-      auto dstMarker = findNodeRemoteMarker(store.getPtr());
-      auto valueMarker = findNodeRemoteMarkerInValue(store.getValue());
+      auto dstMarker = findTransferMarker(store.getPtr());
+      auto valueMarker = findTransferMarkerInValue(store.getValue());
 
       auto candidateMarker = dstMarker ? dstMarker : valueMarker;
       if (!candidateMarker)
@@ -748,19 +748,23 @@ struct TritonTleFuseNodeRemoteTransfers
         continue;
       }
       auto marker = remoteExpr.remote;
+      auto teamKind = tle::FlagCXTeamKindAttr::get(
+          builder.getContext(), marker.getSpace() == "device"
+                                    ? tle::FlagCXTeamKind::INTRA
+                                    : tle::FlagCXTeamKind::WORLD);
 
       if (isPut) {
         builder.create<tle::NodePutOp>(
             loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
             marker.getShardId(), srcOffset, dstOffset, nelems,
             marker.getContextIdAttr(), builder.getI64IntegerAttr(elemBytes),
-            marker.getCoopKindAttr());
+            marker.getCoopKindAttr(), teamKind);
       } else {
         builder.create<tle::NodeGetOp>(
             loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
             marker.getShardId(), srcOffset, dstOffset, nelems,
             marker.getContextIdAttr(), builder.getI64IntegerAttr(elemBytes),
-            marker.getCoopKindAttr());
+            marker.getCoopKindAttr(), teamKind);
       }
 
       unsigned localArgNumber = localExpr.localArg.getArgNumber();
@@ -776,15 +780,16 @@ struct TritonTleFuseNodeRemoteTransfers
 
     bool hasUnfusedMarker = false;
     module.walk([&](tle::RemotePointersOp op) {
-      if (op.getSpace() == "node" && op.getResult()) {
+      if (op.isTransferMarker() && op.getResult()) {
 
         auto failure = fusionFailures.find(op.getOperation());
         if (failure != fusionFailures.end())
-          op.emitOpError() << "could not fuse node remote pointer: "
+          op.emitOpError() << "could not fuse " << op.getSpace() << " remote pointer: "
                            << failure->second;
         else
           op.emitOpError()
-              << "could not fuse node remote pointer: expected a direct, "
+              << "could not fuse " << op.getSpace()
+              << " remote pointer: expected a direct, "
                  "single-use scalar or contiguous load/store copy; use "
                  "tl.load on one side and immediately tl.store that value "
                  "to the other side, make exactly one side tle.remote(...), "

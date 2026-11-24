@@ -348,7 +348,7 @@ public:
   getAxisInfo(Operation *op,
               ArrayRef<const dataflow::Lattice<AxisInfo> *> operands) override {
     auto remote = dyn_cast<triton::tle::RemotePointersOp>(op);
-    if (!remote || remote.getSpace() == "node" || operands.empty())
+    if (!remote || remote.isTransferMarker() || operands.empty())
       return AxisInfo();
 
     const AxisInfo &baseInfo = operands[0]->getValue();
@@ -401,7 +401,7 @@ public:
 
   bool match(Operation *op) override {
     auto remote = dyn_cast<triton::tle::RemotePointersOp>(op);
-    return remote && remote.getSpace() != "node";
+    return remote && !remote.isTransferMarker();
   }
 };
 

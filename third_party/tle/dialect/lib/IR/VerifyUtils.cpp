@@ -74,13 +74,15 @@ llvm::LogicalResult verifyDeviceSpace(mlir::Value src, mlir::Value result) {
   return success();
 }
 
-llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
+llvm::LogicalResult verifyTransferMarker(RemotePointersOp op) {
+  StringRef space = op.getSpace();
   if (Value result = op.getResult()) {
     auto requireMarkerOperand = [&](Value value,
                                     StringRef name) -> LogicalResult {
       if (!value)
         return op.emitOpError()
-               << "node remote pointer marker requires " << name << " operand";
+               << space << " remote pointer marker requires " << name
+               << " operand";
       return success();
     };
     if (failed(requireMarkerOperand(op.getSrc(), "src")) ||
@@ -88,19 +90,19 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
       return failure();
     if (op.getOffset())
       return op.emitOpError()
-             << "node remote pointer marker does not accept an offset operand";
+             << space << " remote pointer marker does not accept an offset operand";
     if (!op.getSrc().getType().isSignlessInteger(64) ||
         !op.getComm().getType().isSignlessInteger(64))
       return op.emitOpError()
-             << "expects node marker src and comm to be i64 handles";
+             << "expects " << space << " marker src and comm to be i64 handles";
     if (failed(verifyNodeContextId(op, op.getContextIdAttr())))
       return failure();
     if (!op.getCoopKindAttr())
-      return op.emitOpError() << "node marker requires coop_kind";
+      return op.emitOpError() << space << " marker requires coop_kind";
     auto ptrTy = dyn_cast<triton::PointerType>(result.getType());
     if (!ptrTy || ptrTy.getAddressSpace() != 1)
       return op.emitOpError()
-             << "node remote pointer marker must produce a scalar global "
+             << space << " remote pointer marker must produce a scalar global "
                 "pointer to an integer or floating-point element";
     Type pointeeTy = ptrTy.getPointeeType();
     unsigned bitWidth = 0;
@@ -110,7 +112,7 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
       bitWidth = floatTy.getWidth();
     if (bitWidth < 8 || bitWidth % 8 != 0)
       return op.emitOpError()
-             << "node remote pointer marker element type must be "
+             << space << " remote pointer marker element type must be "
                 "byte-addressable";
     if (std::optional<int64_t> peer = getConstantIntValue(op.getShardId());
         peer && *peer < 0)
@@ -119,7 +121,7 @@ llvm::LogicalResult verifyNodeSpace(RemotePointersOp op) {
   }
 
   return op.emitOpError()
-         << "node remote pointer marker must produce a pointer result";
+         << space << " remote pointer marker must produce a pointer result";
 }
 
 } // namespace RemotePointers
