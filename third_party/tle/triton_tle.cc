@@ -399,7 +399,7 @@ void init_triton_tle_ir(py::module &&m) {
               throw py::value_error(
                   "TMA completion barriers and eviction policies are only "
                   "supported on the NVIDIA backend");
-            self.create<ttg::TMACopyOp>(src, dst, indices, evictionPolicy);
+            self.create<ttg::TMACopyOp>(src, dst, indices);
 #else
             auto &builder = self.getBuilder();
             Value barrierValue;
@@ -408,8 +408,9 @@ void init_triton_tle_ir(py::module &&m) {
             IntegerAttr expectBytesAttr;
             if (expectBytes > 0)
               expectBytesAttr = builder.getI32IntegerAttr(expectBytes);
-            self.create<ttg::TMACopyOp>(src, dst, indices, barrierValue,
-                                        expectBytesAttr, evictionPolicy);
+            auto copy = self.create<ttg::TMACopyOp>(
+                src, dst, indices, barrierValue, expectBytesAttr);
+            copy.setEvict(evictionPolicy);
 #endif
           },
           py::arg("src"), py::arg("dst"), py::arg("indices"),
@@ -427,8 +428,7 @@ void init_triton_tle_ir(py::module &&m) {
               throw py::value_error(
                   "TMA completion barriers and eviction policies are only "
                   "supported on the NVIDIA backend");
-            auto op =
-                self.create<ttg::TMACopyOp>(src, dst, indices, evictionPolicy);
+            auto op = self.create<ttg::TMACopyOp>(src, dst, indices);
 #else
              Value barrierValue;
              if (!barrier.is_none())
@@ -437,8 +437,10 @@ void init_triton_tle_ir(py::module &&m) {
              if (expectBytes > 0)
                expectBytesAttr = self.getBuilder().getI32IntegerAttr(expectBytes);
              auto op = self.create<ttg::TMACopyOp>(
-                 src, dst, indices, barrierValue, expectBytesAttr,
-                 evictionPolicy);
+                 src, dst, indices, barrierValue, expectBytesAttr);
+#endif
+#ifndef __HCU__
+            op.setEvict(evictionPolicy);
 #endif
             op->setAttr(tle::kLogicalCopyShapeAttr,
                         self.getBuilder().getDenseI64ArrayAttr(copyShape));

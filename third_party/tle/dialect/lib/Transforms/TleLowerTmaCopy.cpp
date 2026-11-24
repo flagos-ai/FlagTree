@@ -186,9 +186,11 @@ public:
           rewriter.create<triton::nvidia_gpu::BarrierExpectOp>(
               loc, userBarrier, static_cast<int32_t>(expectBytes.getInt()),
               pred);
-        rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
-            op.getLoc(), op.getSrc(), indices, userBarrier, dstMemDesc, pred,
-            CacheModifier::NONE, evictionPolicy);
+        auto tmaLoad =
+            rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
+                op.getLoc(), op.getSrc(), indices, userBarrier, dstMemDesc,
+                pred);
+        tmaLoad.setEvict(evictionPolicy);
       } else {
         if (op->hasAttr(op.getExpectBytesAttrName()))
           return op.emitOpError("expect_bytes requires an explicit completion "
@@ -226,9 +228,11 @@ public:
                                                              sizeInBytes, pred);
 
         // Perform async TMA copy from global to existing shared memory
-        rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
-            op.getLoc(), op.getSrc(), indices, mbarrierAlloc, dstMemDesc, pred,
-            CacheModifier::NONE, evictionPolicy);
+        auto tmaLoad =
+            rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
+                op.getLoc(), op.getSrc(), indices, mbarrierAlloc, dstMemDesc,
+                pred);
+        tmaLoad.setEvict(evictionPolicy);
 
         // Wait for completion and invalidate barrier
         Value phase = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
@@ -269,7 +273,8 @@ public:
       // Perform async TMA copy from shared to global memory
       auto tmaStore =
           rewriter.create<triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp>(
-              op.getLoc(), op.getDst(), indices, op.getSrc(), evictionPolicy);
+              op.getLoc(), op.getDst(), indices, op.getSrc());
+      tmaStore.setEvict(evictionPolicy);
       tmaStore->setAttr(kTleTMAStoreExplicitCommitAttr, rewriter.getUnitAttr());
       rewriter.create<TMAStoreCommitGroupOp>(loc);
 

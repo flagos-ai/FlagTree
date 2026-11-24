@@ -206,13 +206,10 @@ static LogicalResult processProducerCommitTmaCopyOp(OpBuilder &builder,
                                              srcTy.getBlockType().getEncoding(),
                                              copy.getIndices());
     builder.setInsertionPoint(copy);
-    auto evict = tt::EvictionPolicy::NORMAL;
-#ifdef __TLE__
-    evict = copy.getEvict();
-#endif
     auto lowered = ttng::AsyncTMACopyGlobalToLocalOp::create(
         builder, copy.getLoc(), copy.getSrc(), indices, bufferFull,
-        copy.getDst(), pred, tt::CacheModifier::NONE, evict);
+        copy.getDst(), pred);
+    lowered.setEvict(copy.getEvict());
     setAsyncTaskIds(lowered, taskIds);
     copy.erase();
   }

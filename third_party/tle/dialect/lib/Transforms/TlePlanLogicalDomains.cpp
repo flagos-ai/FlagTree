@@ -439,18 +439,19 @@ static void applyRootRewrite(LogicalRootRewriteAction &action) {
             addOffset(copyBuilder, copy.getLoc(), indices[colCoordinate],
                       colTile * storageTileCols);
 #ifdef __HCU__
-        auto tiledCopy =
-            ttg::TMACopyOp::create(copyBuilder, copy.getLoc(), copy.getSrc(),
-                                   storageTile, indices, copy.getEvict());
+        auto tiledCopy = ttg::TMACopyOp::create(
+            copyBuilder, copy.getLoc(), copy.getSrc(), storageTile, indices);
 #else
         auto tiledCopy = ttg::TMACopyOp::create(
             copyBuilder, copy.getLoc(), copy.getSrc(), storageTile, indices,
-            copy.getBarrier(), expectBytes, copy.getEvict());
+            copy.getBarrier(), expectBytes);
         // One logical copy contributes one arrival and its full byte count.
         // Continuation tiles complete the same barrier without another arrival.
         if (copy.getBarrier())
           expectBytes = copyBuilder.getI32IntegerAttr(0);
 #endif
+        if (Attribute eviction = copy->getAttr("evict"))
+          tiledCopy->setAttr("evict", eviction);
         int64_t elementBytes =
             oldType.getElementType().getIntOrFloatBitWidth() / 8;
         tiledCopy->setAttr(

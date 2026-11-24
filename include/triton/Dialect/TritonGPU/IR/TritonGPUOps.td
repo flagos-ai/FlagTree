@@ -719,7 +719,7 @@ def TTG_TMACopyOp : TTG_Op<"tma_copy", [
     Variadic<I32>:$indices,
     Optional<TTG_MemDescType>:$barrier,
     OptionalAttr<I32Attr>:$expect_bytes,
-    DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict
+    DefaultValuedAttr<TT_EvictionPolicyAttr, "triton::EvictionPolicy::NORMAL">:$evict
   );
   //assemble
   let assemblyFormat = [{
