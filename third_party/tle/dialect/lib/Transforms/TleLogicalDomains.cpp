@@ -335,6 +335,8 @@ public:
   LogicalResult processExtractStage(Operation *op, LogicalDomainPhase phase);
   LogicalResult processWarpSpecialize(Operation *op, LogicalDomainPhase phase);
   LogicalResult processPipe(Operation *op, LogicalDomainPhase phase);
+  LogicalResult processPipeFieldOperand(Operation *op, OpOperand &operand,
+                                        LogicalDomainPhase phase);
   LogicalResult processMemDescUse(Operation *op, LogicalDomainPhase phase);
   LogicalResult processMemDescTranspose(Operation *op,
                                         LogicalDomainPhase phase);
@@ -1641,26 +1643,68 @@ LogicalDomainContext::processLocalStore(Operation *operation,
   return success();
 }
 
+// Pipe ops declare an `identity` operand before their variadic `fields`, so an
+// operation-wide operand number is *not* the field's `field_names` index.
+// These two helpers translate between the declared field range (whose relative
+// position does index `field_names`) and the operation-wide operand number used
+// for diagnostics and logical-domain use tracking.
+static unsigned pipeFieldBegin(Operation *operation) {
+  return llvm::TypeSwitch<Operation *, unsigned>(operation)
+      .Case<tle::PipeCreateOp, tle::PipeWriterAcquireOp,
+            tle::PipeWriterCommitOp, tle::PipeWriterCloseOp,
+            tle::PipeReaderWaitOp, tle::PipeReaderReleaseOp,
+            tle::PipeDrainOp>([](auto op) {
+        return op.getFieldsMutable().getAsOperandRange().getBeginOperandIndex();
+      })
+      .Default([](Operation *) { return 0u; });
+}
+
+static unsigned pipeFieldCount(Operation *operation) {
+  return llvm::TypeSwitch<Operation *, unsigned>(operation)
+      .Case<tle::PipeCreateOp, tle::PipeWriterAcquireOp,
+            tle::PipeWriterCommitOp, tle::PipeWriterCloseOp,
+            tle::PipeReaderWaitOp, tle::PipeReaderReleaseOp, tle::PipeDrainOp>(
+          [](auto op) { return op.getFields().size(); })
+      .Default([](Operation *) { return 0u; });
+}
+
+LogicalResult LogicalDomainContext::processPipeFieldOperand(
+    Operation *operation, OpOperand &operand, LogicalDomainPhase phase) {
+  unsigned index = operand.getOperandNumber();
+  const MemDescLogicalState *state = lookupMemDesc(operand.get());
+  if (!state)
+    return success();
+  auto names = operation->getAttrOfType<ArrayAttr>("field_names");
+  unsigned begin = pipeFieldBegin(operation);
+  unsigned field = index - begin;
+  if (!names || index < begin || field >= names.size())
+    return emitError(operation, index,
+                     "candidate memdesc is not a pipe field operand");
+  if (phase == LogicalDomainPhase::Plan && !state->isStage) {
+    auto *root = findRootAction(plan, state->provenance.primaryRoot());
+    if (!root)
+      return emitError(operation, index,
+                       "candidate root has no storage action");
+    OpOperand *use = &operand;
+    if (llvm::none_of(root->memdescUses,
+                      [&](const auto &action) { return action.use == use; }))
+      root->memdescUses.push_back({use, true});
+  }
+  return success();
+}
+
 LogicalResult LogicalDomainContext::processPipe(Operation *operation,
                                                 LogicalDomainPhase phase) {
-  for (auto [index, operand] : llvm::enumerate(operation->getOperands())) {
-    const MemDescLogicalState *state = lookupMemDesc(operand);
-    if (!state)
-      continue;
-    auto names = operation->getAttrOfType<ArrayAttr>("field_names");
-    if (!names || index >= names.size())
-      return emitError(operation, index,
-                       "candidate memdesc is not a pipe field operand");
-    if (phase == LogicalDomainPhase::Plan && !state->isStage) {
-      auto *root = findRootAction(plan, state->provenance.primaryRoot());
-      if (!root)
-        return emitError(operation, index,
-                         "candidate root has no storage action");
-      OpOperand *use = &operation->getOpOperand(index);
-      if (llvm::none_of(root->memdescUses,
-                        [&](const auto &action) { return action.use == use; }))
-        root->memdescUses.push_back({use, true});
-    }
+  // Pipe ops carry an `identity` operand in front of their variadic `fields`,
+  // so an operand's position is not its `field_names` index. Iterate the
+  // declared field operand range and translate each to its operation-wide
+  // operand number for diagnostics and use tracking.
+  unsigned begin = pipeFieldBegin(operation);
+  unsigned end = begin + pipeFieldCount(operation);
+  for (unsigned index = begin; index < end; ++index) {
+    if (failed(processPipeFieldOperand(operation,
+                                       operation->getOpOperand(index), phase)))
+      return failure();
   }
   return success();
 }
