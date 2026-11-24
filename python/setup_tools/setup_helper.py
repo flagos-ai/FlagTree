@@ -192,6 +192,8 @@ def get_backend_cmake_args(*args, **kargs):
         cmake_args += ["-DEDITABLE_MODE=ON"]
     if flagtree_backend not in configs.default_backends:
         cmake_args += ["-DFLAGTREE_BACKEND={}".format(flagtree_backend)]
+    # The default backends share a CMake build path. Pass the package's CommonIR choice explicitly.
+    cmake_args.append("-DFLAGTREE_COMMON_IR_ENABLED:BOOL=" + ("ON" if common_ir_enabled else "OFF"))
     return cmake_args
 
 
@@ -914,7 +916,7 @@ cache = FlagTreeCache()
 # Match the build-time CommonIR default and CMake's false constants.
 common_ir = os.environ.get("FLAGTREE_COMMON_IR")
 if common_ir is None:
-    common_ir_enabled = flagtree_backend in ("", "nvidia", "amd", "enflame", "hcu", "iluvatar", "metax", "mthreads")
+    common_ir_enabled = flagtree_backend in ("", "nvidia", "enflame", "hcu", "iluvatar", "metax", "mthreads")
 else:
     common_ir = common_ir.upper()
     common_ir_enabled = common_ir not in ("", "0", "OFF", "NO", "FALSE", "N", "IGNORE",
