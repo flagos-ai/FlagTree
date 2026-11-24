@@ -74,11 +74,58 @@ struct ConvertTritonXPUToLLVM
       mod->setAttr(mlir::triton::gpu::AttrNumWarpsName, b.getI32IntegerAttr(1));
     }
 
+    // Which module this invocation sees, for cases where the MLIR dump
+    // sections do not line up with the pass input (sample_dirichlet: the
+    // dumped module converts cleanly, yet the pipeline reports a failure).
+    if (std::getenv("TRITONXPU_LOG_CONVERT_ENTRY")) {
+      unsigned numFuncs = 0, numReduces = 0, numWhiles = 0;
+      mod.walk([&](Operation *op) {
+        if (isa<triton::FuncOp, LLVM::LLVMFuncOp>(op))
+          ++numFuncs;
+        else if (isa<triton::xpu::ReduceOp>(op))
+          ++numReduces;
+        else if (isa<scf::WhileOp>(op))
+          ++numWhiles;
+      });
+      llvm::errs() << "[convert-entry] funcs=" << numFuncs
+                   << " xpuReduces=" << numReduces << " whiles=" << numWhiles
+                   << "\n";
+    }
+
     mlir::LowerToLLVMOptions option(context);
     option.overrideIndexBitwidth(32);
     TritonXPUToLLVMTypeConverter typeConverter(context,
                                                option); // we can reuse it
     TritonLLVMConversionTarget convTarget(*context);
+
+    // A bare signalPassFailure() only produces the pipeline-level "Failures
+    // have been detected" line, which says nothing about which op or pattern
+    // gave up (sample_dirichlet). Name what is left, or say that nothing is.
+    // Off by default: the module is large. Set
+    // TRITONXPU_DUMP_ON_CONVERT_FAILURE to get the state the pass actually
+    // failed on (the MLIR dump sections do not line up one-to-one with the pass
+    // input).
+    auto dumpOnFailure = [&]() {
+      if (std::getenv("TRITONXPU_DUMP_ON_CONVERT_FAILURE"))
+        mod.print(llvm::errs());
+    };
+    auto reportUnconverted = [&](llvm::StringRef stage) {
+      unsigned reported = 0;
+      mod.walk([&](Operation *op) {
+        if (reported >= 8)
+          return;
+        llvm::StringRef ns = op->getName().getDialectNamespace();
+        if (ns != "tt" && ns != "triton_xpu" && ns != "ttg")
+          return;
+        op->emitError() << stage << ": left unconverted";
+        ++reported;
+      });
+      if (reported == 0)
+        mod.emitError() << stage
+                        << ": conversion failed with no Triton/XPU op left; a "
+                           "pattern signalled failure (use "
+                           "--mlir-print-ir-after-all)";
+    };
 
     // Allocate shared memory and set barrier
     // TODO[dyq]: necessary to open?
@@ -98,9 +145,12 @@ struct ConvertTritonXPUToLLVM
           typeConverter, funcPatterns, patternBenefitDefault);
       mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
                                                             funcPatterns);
-      if (failed(
-              applyPartialConversion(mod, funcTarget, std::move(funcPatterns))))
+      if (failed(applyPartialConversion(mod, funcTarget,
+                                        std::move(funcPatterns)))) {
+        dumpOnFailure();
+        reportUnconverted("function conversion");
         return signalPassFailure();
+      }
     }
 
     // LLVM_DEBUG(llvm::dbgs() << "\nAfter Lower Functions:\n" << mod << "\n");
@@ -108,9 +158,15 @@ struct ConvertTritonXPUToLLVM
     // initSharedMemory is run before the conversion of call and ret ops,
     // because the call op has to know the shared memory base address of
     // each function
-    if (failed(stampSharedMemOffsets(mod)))
+    if (failed(stampSharedMemOffsets(mod))) {
+      dumpOnFailure();
+      mod.emitError() << "shared-memory offset stamping failed";
       return signalPassFailure();
-    initSharedMemory(typeConverter);
+    }
+    if (failed(initSharedMemory(typeConverter))) {
+      dumpOnFailure();
+      return signalPassFailure();
+    }
     ModuleAxisInfoAnalysis axisInfoAnalysis(mod);
     OpBuilder::InsertPoint indexInsertPoint;
 
@@ -189,8 +245,11 @@ struct ConvertTritonXPUToLLVM
     mlir::populateMathToLLVMConversionPatterns(typeConverter, patterns);
     mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
                                                           patterns);
-    if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
+    if (failed(applyPartialConversion(mod, convTarget, std::move(patterns)))) {
+      dumpOnFailure();
+      reportUnconverted("op conversion");
       return signalPassFailure();
+    }
   }
 
 private:
@@ -234,7 +293,13 @@ private:
     return res;
   }
 
-  void initSharedMemory(LLVMTypeConverter &typeConverter) {
+  /// Materialise the `global_smem` base pointer into the `smem` member.
+  ///
+  /// Why: every shared-memory conversion pattern reads `smem`, so a module
+  /// this cannot be run on has to stop the pass before the patterns are
+  /// applied -- `signalPassFailure` alone does not, it only marks the
+  /// pipeline failed after `runOnOperation` returns.
+  LogicalResult initSharedMemory(LLVMTypeConverter &typeConverter) {
     ModuleOp mod = getOperation();
     OpBuilder b(mod.getBodyRegion());
     auto ctx = mod.getContext();
@@ -255,8 +320,18 @@ private:
     // changed?
     SmallVector<LLVM::LLVMFuncOp> funcs;
     mod.walk([&](LLVM::LLVMFuncOp func) { funcs.push_back(func); });
-    assert(funcs.size() == 1 &&
-           "Inliner pass is expected before TritonXPUToLLVM");
+    // Name the leftovers instead of aborting: a module that still carries a
+    // helper (or a second kernel) cannot be told apart from a pass bug once the
+    // assert fires, and the pipeline only reports "Failures have been detected"
+    // for a pass that returns quietly.
+    if (funcs.size() != 1) {
+      for (LLVM::LLVMFuncOp func : funcs)
+        func->emitError()
+            << "ConvertTritonXPUToLLVM expects exactly one function after "
+               "inlining, found "
+            << funcs.size();
+      return failure();
+    }
     b.setInsertionPointToStart(&funcs[0].getBody().front());
     smem = b.create<LLVM::AddressOfOp>(loc, global);
 
@@ -266,6 +341,7 @@ private:
     // LLVM::LLVMPointerType::get(typeConverter.convertType(b.getI8Type()), 2);
     auto ptrTy = LLVM::LLVMPointerType::get(mod.getContext(), 2);
     smem = b.create<LLVM::BitcastOp>(loc, ptrTy, smem);
+    return success();
   }
 };
 

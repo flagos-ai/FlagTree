@@ -13,6 +13,35 @@ namespace {
 
 using ::mlir::triton::gpu::getTotalElemsPerThread;
 
+// Number of output elements one group slot holds in the reduce scratch area.
+//
+// Why: getXPUScratchConfig() replaces the reduction axis with the group size,
+// so the scratch layout is [groupSlot][element]. The core-synchronous loop
+// cache below used to address one slot per core, which collapses a rank-1
+// result with several elements per core into one value (R03 numeric).
+static unsigned scratchElemsPerSlot(ArrayRef<unsigned> smemShape,
+                                    unsigned axis) {
+  unsigned elems = 1;
+  for (unsigned d = 0; d < smemShape.size(); ++d)
+    if (d != axis)
+      elems *= smemShape[d];
+  return elems;
+}
+
+// Linear index of a full-rank index over shape, skipping the reduction axis.
+// The index must have one entry per shape dimension (the reduction axis entry
+// is ignored).
+static unsigned linearizeSkippingAxis(ArrayRef<unsigned> index,
+                                      ArrayRef<unsigned> shape, unsigned axis) {
+  unsigned linear = 0;
+  for (unsigned d = 0; d < shape.size(); ++d) {
+    if (d == axis)
+      continue;
+    linear = linear * shape[d] + index[d];
+  }
+  return linear;
+}
+
 struct XPUReduceOpConversion
     : public ConvertOpToLLVMPattern<triton::xpu::ReduceOp> {
 
@@ -181,9 +210,16 @@ struct XPUReduceOpConversion
     // that operand then folds to a constant.
     bool coreSync = helper.isCoreSynchronous();
     bool loopCarried = op.getLoopNum() > 1 && isNeedLoopCacheResult(op);
+    // The group loop cache above only fits a loop-carried reduce whose cores
+    // all own the same output element, which is the scalar result; a rank-1
+    // result gives every core its own element and needs the per-core cache
+    // below instead (R03 numeric: householder_product / orgqr read a
+    // neighbouring core's running product otherwise).
+    bool shouldUseRegisterPath =
+        coreSync && (!loopCarried || shouldAccumPerCore(op));
 
     // Init shared memory for mask.
-    if (!targetInfo.getXPUIsUseMaskZero() && !(coreSync && !loopCarried)) {
+    if (!targetInfo.getXPUIsUseMaskZero() && !shouldUseRegisterPath) {
       initSharedMemory(helper, rewriter, loc);
     }
     std::map<SmallVector<unsigned>, SmallVector<Value>> accs;
@@ -191,8 +227,21 @@ struct XPUReduceOpConversion
     // First reduce all the values along axis within each thread.
     reduceWithinThreads(helper, srcValues, accs, indices, rewriter);
 
-    if (coreSync && !loopCarried) {
+    if (shouldUseRegisterPath) {
       LLVM_DEBUG(llvm::dbgs() << "\nisCoreSynchronous=True\n");
+
+      // Within one slice there is nothing to combine, but a reduce inside a
+      // slicing loop still accumulates its per-iteration partials.
+      // Whether the SM loop result cache owns the cross-slice accumulation.
+      // loopNum stays the slicing-loop trip count (StoreControl reads it for
+      // the store guard); the flag is absent on every path that predates it, so
+      // the old loopNum > 1 rule is the default.
+      bool loopCacheOwns = op.getLoopNum() > 1;
+      if (auto cacheAttr = op->getAttrOfType<BoolAttr>("loopCache"))
+        loopCacheOwns = cacheAttr.getValue();
+      if (isNeedLoopCacheResult(op) && loopCacheOwns &&
+          packResultsWithLoopAccum(helper, accs, rewriter))
+        return success();
 
       // If all the values to be reduced are within the same warp there is
       // nothing left to do.
@@ -211,6 +260,36 @@ struct XPUReduceOpConversion
 
 private:
   const xpu::TargetInfo &targetInfo;
+
+  /// Whether a loop-carried core-synchronous reduce keeps its running value
+  /// in the per-core loop cache below instead of the group cache on the
+  /// cross-core path.
+  ///
+  /// Why: the group cache gives one slot to each group of cores that share an
+  /// output element, which holds for a scalar result only. A rank-1 result
+  /// spreads its elements over the cores, so two cores would accumulate into
+  /// the same slot and read each other's partial. A `loopCache=false`
+  /// attribute from Legalize means an scf iter_arg already carries the total,
+  /// so no cache may run -- that case belongs here as well, where the flag is
+  /// honoured.
+  ///
+  /// How:
+  ///   - honour an explicit loopCache=false;
+  ///   - otherwise require a single rank-1 result over a slice layout, which
+  ///     is what packResultsWithLoopAccum() can address.
+  bool shouldAccumPerCore(triton::xpu::ReduceOp op) const {
+    if (auto cacheAttr = op->getAttrOfType<BoolAttr>("loopCache"))
+      if (!cacheAttr.getValue())
+        return true;
+    // A multi-operand combine (tl.argmax) pairs its results, and the per-core
+    // cache below accumulates each one on its own; leave those on the group
+    // path, which emits the combine over the whole tuple.
+    if (op.getResult().size() != 1)
+      return false;
+    auto resultTy = dyn_cast<RankedTensorType>(op.getResult()[0].getType());
+    return resultTy && resultTy.getRank() == 1 &&
+           isa<SliceEncodingAttr>(resultTy.getEncoding());
+  }
 
   inline bool isNeedLoopCacheResult(triton::xpu::ReduceOp op) const {
     if (op.getAxis() == 1) {
@@ -1306,6 +1385,79 @@ private:
                                loopResCacheSmemBases, rewriter);
 
     // llvm_unreachable("Not Supported");
+  }
+
+  // Pack a core-synchronous reduce that runs inside a slicing loop.
+  //
+  // Why: such a reduce has nothing to combine inside one slice, but each
+  // iteration contributes a partial that must accumulate. The generic smem
+  // path reduces a group of cores that all own the same output element; here
+  // every core owns a different element (axis 0 is not distributed), so the
+  // running value is kept per core instead of per group.
+  //
+  // How:
+  //   - address the per-core scratch slot (the one
+  //   storeCoreReduceToSharedMemory
+  //     would use);
+  //   - combine this iteration value with the cached one, except on the first
+  //     iteration (index 0), and store the combined value back;
+  //   - pack the combined values as the result.
+  //
+  // \returns false when the result shape is outside what this path handles.
+  bool packResultsWithLoopAccum(
+      ReduceOpHelper &helper,
+      std::map<SmallVector<unsigned>, SmallVector<Value>> &accs,
+      ConversionPatternRewriter &rewriter) const {
+    triton::xpu::ReduceOp op = helper.getXPUOperation();
+    Location loc = op.getLoc();
+    unsigned axis = op.getAxis();
+    auto smemShape = helper.getXPUScratchConfig();
+    auto [smemBases, cacheBases] =
+        getSmemBases(op, product<unsigned>(smemShape), rewriter);
+
+    Value coreId = mlir::LLVM::XPU::getThreadId(rewriter, loc);
+    Value notFirst = icmp_ne(op.getLoopIndex(), i32_val(0));
+    unsigned numElems = scratchElemsPerSlot(smemShape, axis);
+
+    SmallVector<Value> results(op.getNumOperands() - 1);
+    for (unsigned i = 0; i < op.getNumOperands() - 1; ++i) {
+      auto resultTy = dyn_cast<RankedTensorType>(op.getResult()[i].getType());
+      if (!resultTy || resultTy.getRank() != 1)
+        return false;
+      auto resultLayout = cast<SliceEncodingAttr>(resultTy.getEncoding());
+      auto resultOffsets =
+          mlir::LLVM::XPU::emitOffsetForLayoutXPU(resultLayout, resultTy);
+      Type elemTy = getElementType(op, i);
+      SmallVector<Value> resultVals;
+      for (auto offset : resultOffsets) {
+        auto key = offset;
+        key.insert(key.begin() + axis, 0);
+        SmallVector<Value> acc(accs[key]);
+        // One cache entry per (core, element), the same layout
+        // storeCoreReduceToSharedMemory uses. A core can own several output
+        // elements ([1x128] on 64 cores is two per core); keying the entry by
+        // the core id alone made those elements overwrite one another.
+        unsigned elem = linearizeSkippingAxis(key, smemShape, axis);
+        Value slot = add(mul(coreId, i32_val(numElems)), i32_val(elem));
+        Value cachePtr =
+            gep(ptr_ty(rewriter.getContext(), 2), elemTy, smemBases[i], slot);
+        Value cached = load_sm(elemTy, cachePtr);
+        // combine(history, partial): the cached running total is the left
+        // operand and this iteration's partial the right, so a non-commutative
+        // combine (argmax / argmin tie-break, welford) folds in iteration
+        // order. Swapping them let the earlier slice win a tie.
+        SmallVector<Value> hist{cached};
+        accumulate(rewriter, op.getCombineOp(), hist, acc, false);
+        Value result =
+            rewriter.create<LLVM::SelectOp>(loc, notFirst, hist[0], acc[0]);
+        store_sm(result, cachePtr);
+        resultVals.push_back(result);
+      }
+      results[i] = packLLElements(loc, getTypeConverter(), resultVals, rewriter,
+                                  resultTy);
+    }
+    rewriter.replaceOp(op, results);
+    return true;
   }
 
   // Pack the accumulator values and replace the reduce op with the result.

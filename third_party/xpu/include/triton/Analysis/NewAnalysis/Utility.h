@@ -5,6 +5,7 @@
 #include "triton/Dialect/Triton/IR/Utility.h"
 
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
 #include <unordered_set>
 #include <vector>
@@ -136,11 +137,14 @@ bool inOpChain(llvm::SetVector<Operation *> &opChain, Operation *op);
 
 void getOpChainBwd(llvm::SetVector<Operation *> &opChain, Operation *op);
 void getOpChainFwd(llvm::SetVector<Operation *> &opChain, Operation *op);
-void getOpTreeBwd(llvm::SetVector<Operation *> &opTree,
-                  llvm::SetVector<Operation *> &visitedOps, Operation *op);
-void getOpTreeBwd(llvm::SetVector<Operation *> &opTree,
-                  llvm::SetVector<Operation *> &visitedOps, Operation *op,
-                  Block *block);
+void getOpTreeBwd(
+    llvm::SetVector<Operation *> &opTree,
+    llvm::SetVector<Operation *> &visitedOps, Operation *op,
+    const llvm::SmallPtrSetImpl<mlir::Value> *stopValues = nullptr);
+void getOpTreeBwd(
+    llvm::SetVector<Operation *> &opTree,
+    llvm::SetVector<Operation *> &visitedOps, Operation *op, Block *block,
+    const llvm::SmallPtrSetImpl<mlir::Value> *stopValues = nullptr);
 void checkDefUseShapeMatch(ModuleOp &m, MLIRContext *context);
 
 llvm::SmallVector<Operation *>
@@ -216,21 +220,35 @@ std::vector<Operation *> findAllTypeUserOps(Operation *startOp) {
   return found;
 }
 
-template <typename opType> opType findDefOpBwd(const Value &val) {
+template <typename opType>
+opType findDefOpBwdImpl(const Value &val,
+                        llvm::SmallPtrSetImpl<Operation *> &visited) {
   if (!val || !val.getDefiningOp()) {
     return nullptr;
   }
-  auto op = val.getDefiningOp();
-  if (op && isa<opType>(op)) {
+  Operation *op = val.getDefiningOp();
+  // Without memoisation the walk enumerates every path through the def DAG.
+  // Shared subexpressions (e.g. the inlined fp64 pow/sin/cos chains) make that
+  // exponential: one vander kernel spent 85 s here.  A visited node whose
+  // subtree was already explored cannot contain a match, so skipping it keeps
+  // the same first-match result.
+  if (!visited.insert(op).second) {
+    return nullptr;
+  }
+  if (isa<opType>(op)) {
     return cast<opType>(op);
   }
   for (auto operand : op->getOperands()) {
-    op = findDefOpBwd<opType>(operand);
-    if (op) {
-      return cast<opType>(op);
+    if (auto found = findDefOpBwdImpl<opType>(operand, visited)) {
+      return found;
     }
   }
   return nullptr;
+}
+
+template <typename opType> opType findDefOpBwd(const Value &val) {
+  llvm::SmallPtrSet<Operation *, 16> visited;
+  return findDefOpBwdImpl<opType>(val, visited);
 }
 
 } // namespace mlir

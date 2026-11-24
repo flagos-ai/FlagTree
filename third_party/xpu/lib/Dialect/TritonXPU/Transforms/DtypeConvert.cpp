@@ -79,6 +79,12 @@ struct TritonXPUDtypeConvert
             }
             extfOp->moveAfter(constOp);
             for (auto op : constUsers) {
+              // `scf.for` inits and `scf.yield` operands must keep the loop's
+              // low-precision type: the region iter_arg is not retyped here
+              // and the yield is truncated back to it, so promoting the init
+              // alone leaves init f32 next to a bf16 iter_arg.
+              if (mlir::isa<scf::ForOp, scf::YieldOp>(op))
+                continue;
               for (int i = 0; i < op->getOperands().size(); ++i) {
                 if (op->getOperands()[i] == constOp.getResult()) {
                   op->setOperand(i, extfOp->getResult(0));
@@ -162,6 +168,30 @@ struct TritonXPUDtypeConvert
         }
       }
     }
+
+    // A promoted init value that is not an arith.constant (tl.full's -inf, for
+    // one) is retyped in place, so a value used as an scf.for init turns f32
+    // while the loop's region iter_arg stays bf16: the body computes in f32 and
+    // the yield is truncated back, so the iter_arg keeps the low-precision type
+    // and the init alone disagrees.  Put the init back with a trunc/ext.
+    m.walk([&](scf::ForOp forOp) {
+      auto iterArgs = forOp.getRegionIterArgs();
+      auto initArgs = forOp.getInitArgsMutable();
+      for (auto [i, arg] : llvm::enumerate(iterArgs)) {
+        Value init = initArgs[i].get();
+        Type want = arg.getType();
+        if (init.getType() == want)
+          continue;
+        bool initIsF32 = getElementTypeOrSelf(init.getType()).isF32();
+        bool wantIsF32 = getElementTypeOrSelf(want).isF32();
+        OpBuilder b(forOp);
+        if (initIsF32 && !wantIsF32)
+          initArgs[i].set(
+              b.create<arith::TruncFOp>(forOp.getLoc(), want, init));
+        else if (!initIsF32 && wantIsF32)
+          initArgs[i].set(b.create<arith::ExtFOp>(forOp.getLoc(), want, init));
+      }
+    });
 
     // A tt.scan's combine region rides the scanned element type, but the loop
     // above widens only the scan op's operands/results -- getOpTreeBwd stops at

@@ -15,7 +15,16 @@ def ConvertTritonToTritonXPU: Pass<"convert-triton-to-triton-xpu", "mlir::Module
                              // TODO: Does this pass depend on SCF?
                              "mlir::scf::SCFDialect",
                              "mlir::triton::TritonDialect",
-                             // "mlir::triton::gpu::TritonGPUDialect", // Does this pass depend on TritonGPU in Triton 3.0?
+                             // Yes: this pass stamps the TritonGPU module
+                             // attributes and its encodings reference
+                             // CTAEncodingAttr, so the dialect has to be
+                             // loaded. Without it the pass only works behind
+                             // another pass that loaded TritonGPU already --
+                             // running it alone in triton-opt died with
+                             // "can't create Attribute
+                             // 'mlir::triton::gpu::CTAEncodingAttr' because
+                             // storage uniquer isn't initialized".
+                             "mlir::triton::gpu::TritonGPUDialect",
                              "mlir::triton::xpu::TritonXPUDialect"];
 
    let options = [

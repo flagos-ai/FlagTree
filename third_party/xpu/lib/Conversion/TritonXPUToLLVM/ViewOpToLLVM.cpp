@@ -143,6 +143,112 @@ struct XPUBroadcastOpConversion
   }
 };
 
+// tt.split picks the two halves of a trailing dim of size 2.
+//
+// Why: TritonToTritonXPU drops that dimension from the layout, so each result
+// is a subset of the source register list: the slots whose trailing offset is
+// 0 (outLHS) or 1 (outRHS). Both halves live in the same core, so this is a
+// selection, not a data movement.
+//
+// How:
+//   - enumerate the per-core offsets of the source and of each result;
+//   - for each result slot take the source slot with the same offsets and the
+//     wanted trailing value;
+//   - fail loudly when a half is missing (a layout that spreads the trailing
+//     dim over cores cannot express this op).
+struct XPUTSplitOpConversion : public ConvertOpToLLVMPattern<triton::SplitOp> {
+  using ConvertOpToLLVMPattern<triton::SplitOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::SplitOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto typeConverter = getTypeConverter();
+    auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
+    auto lhsTy = cast<RankedTensorType>(op.getOutLHS().getType());
+    auto rhsTy = cast<RankedTensorType>(op.getOutRHS().getType());
+    auto srcVals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+    auto srcOffsets =
+        mlir::LLVM::XPU::emitOffsetForLayoutXPU(srcTy.getEncoding(), srcTy);
+    if (srcVals.size() != srcOffsets.size())
+      return op->emitError(
+          "tt.split source element count does not match its layout");
+
+    auto selectHalf =
+        [&](unsigned half,
+            RankedTensorType dstTy) -> std::optional<SmallVector<Value>> {
+      auto dstOffsets =
+          mlir::LLVM::XPU::emitOffsetForLayoutXPU(dstTy.getEncoding(), dstTy);
+      SmallVector<Value> out;
+      out.reserve(dstOffsets.size());
+      for (ArrayRef<unsigned> dst : dstOffsets) {
+        std::optional<Value> found;
+        for (unsigned i = 0; i < srcOffsets.size(); ++i) {
+          ArrayRef<unsigned> src = srcOffsets[i];
+          if (src.back() != half)
+            continue;
+          if (!std::equal(dst.begin(), dst.end(), src.begin()))
+            continue;
+          found = srcVals[i];
+          break;
+        }
+        if (!found)
+          return std::nullopt;
+        out.push_back(*found);
+      }
+      return out;
+    };
+
+    auto lhsVals = selectHalf(/*half=*/0, lhsTy);
+    auto rhsVals = selectHalf(/*half=*/1, rhsTy);
+    if (!lhsVals || !rhsVals)
+      return op->emitError(
+          "tt.split could not find both halves in the source layout");
+    Value lhs = packLLElements(loc, typeConverter, *lhsVals, rewriter, lhsTy);
+    Value rhs = packLLElements(loc, typeConverter, *rhsVals, rewriter, rhsTy);
+    rewriter.replaceOp(op, {lhs, rhs});
+    return success();
+  }
+};
+
+// tt.trans is a register rename, not a data movement.
+//
+// Why: TritonToTritonXPU gives the result the source layout permuted by the
+// transpose order (see TritonTransPattern), so every core holds exactly the
+// elements it held before, in the same slot order. The element list therefore
+// carries over unchanged, exactly like convert_layout. Materialising a real
+// permute here would be both wrong (the layout already encodes it) and
+// needlessly expensive.
+//
+// How: unpack the source struct and pack it into the result type; the type
+// converter sizes both sides from the (permuted) encoding.
+struct XPUTransOpConversion : public ConvertOpToLLVMPattern<triton::TransOp> {
+  using ConvertOpToLLVMPattern<triton::TransOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::TransOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto typeConverter = getTypeConverter();
+    auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
+    auto resTy = cast<RankedTensorType>(op.getType());
+    auto srcEnc =
+        dyn_cast_or_null<triton::xpu::ClusterLayoutAttr>(srcTy.getEncoding());
+    auto resEnc =
+        dyn_cast_or_null<triton::xpu::ClusterLayoutAttr>(resTy.getEncoding());
+    if (!srcEnc || !resEnc)
+      return failure();
+    if (triton::gpu::getTotalElemsPerThread(srcTy) !=
+        triton::gpu::getTotalElemsPerThread(resTy))
+      return op->emitError(
+          "tt.trans layout permutation changed the per-core element count");
+    auto vals = unpackLLElements(loc, adaptor.getSrc(), rewriter);
+    auto res = packLLElements(loc, typeConverter, vals, rewriter, resTy);
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::xpu::populateViewOpToLLVMPatterns(
@@ -150,4 +256,6 @@ void mlir::triton::xpu::populateViewOpToLLVMPatterns(
     PatternBenefit benefit) {
   patterns.add<XPUExpandDimsOpConversion>(typeConverter, benefit);
   patterns.add<XPUBroadcastOpConversion>(typeConverter, benefit);
+  patterns.add<XPUTransOpConversion>(typeConverter, benefit);
+  patterns.add<XPUTSplitOpConversion>(typeConverter, benefit);
 }

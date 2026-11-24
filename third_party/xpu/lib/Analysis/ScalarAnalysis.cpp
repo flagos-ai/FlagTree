@@ -481,6 +481,126 @@ LogicalResult ScalarAnalysis::visitOperation(
     return success();
   }
 
+  // triton_xpu.convert_layout : a pure layout bridge (SameOperandsAndResult
+  // Shape, "never moves data"). It only re-tags the encoding; the logical
+  // element-per-lane pattern (Scalar / Contig / BlockX) is unchanged. Pass the
+  // operand state straight through. Without this, the 2-D gather chain
+  //   arange -> convert_layout -> expand_dims -> broadcast -> ...
+  // breaks at the very first convert_layout (falls to VectorOther), which then
+  // poisons every downstream add/mul and forces gm2lm offsetState = Unknown
+  // (per-lane scalar gather, no SIMD / no block DMA).
+  if (isa<triton::xpu::ConvertLayoutOp>(op)) {
+    setResult(0, operands[0]->getValue());
+    return success();
+  }
+
+  // tt.expand_dims : inserts a unit-size dimension. In a row-major flattened
+  // view this does NOT change the data pattern along the real (non-unit) axis:
+  // a Contig(stride=1) stays Contig, a Scalar stays Scalar, a BlockX stays
+  // BlockX with the same rowLen. The inserted axis has extent 1 so it carries
+  // no stride. Pass through unchanged.
+  if (isa<triton::ExpandDimsOp>(op)) {
+    setResult(0, operands[0]->getValue());
+    return success();
+  }
+
+  // triton_xpu.broadcast / tt.broadcast : replicate a size-1 dimension up to
+  // the result extent. This is the ONE place that actually changes the
+  // per-lane pattern, so it needs shape-aware handling. We only reason about
+  // the rank-2 (row, col) case that the 2-D codegen produces; anything else is
+  // conservatively `other()`.
+  //
+  // Layout convention here (matches the 2-D kernel): axis 0 = outer/row, axis 1
+  // = inner/col (contiguous). Let (outerS,innerS) be the source extents and
+  // (outerR,innerR) the result extents. Broadcast means exactly one axis grows
+  // from 1 to N while the other matches.
+  //
+  //   * single element [1,1] -> [1,N]: one value replicated across the whole
+  //     block => fully uniform => Scalar. (Returning Scalar, NOT BlockScalar,
+  //     is important: a later `arange + this` becomes Contig+Scalar -> Contig,
+  //     which markContinuous turns into a clean block DMA. BlockScalar would
+  //     have no Contig+BlockScalar combineAdd rule and degrade to other().)
+  //
+  //   * INNER broadcast [K,1] -> [K,innerR]: each row holds one value repeated
+  //     across innerR columns => uniform within each innerR-lane block =>
+  //     BlockScalar(rowLen = innerR). This is the per-row scale/base case.
+  //
+  //   * OUTER broadcast [1,innerR] -> [outerR,innerR]: one row (the inner
+  //     pattern) replicated down every row. The inner pattern restarts at each
+  //     row boundary:
+  //       - Contig(stride=1)   -> BlockContig(rowLen = innerR, stride 1): each
+  //         row is a stride-1 run that restarts => textbook contiguous block.
+  //       - BlockContig(s==1)  -> passthrough (already block-structured).
+  //       - BlockScalar        -> passthrough.
+  //       - otherwise          -> other().
+  //     fromLoad is left false: this block structure is derived purely from
+  //     arithmetic on arange (NOT a data-dependent row base from a load), so we
+  //     must NOT claim it as a genuine runtime gather. getBlockContigRowLen in
+  //     the pass only accepts !blockFromLoad in the aggressive run, and still
+  //     guards blockStrideKnown && blockStride!=rowLen; here blockStride is 0
+  //     (unknown stays false) so cat-strided-copy style patterns are
+  //     unaffected.
+  if (isa<triton::xpu::BroadcastOp, triton::BroadcastOp>(op)) {
+    State s = operands[0]->getValue();
+    if (s.isUnknown()) {
+      setResult(0, State::unknown());
+      return success();
+    }
+    if (s.isScalar()) {
+      setResult(0, State::scalar(s.baseAlign));
+      return success();
+    }
+    auto srcTy = dyn_cast<RankedTensorType>(op->getOperand(0).getType());
+    auto resTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!srcTy || !resTy || srcTy.getRank() != 2 || resTy.getRank() != 2) {
+      setResult(0, State::other());
+      return success();
+    }
+    // The axis-0 = outer / axis-1 = inner(contiguous) reasoning below is only
+    // valid for the row-major layout where axis 1 is the fastest-changing axis,
+    // i.e. ClusterLayoutAttr order == [1, 0]. Some 2-D layouts (e.g. the
+    // reduce2d kernels) use order == [0, 1], where axis 0 is contiguous; there
+    // the INNER/OUTER roles invert and this classification would be "fast but
+    // wrong". When the result carries a cluster encoding whose order is not the
+    // row-major [1, 0], fall back conservatively to other() (the pre-existing
+    // Unknown/per-lane path — slow but correct). Tensors with no cluster
+    // encoding (the pure-logical, pre-layout case) keep the C-order default.
+    if (auto resEnc =
+            dyn_cast_or_null<ClusterLayoutAttr>(resTy.getEncoding())) {
+      ArrayRef<unsigned> order = resEnc.getOrder();
+      if (order.size() != 2 || order[0] != 1 || order[1] != 0) {
+        setResult(0, State::other());
+        return success();
+      }
+    }
+    int64_t outerS = srcTy.getShape()[0], innerS = srcTy.getShape()[1];
+    int64_t outerR = resTy.getShape()[0], innerR = resTy.getShape()[1];
+    if (innerS == 1 && outerS == 1) {
+      // single element replicated everywhere -> fully uniform
+      setResult(0, State::scalar(s.baseAlign));
+    } else if (innerS == 1 && innerR > 1 && outerS == outerR) {
+      // INNER broadcast: one value per row, repeated across the row
+      setResult(0, State::blockScalar(innerR, s.baseAlign, 0, false,
+                                      s.blockFromLoad));
+    } else if (outerS == 1 && outerR > 1 && innerS == innerR) {
+      // OUTER broadcast: the inner pattern restarts at every row
+      if (s.isContig() && s.stride == 1) {
+        setResult(0, State::blockContig(innerR, s.baseAlign, 0, false, false));
+      } else if (s.isBlockContig() && s.stride == 1) {
+        setResult(0, State::blockContig(s.rowLen, s.baseAlign, s.blockStride,
+                                        s.blockStrideKnown, s.blockFromLoad));
+      } else if (s.isBlockScalar()) {
+        setResult(0, State::blockScalar(s.rowLen, s.baseAlign, s.blockStride,
+                                        s.blockStrideKnown, s.blockFromLoad));
+      } else {
+        setResult(0, State::other());
+      }
+    } else {
+      setResult(0, State::other());
+    }
+    return success();
+  }
+
   // arith.addi / arith.subi.
   if (isa<arith::AddIOp, arith::SubIOp>(op)) {
     State a = operands[0]->getValue();
@@ -538,14 +658,28 @@ LogicalResult ScalarAnalysis::visitOperation(
     return success();
   }
 
-  // arith.select : if both branches share the same lattice kind, the
-  // selected value retains that kind (with merged alignments). Otherwise
-  // degrade conservatively. Note: this assumes the condition itself does
-  // not need to be lane-uniform — we only care about the value lattice.
+  // arith.select : keep the arms' common lattice kind only when every lane
+  // picks the same arm, i.e. the condition is lane-uniform.
+  //
+  // Why: a lane-varying condition interleaves the two arms, and two
+  // VectorContig(stride=1) arms with *different* bases do not form one
+  // contiguous run. `join` cannot see that — it merges kinds and
+  // alignments, not bases — so the wrap idiom
+  // `tl.where(off < 0, off + W, off)` used to come out as
+  // VectorContig(stride=1); the pass then stamped the gm2lm
+  // `offsetState = Continuous` and the DMA copied one straight window per
+  // core, silently ignoring the wrap. The same hole let a select between two
+  // different Scalars stay Scalar.
   if (auto sel = dyn_cast<arith::SelectOp>(op)) {
+    State cond = operands[0]->getValue();
     State t = operands[1]->getValue();
     State f = operands[2]->getValue();
-    setResult(0, State::join(t, f));
+    // Unknown is bottom (not resolved yet); stay optimistic and let the
+    // solver revisit once the condition is classified.
+    bool laneUniformPick = cond.isScalar() || cond.isUnknown() ||
+                           sel.getTrueValue() == sel.getFalseValue();
+    setResult(0, laneUniformPick ? State::join(t, f)
+                                 : defaultFor(op->getResult(0)));
     return success();
   }
 

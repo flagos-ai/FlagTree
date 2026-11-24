@@ -16,6 +16,381 @@ namespace xpu {
 #define GEN_PASS_DEF_TRITONXPUMASK
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h.inc"
 
+/// Whether `bodyOp` is a reduce that yields values only, with no companion
+/// index result.
+///
+/// Why: widening lets a fully-masked core contribute `other` instead of the
+/// reduce identity, which is sound only because `other` is chosen neutral for
+/// the combine (0 for a sum, -inf for a max). An index-carrying reduce --
+/// argmax / argmin, two results -- runs a second lane through the same combine,
+/// and an index has no neutral element: on a tie the index of the dead core
+/// wins the comparison and is written out.
+///
+/// How: count results, not operands -- xpu::ReduceOp carries the tile loop
+/// induction variable as a trailing operand, so even a single-value reduce
+/// reports two operands.
+static bool isValueOnlyReduce(Operation *bodyOp) {
+  auto reduceOp = dyn_cast<triton::xpu::ReduceOp>(bodyOp);
+  return reduceOp && reduceOp.getNumResults() == 1;
+}
+
+/// Whether `reduceOp` combines with addition.
+///
+/// Why: widening runs a fully-masked core through the reduce, where it adds the
+/// `other` this pass selects in. That is sound only when `other` is the combine
+/// identity -- true for add (0), false for max / min / prod (-inf / +inf / 1),
+/// where the 0 a dead core adds would override an all-negative max.
+static bool isAdditiveCombine(triton::xpu::ReduceOp reduceOp) {
+  Region &combine = reduceOp.getCombineOp();
+  if (combine.empty())
+    return false;
+  Operation *terminator = combine.front().getTerminator();
+  if (terminator->getNumOperands() != 1)
+    return false;
+  Operation *def = terminator->getOperand(0).getDefiningOp();
+  return isa_and_nonnull<arith::AddFOp, arith::AddIOp>(def);
+}
+
+/// Whether every value-only reduce in `bodyOps` combines additively.
+///
+/// Why: the widened guard runs the whole region, so one non-additive reduce is
+/// enough to make a dead core contribution wrong.
+static bool hasOnlyAdditiveValueReduces(ArrayRef<Operation *> bodyOps) {
+  for (Operation *bodyOp : bodyOps) {
+    if (!isValueOnlyReduce(bodyOp))
+      continue;
+    if (!isAdditiveCombine(cast<triton::xpu::ReduceOp>(bodyOp)))
+      return false;
+  }
+  return true;
+}
+
+/// Whether the per-core tail guard around `bodyOps` may be widened to run on
+/// all cores.
+///
+/// Why: a value reduce needs every core to execute, so the cores whose lanes
+/// are all masked out still contribute `other` (the select this pass inserts)
+/// instead of the reduce identity -- otherwise a masked `tl.load(..., other=C)`
+/// feeding tl.sum silently drops the masked lanes
+/// (test_masked_reduce_other_dropped). Widening is only safe when a
+/// fully-masked core can run without touching memory, which the gm2lm length
+/// clamp `readLen = smin(smax(len, 0), bufLen)` arranges -- but that clamp
+/// reads one len per core along the last dim, so it only expresses a mask that
+/// varies along the last dim. Rank 1 is the shape where the mask dim and the
+/// len dim coincide; a rank-2 mask would let a trailing core read out of bounds
+/// (sglang eagle_verify status 700).
+///
+/// How:
+///   - decline unless the region holds a value-only reduce, so a plain masked
+///     load/store keeps its per-core guard and an argmax/argmin keeps it too
+///     (see isValueOnlyReduce);
+///   - decline unless every such reduce combines additively, so the `other` a
+///     dead core contributes is the combine identity (see isAdditiveCombine);
+///   - decline unless the mask is a rank-1 tensor.
+///
+/// NOTE: this is layered on top of upstream's KTC-8071 tail-guard decision --
+/// it only changes the guard condition for the value-only rank-1 reduce case;
+/// every other case keeps upstream's extract(mask, 0) / bail-out behaviour.
+static bool canWidenTailGuardToAllCores(ArrayRef<Operation *> bodyOps,
+                                        Value mask) {
+  if (!llvm::any_of(bodyOps, isValueOnlyReduce))
+    return false;
+  // An index-carrying reduce (argmax / argmin: two results) has no neutral
+  // index. Widening runs a fully-masked core through the same combine, and on
+  // a tie its index wins -- even when additive value reduces share the body.
+  // Decline the mixed body so the index reduce keeps its per-core guard.
+  if (llvm::any_of(bodyOps, [](Operation *op) {
+        auto r = dyn_cast<triton::xpu::ReduceOp>(op);
+        return r && r.getNumResults() != 1;
+      }))
+    return false;
+  if (!hasOnlyAdditiveValueReduces(bodyOps))
+    return false;
+  auto maskTy = dyn_cast<RankedTensorType>(mask.getType());
+  return maskTy && maskTy.getRank() == 1;
+}
+
+namespace {
+// Rewriting `lhs < rhs` into the suffix length `rhs - lhs` is only sound when
+// `lhs` advances by exactly one per lane (i.e. the predicate is "the first
+// rhs-lhs lanes are on"). For anything else the length is unrelated to the
+// predicate and the mask silently stops being applied.
+//
+// Only reject the cases we can positively prove non-affine (a lane-dependent
+// rem/div/bit-op on the index), so shapes that work today keep their block
+// DMA; everything unproven keeps the historical behaviour.
+//
+// Rank and layout changes are looked through. `expand_dims(remsi(r, N)) < lim`
+// is the same predicate as `remsi(r, N) < lim`, only in 2D; not seeing through
+// the rank change would leave the folder turning it into a length again and
+// drop the mask exactly the way this pass exists to prevent.
+//
+// A modulo whose period is a compile-time multiple of the per-core tile is
+// exempted by `coreAlignedPeriodKeepsFoldSound`: the wrap boundary cannot fall
+// inside a core there, so the fold is still exact and the block DMA survives.
+static bool isRankOrLayoutOnly(Operation *op) {
+  return isa<triton::ExpandDimsOp, triton::SplatOp, triton::BroadcastOp,
+             triton::xpu::BroadcastOp, triton::xpu::ConvertLayoutOp>(op);
+}
+
+// Memoised so a subexpression shared by several paths is walked once; without
+// it the recursion is exponential in the depth of the common subexpression.
+static bool isProvenNonAffineImpl(Value v, llvm::DenseMap<Value, bool> &memo) {
+  auto cached = memo.find(v);
+  if (cached != memo.end())
+    return cached->second;
+
+  bool result = false;
+  if (Operation *defOp = v.getDefiningOp()) {
+    if (isa<mlir::arith::RemSIOp, mlir::arith::RemUIOp, mlir::arith::DivSIOp,
+            mlir::arith::DivUIOp, mlir::arith::AndIOp, mlir::arith::OrIOp,
+            mlir::arith::XOrIOp, mlir::arith::ShLIOp, mlir::arith::ShRUIOp,
+            mlir::arith::ShRSIOp>(defOp)) {
+      result = true;
+    } else if (isRankOrLayoutOnly(defOp)) {
+      result = isProvenNonAffineImpl(defOp->getOperand(0), memo);
+    } else if (isa<mlir::arith::AddIOp, mlir::arith::MulIOp,
+                   mlir::arith::SubIOp, mlir::arith::ExtSIOp,
+                   mlir::arith::ExtUIOp, mlir::arith::TruncIOp,
+                   mlir::arith::IndexCastOp>(defOp)) {
+      result = llvm::any_of(defOp->getOperands(), [&](Value operand) {
+        return isProvenNonAffineImpl(operand, memo);
+      });
+    }
+  }
+  memo[v] = result;
+  return result;
+}
+
+bool isProvenNonAffine(Value v) {
+  llvm::DenseMap<Value, bool> memo;
+  return isProvenNonAffineImpl(v, memo);
+}
+
+// The integer constant behind `v`, looking through the `tt.splat` a scalar
+// constant (or a kernel argument folded to one) gets wrapped in.
+static bool constantIntSplat(Value v, int64_t &out) {
+  if (auto splat = v.getDefiningOp<triton::SplatOp>())
+    v = splat.getSrc();
+  auto constant = v.getDefiningOp<mlir::arith::ConstantOp>();
+  if (!constant)
+    return false;
+  Attribute value = constant.getValue();
+  if (auto intAttr = dyn_cast<IntegerAttr>(value)) {
+    out = intAttr.getInt();
+    return true;
+  }
+  if (auto splatAttr = dyn_cast<SplatElementsAttr>(value)) {
+    if (auto intAttr =
+            dyn_cast<IntegerAttr>(splatAttr.getSplatValue<Attribute>())) {
+      out = intAttr.getInt();
+      return true;
+    }
+  }
+  return false;
+}
+
+// Whether `v` advances by exactly one per lane inside a core, i.e. whether
+// `v[lane] == v[0] + lane` for the lanes a core owns. Only the forms Triton
+// emits around `tl.arange` are seen through; anything else answers "cannot
+// tell", which keeps the fold off just like the affine analysis does.
+//
+// A constant offset is only looked through when it is a multiple of the
+// per-core tile. The wrap boundary of `(lane + C) % period` sits at
+// `lane = -C (mod sizePerCore)`, so an unaligned `C` puts one wrap inside
+// *every* core and the kept lanes stop being a prefix; `rhs - lhs` is then no
+// longer their count. For the same reason `C - lane` is rejected outright --
+// it counts down, not up.
+bool isLaneStrideOne(Value v, int64_t laneAlignment) {
+  Operation *defOp = v.getDefiningOp();
+  if (!defOp)
+    return false;
+  if (auto range = dyn_cast<triton::MakeRangeOp>(defOp))
+    return range.getStartAttr().getInt() % laneAlignment == 0;
+  if (auto range = dyn_cast<triton::xpu::MakeRangeOp>(defOp))
+    return range.getStartAttr().getInt() % laneAlignment == 0;
+  if (isa<mlir::arith::ExtSIOp, mlir::arith::ExtUIOp, mlir::arith::TruncIOp,
+          mlir::arith::IndexCastOp>(defOp))
+    return isLaneStrideOne(defOp->getOperand(0), laneAlignment);
+  if (auto subOp = dyn_cast<mlir::arith::SubIOp>(defOp)) {
+    int64_t offset;
+    if (constantIntSplat(subOp.getRhs(), offset))
+      return offset % laneAlignment == 0 &&
+             isLaneStrideOne(subOp.getLhs(), laneAlignment);
+    return false;
+  }
+  if (auto addOp = dyn_cast<mlir::arith::AddIOp>(defOp)) {
+    int64_t offset;
+    if (constantIntSplat(addOp.getRhs(), offset))
+      return offset % laneAlignment == 0 &&
+             isLaneStrideOne(addOp.getLhs(), laneAlignment);
+    if (constantIntSplat(addOp.getLhs(), offset))
+      return offset % laneAlignment == 0 &&
+             isLaneStrideOne(addOp.getRhs(), laneAlignment);
+    return false;
+  }
+  return false;
+}
+
+// `offs % period` is flagged non-affine by `isProvenNonAffine`, but the fold is
+// still sound for it whenever the modulo boundary never falls inside a core.
+// The tile is strip-mined, so a core owns the lanes `base .. base +
+// sizePerCore - 1` with `base = (core_id + loopIdx * core_num) * sizePerCore`;
+// a `period` that is a multiple of `sizePerCore` therefore keeps every lane of
+// a core on the same run, `lhs` really does advance by one within the run, and
+// `rhs - lhs` is exactly the number of kept lanes -- which lets the block DMA
+// survive instead of degrading to one DMA per lane.
+//
+// Only the shape `cmpi(remsi(idx, period), lim)` is recognised. A modulo hidden
+// behind `expand_dims`/`broadcast` is still rejected, which costs the block DMA
+// but keeps the mask; the rank-changed forms have no length operand that
+// describes them per row anyway.
+bool coreAlignedPeriodKeepsFoldSound(arith::CmpIOp cmpiOp) {
+  auto tensorTy = dyn_cast<RankedTensorType>(cmpiOp.getLhs().getType());
+  if (!tensorTy)
+    return false;
+  auto layout =
+      dyn_cast_or_null<triton::xpu::ClusterLayoutAttr>(tensorTy.getEncoding());
+  if (!layout)
+    return false;
+  ArrayRef<unsigned> sizePerCore = layout.getSizePerCore();
+  if (sizePerCore.empty() || sizePerCore.back() == 0)
+    return false;
+
+  Value lhs = cmpiOp.getLhs();
+  Operation *defOp = lhs.getDefiningOp();
+  if (!isa_and_nonnull<mlir::arith::RemSIOp, mlir::arith::RemUIOp>(defOp))
+    return false;
+  int64_t period = 0;
+  if (!constantIntSplat(defOp->getOperand(1), period) || period <= 0)
+    return false;
+  if (period % sizePerCore.back() != 0)
+    return false;
+  // `(2 * i) % period` wraps on the same boundaries but no longer advances by
+  // one per lane, so the dividend has to be the lane index itself.
+  return isLaneStrideOne(defOp->getOperand(0), sizePerCore.back());
+}
+
+// Whether `rhs - lhs` may be used as the DMA length at all.
+bool lengthFoldIsSound(arith::CmpIOp cmpiOp) {
+  // Every case the affine analysis does not flag keeps the historical fold.
+  if (!isProvenNonAffine(cmpiOp.getLhs()))
+    return true;
+  return coreAlignedPeriodKeepsFoldSound(cmpiOp);
+}
+
+// The tailing `scf.if` skips the whole tile when lane 0 sits outside the mask.
+// That is only *wrong* when the masked-off lanes still carry a value that has
+// to reach the global memory: with an explicit `other` fill the load defines
+// one, and a tailing store that is not predicated itself then has to write it
+// (a fused constant_pad otherwise keeps its uninitialised LM). Without `other`
+// the masked-off lanes hold nothing, and skipping the tile is the historical
+// -- and load bearing -- behaviour: it is what keeps an out-of-range wave from
+// running the rest of the body, e.g. `mask = pid < bs` on a per-core tile,
+// where the tail is `tl.store(out + pid, v)` with no mask of its own. Dropping
+// the guard there makes every wave past `bs` execute that store and write out
+// of bounds.
+bool tailIfIsSafe(Operation *cmpiOp, Operation *terminator) {
+  for (Operation *cur = cmpiOp->getNextNode(); cur && cur != terminator;
+       cur = cur->getNextNode()) {
+    if (auto lm2gm = dyn_cast<triton::xpu::LM2GMOp>(cur)) {
+      if (!lm2gm.getLen())
+        return false;
+    } else if (auto sm2gm = dyn_cast<triton::xpu::SM2GMOp>(cur)) {
+      if (!sm2gm.getLen())
+        return false;
+    } else if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(cur)) {
+      if (!storeOp.getMask())
+        return false;
+    }
+  }
+  return true;
+}
+
+// Whether every core owns at least one lane of the tile the predicate masks.
+// The lowering hands core `c` the contiguous run starting at
+// `c * elemsPerThread` with `elemsPerThread = ceil(shape / cores)` (see
+// MakeRangeOpToLLVM and ClusterLayoutAttr::getElemsPerThread), so the trailing
+// cores fall off the end whenever the shape is not a multiple of the core
+// count. Those waves hold no element at all, yet they are still addressed as
+// `base + core_id`: running them would read a lane of the tile they do not take
+// part in (and store it back), so the guard has to stay even when the tail
+// writes per-lane addresses. Comparing the lane count with the core count is
+// not enough -- it only holds when the run per core is a single element.
+bool tileCoversEveryCore(arith::CmpIOp cmpiOp) {
+  auto tensorTy = dyn_cast<RankedTensorType>(cmpiOp.getResult().getType());
+  if (!tensorTy)
+    return false;
+  auto layout =
+      dyn_cast_or_null<triton::xpu::ClusterLayoutAttr>(tensorTy.getEncoding());
+  if (!layout)
+    return false;
+  ArrayRef<int64_t> shape = tensorTy.getShape();
+  ArrayRef<unsigned> coresPerGroup = layout.getCoresPerGroup();
+  ArrayRef<unsigned> groupsPerCluster = layout.getGroupsPerCluster();
+  if (coresPerGroup.size() != shape.size() ||
+      groupsPerCluster.size() != shape.size())
+    return false;
+  SmallVector<unsigned> elemsPerThread = layout.getElemsPerThread(shape);
+  for (unsigned d = 0; d < shape.size(); ++d) {
+    int64_t cores = (int64_t)coresPerGroup[d] * (int64_t)groupsPerCluster[d];
+    if ((cores - 1) * (int64_t)elemsPerThread[d] >= shape[d])
+      return false;
+  }
+  return true;
+}
+
+// Every unpredicated store that dropping the guard would expose must address
+// global memory per lane (a tile of pointers, `tl.store(out + offs, v)`): then
+// the extra waves write exactly the lanes they own, which is what carries the
+// `other` fill of the masked-off lanes to global memory.
+//
+// A store behind a scalar pointer is different: `tl.store(out, reduced)` (the
+// argmax/argmin pattern) addresses the same location from every core, so the
+// guard is the only thing that keeps the waves holding no lane from clobbering
+// it -- and the loads feeding those waves would be issued from lane-0 addresses
+// of a tile they do not take part in, reading out of bounds. Keep the guard.
+bool tailWritesTileLanes(Operation *cmpiOp, Operation *terminator) {
+  for (Operation *cur = cmpiOp->getNextNode(); cur && cur != terminator;
+       cur = cur->getNextNode()) {
+    Value ptr;
+    if (auto lm2gm = dyn_cast<triton::xpu::LM2GMOp>(cur)) {
+      if (lm2gm.getLen())
+        continue;
+      ptr = lm2gm.getPtr();
+    } else if (auto sm2gm = dyn_cast<triton::xpu::SM2GMOp>(cur)) {
+      if (sm2gm.getLen())
+        continue;
+      ptr = sm2gm.getPtr();
+    } else if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(cur)) {
+      if (storeOp.getMask())
+        continue;
+      ptr = storeOp.getPtr();
+    } else {
+      continue;
+    }
+    if (!isa<RankedTensorType>(ptr.getType()))
+      return false;
+  }
+  return true;
+}
+
+// Whether the load(s) this predicate masks define a value for the masked-off
+// lanes, i.e. were given an `other` operand.
+bool maskUsersDefineOtherFill(const llvm::SetVector<Operation *> &users) {
+  for (Operation *user : users) {
+    if (auto gm2lm = dyn_cast<triton::xpu::GM2LMOp>(user)) {
+      if (gm2lm.getOther())
+        return true;
+    } else if (auto gm2lm = dyn_cast<triton::xpu::GM2LMMaskOp>(user)) {
+      if (gm2lm.getOther())
+        return true;
+    }
+  }
+  return false;
+}
+} // namespace
+
 struct TritonXPUMaskPass : public impl::TritonXPUMaskBase<TritonXPUMaskPass> {
 
 public:
@@ -565,30 +940,36 @@ public:
           }
           if (mask) {
             if (mask == cmpiOp.getResult()) {
-              cmpiOps.insert(cmpiOp);
-              maskUsers.insert(user);
+              if (lengthFoldIsSound(cmpiOp)) {
+                cmpiOps.insert(cmpiOp);
+                maskUsers.insert(user);
+              }
             }
             if (auto andIOp =
                     dyn_cast<mlir::arith::AndIOp>(mask.getDefiningOp())) {
               if (isFindUserOp(cmpiOp, andIOp.getLhs().getDefiningOp())) {
                 if (auto cmpiOpDef =
                         findDefOpBwd<triton::ExpandDimsOp>(andIOp.getLhs())) {
-                  cmpiOps.insert(cmpiOp);
-                  auto expandDimOp = cast<triton::ExpandDimsOp>(cmpiOpDef);
-                  //  expand axis = 0 means inner dim
-                  if (expandDimOp.getAxis() == 0) {
-                    maskUsers.insert(user);
+                  if (lengthFoldIsSound(cmpiOp)) {
+                    cmpiOps.insert(cmpiOp);
+                    auto expandDimOp = cast<triton::ExpandDimsOp>(cmpiOpDef);
+                    //  expand axis = 0 means inner dim
+                    if (expandDimOp.getAxis() == 0) {
+                      maskUsers.insert(user);
+                    }
                   }
                 }
               } else if (isFindUserOp(cmpiOp,
                                       andIOp.getRhs().getDefiningOp())) {
                 if (auto cmpiOpDef =
                         findDefOpBwd<triton::ExpandDimsOp>(andIOp.getRhs())) {
-                  cmpiOps.insert(cmpiOp);
-                  auto expandDimOp = cast<triton::ExpandDimsOp>(cmpiOpDef);
-                  //  expand axis = 0 means inner dim
-                  if (expandDimOp.getAxis() == 0) {
-                    maskUsers.insert(user);
+                  if (lengthFoldIsSound(cmpiOp)) {
+                    cmpiOps.insert(cmpiOp);
+                    auto expandDimOp = cast<triton::ExpandDimsOp>(cmpiOpDef);
+                    //  expand axis = 0 means inner dim
+                    if (expandDimOp.getAxis() == 0) {
+                      maskUsers.insert(user);
+                    }
                   }
                 }
               }
@@ -692,8 +1073,14 @@ public:
       // Step 3. Create scf::IfOp to deal with tailing
       cmpiOps = mlir::topologicalSort(cmpiOps);
       llvm::SmallVector<Operation *> sortedCmpiOps;
+      // Recorded before Step 2 rewrote the `len` operands, so that a cmpiOp
+      // cloned into an earlier guard still knows whether its load had an
+      // `other` fill.
+      llvm::SmallVector<bool> sortedHasOtherFill;
       for (auto it = cmpiOps.begin(); it != cmpiOps.end(); ++it) {
         sortedCmpiOps.emplace_back(*it);
+        sortedHasOtherFill.emplace_back(
+            maskUsersDefineOtherFill(maskUsersMap.lookup(*it)));
       }
       llvm::SmallVector<llvm::SetVector<Operation *>> ifBlockTrees;
       for (int i = 0; i < sortedCmpiOps.size(); ++i) {
@@ -716,14 +1103,34 @@ public:
           }
         }
         auto sortedOpsToMoveAndErase = sortOpTreeBwd(opsToMoveAndErase);
+        // Bail out instead of wrapping the tail only when the masked-off lanes
+        // carry an `other` fill that a tailing unpredicated store has to write
+        // out, that store addresses global memory per lane, and the tile covers
+        // every core; otherwise keep the historical tile-skipping guard.
+        if (!tailIfIsSafe(op, terminator) && sortedHasOtherFill[i] &&
+            tailWritesTileLanes(op, terminator) &&
+            tileCoversEveryCore(cast<arith::CmpIOp>(op)))
+          continue;
         ifBlockTrees.emplace_back(sortedOpsToMoveAndErase);
         // Create scf::IfOp
         builder.setInsertionPoint(terminator);
         mlir::scf::IfOp newIfOp;
         if (auto cmpiOp = dyn_cast<mlir::arith::CmpIOp>(op)) {
-          auto cond = builder.create<triton::xpu::ExtractOp>(
-              loc, builder.getI1Type(), builder.getI32IntegerAttr(0),
-              cmpiOp.getResult());
+          // The per-core tail guard skips every core whose lane-0 mask bit is
+          // off. A value-only reduce instead needs those cores to run so their
+          // `other`-filled lanes still reach the accumulation; widen the guard
+          // to a constant true for that case only. argmax/argmin (index reduce)
+          // and rank-2 masks are declined. See canWidenTailGuardToAllCores.
+          Value cond;
+          if (canWidenTailGuardToAllCores(sortedOpsToMoveAndErase.getArrayRef(),
+                                          cmpiOp.getResult()))
+            cond = builder.create<mlir::arith::ConstantOp>(
+                loc, builder.getI1Type(),
+                builder.getIntegerAttr(builder.getI1Type(), 1));
+          else
+            cond = builder.create<triton::xpu::ExtractOp>(
+                loc, builder.getI1Type(), builder.getI32IntegerAttr(0),
+                cmpiOp.getResult());
           if (auto yieldOp = dyn_cast<scf::YieldOp>(terminator)) {
             if (yieldOp.getResults().size() > 0) {
               newIfOp = builder.create<mlir::scf::IfOp>(
