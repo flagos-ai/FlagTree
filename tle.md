@@ -107,23 +107,27 @@ final NVIDIA backend contract. The `CommonIRToTTGIR` pass must eliminate all
 `tile.*`, `!tile.buf`, and temporary buffer-to-memdesc bridges before the
 remaining TTGIR pipeline runs.
 
-The path is selected at build time and is disabled by default. It currently
-supports only the default NVIDIA backend. Place a compatible checkout of the
-official [FLIR](https://github.com/flagos-ai/flir) `main` branch at
-`third_party/flir`, then build FlagTree with:
+By default the `enflame` / `hcu` / `iluvatar` / `metax` / `mthreads` builds
+automatically download [FLIR](https://github.com/flagos-ai/flir) into
+`third_party/flir` and compile CommonIR support. The `ascend` and `tsingmicro` builds also
+use FLIR.
+The NVIDIA and AMD builds do not compile CommonIR by default; to enable it on
+NVIDIA, opt in at install time:
 
 ```bash
-git clone https://github.com/flagos-ai/flir.git third_party/flir
 FLAGTREE_COMMON_IR=1 python -m pip install -e . --no-build-isolation
+python test/CommonIR/native_matmul_gpu.py
 ```
 
-The environment variable `FLAGTREE_COMMON_IR` sets the internal CMake variable
-`FLAGTREE_COMMON_IR_ENABLED`. When enabled, the C++ build defines
-`__FLAGTREE_COMMON_IR__`, exposes one capability query to Python, and registers
-the CommonIR dialect and conversion pass only for this build. Do not set
-`FLAGTREE_BACKEND` at the same time. Rebuild FlagTree when
-switching between the native and CommonIR paths; this is not a per-kernel
-runtime option.
+- **Build time**: `FLAGTREE_COMMON_IR=0` skips compiling CommonIR (already the
+  default for NVIDIA / AMD).
+- **Runtime**: a build that includes CommonIR support uses the **CommonIR path by
+  default**. Set `FLAGTREE_COMMON_IR=0` before starting a process to fall back to
+  the native TTGIR path. A build without CommonIR support always uses the native
+  path and this variable has no effect.
+
+> Note: NVIDIA's CommonIR adaptation is still in progress; it is currently not
+> enabled by default and a follow-up PR will restore it.
 
 Supported GPU buffer forms are:
 
