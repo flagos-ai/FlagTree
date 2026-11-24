@@ -93,6 +93,17 @@ def _full_view_2d_copy_kernel(x_ptr, out_ptr, stride_xm, stride_xn, stride_om, s
 
 
 @triton.jit
+def _full_view_2d_async_copy_kernel(x_ptr, out_ptr, ROWS: tl.constexpr, COLS: tl.constexpr):
+    smem = tle.gpu.alloc([ROWS, COLS], dtype=tl.float32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
+    rows = tl.arange(0, ROWS)[:, None]
+    cols = tl.arange(0, COLS)[None, :]
+    tle.gpu.copy(x_ptr + rows * COLS + cols, smem, [ROWS, COLS], is_async=True)
+    tle.gpu.async_wait_group(0)
+    vals = tl.load(tle.gpu.local_ptr(smem))
+    tl.store(out_ptr + rows * COLS + cols, vals)
+
+
+@triton.jit
 def _local_load_none_kernel(out_ptr, BLOCK: tl.constexpr):
     idx = tl.arange(0, BLOCK)
     smem_tile = tle.gpu.alloc([BLOCK], dtype=tl.int32, layout=None, scope=tle.gpu.smem, nv_mma_shared_layout=False)
@@ -303,6 +314,21 @@ def test_local_pointer_none_full_view_2d_with_copy_compiles():
         constexprs={"ROWS": 16, "COLS": 32},
     )
     _full_pipeline(compiled)
+
+
+def test_async_copy_to_shared_compiles():
+    """tle.gpu.copy(..., is_async=True) stays an async copy down to the PPU
+    lowering: the conversion to TritonGPU has to legalize
+    ttg.async_copy_global_to_local, which the PPU pattern list declares."""
+    if not _ppu_sdk_available():
+        pytest.skip("PPU SDK not available")
+    compiled = _compile(
+        _full_view_2d_async_copy_kernel,
+        signature={"x_ptr": "*fp32", "out_ptr": "*fp32", "ROWS": "constexpr", "COLS": "constexpr"},
+        constexprs={"ROWS": 16, "COLS": 32},
+    )
+    _full_pipeline(compiled)
+    assert "ttg.async_copy_global_to_local" in compiled.asm["ttgir"]
 
 
 def test_local_pointer_none_load_rewrites_to_local_load():

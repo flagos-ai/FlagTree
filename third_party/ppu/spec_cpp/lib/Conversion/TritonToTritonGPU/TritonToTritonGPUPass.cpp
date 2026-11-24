@@ -641,6 +641,7 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
       GenericOpPattern<triton::gpu::LocalAllocOp>,
       GenericOpPattern<triton::gpu::LocalStoreOp>,
       GenericOpPattern<triton::gpu::LocalLoadOp>,
+      GenericOpPattern<triton::gpu::AsyncCopyGlobalToLocalOp>,
 #endif
       TritonExpandDimsPattern,
       TritonTransPattern,
