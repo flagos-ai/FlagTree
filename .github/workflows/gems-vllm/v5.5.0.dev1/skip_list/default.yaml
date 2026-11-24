@@ -1,0 +1,11 @@
+# Skip operators that cause GPU state corruption
+skip_operators:
+  #- scaled_dot_product_attention
+
+# Skip specific test functions
+skip_test_patterns:
+  #- test_scaled_dot_product_attention_legacy_backward
+
+# Skip entire test files
+skip_test_files:
+  #- test_scaled_dot_product_attention.py
