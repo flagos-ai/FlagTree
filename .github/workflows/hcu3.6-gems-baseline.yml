@@ -22,7 +22,7 @@ name: Hcu3.6-Gems-Baseline
 
 on:
   push:
-    branches: ["main", "triton_v3.6.x"]
+    branches: ["main", "triton_v3.6.x", "gems_vllm_hcu_v0.2.1.dev1"]
 
 permissions:
   contents: read
