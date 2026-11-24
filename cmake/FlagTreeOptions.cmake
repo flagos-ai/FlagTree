@@ -134,6 +134,11 @@ macro(flagtree_configure_options)
     set(FLAGTREE_TLE OFF)
     remove_definitions(-D__TLE__)
     list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
+    # The shared reorder pass judges a write by its memory effects here: the
+    # part of the analysis that needs no TLE dialect (SmemReadOrderCore.h).
+    add_definitions(-D__FLAGTREE_KEEP_SMEM_READ_ORDER__)
+    list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_KEEP_SMEM_READ_ORDER__)
+    set(FLAGTREE_KEEP_SMEM_READ_ORDER_ENABLED ON)
   elseif(FLAGTREE_BACKEND STREQUAL "sunrise")
     find_package(Python3 3.10 REQUIRED COMPONENTS Development.Module Interpreter)
     add_definitions(-D__FLAGTREE_KEEP_SMEM_READ_ORDER__)
