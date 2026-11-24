@@ -42,6 +42,10 @@ FLAGTREE_PYTHON_ROOT = "python"
 # TLE/RAW are excluded from ordinary Python specialization. Keep their
 # original XPU package root and build-time packaging behavior unchanged.
 XPU_TLE_ROOT = "third_party/xpu/python/triton/experimental/tle"
+# ``triton.ops`` is an XPU-only compatibility package, not a specialization of
+# a shared main-tree package. Keep it under the backend and select it only when
+# building an XPU wheel.
+XPU_OPS_ROOT = "third_party/xpu/python/triton/ops"
 # Package-level metadata that must **never** be staged into the tree.  It
 # travels *inside the tarball* (MIT: "shall be included in all copies") but it
 # describes the **package**, not the tree: the repository root already carries
@@ -118,7 +122,7 @@ def get_package_data_tools():
 
 def get_excluded_python_packages():
     # XPU's typed-raw-op TLE is an independent extension, not the shared TLE.
-    return ["triton.experimental.tle", "triton.experimental.tle.*"]
+    return ["triton.experimental.tle", "triton.experimental.tle.*", "triton.ops", "triton.ops.*"]
 
 
 def get_excluded_package_data():
@@ -133,17 +137,23 @@ def get_excluded_package_data():
 
 
 def get_python_packages():
-    # TLE/RAW are not spec modules. Select the original XPU TLE package at
-    # build time without redirecting triton or experimental.__path__.
-    for root, dirs, files in os.walk(XPU_TLE_ROOT):
-        dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__")
-        if "__init__.py" not in files:
-            continue
-        relative_dir = os.path.relpath(root, XPU_TLE_ROOT)
-        package = "triton.experimental.tle"
-        if relative_dir != ".":
-            package += "." + relative_dir.replace(os.sep, ".")
-        yield package, root
+    # TLE/RAW and the legacy operators are XPU-owned packages, not spec
+    # modules. Select them at build time without redirecting the shared Triton
+    # package tree to third_party/xpu/python.
+    package_roots = (
+        (XPU_TLE_ROOT, "triton.experimental.tle"),
+        (XPU_OPS_ROOT, "triton.ops"),
+    )
+    for source_root, package_root in package_roots:
+        for root, dirs, files in os.walk(source_root):
+            dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__")
+            if "__init__.py" not in files:
+                continue
+            relative_dir = os.path.relpath(root, source_root)
+            package = package_root
+            if relative_dir != ".":
+                package += "." + relative_dir.replace(os.sep, ".")
+            yield package, root
 
 
 def _patch_llvm_exports():
