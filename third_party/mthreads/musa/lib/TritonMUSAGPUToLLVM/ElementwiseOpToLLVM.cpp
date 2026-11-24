@@ -1,4 +1,5 @@
 #include "PatternTritonGPUOpToLLVM.h"
+#include "TritonMUSACommon/RlcAttrs.h"
 #include "TritonMUSAGPUToLLVM/TargetInfo.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -8,6 +9,8 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include <algorithm>
+#include <optional>
+#include <utility>
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -527,6 +530,42 @@ struct FDivOpConversion
   }
 };
 
+// RemoveLayoutConversions tags an i32 -> f32 conversion whose per-thread vector
+// width must survive lowering. Emit the whole group as one width-wide vector
+// cast. Return std::nullopt for an untagged op and an empty result (pattern
+// failure) when the tag does not fit the operands.
+template <typename CastOp, typename SourceOp>
+static std::optional<SmallVector<Value>>
+lowerWidthPreservingIntToFp(SourceOp op, const LLVMTypeConverter *typeConverter,
+                            ConversionPatternRewriter &rewriter, Type elemTy,
+                            MultipleOperandsRange operands, Location loc) {
+  auto widthAttr = op->template getAttrOfType<IntegerAttr>(
+      musa::kRlcPreserveIntToFpVectorWidthAttr);
+  if (!widthAttr)
+    return std::nullopt;
+
+  Type inElemTy = getElementType(op.getIn());
+  Type outElemTy = getElementType(op.getOut());
+  int64_t width = widthAttr.getInt();
+  if ((width != 2 && width != 4) || !inElemTy.isInteger(32) ||
+      !outElemTy.isF32() || operands.size() < width)
+    return SmallVector<Value>{};
+
+  TritonLLVMOpBuilder b(loc, rewriter);
+  Type inputVectorType = vec_ty(typeConverter->convertType(inElemTy), width);
+  Type outputVectorType = vec_ty(elemTy, width);
+  Value inputVector = b.undef(inputVectorType);
+  for (int64_t i = 0; i < width; ++i)
+    inputVector = b.insert_element(inputVectorType, inputVector, operands[i][0],
+                                   b.i32_val(i));
+  Value outputVector =
+      CastOp::create(rewriter, loc, outputVectorType, inputVector);
+  SmallVector<Value> outputs;
+  for (int64_t i = 0; i < width; ++i)
+    outputs.push_back(b.extract_element(elemTy, outputVector, b.i32_val(i)));
+  return outputs;
+}
+
 struct SIToFPOpConversion
     : ElementwiseOpConversionBase<arith::SIToFPOp, SIToFPOpConversion> {
   using Base = ElementwiseOpConversionBase<arith::SIToFPOp, SIToFPOpConversion>;
@@ -544,6 +583,10 @@ struct SIToFPOpConversion
                                    ConversionPatternRewriter &rewriter,
                                    Type elemTy, MultipleOperandsRange operands,
                                    Location loc) const {
+    if (auto preserved = lowerWidthPreservingIntToFp<LLVM::SIToFPOp>(
+            op, this->getTypeConverter(), rewriter, elemTy, operands, loc))
+      return std::move(*preserved);
+
     // Pre-PH1 cannot select a bare bf16 cvt; detour through f32 explicitly.
     Type outElemTy = getElementType(op.getOut());
     if (outElemTy.isBF16() && !nativeBf16Cvt) {
@@ -553,6 +596,24 @@ struct SIToFPOpConversion
           loc, rewriter, f32Val, RoundingMode::RTNE, nativeBf16Cvt)};
     }
     return {LLVM::SIToFPOp::create(rewriter, loc, elemTy, operands[0][0])};
+  }
+};
+
+struct UIToFPOpConversion
+    : ElementwiseOpConversionBase<arith::UIToFPOp, UIToFPOpConversion> {
+  using Base = ElementwiseOpConversionBase<arith::UIToFPOp, UIToFPOpConversion>;
+  using Base::Base;
+  using Adaptor = typename Base::OpAdaptor;
+
+  SmallVector<Value> createDestOps(arith::UIToFPOp op, OpAdaptor adaptor,
+                                   ConversionPatternRewriter &rewriter,
+                                   Type elemTy, MultipleOperandsRange operands,
+                                   Location loc) const {
+    if (auto preserved = lowerWidthPreservingIntToFp<LLVM::UIToFPOp>(
+            op, this->getTypeConverter(), rewriter, elemTy, operands, loc))
+      return std::move(*preserved);
+
+    return {LLVM::UIToFPOp::create(rewriter, loc, elemTy, operands[0][0])};
   }
 };
 
@@ -692,6 +753,8 @@ void mlir::triton::MUSA::populateElementwiseOpToLLVMPatterns(
                                    nativeBf16Cvt);
   patterns.add<SIToFPOpConversion>(typeConverter, axisInfoAnalysis, benefit,
                                    nativeBf16Cvt);
+  patterns.add<UIToFPOpConversion>(typeConverter, axisInfoAnalysis,
+                                   priorityBenefit);
   patterns.add<FpToFpOpConversion>(typeConverter, axisInfoAnalysis,
                                    enableFp8Burst2, benefit, nativeBf16Cvt);
   patterns.add<PreciseSqrtOpConversion>(typeConverter, axisInfoAnalysis,

@@ -676,6 +676,8 @@ class musa_knobs(base_knobs):
     replace_llir: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_LLIR")
     replace_mubin: env_opt_str = env_opt_str("TRITON_MUSA_REPLACE_MUBIN")
     libdevice_path: env_opt_str = env_opt_str("TRITON_MUSA_LIBDEVICE_PATH")
+    # Enable the complete MThreads RLC enhancement pipeline.
+    rlc_enhance: env_bool = env_bool("FLAGTREE_MUSA_RLC_ENHANCE", False)
     libprintf_path: env_opt_str = env_opt_str("TRITON_MUSA_LIBPRINTF_PATH")
 
 
