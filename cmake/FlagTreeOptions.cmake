@@ -148,7 +148,7 @@ endmacro()
 macro(flagtree_configure_flagprism)
   set(_flagprism_default OFF)
   # FlagPrism: enable the external tools for supported backends.
-  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax)$")
+  if(FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax|hcu)$")
     set(_flagprism_default ON)
   endif()
   option(TRITON_BUILD_FLAGPRISM
@@ -158,10 +158,10 @@ macro(flagtree_configure_flagprism)
   if(TRITON_BUILD_FLAGPRISM)
     # FlagPrism: allow the default NVIDIA build and supported named backends.
     if(FLAGTREE_BACKEND AND
-       NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax)$")
+       NOT FLAGTREE_BACKEND MATCHES "^(ascend|iluvatar|mthreads|enflame|metax|hcu)$")
       message(FATAL_ERROR
         "TRITON_BUILD_FLAGPRISM is only supported when "
-        "FLAGTREE_BACKEND is ascend, iluvatar, mthreads, enflame, or metax.")
+        "FLAGTREE_BACKEND is ascend, iluvatar, mthreads, enflame, metax, or hcu.")
     endif()
     if(TRITON_BUILD_PROTON)
       message(FATAL_ERROR
@@ -324,9 +324,18 @@ function(flagtree_add_distributed_plugin)
       ${PYTHON_DIST_SRC_PATH}/triton_distributed.cc
       ${PYTHON_DIST_SRC_PATH}/passes.cc
       ${PYTHON_DIST_SRC_PATH}/ir.cc)
+    add_dependencies(TritonDistributed LLVMIRIncGen
+      TritonConversionPassIncGen TritonDistributedConversionPassIncGen
+      TritonDistributedToLLVMConversionPassIncGen)
     target_link_libraries(
       TritonDistributed
       PRIVATE DistributedIR SIMTIR ProtonIR Python3::Module pybind11::headers)
+    if(TRITON_BUILD_FLAGPRISM)
+      target_include_directories(TritonDistributed PRIVATE
+        "${FLAGPRISM_SOURCE_DIR}/Profiler/Dialect/include"
+        "${FLAGPRISM_SOURCE_DIR}"
+        "${PROJECT_BINARY_DIR}/third_party/FlagPrism")
+    endif()
   endif()
 endfunction()
 
@@ -411,7 +420,11 @@ macro(flagtree_configure_python_plugins)
   # FlagPrism: its external component supplies ProtonIR and dialect registration.
   # if(FLAGTREE_BACKEND STREQUAL "hcu")
   if(TRITON_BUILD_FLAGPRISM)
-    # FlagPrism supplies the ProtonIR target and dialect registration.
+    # FlagPrism supplies ProtonIR; HCU still uses shared NVIDIA IR/lowering
+    # libraries in its compiler independently of the profiler implementation.
+    if(FLAGTREE_BACKEND STREQUAL "hcu")
+      add_subdirectory(third_party/nvidia)
+    endif()
   elseif(FLAGTREE_BACKEND STREQUAL "hcu")
     list(APPEND TRITON_PLUGIN_DIRS
       "${CMAKE_CURRENT_SOURCE_DIR}/third_party/hcu/proton")
@@ -634,6 +647,19 @@ macro(flagtree_configure_tools_and_tests)
         ${TRITON_CORE_SOURCE_DIR}/bin ${TRITON_CORE_BINARY_DIR}/bin)
       add_subdirectory(test)
     endif()
+  endif()
+
+  # HCU shares compiler headers across backend and plugin targets.
+  if(FLAGTREE_BACKEND STREQUAL "hcu" AND TRITON_BUILD_FLAGPRISM)
+    add_dependencies(TritonHCUAnalysis TritonHCUGPUAttrDefsIncGen)
+    add_dependencies(TritonDistributedToLLVM SIMTTableGen SIMTAttrDefsIncGen)
+    if(FLAGTREE_TLE)
+      add_dependencies(TleToLLVM NVGPUTableGen NVGPUAttrDefsIncGen)
+      add_dependencies(TritonTLETransforms TritonGPUTransformsIncGen)
+      add_dependencies(NVHopperTransforms TritonGPUTransformsIncGen
+        NVWSTableGen NVWSAttrDefsIncGen)
+    endif()
+    add_dependencies(TritonProton ProtonGPUTransformsIncGen)
   endif()
 
   # When PPU backend is built, the upstream TritonGPU transforms reference
