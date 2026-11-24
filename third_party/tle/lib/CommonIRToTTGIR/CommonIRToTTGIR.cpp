@@ -265,6 +265,19 @@ convertAllocations(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
   return failure(result.wasInterrupted());
 }
 
+static void recordNativeBufferBridges(ModuleOp module,
+                                      llvm::DenseMap<Value, Value> &mapped,
+                                      SmallVectorImpl<Operation *> &eraseOps) {
+  module.walk([&](UnrealizedConversionCastOp op) {
+    if (op.getInputs().size() == 1 && op->getNumResults() == 1 &&
+        isa<ttg::MemDescType>(op.getInputs().front().getType()) &&
+        isa<tile::BufType>(op.getResult(0).getType())) {
+      mapped[op.getResult(0)] = op.getInputs().front();
+      eraseOps.push_back(op);
+    }
+  });
+}
+
 static void
 rewriteConvertedOperands(ModuleOp module,
                          const llvm::DenseMap<Value, Value> &mapped) {
@@ -618,6 +631,8 @@ public:
     SmallVector<Operation *> eraseOps;
     SmallVector<ttg::AsyncCopyGlobalToLocalOp> copies;
     SmallVector<UnrealizedConversionCastOp> argumentCasts;
+
+    recordNativeBufferBridges(module, mapped, eraseOps);
 
     if (failed(convertAllocations(module, mapped, eraseOps)) ||
         failed(convertWarpSpecializeCaptures(
