@@ -128,8 +128,9 @@ static bool haveCompatibleTokenContracts(ttnvws::CreateTokenOp lhs,
   if (lhs.getResult().getType() != rhs.getResult().getType() ||
       lhs.getLoadType() != rhs.getLoadType())
     return false;
-  for (StringRef attr : ArrayRef<StringRef>{"full_count", "empty_count",
-                                            kTleInferFullCountOffsetAttr}) {
+  const StringRef contractAttrs[] = {"full_count", "empty_count",
+                                     kTleInferFullCountOffsetAttr};
+  for (StringRef attr : contractAttrs) {
     if (lhs->getAttr(attr) != rhs->getAttr(attr))
       return false;
   }
