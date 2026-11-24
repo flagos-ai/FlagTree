@@ -32,14 +32,25 @@ if TYPE_CHECKING:
 
 
 def is_backend_builder(builder) -> bool:
-    # The shared pipe model carries an SSA identity operand and a `pipe.drain`
-    # op that the Iluvatar ``iluvatar_tle`` dialect does not have. Detect the
-    # shared-ABI builder by that drain binding instead of a new marker: the
-    # frontend may be installed from a wheel built against a libtriton that
-    # predates this change, and then only the pipe signatures themselves tell
-    # the two ABIs apart. Synthetic builders used by the portable frontend
-    # tests also bind each pipe method, so they must not take this path.
-    return (hasattr(builder, "create_pipe_create") and not hasattr(builder, "create_pipe_drain"))
+    # iluvatar_tle pipe ops keep the field-only operand list; the shared model
+    # threads an SSA identity operand first. Decide from the backend the build
+    # routes to rather than from builder capabilities: the installed Python
+    # package and the libtriton it loads are versioned separately, and capability
+    # probes on this builder did not distinguish the two ABIs.
+    #
+    # Synthetic builders used by the portable frontend tests are not
+    # ``ir.builder`` instances and must keep the shared model, including on an
+    # Iluvatar build that also runs those tests.
+    if not isinstance(builder, ir.builder):
+        return False
+    try:
+        from triton._C import libtriton
+        if hasattr(libtriton, "iluvatar"):
+            return True
+    except ImportError:  # pragma: no cover - libtriton is always present
+        pass
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+    return FLAGTREE_BACKEND == "iluvatar"
 
 
 def validate_pipe_options(scope, readers, one_shot, fields) -> None:

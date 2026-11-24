@@ -1339,12 +1339,10 @@ def test_musa_native_pipe_uses_existing_field_only_signature(monkeypatch):
 
 
 class _IluvatarBuilder:
-    """Mirrors the Iluvatar TLE builder: field-only ``create_pipe_*`` signatures
-    and no shared-model ``create_pipe_drain`` binding.
+    """The field-only ``create_pipe_*`` signatures ``iluvatar_tle`` binds.
 
-    It delegates everything else to the shared fake builder, but does not
-    subclass it: ``hasattr`` walks the MRO, so inheritance would keep the drain
-    method visible and the frontend would wrongly pick the shared ABI.
+    Stands in for the Iluvatar builder's pipe methods only; the frontend picks
+    this ABI from the backend identity, which no synthetic builder can carry.
     """
 
     def __init__(self):
@@ -1353,8 +1351,8 @@ class _IluvatarBuilder:
         self.pipe_create_args = None
 
     def __getattr__(self, name):
-        if name == "create_pipe_drain":
-            raise AttributeError(name)
+        # Buffer helpers (memdesc types, tile accessors) come from the shared
+        # fake; only the pipe methods below are field-only.
         return getattr(self._base, name)
 
     def create_pipe_create(self, fields, capacity, scope, pipe_name, field_names, readers, one_shot):
@@ -1379,8 +1377,39 @@ class _IluvatarBuilder:
         self.pipe_ops.append(("release", list(fields), stage))
 
 
-def test_iluvatar_native_pipe_uses_field_only_signature():
+def test_iluvatar_pipe_detection_keeps_synthetic_builders_portable(monkeypatch):
+    """Only a real backend builder may take the field-only ABI.
+
+    The portable frontend tests build synthetic builders; on an Iluvatar build
+    they must still exercise the shared model, so detection cannot key on the
+    active backend alone.
+    """
+    import triton._flagtree_backend as backend
+    from triton.experimental.tle.language.gpu.iluvatar import pipe as iluvatar_pipe
+
+    monkeypatch.setattr(backend, "FLAGTREE_BACKEND", "iluvatar")
+    assert not iluvatar_pipe.is_backend_builder(_IluvatarBuilder())
+    assert not iluvatar_pipe.is_backend_builder(object())
+
+
+def test_iluvatar_pipe_detection_selects_field_only_abi_on_iluvatar(monkeypatch):
+    """On an Iluvatar build the real builder takes the field-only ABI."""
+    from triton._C.libtriton import ir
+    from triton.experimental.tle.language.gpu.iluvatar import pipe as iluvatar_pipe
+    import triton._flagtree_backend as backend
+
+    monkeypatch.setattr(backend, "FLAGTREE_BACKEND", "iluvatar")
+    assert iluvatar_pipe.is_backend_builder(ir.builder.__new__(ir.builder))
+
+    monkeypatch.setattr(backend, "FLAGTREE_BACKEND", "")
+    assert not iluvatar_pipe.is_backend_builder(ir.builder.__new__(ir.builder))
+
+
+def test_iluvatar_native_pipe_uses_field_only_signature(monkeypatch):
     from triton.experimental.tle.language.gpu import types
+    from triton.experimental.tle.language.gpu.iluvatar import pipe as iluvatar_pipe
+    # The ABI follows the active backend; stand in the Iluvatar builder.
+    monkeypatch.setattr(iluvatar_pipe, "is_backend_builder", lambda builder: True)
     semantic = TestBufferedTensor._FakeSemantic()
     semantic.builder = _IluvatarBuilder()
     field = types.buffered_tensor("base", tl.float16, [2, 16], types.smem,
