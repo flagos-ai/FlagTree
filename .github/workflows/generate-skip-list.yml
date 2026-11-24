@@ -566,12 +566,18 @@ jobs:
           CHANGED=()
           for f in $(find "$ARTIFACTS_DIR" -name '*.yaml'); do
             backend=$(basename "$f" .yaml)
-            cp "$f" "$DEST_DIR/${backend}.yaml"
-            if ! git diff --quiet -- "$DEST_DIR/${backend}.yaml"; then
-              CHANGED+=("$backend")
-              echo "Updated $DEST_DIR/${backend}.yaml"
+            dest="$DEST_DIR/${backend}.yaml"
+            if [ -e "$dest" ]; then action=Updated; else action=Added; fi
+            cp "$f" "$dest"
+            # Stage before comparing. `git diff` only inspects tracked files, so
+            # the very first skip list for a backend -- the case that matters
+            # most -- used to look "Unchanged" and was silently never committed.
+            git add "$dest"
+            if git diff --cached --quiet -- "$dest"; then
+              echo "Unchanged $dest"
             else
-              echo "Unchanged $DEST_DIR/${backend}.yaml"
+              CHANGED+=("$backend")
+              echo "$action $dest"
             fi
           done
 

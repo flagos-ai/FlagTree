@@ -841,6 +841,8 @@ class MUSAOptions:
     sqmma_descriptor_abi: str = "pointer"
     # Opt-in: TME transaction issuers must supply warp-uniform inputs.
     tme_issue_warp: bool = False
+    # Retain side effects and input dependencies of unused empty register identities.
+    lower_dead_tied_register_fences: bool = False
     num_warps: int = 4
     num_ctas: int = 1
     num_stages: int = 1
@@ -1071,6 +1073,8 @@ class MUSABackend(BaseBackend):
             raise ValueError("fp8_downcast_burst4 must be a bool")
         if opts.get("fp8_downcast_burst4", False) and capability != 31:
             raise ValueError("fp8_downcast_burst4 currently requires MP31")
+        if type(opts.get("lower_dead_tied_register_fences", False)) is not bool:
+            raise ValueError("lower_dead_tied_register_fences must be a bool")
         # The bundled MTGPU llc currently only provides processors through
         # mp_32. Reject future numeric capabilities here rather than letting
         # instruction selection terminate the compiler process.
@@ -1353,6 +1357,8 @@ class MUSABackend(BaseBackend):
                 llvm.link_extern_libs(llvm_mod, printf_paths, force_inline=False)
 
         MUSABackend._optimize_llir_module(llvm_mod, metadata, capability)
+        metadata["readonly_register_fence_count"] = (mthreads.lower_dead_tied_register_fences(llvm_mod)
+                                                     if options.lower_dead_tied_register_fences else 0)
         maxntidx = max(1, int(launch_num_warps) * int(options.warp_size))
         kernel_name_hint = src.get_entry_func_name() if hasattr(src, "get_entry_func_name") else ""
         mthreads.decorate_kernel_abi(llvm_mod, kernel_name_hint, maxntidx)
