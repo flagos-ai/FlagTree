@@ -903,8 +903,8 @@ public:
     // FlagTree CommonIR: re-encode the undecorated ttg.local_load/store
     // that CommonIRToTTGIR emits in make_ttir.
     patterns.insert<GenericOpPattern<triton::gpu::LocalLoadOp>,
-                    GenericOpPattern<triton::gpu::LocalStoreOp>>(
-        typeConverter, context);
+                    GenericOpPattern<triton::gpu::LocalStoreOp>>(typeConverter,
+                                                                 context);
 #endif
 
     // Step 4: Set module attributes.

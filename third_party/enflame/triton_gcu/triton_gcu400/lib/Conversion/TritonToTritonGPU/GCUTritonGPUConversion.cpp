@@ -235,13 +235,11 @@ GCUTritonGPUConversionTarget::GCUTritonGPUConversionTarget(
   // dies on an unresolved materialization. Mark the two ops that
   // produce/consume ranked tensors as dynamically legal so the patterns
   // registered in GCUConvertTritonToTritonGPU attach blocked encodings.
-  addDynamicallyLegalOp<triton::gpu::LocalLoadOp,
-                        triton::gpu::LocalStoreOp>(
+  addDynamicallyLegalOp<triton::gpu::LocalLoadOp, triton::gpu::LocalStoreOp>(
       [&](Operation *op) {
         bool hasLegalRegions = true;
         for (auto &region : op->getRegions())
-          hasLegalRegions =
-              hasLegalRegions && typeConverter.isLegal(&region);
+          hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
         return hasLegalRegions && typeConverter.isLegal(op);
       });
 #endif

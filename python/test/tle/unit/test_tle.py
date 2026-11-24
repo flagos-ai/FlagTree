@@ -659,8 +659,8 @@ class TestBufferedTensor:
         assert slot.dtype == tl.float16
         assert slot.type.storage is tle.gpu.smem
         assert semantic.builder.swizzled_encoding_args == (1, 1, 1, [1, 0], [1, 1], [1, 1], [1, 0])
-        assert semantic.builder.tile_subview_args == ("base", ["stage_1", "stage_0", "stage_0"], [16, 32], [1, 1],
-                                                      "fake_layout")
+        assert semantic.builder.tile_subview_args == ("base", ["stage_1", "stage_0",
+                                                               "stage_0"], [16, 32], [1, 1], "fake_layout")
 
     def test_buffered_tensor_slot_rejects_rank_zero_buffer(self):
         """slot(stage) only indexes a real leading stage dimension."""
@@ -700,8 +700,8 @@ class TestBufferedTensor:
         assert subslice.shape == [4, 8, 32]
         assert subslice.type.layout is buffer.type.layout
         assert subslice.type.alloc_shape == [4, 16, 32]
-        assert semantic.builder.tile_subview_args == ("base", ["stage_0", "stage_4", "stage_0"], [4, 8, 32], [1, 1, 1],
-                                                      "fake_layout")
+        assert semantic.builder.tile_subview_args == ("base", ["stage_0", "stage_4",
+                                                               "stage_0"], [4, 8, 32], [1, 1, 1], "fake_layout")
 
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot", "gpu.buffered_tensor.subslice")
     def test_buffered_tensor_subslice_slot_preserves_backing_allocation_shape(self, monkeypatch):
@@ -713,8 +713,9 @@ class TestBufferedTensor:
 
         assert slot.shape == [8, 32]
         assert slot.type.alloc_shape == [4, 16, 32]
-        assert semantic.builder.tile_subview_args == ("tile_subview_handle", ["stage_1", "stage_0", "stage_0"], [8, 32],
-                                                      [1, 1], "fake_layout")
+        assert semantic.builder.tile_subview_args == ("tile_subview_handle", ["stage_1", "stage_0",
+                                                                              "stage_0"], [8, 32], [1,
+                                                                                                    1], "fake_layout")
 
     @pytest.mark.parametrize("start,length,dim", [(-1, 1, 0), (0, 0, 0), (12, 8, 1), (0, 1, 3)])
     def test_buffered_tensor_subslice_rejects_invalid_ranges(self, start, length, dim):
@@ -734,8 +735,7 @@ class TestBufferedTensor:
         assert view.handle == "tile_subview_handle"
         assert view.shape == [8, 1024]
         assert view.type.alloc_shape == [32, 1024]
-        assert semantic.builder.tile_subview_args == ("base", ["stage_16", "stage_0"], [8, 1024], [1, 1],
-                                                      "fake_layout")
+        assert semantic.builder.tile_subview_args == ("base", ["stage_16", "stage_0"], [8, 1024], [1, 1], "fake_layout")
 
     @pytest.mark.parametrize(
         ("offsets", "shape", "message"),

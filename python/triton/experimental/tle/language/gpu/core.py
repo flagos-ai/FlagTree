@@ -1597,7 +1597,8 @@ def copy(
             if eviction_policy:
                 raise ValueError("GPU CommonIR copy does not support eviction policies")
             if tl._unwrap_if_constexpr(offsets) is not None:
-                raise ValueError("GPU CommonIR normal copy does not support offsets; offset the global pointers instead")
+                raise ValueError(
+                    "GPU CommonIR normal copy does not support offsets; offset the global pointers instead")
         return tle_semantic.copy(
             src,
             dst,
