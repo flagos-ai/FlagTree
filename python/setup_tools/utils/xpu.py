@@ -21,6 +21,7 @@
 import os
 import sys
 import shutil
+import inspect
 import subprocess
 import importlib.machinery
 import importlib.util
@@ -39,6 +40,7 @@ BACKEND_ROOT = "third_party/xpu/backend"
 _TABLE_TAGS = ("l19", "l22")
 
 FLAGTREE_PYTHON_ROOT = "python"
+XPU_SPEC_ROOT = "third_party/xpu/spec"
 # TLE/RAW are excluded from ordinary Python specialization. Keep their
 # original XPU package root and build-time packaging behavior unchanged.
 XPU_TLE_ROOT = "third_party/xpu/python/triton/experimental/tle"
@@ -120,40 +122,89 @@ def get_package_data_tools():
     return ["compile_xpu.h", "compile_xpu.c"]
 
 
-def get_excluded_python_packages():
-    # XPU's typed-raw-op TLE is an independent extension, not the shared TLE.
-    return ["triton.experimental.tle", "triton.experimental.tle.*", "triton.ops", "triton.ops.*"]
+def _iter_package_tree(source_root, package_root, require_init):
+    for root, dirs, files in os.walk(source_root):
+        dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__")
+        if require_init and "__init__.py" not in files:
+            continue
+        if not require_init and not any(filename.endswith(".py") for filename in files):
+            continue
+        relative_dir = os.path.relpath(root, source_root)
+        package = package_root
+        if relative_dir != ".":
+            package += "." + relative_dir.replace(os.sep, ".")
+        yield package, root
 
 
-def get_excluded_package_data():
-    # MANIFEST.in grafts the complete main ``python/triton`` tree.  Once the
-    # shared TLE packages above are excluded, setuptools otherwise treats their
-    # files as data belonging to the nearest remaining parent package
-    # (``triton.experimental``) and copies them beside XPU's TLE extension
-    # modules.  Keep the two implementations isolated: XPU TLE/RAW remains at
-    # its original backend package root, while the main-tree TLE contributes no
-    # package data to an XPU wheel.
-    return {"triton.experimental": ["tle/*", "tle/**/*"]}
+def _xpu_python_package_sources():
+    # XPU spec modules are package-routed at build time; no source-tree symlink
+    # under python/triton/spec is required.
+    yield from _iter_package_tree(XPU_SPEC_ROOT, "triton.spec.xpu", require_init=False)
+
+    # TLE/RAW and the legacy operators are XPU-owned packages, not spec modules.
+    yield from _iter_package_tree(XPU_TLE_ROOT, "triton.experimental.tle", require_init=True)
+    yield from _iter_package_tree(XPU_OPS_ROOT, "triton.ops", require_init=True)
 
 
-def get_python_packages():
-    # TLE/RAW and the legacy operators are XPU-owned packages, not spec
-    # modules. Select them at build time without redirecting the shared Triton
-    # package tree to third_party/xpu/python.
-    package_roots = (
-        (XPU_TLE_ROOT, "triton.experimental.tle"),
-        (XPU_OPS_ROOT, "triton.ops"),
-    )
-    for source_root, package_root in package_roots:
-        for root, dirs, files in os.walk(source_root):
-            dirs[:] = sorted(directory for directory in dirs if directory != "__pycache__")
-            if "__init__.py" not in files:
-                continue
-            relative_dir = os.path.relpath(root, source_root)
-            package = package_root
-            if relative_dir != ".":
-                package += "." + relative_dir.replace(os.sep, ".")
-            yield package, root
+def _is_xpu_owned_package(package):
+    return (package == "triton.spec.xpu" or package.startswith("triton.spec.xpu.")
+            or package == "triton.experimental.tle" or package.startswith("triton.experimental.tle.")
+            or package == "triton.ops" or package.startswith("triton.ops."))
+
+
+def _merge_xpu_packages(existing_packages):
+    packages = []
+    seen = set()
+
+    def add(package):
+        if package not in seen:
+            packages.append(package)
+            seen.add(package)
+
+    for package in existing_packages:
+        if not _is_xpu_owned_package(package):
+            add(package)
+    for package, _source_dir in _xpu_python_package_sources():
+        add(package)
+    return packages
+
+
+def _merge_xpu_package_dir(existing_package_dir):
+    package_dir = dict(existing_package_dir or {})
+    for package, source_dir in _xpu_python_package_sources():
+        package_dir[package] = source_dir
+    return package_dir
+
+
+def _merge_xpu_exclude_package_data(existing_exclusions):
+    exclusions = {package: list(patterns) for package, patterns in (existing_exclusions or {}).items()}
+    patterns = exclusions.setdefault("triton.experimental", [])
+    for pattern in ("tle/*", "tle/**/*"):
+        if pattern not in patterns:
+            patterns.append(pattern)
+    return exclusions
+
+
+def _patch_xpu_cmdclass(existing_cmdclass):
+    cmdclass = dict(existing_cmdclass or {})
+    original_build_py = cmdclass.get("build_py")
+    if original_build_py is None:
+        return cmdclass
+
+    class XpuBuildPy(original_build_py):
+
+        def find_data_files(self, package, src_dir):
+            return [path for path in super().find_data_files(package, src_dir) if Path(path).is_file()]
+
+        def run(self):
+            self.force = True
+            build_triton_dir = Path(self.build_lib) / "triton"
+            if build_triton_dir.exists():
+                shutil.rmtree(build_triton_dir)
+            return super().run()
+
+    cmdclass["build_py"] = XpuBuildPy
+    return cmdclass
 
 
 def _patch_llvm_exports():
@@ -1063,3 +1114,42 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
     )
     if is_xpu:
         overlay_runtime_so(cache)
+
+
+def _wrap_setup(original_setup):
+    if getattr(original_setup, "_xpu_package_routing_patched", False):
+        return original_setup
+
+    def setup_with_xpu_package_routing(*args, **kwargs):
+        kwargs["packages"] = _merge_xpu_packages(kwargs.get("packages", []))
+        kwargs["package_dir"] = _merge_xpu_package_dir(kwargs.get("package_dir", {}))
+        kwargs["exclude_package_data"] = _merge_xpu_exclude_package_data(kwargs.get("exclude_package_data", {}))
+        kwargs["cmdclass"] = _patch_xpu_cmdclass(kwargs.get("cmdclass", {}))
+        return original_setup(*args, **kwargs)
+
+    setup_with_xpu_package_routing._xpu_package_routing_patched = True
+    setup_with_xpu_package_routing._xpu_original_setup = original_setup
+    return setup_with_xpu_package_routing
+
+
+def _patch_setup_for_xpu_package_routing():
+    patched = False
+    frame = inspect.currentframe()
+    while frame is not None:
+        setup_func = frame.f_globals.get("setup")
+        if callable(setup_func):
+            frame.f_globals["setup"] = _wrap_setup(setup_func)
+            patched = True
+        frame = frame.f_back
+
+    main_module = sys.modules.get("__main__")
+    if main_module is not None and hasattr(main_module, "setup"):
+        main_module.setup = _wrap_setup(main_module.setup)
+        patched = True
+
+    main_file = getattr(main_module, "__file__", "") if main_module is not None else ""
+    if not patched and os.path.basename(main_file) == "setup.py":
+        raise RuntimeError("xpu setup hook could not find setup() to patch")
+
+
+_patch_setup_for_xpu_package_routing()
