@@ -1377,32 +1377,25 @@ class _IluvatarBuilder:
         self.pipe_ops.append(("release", list(fields), stage))
 
 
-def test_iluvatar_pipe_detection_keeps_synthetic_builders_portable(monkeypatch):
-    """Only a real backend builder may take the field-only ABI.
+def test_iluvatar_pipe_detection_follows_backend_and_rejects_synthetic_builders(monkeypatch):
+    """The ABI follows the build's backend, and only for a real builder.
 
-    The portable frontend tests build synthetic builders; on an Iluvatar build
-    they must still exercise the shared model, so detection cannot key on the
-    active backend alone.
+    Capability probes on the builder cannot separate the two ABIs (an Iluvatar
+    build links the shared TLE IR library as well), so detection reads the
+    backend. Synthetic builders must keep the shared model because the portable
+    frontend tests run on every backend, Iluvatar included.
     """
-    import triton._flagtree_backend as backend
+    from triton._C.libtriton import ir
     from triton.experimental.tle.language.gpu.iluvatar import pipe as iluvatar_pipe
 
-    monkeypatch.setattr(backend, "FLAGTREE_BACKEND", "iluvatar")
+    real_builder = ir.builder.__new__(ir.builder)
+    monkeypatch.setattr(iluvatar_pipe, "_is_iluvatar_backend", lambda: True)
+    assert iluvatar_pipe.is_backend_builder(real_builder)
     assert not iluvatar_pipe.is_backend_builder(_IluvatarBuilder())
     assert not iluvatar_pipe.is_backend_builder(object())
 
-
-def test_iluvatar_pipe_detection_selects_field_only_abi_on_iluvatar(monkeypatch):
-    """On an Iluvatar build the real builder takes the field-only ABI."""
-    from triton._C.libtriton import ir
-    from triton.experimental.tle.language.gpu.iluvatar import pipe as iluvatar_pipe
-    import triton._flagtree_backend as backend
-
-    monkeypatch.setattr(backend, "FLAGTREE_BACKEND", "iluvatar")
-    assert iluvatar_pipe.is_backend_builder(ir.builder.__new__(ir.builder))
-
-    monkeypatch.setattr(backend, "FLAGTREE_BACKEND", "")
-    assert not iluvatar_pipe.is_backend_builder(ir.builder.__new__(ir.builder))
+    monkeypatch.setattr(iluvatar_pipe, "_is_iluvatar_backend", lambda: False)
+    assert not iluvatar_pipe.is_backend_builder(real_builder)
 
 
 def test_iluvatar_native_pipe_uses_field_only_signature(monkeypatch):

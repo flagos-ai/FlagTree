@@ -31,26 +31,26 @@ if TYPE_CHECKING:
     from ...semantic import TLESemantic
 
 
+def _is_iluvatar_backend() -> bool:
+    # Reuse the backend predicate the Iluvatar copy path already uses, so pipe
+    # and copy agree on what an Iluvatar build is.
+    from . import copy as iluvatar_copy
+    return iluvatar_copy.enabled()
+
+
 def is_backend_builder(builder) -> bool:
     # iluvatar_tle pipe ops keep the field-only operand list; the shared model
-    # threads an SSA identity operand first. Decide from the backend the build
-    # routes to rather than from builder capabilities: the installed Python
-    # package and the libtriton it loads are versioned separately, and capability
-    # probes on this builder did not distinguish the two ABIs.
+    # threads an SSA identity operand first. The two ABIs cannot be told apart
+    # by probing this builder: an Iluvatar build links the shared TLE IR library
+    # too, so the class carries both overload sets. Decide from the backend the
+    # build routes to.
     #
     # Synthetic builders used by the portable frontend tests are not
-    # ``ir.builder`` instances and must keep the shared model, including on an
-    # Iluvatar build that also runs those tests.
+    # ``ir.builder`` instances and must keep the shared model, including when
+    # those tests run inside an Iluvatar build.
     if not isinstance(builder, ir.builder):
         return False
-    try:
-        from triton._C import libtriton
-        if hasattr(libtriton, "iluvatar"):
-            return True
-    except ImportError:  # pragma: no cover - libtriton is always present
-        pass
-    from triton._flagtree_backend import FLAGTREE_BACKEND
-    return FLAGTREE_BACKEND == "iluvatar"
+    return _is_iluvatar_backend()
 
 
 def validate_pipe_options(scope, readers, one_shot, fields) -> None:
