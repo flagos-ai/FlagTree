@@ -140,27 +140,31 @@ def test_lsu_cache_policy_rejects_qy2(capfd):
 
 
 @triton.jit
-def _ordinary_memory(src, dst, POLICY: tl.constexpr):
+def _ordinary_memory(src, dst, LOAD: tl.constexpr, STORE: tl.constexpr):
     offsets = tl.arange(0, 128)
-    values = tl.load(src + offsets, cache_policy=POLICY)
-    tl.store(dst + offsets, values, cache_policy=POLICY)
+    values = tl.load(src + offsets, cache_policy=LOAD)
+    tl.store(dst + offsets, values, cache_policy=STORE)
 
 
-@pytest.mark.parametrize("arch,native", [(31, True), (32, False)])
-def test_ordinary_lsu_policy_uses_target_capability(arch, native):
-    target = GPUTarget("musa", arch, 32)
+def _compile_memory(arch, load=None, store=None):
+    source = ASTSource(_ordinary_memory,
+                       signature={"src": "*fp32", "dst": "*fp32", "LOAD": "constexpr", "STORE":
+                                  "constexpr"}, constexprs={"LOAD": load, "STORE": store})
+    return triton.compile(source, target=GPUTarget("musa", arch, 32)).asm["llir"]
 
-    def compile_policy(policy):
-        source = ASTSource(_ordinary_memory, signature={"src": "*fp32", "dst": "*fp32", "POLICY": "constexpr"},
-                           constexprs={"POLICY": policy})
-        return triton.compile(source, target=target).asm["llir"]
 
-    default = compile_policy(None)
-    hinted = compile_policy(LSUCachePolicy(3, 3, 1))
-    assert ("llvm.musa.lsu.ld.cache.hint" in hinted) == native
-    assert ("llvm.musa.lsu.st.cache.hint" in hinted) == native
-    if not native:
-        assert hinted == default
+def test_ordinary_lsu_policy_uses_native_instructions():
+    policy = LSUCachePolicy(3, 3, 1)
+    hinted = _compile_memory(31, policy, policy)
+    assert "llvm.musa.lsu.ld.cache.hint" in hinted
+    assert "llvm.musa.lsu.st.cache.hint" in hinted
+
+
+@pytest.mark.parametrize("access", ["load", "store"])
+def test_unsupported_ordinary_lsu_policy_reports_target(access):
+    assert "llvm.musa.lsu." not in _compile_memory(32)
+    with pytest.raises(CompilationError, match=rf"tl\.{access} with LSUCachePolicy requires MUSA mp_31 .*mp_32"):
+        _compile_memory(32, **{access: LSUCachePolicy()})
 
 
 def test_tme_policy_cannot_silently_select_lsu():

@@ -2204,7 +2204,7 @@ int getMmaInstNum(Type type) {
   } else if (type.isSignlessInteger(8)) {
     return 2;
   } else {
-    assert(false && "invalid dtype for mma");
+    llvm::report_fatal_error("invalid dtype for mma");
   }
 }
 

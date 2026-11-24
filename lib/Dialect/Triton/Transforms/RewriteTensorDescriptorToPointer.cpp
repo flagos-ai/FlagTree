@@ -23,7 +23,9 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#ifdef __TLE__
 #include "triton/Dialect/Triton/IR/CacheControls.h"
+#endif
 #include "triton/Dialect/Triton/Transforms/ArithTypeConversion.h"
 #include "triton/Dialect/Triton/Transforms/FunctionTypeConversion.h"
 #include "triton/Dialect/Triton/Transforms/Passes.h"
@@ -34,7 +36,9 @@
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#ifdef __TLE__
 #include "mlir/IR/Matchers.h"
+#endif
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Support/LLVM.h"
@@ -309,6 +313,7 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     const auto blockShape = op.getDesc().getType().getBlockType().getShape();
     auto descTy = op.getDesc().getType();
     auto desc = unpackDescriptor(descTy, adaptor.getDesc());
+#ifdef __TLE__
     // PPU AIU promotion needs this descriptor as a block pointer.
     auto async = op->getAttrOfType<BoolAttr>("tt.load.async");
     if (async && async.getValue() && triton::isPPUAIUCache(op.getCache())) {
@@ -342,6 +347,7 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
       rewriter.replaceOp(op, load.getResult());
       return success();
     }
+#endif
     auto offsets = castToI64(rewriter, op.getIndices());
     auto other = generateOther(rewriter, loc, descTy, desc.paddingOption);
     auto newLoad = rewriter.replaceOpWithNewOp<triton::LoadOp>(

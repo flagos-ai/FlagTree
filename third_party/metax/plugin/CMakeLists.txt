@@ -11,6 +11,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
     LINK_LIBS TritonMETAXGPUToLLVM MLIRMACADialect MLIRGPUToMACATransforms
       MLIRParser MLIRLLVMToLLVMIRTranslation MLIRBuiltinToLLVMIRTranslation MLIRTargetLLVMIRExport
   )
+endif()
+
+if(FLAGTREE_PLUGIN AND TRITON_BUILD_PYTHON_MODULE)
   add_library(metaxTritonPlugin SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/triton_metax.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/CopyCacheTranslation.cpp

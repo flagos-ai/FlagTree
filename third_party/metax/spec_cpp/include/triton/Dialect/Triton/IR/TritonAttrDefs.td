@@ -15,9 +15,6 @@ def TT_CacheModifierAttr : I32EnumAttr<
         I32EnumAttrCase<"CS", 5, "cs">,
         I32EnumAttrCase<"WT", 6, "wt">,
         I32EnumAttrCase<"CV", 7, "cv">,
-        I32EnumAttrCase<"LU", 8, "lu">,
-        I32EnumAttrCase<"NC", 9, "nc">,
-        I32EnumAttrCase<"BL", 10, "bl">,
     ], TT_NativeCacheModifiers)> {
     let cppNamespace = "::mlir::triton";
 }

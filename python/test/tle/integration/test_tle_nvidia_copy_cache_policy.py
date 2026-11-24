@@ -18,6 +18,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import re
+
 import pytest
 import torch
 import triton
@@ -73,6 +75,11 @@ STORE_POLICIES = (
         CachePolicy(l2=FractionalEvictionPolicy(p))
         for p in ("evict_normal", "evict_first", "evict_last", "evict_unchanged")
     ])
+
+
+def _ptx_supports_cp_async_l2(ptx):
+    version = re.search(r"^\s*\.version (\d+)\.(\d+)", ptx, re.MULTILINE)
+    return tuple(map(int, version.groups())) >= (9, 4)
 
 
 def _assert_policy(ptx, policy, is_load, is_tma=False):
@@ -231,7 +238,8 @@ def test_logical_policy_survives_split(priority, pointer, with_allocator):
         ttgir_async = [line for line in kernel.asm["ttgir"].splitlines() if "ttg.async_copy_global_to_local" in line]
         assert sum(f"evictionPolicy = l2_{priority}" in line for line in ttgir_async) > 1
         ptx_async = [line for line in kernel.asm["ptx"].splitlines() if "cp.async." in line and "shared.global" in line]
-        assert len(ptx_async) > 1 and all(".L2::cache_hint" not in line for line in ptx_async)
+        assert len(ptx_async) > 1
+        assert all((".L2::cache_hint" in line) == _ptx_supports_cp_async_l2(kernel.asm["ptx"]) for line in ptx_async)
     else:
         assert sum(".L2::cache_hint" in line for line in copies) > 1
         assert f"createpolicy.fractional.L2::{priority}" in kernel.asm["ptx"]
@@ -271,14 +279,17 @@ def _block_copy(X, Y, POLICY: tl.constexpr):
     tle.gpu.copy(smem, dest, [16, 32], cache_policy=POLICY)
 
 
-def test_block_pointer_omits_unsafe_async_l2():
+def test_unmasked_block_copy_preserves_l2_until_instruction_lowering():
     x = torch.arange(512, device="cuda", dtype=torch.float32).reshape(16, 32)
     y = torch.empty_like(x)
     policy = CachePolicy(l2=FractionalEvictionPolicy("evict_last"))
     kernel = _block_copy[(1, )](x, y, policy)
     torch.testing.assert_close(y, x, rtol=0, atol=0)
     copies = [line for line in kernel.asm["ptx"].splitlines() if "cp.async." in line and "shared.global" in line]
-    assert copies and all(".L2::cache_hint" not in line for line in copies)
+    assert any("ttg.async_copy_global_to_local" in line and "evictionPolicy = l2_evict_last" in line
+               for line in kernel.asm["ttgir"].splitlines())
+    assert copies and all(
+        (".L2::cache_hint" in line) == _ptx_supports_cp_async_l2(kernel.asm["ptx"]) for line in copies)
     _assert_policy(kernel.asm["ptx"], policy, False)
 
 

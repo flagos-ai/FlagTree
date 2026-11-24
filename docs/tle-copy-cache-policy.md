@@ -101,7 +101,7 @@ memory operation's formal IR attributes **before** creating the operation:
 | **NVIDIA** | `cp.async` (`AsyncCopyGlobalToLocalOp`, **16B**) | `cache`: `""`/`ca` $\to$ `ca`; `cg`/`cs`/`lu`/`cv` $\to$ **`cg`**<br>`l1`: any $\to$ **`evict_normal`**<br>`l2`: `evict_first`/`evict_last` | `cache`: `ca` or **`cg`**<br>`l1`: **`evict_normal`**<br>`l2`: **preserved at PTX $\ge$ 9.4**, **`evict_normal` at PTX $<$ 9.4** | `cp.async.{ca,cg}.shared.global[.L2::cache_hint]` (+ `createpolicy.fractional.L2::evict_*`) | 16B `cp.async` supports only `ca` and `cg`; `cs`/`lu`/`cv` convert to `cg`. L1 eviction is omitted. PTX $<$ 9.4 omits L2 policy to avoid a `ptxas` miscompilation (upstream #11660/#11848). |
 | **NVIDIA** | `cp.async` (`AsyncCopyGlobalToLocalOp`, **4B / 8B**) | `cache`: any (`cg`/`cs`/`lu`/`cv`) $\to$ **`ca`** (default build)<br>`l1`: any $\to$ **`evict_normal`**<br>`l2`: preserved at PTX $\ge$ 9.4, omitted at PTX $<$ 9.4 | `cache`: **`ca`**<br>`l1`: **`evict_normal`**<br>`l2`: preserved at PTX $\ge$ 9.4 / omitted at $<$ 9.4 | `cp.async.ca.shared.global` (+ PTX $\ge$ 9.4 L2 policy) | 4B/8B `cp.async` does not support `cg`; default builds (`__FLAGTREE_PIPELINE_ENHANCE__`) convert non-`ca` modifiers to `ca` with a remark. |
 | **NVIDIA** | TMA (`DescriptorLoadOp` / `AsyncTMACopyGlobalToLocalOp` / `AsyncTMACopyLocalToGlobalOp`) | `l2`: `FractionalEvictionPolicy("evict_first" \| "evict_last" \| ...)` | **1:1 pass-through** (`l2_evict_*`) | `cp.async.bulk.tensor.*.L2::cache_hint` | TMA consumes L2 eviction policies only; specifying `cache_modifier` or `l1` on a TMA descriptor copy raises a frontend `ValueError`. |
-| **MThreads / MUSA** | `tl.load` / `tl.store` / `tle.gpu.copy` (LSU pointer) | `LSUCachePolicy(inner_persistence=0..5, outer_persistence=0..5, l2_policy=0..1)` | **`mp_31`**: **1:1 pass-through** (`musa_i*_o*_l*`)<br>**non-`mp_31`**: ordinary `tl.load`/`tl.store` **fall back to default (`NONE`)** | **`mp_31`**: `llvm.musa.lsu.{ld,st}.cache.hint.i`<br>**non-`mp_31`**: default `load`/`store` | `None` fields resolve to SDK defaults (`inner=4, outer=2, l2=0(ld)/1(st)`). Explicit `tle.gpu.copy` LSU policies require `mp_31`. |
+| **MThreads / MUSA** | `tl.load` / `tl.store` / `tle.gpu.copy` (LSU pointer) | `LSUCachePolicy(inner_persistence=0..5, outer_persistence=0..5, l2_policy=0..1)` | **`mp_31`**: **1:1 pass-through** (`musa_i*_o*_l*`)<br>**non-`mp_31`**: an explicit `LSUCachePolicy` is rejected | **`mp_31`**: `llvm.musa.lsu.{ld,st}.cache.hint.i`<br>**other targets**: omit the policy for default loads and stores | `None` fields resolve to SDK defaults (`inner=4, outer=2, l2=0(ld)/1(st)`). Explicit LSU policies require `mp_31` on ordinary accesses and pointer copies. |
 | **MThreads / MUSA** | `memcpy.g2s` (`AsyncCopyGlobalToLocalOp`) | `LSUCachePolicy` or legacy `cache`/`evict` | **Converted to default `memcpy.g2s` (`NONE` / `NORMAL`)** | `llvm.musa.memcpy.g2s.*` | `memcpy.g2s` has no cache-hint operand; converts to default controls with a remark. |
 | **MThreads / MUSA** | TME Descriptor Copy (`tle.gpu.copy`) | `TMECachePolicy(inner=..., outer=..., prefetch_size=...)` | **1:1 pass-through** | `llvm.musa.tme.{ld,st}.tile.*` | `prefetch_size` (`0, 64, 128, 256`) applies to loads; stores require `prefetch_size=0`. |
 | **Hygon / HCU**<br>(`gfx928` / `gfx936` / `gfx938`) | `tl.load` / `tl.store` / `tle.gpu.copy` (Buffer & Global Ops) | `cache`:<br>• `""`/`.ca` (load), `""`/`.wb`/`.cg` (store) $\to$ `glc=0, slc=0`<br>• `.cg`/`.cs` (load), `.cs` (store) $\to$ `glc=1, slc=1`<br>• `.cv` (load), legacy `.wt` (store) $\to$ `glc=1, slc=0` | `cache`: **1:1 mapped to `glc`/`slc` bits** (and LLVM `nontemporal`/`volatile` on generic path)<br>`evict`: **`evict_normal`** on Buffer Ops | `buffer_{load,store}_*` (default `AMDGCN_USE_BUFFER_OPS=1`) or `global_{load,store}_*` | Buffer Ops omit `evict` with a remark. On generic non-buffer `gfx936` global loads, `.cg`/`.cs` constrain the pointer to a VGPR so uniform loads are not scalarized to `s_load`. |
@@ -145,10 +145,41 @@ l1_bypass = CachePolicy(cache_modifier="cg")
   `l2_prefetch_size` are rejected. `cache_modifier` can be combined with `l2`
   on pointer accesses.
 - **TMA copies**: Accept `l2` policies only (`sm_90`+).
-- **TLE async-copy L2 guard**: Async copies produced by TLE's
-  load-to-local-pointer-store rewrite omit L2 hints when unmasked or inside a
-  loop-free `warp_specialize` partition to avoid uniform register hazards on
-  Hopper.
+- **Async-copy L2 policies**: TLE preserves the policy through copy planning,
+  including unmasked copies and straight-line warp-specialized producers.
+  NVIDIA emits the L2 operand for PTX 9.4 and newer, where the assembler
+  correctly initializes the address descriptor. Older targets omit it at
+  instruction lowering.
+
+The H800 regression test copies one unmasked 16 × 32 FP32 tile through
+shared memory and checks all 512 elements. To reproduce the assembler fault
+on SM90a, set `PTXAS_FIXED` to ptxas 13.4.92 and `PTXAS_OLD` to ptxas
+12.8.93. Run these commands from the checkout with its FlagTree build installed.
+
+```bash
+work=$(mktemp -d)
+test_id=python/test/tle/integration/test_tle_nvidia_copy_cache_policy.py::test_unmasked_block_copy_preserves_l2_until_instruction_lowering
+export TRITON_PTXAS_PATH="$PTXAS_FIXED"
+TRITON_KERNEL_DUMP=1 TRITON_DUMP_DIR="$work/dump" TRITON_CACHE_DIR="$work/fixed-cache" \
+  python -m pytest -q "$test_id"
+
+# Both assemblers accept PTX 8.7. Keep the instructions and change only the header.
+ptx=$(find "$work/dump" -name '_block_copy.ptx' -print -quit)
+key=$(basename "$(dirname "$ptx")")
+mkdir -p "$work/override/$key"
+sed 's/^\.version 9\.4$/.version 8.7/' "$ptx" > "$work/input.ptx"
+"$PTXAS_OLD" -arch=sm_90a "$work/input.ptx" -o "$work/override/$key/_block_copy.cubin"
+TRITON_KERNEL_OVERRIDE=1 TRITON_OVERRIDE_DIR="$work/override" TRITON_CACHE_DIR="$work/old-cache" \
+  python -m pytest -q "$test_id"
+```
+
+With the same hinted PTX input, ptxas 12.8.93 emitted
+`LDGSTS.E.BYPASS.128 [R9+UR0], desc[UR1][R2.64]` without defining
+`UR0` or `UR1`. Running that cubin on H800 raised CUDA error 715
+(`cudaErrorIllegalInstruction`). Assembling the same input with 13.4.92
+produced `[R9+UR4], desc[UR5][R2.64]` with both registers initialized and
+copied all 512 elements correctly. The normal FlagTree path also passed the
+test with 12.8.93 by omitting the L2 operand at PTX 8.7.
 
 ### 4.2 MThreads / MUSA (`TMECachePolicy`, `LSUCachePolicy`)
 
@@ -161,7 +192,7 @@ l1_bypass = CachePolicy(cache_modifier="cg")
   - Controls pointer copies (`tle.gpu.copy`) and ordinary `tl.load` / `tl.store`.
   - `inner_persistence` and `outer_persistence` accept `None` or integers in `0..5`; `l2_policy` accepts `None` or integers in `0..1`.
   - `None` resolves to the direction's SDK default (`inner=4, outer=2, l2=0` for loads; `inner=4, outer=2, l2=1` for stores).
-  - Emits native `llvm.musa.lsu.{ld,st}.cache.hint.i` on `mp_31`; on other MUSA targets, ordinary `tl.load`/`tl.store` fall back to the default instruction while explicit `tle.gpu.copy` raises an error.
+  - Emits native `llvm.musa.lsu.{ld,st}.cache.hint.i` on `mp_31`; an explicit policy on any other MUSA target raises a compilation error. Omitting the policy keeps the default instruction.
 
 ### 4.3 Hygon / HCU (`tle.gpu.hcu.CachePolicy`)
 
@@ -173,6 +204,9 @@ l1_bypass = CachePolicy(cache_modifier="cg")
   - Legacy `tl.store(..., cache_modifier=".wt")` remains supported on `tl.store` with its existing wait behavior, while `hcu.CachePolicy` rejects `".wt"`.
 
 ### 4.4 MetaX / MACA (`tle.gpu.metax.CachePolicy`)
+
+The standard `FLAGTREE_BACKEND=metax` wheel links the in-tree cache lowering into
+`libtriton`. It ships the SDK library alongside it for the vendor MCTLE passes.
 
 - **`tle.gpu.metax.CachePolicy(cache_modifier)`**:
   - Loads accept `"ca"`, `"cg"`, `"cs"`, `"lu"`, `"cv"` (leading dot optional).

@@ -120,9 +120,8 @@ class LSUCachePolicy(NativeCachePolicy):
     selects the SDK default for the copy direction: inner/outer 4/2, L2 0
     for loads and 1 for stores. The SDK coherence control is kept at its
     direction-specific default and is not exposed as a performance hint.
-    Ordinary loads and stores use the native controls on mp_31 and the
-    default memory instruction on other MUSA targets. Explicit LSU copies
-    with native controls require mp_31. Copy synchronization is unchanged.
+    Explicit LSU policies on loads, stores and pointer copies require mp_31.
+    Omit the policy to use the target's default memory instruction.
     """
 
     backend = "mthreads"

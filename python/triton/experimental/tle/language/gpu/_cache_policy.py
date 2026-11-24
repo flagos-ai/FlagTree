@@ -144,10 +144,9 @@ def resolve_memory_policy(policy, pointer, is_load, cache_modifier, eviction_pol
     from .mthreads import common as mthreads_common
     policy = resolve_policy(policy, False, is_load, semantic, mthreads_common.enabled(), iluvatar_copy.enabled(),
                             tle_semantic.COMMON_IR_ENABLED)
-    # An ordinary MUSA load/store can use its original instruction when the
-    # target lacks the LSU cache-hint instruction. Explicit copies validate
-    # their own instruction and completion requirements.
     options = getattr(semantic.builder, "options", None)
-    if policy.backend == "mthreads" and not getattr(options, "supports_lsu_cache_policy", True):
-        return None
+    if policy.backend == "mthreads" and not getattr(options, "supports_lsu_cache_policy", False):
+        access = "tl.load" if is_load else "tl.store"
+        raise ValueError(
+            f"{access} with LSUCachePolicy requires MUSA mp_31 (target mp_{getattr(options, 'arch', 'unknown')})")
     return policy

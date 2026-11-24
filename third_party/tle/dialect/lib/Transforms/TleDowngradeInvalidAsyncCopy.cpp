@@ -21,7 +21,6 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
@@ -34,7 +33,6 @@
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Analysis/AxisInfo.h"
-#include "triton/Dialect/Triton/IR/CacheControls.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
@@ -87,35 +85,6 @@ static bool hasLegalCpAsyncWidth(ttg::AsyncCopyGlobalToLocalOp copyOp,
 
   unsigned vecBytes = maxVec * elemBits / 8;
   return llvm::is_contained({4u, 8u, 16u}, vecBytes);
-}
-
-static std::optional<Region *>
-getEnclosingWarpSpecializePartition(Operation *op) {
-  for (Region *region = op->getParentRegion(); region;) {
-    Operation *parent = region->getParentOp();
-    if (!parent)
-      break;
-    if (isa<ttg::WarpSpecializePartitionsOp>(parent))
-      return region;
-    region = parent->getParentRegion();
-  }
-  return std::nullopt;
-}
-
-static bool isInLoopFreeWarpSpecializePartition(Operation *op) {
-  auto partition = getEnclosingWarpSpecializePartition(op);
-  if (!partition)
-    return false;
-
-  Operation *partitionOp = (*partition)->getParentOp();
-  for (Operation *parent = op->getParentOp(); parent;
-       parent = parent->getParentOp()) {
-    if (isa<scf::ForOp>(parent))
-      return false;
-    if (parent == partitionOp)
-      return true;
-  }
-  return false;
 }
 
 static unsigned floorPowerOfTwo(unsigned value) {
@@ -534,30 +503,14 @@ struct DowngradeInvalidAsyncCopyPass
   template <typename AxisAnalysis>
   LogicalResult downgradeCopies(ModuleOp module, bool planned) {
     AxisAnalysis axisInfo(module);
-    auto target = module->getAttrOfType<StringAttr>("ttg.target");
     SmallVector<ttg::AsyncCopyGlobalToLocalOp> invalidCopies;
     module.walk([&](ttg::AsyncCopyGlobalToLocalOp copyOp) {
       if (copyOp->hasAttr(kCopyPlanAttr) != planned)
         return;
       // Width/layout fallback is independent of hints. Keep the original
       // fields if the copy must become a synchronous load.
-      if (!hasLegalCpAsyncWidth(copyOp, axisInfo)) {
+      if (!hasLegalCpAsyncWidth(copyOp, axisInfo))
         invalidCopies.push_back(copyOp);
-        return;
-      }
-      if (target && target.getValue().starts_with("cuda:") &&
-          copyOp->hasAttr(kTleLocalPointerAsyncStoreAttr) &&
-          usesNvidiaL2Policy(copyOp.getEvict()) &&
-          (!copyOp.getMask() || isInLoopFreeWarpSpecializePartition(copyOp))) {
-        // These TLE shapes exposed undefined uniform registers in LDGSTS on
-        // H800. Omit only the unsafe hint; retain cp.async and its protocol.
-        remarkCacheControlConversion(
-            copyOp, "NVIDIA cp.async", copyOp.getCache(),
-            EvictionPolicy::NORMAL,
-            "L2 hint omitted for unmasked or "
-            "loop-free warp-specialize TLE local-pointer copy");
-        copyOp.setEvict(EvictionPolicy::NORMAL);
-      }
     });
 
     IRRewriter rewriter(&getContext());

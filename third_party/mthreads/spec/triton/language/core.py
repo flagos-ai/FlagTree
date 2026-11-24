@@ -21,6 +21,7 @@ T = TypeVar('T')
 TRITON_BUILTIN = "__triton_builtin__"
 
 PropagateNan = ir.PROPAGATE_NAN
+_HAS_NATIVE_CACHE_POLICY = hasattr(ir.EVICTION_POLICY, "L2_EVICT_FIRST")
 
 
 def must_use_result(x, s=True):
@@ -1267,8 +1268,8 @@ class tensor(base_value):
 
 
 def _type_for_tuple_values(values, fields=None):
-    return tuple_type(
-        [constexpr_type(x) if isinstance(x, (int, float, str, type(None), dtype)) else x.type for x in values], fields)
+    scalars = (int, float, str, type(None), dtype) if _HAS_NATIVE_CACHE_POLICY else (int, float, dtype)
+    return tuple_type([constexpr_type(x) if isinstance(x, scalars) else x.type for x in values], fields)
 
 
 class tuple(base_value):
@@ -2155,6 +2156,8 @@ def _resolve_native_cache_policy(cache_policy, pointer, is_load, cache_modifier,
     cache_policy = _unwrap_if_constexpr(cache_policy)
     if cache_policy is None:
         return None
+    if not _HAS_NATIVE_CACHE_POLICY:
+        raise ValueError("cache_policy requires a TLE-enabled compiler")
     resolve = getattr(cache_policy, "resolve_memory_access", None)
     if resolve is None or getattr(cache_policy, "to_ir", None) is None:
         raise TypeError("cache_policy must be a native tle.gpu cache policy object or None, "

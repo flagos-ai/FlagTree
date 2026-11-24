@@ -820,6 +820,9 @@ def handle_flagtree_backend():
 
 
 def handle_plugin_backend(editable):
+    # MetaX CMake packages its SDK support library alongside the in-tree lowering.
+    if flagtree_backend == "metax":
+        return
     plugin_mode = os.getenv("FLAGTREE_PLUGIN")
     if (plugin_mode and plugin_mode.upper() not in ["0", "OFF"]) or not flagtree_backend:
         return

@@ -3,8 +3,12 @@
 #define TRITON_NATIVE_CACHE_MODIFIERS
 include "mlir/IR/EnumAttr.td"
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 defvar TT_NativeCacheModifiers = !listconcat(
-  [I32EnumAttrCase<"PPU_LSU_DEFAULT", 11, "ppu_lsu_default">],
+  [I32EnumAttrCase<"LU", 8, "lu">,
+   I32EnumAttrCase<"NC", 9, "nc">,
+   I32EnumAttrCase<"BL", 10, "bl">,
+   I32EnumAttrCase<"PPU_LSU_DEFAULT", 11, "ppu_lsu_default">],
   !foreach(kp, [1, 2, 3, 4, 5, 6],
     I32EnumAttrCase<!strconcat("PPU_AIU_KP", !cast<string>(kp)),
                    !add(31, kp), !strconcat("ppu_aiu_kp", !cast<string>(kp))>),
@@ -28,4 +32,8 @@ defvar TT_NativeEvictionPolicies = [
   I32EnumAttrCase<"L2_EVICT_LAST", 11, "l2_evict_last">,
   I32EnumAttrCase<"L2_EVICT_UNCHANGED", 12, "l2_evict_unchanged">
 ];
+#else
+defvar TT_NativeCacheModifiers = []<I32EnumAttrCase>;
+defvar TT_NativeEvictionPolicies = []<I32EnumAttrCase>;
+#endif // __FLAGTREE_NATIVE_CACHE_POLICY__
 #endif

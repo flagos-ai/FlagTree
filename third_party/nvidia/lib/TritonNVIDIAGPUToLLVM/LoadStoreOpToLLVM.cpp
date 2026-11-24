@@ -155,11 +155,13 @@ Value createCachePolicy(triton::EvictionPolicy evict,
   if (computeCapability < 80)
     return {};
   StringRef priority;
-  if (isL2Eviction(evict))
-    priority = stringifyEvictionPolicy(evict).drop_front(3);
-  else if (evict == EvictionPolicy::EVICT_FIRST ||
-           evict == EvictionPolicy::EVICT_LAST)
+  if (evict == EvictionPolicy::EVICT_FIRST ||
+      evict == EvictionPolicy::EVICT_LAST)
     priority = stringifyEvictionPolicy(evict);
+#ifdef __TLE__
+  else if (isL2Eviction(evict))
+    priority = stringifyEvictionPolicy(evict).drop_front(3);
+#endif
   else
     return {};
   PTXBuilder ptx;
@@ -170,6 +172,7 @@ Value createCachePolicy(triton::EvictionPolicy evict,
   return ptx.launch(rewriter, loc, rewriter.getI64Type());
 }
 
+#ifdef __TLE__
 static LogicalResult verifyCacheControls(Operation *op, int capability,
                                          bool isLoad, bool isTMA = false) {
   auto cache = getCacheModifier(op);
@@ -207,6 +210,8 @@ static void addGlobalCacheQualifiers(PTXInstr &inst, Operation *op,
         .o("L1::evict_last", evict == EvictionPolicy::EVICT_LAST);
   inst.o("L2::cache_hint", hasL2Policy);
 }
+
+#endif // __TLE__
 
 // Contains some helper functions for both Load and Store conversions.
 struct LoadStoreConversionBase {
@@ -299,8 +304,10 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
   LogicalResult
   matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+#ifdef __TLE__
     if (failed(verifyCacheControls(op, computeCapability, true)))
       return failure();
+#endif
     auto ctx = getContext();
     auto loc = op->getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
@@ -510,9 +517,18 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
           createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
       // Define the instruction opcode
-      auto &ld = ptxBuilder.create("ld")->o("volatile", op.getIsVolatile());
-      addGlobalCacheQualifiers(ld, op, bool(l2PolicyReg));
-      ld.v(nWords).b(width);
+      auto &ld = ptxBuilder.create("ld")
+                     ->o("volatile", op.getIsVolatile())
+                     .global()
+                     .o("ca", op.getCache() == triton::CacheModifier::CA)
+                     .o("cg", op.getCache() == triton::CacheModifier::CG)
+                     .o("L1::evict_first",
+                        op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
+                     .o("L1::evict_last",
+                        op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+                     .o("L2::cache_hint", l2PolicyReg != Value())
+                     .v(nWords)
+                     .b(width);
 
       PTXBuilder::Operand *evictOpr = nullptr;
       if (l2PolicyReg)
@@ -577,8 +593,10 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
   LogicalResult
   matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+#ifdef __TLE__
     if (failed(verifyCacheControls(op, computeCapability, false)))
       return failure();
+#endif
     Value ptr = op.getPtr();
     Value value = op.getValue();
 
@@ -736,9 +754,20 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
       Value l2PolicyReg =
           createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
-      auto &ptxStoreInstr = *ptxBuilder.create("st");
-      addGlobalCacheQualifiers(ptxStoreInstr, op, bool(l2PolicyReg));
-      ptxStoreInstr.v(nWords).b(width);
+      auto &ptxStoreInstr =
+          ptxBuilder.create("st")
+              ->global()
+              .o("wb", op.getCache() == triton::CacheModifier::WB)
+              .o("cg", op.getCache() == triton::CacheModifier::CG)
+              .o("cs", op.getCache() == triton::CacheModifier::CS)
+              .o("wt", op.getCache() == triton::CacheModifier::WT)
+              .o("L1::evict_first",
+                 op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
+              .o("L1::evict_last",
+                 op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+              .o("L2::cache_hint", l2PolicyReg != Value())
+              .v(nWords)
+              .b(width);
 
       PTXBuilder::Operand *evictOpr = nullptr;
       if (l2PolicyReg)
@@ -1377,8 +1406,10 @@ struct AsyncCopyGlobalToLocalOpConversion
   LogicalResult
   matchAndRewrite(triton::gpu::AsyncCopyGlobalToLocalOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+#ifdef __TLE__
     if (failed(verifyCacheControls(op, computeCapability, true)))
       return failure();
+#endif
     auto ctx = getContext();
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
@@ -1492,20 +1523,20 @@ struct AsyncCopyGlobalToLocalOpConversion
 
     auto evict =
         getNvidiaAsyncEvictionPolicy(op.getEvict(), targetInfo.getPtxVersion());
-#ifndef __FLAGTREE_PIPELINE_ENHANCE__
-    // Preserve upstream's unversioned lowering of the two legacy policies.
-    // Explicit L2 policies introduced by TLE still require PTX 9.4.
+#if !defined(__TLE__) && !defined(__FLAGTREE_PIPELINE_ENHANCE__)
+    // The native build without pipeline enhancements retains its legacy policy.
     if (op.getEvict() == EvictionPolicy::EVICT_FIRST ||
         op.getEvict() == EvictionPolicy::EVICT_LAST)
       evict = op.getEvict();
 #endif
     Value l2PolicyReg =
         createCachePolicy(evict, rewriter, loc, computeCapability);
-    llvm::SmallDenseSet<unsigned> reportedWidths;
-    auto emitCpAsync = [&b, &reportedWidths, &op, evict, threadPred, ptrTy,
-                        hasMask = bool(llMask),
 #ifdef __TLE__
-                        materializeOther,
+    llvm::SmallDenseSet<unsigned> reportedWidths;
+#endif
+    auto emitCpAsync = [&b, &op, threadPred, ptrTy, hasMask = bool(llMask),
+#ifdef __TLE__
+                        &reportedWidths, evict, materializeOther,
 #endif
                         l2PolicyReg](RewriterBase &rewriter, Location loc,
                                      ArrayRef<Value> vals, Value shmemAddr,
@@ -1522,6 +1553,7 @@ struct AsyncCopyGlobalToLocalOpConversion
       if (op.getCache() != CacheModifier::NONE)
         srcCacheModifier = op.getCache();
 #endif
+#ifdef __TLE__
       auto effectiveCache = op.getCache() == CacheModifier::NONE
                                 ? CacheModifier::NONE
                                 : srcCacheModifier;
@@ -1530,6 +1562,7 @@ struct AsyncCopyGlobalToLocalOpConversion
                                      evict,
                                      "ca/cg is selected by transfer width; "
                                      "only supported L2 eviction is emitted");
+#endif
 
       auto structElem = vals[startIdx];
       auto srcElem = b.extract_val(ptrTy, structElem, 0);
@@ -1705,10 +1738,16 @@ struct AsyncTMACopyGlobalToLocalOpConversion
     if (op.getIsVolatile())
       return op.emitError("volatile not supported yet");
 
+    auto loc = op.getLoc();
+    Value l2Policy;
+#ifdef __TLE__
     if (failed(verifyCacheControls(op, 90, true, true)))
       return failure();
-    auto loc = op.getLoc();
-    auto l2Policy = createCachePolicy(op.getEvict(), rewriter, loc, 90);
+    l2Policy = createCachePolicy(op.getEvict(), rewriter, loc, 90);
+#else
+    if (op.getEvict() != EvictionPolicy::NORMAL)
+      return op.emitError("eviction policy not supported yet");
+#endif
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     ttg::MemDescType dstTy = op.getResult().getType();
     Type llvmElemTy = typeConverter->convertType(dstTy.getElementType());
@@ -1899,9 +1938,12 @@ struct AsyncTMACopyLocalToGlobalOpConversion
   matchAndRewrite(triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp op,
                   OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    Value l2Policy;
+#ifdef __TLE__
     if (failed(verifyCacheControls(op, 90, false, true)))
       return failure();
-    auto l2Policy = createCachePolicy(op.getEvict(), rewriter, op.getLoc(), 90);
+    l2Policy = createCachePolicy(op.getEvict(), rewriter, op.getLoc(), 90);
+#endif
     std::ostringstream tmaInst;
     auto rank = op.getCoord().size();
     tmaInst << "@$0 cp.async.bulk.tensor." << rank;

@@ -137,6 +137,12 @@ macro(flagtree_configure_options)
     add_definitions(-D__PPU__)
   endif()
 
+  # MetaX and MThreads also lower native policies through their vendor dialects.
+  if(FLAGTREE_TLE OR FLAGTREE_MTHREADS_TLE OR FLAGTREE_BACKEND STREQUAL "metax")
+    add_definitions(-D__FLAGTREE_NATIVE_CACHE_POLICY__)
+    list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_NATIVE_CACHE_POLICY__)
+  endif()
+
   set(FLAGTREE_PLUGIN "$ENV{FLAGTREE_PLUGIN}")
   if(FLAGTREE_PLUGIN)
     add_definitions(-D__FLAGTREE_PLUGIN__)

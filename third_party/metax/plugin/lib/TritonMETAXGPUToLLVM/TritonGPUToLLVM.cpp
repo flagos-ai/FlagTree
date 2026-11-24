@@ -19,6 +19,12 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
+#ifdef __MCTLE__
+#include "mctle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
+#include "mctle/dialect/include/IR/Dialect.h"
+#include "mctle/dialect/include/Transforms/PatternTleToLLVM.h"
+#endif
+
 #include "PatternTritonGPUOpToLLVM.h"
 #include "Utility.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
@@ -62,6 +68,9 @@ public:
     addLegalDialect<MACA::MACADialect>();
     addIllegalDialect<triton::TritonDialect>();
     addIllegalDialect<triton::gpu::TritonGPUDialect>();
+#ifdef __MCTLE__
+    addIllegalDialect<triton::mctle::McTleDialect>();
+#endif
     addLegalDialect<mlir::scf::SCFDialect>();
     addIllegalDialect<mlir::gpu::GPUDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
@@ -118,6 +127,14 @@ struct ConvertTritonGPUToLLVM
 
     RewritePatternSet patterns(context);
     int benefit = patternBenefitPrioritizeOverLLVMConversions;
+#ifdef __MCTLE__
+    triton::mctle::populateExtractTileOpToLLVMPatterns(typeConverter, patterns,
+                                                       targetInfo, benefit);
+    triton::mctle::populateInsertTileOpToLLVMPatterns(typeConverter, patterns,
+                                                      targetInfo, benefit);
+    triton::mctle::populateLocalPointersOpToLLVMPatterns(
+        typeConverter, targetInfo, patterns, benefit);
+#endif
     mlir::triton::METAX::populateViewOpToLLVMPatterns(typeConverter, patterns,
                                                       benefit);
     mlir::triton::METAX::populateConvertLayoutOpToLLVMPatterns(

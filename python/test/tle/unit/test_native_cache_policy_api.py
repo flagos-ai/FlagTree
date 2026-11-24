@@ -124,21 +124,33 @@ def test_hip_target_uses_selected_backend(monkeypatch):
         resolve(policy, "hip")
 
 
+def test_native_policy_requires_tle_bindings(monkeypatch):
+    from triton.language import core
+
+    monkeypatch.setattr(core, "_HAS_NATIVE_CACHE_POLICY", False)
+    assert core._resolve_native_cache_policy(None, None, True, "", "", None) is None
+    with pytest.raises(ValueError, match="requires a TLE-enabled compiler"):
+        core._resolve_native_cache_policy(gpu.CachePolicy(l1="evict_first"), None, True, "", "", None)
+
+
 def test_resolve_memory_policy_respects_common_ir_and_backend_flags(monkeypatch):
     from triton.experimental.tle.language.gpu import _cache_policy
     from triton.experimental.tle.language.gpu import semantic as tle_semantic
     from triton.experimental.tle.language.gpu.iluvatar import copy as iluvatar_copy
     from triton.experimental.tle.language.gpu.mthreads import common as mthreads_common
     pointer = SimpleNamespace(dtype=SimpleNamespace(address_space=1))
-    semantic = SimpleNamespace(builder=SimpleNamespace(options=SimpleNamespace(arch=90)))
+    options = SimpleNamespace(arch=31, supports_lsu_cache_policy=True)
+    semantic = SimpleNamespace(builder=SimpleNamespace(options=options))
     mthreads_policy = gpu.mthreads.LSUCachePolicy()
     monkeypatch.setattr(mthreads_common, "enabled", lambda: True)
     monkeypatch.setattr(iluvatar_copy, "enabled", lambda: False)
     monkeypatch.setattr(tle_semantic, "COMMON_IR_ENABLED", False)
     assert _cache_policy.resolve_memory_policy(mthreads_policy, pointer, True, "", "", semantic) is mthreads_policy
-    semantic.builder.options.supports_lsu_cache_policy = False
+    options.arch = 32
+    options.supports_lsu_cache_policy = False
     for is_load in (True, False):
-        assert _cache_policy.resolve_memory_policy(mthreads_policy, pointer, is_load, "", "", semantic) is None
+        with pytest.raises(ValueError, match="LSUCachePolicy requires MUSA mp_31 .*mp_32"):
+            _cache_policy.resolve_memory_policy(mthreads_policy, pointer, is_load, "", "", semantic)
     with pytest.raises(ValueError, match="cannot be combined"):
         _cache_policy.resolve_memory_policy(mthreads_policy, pointer, True, ".cg", "", semantic)
     monkeypatch.setattr(tle_semantic, "COMMON_IR_ENABLED", True)

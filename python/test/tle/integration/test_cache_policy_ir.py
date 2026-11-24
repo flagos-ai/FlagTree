@@ -48,6 +48,22 @@ def test_string_and_object_share_memory_controls(read, write):
             assert controls == [read[1:], write[1:]]
 
 
+@pytest.mark.skipif(BACKEND != "metax", reason="MACA native cache metadata")
+def test_metax_streaming_policy_reaches_installed_llvm_lowering():
+    x = torch.arange(256, device=DEVICE, dtype=torch.float32)
+    y = torch.full_like(x, -17)
+    policy = gpu.metax.CachePolicy("cs")
+    baseline = _memory[(1, )](x, y, None, None)
+    y.fill_(-17)
+    kernel = _memory[(1, )](x, y, policy, policy)
+    for instruction in ("load", "store"):
+        accesses = [line for line in kernel.asm["llir"].splitlines() if re.search(rf"\b{instruction}\s", line)]
+        assert any("!metaxgpu.l2rp" in line and "!nontemporal" in line for line in accesses)
+    assert "!metaxgpu.l2rp" not in baseline.asm["llir"]
+    torch.testing.assert_close(y[:253], x[:253] + 1, rtol=0, atol=0)
+    assert torch.all(y[253:] == -17)
+
+
 @pytest.mark.skipif(BACKEND != "hcu", reason="gfx936 write-through buffer store")
 def test_hcu_legacy_write_through_wait():
     x = torch.arange(256, dtype=torch.float32, device=DEVICE)
