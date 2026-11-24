@@ -784,8 +784,8 @@ struct TritonTleFuseNodeRemoteTransfers
 
         auto failure = fusionFailures.find(op.getOperation());
         if (failure != fusionFailures.end())
-          op.emitOpError() << "could not fuse " << op.getSpace() << " remote pointer: "
-                           << failure->second;
+          op.emitOpError() << "could not fuse " << op.getSpace()
+                           << " remote pointer: " << failure->second;
         else
           op.emitOpError()
               << "could not fuse " << op.getSpace()

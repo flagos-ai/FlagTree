@@ -76,8 +76,8 @@ lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
                   Value commHandle, Value peer, Value srcOffset,
                   Value dstOffset, Value nelems, int32_t contextId,
                   int64_t elemBytes, tle::FlagCXTeamKind teamKind,
-                  tle::FlagCXCoopKind coopKind,
-                  NodeTransferKind kind, std::optional<int64_t> constantNelems,
+                  tle::FlagCXCoopKind coopKind, NodeTransferKind kind,
+                  std::optional<int64_t> constantNelems,
                   ConversionPatternRewriter &rewriter) {
   ModuleOp module = op->getParentOfType<ModuleOp>();
   if (!module)
@@ -117,8 +117,8 @@ lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
   }
 
   auto makeI32 = [&](int32_t value) {
-    return rewriter.create<LLVM::ConstantOp>(
-        loc, i32Ty, rewriter.getI32IntegerAttr(value));
+    return rewriter.create<LLVM::ConstantOp>(loc, i32Ty,
+                                             rewriter.getI32IntegerAttr(value));
   };
   Value teamKindValue = makeI32(static_cast<int32_t>(teamKind));
   Value contextIdValue = makeI32(contextId);
@@ -132,8 +132,9 @@ lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
       loc, TypeRange{}, FlatSymbolRefAttr::get(transfer),
       ValueRange{comm, isPut ? dstMem : srcMem,
                  isPut ? dstByteOffset : srcByteOffset, isPut ? srcMem : dstMem,
-                 isPut ? srcByteOffset : dstByteOffset, byteCount, teamKindValue,
-                 peer, contextIdValue, coopKindValue, scope, order});
+                 isPut ? srcByteOffset : dstByteOffset, byteCount,
+                 teamKindValue, peer, contextIdValue, coopKindValue, scope,
+                 order});
   return success();
 }
 
@@ -150,8 +151,7 @@ struct NodePutOpConversion : public ConvertOpToLLVMPattern<tle::NodePutOp> {
             adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
             static_cast<int32_t>(op.getContextIdAttr().getInt()),
             op.getElemBytesAttr().getInt(), op.getTeamKind(), op.getCoopKind(),
-            NodeTransferKind::Put,
-            getConstantInt(op.getNelems()), rewriter)))
+            NodeTransferKind::Put, getConstantInt(op.getNelems()), rewriter)))
       return failure();
     rewriter.eraseOp(op);
     return success();
@@ -171,8 +171,7 @@ struct NodeGetOpConversion : public ConvertOpToLLVMPattern<tle::NodeGetOp> {
             adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
             static_cast<int32_t>(op.getContextIdAttr().getInt()),
             op.getElemBytesAttr().getInt(), op.getTeamKind(), op.getCoopKind(),
-            NodeTransferKind::Get,
-            getConstantInt(op.getNelems()), rewriter)))
+            NodeTransferKind::Get, getConstantInt(op.getNelems()), rewriter)))
       return failure();
     rewriter.eraseOp(op);
     return success();

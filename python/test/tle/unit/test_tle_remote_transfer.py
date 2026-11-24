@@ -57,7 +57,7 @@ def _compile_ttgir(kernel, signature, **constants):
 
 
 @pytest.mark.parametrize("space,mode,context_id", [("device", "transfer", None), ("device", "transfer", 2),
-                                                    ("node", None, 3), ("node", "transfer", 1)])
+                                                   ("node", None, 3), ("node", "transfer", 1)])
 @pytest.mark.parametrize("is_put", [True, False], ids=["put", "get"])
 def test_transfer_fusion(space, mode, context_id, is_put):
     ttgir, metadata = _compile_ttgir(
@@ -101,9 +101,9 @@ def test_device_transfer_requires_a_paired_copy(capfd):
 
 def test_device_transfer_rejects_strided_copy(capfd):
     with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_ttgir(
-            _transfer, {"buffer": "*fp32", "peer": "i32", "src_offset": "i64", "dst_offset": "i64", "valid_n": "i32"},
-            SPACE="device", MODE="transfer", IS_PUT=True, CONTEXT_ID=None, BLOCK_SIZE=16, STRIDE=2)
+        _compile_ttgir(_transfer,
+                       {"buffer": "*fp32", "peer": "i32", "src_offset": "i64", "dst_offset": "i64", "valid_n": "i32"},
+                       SPACE="device", MODE="transfer", IS_PUT=True, CONTEXT_ID=None, BLOCK_SIZE=16, STRIDE=2)
     assert "must use a scalar offset plus a contiguous" in capfd.readouterr().err
 
 
