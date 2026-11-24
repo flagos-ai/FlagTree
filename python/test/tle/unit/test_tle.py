@@ -577,29 +577,33 @@ class TestBufferedTensor:
         def create_pipe_create(self, fields, capacity, scope, pipe_name, field_names, reader_names, one_shot):
             self.pipe_create_args = (list(fields), capacity, scope, pipe_name, list(field_names), list(reader_names),
                                      one_shot)
+            return "pipe_identity"
 
-        def create_pipe_writer_acquire(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        def create_pipe_writer_acquire(self, identity, fields, stage, phase, capacity, scope, pipe_name, field_names):
             self.pipe_ops.append(
-                ("writer_acquire", list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
+                ("writer_acquire", identity, list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
 
-        def create_pipe_writer_commit(self, fields, stage, capacity, scope, pipe_name, field_names):
-            self.pipe_ops.append(("writer_commit", list(fields), stage, capacity, scope, pipe_name, list(field_names)))
-
-        def create_pipe_writer_close(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        def create_pipe_writer_commit(self, identity, fields, stage, capacity, scope, pipe_name, field_names):
             self.pipe_ops.append(
-                ("writer_close", list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
+                ("writer_commit", identity, list(fields), stage, capacity, scope, pipe_name, list(field_names)))
 
-        def create_pipe_reader_wait(self, fields, stage, phase, capacity, scope, pipe_name, field_names, reader_name,
-                                    reader_field_names):
-            self.pipe_ops.append(("reader_wait", list(fields), stage, phase, capacity, scope, pipe_name,
+        def create_pipe_writer_close(self, identity, fields, stage, phase, capacity, scope, pipe_name, field_names):
+            self.pipe_ops.append(
+                ("writer_close", identity, list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
+
+        def create_pipe_reader_wait(self, identity, fields, stage, phase, capacity, scope, pipe_name, field_names,
+                                    reader_name, reader_field_names):
+            self.pipe_ops.append(("reader_wait", identity, list(fields), stage, phase, capacity, scope, pipe_name,
                                   list(field_names), reader_name, list(reader_field_names)))
             return "is_closed"
 
-        def create_pipe_reader_release(self, fields, stage, capacity, scope, pipe_name, field_names, reader_name,
-                                       reader_field_names):
-            self.pipe_ops.append(
-                ("reader_release", list(fields), stage, capacity, scope, pipe_name, list(field_names), reader_name,
-                 list(reader_field_names)))
+        def create_pipe_reader_release(self, identity, fields, stage, capacity, scope, pipe_name, field_names,
+                                       reader_name, reader_field_names):
+            self.pipe_ops.append(("reader_release", identity, list(fields), stage, capacity, scope, pipe_name,
+                                  list(field_names), reader_name, list(reader_field_names)))
+
+        def create_pipe_drain(self, identity, fields, capacity, scope, pipe_name, field_names):
+            self.pipe_ops.append(("drain", identity, list(fields), capacity, scope, pipe_name, list(field_names)))
 
     class _FakeSemantic:
 
@@ -1002,14 +1006,12 @@ class TestPipeFrontend:
         with pytest.raises(ValueError, match="compile-time bool"):
             tle.pipe(capacity=4, one_shot="yes", a=a, _semantic=semantic)
 
-    def test_pipe_rejects_missing_or_invalid_fields(self):
+    def test_pipe_rejects_invalid_fields(self):
         a, semantic = self._make_buffer([4, 16])
         tmem, _ = self._make_buffer([4, 16], storage=tle.gpu.tmem)
         wrong_capacity, _ = self._make_buffer([2, 16])
         rank_one, _ = self._make_buffer([4])
 
-        with pytest.raises(ValueError, match="at least one"):
-            tle.pipe(capacity=4, _semantic=semantic)
         with pytest.raises(ValueError, match="reserved"):
             tle.pipe(capacity=4, fields=a, _semantic=semantic)
         with pytest.raises(ValueError, match="buffered_tensor"):
@@ -1081,10 +1083,10 @@ class TestPipeFrontend:
         assert result.slot.b.shape == [32, 16]
         assert not hasattr(result.slot, "a")
         assert result.slot.type.fields == [("b", result.slot.b.type)]
-        assert semantic.builder.pipe_ops[0] == ("reader_wait", ["base", "base"], "stage_0", "pred_False", 4, "cta", "",
-                                                ["a", "b"], "right", ["b"])
-        assert semantic.builder.pipe_ops[1] == ("reader_release", ["base", "base"], "stage_0", 4, "cta", "", ["a", "b"],
-                                                "right", ["b"])
+        assert semantic.builder.pipe_ops[0] == ("reader_wait", "pipe_identity", ["base", "base"], "stage_0",
+                                                "pred_False", 4, "cta", "", ["a", "b"], "right", ["b"])
+        assert semantic.builder.pipe_ops[1] == ("reader_release", "pipe_identity", ["base", "base"], "stage_0", 4,
+                                                "cta", "", ["a", "b"], "right", ["b"])
 
     def test_pipe_reader_rejects_invalid_field_subset(self):
         a, semantic = self._make_buffer([4, 16])
@@ -1138,10 +1140,10 @@ class TestPipeFrontend:
             "reader_wait",
             "reader_release",
         ]
-        assert semantic.builder.pipe_ops[0] == ("writer_acquire", ["base"], "stage_0", "pred_False", 4, "cta", "a",
-                                                ["a"])
-        assert semantic.builder.pipe_ops[3] == ("reader_wait", ["base"], "stage_0", "pred_False", 4, "cta", "a", ["a"],
-                                                "", ["a"])
+        assert semantic.builder.pipe_ops[0] == ("writer_acquire", "pipe_identity", ["base"], "stage_0", "pred_False", 4,
+                                                "cta", "a", ["a"])
+        assert semantic.builder.pipe_ops[3] == ("reader_wait", "pipe_identity", ["base"], "stage_0", "pred_False", 4,
+                                                "cta", "a", ["a"], "", ["a"])
 
     @pytest.mark.skip_if_tle_unsupported("pipe")
     def test_pipe_one_shot_keeps_frontend_contract(self, monkeypatch):
@@ -1163,6 +1165,57 @@ class TestPipeFrontend:
         assert isinstance(wait_result, tle.pipe_wait_result)
         with pytest.raises(ValueError, match="one_shot"):
             writer.close(0, _semantic=semantic)
+
+    @pytest.mark.skip_if_tle_unsupported("pipe")
+    def test_pipe_fieldless_one_shot_is_a_control_handoff(self):
+        _, semantic = self._make_buffer([1, 16])
+        pipe = tle.pipe(capacity=1, name="ready", one_shot=True, _semantic=semantic)
+        writer = pipe.writer(_semantic=semantic)
+        reader = pipe.reader(_semantic=semantic)
+
+        writer.commit(0, _semantic=semantic)
+        wait_result = reader.wait(0, _semantic=semantic)
+
+        assert pipe.fields == {}
+        assert pipe.type.fields == []
+        assert semantic.builder.pipe_create_args == ([], 1, "cta", "ready", [], [], True)
+        assert semantic.builder.pipe_ops[0] == ("writer_commit", "pipe_identity", [], "stage_0", 1, "cta", "ready", [])
+        assert semantic.builder.pipe_ops[1] == ("reader_wait", "pipe_identity", [], "stage_0", "pred_False", 1, "cta",
+                                                "ready", [], "", [])
+        assert wait_result.slot.fields == {}
+
+    @pytest.mark.skip_if_tle_unsupported("pipe")
+    def test_pipe_fieldless_cyclic_control_handoff_and_drain(self):
+        _, semantic = self._make_buffer([1, 16])
+        pipe = tle.pipe(capacity=1, name="handoff", _semantic=semantic)
+        writer = pipe.writer(_semantic=semantic)
+        reader = pipe.reader(_semantic=semantic)
+
+        writer.acquire(3, _semantic=semantic)
+        writer.commit(3, _semantic=semantic)
+        reader.wait(3, _semantic=semantic)
+        reader.release(3, _semantic=semantic)
+        writer.close(4, _semantic=semantic)
+        pipe.wait_drained(_semantic=semantic)
+
+        assert pipe.fields == {}
+        assert semantic.builder.pipe_create_args == ([], 1, "cta", "handoff", [], [], False)
+        assert [op[0] for op in semantic.builder.pipe_ops] == [
+            "writer_acquire",
+            "writer_commit",
+            "reader_wait",
+            "reader_release",
+            "writer_close",
+            "drain",
+        ]
+
+    @pytest.mark.skip_if_tle_unsupported("pipe")
+    def test_one_shot_pipe_rejects_drain(self):
+        _, semantic = self._make_buffer([1, 16])
+        pipe = tle.pipe(capacity=1, one_shot=True, _semantic=semantic)
+
+        with pytest.raises(ValueError, match="one_shot"):
+            pipe.wait_drained(_semantic=semantic)
 
 
 class TestIntegration:
@@ -1243,3 +1296,146 @@ class TestErrorHandling:
 if __name__ == "__main__":
     # Run tests
     pytest.main([__file__, "-v"])
+
+
+class _MusaBuilder(TestBufferedTensor._FakeBuilder):
+    mark_musa_tle_auto_shared_layout = True
+
+    def create_pipe_create(self, fields, capacity, scope, pipe_name, field_names, readers, one_shot):
+        super().create_pipe_create(fields, capacity, scope, pipe_name, field_names, readers, one_shot)
+
+    def create_pipe_writer_acquire(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("acquire", fields, stage, phase))
+
+    def create_pipe_writer_commit(self, fields, stage, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("commit", fields, stage))
+
+    def create_pipe_writer_close(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("close", fields, stage, phase))
+
+    def create_pipe_reader_wait(self, fields, stage, phase, capacity, scope, pipe_name, field_names, reader_name,
+                                reader_field_names):
+        self.pipe_ops.append(("wait", fields, stage, phase))
+        return "is_closed"
+
+    def create_pipe_reader_release(self, fields, stage, capacity, scope, pipe_name, field_names, reader_name,
+                                   reader_field_names):
+        self.pipe_ops.append(("release", fields, stage))
+
+
+def test_musa_native_pipe_uses_existing_field_only_signature(monkeypatch):
+    from triton.experimental.tle.language.gpu import types
+    from triton.experimental.tle.language.gpu.mthreads import common
+    monkeypatch.setattr(common, "enabled", lambda: True)
+    semantic = TestBufferedTensor._FakeSemantic()
+    semantic.builder = _MusaBuilder()
+    field = types.buffered_tensor("base", tl.float16, [2, 16], types.smem,
+                                  tle.gpu.swizzled_shared_layout.make_default(rank=2), semantic)
+    edge = tle.pipe(capacity=2, data=field, _semantic=semantic)
+    writer, reader = edge.writer(_semantic=semantic), edge.reader(_semantic=semantic)
+    writer.acquire(0, _semantic=semantic)
+    writer.commit(0, _semantic=semantic)
+    writer.close(1, _semantic=semantic)
+    reader.wait(0, _semantic=semantic)
+    reader.release(0, _semantic=semantic)
+    assert [x[0] for x in semantic.builder.pipe_ops] == ["acquire", "commit", "close", "wait", "release"]
+    values = []
+    edge._flatten_ir(values)
+    assert values == ["base"]
+    copied, cursor = edge.type._unflatten_ir(values, 0)
+    assert cursor == 1 and copied.fields["data"].handle == "base"
+
+
+class _IluvatarBuilder:
+    """The field-only ``create_pipe_*`` signatures ``iluvatar_tle`` binds.
+
+    Stands in for the Iluvatar builder's pipe methods only; the frontend picks
+    this ABI from the backend identity, which no synthetic builder can carry.
+    """
+
+    def __init__(self):
+        self._base = TestBufferedTensor._FakeBuilder()
+        self.pipe_ops = []
+        self.pipe_create_args = None
+
+    def __getattr__(self, name):
+        # Buffer helpers (memdesc types, tile accessors) come from the shared
+        # fake; only the pipe methods below are field-only.
+        return getattr(self._base, name)
+
+    def create_pipe_create(self, fields, capacity, scope, pipe_name, field_names, readers, one_shot):
+        self.pipe_create_args = (list(fields), capacity, scope, pipe_name, list(field_names), list(readers), one_shot)
+
+    def create_pipe_writer_acquire(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("acquire", list(fields), stage, phase))
+
+    def create_pipe_writer_commit(self, fields, stage, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("commit", list(fields), stage))
+
+    def create_pipe_writer_close(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("close", list(fields), stage, phase))
+
+    def create_pipe_reader_wait(self, fields, stage, phase, capacity, scope, pipe_name, field_names, reader_name,
+                                reader_field_names):
+        self.pipe_ops.append(("wait", list(fields), stage, phase))
+        return "is_closed"
+
+    def create_pipe_reader_release(self, fields, stage, capacity, scope, pipe_name, field_names, reader_name,
+                                   reader_field_names):
+        self.pipe_ops.append(("release", list(fields), stage))
+
+
+def test_iluvatar_pipe_detection_follows_backend_and_rejects_synthetic_builders(monkeypatch):
+    """The ABI follows the build's backend, and only for a real builder.
+
+    Capability probes on the builder cannot separate the two ABIs (an Iluvatar
+    build links the shared TLE IR library as well), so detection reads the
+    backend. Synthetic builders must keep the shared model because the portable
+    frontend tests run on every backend, Iluvatar included.
+    """
+    from triton._C.libtriton import ir
+    from triton.experimental.tle.language.gpu.iluvatar import pipe as iluvatar_pipe
+
+    real_builder = ir.builder.__new__(ir.builder)
+    monkeypatch.setattr(iluvatar_pipe, "_is_iluvatar_backend", lambda: True)
+    assert iluvatar_pipe.is_backend_builder(real_builder)
+    assert not iluvatar_pipe.is_backend_builder(_IluvatarBuilder())
+    assert not iluvatar_pipe.is_backend_builder(object())
+
+    monkeypatch.setattr(iluvatar_pipe, "_is_iluvatar_backend", lambda: False)
+    assert not iluvatar_pipe.is_backend_builder(real_builder)
+
+
+def test_iluvatar_native_pipe_uses_field_only_signature(monkeypatch):
+    from triton.experimental.tle.language.gpu import types
+    from triton.experimental.tle.language.gpu.iluvatar import pipe as iluvatar_pipe
+    # The ABI follows the active backend; stand in the Iluvatar builder.
+    monkeypatch.setattr(iluvatar_pipe, "is_backend_builder", lambda builder: True)
+    semantic = TestBufferedTensor._FakeSemantic()
+    semantic.builder = _IluvatarBuilder()
+    field = types.buffered_tensor("base", tl.float16, [2, 16], types.smem,
+                                  tle.gpu.swizzled_shared_layout.make_default(rank=2), semantic)
+    edge = tle.pipe(capacity=2, data=field, _semantic=semantic)
+    writer, reader = edge.writer(_semantic=semantic), edge.reader(_semantic=semantic)
+    writer.acquire(0, _semantic=semantic)
+    writer.commit(0, _semantic=semantic)
+    writer.close(1, _semantic=semantic)
+    reader.wait(0, _semantic=semantic)
+    reader.release(0, _semantic=semantic)
+
+    # iluvatar_tle keeps the field-only ABI: no SSA identity is threaded through.
+    assert semantic.builder.pipe_create_args == (["base"], 2, "cta", "", ["data"], [], False)
+    assert [x[0] for x in semantic.builder.pipe_ops] == ["acquire", "commit", "close", "wait", "release"]
+    # The first operand after the op name is the pipe's field handle list.
+    assert all(isinstance(x[1], list) and x[1] == ["base"] for x in semantic.builder.pipe_ops)
+    assert edge.identity is None
+    values = []
+    edge._flatten_ir(values)
+    assert values == ["base"]
+    copied, cursor = edge.type._unflatten_ir(values, 0)
+    assert cursor == 1 and copied.fields["data"].handle == "base"
+
+    with pytest.raises(NotImplementedError, match="wait_drained"):
+        edge.wait_drained(_semantic=semantic)
+    with pytest.raises(ValueError, match="at least one payload field"):
+        tle.pipe(capacity=1, name="p", one_shot=True, _semantic=semantic)
