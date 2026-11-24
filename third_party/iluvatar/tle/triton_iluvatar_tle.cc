@@ -119,6 +119,8 @@ void init_triton_iluvatar_tle_ir(py::module m) {
 
   auto &builderCls = *builderClsPtr;
   builderCls
+      .def("mark_iluvatar_tle_pipe",
+           [](TritonOpBuilder &self) -> void { /* presence-only sentinel */ })
       .def("get_blocked_encoding",
            [](TritonOpBuilder &self, std::vector<unsigned> &sizePerThread,
               std::vector<unsigned> &threadsPerWarp,

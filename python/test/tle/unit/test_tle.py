@@ -1385,25 +1385,23 @@ class _IluvatarBuilder:
         self.pipe_ops.append(("release", list(fields), stage))
 
 
-def test_iluvatar_pipe_detection_follows_backend_and_rejects_synthetic_builders(monkeypatch):
-    """The ABI follows the build's backend, and only for a real builder.
+def test_iluvatar_pipe_detection_follows_builder_native_capability():
+    """The field-only ABI is gated on an Iluvatar-native builder capability.
 
-    Capability probes on the builder cannot separate the two ABIs (an Iluvatar
-    build links the shared TLE IR library as well), so detection reads the
-    backend. Synthetic builders must keep the shared model because the portable
-    frontend tests run on every backend, Iluvatar included.
+    An Iluvatar build links the shared TLE IR library too, so the two pipe ABIs
+    cannot be separated by a shared method; gate on a builder method only the
+    Iluvatar binding registers. Synthetic builders keep the shared model.
     """
-    from triton._C.libtriton import ir
     from triton.experimental.tle.language.gpu.iluvatar import pipe as iluvatar_pipe
 
-    real_builder = ir.builder.__new__(ir.builder)
-    monkeypatch.setattr(iluvatar_pipe, "_is_iluvatar_backend", lambda: True)
-    assert iluvatar_pipe.is_backend_builder(real_builder)
+    class _IluvatarNativeBuilder:
+
+        def mark_iluvatar_tle_pipe(self):
+            return None
+
+    assert iluvatar_pipe.is_backend_builder(_IluvatarNativeBuilder())
     assert not iluvatar_pipe.is_backend_builder(_IluvatarBuilder())
     assert not iluvatar_pipe.is_backend_builder(object())
-
-    monkeypatch.setattr(iluvatar_pipe, "_is_iluvatar_backend", lambda: False)
-    assert not iluvatar_pipe.is_backend_builder(real_builder)
 
 
 def test_iluvatar_native_pipe_uses_field_only_signature(monkeypatch):

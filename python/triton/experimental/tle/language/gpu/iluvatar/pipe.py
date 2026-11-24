@@ -31,26 +31,13 @@ if TYPE_CHECKING:
     from ...semantic import TLESemantic
 
 
-def _is_iluvatar_backend() -> bool:
-    # Reuse the backend predicate the Iluvatar copy path already uses, so pipe
-    # and copy agree on what an Iluvatar build is.
-    from . import copy as iluvatar_copy
-    return iluvatar_copy.enabled()
-
-
 def is_backend_builder(builder) -> bool:
-    # iluvatar_tle pipe ops keep the field-only operand list; the shared model
-    # threads an SSA identity operand first. The two ABIs cannot be told apart
-    # by probing this builder: an Iluvatar build links the shared TLE IR library
-    # too, so the class carries both overload sets. Decide from the backend the
-    # build routes to.
-    #
-    # Synthetic builders used by the portable frontend tests are not
-    # ``ir.builder`` instances and must keep the shared model, including when
-    # those tests run inside an Iluvatar build.
-    if not isinstance(builder, ir.builder):
-        return False
-    return _is_iluvatar_backend()
+    # Gate the iluvatar field-only ABI on a backend-local native capability,
+    # matching the MUSA adapter. A shared-method or backend-flag probe cannot
+    # separate the two ABIs reliably (an Iluvatar build links the shared TLE IR
+    # library too, and synthetic builders used by portable frontend tests must
+    # keep the shared model).
+    return hasattr(builder, "mark_iluvatar_tle_pipe")
 
 
 def validate_pipe_options(scope, readers, one_shot, fields) -> None:
@@ -67,6 +54,14 @@ def validate_pipe_options(scope, readers, one_shot, fields) -> None:
 # shared pipe model carries a separate SSA identity.
 _validate_pipe_reader_name = gpu_types._validate_pipe_reader_name
 _validate_pipe_reader_fields = gpu_types._validate_pipe_reader_fields
+
+
+class pipe_writer_type(gpu_types.pipe_writer_type):
+    pass
+
+
+class pipe_reader_type(gpu_types.pipe_reader_type):
+    pass
 
 
 class pipe_value_type(gpu_types.pipe_value_type):
@@ -138,7 +133,7 @@ class pipe_value(gpu_types.pipe_value):
 
 class pipe_writer(gpu_types.pipe_writer):
 
-    type_cls = gpu_types.pipe_writer_type
+    type_cls = pipe_writer_type
 
     def __init__(self, pipe: pipe_value, reader_name=None, field_names=None):
         if reader_name is not None or field_names is not None:
@@ -172,7 +167,7 @@ class pipe_writer(gpu_types.pipe_writer):
 
 class pipe_reader(gpu_types.pipe_reader):
 
-    type_cls = gpu_types.pipe_reader_type
+    type_cls = pipe_reader_type
 
     def _reader_field_names(self):
         if self.field_names is None:
@@ -198,5 +193,5 @@ class pipe_reader(gpu_types.pipe_reader):
                                                      self._reader_field_names())
 
 
-pipe_writer_type = gpu_types.pipe_writer_type
-pipe_reader_type = gpu_types.pipe_reader_type
+pipe_writer_type.value_cls = pipe_writer
+pipe_reader_type.value_cls = pipe_reader
