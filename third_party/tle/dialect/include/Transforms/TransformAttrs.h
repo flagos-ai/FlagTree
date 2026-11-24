@@ -73,6 +73,12 @@ inline constexpr llvm::StringLiteral kTleReorderLoopLoadsAttr("tt.reorder");
 // and barrier analyses must not recompute or move it.
 inline constexpr llvm::StringLiteral kTlePipeWaitAttr("tle.pipe_wait");
 
+// Marks a gpu.barrier that TleInsertLocalPointerBarriers emitted to order the
+// shared-memory accesses of tle.gpu.local_ptr. A backend whose plain barrier
+// also drains global memory can lower it to a shared-memory-only barrier.
+inline constexpr llvm::StringLiteral
+    kTleSharedOnlyBarrierAttr("tle.shared_only");
+
 } // namespace mlir::triton::tle
 
 #endif // TRITON_TLE_TRANSFORM_ATTRS_H

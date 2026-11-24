@@ -23,9 +23,13 @@
 
 #include "BarrierUtility.h"
 #include "PatternTritonGPUOpToLLVM.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
+#endif // __TLE__
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -126,6 +130,29 @@ struct LocalBarrierOpConversion
   }
 };
 
+#ifdef __TLE__
+// The barrier TleInsertLocalPointerBarriers emits between the shared-memory
+// accesses of tle.gpu.local_ptr. A plain gpu.barrier reaches ppu-llc as
+// barrier0, which also drains the warp's outstanding global accesses; ordering
+// shared memory needs only the shared-memory fence (PPUBarrierFence).
+struct SharedOnlyBarrierOpConversion
+    : public ConvertOpToLLVMPattern<mlir::gpu::BarrierOp> {
+  using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(mlir::gpu::BarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (!op->hasAttr(tle::kTleSharedOnlyBarrierAttr))
+      return failure();
+    unsigned numThreads = triton::gpu::lookupNumWarps(op) *
+                          triton::gpu::lookupThreadsPerWarp(rewriter);
+    ppu::createPPUSharedMemoryBarrier(rewriter, op.getLoc(), numThreads);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+#endif // __TLE__
+
 } // namespace
 
 void mlir::triton::ppu::populateBarrierOpToLLVMPatterns(
@@ -144,5 +171,7 @@ void mlir::triton::ppu::populateBarrierOpToLLVMPatterns(
 #ifdef __TLE__
   patterns.add<NamedBarrierArriveOpConversion, NamedBarrierWaitOpConversion>(
       typeConverter, benefit);
+  patterns.add<SharedOnlyBarrierOpConversion>(typeConverter,
+                                              benefit.getBenefit() + 1);
 #endif
 }
