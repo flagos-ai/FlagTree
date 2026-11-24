@@ -35,7 +35,7 @@ from contextlib import contextmanager
 from typing import cast, Any, Callable, Generator, Generic, Optional, Protocol, Type, TypeVar, TypedDict, TYPE_CHECKING, Union
 
 from triton._C.libtriton import getenv, getenv_bool  # type: ignore
-from ._flagtree_spec import spec_call
+from ._flagtree_backend import FLAGTREE_BACKEND
 
 if TYPE_CHECKING:
     from .runtime.cache import CacheManager, RemoteCacheBackend
@@ -433,7 +433,7 @@ class compilation_knobs(base_knobs):
     override: env_bool = env_bool("TRITON_KERNEL_OVERRIDE")
     dump_ir: env_bool = env_bool("TRITON_KERNEL_DUMP")
     dump_ir_extract_di_local_variables: env_bool = env_bool("LLVM_EXTRACT_DI_LOCAL_VARIABLES")
-    store_binary_only: env_bool = env_bool("TRITON_STORE_BINARY_ONLY")
+    store_binary_only: env_bool = env_bool("TRITON_STORE_BINARY_ONLY", default=FLAGTREE_BACKEND == "xpu")
     always_compile: env_bool = env_bool("TRITON_ALWAYS_COMPILE")
     # TODO: Use enum to constrain / 'typecheck' the values
     use_ir_loc: env_opt_str = env_opt_str("USE_IR_LOC")
@@ -542,6 +542,8 @@ class runtime_knobs(base_knobs):
     # debug is on critical path for kernel launches
     # avoid repeated reads from env-var by calling get directly
     debug: bool = env_bool("TRITON_DEBUG").get()
+    # XPU's specialized JIT uses this to bypass the memoized launcher fast path.
+    disable_launch_fast_path: bool = env_bool("TRITON_DISABLE_LAUNCH_FAST_PATH").get()
     override_arch: env_opt_str = env_opt_str("TRITON_OVERRIDE_ARCH")
 
     launch_enter_hook: HookChain[LaunchHook] = HookChain()
@@ -735,7 +737,3 @@ proton = proton_knobs()
 def refresh_knobs():
     runtime.debug = env_bool("TRITON_DEBUG").get()
     compilation.instrumentation_mode = env_str("TRITON_INSTRUMENTATION_MODE", "").get()
-
-
-# flagtree backend call specialization
-spec_call("knobs_extend_globals", globals())
