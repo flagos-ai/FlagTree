@@ -1599,6 +1599,16 @@ def copy(
             if tl._unwrap_if_constexpr(offsets) is not None:
                 raise ValueError(
                     "GPU CommonIR normal copy does not support offsets; offset the global pointers instead")
+            buffer, pointers = (dst, src) if direction == CopyDirection.GM_TO_LOCAL else (src, dst)
+            requested_shape = tuple(int(tl._unwrap_if_constexpr(dim)) for dim in shape)
+            buffer_shape = tuple(buffer.type.shape)
+            if requested_shape != buffer_shape or tuple(pointers.shape) != buffer_shape:
+                raise ValueError("GPU CommonIR copy requires shape and pointer tensor shape to match the full buffer")
+            if not pointers.dtype.is_ptr() or pointers.dtype.element_ty != buffer.dtype:
+                raise ValueError("GPU CommonIR copy requires pointers with the buffer element type")
+            if iluvatar_enabled and direction == CopyDirection.GM_TO_LOCAL:
+                # Iluvatar's async and SME passes match stores through local pointers.
+                return normcopy(src, dst, shape, direction, mask, other, _semantic)
         return tle_semantic.copy(
             src,
             dst,

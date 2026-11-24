@@ -5,6 +5,7 @@
 #include "tle/include/CommonIRToTTGIR/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/InliningUtils.h"
@@ -69,9 +70,38 @@ lookupBuffer(Operation *op, Value buffer,
   return it->second;
 }
 
+static WalkResult convertSubview(tile::SubViewOp op,
+                                 llvm::DenseMap<Value, Value> &mapped,
+                                 SmallVectorImpl<Operation *> &eraseOps);
+
+static FailureOr<Value>
+lookupOrConvertSubview(Operation *user, Value buffer,
+                       llvm::DenseMap<Value, Value> &mapped,
+                       SmallVectorImpl<Operation *> &eraseOps) {
+  if (!mapped.contains(buffer)) {
+    if (auto subview = buffer.getDefiningOp<tile::SubViewOp>())
+      if (convertSubview(subview, mapped, eraseOps).wasInterrupted())
+        return failure();
+  }
+  return lookupBuffer(user, buffer, mapped);
+}
+
+static void recordConvertedValue(
+    OpBuilder &builder, Value value, Type type,
+    llvm::DenseMap<Value, Value> &mapped,
+    llvm::DenseMap<Value, Type> &convertedTypes,
+    SmallVectorImpl<UnrealizedConversionCastOp> &temporaryCasts) {
+  auto cast = builder.create<UnrealizedConversionCastOp>(
+      value.getLoc(), TypeRange{type}, ValueRange{value});
+  mapped[value] = cast.getResult(0);
+  convertedTypes[value] = type;
+  temporaryCasts.push_back(cast);
+}
+
 static FailureOr<ttg::MemDescType>
 inferMemDescType(ModuleOp module, triton::FuncOp func, BlockArgument argument,
-                 const llvm::DenseMap<Value, Value> &mapped) {
+                 llvm::DenseMap<Value, Value> &mapped,
+                 SmallVectorImpl<Operation *> &eraseOps) {
   ttg::MemDescType inferred;
   for (Operation *user : argument.getUsers()) {
     auto bridge = dyn_cast<UnrealizedConversionCastOp>(user);
@@ -90,17 +120,31 @@ inferMemDescType(ModuleOp module, triton::FuncOp func, BlockArgument argument,
   }
   if (!inferred) {
     unsigned argumentNumber = argument.getArgNumber();
-    module.walk([&](triton::CallOp call) {
+    WalkResult result = module.walk([&](triton::CallOp call) {
       if (inferred ||
           module.lookupSymbol<triton::FuncOp>(call.getCallee()) != func ||
           argumentNumber >= call.getNumOperands())
-        return;
+        return WalkResult::advance();
       Value operand = call.getOperand(argumentNumber);
-      auto it = mapped.find(operand);
-      if (it != mapped.end())
+      if (auto it = mapped.find(operand); it != mapped.end()) {
         operand = it->second;
+      } else {
+        Value source = operand;
+        while (auto subview = source.getDefiningOp<tile::SubViewOp>())
+          source = subview.getSource();
+        if (source != operand && mapped.contains(source)) {
+          auto converted =
+              lookupOrConvertSubview(call, operand, mapped, eraseOps);
+          if (failed(converted))
+            return WalkResult::interrupt();
+          operand = *converted;
+        }
+      }
       inferred = dyn_cast<ttg::MemDescType>(operand.getType());
+      return WalkResult::advance();
     });
+    if (result.wasInterrupted())
+      return failure();
   }
   if (!inferred) {
     emitError(argument.getLoc())
@@ -113,7 +157,8 @@ inferMemDescType(ModuleOp module, triton::FuncOp func, BlockArgument argument,
 static LogicalResult convertFunctionArguments(
     ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
     llvm::DenseMap<Value, Type> &convertedArgumentTypes,
-    SmallVectorImpl<UnrealizedConversionCastOp> &argumentCasts) {
+    SmallVectorImpl<UnrealizedConversionCastOp> &argumentCasts,
+    SmallVectorImpl<Operation *> &eraseOps) {
   for (auto func : module.getOps<triton::FuncOp>()) {
     if (func.getBody().empty())
       continue;
@@ -121,16 +166,13 @@ static LogicalResult convertFunctionArguments(
     for (BlockArgument argument : entry.getArguments()) {
       if (!isa<tile::BufType>(argument.getType()))
         continue;
-      auto type = inferMemDescType(module, func, argument, mapped);
+      auto type = inferMemDescType(module, func, argument, mapped, eraseOps);
       if (failed(type))
         return failure();
       OpBuilder builder(func.getContext());
       builder.setInsertionPointToStart(&entry);
-      auto cast = builder.create<UnrealizedConversionCastOp>(
-          argument.getLoc(), TypeRange{*type}, ValueRange{argument});
-      mapped[argument] = cast.getResult(0);
-      convertedArgumentTypes[argument] = *type;
-      argumentCasts.push_back(cast);
+      recordConvertedValue(builder, argument, *type, mapped,
+                           convertedArgumentTypes, argumentCasts);
     }
   }
   return success();
@@ -152,22 +194,6 @@ auto getWarpSpecializeExplicitCaptures(Op op, long)
   return op.getPartitionOp().getExplicitCaptures();
 }
 } // namespace
-
-static WalkResult convertSubview(tile::SubViewOp op,
-                                 llvm::DenseMap<Value, Value> &mapped,
-                                 SmallVectorImpl<Operation *> &eraseOps);
-
-static FailureOr<Value>
-lookupOrConvertSubview(Operation *user, Value buffer,
-                       llvm::DenseMap<Value, Value> &mapped,
-                       SmallVectorImpl<Operation *> &eraseOps) {
-  if (!mapped.contains(buffer)) {
-    if (auto subview = buffer.getDefiningOp<tile::SubViewOp>())
-      if (convertSubview(subview, mapped, eraseOps).wasInterrupted())
-        return failure();
-  }
-  return lookupBuffer(user, buffer, mapped);
-}
 
 static LogicalResult convertWarpSpecializeCaptures(
     ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
@@ -191,16 +217,39 @@ static LogicalResult convertWarpSpecializeCaptures(
         }
         OpBuilder builder(op.getContext());
         builder.setInsertionPointToStart(&region->front());
-        auto cast = builder.create<UnrealizedConversionCastOp>(
-            argument.getLoc(), TypeRange{(*converted).getType()},
-            ValueRange{argument});
-        mapped[argument] = cast.getResult(0);
-        convertedArgumentTypes[argument] = (*converted).getType();
-        argumentCasts.push_back(cast);
+        recordConvertedValue(builder, argument, (*converted).getType(), mapped,
+                             convertedArgumentTypes, argumentCasts);
       }
     }
   });
   return failure(failedConversion);
+}
+
+static LogicalResult
+convertLoopBuffers(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
+                   llvm::DenseMap<Value, Type> &convertedTypes,
+                   SmallVectorImpl<UnrealizedConversionCastOp> &temporaryCasts,
+                   SmallVectorImpl<Operation *> &eraseOps) {
+  WalkResult walk = module.walk<WalkOrder::PreOrder>([&](scf::ForOp op) {
+    for (auto [init, argument, result] :
+         llvm::zip(op.getInitArgs(), op.getRegionIterArgs(), op.getResults())) {
+      if (!isa<tile::BufType>(init.getType()))
+        continue;
+      auto converted = lookupOrConvertSubview(op, init, mapped, eraseOps);
+      if (failed(converted))
+        return WalkResult::interrupt();
+      Type type = (*converted).getType();
+      OpBuilder builder(op);
+      builder.setInsertionPointToStart(op.getBody());
+      recordConvertedValue(builder, argument, type, mapped, convertedTypes,
+                           temporaryCasts);
+      builder.setInsertionPointAfter(op);
+      recordConvertedValue(builder, result, type, mapped, convertedTypes,
+                           temporaryCasts);
+    }
+    return WalkResult::advance();
+  });
+  return failure(walk.wasInterrupted());
 }
 
 static bool isPointerLike(Type type) {
@@ -362,13 +411,14 @@ convertBufferBridges(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
   return failure(result.wasInterrupted());
 }
 
-static void finalizeConvertedArguments(
-    ModuleOp module, const llvm::DenseMap<Value, Type> &convertedArgumentTypes,
-    ArrayRef<UnrealizedConversionCastOp> argumentCasts) {
-  for (auto [value, type] : convertedArgumentTypes)
-    cast<BlockArgument>(value).setType(type);
+static void
+finalizeConvertedValues(ModuleOp module,
+                        const llvm::DenseMap<Value, Type> &convertedTypes,
+                        ArrayRef<UnrealizedConversionCastOp> temporaryCasts) {
+  for (auto [value, type] : convertedTypes)
+    value.setType(type);
 
-  for (UnrealizedConversionCastOp cast : argumentCasts) {
+  for (UnrealizedConversionCastOp cast : temporaryCasts) {
     cast.getResult(0).replaceAllUsesWith(cast.getInputs().front());
     cast.erase();
   }
@@ -713,7 +763,9 @@ public:
     if (failed(convertWarpSpecializeCaptures(
             module, mapped, convertedArgumentTypes, argumentCasts, eraseOps)) ||
         failed(convertFunctionArguments(module, mapped, convertedArgumentTypes,
-                                        argumentCasts)) ||
+                                        argumentCasts, eraseOps)) ||
+        failed(convertLoopBuffers(module, mapped, convertedArgumentTypes,
+                                  argumentCasts, eraseOps)) ||
         failed(convertSubviews(module, mapped, eraseOps)) ||
         failed(convertBufferBridges(module, mapped, argumentCasts, eraseOps)) ||
         failed(convertTileUsers(module, mapped, foldedInitializers, eraseOps,
@@ -734,7 +786,7 @@ public:
       op->erase();
     }
 
-    finalizeConvertedArguments(module, convertedArgumentTypes, argumentCasts);
+    finalizeConvertedValues(module, convertedArgumentTypes, argumentCasts);
     combineCopyWaits(copies);
 
     bool hasRemainingGpuTileOps = false;

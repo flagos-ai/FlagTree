@@ -173,14 +173,6 @@ def copy(src, dst, shape, offsets, direction, _semantic, completion_barrier=None
 
     if COMMON_IR_ENABLED:
         if descriptor is None:
-            buffer = dst if isinstance(dst, tle.buffered_tensor) else src
-            pointers = src if buffer is dst else dst
-            requested_shape = tuple(int(tl._unwrap_if_constexpr(dim)) for dim in shape)
-            buffer_shape = tuple(buffer.type.shape)
-            if requested_shape != buffer_shape or tuple(pointers.shape) != buffer_shape:
-                raise ValueError("GPU CommonIR copy requires shape and pointer tensor shape to match the full buffer")
-            if not pointers.dtype.is_ptr() or pointers.dtype.element_ty != buffer.dtype:
-                raise ValueError("GPU CommonIR copy requires pointers with the buffer element type")
             _semantic.builder.create_tile_copy(src.handle, dst.handle, False)
             return
         indices = _semantic._convert_to_ir_values(offsets, require_i64=False)
