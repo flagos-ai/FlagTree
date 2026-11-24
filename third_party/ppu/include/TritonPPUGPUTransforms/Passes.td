@@ -128,6 +128,9 @@ def TritonPPUTleLowerPipe : Pass<"tritonppu-tle-lower-pipe", "mlir::ModuleOp"> {
                            "mlir::scf::SCFDialect",
                            "mlir::triton::TritonDialect",
                            "mlir::triton::gpu::TritonGPUDialect",
+#ifdef __TLE__
+                           "mlir::triton::tle::TleDialect",
+#endif // __TLE__
                            "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect"];
 }
 
@@ -143,6 +146,9 @@ def TritonPPUTleLowerTmaCopy : Pass<"tritonppu-tle-lower-tma-copy", "mlir::Modul
   }];
 
   let dependentDialects = ["mlir::triton::TritonDialect",
+#ifdef __TLE__
+                           "mlir::triton::tle::TleDialect",
+#endif // __TLE__
                            "mlir::triton::gpu::TritonGPUDialect"];
 }
 

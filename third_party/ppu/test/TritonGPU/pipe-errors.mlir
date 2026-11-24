@@ -1,24 +1,3 @@
-// Copyright 2025-     FlagOS Contributors
-//
-// Permission is hereby granted, free of charge, to any person obtaining
-// a copy of this software and associated documentation files
-// (the "Software"), to deal in the Software without restriction,
-// including without limitation the rights to use, copy, modify, merge,
-// publish, distribute, sublicense, and/or sell copies of the Software,
-// and to permit persons to whom the Software is furnished to do so,
-// subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be
-// included in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-// IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-// TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-// SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
 // RUN: triton-opt %s -split-input-file --tritonppu-tle-lower-pipe -verify-diagnostics
 
 // Forms the PPU pipe lowering rejects before rewriting. Each diagnostic names
@@ -175,6 +154,38 @@ module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.targ
         ttg.warp_return
       } : (!ttg.memdesc<2x128xf32, #shared, #smem, mutable>) -> ()
     }
+    tt.return
+  }
+}
+
+// -----
+
+// A pipe created in the default region of the warp_specialize its reader runs
+// in: the state the create allocates is not visible to the partitions.
+
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-warps" = 4 : i32, "ttg.num-ctas" = 1 : i32, ttg.target = "ppu:80", "ttg.threads-per-warp" = 32 : i32} {
+  tt.func @create_in_default_region(%ring: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) {
+    %c0 = arith.constant 0 : i32
+    %phase = arith.constant false
+    ttg.warp_specialize(%ring)
+    default {
+      // expected-error @below {{is inside the warp_specialize that its readers run in}}
+      tle.pipe.create %ring {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      tle.pipe.writer_acquire %ring[%c0, %phase] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      tle.pipe.writer_commit %ring[%c0] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      ttg.warp_yield
+    }
+    partition0(%reader: !ttg.memdesc<2x128xf32, #shared, #smem, mutable>) num_warps(4) {
+      %stage = arith.constant 0 : i32
+      %parity = arith.constant false
+      %closed = tle.pipe.reader_wait %reader[%stage, %parity] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      tle.pipe.reader_release %reader[%stage] {capacity = 2 : i32, field_names = ["data"], scope = "cta"} : !ttg.memdesc<2x128xf32, #shared, #smem, mutable>
+      ttg.warp_return
+    } : (!ttg.memdesc<2x128xf32, #shared, #smem, mutable>) -> ()
     tt.return
   }
 }

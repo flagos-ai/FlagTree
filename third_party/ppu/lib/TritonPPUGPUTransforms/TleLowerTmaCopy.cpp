@@ -145,9 +145,9 @@ static LogicalResult lowerCopy(ttg::TMACopyOp op) {
   bool toShared = isa<tt::TensorDescType>(src.getType());
   Value desc = toShared ? src : dst;
   Value memDesc = toShared ? dst : src;
-  auto descTy = cast<tt::TensorDescType>(desc.getType());
+  auto descTy = dyn_cast<tt::TensorDescType>(desc.getType());
   auto memDescTy = dyn_cast<ttg::MemDescType>(memDesc.getType());
-  if (!memDescTy || isa<tt::TensorDescType>(memDesc.getType()))
+  if (!descTy || !memDescTy)
     return op.emitOpError("expects one tensor descriptor and one shared "
                           "buffer operand");
   RankedTensorType blockTy = descTy.getSignlessBlockType();
@@ -189,9 +189,7 @@ static LogicalResult lowerCopy(ttg::TMACopyOp op) {
   op.erase();
   return success();
 }
-#endif // __TLE__
 
-#ifdef __TLE__
 // `other` of a pointer load made from a descriptor load: select(padding, nan,
 // zero) for a float element type; the zero constant alone for other types,
 // which have no NaN padding flag.

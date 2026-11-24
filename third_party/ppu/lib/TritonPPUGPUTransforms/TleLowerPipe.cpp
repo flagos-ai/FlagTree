@@ -43,10 +43,12 @@
 // loops contain no group barrier, since warps may leave them on different
 // iterations.
 
+#include "Dialect/TritonPPUGPU/IR/Dialect.h"
 #include "TritonPPUGPUTransforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -147,15 +149,6 @@ static int getLoopDepth(Operation *op) {
   return depth;
 }
 
-static std::optional<int64_t> getConstantI32(Value value) {
-  if (auto op = value.getDefiningOp<arith::ConstantIntOp>())
-    return op.value();
-  if (auto op = value.getDefiningOp<arith::ConstantOp>())
-    if (auto attr = dyn_cast<IntegerAttr>(op.getValue()))
-      return attr.getInt();
-  return std::nullopt;
-}
-
 // Prints what a pipe field denotes: its allocation and the static offsets of
 // the views taken of it, outermost first. A reader in a worker partition sees
 // the field through a capture, and two pipes may ring through different
@@ -166,7 +159,8 @@ static void printFieldKey(raw_ostream &os, Value field) {
   Value value = canonicalizeCapture(field);
   while (Operation *def = value.getDefiningOp()) {
     if (auto index = dyn_cast<ttg::MemDescIndexOp>(def)) {
-      if (std::optional<int64_t> constant = getConstantI32(index.getIndex()))
+      if (std::optional<int64_t> constant =
+              getConstantIntValue(index.getIndex()))
         views.push_back("[" + std::to_string(*constant) + "]");
     } else if (auto subslice = dyn_cast<ttg::MemDescSubsliceOp>(def)) {
       if (subslice.getType().getShape() !=
@@ -277,7 +271,7 @@ static void forStage(OpBuilder &builder, Location loc, Value stage,
     emit(builder, 0);
     return;
   }
-  if (std::optional<int64_t> constant = getConstantI32(stage)) {
+  if (std::optional<int64_t> constant = getConstantIntValue(stage)) {
     emit(builder, ((*constant % capacity) + capacity) % capacity);
     return;
   }
@@ -363,7 +357,7 @@ static std::string getPipeName(const Pipe &pipe) {
   return "<unnamed>";
 }
 
-static Attribute getCloseTagEncoding(MLIRContext *context, int64_t rank) {
+static Attribute getI32SharedEncoding(MLIRContext *context, int64_t rank) {
   SmallVector<unsigned> order;
   for (int64_t dim = rank - 1; dim >= 0; --dim)
     order.push_back(static_cast<unsigned>(dim));
@@ -372,8 +366,9 @@ static Attribute getCloseTagEncoding(MLIRContext *context, int64_t rank) {
 }
 
 // The tag tensor type depends on the warps of the partition that accesses it.
-static RankedTensorType getCloseTagTensorType(Operation *op, OpBuilder &builder,
-                                              ArrayRef<int64_t> shape) {
+static RankedTensorType getI32SharedTensorType(Operation *op,
+                                               OpBuilder &builder,
+                                               ArrayRef<int64_t> shape) {
   MLIRContext *context = op->getContext();
   auto module = op->getParentOfType<ModuleOp>();
   Attribute encoding = ttg::getDefaultBlockedEncoding(
@@ -383,7 +378,7 @@ static RankedTensorType getCloseTagTensorType(Operation *op, OpBuilder &builder,
   return RankedTensorType::get(shape, builder.getI32Type(), encoding);
 }
 
-static Value createCloseTagTensor(OpBuilder &builder, Location loc,
+static Value createI32SplatTensor(OpBuilder &builder, Location loc,
                                   RankedTensorType type, bool value) {
   Value scalar = i32Const(builder, loc, value ? 1 : 0);
   return tt::SplatOp::create(builder, loc, type, scalar);
@@ -394,17 +389,18 @@ static void createCloseTags(OpBuilder &builder, Pipe &pipe) {
   Location loc = create->getLoc();
   MLIRContext *context = create->getContext();
   auto sharedMemorySpace = ttg::SharedMemorySpaceAttr::get(context);
-  auto arrayType = ttg::MemDescType::get(
-      {pipe.capacity, 1}, builder.getI32Type(), getCloseTagEncoding(context, 2),
-      sharedMemorySpace, /*mutableMemory=*/true);
+  auto arrayType =
+      ttg::MemDescType::get({pipe.capacity, 1}, builder.getI32Type(),
+                            getI32SharedEncoding(context, 2), sharedMemorySpace,
+                            /*mutableMemory=*/true);
   pipe.closeTagSlotType = ttg::MemDescType::get(
-      {1}, builder.getI32Type(), getCloseTagEncoding(context, 1),
+      {1}, builder.getI32Type(), getI32SharedEncoding(context, 1),
       sharedMemorySpace, /*mutableMemory=*/true);
   // Clear the stages one slot at a time: this runs once per kernel, and a
   // register tensor would need a power-of-two number of stages.
   pipe.closeTags = ttg::LocalAllocOp::create(builder, loc, arrayType);
-  Value init = createCloseTagTensor(
-      builder, loc, getCloseTagTensorType(create, builder, {1}), false);
+  Value init = createI32SplatTensor(
+      builder, loc, getI32SharedTensorType(create, builder, {1}), false);
   for (int64_t stage = 0; stage < pipe.capacity; ++stage) {
     Value slot = ttg::MemDescIndexOp::create(
         builder, loc, pipe.closeTagSlotType, pipe.closeTags,
@@ -423,8 +419,8 @@ static Value createCloseTagSlot(OpBuilder &builder, Location loc,
 static void storeCloseTag(OpBuilder &builder, Location loc, const Pipe &pipe,
                           Value stage, Operation *use) {
   Value slot = createCloseTagSlot(builder, loc, pipe, stage, use);
-  Value tag = createCloseTagTensor(
-      builder, loc, getCloseTagTensorType(use, builder, {1}), true);
+  Value tag = createI32SplatTensor(
+      builder, loc, getI32SharedTensorType(use, builder, {1}), true);
   ttg::LocalStoreOp::create(builder, loc, tag, slot);
 }
 
@@ -432,7 +428,7 @@ static Value loadCloseTag(OpBuilder &builder, Location loc, const Pipe &pipe,
                           Value stage, Operation *use) {
   Value slot = createCloseTagSlot(builder, loc, pipe, stage, use);
   Value tag = ttg::LocalLoadOp::create(
-      builder, loc, getCloseTagTensorType(use, builder, {1}), slot);
+      builder, loc, getI32SharedTensorType(use, builder, {1}), slot);
   Value scalar = tt::UnsplatOp::create(builder, loc, builder.getI32Type(), tag);
   return arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::ne, scalar,
                                i32Const(builder, loc, 0));
@@ -534,6 +530,14 @@ static LogicalResult checkRunsOnce(Pipe &pipe) {
   }
   if (failed(checkEveryOpInWarpSpecialize(pipe, ws)))
     return failure();
+  // The create allocates the pipe's state (close tags, counters). The groups
+  // share it as captures of the warp_specialize, so it has to be made before
+  // the op: one made in the default region is not visible to the partitions.
+  if (ws && ws->isAncestor(pipe.create.getOperation()))
+    return pipe.create.emitOpError(
+        "is inside the warp_specialize that its readers run in; create a pipe "
+        "that hands over between warp groups before the warp_specialize, so "
+        "that its state is shared by all of them");
   if (!inLoop(pipe.create) && !(ws && inLoop(ws)))
     return success();
   return pipe.create.emitOpError(
@@ -575,6 +579,10 @@ static FailureOr<std::string> getReaderName(const Pipe &pipe, Operation *op) {
              failure();
     return name;
   }
+  if (name.empty())
+    return op->emitOpError("requires reader_name because pipe was created "
+                           "with explicit readers"),
+           failure();
   if (!llvm::is_contained(pipe.readerNames, name))
     return op->emitOpError("names reader '")
                << name << "' that the pipe does not declare",
@@ -606,8 +614,6 @@ static LogicalResult analyzePipes(ModuleOp module, PipeMap &pipes) {
       if (auto readers = create.getReadersAttr())
         for (Attribute reader : readers)
           pipe.readerNames.push_back(cast<StringAttr>(reader).getValue().str());
-      if (create.getScope() != "cta")
-        return create.emitOpError("PPU pipes support only scope='cta'");
     }
   }
   for (Operation *op : ops) {
@@ -625,7 +631,7 @@ static LogicalResult analyzePipes(ModuleOp module, PipeMap &pipes) {
             tle::PipeWriterCloseOp>(op)) {
       if (failed(recordEndpoint(pipe.writer, op, "writer")))
         return failure();
-      // As on NVIDIA: a one_shot pipe has no close, and is_closed stays false.
+      // A one_shot pipe has no close: is_closed stays false.
       if (pipe.oneShot && isa<tle::PipeWriterCloseOp>(op))
         return op->emitOpError("does not support close on one_shot pipe");
       pipe.hasClose |= isa<tle::PipeWriterCloseOp>(op);
@@ -683,7 +689,7 @@ static int64_t countFreeHardwareBarriers(ModuleOp module) {
   llvm::SmallBitVector physical(kNumHardwareBarriers);
   llvm::DenseSet<int64_t> virtualIds;
   auto visit = [&](Value id) {
-    std::optional<int64_t> constant = getConstantI32(id);
+    std::optional<int64_t> constant = getConstantIntValue(id);
     if (!constant)
       return;
     if (*constant >= kFirstVirtualNamedBarrierId)
@@ -706,7 +712,7 @@ static int64_t countFreeHardwareBarriers(ModuleOp module) {
 static int64_t findNextVirtualBarrierId(ModuleOp module) {
   int64_t next = kFirstVirtualNamedBarrierId;
   auto visit = [&](Value id) {
-    if (std::optional<int64_t> constant = getConstantI32(id))
+    if (std::optional<int64_t> constant = getConstantIntValue(id))
       next = std::max(next, *constant + 1);
   };
   module.walk([&](Operation *op) {
@@ -778,7 +784,7 @@ static Region *getDeferredWriterRegion(Pipe &pipe, size_t numPipes,
     if ((op->getNumRegions() && !isa<scf::ForOp, scf::IfOp>(op)) ||
         isa<ttg::AsyncCommitGroupOp, ttg::AsyncWaitOp, tt::CallOp,
             tt::ElementwiseInlineAsmOp>(op) ||
-        op->getName().getStringRef().contains("aiu") ||
+        isa<tt::AIULoadOp, tt::ppu_gpu::AsyncAIUCopyGlobalToLocalOp>(op) ||
         op->hasAttr("tt.load.async")) {
       unsupported = op;
       return WalkResult::interrupt();
@@ -929,8 +935,9 @@ private:
              "from 0 with a constant depth of 1 to the capacity, the consume "
              "loop n";
     for (auto loop : loops)
-      if (loop.getUnsignedCmp() || getConstantI32(loop.getLowerBound()) != 0 ||
-          getConstantI32(loop.getStep()) != 1)
+      if (loop.getUnsignedCmp() ||
+          getConstantIntValue(loop.getLowerBound()) != 0 ||
+          getConstantIntValue(loop.getStep()) != 1)
         return false;
     auto bound = prefetch.getUpperBound().getDefiningOp<arith::MinSIOp>();
     if (!bound)
@@ -940,7 +947,7 @@ private:
       return false;
     Value depthValue =
         bound.getLhs() == limit ? bound.getRhs() : bound.getLhs();
-    auto depth = getConstantI32(depthValue);
+    auto depth = getConstantIntValue(depthValue);
     if ((bound.getLhs() != limit && bound.getRhs() != limit) || !depth ||
         *depth < 1 || *depth > pipe.capacity)
       return false;
@@ -998,18 +1005,18 @@ private:
     Value next = condition.getLhs();
     auto increment = next.getDefiningOp<arith::AddIOp>();
     if (!increment || !((increment.getLhs() == consume.getInductionVar() &&
-                         getConstantI32(increment.getRhs()) == depth) ||
+                         getConstantIntValue(increment.getRhs()) == depth) ||
                         (increment.getRhs() == consume.getInductionVar() &&
-                         getConstantI32(increment.getLhs()) == depth)))
+                         getConstantIntValue(increment.getLhs()) == depth)))
       return false;
     auto matchesStage = [&](Value stage, Value position) {
       if (auto rem = stage.getDefiningOp<arith::RemSIOp>())
         return rem.getLhs() == position &&
-               getConstantI32(rem.getRhs()) == pipe.capacity;
+               getConstantIntValue(rem.getRhs()) == pipe.capacity;
       if (auto mask = stage.getDefiningOp<arith::AndIOp>())
         return llvm::isPowerOf2_64(pipe.capacity) &&
                mask.getLhs() == position &&
-               getConstantI32(mask.getRhs()) == pipe.capacity - 1;
+               getConstantIntValue(mask.getRhs()) == pipe.capacity - 1;
       return false;
     };
     if (!matchesStage(initialAcquire.getStage(), prefetch.getInductionVar()) ||
@@ -1514,10 +1521,10 @@ private:
         (pipe.oneShot ? 1 : 1 + pipe.crossGroupReaders) * pipe.capacity;
     int64_t size = llvm::PowerOf2Ceil(counters);
     auto type = ttg::MemDescType::get(
-        {size}, builder.getI32Type(), getCloseTagEncoding(context, 1),
+        {size}, builder.getI32Type(), getI32SharedEncoding(context, 1),
         ttg::SharedMemorySpaceAttr::get(context), /*mutableMemory=*/true);
-    Value zeros = createCloseTagTensor(
-        builder, loc, getCloseTagTensorType(create, builder, {size}), false);
+    Value zeros = createI32SplatTensor(
+        builder, loc, getI32SharedTensorType(create, builder, {size}), false);
     pipe.softwareCounters =
         ttg::LocalAllocOp::create(builder, loc, type, zeros);
   }

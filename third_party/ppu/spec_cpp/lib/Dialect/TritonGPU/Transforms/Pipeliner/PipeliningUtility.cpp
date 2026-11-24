@@ -42,6 +42,7 @@
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/TMAUtilities.h"
 #ifdef __TLE__
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
 #endif
 #ifdef __PPU__
 #include "Dialect/TritonPPUGPU/IR/Dialect.h"
@@ -609,6 +610,12 @@ void mlir::triton::combineRedundantWaitOps(
     // or a branching op (forOp, ifOp, whileOp) in between the waits
     while (next &&
            !isa<ttg::AsyncCommitGroupOp, RegionBranchOpInterface>(next)) {
+#ifdef __TLE__
+      // Keep the wait distance a pipe lowering chose.
+      if (auto pipeWait = dyn_cast<ttg::AsyncWaitOp>(next);
+          pipeWait && pipeWait->hasAttr(triton::tle::kTlePipeWaitAttr))
+        break;
+#endif
       if (auto nextWait = dyn_cast<ttg::AsyncWaitOp>(next)) {
         waitGroup.push_back(nextWait);
         minWaitNumber = std::min(minWaitNumber, nextWait.getNum());
