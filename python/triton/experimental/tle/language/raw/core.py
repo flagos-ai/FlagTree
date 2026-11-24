@@ -79,10 +79,11 @@ def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic: TLESeman
         mark_kernel_init_hook(_semantic, _generator)
     hint = _normalize_hint(hint)
     tile_builder = None
-    if smem and FLAGTREE_BACKEND == "iluvatar" and gpu_semantic.COMMON_IR_ENABLED:
+    if smem and gpu_semantic.COMMON_IR_ENABLED:
         tile_builder = _semantic.builder
     values = [_semantic.to_tensor(arg) if isinstance(arg, tl_constexpr) else arg for arg in args]
-    # Iluvatar raw calls pass native memref descriptors to LLVM functions.
+    # Raw calls hand native memref descriptors to the LLVM function, so a
+    # CommonIR tile buffer must be bridged back to a memdesc first.
     handles = [
         gpu_semantic.get_memdesc(value, _semantic)
         if tile_builder is not None and isinstance(value, buffered_tensor) else value.handle for value in values

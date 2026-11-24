@@ -587,6 +587,13 @@ void init_triton_tle_ir(py::module &&m) {
                                                      ValueRange{source})
                  .getResult(0);
            })
+      .def("create_tile_buffer_from_memdesc",
+           [](TritonOpBuilder &self, Type resultTy, Value source) -> Value {
+             return self
+                 .create<UnrealizedConversionCastOp>(TypeRange{resultTy},
+                                                     ValueRange{source})
+                 .getResult(0);
+           })
       .def("create_tile_subview",
            [](TritonOpBuilder &self, Value source, std::vector<Value> &offsets,
               const std::vector<int64_t> &sizes,
