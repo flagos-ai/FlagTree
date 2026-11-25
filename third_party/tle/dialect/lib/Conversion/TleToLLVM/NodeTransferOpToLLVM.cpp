@@ -138,12 +138,12 @@ lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
   return success();
 }
 
-struct NodePutOpConversion : public ConvertOpToLLVMPattern<tle::NodePutOp> {
-  NodePutOpConversion(LLVMTypeConverter &typeConverter, PatternBenefit benefit)
+struct RemotePutOpConversion : public ConvertOpToLLVMPattern<tle::RemotePutOp> {
+  RemotePutOpConversion(LLVMTypeConverter &typeConverter, PatternBenefit benefit)
       : ConvertOpToLLVMPattern(typeConverter, benefit) {}
 
   LogicalResult
-  matchAndRewrite(tle::NodePutOp op, OpAdaptor adaptor,
+  matchAndRewrite(tle::RemotePutOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     if (failed(lowerNodeTransfer(
             op.getLoc(), op.getOperation(), adaptor.getSrc(),
@@ -158,12 +158,12 @@ struct NodePutOpConversion : public ConvertOpToLLVMPattern<tle::NodePutOp> {
   }
 };
 
-struct NodeGetOpConversion : public ConvertOpToLLVMPattern<tle::NodeGetOp> {
-  NodeGetOpConversion(LLVMTypeConverter &typeConverter, PatternBenefit benefit)
+struct RemoteGetOpConversion : public ConvertOpToLLVMPattern<tle::RemoteGetOp> {
+  RemoteGetOpConversion(LLVMTypeConverter &typeConverter, PatternBenefit benefit)
       : ConvertOpToLLVMPattern(typeConverter, benefit) {}
 
   LogicalResult
-  matchAndRewrite(tle::NodeGetOp op, OpAdaptor adaptor,
+  matchAndRewrite(tle::RemoteGetOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     if (failed(lowerNodeTransfer(
             op.getLoc(), op.getOperation(), adaptor.getSrc(),
@@ -183,6 +183,6 @@ struct NodeGetOpConversion : public ConvertOpToLLVMPattern<tle::NodeGetOp> {
 void mlir::triton::tle::populateNodeTransferOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
-  patterns.add<NodePutOpConversion, NodeGetOpConversion>(typeConverter,
-                                                         benefit);
+  patterns.add<RemotePutOpConversion, RemoteGetOpConversion>(
+      typeConverter, benefit);
 }

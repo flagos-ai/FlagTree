@@ -65,7 +65,7 @@ def test_transfer_fusion(space, mode, context_id, is_put):
         SPACE=space, MODE=mode, IS_PUT=is_put, CONTEXT_ID=context_id, BLOCK_SIZE=16, STRIDE=1)
 
     direction = "put" if is_put else "get"
-    assert f'"tle.node_{direction}"' in ttgir
+    assert f'"tle.remote_{direction}"' in ttgir
     if space == "device":
         assert "team_kind = 0 : i32" in ttgir
     assert f"context_id = {context_id or 0} : i32" in ttgir

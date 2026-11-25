@@ -754,13 +754,13 @@ struct TritonTleFuseNodeRemoteTransfers
                                     : tle::FlagCXTeamKind::WORLD);
 
       if (isPut) {
-        builder.create<tle::NodePutOp>(
+        builder.create<tle::RemotePutOp>(
             loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
             marker.getShardId(), srcOffset, dstOffset, nelems,
             marker.getContextIdAttr(), builder.getI64IntegerAttr(elemBytes),
             marker.getCoopKindAttr(), teamKind);
       } else {
-        builder.create<tle::NodeGetOp>(
+        builder.create<tle::RemoteGetOp>(
             loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
             marker.getShardId(), srcOffset, dstOffset, nelems,
             marker.getContextIdAttr(), builder.getI64IntegerAttr(elemBytes),

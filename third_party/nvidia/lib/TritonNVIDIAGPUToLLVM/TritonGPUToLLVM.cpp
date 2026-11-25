@@ -113,8 +113,8 @@ public:
           }
           return hasLegalRegions && typeConverter.isLegal(op);
         });
-    addLegalOp<tle::LocalPointersOp, tle::RemotePointersOp, tle::NodePutOp,
-               tle::NodeGetOp>();
+    addLegalOp<tle::LocalPointersOp, tle::RemotePointersOp, tle::RemotePutOp,
+               tle::RemoteGetOp>();
     // Allow non-TLE ops to remain during this partial conversion.
     markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }

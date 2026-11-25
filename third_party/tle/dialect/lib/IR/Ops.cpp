@@ -1270,14 +1270,14 @@ LogicalResult DistributedBarrierOp::verify() {
   return success();
 }
 
-LogicalResult NodePutOp::verify() {
+LogicalResult RemotePutOp::verify() {
   return verifyNodeTransfer(getOperation(), getSrc(), getDstMem(), getComm(),
                             getPeer(), getSrcOffset(), getDstOffset(),
                             getNelems(), getContextIdAttr(), getElemBytesAttr(),
                             getCoopKind());
 }
 
-LogicalResult NodeGetOp::verify() {
+LogicalResult RemoteGetOp::verify() {
   return verifyNodeTransfer(getOperation(), getSrc(), getDstMem(), getComm(),
                             getPeer(), getSrcOffset(), getDstOffset(),
                             getNelems(), getContextIdAttr(), getElemBytesAttr(),

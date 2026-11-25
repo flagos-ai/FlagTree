@@ -525,14 +525,15 @@ def Tle_GetNumPesOp : Tle_Op<"get_num_pes"> {
   let hasVerifier = 1;
 }
 
-class Tle_NodeTransferOp<string mnemonic> : Tle_Op<mnemonic, [
+class Tle_RemoteTransferOp<string mnemonic> : Tle_Op<mnemonic, [
     MemoryEffects<[MemRead, MemWrite]>
 ]> {
   let summary = "execute a fused FlagCX memory transfer";
   let description = [{
     Represents a transfer after a tle.remote_pointers marker and its
-    load/store users have been fused. team_kind selects the rank domain
-    for peer and defaults to WORLD for existing IR.
+    load/store users have been fused. team_kind selects the rank domain.
+    INTRA interprets peer as a node-local rank. WORLD interprets peer as
+    a global rank and is the default.
     Offsets and nelems are expressed in elements; elem_bytes is applied during
     lowering to form byte offsets and the byte count passed to FlagCX. Nelems
     must be greater than zero. context_id must be an i32 attribute in
@@ -556,11 +557,11 @@ class Tle_NodeTransferOp<string mnemonic> : Tle_Op<mnemonic, [
   let hasVerifier = 1;
 }
 
-def Tle_NodePutOp : Tle_NodeTransferOp<"node_put"> {
+def Tle_RemotePutOp : Tle_RemoteTransferOp<"remote_put"> {
   let summary = "put data from local registered memory to a peer";
 }
 
-def Tle_NodeGetOp : Tle_NodeTransferOp<"node_get"> {
+def Tle_RemoteGetOp : Tle_RemoteTransferOp<"remote_get"> {
   let summary = "get data from a peer into local registered memory";
 }
 
