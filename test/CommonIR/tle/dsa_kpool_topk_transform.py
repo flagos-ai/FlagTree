@@ -373,7 +373,7 @@ def kpool_topk_transform_kernel(
                               scope="cta")
             tl.debug_barrier()
             if HISTN == BINS:
-                hs = tle.gpu.metax.local_load(s_hist)
+                hs = s_hist.load()
             else:
                 hs = tl.atomic_add(hist_ptr + hbins,
                                    tl.zeros([BINS], tl.int32),
@@ -460,11 +460,11 @@ def kpool_topk_transform_kernel(
         # write, so a plain (even volatile) load is hoisted above the
         # accumulation loop and returns the pre-clear zeros -- observed as an
         # all-zero histogram.
-        # tle.gpu.metax.local_load reads the same buffer the atomics wrote, so
+        # buffer.load() reads the same buffer the atomics wrote, so
         # the optimizer cannot hoist it above them (the plain tl.load bug) and
         # it costs ~0.25 us less than the atomic read-back.
         if HISTN == BINS:
-            hcnt = tle.gpu.metax.local_load(s_hist)
+            hcnt = s_hist.load()
         else:
             hcnt = tl.atomic_add(hist_ptr + hbins, tl.zeros([BINS], tl.int32),
                                  sem="relaxed", scope="cta")
@@ -656,6 +656,7 @@ def kpool_topk_transform_kernel(
             nmax1 = tl.sum((act2 & (key_b == max1)).to(tl.int32))
             max2 = tl.max(tl.where(act2 & (key_b < max1), key_b, 0))
             pref = tl.where(nmax1 >= 2, max1, max2)
+            remain -= tl.where(nmax1 >= 2, 0, 1)
         if (full == 0) & (remain > 2):
             # the active set must share every already-fixed bit, i.e. bits
             # >= 11. A wider window would let in the neighbouring digit and
@@ -735,7 +736,7 @@ def kpool_topk_transform_kernel(
                               scope="cta")
             tl.debug_barrier()
             if HISTN == BINS:
-                hcnt_l = tle.gpu.metax.local_load(s_hist)
+                hcnt_l = s_hist.load()
             else:
                 hcnt_l = tl.atomic_add(hist_ptr + hbins,
                                        tl.zeros([BINS], tl.int32),
@@ -850,7 +851,7 @@ def _split_pre_kernel(score_ptr, lengths_ptr, starts_ptr, meta_ptr,
         d = (tl.where(m, _okey(x), 0) >> SHIFT0) & (BINS - 1)
         tl.atomic_add(hist_ptr + d, ones, mask=m, sem="relaxed", scope="cta")
     tl.debug_barrier()
-    hcnt = tle.gpu.metax.local_load(s_hist)
+    hcnt = s_hist.load()
     pre = tl.cumsum(hcnt, axis=0) - hcnt
     t_bin = tl.max(tl.where(pre <= length - group_topk, hbins, -1))
     pack = tl.sum(tl.where(hbins > t_bin, hcnt, 0)
@@ -898,7 +899,7 @@ def _split_hist_kernel(score_ptr, lengths_ptr, starts_ptr, phist_ptr,
         d = (tl.where(m, _okey(x), 0) >> SHIFT0) & (BINS - 1)
         tl.atomic_add(hist_ptr + d, ones, mask=m, sem="relaxed", scope="cta")
     tl.debug_barrier()
-    hcnt = tle.gpu.metax.local_load(s_hist)
+    hcnt = s_hist.load()
     tl.store(phist_ptr + pid.to(tl.int64) * BINS + hbins, hcnt)
 
 
@@ -979,7 +980,7 @@ def _split_classify_kernel(score_ptr, lengths_ptr, starts_ptr, meta_ptr,
         pos = tl.atomic_add(ctr_ptr + 1 + eq.to(tl.int32), ones,
                             mask=keep, sem="relaxed", scope="cta")
         tl.store(tl.where(eq, cand_ptr + pos, sel_ptr + pos),
-                 idx.to(tl.uint16), mask=keep)
+                 idx.to(tl.uint16), mask=keep & (pos < tl.where(eq, CAP, CAPP)))
     tl.debug_barrier()
 
     # Read the two counters with a BLOCK-wide masked atomic (a narrow smem
@@ -1003,7 +1004,7 @@ def _split_classify_kernel(score_ptr, lengths_ptr, starts_ptr, meta_ptr,
     cp = tl.arange(0, CAP)
     cv = tl.load(cand_ptr + cp, mask=cp < cand_cnt, other=0).to(tl.int32)
     tl.store(cand_all_ptr + row.to(tl.int64) * CAP + base_c + cp, cv,
-             mask=cp < cand_cnt)
+             mask=(cp < cand_cnt) & (base_c + cp < CAP))
 
 
 @triton.jit
@@ -1119,6 +1120,7 @@ def _split_finish_kernel(score_ptr, lengths_ptr, out_ptr, page_table_ptr,
             nmax1 = tl.sum((act2 & (key_b == max1)).to(tl.int32))
             max2 = tl.max(tl.where(act2 & (key_b < max1), key_b, 0))
             pref = tl.where(nmax1 >= 2, max1, max2)
+            remain -= tl.where(nmax1 >= 2, 0, 1)
         if (full == 0) & (remain > 2):
             act = live & ((key_b >> R0S) == (pref >> R0S))
             rl1 = tl.arange(0, R1N)
@@ -1367,26 +1369,20 @@ _FAST_LAUNCH: dict = {}
 def _fast_key(score, lengths, output, pool_size, page_table, topk_indices_offset,
               row_starts, seq_lens, page_table_row_index, block, bins, shift0,
               cap, num_warps, num_stages):
-    """Everything a launch depends on except the eight pointers.
-
-    Shapes are ``torch.Size`` (a C tuple) so this is a handful of attribute
-    reads and one tuple hash -- cheap enough to sit in front of the prologue.
-    """
-    # Built from ints, not torch.Size: indexing a shape is a C int read, while
-    # hashing the Size objects themselves measured 1.06 us per call.
-    return (score.shape[0], score.shape[1], score.stride(0), output.shape[1],
-            score.dtype, lengths.dtype, output.dtype, pool_size,
-            -1 if page_table is None else page_table.stride(0),
-            topk_indices_offset is not None, row_starts is not None,
-            seq_lens is not None, page_table_row_index is not None,
-            block, bins, shift0, cap, num_warps, num_stages)
+    """Match tensor metadata and launch options before reusing a binary."""
+    tensors = (score, lengths, output, page_table, topk_indices_offset,
+               row_starts, seq_lens, page_table_row_index)
+    metadata = tuple(None if tensor is None else
+                     (tensor.device, tensor.dtype, tuple(tensor.shape), tensor.stride())
+                     for tensor in tensors)
+    return (metadata, pool_size, block, bins, shift0, cap, num_warps, num_stages)
 
 
 def _fast_launch(key, score, lengths, output, page_table, topk_indices_offset,
                  row_starts, seq_lens, page_table_row_index) -> bool:
     """Re-launch a cached binary for `key`; False means "run the full path"."""
     ent = _FAST_LAUNCH.get(key)
-    if ent is None:
+    if ent is None or not _hooks_idle() or _dist_lite():
         return False
     run, fn, pk, args, quick, slot, get_stream, dev = ent
     po = score if page_table is None else page_table
@@ -1684,7 +1680,7 @@ def fast_kpool_topk_transform_fused(
              table_width, token_topk, group_topk)
     # Everything the launch depends on except the eight pointers (see the
     # fast-launch comment above `_direct_launch`).
-    lkey = (score.dtype, lengths.dtype, output.dtype, batch, score.shape[1],
+    lkey = (fkey, score.dtype, lengths.dtype, output.dtype, batch, score.shape[1],
             width, out_cols, table_width, token_topk, group_topk, pool_size,
             page_table is not None, topk_indices_offset is not None,
             seq_lens is not None, row_starts is not None,

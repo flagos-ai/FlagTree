@@ -87,7 +87,7 @@ def _recurrent_gdn_kernel(
     acc = tl.full((BV, BK), 0, tl.float32)
     if INITIAL and K == BK and V % BV == 0 and not INDEXED:
         state_tile = tle.gpu.alloc(
-            [BV, BK], dtype=tl.float32, layout=None,
+            [BV, BK], dtype=State.dtype.element_ty, layout=None,
             scope=tle.gpu.smem, nv_mma_shared_layout=False,
         )
         tle.gpu.metax.async_copy_global_to_local(
@@ -114,7 +114,7 @@ def _recurrent_gdn_kernel(
         if INITIAL and K == BK and V % BV == 0 and not INDEXED:
             if t == start:
                 tle.gpu.metax.gvm_arrive(0)
-                acc = tl.load(tle.gpu.local_ptr(state_tile))
+                acc = tl.load(tle.gpu.local_ptr(state_tile)).to(tl.float32)
         if HAS_G:
             g = tl.load(G + batch * GS[0] + t * GS[1] + hv * GS[2]).to(tl.float32)
             acc *= tl.exp(g)
@@ -1079,7 +1079,7 @@ class FusedRecurrentFunction(torch.autograd.Function):
         cu_seqlens: Optional[torch.LongTensor] = None,
         use_qk_l2norm_in_kernel: bool = False,
     ):
-        o, final_state = fused_recurrent_gated_delta_rule_fwd(
+        o, final_state = mcoplib_fused_recurrent_gated_delta_rule_fwd(
             q=q,
             k=k,
             v=v,
@@ -1624,9 +1624,8 @@ def benchmark_tle_vs_mcoplib(q, k, v, g, beta, scale, initial_state, *,
                              warmup=25, rep=100):
     """Return ``(tle_ms, maca_ms, maca_over_tle)`` using ``do_bench``.
 
-    Both implementations receive the same tensors.  TLE runs out-of-place;
-    the embedded MACA reference receives a cloned state because it updates its
-    state argument in place.
+    Both implementations receive the same tensors and return separate state
+    tensors, so repeated samples start from the same initial state.
     """
     import triton.testing
 
@@ -1638,7 +1637,7 @@ def benchmark_tle_vs_mcoplib(q, k, v, g, beta, scale, initial_state, *,
 
     def run_maca():
         return mcoplib_fused_recurrent_gated_delta_rule_fwd(
-            q, k, v, g, beta, scale, initial_state.clone(),
+            q, k, v, g, beta, scale, initial_state,
             output_final_state=True, use_qk_l2norm_in_kernel=True,
         )
 
