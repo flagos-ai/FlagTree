@@ -4,6 +4,7 @@ TLE_SUPPORTED_PRIMITIVES = [
     "raw.call_smem",
 
     ## TLE-Lite
+    "range",
     "load",
     "extract_tile",
     "insert_tile",

@@ -1,5 +1,6 @@
 TLE_SUPPORTED_PRIMITIVES = [
     ## TLE-Lite
+    "range",
     "load",
     "extract_tile",
     "insert_tile",

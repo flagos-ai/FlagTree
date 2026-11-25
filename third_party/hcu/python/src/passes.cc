@@ -44,6 +44,7 @@ void init_triton_passes_ttir(py::module &&m) {
                      createTritonRewriteTensorPointer);
   ADD_PASS_WRAPPER_0("add_rewrite_tensor_descriptor_to_pointer",
                      createTritonRewriteTensorDescriptorToPointer);
+  ADD_PASS_WRAPPER_0("add_loop_vectorize", createTritonLoopVectorize);
   ADD_PASS_WRAPPER_0("add_loop_unroll", createTritonLoopUnroll);
   ADD_PASS_WRAPPER_0("add_triton_licm", createTritonLoopInvariantCodeMotion);
   ADD_PASS_WRAPPER_0("add_loop_aware_cse", createTritonLoopAwareCSE);

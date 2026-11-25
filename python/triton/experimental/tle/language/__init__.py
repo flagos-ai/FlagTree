@@ -190,7 +190,7 @@ if hasattr(_language, "tensor_view_type"):
 
 from . import distributed, dsa, gpu, raw
 
-# TLE-specific loop iterator: tl.range plus the `reorder` extension hint.
+# TLE-specific loop iterator: tl.range plus the `loop_vectorize_factor` and `reorder` extension hint.
 from .gpu import range
 
 if TYPE_CHECKING:
