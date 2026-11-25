@@ -113,94 +113,15 @@ concurrency:
 jobs:
   notify:
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.workflow_run.conclusion == 'failure' }}
-    runs-on: ubuntu-latest
+    runs-on: notify-pr-owner
+    # The watchdog wait plus a handful of API calls is a few minutes at worst.
+    # A cap matters more on a self-hosted runner than it did on ubuntu-latest:
+    # the label has few agents, so one job hung on an unanswered API call would
+    # hold up every other notification behind it for the six-hour default.
+    timeout-minutes: 15
     steps:
-      - name: Wait out the auto-rerun watchdog
-        id: settled
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # head_branch and head_repository are author-controlled strings for a
-          # fork PR, so they travel as env vars: interpolating them into the
-          # script below would let a branch name break out into shell.
-          WF_NAME: ${{ github.event.workflow_run.name }}
-          EVENT: ${{ github.event.workflow_run.event }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
-          HEAD_REF: ${{ github.event.workflow_run.head_branch }}
-        run: |
-          set -uo pipefail
-          RUN_ID=${{ github.event.workflow_run.id }}
-          REPO=${{ github.repository }}
-
-          # auto-rerun.yml reruns known-transient failures. Telling the author
-          # about a failure that is about to be retried, and often succeeds, is
-          # the fastest way to make these messages ignorable. Rather than
-          # duplicating its pattern list -- two copies would drift -- wait and
-          # then look at what actually happened to the run.
-          echo "Giving the rerun watchdog time to act..."
-          sleep 180
-
-          STATUS=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '.status' 2>/dev/null || echo "")
-          ATTEMPT=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '.run_attempt' 2>/dev/null || echo "")
-          echo "Run $RUN_ID is now status='$STATUS' attempt='$ATTEMPT' (was attempt ${{ github.event.workflow_run.run_attempt }})"
-
-          # Picked up for a rerun: the next attempt fires its own completed
-          # event, so that one decides whether to notify.
-          if [[ "$STATUS" != "completed" ]]; then
-            echo "Being rerun, leaving it to the next attempt."
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [[ -n "$ATTEMPT" && "$ATTEMPT" != "${{ github.event.workflow_run.run_attempt }}" ]]; then
-            echo "Already on attempt $ATTEMPT, this event is stale."
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Code-Format-Check fixes what it can and pushes the result itself,
-          # inside the failing job, so by the time this event arrives the
-          # branch may already carry a newer commit. A superseded failure is
-          # either already fixed or about to be re-judged by the run on that
-          # newer commit: either way this message would be stale.
-          #
-          # Deliberately limited to this workflow and to pull_request.
-          #
-          # Only this workflow pushes a fix itself, so only here does a moved
-          # head mean the failing code was changed.
-          #
-          # The event restriction matters for this workflow too, since it also
-          # runs on push to main: there the head is refs/heads/main, which
-          # moves whenever anyone merges any PR, so a moved head says nothing
-          # about this failure and checking it would silence real format
-          # failures on main. A pull_request run follows a feature branch,
-          # which only this PR's own commits can move, so a moved head does
-          # mean this failure has been superseded.
-          #
-          # Unreadable head means notify: a message too many is noise, a
-          # failure swallowed is worse.
-          if [[ "$WF_NAME" == "Code-Format-Check" && "$EVENT" == "pull_request" ]]; then
-            if [[ -n "$HEAD_REPO" && -n "$HEAD_REF" ]]; then
-              CURRENT=$(gh api "repos/$HEAD_REPO/branches/$HEAD_REF" --jq '.commit.sha' 2>/dev/null | tr -d '\n' || true)
-              # gh prints the JSON error body on stdout for a 4xx, so a deleted
-              # branch arrives as `{"message":"Branch not found",...}` with a
-              # non-zero status. Only a real commit id may suppress; anything
-              # else falls through to notifying.
-              if [[ "$CURRENT" =~ ^[0-9a-f]{40}$ && "$CURRENT" != "$HEAD_SHA" ]]; then
-                echo "Head moved from $HEAD_SHA to $CURRENT, this failure is superseded."
-                echo "proceed=false" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              echo "Head is still ${HEAD_SHA} (read '${CURRENT}'), nothing fixed it automatically."
-            else
-              echo "No head repository or branch on this run, cannot check for a fix; notifying."
-            fi
-          fi
-
-          echo "proceed=true" >> "$GITHUB_OUTPUT"
-
       - name: Identify who to tell
         id: author
-        if: steps.settled.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -320,7 +241,7 @@ jobs:
 
       - name: Resolve the Feishu recipient
         id: contact
-        if: ${{ steps.settled.outputs.proceed == 'true' && (steps.author.outputs.logins != '' || steps.author.outputs.admins == 'true') }}
+        if: ${{ steps.author.outputs.logins != '' || steps.author.outputs.admins == 'true' }}
         continue-on-error: true
         uses: flagos-ai/FlagTree/.github/actions/lookup-feishu-contact@main
         with:
@@ -331,9 +252,144 @@ jobs:
           app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
           app-token: ${{ secrets.FLAGTREE_FEISHU_BITABLE_APP_TOKEN }}
 
+      # Last gate, not the first: everything above is API calls that take a
+      # few seconds, while this step holds the runner for up to three
+      # minutes. A failure whose author has no row in ci_contacts -- still
+      # most of them -- now ends the job in seconds instead of waiting out a
+      # watchdog for a message nobody was going to get.
+      - name: Wait out the auto-rerun watchdog
+        id: settled
+        if: ${{ steps.contact.outputs.open-ids != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # head_branch and head_repository are author-controlled strings for a
+          # fork PR, so they travel as env vars: interpolating them into the
+          # script below would let a branch name break out into shell.
+          WF_NAME: ${{ github.event.workflow_run.name }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          HEAD_REF: ${{ github.event.workflow_run.head_branch }}
+          SEEN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WATCHDOG: .github/workflows/auto-rerun.yml
+        run: |
+          set -uo pipefail
+          RUN_ID=${{ github.event.workflow_run.id }}
+          REPO=${{ github.repository }}
+
+          # auto-rerun.yml reruns known-transient failures. Telling the author
+          # about a failure that is about to be retried, and often succeeds, is
+          # the fastest way to make these messages ignorable. Rather than
+          # duplicating its pattern list -- two copies would drift -- wait and
+          # then look at what actually happened to the run.
+          #
+          # But there is nothing to wait for when auto-rerun does not watch
+          # the workflow that failed, as is the case for Code-Format-Check.
+          # Which workflows it watches is read out of auto-rerun.yml rather
+          # than listed again here, so the two cannot drift; the contents API
+          # serves the default branch, which is the copy that runs. An
+          # unreadable list means wait, i.e. the old behaviour.
+          WAIT=true
+          WATCHED=$(gh api "repos/$REPO/contents/$WATCHDOG" \
+            -H "Accept: application/vnd.github.raw" 2>/dev/null || true)
+          if [[ -z "$WATCHED" ]]; then
+            echo "Could not read $WATCHDOG; assuming it watches $WF_NAME."
+          elif printf '%s' "$WATCHED" | grep -qF "\"$WF_NAME\""; then
+            echo "auto-rerun watches $WF_NAME, giving it time to act."
+          else
+            echo "auto-rerun does not watch $WF_NAME, nothing to wait for."
+            WAIT=false
+          fi
+
+          # Re-read the run and stop if it has moved on. Called after every
+          # wait interval rather than once at the end: a rerun appears within
+          # seconds of auto-rerun deciding on one, and handing the runner back
+          # then costs a fraction of the full wait.
+          decide() {
+            local snap status attempt
+            snap=$(gh api "repos/$REPO/actions/runs/$RUN_ID" \
+              --jq '"\(.status) \(.run_attempt)"' 2>/dev/null || true)
+            status=${snap%% *}
+            attempt=${snap##* }
+            echo "Run $RUN_ID is status='$status' attempt='$attempt' (was $SEEN_ATTEMPT)"
+
+            # Only a status GitHub actually documents decides anything. gh
+            # prints the JSON error body on stdout for a 4xx, which --jq turns
+            # into "null", and an unreadable status is not evidence of a rerun:
+            # it keeps waiting, and if it never clears, notifies. A message too
+            # many is noise, a failure swallowed is worse.
+            case "$status" in
+              # Picked up for a rerun: the next attempt fires its own
+              # completed event, so that one decides whether to notify.
+              queued | in_progress | requested | waiting | pending)
+                echo "Being rerun, leaving it to the next attempt."
+                echo "proceed=false" >> "$GITHUB_OUTPUT"
+                exit 0
+                ;;
+              completed) ;;
+              *) echo "Status not readable, waiting rather than assuming a rerun." ;;
+            esac
+            if [[ "$attempt" =~ ^[0-9]+$ && "$attempt" != "$SEEN_ATTEMPT" ]]; then
+              echo "Already on attempt $attempt, this event is stale."
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          }
+
+          if [[ "$WAIT" == "true" ]]; then
+            for i in 1 2 3 4 5 6; do
+              sleep 30
+              echo "Waited $((i * 30))s of 180s."
+              decide
+            done
+          else
+            decide
+          fi
+
+          # Code-Format-Check fixes what it can and pushes the result itself,
+          # inside the failing job, so by the time this event arrives the
+          # branch may already carry a newer commit. A superseded failure is
+          # either already fixed or about to be re-judged by the run on that
+          # newer commit: either way this message would be stale.
+          #
+          # Deliberately limited to this workflow and to pull_request.
+          #
+          # Only this workflow pushes a fix itself, so only here does a moved
+          # head mean the failing code was changed.
+          #
+          # The event restriction matters for this workflow too, since it also
+          # runs on push to main: there the head is refs/heads/main, which
+          # moves whenever anyone merges any PR, so a moved head says nothing
+          # about this failure and checking it would silence real format
+          # failures on main. A pull_request run follows a feature branch,
+          # which only this PR's own commits can move, so a moved head does
+          # mean this failure has been superseded.
+          #
+          # Unreadable head means notify: a message too many is noise, a
+          # failure swallowed is worse.
+          if [[ "$WF_NAME" == "Code-Format-Check" && "$EVENT" == "pull_request" ]]; then
+            if [[ -n "$HEAD_REPO" && -n "$HEAD_REF" ]]; then
+              CURRENT=$(gh api "repos/$HEAD_REPO/branches/$HEAD_REF" --jq '.commit.sha' 2>/dev/null | tr -d '\n' || true)
+              # gh prints the JSON error body on stdout for a 4xx, so a deleted
+              # branch arrives as `{"message":"Branch not found",...}` with a
+              # non-zero status. Only a real commit id may suppress; anything
+              # else falls through to notifying.
+              if [[ "$CURRENT" =~ ^[0-9a-f]{40}$ && "$CURRENT" != "$HEAD_SHA" ]]; then
+                echo "Head moved from $HEAD_SHA to $CURRENT, this failure is superseded."
+                echo "proceed=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "Head is still ${HEAD_SHA} (read '${CURRENT}'), nothing fixed it automatically."
+            else
+              echo "No head repository or branch on this run, cannot check for a fix; notifying."
+            fi
+          fi
+
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
       - name: Collect what failed
         id: jobs
-        if: ${{ steps.contact.outputs.open-ids != '' }}
+        if: ${{ steps.settled.outputs.proceed == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -375,7 +431,7 @@ jobs:
       # message is read in the recipient's own chat with the bot, so there is
       # nothing to share. The ids are already de-duplicated by the lookup.
       - name: Notify them
-        if: ${{ steps.contact.outputs.open-ids != '' }}
+        if: ${{ steps.settled.outputs.proceed == 'true' }}
         continue-on-error: true
         uses: flagos-ai/FlagTree/.github/actions/notify-feishu@main
         with:
