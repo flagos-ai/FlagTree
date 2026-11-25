@@ -6,27 +6,18 @@ from . import dsa
 from . import gpu
 from . import raw
 from .dsa.pipe import pipe
+from .distributed import (remote, signal, signal_wait, device_mesh, MeshConfig,
+                          distributed_barrier, shard_id, n_pes,
+                          _get_local_rank, _get_world_rank,
+                          BarrierKind, MemoryOrder, MemoryScope, GroupKind)
+from .sharding import (B, S, P, ShardingSpec, ShardedTensor, sharding,
+                       make_sharded_tensor, reshard, distributed_dot)
+from .communication import get_mem_pool, create_dist_tensor, cleanup_communicator
 
 
-def device_mesh(*args, **kwargs):
-    raise NotImplementedError("tle.device_mesh is not implemented for the XPU TLE backend")
-
-
-def distributed_barrier(*args, **kwargs):
-    raise NotImplementedError("tle.distributed_barrier is not implemented for the XPU TLE backend")
-
-
-def shard_id(*args, **kwargs):
-    raise NotImplementedError("tle.shard_id is not implemented for the XPU TLE backend")
-
-
-def remote(*args, **kwargs):
-    raise NotImplementedError("tle.remote is not implemented for the XPU TLE backend")
-
-
-for _fn in [device_mesh, distributed_barrier, shard_id, remote]:
-    _fn.__triton_builtin__ = True
-
-del _fn
-
-__all__ = ["gpu", "dsa", "pipe", "device_mesh", "distributed_barrier", "shard_id", "remote", "raw"]
+__all__ = ["gpu", "dsa", "pipe", "device_mesh", "MeshConfig", "distributed_barrier",
+           "shard_id", "n_pes", "_get_local_rank", "_get_world_rank", "remote",
+           "signal", "signal_wait", "raw", "get_mem_pool", "create_dist_tensor",
+           "cleanup_communicator", "B", "S", "P", "sharding", "ShardingSpec",
+           "ShardedTensor", "make_sharded_tensor", "reshard", "distributed_dot",
+           "BarrierKind", "MemoryOrder", "MemoryScope", "GroupKind"]

@@ -17,8 +17,18 @@
 # tle.raw: inject a hand-written payload (tle.raw.dialect / tle.raw.call)
 # tle.dsa: allocate buffers in a named on-chip address space (tle.dsa.alloc)
 # tle.pipe: an explicit producer/consumer edge over tle.dsa buffers
+# tle.remote: intra-node peer memory access over the xccl symmetric heap
+# tle.signal / tle.signal_wait: the cross-rank handshake, flagtree's interface
+#   (slot counters in the handle's signal pad; the update is a remote
+#   read-modify-write, since KL5 has no cross-chip atomic)
+# tle.device_mesh / tle.distributed_barrier: a grid-wide barrier (ticket
+#   counter on the mesh); flagtree's other barrier flavours are not implemented
 from . import language
 from . import raw
-from .language import dsa, gpu, pipe
+from .language import (dsa, gpu, pipe, remote, signal, signal_wait,
+                       device_mesh, distributed_barrier)
+from .language import get_mem_pool, create_dist_tensor, cleanup_communicator
 
-__all__ = ["language", "gpu", "dsa", "pipe", "raw"]
+__all__ = ["language", "gpu", "dsa", "pipe", "raw", "remote",
+           "signal", "signal_wait", "device_mesh", "distributed_barrier",
+           "get_mem_pool", "create_dist_tensor", "cleanup_communicator"]
