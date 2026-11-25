@@ -1,4 +1,6 @@
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "CopyCacheTranslation.h"
+#endif
 #include "TritonMETAXGPUToLLVM/Passes.h"
 #include "TritonMETAXGPUTransforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/MACADialect.h"
@@ -74,13 +76,17 @@ PLUGIN_EXPORT void init_triton_metax(py::module &&m) {
   m.def("load_dialects", [](mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
     registry.insert<mlir::MACA::MACADialect>();
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     mlir::triton::METAX::registerCopyCacheTranslation(registry);
+#endif
     context.appendDialectRegistry(registry);
     context.loadAllAvailableDialects();
   });
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
   m.def("split_copy_cache_helpers",
         &mlir::triton::METAX::splitCopyCacheHelpers);
+#endif
 
   m.def(
       "mlir_opt",

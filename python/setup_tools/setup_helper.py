@@ -192,6 +192,9 @@ def get_backend_cmake_args(*args, **kargs):
         cmake_args += ["-DEDITABLE_MODE=ON"]
     if flagtree_backend not in configs.default_backends:
         cmake_args += ["-DFLAGTREE_BACKEND={}".format(flagtree_backend)]
+    native_cache_policy = os.getenv("FLAGTREE_NATIVE_CACHE_POLICY")
+    if native_cache_policy is not None:
+        cmake_args += [f"-DFLAGTREE_NATIVE_CACHE_POLICY={native_cache_policy}"]
     return cmake_args
 
 
@@ -820,8 +823,11 @@ def handle_flagtree_backend():
 
 
 def handle_plugin_backend(editable):
-    # MetaX CMake packages its SDK support library alongside the in-tree lowering.
-    if flagtree_backend == "metax":
+    # MetaX CMake packages its SDK support library alongside the in-tree lowering
+    # when native cache policies (and MCTLE) are enabled.
+    native_cache_enabled = os.getenv("FLAGTREE_NATIVE_CACHE_POLICY", "ON").upper() not in ["0", "OFF", "FALSE"]
+    mctle_enabled = os.getenv("BUILD_MCTLE", "ON").upper() not in ["0", "OFF", "FALSE"]
+    if flagtree_backend == "metax" and native_cache_enabled and mctle_enabled:
         return
     plugin_mode = os.getenv("FLAGTREE_PLUGIN")
     if (plugin_mode and plugin_mode.upper() not in ["0", "OFF"]) or not flagtree_backend:

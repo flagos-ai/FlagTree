@@ -30,9 +30,9 @@ from triton._flagtree_backend import FLAGTREE_BACKEND
 from triton.experimental.tle.language.gpu import CachePolicy, FractionalEvictionPolicy
 
 pytestmark = pytest.mark.skipif(
-    FLAGTREE_BACKEND not in ("", "nvidia") or not torch.cuda.is_available()
+    not tl.core._HAS_NATIVE_CACHE_POLICY or FLAGTREE_BACKEND not in ("", "nvidia") or not torch.cuda.is_available()
     or torch.cuda.get_device_capability()[0] < 9,
-    reason="requires NVIDIA Hopper or newer",
+    reason="requires NVIDIA Hopper or newer with native cache policy enabled",
 )
 
 

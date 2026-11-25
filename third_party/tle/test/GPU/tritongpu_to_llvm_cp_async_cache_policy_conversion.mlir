@@ -19,6 +19,7 @@
 // TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 // SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+// REQUIRES: flagtree-native-cache-policy
 // RUN: triton-opt %s -split-input-file -verify-diagnostics --allocate-shared-memory-nv --convert-triton-gpu-to-llvm="ptx-version=94" | FileCheck %s
 
 #blocked = #ttg.blocked<{sizePerThread = [4], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>

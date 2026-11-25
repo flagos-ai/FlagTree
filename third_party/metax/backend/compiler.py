@@ -379,7 +379,8 @@ class MACABackend(BaseBackend):
 
     @staticmethod
     def make_llir(src, metadata, options, capability):
-        if "mccache.helper" in src:
+        from triton.language.core import _HAS_NATIVE_CACHE_POLICY
+        if _HAS_NATIVE_CACHE_POLICY and "mccache.helper" in src:
             src, copy_cache_helpers = metax.split_copy_cache_helpers(src)
         else:
             copy_cache_helpers = ""

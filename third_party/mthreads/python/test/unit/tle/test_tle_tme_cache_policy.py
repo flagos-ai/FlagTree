@@ -16,6 +16,9 @@ from test_tle_utils import compile_musa, compile_to_ttir, require_mthreads_libtr
 
 require_mthreads_libtriton()
 
+if not tl.core._HAS_NATIVE_CACHE_POLICY:
+    pytest.skip("native cache policy disabled", allow_module_level=True)
+
 POLICIES = ("none", "once", "normal", "persist")
 PAIRS = [TMECachePolicy(inner, outer) for inner, outer in itertools.product(POLICIES, repeat=2)]
 

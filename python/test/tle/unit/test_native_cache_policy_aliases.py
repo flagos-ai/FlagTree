@@ -45,6 +45,7 @@ def test_ppu_ba_rejected(load):
         gpu.ppu.CachePolicy(".ba").validate_copy(False, load)
 
 
+@pytest.mark.skipif(not tl.core._HAS_NATIVE_CACHE_POLICY, reason="native cache policy IR bindings disabled")
 @pytest.mark.parametrize("load", [False, True])
 def test_musa_cache_enum_encodes_every_lsu_tuple(load):
     from triton._C.libtriton import ir
@@ -61,6 +62,7 @@ def test_musa_cache_enum_encodes_every_lsu_tuple(load):
     assert len(modes) == 72
 
 
+@pytest.mark.skipif(not tl.core._HAS_NATIVE_CACHE_POLICY, reason="native cache policy IR bindings disabled")
 def test_ppu_aiu_modes_are_distinct_from_lsu_modifiers():
     aiu = {gpu.ppu.AIUCachePolicy(kp).to_ir(True)[0] for kp in range(1, 7)}
     lsu = {gpu.ppu.CachePolicy(kp).to_ir(True)[0] for kp in (1, 2, 4, 5, 6)}

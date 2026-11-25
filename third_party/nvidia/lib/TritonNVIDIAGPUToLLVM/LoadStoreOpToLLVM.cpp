@@ -2,7 +2,9 @@
 #include "TargetInfo.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "triton/Dialect/Triton/IR/CacheControls.h"
+#endif
 #ifdef __TLE__
 #include "mlir/IR/BuiltinAttributes.h"
 #endif
@@ -157,7 +159,7 @@ Value createCachePolicy(triton::EvictionPolicy opEvict,
   const bool hasL2EvictPolicy =
       opEvict == triton::EvictionPolicy::EVICT_FIRST ||
       opEvict == triton::EvictionPolicy::EVICT_LAST
-#ifdef __TLE__
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
       || isL2Eviction(opEvict)
 #endif
       ;
@@ -166,16 +168,23 @@ Value createCachePolicy(triton::EvictionPolicy opEvict,
   const bool hardwareSupport = computeCapability >= 80;
 
   if (hasL2EvictPolicy && hardwareSupport) {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     auto *policyInstr = ptxBuilder.create("createpolicy.fractional");
     policyInstr
         ->o("L2::evict_first", opEvict == triton::EvictionPolicy::EVICT_FIRST)
         .o("L2::evict_last", opEvict == triton::EvictionPolicy::EVICT_LAST);
-#ifdef __TLE__
     if (isL2Eviction(opEvict))
       policyInstr->o("L2::" +
                      stringifyEvictionPolicy(opEvict).drop_front(3).str());
-#endif
     auto &policy = policyInstr->b(64);
+#else
+    auto &policy =
+        ptxBuilder.create("createpolicy.fractional")
+            ->o("L2::evict_first",
+                opEvict == triton::EvictionPolicy::EVICT_FIRST)
+            .o("L2::evict_last", opEvict == triton::EvictionPolicy::EVICT_LAST)
+            .b(64);
+#endif
 
     const std::string writeConstraint = "=l";
     // prepare asm operands
@@ -191,7 +200,7 @@ Value createCachePolicy(triton::EvictionPolicy opEvict,
   return policyRet;
 }
 
-#ifdef __TLE__
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 static LogicalResult verifyCacheControls(Operation *op, int capability,
                                          bool isLoad, bool isTMA = false) {
   auto cache = getCacheModifier(op);
@@ -229,7 +238,7 @@ static void addGlobalCacheQualifiers(PTXInstr &inst, Operation *op,
         .o("L1::evict_last", evict == EvictionPolicy::EVICT_LAST);
   inst.o("L2::cache_hint", hasL2Policy);
 }
-#endif // __TLE__
+#endif // __FLAGTREE_NATIVE_CACHE_POLICY__
 
 // Contains some helper functions for both Load and Store conversions.
 struct LoadStoreConversionBase {
@@ -322,7 +331,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
   LogicalResult
   matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-#ifdef __TLE__
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     if (failed(verifyCacheControls(op, computeCapability, true)))
       return failure();
 #endif
@@ -515,7 +524,18 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
         ld->o("shared::cluster", isClusterSharedPtr)
             .o("shared", !isClusterSharedPtr);
       } else {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
         addGlobalCacheQualifiers(*ld, op, bool(l2PolicyReg));
+#else
+        ld->global()
+            .o("ca", op.getCache() == triton::CacheModifier::CA)
+            .o("cg", op.getCache() == triton::CacheModifier::CG)
+            .o("L1::evict_first",
+               op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
+            .o("L1::evict_last",
+               op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+            .o("L2::cache_hint", l2PolicyReg != Value());
+#endif
       }
       ld->v(nWords).b(width);
 
@@ -611,7 +631,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
   LogicalResult
   matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-#ifdef __TLE__
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     if (failed(verifyCacheControls(op, computeCapability, false)))
       return failure();
 #endif
@@ -752,7 +772,20 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
         ptxStoreInstr->o("shared::cluster", isClusterSharedPtr)
             .o("shared", !isClusterSharedPtr);
       } else {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
         addGlobalCacheQualifiers(*ptxStoreInstr, op, bool(l2PolicyReg));
+#else
+        ptxStoreInstr->global()
+            .o("wb", op.getCache() == triton::CacheModifier::WB)
+            .o("cg", op.getCache() == triton::CacheModifier::CG)
+            .o("cs", op.getCache() == triton::CacheModifier::CS)
+            .o("wt", op.getCache() == triton::CacheModifier::WT)
+            .o("L1::evict_first",
+               op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
+            .o("L1::evict_last",
+               op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+            .o("L2::cache_hint", l2PolicyReg != Value());
+#endif
       }
       ptxStoreInstr->v(nWords).b(width);
 
@@ -1424,7 +1457,7 @@ struct AsyncCopyGlobalToLocalOpConversion
   LogicalResult
   matchAndRewrite(triton::gpu::AsyncCopyGlobalToLocalOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-#ifdef __TLE__
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     if (failed(verifyCacheControls(op, computeCapability, true)))
       return failure();
 #endif
@@ -1545,7 +1578,7 @@ struct AsyncCopyGlobalToLocalOpConversion
     Value threadPred =
         emitRedundantThreadPredicate(freeVarMasks, rewriter, loc, targetInfo);
 
-#if defined(__FLAGTREE_PIPELINE_ENHANCE__) || defined(__TLE__)
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     // Adapted from https://github.com/triton-lang/triton/pull/11660 and
     // https://github.com/triton-lang/triton/pull/11848: ptxas before CUDA 13.4
     // (PTX 9.4) miscompiles cp.async with an L2::cache_hint into an illegal
@@ -1554,18 +1587,26 @@ struct AsyncCopyGlobalToLocalOpConversion
         getNvidiaAsyncEvictionPolicy(op.getEvict(), targetInfo.getPtxVersion());
     Value l2PolicyReg =
         createCachePolicy(evict, rewriter, loc, computeCapability);
+#elif defined(__FLAGTREE_PIPELINE_ENHANCE__)
+    Value l2PolicyReg;
+    if (targetInfo.getPtxVersion() >= 94)
+      l2PolicyReg =
+          createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 #else  // __FLAGTREE_PIPELINE_ENHANCE__
     Value l2PolicyReg =
         createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 #endif // __FLAGTREE_PIPELINE_ENHANCE__
 
-#ifdef __TLE__
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     llvm::SmallDenseSet<unsigned> reportedWidths;
 #endif
     auto emitCpAsync =
         [&b, threadPred, ptrTy, hasMask = bool(llMask), opCache = op.getCache(),
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+         &op, &reportedWidths, evict,
+#endif
 #ifdef __TLE__
-         &op, &reportedWidths, evict, materializeOther,
+         materializeOther,
 #endif
          l2PolicyReg](RewriterBase &rewriter, Location loc,
                       ArrayRef<Value> vals, Value shmemAddr, int startIdx,
@@ -1591,7 +1632,7 @@ struct AsyncCopyGlobalToLocalOpConversion
               ? (nBytes == 16 ? CacheModifier::CG : CacheModifier::CA)
               : opCache;
 #endif // __FLAGTREE_PIPELINE_ENHANCE__
-#ifdef __TLE__
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
       auto effectiveCache = opCache == CacheModifier::NONE ? CacheModifier::NONE
                                                            : srcCacheModifier;
       if (reportedWidths.insert(nBytes).second)
@@ -1791,8 +1832,10 @@ struct AsyncTMACopyGlobalToLocalOpConversion
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
 #ifdef __TLE__
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     if (failed(verifyCacheControls(op, computeCapability, true, true)))
       return failure();
+#endif
     Value l2PolicyReg =
         createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 #endif
@@ -1899,11 +1942,17 @@ struct AsyncTMACopyGlobalToLocalOpConversion
   }
 };
 
-LogicalResult
-convertTMAStoreLikeOp(Operation *op, const TypeConverter *typeConverter,
-                      ConversionPatternRewriter &rewriter, Value tmaPtr,
-                      ttg::MemDescType srcTy, Value src, ValueRange coords,
-                      const std::string &tmaInst, Value l2PolicyReg = {}) {
+LogicalResult convertTMAStoreLikeOp(Operation *op,
+                                    const TypeConverter *typeConverter,
+                                    ConversionPatternRewriter &rewriter,
+                                    Value tmaPtr, ttg::MemDescType srcTy,
+                                    Value src, ValueRange coords,
+                                    const std::string &tmaInst
+#if defined(__TLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
+                                    ,
+                                    Value l2PolicyReg = {}
+#endif
+) {
   auto loc = op->getLoc();
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   Type llvmElemTy = typeConverter->convertType(srcTy.getElementType());
@@ -1963,7 +2012,7 @@ convertTMAStoreLikeOp(Operation *op, const TypeConverter *typeConverter,
       operands.push_back(ptxBuilderTMA.newOperand(coord, "r"));
     }
     operands.push_back(ptxBuilderTMA.newOperand(shMemPtr, "r"));
-#ifdef __TLE__
+#if defined(__TLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
     if (l2PolicyReg)
       operands.push_back(ptxBuilderTMA.newOperand(l2PolicyReg, "l"));
 #endif
@@ -1988,7 +2037,7 @@ struct AsyncTMACopyLocalToGlobalOpConversion
           triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp> {
   using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
 
-#ifdef __TLE__
+#if defined(__TLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
   AsyncTMACopyLocalToGlobalOpConversion(LLVMTypeConverter &typeConverter,
                                         int computeCapability,
                                         PatternBenefit benefit)
@@ -2001,18 +2050,17 @@ struct AsyncTMACopyLocalToGlobalOpConversion
   matchAndRewrite(triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp op,
                   OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    Value l2PolicyReg;
-#ifdef __TLE__
+#if defined(__TLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
     if (failed(verifyCacheControls(op, computeCapability, false, true)))
       return failure();
-    l2PolicyReg = createCachePolicy(op.getEvict(), rewriter, op.getLoc(),
-                                    computeCapability);
+    Value l2PolicyReg = createCachePolicy(op.getEvict(), rewriter, op.getLoc(),
+                                          computeCapability);
 #endif
     std::ostringstream tmaInst;
     auto rank = op.getCoord().size();
     tmaInst << "@$0 cp.async.bulk.tensor." << rank;
     tmaInst << "d.global.shared::cta.bulk_group";
-#ifdef __TLE__
+#if defined(__TLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
     if (l2PolicyReg)
       tmaInst << ".L2::cache_hint";
 #endif
@@ -2024,14 +2072,20 @@ struct AsyncTMACopyLocalToGlobalOpConversion
         tmaInst << ", ";
     }
     tmaInst << "}], [$" << (operandIdx++) << "]";
-#ifdef __TLE__
+#if defined(__TLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
     if (l2PolicyReg)
       tmaInst << ", $" << operandIdx++;
 #endif
     tmaInst << ";";
+#if defined(__TLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
     return convertTMAStoreLikeOp(
         op, typeConverter, rewriter, adaptor.getDesc(), op.getSrc().getType(),
         adaptor.getSrc(), adaptor.getCoord(), tmaInst.str(), l2PolicyReg);
+#else
+    return convertTMAStoreLikeOp(op, typeConverter, rewriter, adaptor.getDesc(),
+                                 op.getSrc().getType(), adaptor.getSrc(),
+                                 adaptor.getCoord(), tmaInst.str());
+#endif
   }
 };
 
@@ -2396,11 +2450,18 @@ void mlir::triton::NVIDIA::populateLoadStoreOpToLLVMPatterns(
       typeConverter, targetInfo, computeCapability, axisInfoAnalysis, benefit);
   patterns.add<AsyncCommitGroupOpConversion, AsyncWaitOpConversion,
                AsyncCopyMbarrierArriveOpConversion>(typeConverter, benefit);
-#ifdef __TLE__
+#if defined(__TLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
   patterns.add<AsyncTMACopyGlobalToLocalOpConversion,
                AsyncTMACopyLocalToGlobalOpConversion>(
       typeConverter, computeCapability, benefit);
   patterns.add<AsyncTMAReduceOpConversion, AsyncTMAGatherOpConversion,
+               AsyncTMAScatterOpConversion, TMAStoreWaitOpConversion>(
+      typeConverter, benefit);
+#elif defined(__TLE__)
+  patterns.add<AsyncTMACopyGlobalToLocalOpConversion>(
+      typeConverter, computeCapability, benefit);
+  patterns.add<AsyncTMACopyLocalToGlobalOpConversion,
+               AsyncTMAReduceOpConversion, AsyncTMAGatherOpConversion,
                AsyncTMAScatterOpConversion, TMAStoreWaitOpConversion>(
       typeConverter, benefit);
 #else

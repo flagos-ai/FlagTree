@@ -22,15 +22,21 @@
  */
 
 #include "TritonPPUGPUTransforms/Passes.h"
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#endif
 #include "mlir/IR/BuiltinOps.h"
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "mlir/IR/Matchers.h"
 #include "triton/Dialect/Triton/IR/CacheControls.h"
+#endif
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/MathExtras.h"
+#endif
 
 namespace mlir {
 
@@ -48,6 +54,7 @@ static bool isAIULoadElementType(Type elemTy) {
   return bitWidth == 8 || bitWidth == 16 || bitWidth == 32;
 }
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 static triton::MakeTensorPtrOp findTensorPointer(Value pointer) {
   llvm::SmallDenseSet<Value, 8> seen;
   while (seen.insert(pointer).second) {
@@ -146,6 +153,7 @@ static LogicalResult splitRankThreeLoad(triton::LoadOp load,
   load.erase();
   return success();
 }
+#endif // __FLAGTREE_NATIVE_CACHE_POLICY__
 
 class TlePromoteAsyncLoadToAIUPass
     : public impl::TlePromoteAsyncLoadToAIUPassBase<
@@ -158,6 +166,7 @@ public:
     ModuleOp m = getOperation();
     OpBuilder builder(m.getContext());
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     bool invalid = false;
     SmallVector<triton::LoadOp> rankThreeLoads;
     m.walk([&](triton::LoadOp load) {
@@ -172,10 +181,12 @@ public:
       signalPassFailure();
       return;
     }
+#endif
     SmallVector<triton::LoadOp> toPromote;
     m.walk([&](triton::LoadOp loadOp) {
       auto asyncAttr =
           llvm::cast_if_present<BoolAttr>(loadOp->getAttr("tt.load.async"));
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
       bool nativeAIU = triton::isPPUAIUCache(loadOp.getCache());
       if (nativeAIU) {
         auto resultTy = dyn_cast<RankedTensorType>(loadOp.getType());
@@ -275,6 +286,10 @@ public:
       }
       if (!nativeAIU && (!asyncAttr || !asyncAttr.getValue()))
         return;
+#else
+      if (!asyncAttr || !asyncAttr.getValue())
+        return;
+#endif
       if (!triton::isTensorPointerType(loadOp.getPtr().getType()))
         return;
       auto resultTy = dyn_cast<RankedTensorType>(loadOp.getType());
@@ -283,10 +298,12 @@ public:
       toPromote.push_back(loadOp);
     });
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     if (invalid) {
       signalPassFailure();
       return;
     }
+#endif
     for (auto loadOp : toPromote) {
       builder.setInsertionPoint(loadOp);
       auto aiuLoad = triton::AIULoadOp::create(

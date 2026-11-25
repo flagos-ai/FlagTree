@@ -21,6 +21,9 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#ifndef __FLAGTREE_NATIVE_CACHE_POLICY__
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#endif
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
@@ -86,6 +89,56 @@ static bool hasLegalCpAsyncWidth(ttg::AsyncCopyGlobalToLocalOp copyOp,
   unsigned vecBytes = maxVec * elemBits / 8;
   return llvm::is_contained({4u, 8u, 16u}, vecBytes);
 }
+
+#ifndef __FLAGTREE_NATIVE_CACHE_POLICY__
+static std::optional<Region *>
+getEnclosingWarpSpecializePartition(Operation *op) {
+  for (Region *region = op->getParentRegion(); region;) {
+    Operation *parent = region->getParentOp();
+    if (!parent)
+      break;
+    if (isa<ttg::WarpSpecializePartitionsOp>(parent))
+      return region;
+    region = parent->getParentRegion();
+  }
+  return std::nullopt;
+}
+
+static bool isInLoopFreeWarpSpecializePartition(Operation *op) {
+  auto partition = getEnclosingWarpSpecializePartition(op);
+  if (!partition)
+    return false;
+
+  Operation *partitionOp = (*partition)->getParentOp();
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (isa<scf::ForOp>(parent))
+      return false;
+    if (parent == partitionOp)
+      return true;
+  }
+  return false;
+}
+
+static bool hasL2CachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
+  return copyOp.getEvict() == tt::EvictionPolicy::EVICT_FIRST ||
+         copyOp.getEvict() == tt::EvictionPolicy::EVICT_LAST;
+}
+
+static void
+dropUnsafeLoopFreePartitionCachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
+  if (!copyOp->hasAttr(kTleLocalPointerAsyncStoreAttr) ||
+      !hasL2CachePolicy(copyOp) || !isInLoopFreeWarpSpecializePartition(copyOp))
+    return;
+
+  // PTXAS may emit undefined uniform registers for straight-line
+  // warp-specialize producer partitions that use cp.async L2 cache-policy
+  // operands. Eviction policy is a non-semantic hint, so keep the async copy
+  // and drop only the unsafe hint in loop-free partitions.
+  copyOp.setEvictAttr(tt::EvictionPolicyAttr::get(copyOp.getContext(),
+                                                  tt::EvictionPolicy::NORMAL));
+}
+#endif
 
 static unsigned floorPowerOfTwo(unsigned value) {
   if (value == 0)
@@ -494,12 +547,19 @@ struct DowngradeInvalidAsyncCopyPass
         rematerializeLogicalAsyncCopy(copyOp, initialAxisInfo,
                                       caches[copyOp->getBlock()], dominance);
     }
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     if (failed(downgradeCopies<tt::ModuleAxisInfoAnalysis>(module, false)) ||
         (!plannedCopies.empty() &&
          failed(downgradeCopies<tle::ModuleAxisInfoAnalysis>(module, true))))
       signalPassFailure();
+#else
+    downgradeCopies<tt::ModuleAxisInfoAnalysis>(module, false);
+    if (!plannedCopies.empty())
+      downgradeCopies<tle::ModuleAxisInfoAnalysis>(module, true);
+#endif
   }
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
   template <typename AxisAnalysis>
   LogicalResult downgradeCopies(ModuleOp module, bool planned) {
     AxisAnalysis axisInfo(module);
@@ -532,6 +592,41 @@ struct DowngradeInvalidAsyncCopyPass
     }
     return success();
   }
+#else
+  template <typename AxisAnalysis>
+  void downgradeCopies(ModuleOp module, bool planned) {
+    AxisAnalysis axisInfo(module);
+    SmallVector<ttg::AsyncCopyGlobalToLocalOp> invalidCopies;
+    module.walk([&](ttg::AsyncCopyGlobalToLocalOp copyOp) {
+      if (copyOp->hasAttr(kCopyPlanAttr) != planned)
+        return;
+      dropUnsafeLoopFreePartitionCachePolicy(copyOp);
+      if (hasLegalCpAsyncWidth(copyOp, axisInfo))
+        return;
+      invalidCopies.push_back(copyOp);
+    });
+
+    IRRewriter rewriter(&getContext());
+    for (ttg::AsyncCopyGlobalToLocalOp copyOp : invalidCopies) {
+      if (copyOp->hasAttr(kTleRequiredAsyncCopyAttr)) {
+        if (succeeded(legalizeRequiredAsyncCopy(rewriter, copyOp, axisInfo)))
+          continue;
+        copyOp.emitError(
+            "explicit tle.gpu.copy(is_async=True) cannot be represented by "
+            "a legal NVIDIA cp.async width; refusing synchronous downgrade");
+        signalPassFailure();
+        return;
+      }
+      if (copyOp->getBlock() &&
+          failed(downgradeAsyncCopy(rewriter, copyOp, axisInfo))) {
+        copyOp.emitError("cannot downgrade invalid async copy with non-trivial "
+                         "async token users");
+        signalPassFailure();
+        return;
+      }
+    }
+  }
+#endif
 };
 
 } // namespace

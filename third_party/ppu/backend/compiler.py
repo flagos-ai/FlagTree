@@ -362,7 +362,8 @@ class PPUBackend(BaseBackend):
         passes.common.add_inliner(pm)
         # AIU promotion needs a block pointer. Expand explicit AIU descriptors
         # first; ordinary descriptors follow the original pass order.
-        early_descriptor = capability // 10 < 9 and ppu.has_aiu_descriptor_load(mod)
+        early_descriptor = (capability // 10 < 9 and hasattr(ppu, "has_aiu_descriptor_load")
+                            and ppu.has_aiu_descriptor_load(mod))
         if early_descriptor:
             passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
             passes.common.add_canonicalizer(pm)
@@ -549,9 +550,10 @@ class PPUBackend(BaseBackend):
 
         # The AIU lowering calls SDK bridge helpers it only declares; record
         # the exact set so make_hgbin links the bridge without inspecting text.
-        metadata["ppu_aiu_helpers"] = sorted(fn.name
-                                             for fn in llvm_mod.get_functions()
-                                             if fn.is_declaration() and fn.name.startswith(AIU_HELPER_PREFIX))
+        if hasattr(ppu, "has_aiu_descriptor_load"):
+            metadata["ppu_aiu_helpers"] = sorted(fn.name
+                                                 for fn in llvm_mod.get_functions()
+                                                 if fn.is_declaration() and fn.name.startswith(AIU_HELPER_PREFIX))
 
         # Get some metadata
         total_num_warps = src.get_int_attr("ttg.total-num-warps")
@@ -732,5 +734,7 @@ please share the reproducer above with Triton project.
     @functools.lru_cache()
     def hash(self):
         version = get_ppu_llc_version()
+        if not hasattr(ppu, "has_aiu_descriptor_load"):
+            return f'{version}-{self.target.arch}'
         helper = Path(__file__).parent / "lib" / "aiu_cache_policy.ll"
         return f'{version}-{self.target.arch}-{file_hash(str(helper))}'

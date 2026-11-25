@@ -28,7 +28,9 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "triton/Dialect/Triton/IR/CacheControls.h"
+#endif
 
 #include "TritonPPUGPUToLLVM/TIXAsmFormat.h"
 
@@ -65,6 +67,7 @@ static constexpr bool disableLDAcquireLowering = false;
 
 namespace {
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 // TLE copy policies are kept distinct from CUDA compatibility eviction hints:
 // the PPU SDK accepts those hints but discards them. Use only modifiers with a
 // native PPU instruction encoding and diagnose unsupported operations.
@@ -101,6 +104,7 @@ FailureOr<StringAttr> getCopyCacheModifier(Operation *op, bool isLoad,
                   : "." + stringifyCacheModifier(modifier).str();
   return StringAttr::get(op->getContext(), text);
 }
+#endif // __FLAGTREE_NATIVE_CACHE_POLICY__
 
 Value maybeAnd(RewriterBase &rewriter, Location loc, Value a, Value b) {
   auto tb = TritonLLVMOpBuilder(loc, rewriter);
@@ -250,10 +254,12 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
   LogicalResult
   matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     auto copyModifierOr = getCopyCacheModifier(op, /*isLoad=*/true);
     if (failed(copyModifierOr))
       return failure();
     StringAttr copyModifier = *copyModifierOr;
+#endif
     auto ctx = getContext();
     auto loc = op->getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);
@@ -415,9 +421,11 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
           createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
       bool isSharedPtr = isSharedMemoryPointer(ptrElems[vecStart]);
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
       if (copyModifier && isSharedPtr)
         return op.emitError(
             "PPU copy cache policy only applies to global memory");
+#endif
 
       // Define the instruction opcode
       auto &ld =
@@ -425,6 +433,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
               ->o("volatile", op.getIsVolatile())
               .o("global", !isSharedPtr)
               .o("shared", isSharedPtr)
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
               .o("ca", !copyModifier && !isSharedPtr &&
                            op.getCache() == triton::CacheModifier::CA)
               .o("cg", !copyModifier && !isSharedPtr &&
@@ -433,6 +442,12 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
                      ? copyModifier.getValue().drop_front().str()
                      : "",
                  copyModifier && !copyModifier.getValue().empty())
+#else
+              .o("ca",
+                 !isSharedPtr && op.getCache() == triton::CacheModifier::CA)
+              .o("cg",
+                 !isSharedPtr && op.getCache() == triton::CacheModifier::CG)
+#endif
               .o("L1::evict_first",
                  !isSharedPtr &&
                      op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
@@ -505,10 +520,12 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
   LogicalResult
   matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     auto copyModifierOr = getCopyCacheModifier(op, /*isLoad=*/false);
     if (failed(copyModifierOr))
       return failure();
     StringAttr copyModifier = *copyModifierOr;
+#endif
     Value ptr = op.getPtr();
     Value value = op.getValue();
 
@@ -621,14 +638,17 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
           createCachePolicy(op.getEvict(), rewriter, loc, computeCapability);
 
       bool isSharedStore = isSharedMemoryPointer(ptrElems[vecStart]);
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
       if (copyModifier && isSharedStore)
         return op.emitError(
             "PPU copy cache policy only applies to global memory");
+#endif
 
       auto &tixStoreInstr =
           tixBuilder.create("ppu.st")
               ->o("global", !isSharedStore)
               .o("shared", isSharedStore)
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
               .o("wb", !copyModifier && !isSharedStore &&
                            op.getCache() == triton::CacheModifier::WB)
               .o("cg", !copyModifier && !isSharedStore &&
@@ -641,6 +661,16 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
                      ? copyModifier.getValue().drop_front().str()
                      : "",
                  copyModifier && !copyModifier.getValue().empty())
+#else
+              .o("wb",
+                 !isSharedStore && op.getCache() == triton::CacheModifier::WB)
+              .o("cg",
+                 !isSharedStore && op.getCache() == triton::CacheModifier::CG)
+              .o("cs",
+                 !isSharedStore && op.getCache() == triton::CacheModifier::CS)
+              .o("wt",
+                 !isSharedStore && op.getCache() == triton::CacheModifier::WT)
+#endif
               .o("L1::evict_first",
                  !isSharedStore &&
                      op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
@@ -793,6 +823,7 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
       Value shMemOffset = b.add(shMemOffsetCopies, shMemOffsetWarps);
       Value shMemPtr =
           b.gep(elemPtrTy, llvmElemTy, dstMemObj.getBase(), shMemOffset);
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
       if (isPPUAIUCache(op.getCache())) {
         // SDK 2.1 __aiu_load_tsm_params_2d packing, from libppudevice.bc.
         // The 2D X/Z dimensions and coordinates use 24-bit extension fields.
@@ -856,6 +887,7 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
         }
         continue;
       }
+#endif
       SmallVector<TIXBuilder::Operand *> operands;
       if (isNeedPred) {
         operands.push_back(tixBuilderAIU.newOperand(pred, "b"));
@@ -1054,6 +1086,7 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
   matchAndRewrite(triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp op,
                   OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     if (failed(getCopyCacheModifier(op, true, true)))
       return failure();
     // Native AIU modes keep their SDK encoding. No equivalence between
@@ -1070,6 +1103,12 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
         return op.emitError("PPU AIU cache policy requires kp=1..6 and rank-2 "
                             "PPU0010 AIU layout");
     }
+#else
+    assert(op.getCache() == triton::CacheModifier::NONE &&
+           "cache modifiers not supported yet.");
+    assert(op.getEvict() == triton::EvictionPolicy::NORMAL &&
+           "eviction policy not supported yet.");
+#endif
     auto tensorType = op.getResult().getType();
     if (auto resSharedLayout =
             dyn_cast<ttg::PPUAIUSharedEncodingAttr>(tensorType.getEncoding())) {
@@ -1642,12 +1681,14 @@ struct AsyncCopyGlobalToLocalOpConversion
   LogicalResult
   matchAndRewrite(triton::gpu::AsyncCopyGlobalToLocalOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     if (failed(getCopyCacheModifier(op, true)))
       return failure();
     triton::remarkCacheControlConversion(
         op, "PPU asynchronous copy", triton::CacheModifier::NONE,
         triton::EvictionPolicy::NORMAL,
         "the selected instruction uses its default cache controls");
+#endif
     auto ctx = getContext();
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);

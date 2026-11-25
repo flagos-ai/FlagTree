@@ -326,9 +326,14 @@ void createAIUAsyncCopy(scf::ForOp forOp, tt::AIULoadOp loadOp, Value alloc,
 
   // Create async copy
   Value view = createSingleBufferView(builder, alloc, insertIdx);
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
   Operation *copy = triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp::create(
       builder, src, loadOp.getIndices(), loadOp.getShape(), view,
       loadOp.getCache(), loadOp.getEvict());
+#else
+  Operation *copy = triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp::create(
+      builder, src, loadOp.getIndices(), loadOp.getShape(), view);
+#endif
   Operation *commit =
       ttg::AsyncCommitGroupOp::create(builder, copy->getResult(0));
 

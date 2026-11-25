@@ -34,6 +34,9 @@ from triton.experimental.tle.language.gpu.mthreads import LSUCachePolicy, TMECac
 
 from test_tle_utils import compile_musa, compile_to_ttir, require_mthreads_libtriton
 
+if not tl.core._HAS_NATIVE_CACHE_POLICY:
+    pytest.skip("native cache policy disabled", allow_module_level=True)
+
 require_mthreads_libtriton()
 
 POLICIES = [LSUCachePolicy()] + [LSUCachePolicy(i, 5 - i, i % 2) for i in range(6)]

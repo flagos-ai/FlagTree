@@ -19,7 +19,7 @@ add_triton_library(TritonMETAXGPUTransforms
   TritonGPUIR
 
   LINK_LIBS PUBLIC
-  TritonGPUTransforms
+  $<$<BOOL:${FLAGTREE_NATIVE_CACHE_POLICY}>:TritonGPUTransforms>
 )
 
 target_include_directories(TritonMETAXGPUTransforms PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../include)

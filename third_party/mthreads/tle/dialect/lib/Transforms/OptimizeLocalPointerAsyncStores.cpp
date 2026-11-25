@@ -8,7 +8,9 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "triton/Analysis/AxisInfo.h"
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "triton/Analysis/Utility.h"
+#endif
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -242,10 +244,12 @@ getAsyncCopyContiguity(tt::LoadOp load,
 static bool
 canUseAsyncCopyForStore(tt::LoadOp load, const StaticSubviewMatch &match,
                         tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
   // memcpy.g2s zero-fills masked lanes. Unlike the async-load frontend,
   // this rewrite has no register select to restore a nonzero fill value.
   if (load.getMask() && load.getOther() && !isZeroConst(load.getOther()))
     return false;
+#endif
   if (!tt::canBeConvertedToAsyncLoad(load, axisInfoAnalysis))
     return false;
 

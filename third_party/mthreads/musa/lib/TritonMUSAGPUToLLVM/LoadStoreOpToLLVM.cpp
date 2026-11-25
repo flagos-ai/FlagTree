@@ -3,7 +3,9 @@
 #include "TritonMUSACommon/MusaArchTraits.h"
 #include "TritonMUSACommon/SqmmaAttrUtils.h"
 #include "TritonMUSACommon/TMEUtils.h"
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "include/triton/Dialect/Triton/IR/CacheControls.h"
+#endif
 #ifdef __TLE__
 #include "MUSATLE/Transforms/TransformAttrs.h"
 #endif
@@ -39,6 +41,7 @@ namespace {
 inline constexpr llvm::StringLiteral kInplaceLoadAttr =
     "musa.inplace_load_candidate";
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 static LogicalResult validateLSUCachePolicy(Operation *op,
                                             const MUSA::TargetInfo &targetInfo,
                                             Value ptr) {
@@ -173,6 +176,7 @@ static void emitLSUCacheStore(RewriterBase &rewriter, Location loc, Value ptr,
   LLVM::BrOp::create(rewriter, loc, after);
   rewriter.setInsertionPointToStart(after);
 }
+#endif // __FLAGTREE_NATIVE_CACHE_POLICY__
 
 static bool supportsNativeFloatingAtomic(const MUSA::TargetInfo &targetInfo,
                                          Value ptr, Type valueElemTy) {
@@ -1322,10 +1326,12 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
 
     auto ptrElems = ::mlir::unpackLLElements(loc, llPtr, rewriter);
     unsigned numElems = ptrElems.size();
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     auto copyPolicy = op.getCache();
     bool hasLSUPolicy = isMusaLSUCache(copyPolicy);
     if (failed(validateLSUCachePolicy(op, targetInfo, ptrElems.front())))
       return failure();
+#endif
 
     unsigned vec = getVectorSize(ptr, axisInfoAnalysis);
     vec = std::min(vec, numElems);
@@ -1363,7 +1369,11 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
 
     auto freeVarMasks = getFreeVariableMasks(ptr.getType());
     uint32_t regMask = freeVarMasks.lookup(str_attr("reg"));
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     bool useInplaceLoad = op->hasAttr(kInplaceLoadAttr) && !hasLSUPolicy;
+#else
+    bool useInplaceLoad = op->hasAttr(kInplaceLoadAttr);
+#endif
 
     SmallVector<Value> loaded;
     loaded.reserve(numElems);
@@ -1397,14 +1407,18 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
                 ? LLVM::ConstantOp::create(rewriter, loc, valueElemTy,
                                            rewriter.getZeroAttr(valueElemTy))
                 : otherElems[i];
-        Value val = hasLSUPolicy ? emitLSUCacheLoad(rewriter, loc, ptrElems[i],
-                                                    valueElemTy, pred, falseVal,
-                                                    copyPolicy)
-                    : useInplaceLoad
-                        ? LLVM::MUSA::llInplaceLoad(rewriter, loc, ptrElems[i],
-                                                    valueElemTy, pred, falseVal)
-                        : LLVM::MUSA::llLoad(rewriter, loc, ptrElems[i],
-                                             valueElemTy, pred, falseVal);
+        Value val =
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+            hasLSUPolicy
+                ? emitLSUCacheLoad(rewriter, loc, ptrElems[i], valueElemTy,
+                                   pred, falseVal, copyPolicy)
+            :
+#endif
+            useInplaceLoad
+                ? LLVM::MUSA::llInplaceLoad(rewriter, loc, ptrElems[i],
+                                            valueElemTy, pred, falseVal)
+                : LLVM::MUSA::llLoad(rewriter, loc, ptrElems[i], valueElemTy,
+                                     pred, falseVal);
         loaded.push_back(val);
       }
     } else {
@@ -1437,9 +1451,12 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp> {
         }
 
         Value vecVal =
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
             hasLSUPolicy ? emitLSUCacheLoad(rewriter, loc, ptrElems[vecStart],
                                             vecTy, pred, falseVal, copyPolicy)
-            : useInplaceLoad
+            :
+#endif
+            useInplaceLoad
                 ? LLVM::MUSA::llInplaceLoad(rewriter, loc, ptrElems[vecStart],
                                             vecTy, pred, falseVal)
                 : LLVM::MUSA::llLoad(rewriter, loc, ptrElems[vecStart], vecTy,
@@ -1484,10 +1501,12 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp> {
     auto ptrElems = ::mlir::unpackLLElements(loc, llPtr, rewriter);
     auto valElems = ::mlir::unpackLLElements(loc, llVal, rewriter);
     unsigned numElems = ptrElems.size();
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     auto copyPolicy = op.getCache();
     bool hasLSUPolicy = isMusaLSUCache(copyPolicy);
     if (failed(validateLSUCachePolicy(op, targetInfo, ptrElems.front())))
       return failure();
+#endif
     assert(numElems == valElems.size());
 
     unsigned vec = getVectorSize(ptr, axisInfoAnalysis);
@@ -1546,10 +1565,12 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp> {
         if (!maskElems.empty()) {
           pred = maybeAnd(rewriter, loc, pred, maskElems[i]);
         }
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
         if (hasLSUPolicy)
           emitLSUCacheStore(rewriter, loc, ptrElems[i], valElems[i], pred,
                             copyPolicy);
         else
+#endif
           LLVM::MUSA::llStore(rewriter, loc, ptrElems[i], valElems[i], pred);
       }
       rewriter.eraseOp(op);
@@ -1573,10 +1594,12 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp> {
         storeVal = b.insert_element(
             vecTy, storeVal, valElems[vecStart + elemIdx], b.i32_val(elemIdx));
       }
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
       if (hasLSUPolicy)
         emitLSUCacheStore(rewriter, loc, ptrElems[vecStart], storeVal, pred,
                           copyPolicy);
       else
+#endif
         LLVM::MUSA::llStore(rewriter, loc, ptrElems[vecStart], storeVal, pred);
     }
 
@@ -2170,12 +2193,14 @@ struct AsyncCopyGlobalToLocalOpConversion
     Value llMask = adaptor.getMask();
 
     auto srcElems = ::mlir::unpackLLElements(loc, llSrc, rewriter);
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     if (failed(validateLSUCachePolicy(op, targetInfo, srcElems.front())))
       return failure();
     triton::remarkCacheControlConversion(
         op, "MUSA memcpy.g2s", triton::CacheModifier::NONE,
         triton::EvictionPolicy::NORMAL,
         "the selected instruction uses its default cache controls");
+#endif
     SmallVector<Value> maskElems;
     if (llMask)
       maskElems = ::mlir::unpackLLElements(loc, llMask, rewriter);

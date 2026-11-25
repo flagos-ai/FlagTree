@@ -10,6 +10,9 @@ import pytest
 import torch
 import triton
 import triton.language as tl
+
+if not tl.core._HAS_NATIVE_CACHE_POLICY:
+    pytest.skip("native cache policy disabled", allow_module_level=True)
 from triton.backends.compiler import GPUTarget
 from triton.compiler import ASTSource
 from triton.experimental.tle import language as tle

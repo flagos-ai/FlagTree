@@ -2029,7 +2029,18 @@ struct ExpOpConversionApprox
     if (elemTy.getIntOrFloatBitWidth() != 32)
       return {};
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     return {rewriter.create<LLVM::ExpOp>(loc, elemTy, operands[0])};
+#else
+    if (elemTy.getIntOrFloatBitWidth() == 32) {
+      return {rewriter.create<LLVM::ExpOp>(loc, elemTy, operands[0])};
+    } else if (elemTy.getIntOrFloatBitWidth() == 16) {
+      return {
+          EmitSingleFP16ElementwiseOp<LLVM::ExpOp>(loc, rewriter, operands[0])};
+    } else {
+      assert(false && "unsupported ExpOp operand type for MACA");
+    }
+#endif
   }
 };
 

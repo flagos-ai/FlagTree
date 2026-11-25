@@ -14,7 +14,9 @@
 #include "third_party/hcu/lib/TritonHCUGPUToLLVM/Utility.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "triton/Dialect/Triton/IR/CacheControls.h"
+#endif
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -557,11 +559,13 @@ private:
 // (https://cplusplus.github.io/CWG/issues/2518.html)
 template <typename T> struct always_false : std::false_type {};
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 // Buffer ops have no eviction field. Leave foreign scopes on the source op
 // so its normal lowering diagnoses them without a separate module walk.
 static bool hasForeignEviction(triton::EvictionPolicy evict) {
   return triton::isL1Eviction(evict) || triton::isL2Eviction(evict);
 }
+#endif
 
 template <typename SourceOp>
 struct ConvertTritonLoadToBufferLoad : public mlir::OpRewritePattern<SourceOp> {
@@ -589,13 +593,18 @@ struct ConvertTritonLoadToBufferLoad : public mlir::OpRewritePattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "Failed to convert LoadOp");
     }
 
-    if (!hasForeignEviction(op.getEvict()) &&
+    if (
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+        !hasForeignEviction(op.getEvict()) &&
+#endif
         canUseBufferOps(ptr, assumptions, solver, analyzeSmallTensorOfst)) {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
       // Buffer ops already carry cache; their ISA mapping decides its effect.
       triton::remarkCacheControlConversion(
           op, "HCU buffer memory operation", op.getCache(),
           triton::EvictionPolicy::NORMAL,
           "buffer operations do not carry eviction priorities");
+#endif
       auto addPtrOp = ptr.getDefiningOp<triton::AddPtrOp>();
       Value tensorPtr = addPtrOp.getPtr();
       Value tensorOffset = addPtrOp.getOffset();
@@ -685,13 +694,18 @@ struct ConvertTritonStoreToBufferStore
     LDBG("Try to convert: " << op);
     Value ptr = op.getPtr();
 
-    if (!hasForeignEviction(op.getEvict()) &&
+    if (
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+        !hasForeignEviction(op.getEvict()) &&
+#endif
         canUseBufferOps(ptr, assumptions, solver, analyzeSmallTensorOfst)) {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
       // Buffer ops already carry cache; their ISA mapping decides its effect.
       triton::remarkCacheControlConversion(
           op, "HCU buffer memory operation", op.getCache(),
           triton::EvictionPolicy::NORMAL,
           "buffer operations do not carry eviction priorities");
+#endif
       auto addPtrOp = ptr.getDefiningOp<triton::AddPtrOp>();
       Value tensorPtr = addPtrOp.getPtr();
       Value tensorOffset = addPtrOp.getOffset();
@@ -770,7 +784,11 @@ struct TritonHCUGPUConvertToBufferOpsPass
         context, assumptions, axisInfoAnalysis, solver,
         this->analyzeSmallTensorOfst);
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     if (failed(applyPatternsGreedily(mod, std::move(patterns))))
+#else
+    if (applyPatternsGreedily(mod, std::move(patterns)).failed())
+#endif
       signalPassFailure();
   }
 };

@@ -1,6 +1,7 @@
 
 llvm_canonicalize_cmake_booleans(
   MLIR_ENABLE_BINDINGS_PYTHON
+  FLAGTREE_NATIVE_CACHE_POLICY
 )
 
 configure_lit_site_cfg(

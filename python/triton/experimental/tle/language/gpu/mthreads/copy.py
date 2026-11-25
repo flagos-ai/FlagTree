@@ -98,6 +98,8 @@ def normalize_cache_policy(cache_policy):
         raise ValueError("copy cache_policy is only supported by the MUSA TLE backend")
     if not isinstance(cache_policy, TMECachePolicy):
         raise ValueError("cache_policy must be a compile-time tle.gpu.mthreads.TMECachePolicy")
+    if not tl._HAS_NATIVE_CACHE_POLICY and (cache_policy.inner_code > 3 or cache_policy.prefetch_size != 0):
+        raise ValueError("native MUSA TME inner codes 4..5 and prefetch_size require native cache policy support")
     return cache_policy.inner_code, cache_policy.outer_code
 
 
@@ -138,8 +140,15 @@ def tmacopy(src, dst, direction, shape, offsets, barrier=None, cache_policy=None
             raise ValueError("TMA copy barrier must be an indexed tle.gpu barrier slot")
         if barrier.expect_bytes is None or int(barrier.expect_bytes) <= 0:
             raise ValueError("TMA copy barrier must have positive expect_bytes")
-        _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, barrier.handle,
-                                          int(barrier.expect_bytes), cache_policy, prefetch_size)
+        if tl._HAS_NATIVE_CACHE_POLICY:
+            _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, barrier.handle,
+                                              int(barrier.expect_bytes), cache_policy, prefetch_size)
+        else:
+            _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, barrier.handle,
+                                              int(barrier.expect_bytes), cache_policy)
         return
-    _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, cachePolicy=cache_policy,
-                                      prefetchSize=prefetch_size)
+    if tl._HAS_NATIVE_CACHE_POLICY:
+        _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, cachePolicy=cache_policy,
+                                          prefetchSize=prefetch_size)
+    else:
+        _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, cachePolicy=cache_policy)

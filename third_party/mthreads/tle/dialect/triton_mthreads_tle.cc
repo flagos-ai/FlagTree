@@ -713,6 +713,7 @@ void init_triton_musa_tle_ir(py::module m) {
            })
       .def(
           "create_tma_copy",
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
           [](TritonOpBuilder &self, mlir::Value src, mlir::Value dst,
              std::vector<mlir::Value> indices, py::object completionBarrier,
              int32_t expectBytes,
@@ -754,6 +755,31 @@ void init_triton_musa_tle_ir(py::module m) {
           py::arg("completionBarrier") = py::none(),
           py::arg("expectBytes") = -1, py::arg("cachePolicy") = py::none(),
           py::arg("prefetchSize") = 0)
+#else
+          [](TritonOpBuilder &self, mlir::Value src, mlir::Value dst,
+             std::vector<mlir::Value> indices, py::object completionBarrier,
+             int32_t expectBytes,
+             std::optional<std::pair<int32_t, int32_t>> cachePolicy) -> void {
+            mlir::Value barrier;
+            if (!completionBarrier.is_none())
+              barrier = py::cast<mlir::Value>(completionBarrier);
+            auto op = self.create<ttg::TMACopyOp>(src, dst, indices, barrier);
+            if (expectBytes >= 0)
+              op->setAttr("expect_bytes",
+                          self.getBuilder().getI32IntegerAttr(expectBytes));
+            if (cachePolicy) {
+              op->setAttr(
+                  musa::kTMEInnerPersistenceAttr,
+                  self.getBuilder().getI32IntegerAttr(cachePolicy->first));
+              op->setAttr(
+                  musa::kTMEOuterPersistenceAttr,
+                  self.getBuilder().getI32IntegerAttr(cachePolicy->second));
+            }
+          },
+          py::arg("src"), py::arg("dst"), py::arg("indices"),
+          py::arg("completionBarrier") = py::none(),
+          py::arg("expectBytes") = -1, py::arg("cachePolicy") = py::none())
+#endif
       .def("create_pipe_create",
            [](TritonOpBuilder &self, std::vector<mlir::Value> fields,
               int32_t capacity, const std::string &scope,

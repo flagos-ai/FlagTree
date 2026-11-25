@@ -19,6 +19,7 @@
 // TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 // SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+// REQUIRES: flagtree-native-cache-policy
 // RUN: triton-opt %s -split-input-file -verify-diagnostics -triton-tle-downgrade-invalid-async-copy | FileCheck %s
 
 

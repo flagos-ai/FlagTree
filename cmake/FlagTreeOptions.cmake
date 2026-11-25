@@ -137,10 +137,22 @@ macro(flagtree_configure_options)
     add_definitions(-D__PPU__)
   endif()
 
-  # MetaX and MThreads also lower native policies through their vendor dialects.
-  if(FLAGTREE_TLE OR FLAGTREE_MTHREADS_TLE OR FLAGTREE_BACKEND STREQUAL "metax")
+  # Enable native cache policies only on the five supported backends when their
+  # corresponding TLE support is active; allow explicit -DFLAGTREE_NATIVE_CACHE_POLICY=OFF.
+  set(_flagtree_native_cache_policy_supported OFF)
+  if(((NOT FLAGTREE_BACKEND OR FLAGTREE_BACKEND MATCHES "^(nvidia|hcu|ppu)$") AND FLAGTREE_TLE) OR
+     (FLAGTREE_BACKEND STREQUAL "mthreads" AND FLAGTREE_MTHREADS_TLE) OR
+     (FLAGTREE_BACKEND STREQUAL "metax" AND BUILD_MCTLE))
+    set(_flagtree_native_cache_policy_supported ON)
+  endif()
+  option(FLAGTREE_NATIVE_CACHE_POLICY
+         "Enable FlagTree native cache policy extensions"
+         ${_flagtree_native_cache_policy_supported})
+  if(FLAGTREE_NATIVE_CACHE_POLICY AND _flagtree_native_cache_policy_supported)
     add_definitions(-D__FLAGTREE_NATIVE_CACHE_POLICY__)
     list(APPEND LLVM_TABLEGEN_FLAGS -D__FLAGTREE_NATIVE_CACHE_POLICY__)
+  else()
+    set(FLAGTREE_NATIVE_CACHE_POLICY OFF)
   endif()
 
   set(FLAGTREE_PLUGIN "$ENV{FLAGTREE_PLUGIN}")

@@ -1,12 +1,16 @@
 #include "TargetInfo.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "llvm/ADT/StringExtras.h"
+#endif
 
 #include "PatternTritonGPUOpToLLVM.h"
 
 #include "Utility.h"
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "triton/Dialect/Triton/IR/CacheControls.h"
+#endif
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
 #include <optional>
@@ -28,6 +32,7 @@ using ::mlir::triton::gpu::SwizzledSharedEncodingAttr;
 
 namespace {
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 LogicalResult validateCopyCachePolicy(Operation *op, bool isLoad) {
   if (triton::isL1Eviction(triton::getEvictionPolicy(op)) ||
       triton::isL2Eviction(triton::getEvictionPolicy(op)))
@@ -109,6 +114,7 @@ LLVM::CallOp emitCopyCacheAccess(OpBuilder &builder, Location loc,
     args.push_back(value);
   return builder.create<LLVM::CallOp>(loc, function, args);
 }
+#endif // __FLAGTREE_NATIVE_CACHE_POLICY__
 
 Value maybeAnd(RewriterBase &rewriter, Location loc, Value a, Value b) {
   auto tb = TritonLLVMOpBuilder(loc, rewriter);
@@ -366,6 +372,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     Value ptr = op.getPtr();
     Value mask = op.getMask();
     Value other = op.getOther();
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     if (failed(validateCopyCachePolicy(op, true)))
       return failure();
     // CA and CV use the SDK's default load. Only a modifier with a
@@ -374,6 +381,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
     bool hasCopyCachePolicy = cache == CacheModifier::CG ||
                               cache == CacheModifier::CS ||
                               cache == CacheModifier::LU;
+#endif
     LDBG("Lower LoadOp for " << ptr);
 
     // adaptor values
@@ -542,7 +550,11 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
       }
 #endif
       if (!disableOptFlag && !op.getIsVolatile()) {
-        if (!hasCopyCachePolicy && !disableLdgPred && isOtherValid &&
+        if (
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+            !hasCopyCachePolicy &&
+#endif
+            !disableLdgPred && isOtherValid &&
             (totalWidth == 128 || totalWidth == 64 || totalWidth == 32 ||
              totalWidth == 16 || totalWidth == 8)) {
           // llvm.mxc.ldg.predicator
@@ -611,12 +623,17 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
               loc, pred,
               [&](OpBuilder &builder, Location loc) {
                 Value vec_values;
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
                 auto address = b.bitcast(ptrElems[vecStart], retPtrTy);
                 vec_values =
                     hasCopyCachePolicy
                         ? emitCopyCacheAccess(builder, loc, op, retTy, address)
                               .getResult()
                         : b.load(retTy, address);
+#else
+                vec_values =
+                    b.load(retTy, b.bitcast(ptrElems[vecStart], retPtrTy));
+#endif
                 builder.create<mlir::scf::YieldOp>(loc,
                                                    ValueRange({vec_values}));
               },
@@ -660,6 +677,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
               auto loaded = rewriter.create<scf::IfOp>(
                   loc, pred,
                   [&](OpBuilder &builder, Location loc) {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
                     Value loadVal =
                         hasCopyCachePolicy
                             ? emitCopyCacheAccess(builder, loc, op, valueElemTy,
@@ -668,6 +686,11 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
                             : builder.create<LLVM::LoadOp>(
                                   loc, valueElemTy, ptrElems[elemOffset], 0,
                                   op.getIsVolatile());
+#else
+                    auto loadVal = builder.create<LLVM::LoadOp>(
+                        loc, valueElemTy, ptrElems[elemOffset], 0,
+                        op.getIsVolatile());
+#endif
                     builder.create<scf::YieldOp>(loc, ValueRange({loadVal}));
                   },
                   [&](OpBuilder &builder, Location loc) {
@@ -676,6 +699,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
                   });
               loadedVals.push_back(loaded->getResult(0));
             } else {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
               Value loadVal =
                   hasCopyCachePolicy
                       ? emitCopyCacheAccess(rewriter, loc, op, valueElemTy,
@@ -684,6 +708,11 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
                       : rewriter.create<LLVM::LoadOp>(loc, valueElemTy,
                                                       ptrElems[elemOffset], 0,
                                                       op.getIsVolatile());
+#else
+              auto loadVal = rewriter.create<LLVM::LoadOp>(
+                  loc, valueElemTy, ptrElems[elemOffset], 0,
+                  op.getIsVolatile());
+#endif
               loadedVals.push_back(loadVal);
             }
           }
@@ -718,6 +747,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     Value llMask = adaptor.getMask();
     Value llValue = adaptor.getValue();
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     if (failed(validateCopyCachePolicy(op, false)))
       return failure();
     // WT uses the SDK's default store.
@@ -725,6 +755,7 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
     bool hasCopyCachePolicy = cache == CacheModifier::WB ||
                               cache == CacheModifier::CG ||
                               cache == CacheModifier::CS;
+#endif
 
     auto loc = op->getLoc();
     MLIRContext *ctx = rewriter.getContext();
@@ -834,7 +865,10 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
 
       Type valArgTy = IntegerType::get(ctx, width);
       auto wordTy = vec_ty(valueElemTy, wordNElems);
-      if (!hasCopyCachePolicy &&
+      if (
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+          !hasCopyCachePolicy &&
+#endif
           (totalWidth == 128 || totalWidth == 64 || totalWidth == 32)) {
         Type retTy = vec > 1 ? vec_ty(valueElemTy, vec) : valueElemTy;
         Type retPtrTy = ptr_ty(rewriter.getContext(), 1);
@@ -909,12 +943,16 @@ struct StoreOpConversion : public ConvertOpToLLVMPattern<triton::StoreOp>,
                 vec_values = b.insert_element(retTy, vec_values, elem,
                                               b.i32_val(elemIndex));
               }
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
               auto address = b.bitcast(ptrElems[vecStart], retPtrTy);
               if (hasCopyCachePolicy)
                 emitCopyCacheAccess(builder, loc, op, retTy, address,
                                     vec_values);
               else
                 b.store(vec_values, address);
+#else
+              b.store(vec_values, b.bitcast(ptrElems[vecStart], retPtrTy));
+#endif
               builder.create<mlir::scf::YieldOp>(loc);
             },
             nullptr);
@@ -1353,12 +1391,14 @@ struct AsyncCopyGlobalToLocalOpConversion
   LogicalResult
   matchAndRewrite(triton::gpu::AsyncCopyGlobalToLocalOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     if (failed(validateCopyCachePolicy(op, true)))
       return failure();
     triton::remarkCacheControlConversion(
         op, "MetaX asynchronous copy", triton::CacheModifier::NONE,
         triton::EvictionPolicy::NORMAL,
         "the selected instruction uses its default cache controls");
+#endif
     auto ctx = getContext();
     auto loc = op.getLoc();
     auto b = TritonLLVMOpBuilder(loc, rewriter);

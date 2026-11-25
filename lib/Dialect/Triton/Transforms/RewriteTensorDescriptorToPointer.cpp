@@ -23,7 +23,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifdef __TLE__
+#if defined(__TLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
 #include "triton/Dialect/Triton/IR/CacheControls.h"
 #endif
 #include "triton/Dialect/Triton/Transforms/ArithTypeConversion.h"
@@ -36,7 +36,7 @@
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinAttributes.h"
-#ifdef __TLE__
+#if defined(__TLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
 #include "mlir/IR/Matchers.h"
 #endif
 #include "mlir/IR/Operation.h"
@@ -313,7 +313,7 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     const auto blockShape = op.getDesc().getType().getBlockType().getShape();
     auto descTy = op.getDesc().getType();
     auto desc = unpackDescriptor(descTy, adaptor.getDesc());
-#ifdef __TLE__
+#if defined(__TLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
     // PPU AIU promotion needs this descriptor as a block pointer.
     auto async = op->getAttrOfType<BoolAttr>("tt.load.async");
     if (async && async.getValue() && triton::isPPUAIUCache(op.getCache())) {

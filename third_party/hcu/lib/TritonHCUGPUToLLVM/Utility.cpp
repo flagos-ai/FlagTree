@@ -480,6 +480,7 @@ int32_t getCtrlBitsForBufferAtomicsOnGFX_942_950(bool setSC0, bool setSC1,
   return aux;
 }
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 // Pre-gfx942 GCN/CDNA (including HCU gfx936):
 //   bit 0 = glc, bit 1 = slc
 // -------+-----+-----+-----+
@@ -527,6 +528,11 @@ static int32_t getDefaultCtrlBitsForCacheModifier(triton::CacheModifier cm,
   }
   return aux;
 }
+#else
+static int32_t getDefaultCtrlBitsForCacheModifier(triton::CacheModifier cm) {
+  return 0;
+}
+#endif
 
 // Cache modifiers changes how data is managed in the GPU's cache hierarchy:
 // .ca: cache at all levels with LRU policy
@@ -543,7 +549,11 @@ int32_t getCtrlBitsForCacheModifierOnTarget(
   case llvm::AMDGPU::GK_GFX950:
     return getCtrlBitsForCacheModifierOnGFX_942_950(cm, isLoad);
   default:
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     return getDefaultCtrlBitsForCacheModifier(cm, isLoad);
+#else
+    return getDefaultCtrlBitsForCacheModifier(cm);
+#endif
   }
 }
 

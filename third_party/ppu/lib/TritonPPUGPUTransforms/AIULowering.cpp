@@ -24,10 +24,14 @@
 #include "Dialect/TritonPPUGPU/IR/Dialect.h"
 #include "TritonPPUGPUToLLVM/AIUUtility.h"
 #include "TritonPPUGPUTransforms/Passes.h"
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "mlir/IR/Matchers.h"
+#endif
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "triton/Dialect/Triton/IR/CacheControls.h"
+#endif
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -75,10 +79,16 @@ public:
                          encoding, sharedMemorySpace, /*mutableMemory=*/true);
     Value alloc = rewriter.create<LocalAllocOp>(loc, memDescType, Value());
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     Operation *copy =
         rewriter.create<triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp>(
             loc, op.getSrcPtr(), op.getIndices(), op.getShape(), alloc,
             op.getCache(), op.getEvict());
+#else
+    Operation *copy =
+        rewriter.create<triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp>(
+            loc, op.getSrcPtr(), op.getIndices(), op.getShape(), alloc);
+#endif
 
     Value Zero = rewriter.create<arith::ConstantIntOp>(loc, 0, 0);
 
@@ -108,6 +118,7 @@ public:
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
     // Native AIU coordinates must not wrap the 24-bit encoding. In
     // particular, negative X/Z offsets fault on the tested SDK 2.1 path.
     // Check the actual indices after block-pointer advance has been lowered.
@@ -148,6 +159,7 @@ public:
       signalPassFailure();
       return;
     }
+#endif
 
     mlir::RewritePatternSet patterns(context);
     patterns.add<mlir::triton::gpu::AIULoadLowering>(context);

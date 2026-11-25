@@ -47,7 +47,7 @@ inline bool hasExplicitCacheControl(Operation *op) {
 // (upstream #11660/#11848). Reuse the version selected by the NVIDIA backend.
 inline constexpr int kMinPtxVersionForCpAsyncL2Hint = 94;
 inline bool usesNvidiaL2Policy(EvictionPolicy evict) {
-#ifdef __TLE__
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
   if (isL2Eviction(evict))
     return true;
 #endif
