@@ -1,4 +1,5 @@
 #include "ReduceScanCommon.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -34,6 +35,30 @@ public:
     auto srcValues = unpackInputs(loc, op, adaptor, rewriter);
     std::map<SmallVector<unsigned>, SmallVector<Value>> accs;
     std::map<SmallVector<unsigned>, SmallVector<Value>> indices;
+#ifdef __TLE__
+    auto module = op->getParentOfType<ModuleOp>();
+    auto maxWidth =
+        module
+            ? module->getAttrOfType<IntegerAttr>("musa.local_max_vector_width")
+            : IntegerAttr();
+    if (maxWidth && maxWidth.getInt() == 4 &&
+        op->hasAttr("musa.reduce_full_axis_constant") &&
+        helper.isWarpSynchronous() && op.getNumOperands() == 1) {
+      // All logical values along this axis are equal by the preserved
+      // constancy contract. Any locally owned representative gives the same
+      // idempotent maxnum result; no lane exchange is required.
+      auto type = op.getInputTypes()[0];
+      auto offsets = emitOffsetForLayout(helper.getSrcLayout(), type);
+      for (unsigned i = 0; i < offsets.size(); ++i) {
+        auto key = offsets[i];
+        key[op.getAxis()] = 0;
+        if (!accs.count(key))
+          accs[key] = srcValues[i];
+      }
+      packResults(helper, accs, rewriter);
+      return success();
+    }
+#endif
     // First reduce all the values along axis within each thread.
     reduceWithinThreads(helper, srcValues, accs, indices, rewriter);
 
@@ -139,6 +164,127 @@ private:
     auto *combineOp = &op.getCombineOp();
     auto srcIndices = emitIndices(op.getLoc(), rewriter, targetInfo,
                                   helper.getSrcLayout(), operandType, true);
+#ifdef __TLE__
+    // Vectorize independent row sums only; preserve each row's exact scalar
+    // reduction order and retain the existing cross-lane reduction below.
+    auto &combineBlock = combineOp->front();
+    auto add = dyn_cast<arith::AddFOp>(combineBlock.front());
+    auto sumModule = op->getParentOfType<ModuleOp>();
+    auto sumWidth =
+        sumModule
+            ? sumModule->getAttrOfType<IntegerAttr>("musa.fp32_vector_width")
+            : IntegerAttr();
+    bool vectorSumLayout =
+        sumWidth && sumWidth.getInt() == 4 &&
+        (isa<triton::gpu::MUSASqmmaEncodingAttr>(helper.getSrcLayout()) ||
+         isa<triton::gpu::LinearEncodingAttr>(helper.getSrcLayout()));
+    if (op.getNumOperands() == 1 && operandType.getElementType().isF32() &&
+        vectorSumLayout && add &&
+        std::distance(combineBlock.begin(), combineBlock.end()) == 2 &&
+        add.getLhs() == combineBlock.getArgument(0) &&
+        add.getRhs() == combineBlock.getArgument(1) &&
+        add.getFastmath() == arith::FastMathFlags::none &&
+        combineBlock.getTerminator()->getOperand(0) == add.getResult()) {
+      std::map<SmallVector<unsigned>, SmallVector<unsigned>> groups;
+      for (const auto &entry : uniqueOffsets) {
+        unsigned i = entry.second;
+        auto key = offsets[i];
+        key[op.getAxis()] = 0;
+        groups[key].push_back(i);
+      }
+      unsigned rows = groups.size();
+      bool rectangular = rows >= 2 && rows <= 8 && (rows & (rows - 1)) == 0;
+      unsigned count = groups.begin()->second.size();
+      for (const auto &entry : groups)
+        rectangular &= entry.second.size() == count;
+      if (rectangular && count > 1) {
+        SmallVector<SmallVector<unsigned>> keys, positions;
+        for (const auto &entry : groups) {
+          keys.push_back(entry.first);
+          positions.push_back(entry.second);
+          indices[entry.first] = srcIndices[entry.second.front()];
+        }
+        unsigned width = std::min(rows, 4u);
+        auto loc = op.getLoc();
+        auto b = TritonLLVMOpBuilder(loc, rewriter);
+        for (unsigned first = 0; first < rows; first += width) {
+          auto valuesAt = [&](unsigned step) {
+            SmallVector<Value> values;
+            for (unsigned j = 0; j < width; ++j)
+              values.push_back(srcValues[positions[first + j][step]][0]);
+            return packLLVector(loc, values, rewriter);
+          };
+          Value sum = valuesAt(0);
+          for (unsigned step = 1; step < count; ++step)
+            sum = b.fadd(sum, valuesAt(step));
+          auto results = unpackLLVector(loc, sum, rewriter);
+          for (unsigned j = 0; j < width; ++j)
+            accs[keys[first + j]] = {results[j]};
+        }
+        return;
+      }
+    }
+    // Opt-in, register-local maxnum tree. Unlike sums this has no FP32
+    // rounding chain to preserve. Keep the cross-lane reduction unchanged.
+    auto module = op->getParentOfType<ModuleOp>();
+    auto maxWidth =
+        module
+            ? module->getAttrOfType<IntegerAttr>("musa.local_max_vector_width")
+            : IntegerAttr();
+    auto maxOp = dyn_cast<arith::MaxNumFOp>(combineBlock.front());
+    if (maxWidth && maxWidth.getInt() == 4 && op.getNumOperands() == 1 &&
+        operandType.getElementType().isF32() && maxOp &&
+        std::distance(combineBlock.begin(), combineBlock.end()) == 2 &&
+        maxOp.getLhs() == combineBlock.getArgument(0) &&
+        maxOp.getRhs() == combineBlock.getArgument(1) &&
+        maxOp.getFastmath() == arith::FastMathFlags::none &&
+        combineBlock.getTerminator()->getOperand(0) == maxOp.getResult()) {
+      std::map<SmallVector<unsigned>, SmallVector<unsigned>> groups;
+      for (const auto &entry : uniqueOffsets) {
+        auto key = offsets[entry.second];
+        key[op.getAxis()] = 0;
+        groups[key].push_back(entry.second);
+      }
+      bool supported = !groups.empty();
+      for (const auto &entry : groups)
+        supported &= entry.second.size() >= 4 && entry.second.size() % 4 == 0;
+      if (supported) {
+        auto loc = op.getLoc();
+        auto b = TritonLLVMOpBuilder(loc, rewriter);
+        auto vectorTy = vec_ty(f32_ty, 4);
+        for (const auto &entry : groups) {
+          const auto &positions = entry.second;
+          auto valuesAt = [&](unsigned first) {
+            SmallVector<Value> values;
+            for (unsigned j = 0; j < 4; ++j)
+              values.push_back(srcValues[positions[first + j]][0]);
+            return packLLVector(loc, values, rewriter);
+          };
+          SmallVector<Value> level;
+          for (unsigned first = 0; first < positions.size(); first += 4)
+            level.push_back(valuesAt(first));
+          // Independent pairs expose parallel work and shorten the critical
+          // path from O(n) to O(log n). This path is opt-in for maxnum only;
+          // neither sum ordering nor the cross-lane tree is changed.
+          while (level.size() > 1) {
+            SmallVector<Value> next;
+            for (unsigned i = 0; i < level.size(); i += 2)
+              next.push_back(i + 1 < level.size()
+                                 ? b.fmax(vectorTy, level[i], level[i + 1])
+                                 : level[i]);
+            level = std::move(next);
+          }
+          auto lanes = unpackLLVector(loc, level.front(), rewriter);
+          Value lo = b.fmax(f32_ty, lanes[0], lanes[1]);
+          Value hi = b.fmax(f32_ty, lanes[2], lanes[3]);
+          Value result = b.fmax(f32_ty, lo, hi);
+          accs[entry.first] = {result};
+          indices[entry.first] = srcIndices[positions.front()];
+        }
+        return;
+      }
+    }
+#endif
     // reduce within threads
     for (const auto &[_, i] : uniqueOffsets) {
       SmallVector<unsigned> key = offsets[i];

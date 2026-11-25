@@ -176,8 +176,19 @@ def torch_addnormalize(a, b):
 
 # Perf test workload and target: the TLE kernel must beat the native kernel
 # by at least 20% (measured margin on H100 PCIe is ~40%).
+#
+# A single do_bench() run is not stable enough for a 1.2x gate on shared CI
+# runners: both kernels sit under 60us, so a single contaminated run of either
+# moves the ratio by several percent. Keep the intended margin but measure each
+# kernel with the best of several runs so one noisy sample cannot fail the gate.
 SPEEDUP_TARGET = 1.2
+PERF_REPEATS = 3
 PERF_M, PERF_N = 8192, 1024
+
+
+def _best_ms(fn, repeats=PERF_REPEATS):
+    """Fastest of ``repeats`` do_bench samples; elapsed time is additive noise."""
+    return min(triton.testing.do_bench(fn, return_mode="median") for _ in range(repeats))
 
 
 class TestTLEAddNormalizePerf:
@@ -225,9 +236,9 @@ class TestTLEAddNormalizePerf:
         addnormalize_tle(a, b, y)
         torch.testing.assert_close(y, torch_addnormalize(a, b), atol=1e-4, rtol=1e-4)
 
-        native_ms = triton.testing.do_bench(lambda: addnormalize_native(a, b, y))
-        tle_ms = triton.testing.do_bench(lambda: addnormalize_tle(a, b, y))
-        torch_ms = triton.testing.do_bench(lambda: torch_addnormalize(a, b))
+        native_ms = _best_ms(lambda: addnormalize_native(a, b, y))
+        tle_ms = _best_ms(lambda: addnormalize_tle(a, b, y))
+        torch_ms = _best_ms(lambda: torch_addnormalize(a, b))
 
         # Effective traffic: native re-reads a/b in both passes (5 passes),
         # TLE keeps s = a + b in shared memory (3 passes).

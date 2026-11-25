@@ -918,11 +918,11 @@ def test_mthreads_tle_sqmma_rejects_nonzero_pending_groups():
         compile_to_ttir(_tle_sqmma_nonzero_wait_kernel, {"out": "*fp32"})
 
 
-def test_mthreads_tle_sqmma_requires_auto_shared_layout(capfd):
+def test_mthreads_tle_sqmma_rejects_non_byte_explicit_shared_layout(capfd):
     with pytest.raises(RuntimeError, match="PassManager::run failed"):
         compile_musa(_tle_sqmma_non_auto_layout_kernel, {"out": "*fp32"})
     captured = capfd.readouterr()
-    assert "requires layout=None and nv_mma_shared_layout=True" in captured.err
+    assert "explicit SQMMA shared operands require a rank-2 byte allocation" in captured.err
 
 
 def test_mthreads_tle_sqmma_lowers_to_parameterless_wait():
