@@ -420,7 +420,6 @@ def _persistent_intra_node_kernel(
             # The cumulative count avoids clearing counters between launches.
             # The last RMW acquires the preceding CTAs' publications.
             last = previous == epoch.to(tl.int64) * nctas - 1
-            tl.debug_barrier()
             if DEBUG_PROGRESS:
                 entry = (pair * nctas + pid) * 2
                 tl.atomic_xchg(progress_ptr + entry, progress_token, sem="release", scope="sys")
