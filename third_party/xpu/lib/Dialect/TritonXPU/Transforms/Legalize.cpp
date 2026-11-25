@@ -5019,7 +5019,7 @@ struct TritonXPULegalizePass
   ///
   /// Why: the slicing runs once per dataflow sink, and tree B can narrow a
   /// value tree A had already settled -- the surviving mismatch therefore only
-  /// exists after the last tree, which no per-tree walk can see. The D-AMS
+  /// exists after the last tree, which no per-tree walk can see. The
   /// layernorm welford kernel ends there:
   ///   'arith.subf' op requires the same type for all operands and results
   /// on the `pre - mean` of `norm = (pre - mean) * rsqrt(var + eps)`, where
