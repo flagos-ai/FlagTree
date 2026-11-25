@@ -1394,7 +1394,8 @@ void init_triton_tle(py::module &&m) {
   init_triton_tle_ir(m.def_submodule("ir"));
   init_triton_tle_passes(m.def_submodule("passes"));
 #ifdef __FLAGTREE_COMMON_IR__
-  init_triton_tle_passes_commonir(m.def_submodule("passes").def_submodule("commonir"));
+  init_triton_tle_passes_commonir(
+      m.def_submodule("passes").def_submodule("commonir"));
 #endif
   init_tle_raw_ir(m.def_submodule("raw_ir"));
   init_tle_raw_passes(m.def_submodule("raw_passes"));
