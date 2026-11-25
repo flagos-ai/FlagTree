@@ -761,43 +761,78 @@ struct TritonXPUInferLayoutInterface
   //   outputEnc.order = inverse(inverse(inputEnc.order) * trans.order)
   //                   = inverse(trans.order) * inputEnc.order.
   //
+  // Give a transpose the layout that makes it a register rename.
+  //
+  // Why: a transpose only renames the element each core holds. Permuting the
+  // per-dimension split by the transpose order keeps every core on exactly the
+  // elements it had, so the LLVM lowering is a slot-wise copy instead of a
+  // data movement. The layout order needs the inverse permutation (see the
+  // derivation above): outputEnc.order = inverse(trans.order) * inputEnc.order.
+  //
+  // How:
+  //   - permute sizePerCore / coresPerGroup / groupsPerCluster by the order
+  //     (prop[i] describes dimension i, so the property moves with the axis);
+  //   - compose the layout order with the inverse permutation;
+  //   - reject a non-cluster operand: the XPU backend has no other layout it
+  //     could reason about here.
+  //
+  // \param operandEncoding layout of the source tensor.
+  // \param shape source shape (unused: the permutation is shape independent).
+  // \param order the transpose permutation.
+  // \param resultEncoding receives the permuted layout.
+  // \param loc diagnostic anchor.
   LogicalResult
   inferTransOpEncoding(Attribute operandEncoding, ArrayRef<int64_t> shape,
                        ArrayRef<int32_t> order, Attribute &resultEncoding,
                        std::optional<Location> loc) const override {
-    // [t2] Implement the derivation documented above for the XPU cluster
-    // layout: an encoding's `order` names the dims from fastest to slowest
-    // moving, so the transposed layout keeps the same relative element order
-    // and only relabels the dims:
-    //     out.order[k] = invTrans[in.order[k]]
-    // while the per-dimension fields follow the transposed dims (result dim i
-    // comes from input dim order[i]).
-    auto enc = dyn_cast<triton::xpu::ClusterLayoutAttr>(operandEncoding);
-    if (!enc)
-      return failure(); // unhandled encoding
-    if (static_cast<int64_t>(order.size()) !=
-            static_cast<int64_t>(shape.size()) ||
-        static_cast<int64_t>(enc.getOrder().size()) !=
-            static_cast<int64_t>(order.size()))
-      return emitOptionalError(loc, "rank mismatch in inferTransOpEncoding");
-    SmallVector<int64_t> invTrans(order.size());
-    for (size_t i = 0; i < order.size(); ++i)
-      invTrans[order[i]] = static_cast<int64_t>(i);
-    auto permutePerDim = [&](ArrayRef<unsigned> v) {
-      SmallVector<unsigned> r;
-      r.reserve(v.size());
-      for (int32_t d : order)
-        r.push_back(v[d]);
-      return r;
+    auto cluster =
+        mlir::dyn_cast<triton::xpu::ClusterLayoutAttr>(operandEncoding);
+    if (!cluster)
+      return emitOptionalError(loc,
+                               "tt.trans requires a cluster layout "
+                               "operand, got ",
+                               operandEncoding);
+    // Every index below -- dims[axis], inverse[order[i]], inverse[axis] --
+    // comes straight out of the attributes, so a malformed tt.trans reads or
+    // writes past the end. Reject it here rather than relying on an assert a
+    // release build drops.
+    unsigned rank = cluster.getSizePerCore().size();
+    if (order.size() != rank || cluster.getOrder().size() != rank)
+      return emitOptionalError(loc, "tt.trans order rank ", order.size(),
+                               " does not match the cluster layout rank ",
+                               rank);
+    llvm::SmallVector<bool> seen(rank, false);
+    for (int32_t axis : order) {
+      if (axis < 0 || static_cast<unsigned>(axis) >= rank || seen[axis])
+        return emitOptionalError(loc,
+                                 "tt.trans order is not a permutation of "
+                                 "[0, ",
+                                 rank, ")");
+      seen[axis] = true;
+    }
+    for (unsigned axis : cluster.getOrder())
+      if (axis >= rank)
+        return emitOptionalError(loc, "cluster layout order entry ", axis,
+                                 " is out of range for rank ", rank);
+
+    auto permute = [&](ArrayRef<unsigned> dims) {
+      llvm::SmallVector<unsigned> out;
+      out.reserve(dims.size());
+      for (auto axis : order)
+        out.push_back(dims[axis]);
+      return out;
     };
-    SmallVector<unsigned> newOrder;
-    newOrder.reserve(enc.getOrder().size());
-    for (unsigned d : enc.getOrder())
-      newOrder.push_back(static_cast<unsigned>(invTrans[d]));
+    llvm::SmallVector<unsigned> inverse(order.size());
+    for (unsigned i = 0; i < order.size(); ++i)
+      inverse[order[i]] = i;
+    llvm::SmallVector<unsigned> retOrder;
+    for (unsigned axis : cluster.getOrder())
+      retOrder.push_back(inverse[axis]);
+
     resultEncoding = triton::xpu::ClusterLayoutAttr::get(
-        enc.getContext(), permutePerDim(enc.getSizePerCore()),
-        permutePerDim(enc.getCoresPerGroup()),
-        permutePerDim(enc.getGroupsPerCluster()), newOrder);
+        getContext(), permute(cluster.getSizePerCore()),
+        permute(cluster.getCoresPerGroup()),
+        permute(cluster.getGroupsPerCluster()), retOrder);
     return success();
   }
 
@@ -861,9 +896,94 @@ struct TritonXPUInferLayoutInterface
   inferReshapeOpEncoding(ArrayRef<int64_t> srcShape, Attribute srcEnc,
                          ArrayRef<int64_t> dstShape, Attribute &dstEnc,
                          std::optional<Location> loc) const override {
-    llvm_unreachable(
-        "TODO[dyq]: Add triton::xpu::GlobalEncodingAttr Calculation Logic");
-    return failure();
+    auto src = mlir::dyn_cast<triton::xpu::ClusterLayoutAttr>(srcEnc);
+    if (!src)
+      return emitOptionalError(loc,
+                               "tt.reshape requires a cluster layout "
+                               "operand, got ",
+                               srcEnc);
+    auto sizePerCore = src.getSizePerCore();
+    auto coresPerGroup = src.getCoresPerGroup();
+    auto groupsPerCluster = src.getGroupsPerCluster();
+    auto order = src.getOrder();
+
+    // Factor the trailing dimension: [.., L] -> [.., L/F, F]. The new last
+    // dim F must come from elements that are already contiguous WITHIN a core
+    // (sizePerCore[last] a multiple of F), so no data crosses a core and the
+    // reshape is a nop. This is the shape isreal needs:
+    //   [128] (sizePerCore=[2], cores=[64]) -> [64, 2] (sizePerCore=[1,2],
+    //   cores=[64,1]) -- each core keeps its (real, imag) pair, so the
+    //   following tt.split finds both halves in-core.
+    auto factorTrailing = [&](unsigned F) -> bool {
+      unsigned last = sizePerCore.size() - 1;
+      if (sizePerCore[last] % F != 0)
+        return false;
+      llvm::SmallVector<unsigned> sz(sizePerCore.begin(), sizePerCore.end());
+      llvm::SmallVector<unsigned> cg(coresPerGroup.begin(),
+                                     coresPerGroup.end());
+      llvm::SmallVector<unsigned> gc(groupsPerCluster.begin(),
+                                     groupsPerCluster.end());
+      sz[last] /= F;
+      sz.push_back(F);
+      cg.push_back(1);
+      gc.push_back(1);
+      // The new trailing dim is the fastest-varying (the contiguous pair);
+      // every existing axis keeps its relative order behind it.
+      llvm::SmallVector<unsigned> ord;
+      ord.push_back(sz.size() - 1);
+      for (unsigned a : order)
+        ord.push_back(a);
+      dstEnc =
+          triton::xpu::ClusterLayoutAttr::get(getContext(), sz, cg, gc, ord);
+      return true;
+    };
+
+    // Merge the trailing two dimensions: [.., P, F] -> [.., P*F]. Inverse of
+    // the factor case, kept so the interface stays symmetrical.
+    auto mergeTrailing = [&]() -> bool {
+      unsigned last = sizePerCore.size() - 1;
+      if (last == 0)
+        return false;
+      // Only when the last dim is entirely in-core (one core, one group) --
+      // the mirror of how factorTrailing created it.
+      if (coresPerGroup[last] != 1 || groupsPerCluster[last] != 1)
+        return false;
+      llvm::SmallVector<unsigned> sz(sizePerCore.begin(),
+                                     sizePerCore.end() - 1);
+      llvm::SmallVector<unsigned> cg(coresPerGroup.begin(),
+                                     coresPerGroup.end() - 1);
+      llvm::SmallVector<unsigned> gc(groupsPerCluster.begin(),
+                                     groupsPerCluster.end() - 1);
+      sz[last - 1] *= sizePerCore[last];
+      llvm::SmallVector<unsigned> ord;
+      for (unsigned a : order)
+        if (a != last)
+          ord.push_back(a > last ? a - 1 : a);
+      dstEnc =
+          triton::xpu::ClusterLayoutAttr::get(getContext(), sz, cg, gc, ord);
+      return true;
+    };
+
+    // [.., L] -> [.., L/F, F]
+    if (dstShape.size() == srcShape.size() + 1 &&
+        srcShape.drop_back().equals(dstShape.drop_back(2)) &&
+        dstShape[dstShape.size() - 2] * dstShape[dstShape.size() - 1] ==
+            srcShape.back()) {
+      if (factorTrailing(dstShape.back()))
+        return success();
+    }
+    // [.., P, F] -> [.., P*F]
+    if (srcShape.size() == dstShape.size() + 1 &&
+        dstShape.drop_back().equals(srcShape.drop_back(2)) &&
+        srcShape[srcShape.size() - 2] * srcShape[srcShape.size() - 1] ==
+            dstShape.back()) {
+      if (mergeTrailing())
+        return success();
+    }
+    return emitOptionalError(
+        loc, "tt.reshape on a cluster layout is only supported when it factors "
+             "or merges the trailing dimension within a core; got srcShape/"
+             "dstShape that would move data across cores");
   }
 
   LogicalResult
@@ -882,13 +1002,46 @@ struct TritonXPUInferLayoutInterface
     return failure();
   }
 
+  // Layout of the two halves tt.split returns.
+  //
+  // Why: split removes the trailing dim of size 2 and keeps the elements, so
+  // the halves carry the source layout with that dimension dropped -- no data
+  // movement. tt.trans and tt.split both inherit
+  // InferTypeOpWithLayoutEquivalence, whose verifier calls this, so the
+  // conversion cannot simply set the result types by hand.
+  //
+  // How:
+  //   - require a cluster layout of rank >= 2;
+  //   - drop the last entry of each per-dimension array;
+  //   - remove the last axis from `order` and renumber the axes above it.
+  //
+  // \param srcEnc layout of the tensor being split.
+  // \param dstEnc receives the layout of each half.
+  // \param shape source shape (its trailing dim must be the split dim).
+  // \param loc diagnostic anchor.
   LogicalResult
   inferSplitOpEncoding(Attribute srcEnc, Attribute &dstEnc,
                        ArrayRef<int64_t> shape,
                        std::optional<Location> loc) const override {
-    llvm_unreachable(
-        "TODO[dyq]: Add triton::xpu::GlobalEncodingAttr Calculation Logic");
-    return failure();
+    auto cluster = mlir::dyn_cast<triton::xpu::ClusterLayoutAttr>(srcEnc);
+    if (!cluster || cluster.getSizePerCore().size() < 2)
+      return emitOptionalError(loc,
+                               "tt.split requires a cluster layout of "
+                               "rank >= 2, got ",
+                               srcEnc);
+    const unsigned lastDim = cluster.getSizePerCore().size() - 1;
+    auto dropLast = [&](ArrayRef<unsigned> dims) {
+      return llvm::SmallVector<unsigned>(dims.begin(), dims.end() - 1);
+    };
+    llvm::SmallVector<unsigned> order;
+    for (unsigned axis : cluster.getOrder())
+      if (axis != lastDim)
+        order.push_back(axis < lastDim ? axis : axis - 1);
+    dstEnc = triton::xpu::ClusterLayoutAttr::get(
+        getContext(), dropLast(cluster.getSizePerCore()),
+        dropLast(cluster.getCoresPerGroup()),
+        dropLast(cluster.getGroupsPerCluster()), order);
+    return success();
   }
 
   LogicalResult

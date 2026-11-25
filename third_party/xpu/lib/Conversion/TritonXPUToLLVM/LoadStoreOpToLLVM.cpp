@@ -239,6 +239,47 @@ struct LoadStoreConversionBase {
     }
   }
 
+  /// `size > 0`, or null when `size` is a non-zero compile-time constant.
+  ///
+  /// Why: every DMA descriptor this file emits has to be non-empty, and most
+  /// byte counts are constants folded from the tile shape -- testing those at
+  /// run time would put a branch around every ordinary transfer. Only the
+  /// counts that came from a mask clamp can reach 0.
+  Value getNonZeroBytesCondOrNull(ConversionPatternRewriter &rewriter,
+                                  Location loc, Value size) const {
+    if (auto constOp = size.getDefiningOp<LLVM::ConstantOp>())
+      if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue()))
+        if (!intAttr.getValue().isZero())
+          return {};
+    return icmp_sgt(size, i32_val(0));
+  }
+
+  /// createGM2LMOp(), skipped when the byte count is 0 at run time.
+  ///
+  /// Why: see emitGuardedDma(). Only for callers in straight-line lowering
+  /// code -- the guard splits the current block, so the
+  /// OffsetState::LocallyContinuous helpers must keep using the unguarded
+  /// createGM2LMOp() they reach through createMemOp().
+  void createGuardedGM2LMOp(ConversionPatternRewriter &rewriter,
+                            mlir::MLIRContext *ctx, mlir::Location &loc,
+                            Value src, Value dst, Value offset,
+                            Value size) const {
+    emitGuardedDma(
+        rewriter, loc, getNonZeroBytesCondOrNull(rewriter, loc, size),
+        [&] { createGM2LMOp(rewriter, ctx, loc, src, dst, offset, size); });
+  }
+
+  /// createLM2GMOp(), skipped when the byte count is 0 at run time.
+  /// Same caller restriction as createGuardedGM2LMOp().
+  void createGuardedLM2GMOp(ConversionPatternRewriter &rewriter,
+                            mlir::MLIRContext *ctx, mlir::Location &loc,
+                            Value src, Value dst, Value offset,
+                            Value size) const {
+    emitGuardedDma(
+        rewriter, loc, getNonZeroBytesCondOrNull(rewriter, loc, size),
+        [&] { createLM2GMOp(rewriter, ctx, loc, src, dst, offset, size); });
+  }
+
   void createSM2GMOp(ConversionPatternRewriter &rewriter,
                      mlir::MLIRContext *ctx, mlir::Location &loc, Value src,
                      Value dst, Value offset, Value size) const {
@@ -263,6 +304,51 @@ struct LoadStoreConversionBase {
                      mlir::MLIRContext *ctx, mlir::Location &loc, Value src,
                      Value dst, Value offset, Value size) const {
     rewriter.create<mlir::LLVM::XPU::GM2SMOp_v3>(loc, src, dst, offset, size);
+  }
+
+  /// Emit `emitDma` only where `cond` holds, instead of shrinking its length.
+  ///
+  /// Why: a zero-byte descriptor is not a way to say "skip this transfer". The
+  /// DMA engine raises XPUERR_KEXCEPTION on a zero-length descriptor unless
+  /// /proc/kunlun/dev*/dma_excp_mask has `mask dma len zero` set, and the CI
+  /// runners cannot write that file -- they run with it at 0. A store shrunk
+  /// to zero bytes for the cores past a tile's last-dim extent therefore
+  /// faulted the process with status 719 and took all 24 FlagGems
+  /// upsample_bicubic2d_aa cases down with it, while the same build passed on a
+  /// box where the mask is set. Skip the descriptor instead.
+  ///
+  /// How:
+  ///   - emit in place when `cond` is null, so the common path keeps a single
+  ///     basic block and no extra compare;
+  ///   - otherwise branch over the DMA, same shape as emitPartitionedGM2SM().
+  ///
+  /// WARNING: this splits the current block, so it may only be called from
+  /// straight-line lowering code. Do NOT fold it into createGM2LMOp() or
+  /// createLM2GMOp(): those are also reached from the OffsetState::
+  /// LocallyContinuous paths, which build their own blocks by hand
+  /// (oldBlock/newBlock plus a trailing LLVM::BrOp) and assume the DMA
+  /// leaves the block structure alone. Guarding every DMA that way made the
+  /// trailing branch land in a block that already had a terminator, and
+  /// ConvertTritonXPUToLLVM died with the verifier error -- operation with
+  /// block successors must terminate its parent block -- on three AMS tle
+  /// kernels (67, 69, 72). Guard only the site whose byte count can
+  /// actually reach zero.
+  void emitGuardedDma(ConversionPatternRewriter &rewriter, Location loc,
+                      Value cond, llvm::function_ref<void()> emitDma) const {
+    if (!cond) {
+      emitDma();
+      return;
+    }
+    Block *currentBlock = rewriter.getInsertionBlock();
+    Block *afterBlock =
+        rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
+    Block *dmaBlock = rewriter.createBlock(afterBlock);
+    rewriter.setInsertionPointToEnd(currentBlock);
+    rewriter.create<LLVM::CondBrOp>(loc, cond, dmaBlock, afterBlock);
+    rewriter.setInsertionPointToStart(dmaBlock);
+    emitDma();
+    rewriter.create<LLVM::BrOp>(loc, afterBlock);
+    rewriter.setInsertionPointToStart(afterBlock);
   }
 
   // One GM->SM staging DMA, PARTITIONED across all cores of the cluster: core
@@ -1535,7 +1621,18 @@ struct LoadStoreConversionBase {
       newLoadedVals.emplace_back(vh);
     }
     if (numElems % 2 == 1) {
-      int remainedIdx = numElems - 1;
+      // The odd tail is the LAST entry the caller pushed, which sits at index
+      // numElems/2 -- right after the numElems/2 full pairs the loop consumed.
+      //
+      // Why: callers fill loadedVals with numElems/2 full vectors and then one
+      // half-width remainder (LoadStoreOpToLLVM.cpp ~2096-2103). NOTE: the
+      // VecBF16ToFP32Unordered sibling writes `numElems - 1` for the same name,
+      // but there it is a GEP offset into LM, not an index into loadedVals;
+      // copying that formula here walked past the end (size == numElems/2 + 1)
+      // and aborted the compiler on a bf16 load with an odd vector count -- a
+      // trailing-3 tile, e.g. weight_norm (4,256,3) bf16. See
+      // third_party/xpu/docs/vecbf16_to_fp32_odd_tail_index.md.
+      int remainedIdx = numElems / 2;
       Value ext = rewriter.create<LLVM::FPExtOp>(loc, resElemTy,
                                                  loadedVals[remainedIdx]);
       newLoadedVals.emplace_back(ext);
@@ -1859,13 +1956,41 @@ struct XPULoadOpConversion : public ConvertOpToLLVMPattern<triton::xpu::LoadOp>,
       Value endOffset = i32_val((ptrNumElems - 1) * absStride);
       lmBasePtr = gep(ptr_ty(ctx, 0), ptrElemScalarTy, lmBasePtr, endOffset);
     }
+    // A multi-row (coreDealMultiRows) LM tile is row-major [rows, colSize].
+    // When UnrollControl splits a reduce over the column axis into iterNum
+    // windows, window k covers columns [k*windowCols, (k+1)*windowCols) of
+    // every row.  Window 0 is supplied by an extract_slice, which already
+    // remaps slot = (i/windowCols)*colSize + i%windowCols; windows k>=1 arrive
+    // here as a load carrying `index = k` and need the same remap, or they
+    // read the wrong LM slots.  windowCols comes from the result tile, whose
+    // sizePerCore UnrollControl partitioned per window.
+    int64_t windowCols = 0;
+    if (auto resTensorTy = dyn_cast<RankedTensorType>(resTy)) {
+      if (resTensorTy.getRank() == 2) {
+        if (auto layout = dyn_cast_or_null<triton::xpu::ClusterLayoutAttr>(
+                resTensorTy.getEncoding())) {
+          if (layout.getSizePerCore().size() > 1)
+            windowCols = layout.getSizePerCore()[1];
+        }
+      }
+    }
+    bool rowMajorWindow = coreDealMultiRows && index && !op.getSVOpt() &&
+                          !op.getIsDiscrete() && !isVectorized && colSize > 0 &&
+                          windowCols > 1 && windowCols <= colSize &&
+                          colSize % windowCols == 0 &&
+                          ptrNumElems % colSize == 0 &&
+                          resNumElems == static_cast<unsigned>(windowCols) *
+                                             (ptrNumElems / colSize);
     if (index && !op.getIsDiscrete()) {
       ptrNumElems = resNumElems;
       unsigned _stride =
           (bf16Tofp32 && isVectorized)
               ? std::ceil(static_cast<double>(ptrNumElems * stride) / 2)
               : ptrNumElems * stride;
-      _stride = coreDealMultiRows ? stride : _stride;
+      // A row-major window is one contiguous column block in every row, so
+      // the window base advances by windowCols words, not by a whole tile.
+      _stride = rowMajorWindow ? static_cast<unsigned>(windowCols)
+                               : (coreDealMultiRows ? stride : _stride);
       Value idx = mul(llIndex, i32_val(_stride));
       lmBasePtr = gep(ptr_ty(ctx, 0), ptrDataVecTy, lmBasePtr, idx);
       stride = coreDealMultiRows
@@ -1981,6 +2106,23 @@ struct XPULoadOpConversion : public ConvertOpToLLVMPattern<triton::xpu::LoadOp>,
           loadedVals.push_back(loaded);
         }
       }
+    } else if (rowMajorWindow) {
+      // The base already sits windowCols words into the tile (index*stride
+      // above); element e of the window maps to slot
+      //   (e/windowCols)*colSize + e%windowCols
+      // in the row-major [rows, colSize] LM tile.  extract_slice applies the
+      // same remap to window 0, so consecutive windows read disjoint slots
+      // and every DMA-written slot is read exactly once.
+      for (unsigned e = 0; e < resNumElems; ++e) {
+        int64_t slot =
+            static_cast<int64_t>(e / windowCols) * colSize + (e % windowCols);
+        Value elemPtr = gep(ptr_ty(ctx, 0), ptrElemScalarTy, lmBasePtr,
+                            i32_val(static_cast<int32_t>(slot)));
+        Value loaded = load(ptrElemScalarTy, elemPtr);
+        if (bf16Tofp32)
+          loaded = rewriter.create<LLVM::FPExtOp>(loc, resElemScalarTy, loaded);
+        loadedVals.push_back(loaded);
+      }
     } else if (!(coreDealMultiRows && index) && stride > 1 && isVectorized &&
                ptrDataVecSize * ptrDataNbits == 512) {
       // Vgather
@@ -2000,18 +2142,34 @@ struct XPULoadOpConversion : public ConvertOpToLLVMPattern<triton::xpu::LoadOp>,
         Value vecPtr = gep(ptr_ty(ctx, 0), ptrDataVecTy, _lmBasePtr,
                            int_val(ptrDataNbits, vecIdx * stride));
         Value tmpPtr = bitcast(vecPtr, ptr_ty(ctx, 0));
-        Value vgather;
+        // The hardware vector-gather has only 32-bit (VGatherF) and 16-bit
+        // (VGatherHF) forms. A strided vectorized load of a narrower element
+        // (i8/fp8) reaches here with no matching instruction; it used to
+        // llvm_unreachable and abort the whole compile. Fall back to
+        // per-element strided scalar loads instead -- correct, just without
+        // the single-instruction gather. 64-bit loads never reach this branch
+        // (they are not vectorized to the 512-bit VGather width).
+        Value loaded;
         if (ptrElemScalarTy.isF32() || ptrElemScalarTy.isInteger(32)) {
-          vgather = rewriter.create<mlir::LLVM::XPU::VGatherFOp>(
-              loc, offsetTy, tmpPtr, offsetVec);
+          loaded = bitcast(rewriter.create<mlir::LLVM::XPU::VGatherFOp>(
+                               loc, offsetTy, tmpPtr, offsetVec),
+                           resElemTy);
         } else if (ptrElemScalarTy.isF16() || ptrElemScalarTy.isBF16() ||
                    ptrElemScalarTy.isInteger(16)) {
-          vgather = rewriter.create<mlir::LLVM::XPU::VGatherHFOp>(
-              loc, offsetTy, tmpPtr, offsetVec);
+          loaded = bitcast(rewriter.create<mlir::LLVM::XPU::VGatherHFOp>(
+                               loc, offsetTy, tmpPtr, offsetVec),
+                           resElemTy);
         } else {
-          llvm_unreachable("Only support I16/FP16/BF16/I32/FP32 in VGather!");
+          loaded = rewriter.create<LLVM::UndefOp>(loc, resElemTy);
+          for (size_t elemIdx = 0; elemIdx < ptrDataVecSize; ++elemIdx) {
+            Value elemPtr =
+                gep(ptr_ty(ctx, 0), ptrElemScalarTy, tmpPtr,
+                    i32_val(static_cast<int32_t>(stride * elemIdx)));
+            Value scalar = load(ptrElemScalarTy, elemPtr);
+            loaded = insert_element(resElemTy, loaded, scalar,
+                                    i32_val(static_cast<int32_t>(elemIdx)));
+          }
         }
-        Value loaded = bitcast(vgather, resElemTy);
         loadedVals.push_back(loaded);
       }
       if (bf16Tofp32) {
@@ -2495,15 +2653,37 @@ struct XPUGM2LMOpConversion
     Value elemBytes = i32_val(elemNbits / 8u);
     Value offsetBytes = i32_val(0);
 
+    // The `len` operand doubles as the mask carrier: CreateGM2LM parks the
+    // tt.load mask or a suffix length in the same slot.
+    //   * 32/64-bit int -> suffix length (a prefix of the tile is copied, which
+    //     any block DMA can express);
+    //   * 1-bit int     -> the raw per-element predicate, i.e. the mask that
+    //     Mask.cpp could not turn into a suffix length. No block DMA can
+    //     express it, so it must go through the per-element path.
     bool mask = false;
+    bool predMask = false;
     unsigned lenElemBit = 32;
     llvm::SmallVector<Value> llLens;
+    llvm::SmallVector<Value> llMasks;
     if (op.getLen()) {
       auto lenElemTy = getElementTypeOrSelf(op.getLen().getType());
       lenElemBit = lenElemTy.getIntOrFloatBitWidth();
-      mask = llGMPtrs.size() > 1 ? mlir::isa<mlir::IntegerType>(lenElemTy) &&
-                                       (lenElemBit == 32 || lenElemBit == 64)
-                                 : false;
+      bool isInt = mlir::isa<mlir::IntegerType>(lenElemTy);
+      if (mlir::isa<RankedTensorType>(ptrTy) && isInt && lenElemBit == 1) {
+        // Raw per-element predicate. Note this must not be gated on
+        // llGMPtrs.size() > 1: a tensor can be laid out with a single element
+        // per thread, and the predicate is still real there.
+        predMask = true;
+        llMasks = unpackLLElements(loc, llLen, rewriter);
+      } else {
+        // Clamp to the suffix length even with one element per thread: a core
+        // whose element sits past the suffix then reads zero bytes and keeps
+        // its `other` prefill. The old size() > 1 gate skipped the clamp, so a
+        // masked-out in-extent core overwrote `other` with GM data and a masked
+        // tl.load feeding a value reduce dropped the masked lanes
+        // (test_masked_reduce_other_dropped).
+        mask = isInt && (lenElemBit == 32 || lenElemBit == 64);
+      }
     }
 
     Value bufLen = i32_val(numElems);
@@ -2520,6 +2700,9 @@ struct XPUGM2LMOpConversion
 
     OffsetState offsetState = static_cast<OffsetState>(op.getOffsetState());
     int32_t fixedStride = op.getFixedStride();
+    // A per-element predicate is incompatible with every block DMA below.
+    if (predMask)
+      offsetState = OffsetState::Unknown;
     if (offsetState == OffsetState::Unknown) {
       /*  Small Col Size Opt Mask(14 < 16)
 
@@ -2532,6 +2715,27 @@ struct XPUGM2LMOpConversion
               T T T T T T T F
       */
       SmallVector<bool> maskLists;
+      if (predMask) {
+        // Per-element masked load. Each lane gets its own DMA whose length is 0
+        // for masked-off lanes: that leaves the lane's LM slot holding the
+        // `other` prefill instead of being overwritten with the neighbours'
+        // data, and it never dereferences an out-of-range GM address.
+        readBytes = elemBytes;
+        for (size_t i = 0; i < llGMPtrs.size(); ++i) {
+          Value laneMask = i < llMasks.size() ? llMasks[i] : llMasks[0];
+          Value base = select(laneMask, llGMPtrs[i], llGMPtrs[0]);
+          Value dstPtr = bitcast(llLMPtrs[i], ptr_ty(ctx, 0));
+          Value srcPtr = bitcast(base, ptr_ty(ctx, 1));
+          createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                        select(laneMask, readBytes, i32_val(0)));
+        }
+        if (!async)
+          createMfenceLMOp(rewriter, loc);
+        resultStruct = packLLElements(loc, typeConverter, llLMPtrs, rewriter,
+                                      llvmResultStructTy);
+        rewriter.replaceOp(op, {resultStruct});
+        return success();
+      }
       if (coreDealMultiRows) {
         auto shape = cast<RankedTensorType>(ptrTy).getShape();
         auto tensorRowSize =
@@ -2590,8 +2794,8 @@ struct XPUGM2LMOpConversion
           }
           Value dstPtr = bitcast(llLMPtrs[i], ptr_ty(ctx, 0));
           Value srcPtr = bitcast(base, ptr_ty(ctx, 1));
-          createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                        readBytes);
+          createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                               readBytes);
         }
         // Fence once after issuing all per-element DMAs. A per-iteration fence
         // would serialize every element's DMA; a single trailing fence still
@@ -2624,20 +2828,55 @@ struct XPUGM2LMOpConversion
       resultStruct = packLLElements(loc, typeConverter, newLmBufPtrs, rewriter,
                                     llLMPtr.getType());
     } else if (offsetState == OffsetState::LocallyScalar) {
+      // BlockScalar: every `rowLen` consecutive lanes share one GM address.
+      // Issue one scalar DMA per row-aligned lane group and point every lane
+      // in the group at that group's LM slot. Avoids the per-element Unknown
+      // gather while respecting that the group base addresses may be far
+      // apart in GM.
+      //
+      // The group size is gcd(rowLen, numElems), not rowLen: a core's lane
+      // window starts at a multiple of numElems and row boundaries are
+      // multiples of rowLen, so only a group size dividing *both* is
+      // guaranteed to stay inside a single row. Striding by rowLen directly
+      // is only correct when rowLen divides numElems (or vice versa); for
+      // e.g. rowLen=1232 / numElems=128 it would cover all 128 lanes with
+      // lane 0's address while ~10% of the cores actually straddle a row
+      // boundary and need a second address.
       int64_t rowLen = op.getRowLen();
+      size_t lanes = llLMPtrs.size();
       if (rowLen <= 0)
-        rowLen = static_cast<int64_t>(llLMPtrs.size());
-      readBytes = elemBytes;
-      SmallVector<Value> newLmBufPtrs(llLMPtrs.size());
-      for (size_t start = 0; start < llLMPtrs.size();
-           start += static_cast<size_t>(rowLen)) {
+        rowLen = static_cast<int64_t>(lanes);
+      auto gcd = [](int64_t a, int64_t b) {
+        while (b != 0) {
+          int64_t t = a % b;
+          a = b;
+          b = t;
+        }
+        return a;
+      };
+      size_t group =
+          static_cast<size_t>(gcd(rowLen, static_cast<int64_t>(lanes)));
+      if (group == 0)
+        group = 1;
+      readBytes = elemBytes; // one element per group
+      SmallVector<Value> newLmBufPtrs(lanes);
+      for (size_t start = 0; start < lanes; start += group) {
+        // A group head can sit past the mask tail (xnumel not a multiple of the
+        // block size, or a fully-masked tail core), so clamp it to lane 0's
+        // address like the Unknown path does. The clamped value is only
+        // consumed by masked-off lanes and never stored; the OOB-address DMA
+        // itself is pre-existing behavior shared with the Unknown path.
+        Value base = llGMPtrs[start];
+        if (mask && start > 0)
+          base = select(icmp_slt(int_val(lenElemBit, start), llLens[0]),
+                        llGMPtrs[start], llGMPtrs[0]);
         Value dstPtr = bitcast(llLMPtrs[start], ptr_ty(ctx, 0));
-        Value srcPtr = bitcast(llGMPtrs[start], ptr_ty(ctx, 1));
-        createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                      readBytes);
-        size_t end = start + static_cast<size_t>(rowLen);
-        if (end > llLMPtrs.size())
-          end = llLMPtrs.size();
+        Value srcPtr = bitcast(base, ptr_ty(ctx, 1));
+        createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                             readBytes);
+        size_t end = start + group;
+        if (end > lanes)
+          end = lanes;
         for (size_t j = start; j < end; ++j)
           newLmBufPtrs[j] = llLMPtrs[start];
       }
@@ -2698,15 +2937,15 @@ struct XPUGM2LMOpConversion
         readBytes = mul(i32_val(tensorRowSize * tensorColSize), elemBytes);
         Value dstPtr = bitcast(llLMPtrs[0], ptr_ty(ctx, 0));
         Value srcPtr = bitcast(llGMPtrs[0], ptr_ty(ctx, 1));
-        createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                      readBytes);
+        createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                             readBytes);
       } else {
         readBytes = mul(i32_val(tensorColSize), elemBytes);
         for (int i = 0; i < tensorRowSize; ++i) {
           Value dstPtr = bitcast(llLMPtrs[i * shape[1]], ptr_ty(ctx, 0));
           Value srcPtr = bitcast(llGMPtrs[i * tensorColSize], ptr_ty(ctx, 1));
-          createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                        readBytes);
+          createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                               readBytes);
         }
       }
 
@@ -2719,7 +2958,13 @@ struct XPUGM2LMOpConversion
 
     Value dstPtr = bitcast(llLMPtrs[0], ptr_ty(ctx, 0));
     Value srcPtr = bitcast(llGMPtrs[0], ptr_ty(ctx, 1));
-    createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes, readBytes);
+    // A masked read clamps its length to 0 when every lane this core owns is
+    // masked out, and a 0-byte descriptor faults where dma_excp_mask is clear.
+    // createGuardedGM2LMOp() skips it -- the LM those lanes would have received
+    // is the same either way, and the load lowering re-selects `other` into
+    // them.
+    createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                         readBytes);
     if (!async)
       createMfenceLMOp(rewriter, loc);
 
@@ -2835,14 +3080,24 @@ struct XPULM2GMOpConversion
     Value offsetBytes = i32_val(0);
 
     llvm::SmallVector<Value> llLens;
+    llvm::SmallVector<Value> llMasks;
     bool mask = false;
+    bool predMask = false;
     unsigned lenElemBit = 32;
     if (op.getLen()) {
       auto lenElemTy = getElementTypeOrSelf(op.getLen().getType());
       lenElemBit = lenElemTy.getIntOrFloatBitWidth();
-      mask = llPtrs.size() > 1 ? mlir::isa<mlir::IntegerType>(lenElemTy) &&
-                                     (lenElemBit == 32 || lenElemBit == 64)
-                               : false;
+      bool isInt = mlir::isa<mlir::IntegerType>(lenElemTy);
+      if (mlir::isa<RankedTensorType>(ptrTy) && isInt && lenElemBit == 1) {
+        // Raw per-element predicate, see XPUGM2LMOpConversion. Must not be
+        // gated on llPtrs.size() > 1: a tensor may be laid out with a single
+        // element per thread and the predicate is still real there.
+        predMask = true;
+        llMasks = unpackLLElements(loc, llLen, rewriter);
+      } else {
+        mask = llPtrs.size() > 1 && isInt &&
+               (lenElemBit == 32 || lenElemBit == 64);
+      }
     }
     Value bufLen = i32_val(numElems);
     Value readLen = bufLen;
@@ -2858,6 +3113,10 @@ struct XPULM2GMOpConversion
     auto lmBufPtrs = unpackLLElements(loc, llBufPtr, rewriter);
     Value lmBuf = lmBufPtrs[0];
 
+    // A per-element predicate is incompatible with every block DMA below.
+    if (predMask)
+      offsetState = OffsetState::Unknown;
+
     // Create LM2GM and mfence
     switch (offsetState) {
     case OffsetState::Continuous: {
@@ -2868,23 +3127,24 @@ struct XPULM2GMOpConversion
           readBytes = mul(i32_val(tensorRowSize * tensorColSize), elemBytes);
           Value srcPtr = bitcast(lmBufPtrs[0], ptr_ty(ctx, 0));
           Value dstPtr = bitcast(llPtrs[0], ptr_ty(ctx, 1));
-          createLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                        readBytes);
+          createGuardedLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                               readBytes);
+
         } else {
           for (int i = 0; i < tensorRowSize; ++i) {
-            readBytes = mul(i32_val(tensorColSize), elemBytes);
+            Value rowBytes = mul(i32_val(tensorColSize), elemBytes);
             Value srcPtr = bitcast(lmBufPtrs[i * shape[1]], ptr_ty(ctx, 0));
             Value dstPtr = bitcast(llPtrs[i * tensorColSize], ptr_ty(ctx, 1));
-            createLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                          readBytes);
+            createGuardedLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr,
+                                 offsetBytes, rowBytes);
           }
         }
 
       } else {
         Value srcPtr = bitcast(lmBuf, ptr_ty(ctx, 0));
         Value basePtr = bitcast(base, ptr_ty(ctx, 1));
-        createLM2GMOp(rewriter, ctx, loc, srcPtr, basePtr, offsetBytes,
-                      readBytes);
+        createGuardedLM2GMOp(rewriter, ctx, loc, srcPtr, basePtr, offsetBytes,
+                             readBytes);
       }
       break;
     }
@@ -2930,6 +3190,22 @@ struct XPULM2GMOpConversion
       break;
     }
     case OffsetState::Unknown: {
+      if (predMask) {
+        // Per-element masked store: a zero-length DMA per masked-off lane, so
+        // nothing is written outside the tile instead of clobbering the first
+        // lane's address the way the suffix-length form does.
+        for (size_t i = 0; i < llPtrs.size(); ++i) {
+          Value laneMask = i < llMasks.size() ? llMasks[i] : llMasks[0];
+          Value lmIdx = select(laneMask, i32_val(i), i32_val(0));
+          lmBuf = bitcast(lmBuf, ptr_ty(ctx, 0));
+          Value elemPtr = gep(ptr_ty(ctx, 0), elemTy, lmBuf, lmIdx);
+          Value srcPtr = bitcast(elemPtr, ptr_ty(ctx, 0));
+          Value dstPtr = select(laneMask, llPtrs[i], llPtrs[0]);
+          createLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                        select(laneMask, elemBytes, i32_val(0)));
+        }
+        break;
+      }
       for (size_t llPtrIdx = 0; llPtrIdx < llPtrs.size(); ++llPtrIdx) {
         Value maskedIdx;
         if (mask) {
@@ -2966,9 +3242,10 @@ struct XPULM2GMOpConversion
         } else {
           dstPtr = llPtrs[llPtrIdx];
         }
-        createLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                      elemBytes);
+        createGuardedLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                             elemBytes);
       }
+
       break;
     }
     default:
@@ -3112,8 +3389,8 @@ struct XPUGM2LMMaskOpConversion
         readBytes = mul(i32_val(fixedStride), readBytes);
         readBytes =
             mask ? select(llMasks[0], readBytes, i32_val(0)) : readBytes;
-        createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                      readBytes);
+        createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                             readBytes);
       } else if (fixedStride < 0 && fixedStride != INT32_MIN &&
                  numElems * (-fixedStride) <= targetInfo.getXPUBufferSize()) {
         int32_t absStride = -fixedStride;
@@ -3127,8 +3404,8 @@ struct XPUGM2LMMaskOpConversion
         Value adjustedSrcInt = add(srcPtrInt, i64_val(byteOffset));
         srcPtr =
             bitcast(inttoptr(ptr_ty(ctx, 1), adjustedSrcInt), ptr_ty(ctx, 1));
-        createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                      readBytes);
+        createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                             readBytes);
       } else {
         // Unknown
         for (size_t i = 0; i < llGMPtrs.size(); ++i) {
@@ -3143,8 +3420,8 @@ struct XPUGM2LMMaskOpConversion
           Value srcPtr = bitcast(llGMPtrs[i], ptr_ty(ctx, 1));
           Value _readBytes =
               mask ? select(llMasks[i], elemBytes, i32_val(0)) : elemBytes;
-          createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                        _readBytes);
+          createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                               _readBytes);
         }
       }
       resultStruct = packLLElements(loc, typeConverter, llLMPtrs, rewriter,
@@ -3161,14 +3438,16 @@ struct XPUGM2LMMaskOpConversion
         newLmBufPtrs[idx] = elemPtr;
       }
       readBytes = mask ? select(llMasks[0], readBytes, i32_val(0)) : readBytes;
-      createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes, readBytes);
+      createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                           readBytes);
 
       resultStruct = packLLElements(loc, typeConverter, newLmBufPtrs, rewriter,
                                     llvmResultStructTy);
     } else if (offsetState == OffsetState::DiscreteSame) {
       readBytes = elemBytes;
       readBytes = mask ? select(llMasks[0], readBytes, i32_val(0)) : readBytes;
-      createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes, readBytes);
+      createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                           readBytes);
 
       SmallVector<Value> newLmBufPtrs(llLMPtrs.size(), llLMPtrs[0]);
       resultStruct = packLLElements(loc, typeConverter, newLmBufPtrs, rewriter,
@@ -3211,8 +3490,8 @@ struct XPUGM2LMMaskOpConversion
           readBytes = mul(i32_val(tensorRowSize * tensorColSize), elemBytes);
           readBytes =
               mask ? select(llMasks[0], readBytes, i32_val(0)) : readBytes;
-          createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                        readBytes);
+          createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                               readBytes);
         } else {
           // readBytes = mul(i32_val(tensorColSize), elemBytes);
           for (int i = 0; i < tensorRowSize; ++i) {
@@ -3221,8 +3500,8 @@ struct XPUGM2LMMaskOpConversion
             auto _readBytes =
                 mask ? select(llMasks[i * shape[1]], readBytes, i32_val(0))
                      : readBytes;
-            createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                          _readBytes);
+            createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr,
+                                 offsetBytes, _readBytes);
           }
         }
       } else {
@@ -3230,8 +3509,8 @@ struct XPUGM2LMMaskOpConversion
         Value srcPtr = bitcast(llGMPtrs[0], ptr_ty(ctx, 1));
         readBytes =
             mask ? select(llMasks[0], readBytes, i32_val(0)) : readBytes;
-        createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                      readBytes);
+        createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                             readBytes);
       }
     } else {
       LLVM_DEBUG(llvm::dbgs() << "[GM2LM]: offsetState is " << offsetState
@@ -3351,8 +3630,8 @@ struct XPULM2GMMaskOpConversion
           Value dstPtr = bitcast(llPtrs[0], ptr_ty(ctx, 1));
           readBytes =
               mask ? select(llMasks[0], readBytes, i32_val(0)) : readBytes;
-          createLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                        readBytes);
+          createGuardedLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                               readBytes);
         } else {
           // readBytes = mul(i32_val(tensorColSize), elemBytes);
           for (int i = 0; i < tensorRowSize; ++i) {
@@ -3361,8 +3640,8 @@ struct XPULM2GMMaskOpConversion
             auto _readBytes =
                 mask ? select(llMasks[i * shape[1]], readBytes, i32_val(0))
                      : readBytes;
-            createLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                          _readBytes);
+            createGuardedLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr,
+                                 offsetBytes, _readBytes);
           }
         }
       } else {
@@ -3370,8 +3649,8 @@ struct XPULM2GMMaskOpConversion
         Value basePtr = bitcast(base, ptr_ty(ctx, 1));
         readBytes =
             mask ? select(llMasks[0], readBytes, i32_val(0)) : readBytes;
-        createLM2GMOp(rewriter, ctx, loc, srcPtr, basePtr, offsetBytes,
-                      readBytes);
+        createGuardedLM2GMOp(rewriter, ctx, loc, srcPtr, basePtr, offsetBytes,
+                             readBytes);
       }
       break;
     }
@@ -3435,8 +3714,8 @@ struct XPULM2GMMaskOpConversion
           }
         }
         readBytes = mask ? select(_mask, elemBytes, i32_val(0)) : elemBytes;
-        createLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
-                      readBytes);
+        createGuardedLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                             readBytes);
       }
       break;
     }
@@ -3525,6 +3804,85 @@ struct XPUAtomicRMWOpConversion
         packLLElements(loc, typeConverter, resultVals, rewriter, structTy);
     rewriter.replaceOp(op, resultStruct);
 
+    return success();
+  }
+};
+
+// tt.atomic_cas maps to one device call per element, the same way
+// XPUAtomicRMWOpConversion maps atomic RMW. The device library provides
+// atomicCAS for int and long long, see
+// third_party/xpu/device/xpu3/trigonometric.xpu. An f32 operand goes through
+// its i32 bit pattern, so the comparison is bitwise, as on CUDA.
+// TritonToTritonXPUPass rejects every other element type.
+struct XPUAtomicCASOpConversion
+    : public ConvertOpToLLVMPattern<triton::AtomicCASOp>,
+      public LoadStoreConversionBase {
+
+  XPUAtomicCASOpConversion(LLVMTypeConverter &converter,
+                           const xpu::TargetInfo &targetInfo,
+                           ModuleAxisInfoAnalysis &axisAnalysisPass,
+                           PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::AtomicCASOp>(converter, benefit),
+        LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
+
+  LogicalResult
+  matchAndRewrite(triton::AtomicCASOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op->getLoc();
+    auto typeConverter = getTypeConverter();
+
+    // tt.atomic_cas carries no mask operand (unlike tt.atomic_rmw, whose
+    // arguments list has Optional<TT_BoolLike>:$mask), so this lowering cannot
+    // tell an active lane from an inactive one. In the default mode that is
+    // safe: Mask.cpp wraps the tail of the block in an scf.if keyed on the
+    // core's own lane mask, so a core whose lane is masked out skips the CAS
+    // and never uses the out-of-range address its offset arithmetic produced.
+    // Mask-zero removes that scf.if and instead hands the mask to the
+    // GM2LMMask / LM2GMMask / SM2GMMask ops, which drop the access themselves.
+    // tt.atomic_cas is none of those ops, so under mask-zero an inactive lane
+    // would call xpu::atomicCAS on an address past the end of the tensor: a
+    // silent out-of-bounds write rather than a fault.
+    if (targetInfo.getXPUIsUseMaskZero())
+      return op.emitError()
+             << "[unsupported-on-xpu] tt.atomic_cas is not supported with "
+                "mask-zero: the op has no mask operand, and mask-zero removes "
+                "the tail-mask scf.if that otherwise stops inactive lanes from "
+                "using out-of-range addresses";
+
+    auto llPtrs = unpackLLElements(loc, adaptor.getPtr(), rewriter);
+    auto llCmps = unpackLLElements(loc, adaptor.getCmp(), rewriter);
+    auto llVals = unpackLLElements(loc, adaptor.getVal(), rewriter);
+
+    auto resTy = op.getType();
+    Type valueElemTy = getElementTypeOrSelf(resTy);
+    unsigned numElems = getTotalElemsPerThread(resTy);
+
+    Type callElemTy = valueElemTy.isInteger(64) ? rewriter.getI64Type()
+                                                : rewriter.getI32Type();
+    std::string funcName = valueElemTy.isInteger(64)
+                               ? "_ZN3xpu9atomicCASEPU3AS1xxx"
+                               : "_ZN3xpu9atomicCASEPU3AS1iii";
+
+    SmallVector<Value> resultVals(numElems);
+    for (unsigned i = 0; i < numElems; ++i) {
+      Value cmp = llCmps[i];
+      Value val = llVals[i];
+      if (cmp.getType() != callElemTy)
+        cmp = rewriter.create<LLVM::BitcastOp>(loc, callElemTy, cmp);
+      if (val.getType() != callElemTy)
+        val = rewriter.create<LLVM::BitcastOp>(loc, callElemTy, val);
+      SmallVector<Value, 3> operandRange{llPtrs[i], cmp, val};
+      Value old = mlir::LLVM::XPU::createDeviceCall(
+          funcName, rewriter, op, callElemTy, operandRange, loc);
+      if (old.getType() != valueElemTy)
+        old = rewriter.create<LLVM::BitcastOp>(loc, valueElemTy, old);
+      resultVals[i] = old;
+    }
+
+    Type structTy = typeConverter->convertType(resTy);
+    Value resultStruct =
+        packLLElements(loc, typeConverter, resultVals, rewriter, structTy);
+    rewriter.replaceOp(op, resultStruct);
     return success();
   }
 };
@@ -4280,8 +4638,8 @@ struct XPUTLECopyG2LOpConversion
         createGM2SMOp(rewriter, ctx, loc, srcPtr, dstPtrSeg, zeroI32,
                       copyBytes);
       else
-        createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtrSeg, zeroI32,
-                      copyBytes);
+        createGuardedGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtrSeg, zeroI32,
+                             copyBytes);
     }
 
     bool isSync = op.getIsSync();
@@ -4450,8 +4808,8 @@ struct XPUTLECopyL2GOpConversion
         createSM2GMOp(rewriter, ctx, loc, srcPtrSeg, dstPtr, zeroI32,
                       copyBytesVal);
       else
-        createLM2GMOp(rewriter, ctx, loc, srcPtrSeg, dstPtr, zeroI32,
-                      copyBytesVal);
+        createGuardedLM2GMOp(rewriter, ctx, loc, srcPtrSeg, dstPtr, zeroI32,
+                             copyBytesVal);
     }
     // Completion fence. Dropped for is_sync=false so the write-back overlaps
     // with whatever follows; the caller owes a tle_dma_wait before it reuses
@@ -4527,7 +4885,7 @@ struct XPUTLENormCopyG2LOpConversion
       if (toShared)
         createGM2SMOp(rewriter, ctx, loc, gmPtr, lmSlot, zeroI32, szI32);
       else
-        createGM2LMOp(rewriter, ctx, loc, gmPtr, lmSlot, zeroI32, szI32);
+        createGuardedGM2LMOp(rewriter, ctx, loc, gmPtr, lmSlot, zeroI32, szI32);
     }
     // is_sync=false means the caller (tritonxpu-tle-pipeline) drains this fill
     // itself, one iteration later, with a triton_xpu.tle_wait. Fencing here as
@@ -4581,7 +4939,7 @@ struct XPUTLENormCopyL2GOpConversion
       if (fromShared)
         createSM2GMOp(rewriter, ctx, loc, lmSlot, gmPtr, zeroI32, szI32);
       else
-        createLM2GMOp(rewriter, ctx, loc, lmSlot, gmPtr, zeroI32, szI32);
+        createGuardedLM2GMOp(rewriter, ctx, loc, lmSlot, gmPtr, zeroI32, szI32);
     }
     // Only the trailing fence is optional: the leading one above guards the
     // CPU stores that produced this buffer and must always be there.
@@ -5631,19 +5989,19 @@ void mlir::triton::xpu::populateLoadStoreOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, const TargetInfo &targetInfo,
     RewritePatternSet &patterns, ModuleAxisInfoAnalysis &axisInfoAnalysis,
     PatternBenefit benefit) {
-  patterns
-      .add<XPULoadOpConversion, XPUStoreOpConversion, XPUAllocaOpConversion,
-           XPULoadScalarIndexedOpConversion, XPUStageSMOpConversion,
-           XPUGM2LMMaskOpConversion, XPULM2GMMaskOpConversion,
-           XPUAtomicRMWOpConversion, XPUGM2LMOpConversion, XPULM2GMOpConversion,
-           // TLE patterns
-           XPUTLELocalAllocOpConversion, XPUTLECopyG2LOpConversion,
-           XPUTLECopyL2GOpConversion, XPUTLEDmaWaitOpConversion,
-           XPUTLENormCopyG2LOpConversion, XPUTLENormCopyL2GOpConversion,
-           XPUTLEWaitOpConversion, XPUTLELocalPtrOpConversion,
-           XPUTLETritonLoadOpConversion, XPUTLETritonStoreOpConversion,
-           XPUTLEVLoadOpConversion, XPUTLEVStoreOpConversion,
-           // vector<->scalar boundary
-           XPUPackOpConversion, XPUUnpackOpConversion>(
-          typeConverter, targetInfo, axisInfoAnalysis, benefit);
+  patterns.add<XPULoadOpConversion, XPUStoreOpConversion, XPUAllocaOpConversion,
+               XPULoadScalarIndexedOpConversion, XPUStageSMOpConversion,
+               XPUGM2LMMaskOpConversion, XPULM2GMMaskOpConversion,
+               XPUAtomicRMWOpConversion, XPUAtomicCASOpConversion,
+               XPUGM2LMOpConversion, XPULM2GMOpConversion,
+               // TLE patterns
+               XPUTLELocalAllocOpConversion, XPUTLECopyG2LOpConversion,
+               XPUTLECopyL2GOpConversion, XPUTLEDmaWaitOpConversion,
+               XPUTLENormCopyG2LOpConversion, XPUTLENormCopyL2GOpConversion,
+               XPUTLEWaitOpConversion, XPUTLELocalPtrOpConversion,
+               XPUTLETritonLoadOpConversion, XPUTLETritonStoreOpConversion,
+               XPUTLEVLoadOpConversion, XPUTLEVStoreOpConversion,
+               // vector<->scalar boundary
+               XPUPackOpConversion, XPUUnpackOpConversion>(
+      typeConverter, targetInfo, axisInfoAnalysis, benefit);
 }
