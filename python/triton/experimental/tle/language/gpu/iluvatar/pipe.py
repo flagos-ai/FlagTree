@@ -69,6 +69,14 @@ _validate_pipe_reader_name = gpu_types._validate_pipe_reader_name
 _validate_pipe_reader_fields = gpu_types._validate_pipe_reader_fields
 
 
+class pipe_writer_type(gpu_types.pipe_writer_type):
+    pass
+
+
+class pipe_reader_type(gpu_types.pipe_reader_type):
+    pass
+
+
 class pipe_value_type(gpu_types.pipe_value_type):
 
     def __init__(self, capacity: int, scope: str, name: Optional[str], fields, readers=None, one_shot=False):
@@ -138,7 +146,7 @@ class pipe_value(gpu_types.pipe_value):
 
 class pipe_writer(gpu_types.pipe_writer):
 
-    type_cls = gpu_types.pipe_writer_type
+    type_cls = pipe_writer_type
 
     def __init__(self, pipe: pipe_value, reader_name=None, field_names=None):
         if reader_name is not None or field_names is not None:
@@ -172,7 +180,7 @@ class pipe_writer(gpu_types.pipe_writer):
 
 class pipe_reader(gpu_types.pipe_reader):
 
-    type_cls = gpu_types.pipe_reader_type
+    type_cls = pipe_reader_type
 
     def _reader_field_names(self):
         if self.field_names is None:
@@ -198,5 +206,5 @@ class pipe_reader(gpu_types.pipe_reader):
                                                      self._reader_field_names())
 
 
-pipe_writer_type = gpu_types.pipe_writer_type
-pipe_reader_type = gpu_types.pipe_reader_type
+pipe_writer_type.value_cls = pipe_writer
+pipe_reader_type.value_cls = pipe_reader

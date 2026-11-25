@@ -1399,6 +1399,7 @@ def test_iluvatar_pipe_detection_follows_backend_and_rejects_synthetic_builders(
 
 
 def test_iluvatar_native_pipe_uses_field_only_signature(monkeypatch):
+    from triton.compiler.code_generator import flatten_values_to_ir, unflatten_ir_values
     from triton.experimental.tle.language.gpu import types
     from triton.experimental.tle.language.gpu.iluvatar import pipe as iluvatar_pipe
     # The ABI follows the active backend; stand in the Iluvatar builder.
@@ -1409,6 +1410,10 @@ def test_iluvatar_native_pipe_uses_field_only_signature(monkeypatch):
                                   tle.gpu.swizzled_shared_layout.make_default(rank=2), semantic)
     edge = tle.pipe(capacity=2, data=field, _semantic=semantic)
     writer, reader = edge.writer(_semantic=semantic), edge.reader(_semantic=semantic)
+    # JIT calls and warp-specialize captures reconstruct endpoints from IR.
+    handles = flatten_values_to_ir((writer, reader))
+    assert handles == ["base", "base"]
+    writer, reader = unflatten_ir_values(handles, [writer.type, reader.type])
     writer.acquire(0, _semantic=semantic)
     writer.commit(0, _semantic=semantic)
     writer.close(1, _semantic=semantic)
