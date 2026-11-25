@@ -27,15 +27,17 @@ macro(flagtree_configure_options)
     set(FLAGTREE_DEFAULT_OPTION OFF)
   endif()
 
-  # Enable CommonIR by default for the integrated backends and FLIR-based builds.
-  # Set FLAGTREE_COMMON_IR=0 (or OFF) to opt out.
+  # Python packaging provides the build setting and provisions FLIR.
+  # Keep the default for direct CMake builds aligned with setup_helper.py.
   if(DEFINED ENV{FLAGTREE_COMMON_IR})
     set(FLAGTREE_COMMON_IR_ENABLED "$ENV{FLAGTREE_COMMON_IR}")
-  elseif(NOT FLAGTREE_BACKEND OR
-         FLAGTREE_BACKEND MATCHES "^(nvidia|amd|ascend|enflame|hcu|iluvatar|metax|mthreads|tsingmicro)$")
-    set(FLAGTREE_COMMON_IR_ENABLED ON)
-  else()
-    set(FLAGTREE_COMMON_IR_ENABLED OFF)
+  elseif(NOT DEFINED FLAGTREE_COMMON_IR_ENABLED)
+    if(NOT FLAGTREE_BACKEND OR
+       FLAGTREE_BACKEND MATCHES "^(nvidia|ascend|enflame|hcu|iluvatar|metax|mthreads|tsingmicro)$")
+      set(FLAGTREE_COMMON_IR_ENABLED ON)
+    else()
+      set(FLAGTREE_COMMON_IR_ENABLED OFF)
+    endif()
   endif()
   if(FLAGTREE_COMMON_IR_ENABLED)
     add_compile_definitions(__FLAGTREE_COMMON_IR__)
