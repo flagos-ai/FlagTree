@@ -349,13 +349,15 @@ def TritonTleLowerBarriers
   let description = [{
     This pass lowers the public ``tle.gpu`` barrier API IR.  Mbarrier-backed
     barriers become region-owned shared i64 allocations plus ttng init/wait/arrive
-    ops. Initialization is published to the participating threads. At the end of
-    the defining region, owned barriers are invalidated between rendezvous before
-    their shared storage can be reused. Caller-provided barriers remain borrowed.
+    ops. Initialization is published to the participating threads. When control
+    leaves the initialized scope, owned barriers are invalidated between
+    rendezvous before their shared storage can be reused. Caller-provided
+    barriers remain borrowed.
     Named barriers become statically numbered ttng named barrier ops.
   }];
 
   let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::cf::ControlFlowDialect",
                            "mlir::gpu::GPUDialect",
                            "mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
