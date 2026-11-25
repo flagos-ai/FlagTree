@@ -103,6 +103,15 @@ on:
         type: boolean
         required: false
         default: false
+      PUBLISH_BASELINE:
+        description: >-
+          Also publish the final round as the FlagGems baseline on the runner,
+          replacing ~/flaggems_ci/Baseline/best_<library>_<tag>. Only applies to
+          backends whose generation succeeded, and is ignored when SOURCE_RUN_ID
+          is set (no rounds are run in that mode).
+        type: boolean
+        required: false
+        default: false
 
 # Three ways to use this workflow:
 #
@@ -120,6 +129,9 @@ on:
 #
 # Generation is skipped whenever SOURCE_RUN_ID is set, so a typo'd run id
 # fails fast at the download step instead of silently re-running for an hour.
+#
+# PUBLISH_BASELINE is orthogonal to the three modes, but only has an effect in
+# modes 1 and 3: mode 2 runs no rounds, so there is no log directory to publish.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.run_id }}
@@ -325,6 +337,9 @@ jobs:
         env:
           GPU_ENV_VAR: ${{ matrix.gpu_env }}
           INPUT_REPO_KIND: ${{ inputs.REPO_KIND }}
+          INPUT_FLAGGEMS_REF: ${{ inputs.FLAGGEMS_REF }}
+          INPUT_VLLM_REF: ${{ inputs.FLAGGEMS_VLLM_REF }}
+          RUNNER_LABEL: ${{ matrix.runner }}
         run: |
           source ~/env.sh
           env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
@@ -343,6 +358,23 @@ jobs:
           # artifact location is predictable across runs.
           WORK_DIR="$HOME/flaggems_ci/skip_list/${REPO_KIND}_skip_list"
           echo "work_dir=$WORK_DIR" >> $GITHUB_OUTPUT
+
+          # Baseline paths, used only when PUBLISH_BASELINE is set. Names match
+          # template-gems-baseline.yml so gems-test finds them unchanged: the
+          # vllm library carries a marker in every directory, and the archive is
+          # keyed by runner because two runners can share a host.
+          CI_DIR="$HOME/flaggems_ci"
+          case "$REPO_KIND" in
+            flaggems-vllm)
+              echo "best_dir=${CI_DIR}/Baseline/best_FlagGemsVllm_${INPUT_VLLM_REF}" >> $GITHUB_OUTPUT
+              echo "best_archive_dir=${CI_DIR}/Baseline/best_archive_vllm_${RUNNER_LABEL}" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "best_dir=${CI_DIR}/Baseline/best_FlagGems_${INPUT_FLAGGEMS_REF}" >> $GITHUB_OUTPUT
+              echo "best_archive_dir=${CI_DIR}/Baseline/best_archive_${RUNNER_LABEL}" >> $GITHUB_OUTPUT
+              ;;
+          esac
+          echo "date=$(date +'%Y%m%d_%H%M%S')" >> $GITHUB_OUTPUT
 
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
@@ -411,6 +443,62 @@ jobs:
             --window-threshold "$WINDOW_THRESHOLD" \
             --flaky-rounds "$FLAKY_ROUNDS" \
             --max-detection-rounds "$MAX_DETECTION_ROUNDS"
+
+      # Deliberately not `!cancelled()`: a baseline is only meaningful when the
+      # rounds converged, so this is skipped whenever generation failed.
+      - name: Publish baseline
+        if: ${{ success() && inputs.PUBLISH_BASELINE }}
+        shell: bash
+        env:
+          BACKEND: ${{ matrix.backend }}
+          WORK_DIR: ${{ steps.env.outputs.work_dir }}
+          BEST_DIR: ${{ steps.env.outputs.best_dir }}
+          BEST_ARCHIVE_DIR: ${{ steps.env.outputs.best_archive_dir }}
+          DATE: ${{ steps.env.outputs.date }}
+          COMMIT_ID: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # The last round the detection ran is the one that matches the skip
+          # list it produced, so that is what becomes the baseline. Rounds are
+          # numbered globally across both phases, so the highest number wins;
+          # sort -V keeps round_9 before round_10.
+          LAST_ROUND=$(find "$WORK_DIR/output" -maxdepth 2 -type d -name 'round_*' \
+                       | sort -V | tail -1)
+          if [ -z "$LAST_ROUND" ]; then
+            echo "::error::No round directory under $WORK_DIR/output; nothing to publish."
+            exit 1
+          fi
+
+          # Same guard as template-gems-baseline.yml: a round without a usable
+          # summary.json cannot serve as a baseline.
+          if [ ! -s "$LAST_ROUND/summary.json" ]; then
+            echo "::error::$LAST_ROUND/summary.json is missing or empty; refusing to publish a baseline."
+            exit 1
+          fi
+          echo "Publishing $LAST_ROUND as the baseline for ${BACKEND}."
+
+          # Archive the previous baseline rather than deleting it, so a bad
+          # update can be rolled back.
+          if [ -d "$BEST_DIR" ]; then
+            ARCHIVE_DIR="${BEST_ARCHIVE_DIR}/${DATE}"
+            echo "Archiving existing baseline to $ARCHIVE_DIR"
+            mkdir -p "$ARCHIVE_DIR"
+            mv "$BEST_DIR" "$ARCHIVE_DIR"
+          fi
+
+          mkdir -p "$BEST_DIR"
+          cp -raf "$LAST_ROUND"/* "$BEST_DIR/"
+          echo "$DATE : $COMMIT_ID" > "$BEST_DIR/commit_id.txt"
+
+          {
+            echo "### Baseline published for \`${BACKEND}\`"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Source round | \`$LAST_ROUND\` |"
+            echo "| Baseline | \`$BEST_DIR\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload skip list
         if: ${{ !cancelled() }}

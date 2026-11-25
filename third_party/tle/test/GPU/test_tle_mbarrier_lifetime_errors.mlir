@@ -48,3 +48,37 @@ module {
     tt.return
   }
 }
+
+// -----
+
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+!array = !ttg.memdesc<1x1xi64, #shared, #smem, mutable>
+
+module {
+  tt.func @return_owned_barrier_from_successor() -> !array {
+    // expected-error @+1 {{owned mbarrier cannot escape its defining region}}
+    %bar = tle.barrier.alloc {arrive_count = 1 : i32, init_polarity = 0 : i32, num_barriers = 1 : i32} : !array
+    cf.br ^exit(%bar : !array)
+  ^exit(%alias: !array):
+    tt.return %alias : !array
+  }
+}
+
+// -----
+
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
+#smem = #ttg.shared_memory
+!array = !ttg.memdesc<1x1xi64, #shared, #smem, mutable>
+
+module {
+  tt.func @merge_owned_with_borrowed(%skip: i1, %borrowed: !array) {
+    cf.cond_br %skip, ^join(%borrowed : !array), ^init
+  ^init:
+    // expected-error @+1 {{owned mbarrier cannot escape its defining region}}
+    %bar = tle.barrier.alloc {arrive_count = 1 : i32, init_polarity = 0 : i32, num_barriers = 1 : i32} : !array
+    cf.br ^join(%bar : !array)
+  ^join(%alias: !array):
+    tt.return
+  }
+}

@@ -180,7 +180,8 @@ static bool sameExactSMEMStage(const ExactView &view, Value stage) {
   return sameIndexValue(view.getStage(), stage);
 }
 
-static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee) {
+static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee,
+                                    int64_t callId) {
   if (callee.isExternal())
     return call.emitOpError(
         "cannot inline external callee containing pipe ops");
@@ -197,27 +198,37 @@ static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee) {
   if (returnOp.getNumOperands() != call.getNumResults())
     return call.emitOpError("callee return count does not match call results");
 
-  IRMapping mapping;
-  for (auto [arg, operand] :
-       llvm::zip(block.getArguments(), call.getOperands()))
-    mapping.map(arg, operand);
-
   OpBuilder builder(call);
+  SmallVector<Type> argumentTypes = llvm::to_vector(llvm::map_range(
+      call.getOperands(), [](Value value) { return value.getType(); }));
+  auto begin =
+      PipeCallBeginOp::create(builder, call.getLoc(), argumentTypes,
+                              call.getOperands(), callee.getName(), callId);
+  IRMapping mapping;
+  for (auto [arg, alias] : llvm::zip(block.getArguments(), begin.getAliases()))
+    mapping.map(arg, alias);
   for (Operation &op : block.getOperations()) {
     if (&op == returnOp.getOperation())
       continue;
     builder.clone(op, mapping);
   }
+  PipeCallEndOp::create(builder, call.getLoc(), callee.getName(), callId);
 
-  for (auto [result, returned] :
-       llvm::zip(call.getResults(), returnOp.getOperands()))
-    result.replaceAllUsesWith(mapping.lookupOrDefault(returned));
+  if (call.getNumResults()) {
+    SmallVector<Value> returned;
+    for (Value value : returnOp.getOperands())
+      returned.push_back(mapping.lookupOrDefault(value));
+    auto resultMarker = PipeCallReturnOp::create(
+        builder, call.getLoc(), call.getResultTypes(), returned, callId);
+    call.replaceAllUsesWith(resultMarker.getAliases());
+  }
   call.erase();
   return success();
 }
 
 static LogicalResult inlinePipeHelperCalls(ModuleOp module) {
   bool changed = true;
+  int64_t nextCallId = 0;
   while (changed) {
     changed = false;
     SmallVector<tt::CallOp> calls;
@@ -233,7 +244,7 @@ static LogicalResult inlinePipeHelperCalls(ModuleOp module) {
       auto callee = module.lookupSymbol<tt::FuncOp>(call.getCallee());
       if (!callee || !containsPipeLifecycleOp(callee))
         continue;
-      if (failed(inlinePipeCall(call, callee)))
+      if (failed(inlinePipeCall(call, callee, nextCallId++)))
         return failure();
       changed = true;
     }
@@ -2281,6 +2292,35 @@ public:
     for (auto &[key, state] : pipes) {
       if (!state.dataTransport && state.writerThreadCount)
         setTokenCount(state.token, "full_count", *state.writerThreadCount);
+    }
+
+    // The call marker owns the canonical lowered ABI used to restore one
+    // shared noinline helper. Replace original pipe identities in that ABI by
+    // the NVWS tokens created for the concrete pipe instance. The token
+    // lowering pass will subsequently replace those token parameters by the
+    // required barrier arrays across the restored call boundary.
+    SmallVector<PipeCallBeginOp> callBegins;
+    module.walk([&](PipeCallBeginOp begin) { callBegins.push_back(begin); });
+    for (PipeCallBeginOp begin : llvm::reverse(callBegins)) {
+      for (auto [index, operand] : llvm::enumerate(begin->getOpOperands())) {
+        Value identity = canonicalizePipeField(operand.get());
+        if (identity != operand.get() && isNvwsTokenValue(identity)) {
+          operand.set(identity);
+          begin.getAliases()[index].setType(identity.getType());
+          continue;
+        }
+        for (auto &[key, definition] : pipeDefinitions) {
+          if (definition.create.getIdentity() != identity)
+            continue;
+          auto state = pipes.find(key);
+          assert(state != pipes.end() && "lowered pipe must have state");
+          Value token =
+              getWarpSpecializeCaptureForUse(begin, state->second.token);
+          operand.set(token);
+          begin.getAliases()[index].setType(token.getType());
+          break;
+        }
+      }
     }
 
     // Pipe identities are explicit warp-specialize captures so lifecycle ops

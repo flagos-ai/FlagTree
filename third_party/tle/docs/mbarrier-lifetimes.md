@@ -1,10 +1,10 @@
 # Region-owned mbarrier lifetimes
 
-TLE mbarrier allocations own their hardware objects for the single-block
-structured region that defines them. A caller-provided descriptor is borrowed;
-the callee must not initialize or invalidate it. A descriptor or indexed alias
-must not leave the owning region. Allocate it in the enclosing region or caller
-when its users need a longer lifetime.
+TLE mbarrier allocations own their hardware objects within the defining
+structured region. In a function with multiple blocks, ownership starts at
+initialization and extends through the blocks it dominates. A caller-provided
+descriptor is borrowed. Allocate in an enclosing region or caller when users
+need a longer lifetime.
 
 ## Root cause and ordering
 
@@ -18,11 +18,12 @@ their shared bytes can serve an unrelated allocation. Sequential outlined
 helpers and allocations inside runtime loops expose these missing boundaries.
 
 The pass records the slots that it initializes, publishes initialization, and
-uses shared-memory alias analysis to reject an owned descriptor escaping through
-a function return or structured-region yield. At each owning region exit it
-inserts a rendezvous, invalidates each owned slot, then inserts another
-rendezvous. Invalidation retains a use of the allocation until this boundary,
-so shared-memory allocation cannot reuse its bytes before retirement. An outer
+uses shared-memory alias analysis to reject an owned descriptor that escapes
+through a return, yield, or CFG edge that leaves the initialized scope. At each
+exit from that scope it inserts a rendezvous, invalidates each owned slot, then
+inserts another rendezvous. This covers returns reached after initialization,
+joins with paths that bypass initialization, and backedges that reexecute the
+allocation. Invalidation keeps the shared bytes live until retirement. An outer
 allocation remains owned by its outer region when a loop or warp-specialization
 partition borrows an alias.
 
@@ -36,9 +37,15 @@ rendezvous for named-only captures. The regression covers this distinction.
 
 ```sh
 lit -v third_party/tle/test/GPU/test_tle_mbarrier_lifetime.mlir \
+       third_party/tle/test/GPU/test_tle_mbarrier_lifetime_cfg.mlir \
        third_party/tle/test/GPU/test_tle_mbarrier_lifetime_errors.mlir
 pytest -q python/test/tle/unit/test_tle_mbarrier_lifetime.py
 ```
+
+The CFG test reproduces the failure from #1541 when an early return puts a
+MiniMax sparse prefill barrier in a multi-block function body. It checks
+retirement only on paths that ran initialization, including the edge into a
+shared continuation and the backedge before reinitialization.
 
 With the barrier pass from main `bb8a53cc427f`, both original MLIR files fail:
 the positive file lacks publication/retirement, and the diagnostics file accepts

@@ -732,6 +732,16 @@ LogicalResult PipeCallBeginOp::verify() {
   return success();
 }
 
+LogicalResult PipeCallReturnOp::verify() {
+  if (getValues().size() != getAliases().size())
+    return emitOpError("expects one alias result for every returned value");
+  for (auto [value, alias] : llvm::zip(getValues(), getAliases()))
+    if (value.getType() != alias.getType())
+      return emitOpError(
+          "expects returned value and alias to have the same type");
+  return success();
+}
+
 LogicalResult PipeWriterAcquireOp::verify() {
   if (failed(verifyPipeAttrs(getOperation(), getFields())))
     return failure();
