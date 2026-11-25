@@ -131,6 +131,7 @@ macro(flagtree_configure_options)
     if(BUILD_MCTLE)
       list(APPEND TRITON_PLUGIN_NAMES "mctle")
       add_definitions(-D__MCTLE__)
+      list(APPEND LLVM_TABLEGEN_FLAGS -D__MCTLE__)
     endif()
     # MetaX spec headers do not implement the generic TLE dialect. Drop
     # __TLE__ for every MetaX build. Keep FLAGTREE_TLE on when CommonIR is
