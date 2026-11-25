@@ -112,12 +112,13 @@ def test_ordinary_streaming_load_and_store_on_hcu(arch, monkeypatch):
 
 
 @pytest.mark.parametrize("n", (1, 127, 128))
-def test_uniform_mask_keeps_vector_cache_control(n, monkeypatch):
+@pytest.mark.parametrize("arch", ("gfx936", "gfx938"))
+def test_uniform_mask_keeps_vector_cache_control(arch, n, monkeypatch):
     pytest.importorskip("triton._C.libtriton.hcu")
     monkeypatch.setenv("AMDGCN_USE_BUFFER_OPS", "0")
     compiled = triton.compile(
         ASTSource(masked_copy_kernel, {"a": "*fp32", "b": "*fp32"}, {"N": n, "POLICY": CachePolicy(".cs")}),
-        target=GPUTarget("hip", "gfx936", 64), options={"num_warps": 4})
+        target=GPUTarget("hip", arch, 64), options={"num_warps": 4})
     loads = [line for line in compiled.asm["amdgcn"].splitlines() if "global_load_" in line]
     assert loads and all("glc slc" in line for line in loads)
     assert "load volatile" not in compiled.asm["llir"]

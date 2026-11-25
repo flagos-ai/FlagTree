@@ -712,9 +712,10 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
             otherElems, vecStart);
 
       if ((cacheMod == CacheModifier::CG || cacheMod == CacheModifier::CS) &&
-          targetInfo.getArch() == "gfx936" &&
+          (targetInfo.getArch() == "gfx936" ||
+           targetInfo.getArch() == "gfx938") &&
           cast<LLVM::LLVMPointerType>(ptr.getType()).getAddressSpace() == 1) {
-        // gfx936 LLVM can scalarize uniform non-temporal loads to s_load,
+        // DTK can scalarize uniform non-temporal loads to s_load,
         // losing their cache controls. A tied VGPR address keeps this one
         // hinted access on the global vector path without adding volatility.
         // The empty asm is a pure register constraint: LLVM cannot see

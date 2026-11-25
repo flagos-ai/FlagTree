@@ -39,7 +39,7 @@ class CachePolicy(NativeCachePolicy):
     operations. Load ``.cv`` additionally selects a volatile operation.
     Load ``.ca`` and store ``.wb``/``.cg`` are aliases for default caching.
 
-    These modifiers use the HCU target's cache mapping. On gfx936, load
+    These modifiers use the HCU target's cache mapping. On gfx936 and gfx938, load
     ``.cg``/``.cs`` constrain the address to vector registers to preserve
     cache controls when LLVM would otherwise scalarize a uniform load.
     This can increase address register use or require register moves.
