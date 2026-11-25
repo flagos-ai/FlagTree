@@ -113,7 +113,7 @@ concurrency:
 jobs:
   notify:
     if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.workflow_run.conclusion == 'failure' }}
-    runs-on: notify-pr-owner
+    runs-on: ubuntu-latest
     steps:
       - name: Wait out the auto-rerun watchdog
         id: settled
