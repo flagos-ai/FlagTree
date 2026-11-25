@@ -6,7 +6,7 @@ vllm==0.32.0+empty
 torch==2.10.0
 
 [2026/11/25] vllm-plugin-fl==0.5.0.dev0+g814b6d3e5 (2026/11/17), flag_gems==5.4.0 (2026/09/22), flaggems_vllm==0.3.0.dev1 (2026/11/17), flagtree===0.7.1+ppu3.6 (2026/11/17)
-# 服务冷启动时间: 13分41秒, 服务热启动时间: 7分30秒
+# 服务冷启动时间: 13分41秒, 服务热启动时间: 4分10秒
 # 输入长度: 1K, 输出长度: 1K, 并发数: 4
   Output token throughput (tok/s): 135.00
   Total token throughput (tok/s): 269.99
