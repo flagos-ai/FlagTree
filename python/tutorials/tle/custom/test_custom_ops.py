@@ -42,22 +42,15 @@ SMALLK_SORT_WAYS = 4
 
 
 @triton.jit
-def duplicate_bitwise_mask_kernel(src, dst):
-    ONE_REPEAT_SORT_NUM: tl.constexpr = 32
-    DEFAULT_BLOCK_SIZE: tl.constexpr = 256
-    BUFFER_SIZE: tl.constexpr = DEFAULT_BLOCK_SIZE // 4
-    NUM_GROUPS: tl.constexpr = 8
-    src_offs = tl.arange(0, NUM_GROUPS)
+def duplicate_bitwise_mask_kernel(dst, MASK0: tl.constexpr, SCALAR: tl.constexpr, INIT: tl.constexpr):
+    BUFFER_SIZE: tl.constexpr = 32
     dst_offs = tl.arange(0, BUFFER_SIZE)
-    src_ub = tle.dsa.alloc([BUFFER_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(src + src_offs, tle.dsa.subview(src_ub, offsets=[0], sizes=[NUM_GROUPS], strides=[1]), [NUM_GROUPS])
-    src_tensor = tle.dsa.to_tensor(src_ub, writable=True)
-    neg_inf = tl.full([1], float("-inf"), dtype=tl.float32)
     mask = tl.zeros([2], dtype=tl.int64)
-    mask = tl.where(tl.arange(0, 2) == 0, (-1) << NUM_GROUPS, mask)
-    src_tensor = tle_raw.call("ascend_duplicate_bitwise_mask", neg_inf, mask, 1, 1, 8, out=src_tensor)
-    #out_tensor = tle.dsa.to_tensor(tle.dsa.subview(src_ub, offsets=[0], sizes=[ONE_REPEAT_SORT_NUM], strides=[1]))
-    tl.store(dst + dst_offs, src_tensor, mask=dst_offs < ONE_REPEAT_SORT_NUM)
+    mask = tl.where(tl.arange(0, 2) == 0, MASK0, mask)
+    out = tl.full([BUFFER_SIZE], INIT, dtype=tl.float32)
+    tl.debug_barrier()
+    out = tle_raw.call("ascend_duplicate_bitwise_mask", tl.full([1], SCALAR, dtype=tl.float32), mask, 1, 1, 8, out=out)
+    tl.store(dst + dst_offs, out)
 
 
 @triton.jit
@@ -701,17 +694,23 @@ def test_pair_reduce_sum():
 
 def test_duplicate():
     ONE_REPEAT_SORT_NUM = 32
-    torch.manual_seed(0)
     n_groups = 8
-    top2_sum = torch.rand([n_groups], dtype=torch.float32, device=DEVICE)
+    sentinel = 7.0
+    fill = float("-inf")
     out = torch.zeros([ONE_REPEAT_SORT_NUM], dtype=torch.float32, device=DEVICE)
 
-    duplicate_bitwise_mask_kernel[(1, )](top2_sum, out)
+    duplicate_bitwise_mask_kernel[(1, )](out, MASK0=((1 << ONE_REPEAT_SORT_NUM) - 1) ^ ((1 << n_groups) - 1),
+                                         SCALAR=fill, INIT=sentinel)
     torch_npu.npu.synchronize()
 
-    top2_sum_pad = np.pad(top2_sum.cpu().numpy(), pad_width=(0, ONE_REPEAT_SORT_NUM - n_groups), mode='constant',
-                          constant_values=-np.inf)
-    np.testing.assert_array_equal(top2_sum_pad, out.cpu().numpy(), err_msg="duplicate_bitwise_mask dst mismatch")
+    expected = np.array([sentinel] * n_groups + [fill] * (ONE_REPEAT_SORT_NUM - n_groups), dtype=np.float32)
+    np.testing.assert_array_equal(expected, out.cpu().numpy(), err_msg="duplicate_bitwise_mask dst mismatch (tail fill)")
+
+    duplicate_bitwise_mask_kernel[(1, )](out, MASK0=(1 << n_groups) - 1, SCALAR=fill, INIT=sentinel)
+    torch_npu.npu.synchronize()
+
+    expected = np.array([fill] * n_groups + [sentinel] * (ONE_REPEAT_SORT_NUM - n_groups), dtype=np.float32)
+    np.testing.assert_array_equal(expected, out.cpu().numpy(), err_msg="duplicate_bitwise_mask dst mismatch (head fill)")
     print("[PASS] duplicate correctness")
 
 

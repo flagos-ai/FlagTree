@@ -446,15 +446,19 @@ L1 tile 在 c310 上无法与 `tl.dot` 配对，因此声明
 c310 使用注意：
 
 - sort / gather-mask / pair-reduce / duplicate 用
-  `extra_buffers = [(tl.float16, 1)]` 作为“禁止 PlanMemory in-place 复用”的
-  dummy 临时 buffer。0 元素 alloc 在 c310 不会被 `PlanMemory` 规划，会报
-  `'memref.alloc' op error: read before first write`，因此必须保留非零大小。
-- 不要把同一个 `tle.dsa.alloc` buffer 同时用作 `tle.dsa.copy` 的目的端和
-  custom op 的 `tle.dsa.to_tensor` 输入。`TritonToLinalg` 的 `UseAnalysis`
-  会把 custom op 的 MixUse 输入经 `to_tensor` 反向传播到该 buffer，并把无结果
-  的 `hivm.copy` 误判为 meta user；随后 buffer 被克隆成 `MetaUse`，DMA 写入
-  克隆而 custom op 读取原 buffer。只读输入应直接用 `tl.load`（或 block ptr）
-  传入，直到上游修复 `hivm.copy` 的 meta-user 分类。
+  `extra_buffers = [(tl.float16, 0)]` 作为 dummy 临时 buffer。它只为 custom op
+  增加一个独立的 `tmps` 操作数；size 0 与 1 在下游都会被规划到独立的 UB 偏移，
+  out 与输入的内存布局不变。实测（CANN 9.2.1 / 950DT）0 和 1 的正确性、UB 布局
+  完全一致，因此统一使用 0。
+- custom op 的输入直接用 `tl.load`（或 block ptr）传入，输出来自
+  `tl.full`/`tl.zeros`。不要用 `tle.dsa.alloc` + `tle.dsa.copy` +
+  `tle.dsa.to_tensor` 把同一个 buffer 既当 DMA 目标又当 custom op 的输入/输出：
+  旧版 `TritonToLinalg` 的 UseAnalysis 会把该 buffer 克隆成 MetaUse，导致 DMA
+  与 custom op 读写不同副本。该 pass 在新版上游 triton-ascend 中已移除，但这种
+  写法仍应避免；直接用 `tl.load` 更简单、也更稳定。
+- c310 上 `duplicate_bitwise_mask` 的调用需要在 custom op 之前加
+  `tl.debug_barrier()`，确保 mask / scalar / out 的 UB 写入完成；否则首次或
+  部分调用会偶发丢失 duplicate 的写入。
 
 
 ## compare_scalar
