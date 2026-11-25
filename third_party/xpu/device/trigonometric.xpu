@@ -2413,6 +2413,47 @@ __device__ float16 atomicMul(__global_ptr__ float16 *address, float16 val) {
   }
 }
 
+__device__ int atomicCAS(__global_ptr__ int *address, int compare, int val) {
+  int old;
+  if ((long)address >= GM_BASE_ADDR) {
+    xtransLock();
+    old = *address;
+    if (old == compare) {
+      *address = val;
+    }
+    xtransUnlock();
+  } else {
+    ticket_lock_mix();
+    old = *address;
+    if (old == compare) {
+      *address = val;
+    }
+    ticket_unlock_mix();
+  }
+  return old;
+}
+
+__device__ long long atomicCAS(__global_ptr__ long long *address,
+                               long long compare, long long val) {
+  long long old;
+  if ((long)address >= GM_BASE_ADDR) {
+    xtransLock();
+    old = *address;
+    if (old == compare) {
+      *address = val;
+    }
+    xtransUnlock();
+  } else {
+    ticket_lock_mix();
+    old = *address;
+    if (old == compare) {
+      *address = val;
+    }
+    ticket_unlock_mix();
+  }
+  return old;
+}
+
 __device__ uint8_t fp32_to_fp8_e4m3_fnuz_rne(float f) {
   // 通过 union 重解释浮点数，避免 memcpy
   union {
@@ -2624,3 +2665,35 @@ __device__ void printTensorI8(_shared_ptr_ int8_t *tensor, int32_t m, int32_t n,
 #endif
 
 } // namespace xpu
+
+// Device-side assert for Triton kernels.
+//
+// Why: TargetInfo::assertFail() lowers tl.device_assert to a call to
+// __assert_fail, and inductor emits one per indirect index. XTDK's own
+// xtdk_assert.h carries a header-only `inline weak` definition, so a kernel
+// compiled from C++ picks it up -- but a Triton kernel goes straight from LLVM
+// IR to xpu3-elfconv-triton and never includes a header, so the call reaches
+// the linker as `ld.lld: error: undefined symbol: __assert_fail`. Defining it
+// here puts it in libdevice-xpu3.bc, which every Triton kernel links against.
+//
+// How:
+//   - print file:line, the function and the failed expression, matching the
+//     wording xtdk_assert.h uses so logs read the same on both paths;
+//   - then __builtin_trap(), which lowers to llvm.trap + unreachable.
+//
+// WARNING: xtdk_assert.h stops the core with __builtin_xcn_s_abort (arch5) or
+// __builtin_xcn_s_sendmsg(11) + spin (arch3/4). Neither builtin exists in the
+// clang that builds this file (xtdk-llvm19-printf; both are XCN-target
+// builtins), so the core is stopped with llvm.trap instead. How the runtime
+// surfaces a trapped core has NOT been measured -- expect a device fault
+// rather than xtdk's message, and check before relying on the exit path.
+//
+// NOTE: weak, like the XTDK header's definition, so a translation unit that
+// does include xtdk_assert.h still wins and there is no duplicate symbol.
+extern "C" __device__ __attribute__((weak)) void
+__assert_fail(const char *assertion, const char *file, unsigned int line,
+              const char *function) {
+  printf("%s:%u: %s: Device-side assertion `%s' failed.\n", file, line,
+         function, assertion);
+  __builtin_trap();
+}

@@ -876,7 +876,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         return launch
 
     def __init__(self, fn, version=None, do_not_specialize=None, do_not_specialize_on_alignment=None, debug=None,
-                 noinline=None, repr=None, launch_metadata=None):
+                 noinline=None, repr=None, launch_metadata=None, cluster_fallback=None):
         do_not_specialize = do_not_specialize if do_not_specialize else []
         do_not_specialize_on_alignment = do_not_specialize_on_alignment if do_not_specialize_on_alignment else []
 
@@ -887,6 +887,8 @@ class JITFunction(JITCallable, KernelInterface[T]):
         self.do_not_specialize_on_alignment = do_not_specialize_on_alignment
         self._repr = repr
         self.launch_metadata = launch_metadata
+        # XPU5/HOUYI compile option; None means "follow the environment".
+        self.cluster_fallback = cluster_fallback
 
         self.params = []
         for i, param in enumerate(self.signature.parameters.values()):
@@ -956,6 +958,15 @@ class JITFunction(JITCallable, KernelInterface[T]):
     def _do_compile(self, key, signature, device, constexprs, options, attrs, warmup):
         kernel_cache, _, target, backend, _ = self.device_caches[device]
 
+        # `@triton.jit(cluster_fallback=...)` is a per-kernel default: a launch
+        # keyword of the same name is more specific and wins. Reparse so the
+        # effective value reaches the hooks and the async cache key as well as
+        # the compiler, instead of patching it into the options dict later.
+        if (self.cluster_fallback is not None and hasattr(options, "cluster_fallback")
+                and getattr(options, "cluster_fallback") is None):
+            options = backend.parse_options({**options.__dict__, "cluster_fallback": self.cluster_fallback})
+        compile_options = dict(options.__dict__)
+
         if self._call_hook(knobs.runtime.jit_cache_hook, key, signature, device, constexprs, options, [attrs], warmup):
             return None
         src = self.ASTSource(self, signature, constexprs, attrs)
@@ -967,7 +978,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
             cache_key = get_cache_key(src, backend, options, env_vars)
 
             def async_compile():
-                return self.compile(src, target=target, options=options.__dict__, _env_vars=env_vars)
+                return self.compile(src, target=target, options=compile_options, _env_vars=env_vars)
 
             def finalize_compile(kernel):
                 kernel_cache[key] = kernel
@@ -976,7 +987,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
             kernel = async_mode.submit(cache_key, async_compile, finalize_compile)
         else:
-            kernel = self.compile(src, target=target, options=options.__dict__)
+            kernel = self.compile(src, target=target, options=compile_options)
             kernel_cache[key] = kernel
             self._call_hook(knobs.runtime.jit_post_compile_hook, key, signature, device, constexprs, options, [attrs],
                             warmup)
@@ -1009,6 +1020,7 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int | str]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
+    cluster_fallback: Optional[bool] = None,
 ) -> Callable[[T], JITFunction[T]]:
     ...
 
@@ -1023,6 +1035,7 @@ def jit(
     do_not_specialize_on_alignment: Optional[Iterable[int | str]] = None,
     debug: Optional[bool] = None,
     noinline: Optional[bool] = None,
+    cluster_fallback: Optional[bool] = None,
 ) -> KernelInterface[T]:
     """
     Decorator for JIT-compiling a function using the Triton compiler.
@@ -1037,6 +1050,12 @@ def jit(
            * builtins within the triton package,
            * arguments to this function,
            * other jit'd functions
+
+    :param cluster_fallback: XPU5/HOUYI only.  Enable the SDNN -> vector compile
+        fallback for this kernel.  ``None`` (default) follows the global
+        ``TRITON_XPU_CLUSTER_FALLBACK`` switch (off by default); ``True``/``False``
+        override it for this kernel.  Ignored by other backends and by the
+        interpreter.  A launch keyword of the same name overrides this value.
 
     :param fn: the function to be jit-compiled
     :type fn: Callable
@@ -1059,6 +1078,7 @@ def jit(
                 noinline=noinline,
                 repr=repr,
                 launch_metadata=launch_metadata,
+                cluster_fallback=cluster_fallback,
             )
 
     if fn is not None:

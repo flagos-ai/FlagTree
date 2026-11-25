@@ -1,7 +1,7 @@
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Union
+from typing import Dict, Optional, Union
 from types import ModuleType
 
 
@@ -56,6 +56,29 @@ class BaseBackend(metaclass=ABCMeta):
         a `bytes` object for execution by the launcher.
         """
         raise NotImplementedError
+
+    def ttir_has_dot(self, module) -> bool:
+        """Whether the TTIR reaching `refine_options_after_ttir` has a dot op.
+
+        Backends that can retry a failed fast pipeline use this to decide
+        whether the general pipeline is even applicable; the default says no.
+        """
+        return False
+
+    def fallback_options(self, options, state=None) -> Optional[dict]:
+        """Return raw option overrides for one retry, or None (default).
+
+        `compile()` calls this only after a stage raised.  The returned dict is
+        merged into the raw options *last*, so it wins over source-derived
+        options such as `is_sdnn`, and the source is compiled once more with
+        the same target.  Returning None keeps the original failure final.
+
+        `state` carries what the failed attempt learned: notably `has_dot`,
+        set from `ttir_has_dot()` once the TTIR stage has run.  A backend whose
+        fallback only makes sense for dot kernels must check it; the caller
+        does not impose a scope of its own.
+        """
+        return None
 
     @abstractmethod
     def load_dialects(self, context):

@@ -199,68 +199,269 @@ def _get_np_dtype(tt_dtype):
     return np_types[tt_dtype]
 
 
+# Per-format facts the bit-level conversions need. The patterns are magnitudes
+# (sign bit stripped), except the fnuz NaN, which *is* the sign bit:
+#   max_finite_bits  the largest finite encoding. IEEE encodings grow
+#                    monotonically with the magnitude, so "out of range" is
+#                    exactly "encodes above this", which also catches the slot a
+#                    format reserves for Inf / NaN;
+#   inf / nan        this format's own patterns, used when *decoding* a stored
+#                    tile. ``inf = None`` means the format has no infinity (OCP
+#                    e4m3 and the two fnuz formats);
+#   saturate         what a *conversion into* this format does with a value that
+#                    is out of range. The fp8 formats saturate to max_finite,
+#                    which is what Triton's own conversion contract asks for
+#                    (python/test/unit/language/test_conversions.py
+#                    ::test_typeconvert_downcast_clamping: max + 100 -> max,
+#                    +-inf -> +-max, NaN -> NaN) and what the satfinite
+#                    instructions on real targets do. bf16 / fp16 do not: a
+#                    standard fptrunc overflows to infinity.
+#                    WARNING: torch disagrees for fp8 -- ``tensor.to(float8)``
+#                    produces NaN there. A reference built with torch therefore
+#                    diverges from the interpreter exactly on the values a
+#                    kernel should not be producing anyway;
+#   signed_special   whether the sign bit belongs in those patterns;
+#   signed_zero      whether the format has a negative zero. The fnuz formats do
+#                    not, and 0x80 is their NaN, so -0.0 has to encode as 0x00
+#                    or a sign-preserving conversion would invent a NaN.
+#
+# Cross-checked against torch bit for bit, in both directions, over every 8-bit
+# pattern and ~11k values per format -- ties (e4m3fn 464.0 -> 448.0) and
+# subnormals included, out-of-range inputs excluded for the saturating rows.
+# See third_party/kernel_split/tests/core/test_interpreter_fp8.py.
+#
+# NOTE: fp8e4b15 is Triton-only and has no torch counterpart, so its row follows
+# the OCP e4m3 convention (all-ones = NaN) rather than a measurement.
+_FLOAT_FORMATS = {
+    "fp8e5": {"max_finite_bits": 0x7B, "inf": 0x7C, "nan": 0x7F, "saturate": True, "signed_special": True,
+              "signed_zero": True},
+    "fp8e4nv": {"max_finite_bits": 0x7E, "inf": None, "nan": 0x7F, "saturate": True, "signed_special": True,
+                "signed_zero": True},
+    "fp8e5b16": {"max_finite_bits": 0x7F, "inf": None, "nan": 0x80, "saturate": True, "signed_special": False,
+                 "signed_zero": False},
+    "fp8e4b8": {"max_finite_bits": 0x7F, "inf": None, "nan": 0x80, "saturate": True, "signed_special": False,
+                "signed_zero": False},
+    "fp8e4b15": {"max_finite_bits": 0x7E, "inf": None, "nan": 0x7F, "saturate": True, "signed_special": True,
+                 "signed_zero": True},
+    "fp16": {"max_finite_bits": 0x7BFF, "inf": 0x7C00, "nan": 0x7E00, "saturate": False, "signed_special": True,
+             "signed_zero": True},
+    "bf16": {"max_finite_bits": 0x7F7F, "inf": 0x7F80, "nan": 0x7FC0, "saturate": False, "signed_special": True,
+             "signed_zero": True},
+}
+
+
+def _input_magnitude(bits, dtype):
+    """``|value|`` of every entry of *bits*, as float64, reading subnormals too.
+
+    NOTE: an all-ones exponent comes out as a large finite number rather than
+    Inf or NaN. ``_decode_float_specials`` puts those back, which keeps this
+    function free of special cases.
+    """
+    mantissa_mask = (1 << dtype.fp_mantissa_width) - 1
+    exponent_width = dtype.primitive_bitwidth - dtype.fp_mantissa_width - 1
+    exponent = ((bits >> dtype.fp_mantissa_width) & ((1 << exponent_width) - 1)).astype(np.int64)
+    fraction = (bits & mantissa_mask) / (mantissa_mask + 1)
+    normal = np.ldexp(1.0 + fraction, exponent - dtype.exponent_bias)
+    subnormal = np.ldexp(fraction, 1 - dtype.exponent_bias)
+    return np.where(exponent == 0, subnormal, normal)
+
+
+def _quantize_to_grid(magnitude, output_dtype, rounding_mode):
+    """Round *magnitude* onto *output_dtype*'s value grid.
+
+    Returns ``(multiple, ulp_exponent)`` with ``magnitude ~= multiple * 2 **
+    ulp_exponent``.
+
+    Why: the step between neighbouring values is constant inside a binade but
+    stops shrinking below the smallest normal, so the grid has to be chosen
+    before rounding.
+
+    How:
+      - take the binade from ``frexp`` and clamp it to the smallest normal one,
+        which is what makes subnormals round on the subnormal step;
+      - ``np.rint`` rounds half to even, the IEEE 754 default; RTZ truncates;
+      - a tie that rounds up can leave the binade (1.111... -> 10.000), so that
+        carry is folded back into the exponent.
+    """
+    mantissa_width = output_dtype.fp_mantissa_width
+    smallest_normal_binade = 1 - output_dtype.exponent_bias
+    binade = np.frexp(magnitude)[1] - 1
+    ulp_exponent = np.maximum(binade, smallest_normal_binade) - mantissa_width
+    scaled = np.ldexp(magnitude, -ulp_exponent)
+    multiple = np.trunc(scaled) if rounding_mode == _ir.ROUNDING_MODE.RTZ else np.rint(scaled)
+    carry = multiple >= (1 << (mantissa_width + 1))
+    return np.where(carry, multiple / 2, multiple), ulp_exponent + carry
+
+
+def _encode_grid_multiple(multiple, ulp_exponent, output_dtype):
+    """Pack a quantised magnitude into exponent field + mantissa bits."""
+    mantissa_width = output_dtype.fp_mantissa_width
+    implicit_one = 1 << mantissa_width
+    is_subnormal = multiple < implicit_one
+    exponent_field = np.where(is_subnormal, 0, ulp_exponent + mantissa_width + output_dtype.exponent_bias)
+    mantissa = np.where(is_subnormal, multiple, multiple - implicit_one)
+    return (exponent_field.astype(np.int64) << mantissa_width) | mantissa.astype(np.int64)
+
+
+def _encode_float_specials(magnitude_bits, values, output_dtype):
+    """*magnitude_bits*, with everything that is not a finite value re-encoded.
+
+    Why: clamping the exponent field (what this used to do) turns an
+    out-of-range value into a plausible small number -- e4m3 1000.0 came back as
+    256.0, and so did an infinity. Both formats have a defined answer for that
+    case, and neither of them is a small number.
+
+    How: a NaN becomes this format's NaN; an infinity, and any magnitude that
+    encodes above ``max_finite_bits``, becomes whatever this format does with an
+    overflow -- max_finite for the fp8 formats (see ``saturate`` on the table),
+    an infinity for bf16 / fp16.
+    """
+    limits = _FLOAT_FORMATS[output_dtype.name]
+    if limits["saturate"]:
+        overflow_bits = limits["max_finite_bits"]
+    else:
+        overflow_bits = limits["nan"] if limits["inf"] is None else limits["inf"]
+    special = np.where(np.isnan(values), limits["nan"], overflow_bits)
+    out_of_range = ~np.isfinite(values) | (magnitude_bits > limits["max_finite_bits"])
+    return np.where(out_of_range, special, magnitude_bits)
+
+
+def _encode_float_values(values, output_dtype, rounding_mode):
+    """Encode float64 *values* as *output_dtype*'s storage bits (bf16 / fp8)."""
+    limits = _FLOAT_FORMATS[output_dtype.name]
+    finite = np.where(np.isfinite(values), values, 0.0)
+    multiple, ulp_exponent = _quantize_to_grid(np.abs(finite), output_dtype, rounding_mode)
+    magnitude_bits = _encode_float_specials(_encode_grid_multiple(multiple, ulp_exponent, output_dtype), values,
+                                            output_dtype)
+    has_sign = np.signbit(values) & (limits["signed_zero"] | (magnitude_bits != 0))
+    has_sign = has_sign & (limits["signed_special"] | (magnitude_bits <= limits["max_finite_bits"]))
+    bits = (has_sign.astype(np.int64) << (output_dtype.primitive_bitwidth - 1)) | magnitude_bits
+    return bits.astype(getattr(np, f"uint{output_dtype.primitive_bitwidth}"))
+
+
+# Floating formats numpy holds natively, so no bit surgery is needed for them.
+_NUMPY_FLOATS = {"fp16": np.float16, "fp32": np.float32, "fp64": np.float64}
+
+
+def _decode_float_bits(input, input_dtype):
+    """The values *input* encodes, as float64, Inf and NaN included.
+
+    Why: the conversion below reasons about values, not bit fields -- that is
+    what keeps subnormals, ties and saturation from each needing their own
+    special case. float64 is exact for every format the interpreter handles.
+    """
+    native = _NUMPY_FLOATS.get(input_dtype.name)
+    if native is not None:
+        # Through the buffer, not asarray: callers hand over either the native
+        # array or the raw storage of the same width, and both have to decode
+        # as the bits they are.
+        return np.frombuffer(input.tobytes(), dtype=native).astype(np.float64)
+    bits = np.frombuffer(input.tobytes(), dtype=getattr(np, f"uint{input_dtype.primitive_bitwidth}"))
+    sign = (bits >> (input_dtype.primitive_bitwidth - 1)) & 0x01
+    magnitude = _input_magnitude(bits, input_dtype)
+    return _decode_float_specials(np.where(sign == 1, -magnitude, magnitude), bits, input_dtype)
+
+
+def _decode_float_specials(values, bits, input_dtype):
+    """*values* with this format's Inf / NaN encodings put back.
+
+    Why: ``_input_magnitude`` reads every pattern as a finite number, so without
+    this an e5m2 infinity decodes as 65536.0 and an e4m3 NaN as 480.0 -- and
+    then arithmetic on them silently continues.
+
+    How: a magnitude above the format's largest finite encoding is its reserved
+    slot (Inf when the format has one, NaN otherwise); the fnuz formats instead
+    spell their single NaN as the sign bit alone.
+    """
+    limits = _FLOAT_FORMATS[input_dtype.name]
+    magnitude_bits = bits & ((1 << (input_dtype.primitive_bitwidth - 1)) - 1)
+    if limits["signed_zero"]:
+        is_special = magnitude_bits > limits["max_finite_bits"]
+    else:
+        is_special = bits == limits["nan"]
+    if limits["inf"] is None:
+        # No infinity in this format: every reserved pattern is its NaN.
+        return np.where(is_special, np.nan, values)
+    is_inf = is_special & (magnitude_bits == limits["inf"])
+    infinities = np.where(np.signbit(values), -np.inf, np.inf)
+    return np.where(is_special & ~is_inf, np.nan, np.where(is_inf, infinities, values))
+
+
 def _convert_float(input, input_dtype, output_dtype, rounding_mode):
-    input_uint_dtype = getattr(np, f"uint{input_dtype.primitive_bitwidth}")
-    output_unint_dtype = getattr(np, f"uint{output_dtype.primitive_bitwidth}")
-    input_bin = np.frombuffer(input.tobytes(), dtype=input_uint_dtype)
-    sign = (input_bin >> (input_dtype.primitive_bitwidth - 1)) & 0x01
-    input_exponent_width = input_dtype.primitive_bitwidth - input_dtype.fp_mantissa_width - 1
-    output_exponent_width = output_dtype.primitive_bitwidth - output_dtype.fp_mantissa_width - 1
-    significand = input_bin & ((1 << input_dtype.fp_mantissa_width) - 1)
-    bias_input = input_dtype.exponent_bias
-    bias_output = output_dtype.exponent_bias
-    exponent = ((input_bin >> input_dtype.fp_mantissa_width) & ((1 << input_exponent_width) - 1)).astype(np.int32)
-    subnormal_index = exponent == 0
-    if np.any(subnormal_index):
-        # Credit to Phil: phil@openai.com
-        # subnormal repr: ((-1.0)**sign) * (2.0**(1 - exp_bias)) * (2^(m0) + 2^(m1) + ... + 2^(mn))
-        # where m0, m1, ..., mn are the 1-bit of the mantissa
-        # convert it to normal repr: ((-1.0)**sign) * (2.0**(1 + m0 - exp_bias)) * (1 + 2^(m1 - m0) + ... + 2^(mn - m0))
-        bit_pos = np.zeros_like(input_bin, dtype=np.int32)
-        # Find the most significant bit of the mantissa in the significand
-        for i in range(input_dtype.fp_mantissa_width):
-            bit_index = ((significand >> i) & 0x01)
-            # pos should be >= 1
-            bit_pos[bit_index == 1] = input_dtype.fp_mantissa_width - i
-        zero_significand_index = significand == 0
-        exponent[subnormal_index] = 1 - bit_pos[subnormal_index]
-        # 0 significand and subnormal should be treated as 0
-        exponent[zero_significand_index & subnormal_index] = bias_input - bias_output
-        significand[subnormal_index] = (significand[subnormal_index] << bit_pos[subnormal_index]) & (
-            (1 << input_dtype.fp_mantissa_width) - 1)
-    # Prevent overflow and underflow
-    exponent_output = np.maximum(0, np.minimum((exponent - bias_input + bias_output), (1 << output_exponent_width) - 1))
-    exponent_output = exponent_output.astype(output_unint_dtype)
-    sign_output = sign.astype(output_unint_dtype)
-    if input_dtype.primitive_bitwidth > output_dtype.primitive_bitwidth:  # Downcast
-        significand_output = (significand >> (input_dtype.fp_mantissa_width - output_dtype.fp_mantissa_width)) & (
-            (1 << output_dtype.fp_mantissa_width) - 1)
-        if rounding_mode == _ir.ROUNDING_MODE.RTNE:  # Round to nearst even
-            # find the cut-off bit
-            cut_off = significand & (1 << (input_dtype.fp_mantissa_width - output_dtype.fp_mantissa_width - 1))
-            significand_output = significand_output + (cut_off > 0)
-        significand_output = significand_output.astype(output_unint_dtype)
-    else:  # Upcast
-        significand_output = (significand.astype(output_unint_dtype) <<
-                              (output_dtype.fp_mantissa_width - input_dtype.fp_mantissa_width)) & (
-                                  (1 << output_dtype.fp_mantissa_width) - 1)
-    subnormal_index = exponent_output == 0
-    if np.any(subnormal_index):  # underflow
-        # normal repr: ((-1.0)**sign) * (2.0**(exp - exp_bias_input)) * (1 + 2^(m0) + 2^(m1) + ... + 2^(mn))
-        # where m0, m1, ..., mn are the 1-bit of the mantissa
-        # shift = (1 - exp_bias_output) - (exp - exp_bias_input)
-        # convert it to subnormal repr: ((-1.0)**sign) * (2.0**(1 - exp_bias_output)) * (2^(-shift) + 2^(m0 - shift) + 2^(m1 - shift) + ... + 2^(mn - shift))
-        exponent = ((input_bin >> input_dtype.fp_mantissa_width) & ((1 << input_exponent_width) - 1)).astype(np.int32)
-        non_zero_exponent_index = exponent != 0
-        # If the original exponent is not zero, we still need to shift the significand and consider the 1.0 part in mantissa
-        subnormal_index = subnormal_index & non_zero_exponent_index
-        shift = np.zeros_like(input_bin, dtype=np.int32)
-        shift[subnormal_index] = (1 - bias_output) - (exponent[subnormal_index] - bias_input)
-        significand_output[subnormal_index] = (significand_output[subnormal_index] >> shift[subnormal_index]) | (
-            1 << (output_dtype.fp_mantissa_width - shift[subnormal_index]))
-    output = (sign_output << (output_dtype.primitive_bitwidth - 1)) | (
-        exponent_output << output_dtype.fp_mantissa_width) | significand_output
-    return output.reshape(input.shape)
+    """Re-encode *input* from *input_dtype* into *output_dtype*'s storage bits.
+
+    Why: numpy has neither bf16 nor fp8, so any conversion touching them has to
+    be spelled out here. Going through the value (decode, then quantise and
+    encode) rather than shifting mantissa fields is what makes rounding,
+    subnormals, the carry out of a binade and saturation fall out for free --
+    the result is bit-identical to torch for every format pair covered by
+    third_party/kernel_split/tests/core/test_interpreter_fp8.py.
+
+    \returns the raw bits of *output_dtype*, shaped like *input*; callers view
+    them as the storage type.
+    """
+    values = _decode_float_bits(input, input_dtype)
+    native = _NUMPY_FLOATS.get(output_dtype.name)
+    if native is not None:
+        # numpy rounds to nearest even on narrowing, which is the same default.
+        # An out-of-range value becomes an infinity, which is the point, so the
+        # cast's overflow warning is not news.
+        with np.errstate(over="ignore"):
+            narrowed = values.astype(native)
+        bits = np.ascontiguousarray(narrowed).view(getattr(np, f"uint{output_dtype.primitive_bitwidth}"))
+    else:
+        bits = _encode_float_values(values, output_dtype, rounding_mode)
+    return bits.reshape(input.shape)
+
+
+# Float types numpy cannot hold, so the interpreter keeps them as the integer
+# storage carrying their raw bit pattern (see ``_get_np_dtype``): bf16 as
+# uint16, every fp8 flavour as uint8.
+#
+# Spelled as names, not as ``tl.bfloat16`` & co: this module is imported from
+# the ``@jit`` decorator while ``triton.language`` is still initializing, so a
+# module-level ``tl.<dtype>`` lookup would be a circular import. Matching the
+# exact name also keeps ``pointer<fp8e4nv>`` out -- ``dtype.is_fp8()`` is a
+# substring test and would accept it.
+_BIT_STORED_FLOAT_NAMES = frozenset({
+    "bf16",
+    "fp8e5",
+    "fp8e5b16",
+    "fp8e4nv",
+    "fp8e4b8",
+    "fp8e4b15",
+})
+
+
+def _is_bit_stored_float(dtype):
+    """True when *dtype*'s interpreter storage is an integer bit pattern."""
+    return getattr(dtype, "name", None) in _BIT_STORED_FLOAT_NAMES
+
+
+def _widen_float(data, dtype):
+    """Return *data* as fp32 values.
+
+    Why: bf16 and fp8 tensors are stored as raw uint16 / uint8 bit patterns, so
+    any arithmetic on ``data`` would operate on the encoding instead of the
+    value (e4m3 ``1.0 + 1.0`` would be 0x38 + 0x38 = 0x70, i.e. 128.0).
+    """
+    if _is_bit_stored_float(dtype):
+        return _convert_float(data, dtype, tl.float32, None).view(np.float32)
+    return data
+
+
+def _narrow_float(data, dtype):
+    """Encode fp32 *data* as *dtype*'s storage: the raw bit pattern it holds.
+
+    Why: an arithmetic result computed in fp32 has to go back into the narrow
+    format the tensor claims to be, and it must land on the same value the
+    hardware would store -- so it rounds to nearest even and saturates, exactly
+    like an explicit ``.to()`` of the same value.
+    """
+    if _is_bit_stored_float(dtype):
+        arr = np.ascontiguousarray(np.asarray(data, dtype=np.float32))
+        return _convert_float(arr, tl.float32, dtype, _ir.ROUNDING_MODE.RTNE).view(_get_np_dtype(dtype))
+    return data
 
 
 def _erf(x):
@@ -424,6 +625,34 @@ class InterpreterBuilder:
     def get_fp64(self, value):
         return TensorHandle(np.array([value], dtype=np.float64), tl.float64)
 
+    def get_bf16(self, value):
+        return self.make_bit_stored_constant(value, tl.bfloat16)
+
+    def get_fp8e5(self, value):
+        return self.make_bit_stored_constant(value, tl.float8e5)
+
+    def get_fp8e5b16(self, value):
+        return self.make_bit_stored_constant(value, tl.float8e5b16)
+
+    def get_fp8e4nv(self, value):
+        return self.make_bit_stored_constant(value, tl.float8e4nv)
+
+    def get_fp8e4b8(self, value):
+        return self.make_bit_stored_constant(value, tl.float8e4b8)
+
+    def get_fp8e4b15(self, value):
+        return self.make_bit_stored_constant(value, tl.float8e4b15)
+
+    def make_bit_stored_constant(self, value, dtype):
+        """A bf16 / fp8 constant, encoded as the bits the interpreter stores.
+
+        Why: ``semantic.scalar_constant`` dispatches on ``get_{dtype.name}``, so
+        every bit-stored float needs its own entry point; without one a literal
+        of that type dies with AttributeError.
+        """
+        bits = _narrow_float(np.array([value], dtype=np.float32), dtype)
+        return TensorHandle(bits, dtype)
+
     def get_null_value(self, type):
         return TensorHandle(np.array([0], dtype=_get_np_dtype(type)), type)
 
@@ -467,12 +696,15 @@ class InterpreterBuilder:
     def cast_impl(self, src, dst_type):
         src_element_type = src.dtype.scalar
         dst_element_type = dst_type.scalar
-        if (src_element_type == tl.bfloat16 and dst_element_type == tl.float32) or \
-           (src_element_type == tl.float32 and dst_element_type == tl.bfloat16):
-            data = _convert_float(src.data, src_element_type, dst_element_type, None).view(_get_np_dtype(dst_type))
+        if src_element_type == dst_element_type:
+            return TensorHandle(src.data, dst_type.scalar)
+        if _is_bit_stored_float(src_element_type):
+            # Stored as bits: widen first, then cast numerically.
+            data = _widen_float(src.data, src_element_type).astype(_get_np_dtype(dst_type))
             return TensorHandle(data, dst_type.scalar)
-        else:
-            return TensorHandle(src.data.astype(_get_np_dtype(dst_type)), dst_type.scalar)
+        if _is_bit_stored_float(dst_element_type):
+            return TensorHandle(_narrow_float(src.data, dst_element_type), dst_type.scalar)
+        return TensorHandle(src.data.astype(_get_np_dtype(dst_type)), dst_type.scalar)
 
     create_si_to_fp = lambda self, src, dst_type: self.cast_impl(src, dst_type)
     create_ui_to_fp = lambda self, src, dst_type: self.cast_impl(src, dst_type)
@@ -492,11 +724,15 @@ class InterpreterBuilder:
         return TensorHandle(src.data.view(_get_np_dtype(dst_type)), dst_type.scalar)
 
     # binary operators
-    def binary_op(self, lhs, rhs, op):
-        output = op(lhs.data, rhs.data)
-        tl_dtype = lhs.dtype.scalar
+    def binary_op(self, lhs, rhs, op, out_dtype=None):
+        tl_dtype = lhs.dtype.scalar if out_dtype is None else out_dtype
+        a = _widen_float(lhs.data, lhs.dtype.scalar)
+        b = _widen_float(rhs.data, rhs.dtype.scalar)
+        output = op(a, b)
 
-        if not _validate_np_data_size(output, tl_dtype):
+        if _is_bit_stored_float(tl_dtype):
+            output = _narrow_float(output, tl_dtype)
+        elif tl_dtype != tl.int1 and not _validate_np_data_size(output, tl_dtype):
             output = output.astype(_get_np_dtype(tl_dtype))
 
         return TensorHandle(output, tl_dtype)
@@ -525,28 +761,28 @@ class InterpreterBuilder:
     create_maxui = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.maximum)
     create_maximumf = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.maximum)
     create_maxnumf = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.maximum)
-    create_icmpSLE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less_equal)
-    create_icmpSLT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less)
-    create_icmpSGE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater_equal)
-    create_icmpSGT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater)
-    create_icmpULE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less_equal)
-    create_icmpULT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less)
-    create_icmpUGE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater_equal)
-    create_icmpUGT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater)
-    create_icmpEQ = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.equal)
-    create_icmpNE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.not_equal)
-    create_fcmpOLT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less)
-    create_fcmpOGT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater)
-    create_fcmpOLE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less_equal)
-    create_fcmpOGE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater_equal)
-    create_fcmpOEQ = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.equal)
-    create_fcmpONE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.not_equal)
-    create_fcmpULT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less)
-    create_fcmpUGT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater)
-    create_fcmpULE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less_equal)
-    create_fcmpUGE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater_equal)
-    create_fcmpUEQ = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.equal)
-    create_fcmpUNE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.not_equal)
+    create_icmpSLE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less_equal, tl.int1)
+    create_icmpSLT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less, tl.int1)
+    create_icmpSGE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater_equal, tl.int1)
+    create_icmpSGT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater, tl.int1)
+    create_icmpULE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less_equal, tl.int1)
+    create_icmpULT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less, tl.int1)
+    create_icmpUGE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater_equal, tl.int1)
+    create_icmpUGT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater, tl.int1)
+    create_icmpEQ = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.equal, tl.int1)
+    create_icmpNE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.not_equal, tl.int1)
+    create_fcmpOLT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less, tl.int1)
+    create_fcmpOGT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater, tl.int1)
+    create_fcmpOLE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less_equal, tl.int1)
+    create_fcmpOGE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater_equal, tl.int1)
+    create_fcmpOEQ = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.equal, tl.int1)
+    create_fcmpONE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.not_equal, tl.int1)
+    create_fcmpULT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less, tl.int1)
+    create_fcmpUGT = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater, tl.int1)
+    create_fcmpULE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.less_equal, tl.int1)
+    create_fcmpUGE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.greater_equal, tl.int1)
+    create_fcmpUEQ = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.equal, tl.int1)
+    create_fcmpUNE = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.not_equal, tl.int1)
     create_and = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.bitwise_and)
     create_xor = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.bitwise_xor)
     create_or = lambda self, lhs, rhs: self.binary_op(lhs, rhs, np.bitwise_or)
@@ -580,10 +816,15 @@ class InterpreterBuilder:
 
     # ternary functions
     def ternary_op(self, lhs, rhs, other, op):
-        output = op(lhs.data, rhs.data, other.data)
         tl_dtype = other.dtype.scalar
+        a = _widen_float(lhs.data, lhs.dtype.scalar)
+        b = _widen_float(rhs.data, rhs.dtype.scalar)
+        c = _widen_float(other.data, other.dtype.scalar)
+        output = op(a, b, c)
 
-        if not _validate_np_data_size(output, tl_dtype):
+        if _is_bit_stored_float(tl_dtype):
+            output = _narrow_float(output, tl_dtype)
+        elif not _validate_np_data_size(output, tl_dtype):
             output = output.astype(_get_np_dtype(tl_dtype))
 
         return TensorHandle(output, tl_dtype)
@@ -592,11 +833,21 @@ class InterpreterBuilder:
     create_select = lambda self, cond, lhs, rhs: self.ternary_op(cond, lhs, rhs, np.where)
 
     def create_fma(self, x, y, z):
-        return TensorHandle(x.data * y.data + z.data, z.dtype.scalar)
+        tl_dtype = z.dtype.scalar
+        out = (_widen_float(x.data, x.dtype.scalar)
+               * _widen_float(y.data, y.dtype.scalar)
+               + _widen_float(z.data, tl_dtype))
+        if _is_bit_stored_float(tl_dtype):
+            out = _narrow_float(out, tl_dtype)
+        return TensorHandle(out, tl_dtype)
 
     # unary functions
     def unary_op(self, arg, op):
-        return TensorHandle(op(arg.data), arg.dtype.scalar)
+        tl_dtype = arg.dtype.scalar
+        out = op(_widen_float(arg.data, tl_dtype))
+        if _is_bit_stored_float(tl_dtype):
+            out = _narrow_float(out, tl_dtype)
+        return TensorHandle(out, tl_dtype)
 
     def create_fabs(self, arg):
         # Mask out the sign bit based on the primitive length
@@ -625,7 +876,7 @@ class InterpreterBuilder:
         return TensorHandle(ret, arg.dtype.scalar)
 
     def create_rsqrt(self, arg):
-        return TensorHandle(1 / np.sqrt(arg.data), arg.dtype.scalar)
+        return self.unary_op(arg, lambda x: 1 / np.sqrt(x))
 
     # tensor operators
     create_reshape = lambda self, arg, shape, allow_reorder: TensorHandle(arg.data.reshape(shape), arg.dtype.scalar)
@@ -640,6 +891,13 @@ class InterpreterBuilder:
            (b.dtype.primitive_bitwidth == 8 and b.dtype.is_floating()):
             a_data = _convert_float(a_data, a.dtype, tl.float16, None).view(np.float16)
             b_data = _convert_float(b_data, b.dtype, tl.float16, None).view(np.float16)
+        # bfloat16 is stored as raw uint16 bits, so np.matmul would multiply
+        # those bit patterns. Widen the operands to fp32 for the matmul; the
+        # accumulator (and the dot's result dtype) is fp32 by construction.
+        if a.dtype.scalar == tl.bfloat16:
+            a_data = _convert_float(a_data, a.dtype, tl.float32, None).view(np.float32)
+        if b.dtype.scalar == tl.bfloat16:
+            b_data = _convert_float(b_data, b.dtype, tl.float32, None).view(np.float32)
         return TensorHandle(np.matmul(a_data, b_data, dtype=d.data.dtype) + d.data, d.dtype.scalar)
 
     def create_make_range(self, ret_ty, start, stop):
@@ -841,38 +1099,67 @@ _MISSING = object()
 
 
 class _LangPatchScope:
-    """Tracks patched attributes so they can be restored."""
+    """Tracks patched attributes and globals so they can be restored."""
 
     def __init__(self) -> None:
-        self._changes: list[tuple[object, str, object]] = []
+        self._undo: list[Callable[[], None]] = []
 
     def set_attr(self, obj: object, name: str, value: object) -> None:
         original = getattr(obj, name, _MISSING)
-        self._changes.append((obj, name, original))
-        setattr(obj, name, value)
 
-    def restore(self) -> None:
-        while self._changes:
-            obj, name, original = self._changes.pop()
+        def undo():
             if original is _MISSING:
                 delattr(obj, name)
             else:
                 setattr(obj, name, original)
 
+        self._undo.append(undo)
+        setattr(obj, name, value)
+
+    def set_item(self, mapping: dict, name: str, value: object) -> None:
+        original = mapping.get(name, _MISSING)
+
+        def undo():
+            if original is _MISSING:
+                mapping.pop(name, None)
+            else:
+                mapping[name] = original
+
+        self._undo.append(undo)
+        mapping[name] = value
+
+    def restore(self) -> None:
+        while self._undo:
+            self._undo.pop()()
+
+
+def _bound_builtin(member, semantic):
+    return lambda *args, **kwargs: member(*args, **{k: v
+                                                    for k, v in kwargs.items()
+                                                    if k != "_semantic"}, _semantic=semantic)
+
 
 def _patch_attr(obj, name, member, builder, scope: _LangPatchScope):
-    semantic = TritonSemantic(builder)
-    new_member = lambda *args, member=member, **kwargs: (member(*args, **
-                                                                {k: v
-                                                                 for k, v in kwargs.items()
-                                                                 if k != "_semantic"}, _semantic=semantic))
-    scope.set_attr(obj, name, new_member)
+    scope.set_attr(obj, name, _bound_builtin(member, TritonSemantic(builder)))
 
 
 def _patch_builtin(pkg, builder, scope: _LangPatchScope):
     for name, member in inspect.getmembers(pkg):
         if tl.core.is_builtin(member):
             _patch_attr(pkg, name, member, builder, scope)
+
+
+def _patch_builtin_aliases(scope_globals, builder, scope: _LangPatchScope):
+    """Patch builtins a module bound under a name of its own.
+
+    ``exp = tl.exp`` at module scope holds the unpatched builtin, so patching
+    the ``tl`` module alone leaves the alias reaching the real front end, which
+    refuses the call because no ``_semantic`` was passed. Runs after the module
+    patches, so a name that is already a bound wrapper is left alone.
+    """
+    for name, member in list(scope_globals.items()):
+        if tl.core.is_builtin(member):
+            scope.set_item(scope_globals, name, _bound_builtin(member, TritonSemantic(builder)))
 
 
 def _patch_lang_tensor(tensor, scope: _LangPatchScope):
@@ -994,12 +1281,17 @@ class ReduceOps(ReduceScanOpInterface):
     def min_max(self, input, val_reduce_op, idx_reduce_op=None):
         # If input is a tuple, it must be (val, index), and we only take val
         input = input[0] if isinstance(input, tuple) else input
+        tl_dtype = input.dtype.scalar
+        data = _widen_float(input.handle.data, tl_dtype)
         val = None
         idx = None
         if val_reduce_op:
-            val = self.to_tensor(val_reduce_op(input.handle.data, axis=self.axis, keepdims=self.keep_dims), input.dtype)
+            v = val_reduce_op(data, axis=self.axis, keepdims=self.keep_dims)
+            if _is_bit_stored_float(tl_dtype):
+                v = _narrow_float(v, tl_dtype)
+            val = self.to_tensor(v, input.dtype)
         if idx_reduce_op:
-            idx = self.to_tensor(idx_reduce_op(input.handle.data, axis=self.axis, keepdims=self.keep_dims), tl.int32)
+            idx = self.to_tensor(idx_reduce_op(data, axis=self.axis, keepdims=self.keep_dims), tl.int32)
         if val is not None and idx is not None:
             return val, idx
         elif val is not None:
@@ -1010,7 +1302,11 @@ class ReduceOps(ReduceScanOpInterface):
             raise ValueError("val_reduce_op and idx_reduce_op are both None")
 
     def sum(self, input):
-        return self.to_tensor(np.sum(input.handle.data, axis=self.axis, keepdims=self.keep_dims), input.dtype)
+        tl_dtype = input.dtype.scalar
+        data = np.sum(_widen_float(input.handle.data, tl_dtype), axis=self.axis, keepdims=self.keep_dims)
+        if _is_bit_stored_float(tl_dtype):
+            data = _narrow_float(data, tl_dtype)
+        return self.to_tensor(data, input.dtype)
 
     def apply_impl(self, input):
         if self.combine_fn == tl.standard._argmin_combine_tie_break_left:
@@ -1035,10 +1331,22 @@ class ScanOps(ReduceScanOpInterface):
         self.reverse = reverse
 
     def cumsum(self, input):
-        return [self.to_tensor(np.cumsum(input.handle.data, axis=self.axis), dtype=input.dtype)]
+        return [self.scan_values(input, np.cumsum)]
 
     def cumprod(self, input):
-        return [self.to_tensor(np.cumprod(input.handle.data, axis=self.axis), dtype=input.dtype)]
+        return [self.scan_values(input, np.cumprod)]
+
+    def scan_values(self, input, scan_op):
+        """Run *scan_op* along the axis, widening a bit-stored float first.
+
+        Why: bf16 and fp8 arrive as their uint16 / uint8 encoding, and a scan
+        accumulates, so running it on the bits is wrong from the second element
+        on. bf16 only looks fine here because ``tl.cumsum`` promotes it to fp32
+        in the front end; fp8 gets no such promotion.
+        """
+        tl_dtype = input.dtype.scalar
+        data = scan_op(_widen_float(input.handle.data, tl_dtype), axis=self.axis)
+        return self.to_tensor(_narrow_float(data, tl_dtype), input.dtype)
 
     def generic_scan(self, input):
         input_data = []
@@ -1136,6 +1444,10 @@ def _patch_lang_core(lang, scope: _LangPatchScope):
             return builder.get_fp8e4nv_ty()
         elif self.name == 'fp8e4b15':
             return builder.get_fp8e4b15_ty()
+        elif self.name == 'fp8e4b8':
+            return builder.get_fp8e4b8_ty()
+        elif self.name == 'fp8e5b16':
+            return builder.get_fp8e5b16_ty()
         elif self.name == 'fp16':
             return builder.get_half_ty()
         elif self.name == 'bf16':
@@ -1196,6 +1508,7 @@ def _patch_lang(fn):
         _patch_lang_tensor(lang.tensor, scope)
         _patch_lang_core(lang, scope)
     _patch_builtin(tl.core.tensor_descriptor_base, interpreter_builder, scope)
+    _patch_builtin_aliases(fn.__globals__, interpreter_builder, scope)
     return scope
 
 
@@ -1489,10 +1802,19 @@ class InterpretedFunction(KernelInterface[T]):
         return self.fn.__name__
 
     def __call__(self, *args, **kwargs):
-        # This is a device function call
-        _patch_lang(self.fn)
+        # This is a device function call.
+        #
+        # Restore the scope: an inline helper may patch modules the enclosing
+        # kernel launch did not. ``tl.zeros`` lives in ``core.py``, so its
+        # globals make ``_patch_lang`` patch ``tl.core``; the launch scope only
+        # patched ``tl``, so its ``finally`` cannot undo this. Leaving the
+        # patches behind makes the real front end call interpreter
+        # implementations with MLIR values.
+        scope = _patch_lang(self.fn)
         fn = self.rewrite()
         try:
             return fn(*args, **kwargs)
         except Exception as e:
             raise InterpreterError(repr(e)) from e
+        finally:
+            scope.restore()
