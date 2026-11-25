@@ -1,3 +1,4 @@
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #ifndef TRITON_DIALECT_TRITON_IR_CACHE_CONTROLS_H
 #define TRITON_DIALECT_TRITON_IR_CACHE_CONTROLS_H
 
@@ -15,7 +16,6 @@ inline EvictionPolicy getEvictionPolicy(Operation *op) {
   return attr ? attr.getValue() : EvictionPolicy::NORMAL;
 }
 
-#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 inline bool isMusaLSUCache(CacheModifier cache) {
   return cache >= CacheModifier::MUSA_I0_O0_L0 &&
          cache <= CacheModifier::MUSA_I5_O5_L1;
@@ -36,8 +36,6 @@ inline bool isL2Eviction(EvictionPolicy evict) {
          evict <= EvictionPolicy::L2_EVICT_UNCHANGED;
 }
 
-#endif // __FLAGTREE_NATIVE_CACHE_POLICY__
-
 inline bool hasExplicitCacheControl(Operation *op) {
   return getCacheModifier(op) != CacheModifier::NONE ||
          getEvictionPolicy(op) != EvictionPolicy::NORMAL;
@@ -47,11 +45,7 @@ inline bool hasExplicitCacheControl(Operation *op) {
 // (upstream #11660/#11848). Reuse the version selected by the NVIDIA backend.
 inline constexpr int kMinPtxVersionForCpAsyncL2Hint = 94;
 inline bool usesNvidiaL2Policy(EvictionPolicy evict) {
-#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
-  if (isL2Eviction(evict))
-    return true;
-#endif
-  return evict == EvictionPolicy::EVICT_FIRST ||
+  return isL2Eviction(evict) || evict == EvictionPolicy::EVICT_FIRST ||
          evict == EvictionPolicy::EVICT_LAST;
 }
 
@@ -89,4 +83,6 @@ inline void remarkCacheControlConversion(Operation *op, StringRef path,
 }
 
 } // namespace mlir::triton
-#endif
+
+#endif // TRITON_DIALECT_TRITON_IR_CACHE_CONTROLS_H
+#endif // __FLAGTREE_NATIVE_CACHE_POLICY__

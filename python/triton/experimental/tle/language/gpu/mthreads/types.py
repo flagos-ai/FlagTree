@@ -79,6 +79,18 @@ class TMECachePolicy(NativeCachePolicy):
     prefetch_size: int = 0
 
     def __post_init__(self):
+        if not getattr(tl, "_HAS_NATIVE_CACHE_POLICY", False):
+            for name in ("inner", "outer"):
+                value = tl._unwrap_if_constexpr(getattr(self, name))
+                if not isinstance(value, str) or value not in _TME_CACHE_POLICIES:
+                    raise ValueError(
+                        f"TMECachePolicy {name} must be a compile-time string: none, once, normal, or persist")
+                object.__setattr__(self, name, value)
+            prefetch = tl._unwrap_if_constexpr(self.prefetch_size)
+            if type(prefetch) is not int or prefetch != 0:
+                raise ValueError("TMECachePolicy prefetch_size requires native cache policy support")
+            object.__setattr__(self, "prefetch_size", 0)
+            return
         for name in ("inner", "outer"):
             value = tl._unwrap_if_constexpr(getattr(self, name))
             if type(value) is int and value in range(4):

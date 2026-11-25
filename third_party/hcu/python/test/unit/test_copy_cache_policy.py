@@ -29,7 +29,7 @@ from triton.compiler import ASTSource
 from triton.experimental.tle import language as tle
 from triton.experimental.tle.language.gpu.hcu import CachePolicy
 
-if not tl.core._HAS_NATIVE_CACHE_POLICY:
+if not getattr(tl.core, "_HAS_NATIVE_CACHE_POLICY", False):
     pytest.skip("native cache policy disabled", allow_module_level=True)
 
 LOAD_MODIFIERS = ("", ".ca", ".cg", ".cs", ".cv")

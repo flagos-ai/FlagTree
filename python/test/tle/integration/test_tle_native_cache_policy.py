@@ -8,7 +8,7 @@ import triton.language as tl
 import triton.experimental.tle.language as tle
 from triton._flagtree_backend import FLAGTREE_BACKEND
 
-if not tl.core._HAS_NATIVE_CACHE_POLICY:
+if not getattr(tl.core, "_HAS_NATIVE_CACHE_POLICY", False):
     pytest.skip("native cache policy disabled", allow_module_level=True)
 BACKEND = FLAGTREE_BACKEND or "nvidia"
 SUPPORTED_BACKENDS = ("nvidia", "mthreads", "hcu", "metax", "ppu")

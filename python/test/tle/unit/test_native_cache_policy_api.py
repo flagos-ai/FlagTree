@@ -2,9 +2,14 @@
 import importlib
 from types import SimpleNamespace
 
+import inspect
 import pytest
 from triton.experimental.tle.language import gpu
 from triton.experimental.tle.language.gpu._cache_policy import resolve_policy
+from triton.language import core as _tl_core
+
+if "cache_policy" not in inspect.signature(_tl_core.load).parameters:
+    pytest.skip("backend core.py does not expose native cache_policy", allow_module_level=True)
 
 
 def resolve(policy, backend="nvidia", descriptor=False, load=True, common_ir=False, arch=None):
@@ -127,7 +132,7 @@ def test_hip_target_uses_selected_backend(monkeypatch):
 def test_native_policy_requires_tle_bindings(monkeypatch):
     from triton.language import core
 
-    monkeypatch.setattr(core, "_HAS_NATIVE_CACHE_POLICY", False)
+    monkeypatch.setattr(core, "_HAS_NATIVE_CACHE_POLICY", False, raising=False)
     assert core._resolve_native_cache_policy(None, None, True, "", "", None) is None
     with pytest.raises(ValueError, match="requires a TLE-enabled compiler"):
         core._resolve_native_cache_policy(gpu.CachePolicy(l1="evict_first"), None, True, "", "", None)

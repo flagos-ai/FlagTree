@@ -26,7 +26,7 @@ import pytest
 import triton
 import triton.language as tl
 
-if not tl.core._HAS_NATIVE_CACHE_POLICY:
+if not getattr(tl.core, "_HAS_NATIVE_CACHE_POLICY", False):
     pytest.skip("native cache policy disabled", allow_module_level=True)
 from triton.backends.compiler import GPUTarget
 from triton.compiler import ASTSource

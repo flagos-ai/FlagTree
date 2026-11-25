@@ -1,9 +1,9 @@
 // Copyright 2025- FlagOS Contributors
 // SPDX-License-Identifier: MIT
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #ifndef TRITON_METAX_COPY_CACHE_TRANSLATION_H
 #define TRITON_METAX_COPY_CACHE_TRANSLATION_H
-
 #include "mlir/IR/DialectRegistry.h"
 #include <string>
 #include <utility>
@@ -15,4 +15,5 @@ void registerCopyCacheTranslation(DialectRegistry &registry);
 std::pair<std::string, std::string>
 splitCopyCacheHelpers(const std::string &source);
 } // namespace mlir::triton::METAX
-#endif
+#endif // TRITON_METAX_COPY_CACHE_TRANSLATION_H
+#endif // __FLAGTREE_NATIVE_CACHE_POLICY__

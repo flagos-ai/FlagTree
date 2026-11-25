@@ -21,15 +21,23 @@ if(FLAGTREE_NATIVE_CACHE_POLICY)
     )
     set_target_properties(metaxTritonPlugin PROPERTIES
       PREFIX ""
-      OUTPUT_NAME "metaxTritonPlugin"
-      LIBRARY_OUTPUT_DIRECTORY "${TRITON_WHEEL_DIR}/_C"
+      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+      POSITION_INDEPENDENT_CODE ON
     )
-    target_link_options(metaxTritonPlugin PRIVATE
-      -Wl,--exclude-libs,ALL
+    set_target_properties(metaxTritonPlugin PROPERTIES
+      LINK_FLAGS "-Wl,--exclude-libs,ALL"
+    )
+    add_dependencies(metaxTritonPlugin
+      TritonMETAXGPUToLLVM
+      TritonMETAXGPUTransforms
+      MLIRMACADialect
+      MLIRGPUToMACATransforms
+    )
+    target_sources(metaxTritonPlugin PRIVATE
+      $<TARGET_OBJECTS:TritonMETAXGPUToLLVM>
+      $<TARGET_OBJECTS:TritonMETAXGPUTransforms>
     )
     target_link_libraries(metaxTritonPlugin PRIVATE
-      $<TARGET_FILE:TritonMETAXGPUTransforms>
-      $<TARGET_FILE:TritonMETAXGPUToLLVM>
       $<TARGET_FILE:MLIRMACADialect>
       $<TARGET_FILE:MLIRGPUToMACATransforms>
       Python3::Module
@@ -47,15 +55,23 @@ else()
     )
     set_target_properties(metaxTritonPlugin PROPERTIES
       PREFIX ""
-      OUTPUT_NAME "metaxTritonPlugin"
-      LIBRARY_OUTPUT_DIRECTORY "${TRITON_WHEEL_DIR}/_C"
+      LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib
+      POSITION_INDEPENDENT_CODE ON
     )
-    target_link_options(metaxTritonPlugin PRIVATE
-      -Wl,--exclude-libs,ALL
+    set_target_properties(metaxTritonPlugin PROPERTIES
+      LINK_FLAGS "-Wl,--exclude-libs,ALL"
+    )
+    add_dependencies(metaxTritonPlugin
+      TritonMETAXGPUToLLVM
+      TritonMETAXGPUTransforms
+      MLIRMACADialect
+      MLIRGPUToMACATransforms
+    )
+    target_sources(metaxTritonPlugin PRIVATE
+      $<TARGET_OBJECTS:TritonMETAXGPUToLLVM>
+      $<TARGET_OBJECTS:TritonMETAXGPUTransforms>
     )
     target_link_libraries(metaxTritonPlugin PRIVATE
-      $<TARGET_FILE:TritonMETAXGPUTransforms>
-      $<TARGET_FILE:TritonMETAXGPUToLLVM>
       $<TARGET_FILE:MLIRMACADialect>
       $<TARGET_FILE:MLIRGPUToMACATransforms>
       Python3::Module

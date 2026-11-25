@@ -1,9 +1,8 @@
 // Native instruction controls carried by the existing `cache` field.
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #ifndef TRITON_NATIVE_CACHE_MODIFIERS
 #define TRITON_NATIVE_CACHE_MODIFIERS
 include "mlir/IR/EnumAttr.td"
-
-#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 defvar TT_NativeCacheModifiers = !listconcat(
   [I32EnumAttrCase<"LU", 8, "lu">,
    I32EnumAttrCase<"NC", 9, "nc">,
@@ -32,8 +31,5 @@ defvar TT_NativeEvictionPolicies = [
   I32EnumAttrCase<"L2_EVICT_LAST", 11, "l2_evict_last">,
   I32EnumAttrCase<"L2_EVICT_UNCHANGED", 12, "l2_evict_unchanged">
 ];
-#else
-defvar TT_NativeCacheModifiers = []<I32EnumAttrCase>;
-defvar TT_NativeEvictionPolicies = []<I32EnumAttrCase>;
+#endif // TRITON_NATIVE_CACHE_MODIFIERS
 #endif // __FLAGTREE_NATIVE_CACHE_POLICY__
-#endif

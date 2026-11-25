@@ -1,6 +1,16 @@
+# The shared Triton core targets are created by FlagTreeOptions.cmake. Keep
+# this backend CMake file focused on MetaX-only sources and plugins.
 target_sources(TritonTools PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/spec_cpp/lib/Tools/SwizzleDumpUtils.cpp
 )
+
+if(FLAGTREE_PLUGIN)
+  set(PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
+elseif(EDITABLE_MODE)
+  set(PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+else()
+  set(PLUGIN_DIR "$ENV{HOME}/.flagtree/${FLAGTREE_BACKEND}")
+endif()
 
 if(FLAGTREE_NATIVE_CACHE_POLICY)
   if(TRITON_BUILD_PYTHON_MODULE)
@@ -15,8 +25,7 @@ if(FLAGTREE_NATIVE_CACHE_POLICY)
     if(BUILD_MCTLE AND NOT FLAGTREE_PLUGIN)
       # The public SDK provides MCTLE passes whose sources are not distributed.
       find_file(MetaxSdkPlugin metaxTritonPlugin.so
-        HINTS "${CMAKE_CURRENT_SOURCE_DIR}" "$ENV{FLAGTREE_OFFLINE_BUILD_DIR}"
-              "$ENV{HOME}/.flagtree/metax"
+        HINTS "${CMAKE_CURRENT_SOURCE_DIR}" "${PLUGIN_DIR}"
         REQUIRED)
       set(packaged_plugin "${TRITON_WHEEL_DIR}/_C/metaxTritonPlugin.so")
       configure_file("${MetaxSdkPlugin}" "${packaged_plugin}" COPYONLY)
@@ -34,16 +43,9 @@ if(FLAGTREE_NATIVE_CACHE_POLICY)
     # FlagPrism：generate MCTLE headers before compiling MetaX TritonGPUIR sources.
     add_dependencies(TritonGPUIR McTleTableGen)
     # FlagPrism end
+    target_link_libraries(TritonToTritonGPU PUBLIC McTleIR)
   endif()
 else()
-  if(FLAGTREE_PLUGIN)
-    set(PLUGIN_DIR "${Python3_SITELIB}/triton/_C")
-  elseif(EDITABLE_MODE)
-    set(PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-  else()
-    set(PLUGIN_DIR "$ENV{HOME}/.flagtree/${FLAGTREE_BACKEND}")
-  endif()
-
   if(TRITON_BUILD_PYTHON_MODULE)
     if(BUILD_MCTLE)
       include_directories(${CMAKE_CURRENT_SOURCE_DIR}/plugin)
@@ -62,6 +64,7 @@ else()
           ${PLUGIN_DIR}
         REQUIRED
       )
+      configure_file("${BackendTritonPluginLib}" "${TRITON_WHEEL_DIR}/_C/metaxTritonPlugin.so" COPYONLY)
       add_triton_plugin(TritonMetax
         SHARED_LIB ${BackendTritonPluginLib}
       )
@@ -75,5 +78,6 @@ else()
     # FlagPrism：generate MCTLE headers before compiling MetaX TritonGPUIR sources.
     add_dependencies(TritonGPUIR McTleTableGen)
     # FlagPrism end
+    target_link_libraries(TritonToTritonGPU PUBLIC McTleIR)
   endif()
 endif()

@@ -19,7 +19,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
-#ifdef __MCTLE__
+#if defined(__MCTLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
 #include "mctle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
 #include "mctle/dialect/include/IR/Dialect.h"
 #include "mctle/dialect/include/Transforms/PatternTleToLLVM.h"
@@ -68,7 +68,7 @@ public:
     addLegalDialect<MACA::MACADialect>();
     addIllegalDialect<triton::TritonDialect>();
     addIllegalDialect<triton::gpu::TritonGPUDialect>();
-#ifdef __MCTLE__
+#if defined(__MCTLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
     addIllegalDialect<triton::mctle::McTleDialect>();
 #endif
     addLegalDialect<mlir::scf::SCFDialect>();
@@ -127,7 +127,7 @@ struct ConvertTritonGPUToLLVM
 
     RewritePatternSet patterns(context);
     int benefit = patternBenefitPrioritizeOverLLVMConversions;
-#ifdef __MCTLE__
+#if defined(__MCTLE__) && defined(__FLAGTREE_NATIVE_CACHE_POLICY__)
     triton::mctle::populateExtractTileOpToLLVMPatterns(typeConverter, patterns,
                                                        targetInfo, benefit);
     triton::mctle::populateInsertTileOpToLLVMPatterns(typeConverter, patterns,

@@ -1,6 +1,7 @@
 // Copyright 2025- FlagOS Contributors
 // SPDX-License-Identifier: MIT
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "CopyCacheTranslation.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/MACADialect.h"
@@ -104,3 +105,4 @@ splitCopyCacheHelpers(const std::string &source) {
   return {mainStream.str(), helperStream.str()};
 }
 } // namespace mlir::triton::METAX
+#endif // __FLAGTREE_NATIVE_CACHE_POLICY__

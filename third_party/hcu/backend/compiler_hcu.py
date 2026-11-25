@@ -780,9 +780,10 @@ class HIPBackend(BaseBackend):
         kernel_ir = str(src)
         # Keep buffer-resource IR on DTK clang when a kernel also uses tle.raw.
         # Path follows FlagTree/DTK layout: {ROCM_PATH|/opt/dtk}/dcc/bin/dcc
-        from triton.language.core import _HAS_NATIVE_CACHE_POLICY
+        import triton.language.core as tl_core
         dcc = Path(HIPBackend.path_to_rocm()) / "dcc" / "bin" / "dcc"
-        rsrc_marker = "ptr addrspace(8)" if _HAS_NATIVE_CACHE_POLICY else "llvm.amdgcn.make.buffer.rsrc"
+        rsrc_marker = "ptr addrspace(8)" if getattr(tl_core, "_HAS_NATIVE_CACHE_POLICY",
+                                                    False) else "llvm.amdgcn.make.buffer.rsrc"
         use_dcc = bool(metadata.get("hcu_tle_raw")) and dcc.is_file() and rsrc_marker not in kernel_ir
         metadata["hcu_raw_dcc"] = use_dcc
         try:

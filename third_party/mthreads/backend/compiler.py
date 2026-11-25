@@ -820,8 +820,8 @@ class MUSAOptions:
 
     @property
     def supports_lsu_cache_policy(self) -> bool:
-        from triton.language.core import _HAS_NATIVE_CACHE_POLICY
-        return _HAS_NATIVE_CACHE_POLICY and musa_capability_from_arch(self.arch) == 31
+        import triton.language.core as tl_core
+        return getattr(tl_core, "_HAS_NATIVE_CACHE_POLICY", False) and musa_capability_from_arch(self.arch) == 31
 
     def __post_init__(self):
         default_libdir = Path(__file__).parent / "lib"

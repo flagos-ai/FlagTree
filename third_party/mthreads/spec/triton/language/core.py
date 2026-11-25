@@ -2214,7 +2214,6 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
         Mutually exclusive with nonempty cache_modifier and eviction_policy.
         None preserves the original memory path and default controls.
     """
-    cache_policy = _resolve_native_cache_policy(cache_policy, pointer, True, cache_modifier, eviction_policy, _semantic)
     # `mask` and `other` can be constexpr
     mask = _unwrap_if_constexpr(mask)
     other = _unwrap_if_constexpr(other)
@@ -2226,6 +2225,7 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     cache_modifier = _unwrap_if_constexpr(cache_modifier)
     eviction_policy = _unwrap_if_constexpr(eviction_policy)
     volatile = _unwrap_if_constexpr(volatile)
+    cache_policy = _resolve_native_cache_policy(cache_policy, pointer, True, cache_modifier, eviction_policy, _semantic)
     if cache_policy is not None:
         cache_modifier, eviction_policy = cache_policy.to_ir(True)
     return _semantic.load(pointer, mask, other, boundary_check, padding_option, cache_modifier, eviction_policy,
@@ -2326,8 +2326,6 @@ def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", evict
         Mutually exclusive with nonempty cache_modifier and eviction_policy.
         None preserves the original memory path and default controls.
     """
-    cache_policy = _resolve_native_cache_policy(cache_policy, pointer, False, cache_modifier, eviction_policy,
-                                                _semantic)
     # `value` can be constexpr
     value = _semantic.to_tensor(value)
     mask = _unwrap_if_constexpr(mask)
@@ -2335,6 +2333,8 @@ def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", evict
         mask = _semantic.to_tensor(mask)
     cache_modifier = _unwrap_if_constexpr(cache_modifier)
     eviction_policy = _unwrap_if_constexpr(eviction_policy)
+    cache_policy = _resolve_native_cache_policy(cache_policy, pointer, False, cache_modifier, eviction_policy,
+                                                _semantic)
     if cache_policy is not None:
         cache_modifier, eviction_policy = cache_policy.to_ir(False)
     return _semantic.store(pointer, value, mask, boundary_check, cache_modifier, eviction_policy)
