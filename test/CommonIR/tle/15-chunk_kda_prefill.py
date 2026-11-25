@@ -376,14 +376,14 @@ def _kda_fwd_state_output_tle_kernel(
             )
             tle.gpu.metax.gvm_arrive(6)
 
-        b_w = tle.gpu.metax.local_load(w_smem.slot(cur), intrinsic=True, is_constant_offs=True)
-        b_qg = tle.gpu.metax.local_load(qg_smem.slot(cur), intrinsic=True, is_constant_offs=True)
-        b_kg = tle.gpu.metax.local_load(kg_smem.slot(cur), intrinsic=True, is_constant_offs=True)
-        b_Aqk = tle.gpu.metax.local_load(Aqk_smem.slot(cur), intrinsic=True, is_constant_offs=True)
-        b_Akk = tle.gpu.metax.local_load(Akk_smem.slot(cur), intrinsic=True, is_constant_offs=True)
+        b_w = w_smem.slot(cur).load()
+        b_qg = qg_smem.slot(cur).load()
+        b_kg = kg_smem.slot(cur).load()
+        b_Aqk = Aqk_smem.slot(cur).load()
+        b_Akk = Akk_smem.slot(cur).load()
         # g_last 直接全局 load（走 3-D smem 会漂，见 _async_copy_chunk）
         b_gk = tl.load(g_last_ptr + (i_b * NT + i_t) * HV * K + i_hv * K + o_k)
-        b_v = tle.gpu.metax.local_load(v_smem.slot(cur), intrinsic=True, is_constant_offs=True)
+        b_v = v_smem.slot(cur).load()
         b_beta = tl.load(beta_ptr + (i_b * T_pad + i_t * BT) * HV + i_hv + o_i * HV)
         b_vb = (b_v.to(tl.float32)
                 * tl.sigmoid(b_beta.to(tl.float32))[:, None]).to(v_ptr.dtype.element_ty)
@@ -669,7 +669,7 @@ def _load_mcoplib():
     mcoplib 的 __init__ 会往 stdout print 一行 version 文件 WARNING，这里屏蔽掉。
     """
     try:
-        for p in ("/home/flagos-ly/mcoplib",):
+        for p in (os.environ.get("MCOPLIB_ROOT", "/home/flagos-ly/mcoplib"),):
             if os.path.isdir(p) and p not in sys.path:
                 sys.path.insert(0, p)
         with contextlib.redirect_stdout(io.StringIO()):
@@ -691,7 +691,7 @@ def _load_fg_o():
     放在 ops/FLA/chunk_gla.py，不在 chunk_kda.py。包 __init__ 会 import
     flag_gems，这里把 FlagGems 源码树挂进 sys.path。
     """
-    for p in ("/home/flagos-ly/FlagGems-vllm/src", "/home/flagos-ly/FlagGems/src"):
+    for p in (FG_VLLM_SRC, os.environ.get("FLAGGEMS_SRC", "/home/flagos-ly/FlagGems/src")):
         if os.path.isdir(p) and p not in sys.path:
             sys.path.insert(0, p)
     # TLE 变体在本构建上会抛 "backend 'metax' does not support TLE primitive
@@ -713,7 +713,7 @@ def _load_fg_o():
 # 匹配不到 —— 那种情况下拒绝编译，而不是拿未 patch 的源码去撞编译错误。
 # -----------------------------------------------------------------------------
 
-FG_VLLM_SRC = "/home/flagos-ly/FlagGems-vllm/src"
+FG_VLLM_SRC = os.environ.get("FLAGGEMS_VLLM_SRC", "/home/flagos-ly/FlagGems-vllm/src")
 FG_KDA_REL = "flaggems_vllm/ops/FLA/chunk_kda.py"
 
 _FP16_DOT_RE = re.compile(
@@ -954,6 +954,7 @@ def test_reference_equivalence():
         print(f"  B{B}T{T}H{H}: |o|max={mag:.4g} rel_o={rel_o:.1e} "
               f"|h|max={h_mag:.4g} rel_h={rel_h:.1e} {'ok' if good else 'FAIL'}")
     print(f"test_reference_equivalence: {'passed' if ok else 'FAILED'}")
+    assert ok, "KDA reference implementations disagree"
     return ok
 
 
@@ -996,6 +997,7 @@ def test_correctness():
         print(f"| B{B}T{T}H{H}K{K}V{V} | {diff_o:.4g} | {diff_h:.4g} "
               f"| {h_mag:.4g} | {good} |")
     print(f"test_correctness: {'all passed' if ok else 'FAILED'}")
+    assert ok, "KDA output or final state differs from the reference"
     return ok
 
 

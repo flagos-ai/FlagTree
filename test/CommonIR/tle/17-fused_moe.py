@@ -860,8 +860,8 @@ def bench(only_m=None):
 #             sweep is per-BM with the stages optimised jointly.
 # =============================================================================
 
-FLAGGEMS_SRC = "/home/flagos-ly/FlagGems-vllm/src"
-MCOPLIB_ROOT = "/home/flagos-ly/mcoplib"
+FLAGGEMS_SRC = os.environ.get("FLAGGEMS_VLLM_SRC", "/home/flagos-ly/FlagGems-vllm/src")
+MCOPLIB_ROOT = os.environ.get("MCOPLIB_ROOT", "/home/flagos-ly/mcoplib")
 
 # (BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, GROUP_SIZE_M, num_warps, num_stages)
 MCOPLIB_CANDIDATES = [
