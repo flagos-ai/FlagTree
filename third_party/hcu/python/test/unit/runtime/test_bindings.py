@@ -1,6 +1,7 @@
 import triton
 import triton.language as tl
 
+import pytest
 import torch
 import math
 
@@ -102,3 +103,14 @@ def test_python_func_in_visit_call(device):
     x = torch.randn(4, device=device)
     out = torch.zeros_like(x)
     test_py_call_const_kernel[(4, )](x, out, 4, 4)
+
+
+def test_legacy_launch_options(device):
+    x = torch.arange(16, device=device, dtype=torch.float32)
+    out = torch.empty_like(x)
+    add_kernel[(1, )](x, x, x.numel(), out, 16, num_ldmatrixes=0, enable_mmacfuse=2, reorder_instr=False,
+                      instruction_sched_variant="local-prefetch")
+    torch.testing.assert_close(out, x + x)
+
+    with pytest.raises(KeyError, match="unrecognised"):
+        add_kernel[(1, )](x, x, x.numel(), out, 16, unknown_hcu_option=True)

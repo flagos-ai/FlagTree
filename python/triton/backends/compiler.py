@@ -88,6 +88,7 @@ class ReplaceLowering(Exception):
 
 class BaseBackend(metaclass=ABCMeta):
     supports_native_tensor_specialization = True
+    legacy_launch_options = frozenset()
 
     def __init__(self, target: GPUTarget) -> None:
         self.target = target

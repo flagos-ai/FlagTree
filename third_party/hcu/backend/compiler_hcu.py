@@ -271,6 +271,9 @@ class HIPOptions:
 
 
 class HIPBackend(BaseBackend):
+    legacy_launch_options = frozenset(
+        {"enable_mmacfuse", "instruction_sched_variant", "num_ldmatrixes", "reorder_instr"})
+
     instrumentation = None
     supports_native_tensor_specialization = False
 
@@ -318,11 +321,6 @@ class HIPBackend(BaseBackend):
 
         if "optimize_epilogue" not in opts:
             args["optimize_epilogue"] = knobs.hcu.optimize_epilogue
-
-        # dtk triton compatibility: consume legacy compiler.py options and ignore.
-        opts.pop("num_ldmatrixes", None)
-        opts.pop("enable_mmacfuse", None)
-        opts.pop("reorder_instr", None)
 
         args.update({k: opts[k] for k in HIPOptions.__dataclass_fields__.keys() \
                      if k in opts and opts[k] is not None})

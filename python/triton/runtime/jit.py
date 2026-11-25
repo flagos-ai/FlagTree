@@ -724,7 +724,7 @@ class JITFunction(JITCallable, KernelInterface[T]):
         assert "device" not in kwargs, "device option is deprecated; current device will be used"
         assert "stream" not in kwargs, "stream option is deprecated; current stream will be used"
         for k in kwargs:
-            if k not in options.__dict__ and k not in sigkeys:
+            if k not in options.__dict__ and k not in sigkeys and k not in backend.legacy_launch_options:
                 raise KeyError("Keyword argument %s was specified but unrecognised" % k)
         # constexprs
         constexprs = find_paths_if(sigvals, lambda _, val: val == "constexpr")
