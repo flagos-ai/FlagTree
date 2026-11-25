@@ -63,6 +63,13 @@ converts to:
   %11 = arith.divf %7, %10 : tensor<100xf32>
 ```
 */
+struct PreciseDivConverter : public OpConversionPattern<triton::PreciseDivFOp> {
+public:
+  using OpConversionPattern<triton::PreciseDivFOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(triton::PreciseDivFOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
 
 /*
 Convert `tt.fp_to_fp` operation with RTNE (default) rounding mode to
@@ -169,8 +176,31 @@ public:
                                 PatternRewriter &rewriter) const override;
 };
 
+class DenseConstantConverter : public OpConversionPattern<arith::ConstantOp> {
+public:
+  using OpConversionPattern<arith::ConstantOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(arith::ConstantOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
 
+class MakeRangeConverter : public OpConversionPattern<triton::MakeRangeOp> {
+public:
+  using OpConversionPattern<triton::MakeRangeOp>::OpConversionPattern;
 
+  LogicalResult
+  matchAndRewrite(triton::MakeRangeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+class SplatConverter : public OpConversionPattern<triton::SplatOp> {
+public:
+  using OpConversionPattern<triton::SplatOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::SplatOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
 
 class UnsplatConverter : public OpConversionPattern<triton::UnsplatOp> {
 public:
@@ -181,9 +211,40 @@ public:
                   ConversionPatternRewriter &rewriter) const override;
 };
 
+class ReshapeConverter : public OpConversionPattern<triton::ReshapeOp> {
+public:
+  using OpConversionPattern<triton::ReshapeOp>::OpConversionPattern;
 
+  LogicalResult
+  matchAndRewrite(triton::ReshapeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
 
+class ExpandDimsConverter : public OpConversionPattern<triton::ExpandDimsOp> {
+public:
+  using OpConversionPattern<triton::ExpandDimsOp>::OpConversionPattern;
 
+  LogicalResult
+  matchAndRewrite(triton::ExpandDimsOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+class ClampFConverter : public OpConversionPattern<triton::ClampFOp> {
+public:
+  using OpConversionPattern<triton::ClampFOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(triton::ClampFOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+class BroadcastConverter : public OpConversionPattern<triton::BroadcastOp> {
+public:
+  using OpConversionPattern<triton::BroadcastOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::BroadcastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
 
 template <typename OpTy>
 class ReductionOpBaseConverter : public OpConversionPattern<OpTy> {
@@ -480,8 +541,30 @@ public:
                   ConversionPatternRewriter &rewriter) const override;
 };
 
+class JoinConverter : public OpConversionPattern<triton::JoinOp> {
+public:
+  using OpConversionPattern<triton::JoinOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(triton::JoinOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
 
+class SplitConverter : public OpConversionPattern<triton::SplitOp> {
+public:
+  using OpConversionPattern<triton::SplitOp>::OpConversionPattern;
 
+  LogicalResult
+  matchAndRewrite(triton::SplitOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+class CatConverter : public OpConversionPattern<triton::CatOp> {
+public:
+  using OpConversionPattern<triton::CatOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(triton::CatOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
 
 class GatherConverter : public OpConversionPattern<triton::GatherOp> {
 private:
@@ -606,9 +689,40 @@ public:
                   ConversionPatternRewriter &rewriter) const override;
 };
 
+class TransposeConverter : public OpConversionPattern<triton::TransOp> {
+public:
+  using OpConversionPattern<triton::TransOp>::OpConversionPattern;
 
+  LogicalResult
+  matchAndRewrite(triton::TransOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
 
+class BitcastConverter : public OpConversionPattern<triton::BitcastOp> {
+public:
+  using OpConversionPattern<triton::BitcastOp>::OpConversionPattern;
 
+  LogicalResult
+  matchAndRewrite(triton::BitcastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+class TritonMulhiuiConverter : public OpConversionPattern<triton::MulhiUIOp> {
+public:
+  using OpConversionPattern<triton::MulhiUIOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(triton::MulhiUIOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
+
+class TritonPreciseSqrtConverter
+    : public OpConversionPattern<triton::PreciseSqrtOp> {
+public:
+  using OpConversionPattern<triton::PreciseSqrtOp>::OpConversionPattern;
+  LogicalResult
+  matchAndRewrite(triton::PreciseSqrtOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override;
+};
 
 class DeviceAssertConverter : public OpConversionPattern<triton::AssertOp> {
   using OpConversionPattern<triton::AssertOp>::OpConversionPattern;

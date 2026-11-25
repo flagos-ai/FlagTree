@@ -1,11 +1,16 @@
 add_triton_library(TritonToLinalg
         TritonToLinalgPass.cpp
         LoadStoreConverter.cpp
+        FunctionConverter.cpp
+        ArgMinMaxConverter.cpp
         TritonOpConverter.cpp
+        HoistBroadcast.cpp
         BlockPtrAnalysis.cpp
+        UseAnalysis.cpp
         ImplicitPermute.cpp
         DescriptorConverter.cpp
         MarkTensorKindPass.cpp
+        DevicePrintOffsetRewrite.cpp
         DeduplicateDebugNopsPass.cpp
         CanonicalizeDebugLocationsPass.cpp
 
@@ -29,7 +34,6 @@ add_triton_library(TritonToLinalg
   TritonAnalysis
   TritonMemoryAccessAnalysis
   TritonToGraph
-  TritonToLinalgGeneric
   MLIRTritonNPUUtils
   MLIRSCFTransforms
   MLIRLinalgTransforms

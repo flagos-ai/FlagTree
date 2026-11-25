@@ -21,9 +21,6 @@ set(TRITON_DISTRIBUTED_ASCEND_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/Triton-dis
 include_directories(${ASCENDNPU_IR_SRC_DIR}/bishengir/include)
 include_directories(${ASCENDNPU_IR_BINARY_DIR}/bishengir/include) # Tablegen'd files
 
-add_subdirectory(
-  ${PROJECT_SOURCE_DIR}/third_party/flir/lib/Conversion/TritonToLinalgGeneric
-  ${PROJECT_BINARY_DIR}/third_party/flir/lib/Conversion/TritonToLinalgGeneric)
 add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(bin)

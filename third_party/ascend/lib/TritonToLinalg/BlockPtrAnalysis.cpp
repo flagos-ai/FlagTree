@@ -23,7 +23,7 @@
 #include "ascend/include/TritonToLinalg/BlockPtrAnalysis.h"
 #include "ascend/include/TritonControlFlowOpt/ControlFlowRewrite.h"
 #include "ascend/include/TritonToLinalg/TritonToLinalgPass.h"
-#include "triton-shared/Conversion/TritonToLinalgGeneric/DebugUtils.h"
+#include "ascend/include/Utils/DebugUtils.h"
 #include "ascend/include/Utils/Utils.h"
 
 #include "bishengir/Dialect/Annotation/IR/Annotation.h"
