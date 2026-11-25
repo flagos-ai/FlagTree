@@ -44,6 +44,16 @@ def test_compile_cast(source, dest, rounding, pattern):
                                                                        and rounding == "rtne")
 
 
+def test_mp31_and_main_fp8_options_share_one_intrinsic():
+    signature = {"x": "*fp32", "y": "*fp8e4nv", "n": "i32", "BLOCK": "constexpr", "ROUND": "constexpr"}
+    k = compile_musa(_cast, signature, {"BLOCK": 1024, "ROUND": "rtne"},
+                     options={"mp31_vector_arithmetic": True, "fp8_downcast_burst4": True})
+    llir = k.asm["llir"]
+    assert "call <4 x i8> @llvm.musa.f2e4m3.rn.bst4" in llir
+    assert llir.count("declare <4 x i8> @llvm.musa.f2e4m3.rn.bst4(") == 1
+    assert k.asm["mubin"]
+
+
 def test_option_scope():
     _, backend = mthreads_backend()
     off = backend.parse_options({})

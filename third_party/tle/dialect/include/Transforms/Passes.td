@@ -413,8 +413,10 @@ def TritonTleLowerPipeToNvws
   }];
 
   let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::gpu::GPUDialect",
                            "mlir::triton::TritonDialect",
                            "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
                            "mlir::triton::nvws::NVWSDialect"];
 }
 

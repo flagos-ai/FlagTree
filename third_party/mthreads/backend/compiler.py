@@ -841,6 +841,8 @@ class MUSAOptions:
     sqmma_descriptor_abi: str = "pointer"
     # Opt-in: TME transaction issuers must supply warp-uniform inputs.
     tme_issue_warp: bool = False
+    # Retain side effects and input dependencies of unused empty register identities.
+    lower_dead_tied_register_fences: bool = False
     num_warps: int = 4
     num_ctas: int = 1
     num_stages: int = 1
@@ -869,6 +871,11 @@ class MUSAOptions:
     disable_max_ilp_scheduler: bool = False
     disable_sqmma_m_split_preference: bool = False
     enable_fp8_burst2: bool = False
+    fp8_downcast_burst4: bool = False
+    exp2_vector_width: int = 1
+    exp2_native: bool = False
+    fp32_vector_width: int = 1
+    local_max_vector_width: int = 1
     mp31_vector_arithmetic: bool = False
     canonicalize_lane_shuffles: bool = False
     enable_llvm_compat: bool = True
@@ -1049,6 +1056,27 @@ class MUSABackend(BaseBackend):
             raise ValueError("tme_issue_warp must be a bool")
         if opts.get("tme_issue_warp", False) and capability != 31:
             raise ValueError("tme_issue_warp is currently supported only on MP31")
+        exp2_width = opts.get("exp2_vector_width", 1)
+        if isinstance(exp2_width, bool) or not isinstance(exp2_width, int) or exp2_width not in (1, 2, 4):
+            raise ValueError(f"exp2_vector_width must be 1, 2, or 4, got {exp2_width!r}")
+        if type(opts.get("exp2_native", False)) is not bool:
+            raise ValueError("exp2_native must be a bool")
+        if opts.get("exp2_native", False) and exp2_width == 1:
+            raise ValueError("exp2_native requires exp2_vector_width 2 or 4")
+        fp32_width = opts.get("fp32_vector_width", 1)
+        if type(fp32_width) is not int or fp32_width not in (1, 4):
+            raise ValueError("fp32_vector_width must be 1 or 4")
+        max_width = opts.get("local_max_vector_width", 1)
+        if type(max_width) is not int or max_width not in (1, 4):
+            raise ValueError("local_max_vector_width must be 1 or 4")
+        if max_width == 4 and capability != 31:
+            raise ValueError("local_max_vector_width 4 currently requires MP31")
+        if type(opts.get("fp8_downcast_burst4", False)) is not bool:
+            raise ValueError("fp8_downcast_burst4 must be a bool")
+        if opts.get("fp8_downcast_burst4", False) and capability != 31:
+            raise ValueError("fp8_downcast_burst4 currently requires MP31")
+        if type(opts.get("lower_dead_tied_register_fences", False)) is not bool:
+            raise ValueError("lower_dead_tied_register_fences must be a bool")
         for name in ("mp31_vector_arithmetic", "canonicalize_lane_shuffles"):
             if type(opts.get(name, False)) is not bool:
                 raise ValueError(f"{name} must be a bool")
@@ -1278,6 +1306,13 @@ class MUSABackend(BaseBackend):
                      ir.builder(src.context).get_int32_attr(int(options.sqmma_descriptor_abi == "native_mp31_sg16")))
         src.set_attr("musa.sqmma_native_shared",
                      ir.builder(src.context).get_int32_attr(int(options.sqmma_descriptor_abi == "native_mp31_shared")))
+        src.set_attr("musa.exp2_vector_width", ir.builder(src.context).get_int32_attr(options.exp2_vector_width))
+        src.set_attr("musa.exp2_native", ir.builder(src.context).get_int32_attr(int(options.exp2_native)))
+        src.set_attr("musa.fp8_downcast_burst4",
+                     ir.builder(src.context).get_int32_attr(int(options.fp8_downcast_burst4)))
+        src.set_attr("musa.fp32_vector_width", ir.builder(src.context).get_int32_attr(options.fp32_vector_width))
+        src.set_attr("musa.local_max_vector_width",
+                     ir.builder(src.context).get_int32_attr(options.local_max_vector_width))
         mod = src
         total_num_warps = src.get_int_attr("ttg.total-num-warps")
         launch_num_warps = total_num_warps if total_num_warps is not None else options.num_warps
@@ -1329,6 +1364,8 @@ class MUSABackend(BaseBackend):
                 llvm.link_extern_libs(llvm_mod, printf_paths, force_inline=False)
 
         MUSABackend._optimize_llir_module(llvm_mod, metadata, capability)
+        metadata["readonly_register_fence_count"] = (mthreads.lower_dead_tied_register_fences(llvm_mod)
+                                                     if options.lower_dead_tied_register_fences else 0)
         if options.canonicalize_lane_shuffles:
             metadata["canonicalized_lane_shuffle_count"] = mthreads.canonicalize_lane_shuffles(llvm_mod)
         if options.mp31_vector_arithmetic:
