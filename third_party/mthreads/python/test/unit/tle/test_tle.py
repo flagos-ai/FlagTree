@@ -38,6 +38,7 @@ def test_tle_language_import_exports_load_signature():
         "alias_offset_bytes",
         "nv_mma_shared_layout",
         "alignment_bytes",
+        "sharding",
         "_semantic",
     ]
     copy_parameters = inspect.signature(tle.gpu.copy).parameters

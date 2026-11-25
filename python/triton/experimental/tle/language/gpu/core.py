@@ -358,6 +358,101 @@ def memory_space(input, space, _builder=None, _semantic: TLESemantic | None = No
     return input
 
 
+# Canonical cluster-dimension tokens understood by the allocation/pointer
+# lowering. Logical mesh axes are mapped onto these by position, so a mesh may
+# spell its cluster axes however it likes (cluster_m, block_cluster, ...).
+_CLUSTER_AXIS_TOKENS = ("cluster_x", "cluster_y", "cluster_z")
+
+# Backends whose lowering consumes ttg.local_alloc.mesh_share / mesh_axis.
+# Accepting the placement anywhere else would keep the CTA-private allocation
+# while reporting cluster sharing, which is unsafe, so it is rejected instead.
+_SHARDING_BACKENDS = ("enflame", )
+
+
+def _require_sharding_backend():
+    """Reject cluster placement on backends that ignore the placement attrs."""
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+    if FLAGTREE_BACKEND not in _SHARDING_BACKENDS:
+        raise ValueError("tle.gpu.alloc sharding requires a backend that lowers "
+                         "ttg.local_alloc.mesh_share/mesh_axis "
+                         f"(supported: {list(_SHARDING_BACKENDS)}), got backend {FLAGTREE_BACKEND!r}")
+
+
+def _mesh_cluster_axes(mesh):
+    """Return the mesh's cluster-scope axes as ``(name, size)`` pairs.
+
+    Mirrors ``_mesh_to_cluster_dims``: explicit cluster axes win, then block
+    axes, then the whole launch shape.
+    """
+    launch = list(zip(mesh.launch_dim_names, mesh.launch_shape))
+    for marker in ("cluster", "block"):
+        axes = [item for item in launch if marker in item[0]]
+        if axes:
+            return axes
+    return launch
+
+
+def _resolve_sharding_placement(sharding, storage, _semantic, *, split_ranks=None):
+    """Map a ``tle.sharding(...)`` spec to this buffer's cluster placement.
+
+    Returns the canonical cluster-dimension token (``cluster_x`` /
+    ``cluster_y`` / ``cluster_z``) that indexes the physical replicas, or
+    ``None`` when the spec declares no split axis (a single copy shared by the
+    whole cluster).
+
+    The split axis is resolved from the mesh topology instead of its spelling:
+    any cluster-scope mesh axis is accepted and mapped onto a canonical cluster
+    dimension by position. A 3D allocation carries an extra leading
+    pipeline-stage dimension, so its split spec describes the payload tile;
+    ``split_ranks`` therefore accepts both the payload and the storage rank.
+
+    Raises:
+        ValueError: when the spec is partial, splits along more than one axis,
+            does not match the declared ranks, names an axis outside the
+            mesh's cluster scope, or is used for a non-SMEM allocation.
+    """
+    if storage is not tle.smem:
+        raise ValueError("sharding is only supported for tle.gpu.smem allocations")
+
+    split = getattr(sharding, "split", None)
+    partial = getattr(sharding, "partial", None)
+    if split is None or partial is None:
+        raise TypeError(f"sharding must be a tle.sharding(...) spec, got {type(sharding).__name__}")
+    if partial:
+        raise ValueError(f"alloc sharding cannot be partial, got {list(partial)}")
+
+    if split and split_ranks is not None and len(split) not in split_ranks:
+        raise ValueError(f"alloc sharding splits {len(split)} tensor dims, "
+                         f"but the buffer contract expects one of {sorted(split_ranks)}")
+
+    axes = {axis for dim_axes in split for axis in dim_axes}
+    if len(axes) > 1:
+        raise ValueError(f"alloc sharding supports at most one split axis, got {sorted(axes)}")
+    axis = next(iter(axes), None)
+
+    mesh = getattr(sharding, "mesh", None)
+    canonical_axis = None
+    if axis is not None:
+        if mesh is None:
+            raise TypeError("alloc sharding requires a mesh to resolve the split axis")
+        cluster_axes = [name for name, _ in _mesh_cluster_axes(mesh)]
+        if axis not in cluster_axes:
+            raise ValueError(f"alloc sharding split axis {axis!r} is not a cluster-scope axis of the mesh; "
+                             f"cluster axes are {cluster_axes}")
+        index = cluster_axes.index(axis)
+        if index >= len(_CLUSTER_AXIS_TOKENS):
+            raise ValueError(f"mesh exposes {len(cluster_axes)} cluster axes; only "
+                             f"{len(_CLUSTER_AXIS_TOKENS)} are supported")
+        canonical_axis = _CLUSTER_AXIS_TOKENS[index]
+
+    # Make the launch cluster dimensions available even when the kernel never
+    # calls tle.remote(..., scope=mesh). Imported lazily to avoid a module cycle.
+    if mesh is not None and _semantic is not None:
+        from ..distributed import _apply_mesh_cluster_launch
+        _apply_mesh_cluster_launch(mesh, _semantic)
+    return canonical_axis
+
+
 @tl.builtin
 def alloc(
     shape: tuple,
@@ -369,6 +464,7 @@ def alloc(
     alias_offset_bytes: int = 0,
     nv_mma_shared_layout=True,
     alignment_bytes: Optional[int] = None,
+    sharding=None,
     _semantic: TLESemantic | None = None,
 ) -> tle.buffered_tensor:
     """
@@ -403,6 +499,25 @@ def alloc(
         alignment_bytes: Additional power-of-two alignment for a new Shared
             allocation (for example, a byte arena containing aligned aliases).
             Does not weaken the layout alignment. Not valid for alias views.
+        sharding: Optional ``tle.sharding(...)`` spec declaring the cluster
+            placement of this buffer:
+              * one split axis  -> cluster-shared, one replica per coordinate on
+                that axis (records the low-level ``mesh_axis`` attribute);
+              * no split axis   -> cluster-shared, a single replica reused by the
+                whole cluster;
+              * omitted         -> CTA-private, one replica per CTA.
+            The split axis is resolved from the mesh topology, so any
+            cluster-scope axis name (``cluster_x``, ``cluster_m``,
+            ``block_cluster``, ...) is accepted and mapped onto the canonical
+            cluster dimension. ``split`` describes the logical payload tile: a
+            rank-3 allocation with a leading pipeline-stage dimension accepts
+            either the payload rank or the storage rank, and any other rank is
+            rejected. Partial specs and specs splitting more than one axis are
+            rejected. Only backends whose lowering consumes
+            ``ttg.local_alloc.mesh_share`` / ``mesh_axis`` support this
+            (currently ``enflame``); elsewhere the placement is rejected rather
+            than silently kept CTA-private. ``alias`` and ``init_value`` are
+            not supported with ``sharding``.
         _semantic: Semantic analyzer (internal use)
 
     Returns:
@@ -494,6 +609,27 @@ def alloc(
             _semantic.builder, unwrapped_shape))
         if use_mthreads_buffer:
             mthreads_buffer.validate_shape(unwrapped_shape)
+        # Normalize and validate the cluster placement before dispatching to a
+        # storage implementation, so every path either honors the spec or
+        # reports that it cannot.
+        sharding = tl._unwrap_if_constexpr(sharding)
+        sharding_axis = None
+        if sharding is not None:
+            _require_sharding_backend()
+            if tle_semantic.COMMON_IR_ENABLED:
+                raise ValueError("tle.gpu.alloc sharding is not supported on the CommonIR path")
+            if use_mthreads_buffer:
+                raise ValueError("tle.gpu.alloc sharding is not supported with mthreads buffers")
+            if alias is not None:
+                raise ValueError("tle.gpu.alloc sharding is not supported on alias views")
+            if init_value is not None:
+                raise ValueError("tle.gpu.alloc sharding is not supported with init_value")
+            # A rank-3 allocation carries a leading pipeline-stage dimension and
+            # its split spec describes the payload tile, so accept both ranks.
+            split_ranks = {len(unwrapped_shape)}
+            if len(unwrapped_shape) == 3:
+                split_ranks.add(len(unwrapped_shape) - 1)
+            sharding_axis = _resolve_sharding_placement(sharding, storage, _semantic, split_ranks=split_ranks)
         # A plain linear MemDesc describes a physical arena, not a logical
         # matrix. Its byte extent need not fit a ranked register tensor.
         physical_buffer = (len(unwrapped_shape) == 1 and not nv_mma_shared_layout) or (isinstance(
@@ -639,6 +775,18 @@ def alloc(
                 mthreads_wgmma.mark_auto_shared_layout(_semantic.builder, tensor_handle)
             if logical_candidate:
                 _semantic.builder.mark_logical_alloc_candidate(tensor_handle, unwrapped_shape, logical_non_power_axis)
+            # Cluster placement of this buffer. Three states, all expressed through
+            # ttg.local_alloc.mesh_share / mesh_axis:
+            #   sharding with one split axis -> mesh_share, mesh_axis=<that axis>
+            #                                   (one replica per axis coordinate)
+            #   sharding with no split axis  -> mesh_share only
+            #                                   (one replica for the whole cluster)
+            #   no sharding                  -> CTA-private (one replica per CTA)
+            if sharding is not None:
+                tensor_handle.set_attr("ttg.local_alloc.mesh_share", _semantic.builder.get_bool_attr(True))
+                if sharding_axis is not None:
+                    tensor_handle.set_attr("ttg.local_alloc.mesh_axis",
+                                           _semantic.builder.get_string_attr(sharding_axis))
         else:
             raise ValueError(f"Storage type {storage} not yet supported")
 

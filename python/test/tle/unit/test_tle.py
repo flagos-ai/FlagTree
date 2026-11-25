@@ -518,6 +518,15 @@ class TestBufferedTensor:
         def __str__(self):
             return "tensor<4xi32>"
 
+    class _FakeHandle:
+        """Allocation handle that records the attributes alloc() stamps on it."""
+
+        def __init__(self):
+            self.attrs = {}
+
+        def set_attr(self, name, value):
+            self.attrs[name] = value
+
     class _FakeBuilder:
 
         def __init__(self):
@@ -528,12 +537,25 @@ class TestBufferedTensor:
             self.pipe_create_args = None
             self.tma_copy_args = None
             self.pipe_ops = []
+            self.local_alloc_args = None
+            self.local_alloc_handle = None
 
         def get_half_ty(self):
             return "fp16"
 
         def get_int64_ty(self):
             return "i64"
+
+        def create_local_alloc(self, shape, element_ty, layout):
+            self.local_alloc_args = (list(shape), element_ty, layout)
+            self.local_alloc_handle = TestBufferedTensor._FakeHandle()
+            return self.local_alloc_handle
+
+        def get_bool_attr(self, value):
+            return ("bool", bool(value))
+
+        def get_string_attr(self, value):
+            return ("str", str(value))
 
         def make_swizzled_shared_encoding_attr(self, vector_size, per_phase, max_phase, order, ctas_per_cga,
                                                cta_split_num, cta_order):
@@ -751,6 +773,164 @@ class TestBufferedTensor:
 
         with pytest.raises(ValueError, match=message):
             buffer.subslice(offsets, shape, _semantic=semantic)
+
+
+class TestAllocSharding:
+    """alloc(sharding=...) turns a tle.sharding spec into cluster placement attrs."""
+
+    MESH = tle.device_mesh({"block_cluster": [("cluster_x", 2), ("cluster_y", 3)]})
+
+    @pytest.fixture(autouse=True)
+    def _enflame_backend(self, monkeypatch):
+        # Cluster placement is gated to backends whose lowering consumes the
+        # placement attributes; the default build does not.
+        import triton._flagtree_backend as flagtree_backend
+        monkeypatch.setattr(flagtree_backend, "FLAGTREE_BACKEND", "enflame")
+
+    def _alloc(self, sharding=None, shape=(4, 16), init_value=None):
+        semantic = TestBufferedTensor._FakeSemantic()
+        buffer = tle.gpu.alloc(
+            list(shape),
+            dtype=tl.float16,
+            layout=None,
+            scope=tle.gpu.smem,
+            nv_mma_shared_layout=False,
+            init_value=init_value,
+            sharding=sharding,
+            _semantic=semantic,
+        )
+        return buffer, semantic.builder.local_alloc_handle
+
+    def test_split_axis_records_mesh_share_and_axis(self):
+        buffer, handle = self._alloc(tle.sharding(self.MESH, split=(("cluster_y", ), [])))
+
+        assert isinstance(buffer, tle.gpu.buffered_tensor)
+        assert buffer.shape == [4, 16]
+        assert handle.attrs["ttg.local_alloc.mesh_share"] == ("bool", True)
+        assert handle.attrs["ttg.local_alloc.mesh_axis"] == ("str", "cluster_y")
+
+    def test_no_split_axis_records_single_shared_copy(self):
+        _, handle = self._alloc(tle.sharding(self.MESH))
+
+        assert handle.attrs["ttg.local_alloc.mesh_share"] == ("bool", True)
+        assert "ttg.local_alloc.mesh_axis" not in handle.attrs
+
+    def test_without_sharding_keeps_cta_private(self):
+        _, handle = self._alloc()
+
+        assert handle.attrs == {}
+
+    def test_sharding_is_registered_as_builtin(self):
+        # The JIT dependency finder rejects plain Python callables referenced
+        # from a kernel, so tle.sharding must carry the builtin flag.
+        assert getattr(tle.sharding, "__triton_builtin__", False)
+
+    def test_sharding_accepts_constexpr_mesh_and_language_tuple(self):
+        # Inside a kernel the mesh is a constexpr and tuple literals are
+        # language.tuple, so sharding() has to normalize both.
+        split = tl.tuple([tl.tuple([tl.constexpr("cluster_y")]), tl.tuple([])])
+        spec = tle.sharding(tl.constexpr(self.MESH), split=split)
+
+        _, handle = self._alloc(spec)
+
+        assert handle.attrs["ttg.local_alloc.mesh_axis"] == ("str", "cluster_y")
+
+    def test_non_canonical_cluster_axis_name_is_canonicalized(self):
+        # The axis is resolved from the mesh topology, not from its spelling.
+        mesh = tle.device_mesh({"block_cluster": [("cluster_m", 2)]})
+
+        _, handle = self._alloc(tle.sharding(mesh, split=(("cluster_m", ), [])))
+
+        assert handle.attrs["ttg.local_alloc.mesh_axis"] == ("str", "cluster_x")
+
+    def test_cluster_axis_position_selects_canonical_token(self):
+        _, handle = self._alloc(tle.sharding(self.MESH, split=(("cluster_x", ), [])))
+
+        assert handle.attrs["ttg.local_alloc.mesh_axis"] == ("str", "cluster_x")
+
+    def test_rejects_partial(self):
+        with pytest.raises(RuntimeError, match="cannot be partial"):
+            self._alloc(tle.sharding(self.MESH, partial=["cluster_x"]))
+
+    def test_rejects_multiple_split_axes(self):
+        with pytest.raises(RuntimeError, match="at most one split axis"):
+            self._alloc(tle.sharding(self.MESH, split=(("cluster_x", "cluster_y"), [])))
+
+    def test_rejects_non_cluster_axis(self):
+        # A node-level axis is a real mesh axis but not part of the cluster.
+        mesh = tle.device_mesh({"node": [("node_x", 2)], "block_cluster": [("cluster_x", 2)]})
+
+        with pytest.raises(RuntimeError, match="not a cluster-scope axis"):
+            self._alloc(tle.sharding(mesh, split=(("node_x", ), [])))
+
+    def test_rejects_split_rank_mismatch(self):
+        with pytest.raises(RuntimeError, match="splits 1 tensor dims"):
+            self._alloc(tle.sharding(self.MESH, split=(("cluster_y", ), )))
+
+    def test_staged_buffer_accepts_payload_rank_split(self):
+        # A 3D allocation carries a stage dim; its split spec describes the
+        # (M, N) payload tile.
+        buffer, handle = self._alloc(tle.sharding(self.MESH, split=(("cluster_y", ), [])), shape=(2, 4, 16))
+
+        assert buffer.shape == [2, 4, 16]
+        assert handle.attrs["ttg.local_alloc.mesh_axis"] == ("str", "cluster_y")
+
+    def test_rejects_unsupported_backend(self, monkeypatch):
+        import triton._flagtree_backend as flagtree_backend
+        monkeypatch.setattr(flagtree_backend, "FLAGTREE_BACKEND", "nvidia")
+
+        with pytest.raises(RuntimeError, match="requires a backend that lowers"):
+            self._alloc(tle.sharding(self.MESH))
+
+    def test_rejects_common_ir_path(self, monkeypatch):
+        from triton.experimental.tle.language.gpu import semantic as tle_semantic
+        monkeypatch.setattr(tle_semantic, "COMMON_IR_ENABLED", True)
+
+        with pytest.raises(RuntimeError, match="CommonIR path"):
+            self._alloc(tle.sharding(self.MESH))
+
+    def test_rejects_mthreads_buffer(self, monkeypatch):
+        from triton.experimental.tle.language.gpu.mthreads import buffer as mthreads_buffer
+        from triton.experimental.tle.language.gpu.mthreads import common as mthreads_common
+        monkeypatch.setattr(mthreads_common, "enabled", lambda: True)
+        monkeypatch.setattr(mthreads_buffer, "needs_non_power_of_two_leading_dim", lambda builder, shape: True)
+        monkeypatch.setattr(mthreads_buffer, "validate_shape", lambda shape: None)
+
+        with pytest.raises(RuntimeError, match="mthreads buffers"):
+            self._alloc(tle.sharding(self.MESH))
+
+    def test_rejects_alias_with_sharding(self):
+        semantic = TestBufferedTensor._FakeSemantic()
+        layout = tle.gpu.swizzled_shared_layout.make_default(2)
+        source = tle.gpu.buffered_tensor("base", tl.float16, [4, 16], tle.gpu.smem, layout, semantic)
+
+        with pytest.raises(RuntimeError, match="alias views"):
+            tle.gpu.alloc(
+                [4, 16],
+                dtype=tl.float16,
+                layout=None,
+                scope=tle.gpu.smem,
+                nv_mma_shared_layout=False,
+                alias=source,
+                sharding=tle.sharding(self.MESH),
+                _semantic=semantic,
+            )
+
+    def test_rejects_init_value_with_sharding(self):
+        with pytest.raises(RuntimeError, match="init_value"):
+            self._alloc(tle.sharding(self.MESH), init_value=object())
+
+    def test_rejects_axis_missing_from_mesh(self):
+        with pytest.raises(ValueError, match="unknown mesh axis"):
+            tle.sharding(self.MESH, split=(("cluster_z", ), []))
+
+    def test_resolver_rejects_non_smem_storage(self):
+        from triton.experimental.tle.language.gpu.core import _resolve_sharding_placement
+
+        spec = tle.sharding(self.MESH, split=(("cluster_y", ), []))
+
+        with pytest.raises(ValueError, match="only supported for tle.gpu.smem"):
+            _resolve_sharding_placement(spec, tle.gpu.tmem, None)
 
 
 class TestCachePolicyFrontend:

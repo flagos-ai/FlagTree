@@ -632,6 +632,22 @@ class ShardedTensor:
     shape: tuple[int, ...] | None = None
 
 
+def _to_python_container(value):
+    """Convert ``language.tuple`` values built inside @triton.jit to Python.
+
+    Tuple/list literals written in a kernel become ``language.tuple`` nodes, and
+    their elements can be constexpr wrappers, so neither plain ``isinstance``
+    checks nor the axis normalizers below can consume them directly.
+    """
+    if isinstance(value, tl.tuple):
+        return [_to_python_container(item) for item in value.values]
+    if isinstance(value, list):
+        return [_to_python_container(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_to_python_container(item) for item in value)
+    return tl._unwrap_if_constexpr(value)
+
+
 def sharding(
     mesh: device_mesh,
     split: Sequence[Any] | None = None,
@@ -643,8 +659,13 @@ def sharding(
     This is annotation metadata today. Communication lowering is added in later
     phases.
     """
+    # Inside a @triton.jit kernel a constexpr parameter carries the mesh, so the
+    # annotation helper has to peel that wrapper before validating.
+    mesh = tl._unwrap_if_constexpr(mesh)
     if not isinstance(mesh, device_mesh):
         raise TypeError(f"mesh must be device_mesh, got {type(mesh).__name__}")
+    split = _to_python_container(split)
+    partial = _to_python_container(partial)
 
     split_specs: list[tuple[str, ...]] = []
     if split is None:
@@ -678,6 +699,14 @@ def sharding(
         partial=tuple(axis for axis in mesh.dim_names if axis in partial_set),
         broadcast=broadcast,
     )
+
+
+# ``sharding`` is also called from inside @triton.jit kernels (for example
+# ``tle.gpu.alloc(..., sharding=tle.sharding(mesh, ...))``). The JIT dependency
+# finder rejects references to plain Python callables, so mark it as a Triton
+# builtin. Only the flag is set: the ``@builtin`` decorator would also demand a
+# ``_semantic`` argument and break the host-side API (Thrive, make_sharded_tensor).
+setattr(sharding, tl.TRITON_BUILTIN, True)
 
 
 def make_sharded_tensor(
