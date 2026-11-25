@@ -825,3 +825,86 @@ def test_higher_order_kernel(device, fresh_triton_cache, capsys):
 Compiling with fn_a
 Compiling with fn_a after modification
 """)
+
+
+def test_file_cache_corrupt_group_returns_none_and_recovers(tmp_path: pathlib.Path, monkeypatch):
+    from triton.runtime.cache import FileCacheManager
+
+    cache_root = tmp_path / "triton_cache"
+    monkeypatch.setattr(triton.knobs.cache, "dir", str(cache_root))
+    mgr = FileCacheManager("corrupt_group_key")
+    grp_path = pathlib.Path(mgr.cache_dir) / "__grp__demo.json"
+
+    for payload in (
+        b"",
+        b'{"child_paths": {"a": ',
+        b"\xff\xfe\x00\x81",
+        b"[]",
+        b"null",
+        b'{"child_paths": [1, 2]}',
+    ):
+        grp_path.write_bytes(payload)
+        assert mgr.get_group("demo.json") is None
+
+    child_path = mgr.put("ok", "demo.txt", binary=False)
+    mgr.put_group("demo.json", {"demo.txt": child_path})
+    assert mgr.get_group("demo.json") == {"demo.txt": child_path}
+
+
+def test_file_cache_put_keeps_parent_dir_and_cleans_temp(tmp_path: pathlib.Path, monkeypatch):
+    from triton.runtime.cache import FileCacheManager
+
+    cache_root = tmp_path / "nested" / "triton_cache"
+    monkeypatch.setattr(triton.knobs.cache, "dir", str(cache_root))
+    mgr = FileCacheManager("cleanup_key")
+
+    out_path = mgr.put("hello", "a.txt", binary=False)
+    assert os.path.exists(out_path)
+    assert os.path.isdir(cache_root)
+    assert [p for p in os.listdir(mgr.cache_dir) if p.startswith("tmp.pid_")] == []
+
+    def fail_replace(_src, _dst):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(OSError, match="simulated replace failure"):
+        mgr.put("bad", "b.txt", binary=False)
+    assert [p for p in os.listdir(mgr.cache_dir) if p.startswith("tmp.pid_")] == []
+
+
+def test_remote_cache_corrupt_group_returns_none_and_recovers(tmp_path: pathlib.Path, monkeypatch):
+    from triton.runtime.cache import RemoteCacheBackend, RemoteCacheManager
+
+    backend_store = {}
+
+    class _MemoryRemoteBackend(RemoteCacheBackend):
+
+        def __init__(self, key: str):
+            self._key = key
+
+        def get(self, filenames):
+            return {f: backend_store[(self._key, f)] for f in filenames if (self._key, f) in backend_store}
+
+        def put(self, filename: str, data: bytes):
+            backend_store[(self._key, filename)] = data
+
+    cache_root = tmp_path / "remote_triton_cache"
+    monkeypatch.setattr(triton.knobs.cache, "dir", str(cache_root))
+    monkeypatch.setattr(triton.knobs.cache, "remote_manager_class", _MemoryRemoteBackend)
+
+    mgr = RemoteCacheManager("remote_corrupt_group_key")
+    for payload in (
+        b"",
+        b'{"child_paths": {"a": ',
+        b"\xff\xfe\x00\x81",
+        b"[]",
+        b"null",
+    ):
+        backend_store[("remote_corrupt_group_key", "__grp__demo.json")] = payload
+        assert mgr.get_group("demo.json") is None
+
+    child_path = mgr.put(b"ok", "demo.txt", binary=True)
+    mgr.put_group("demo.json", {"demo.txt": child_path})
+    res = mgr.get_group("demo.json")
+    assert res is not None and list(res.keys()) == ["demo.txt"]
+    assert pathlib.Path(res["demo.txt"]).read_bytes() == b"ok"

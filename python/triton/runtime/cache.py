@@ -97,11 +97,16 @@ class FileCacheManager(CacheManager):
         if not self.has_file(grp_filename):
             return None
         grp_filepath = self._make_path(grp_filename)
-        with open(grp_filepath) as f:
-            grp_data = json.load(f)
+        try:
+            with open(grp_filepath, encoding="utf-8") as f:
+                grp_data = json.load(f)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if not isinstance(grp_data, dict):
+            return None
         child_paths = grp_data.get("child_paths", None)
         # Invalid group data.
-        if child_paths is None:
+        if not isinstance(child_paths, dict):
             return None
         result = {}
         for c, p in child_paths.items():
@@ -135,12 +140,19 @@ class FileCacheManager(CacheManager):
         temp_path = os.path.join(temp_dir, filename)
 
         mode = "wb" if binary else "w"
-        with open(temp_path, mode) as f:
-            f.write(data)
-        # Replace is guaranteed to be atomic on POSIX systems if it succeeds
-        # so filepath cannot see a partial write
-        os.replace(temp_path, filepath)
-        os.removedirs(temp_dir)
+        try:
+            with open(temp_path, mode) as f:
+                f.write(data)
+            # Replace is guaranteed to be atomic on POSIX systems if it succeeds
+            # so filepath cannot see a partial write
+            os.replace(temp_path, filepath)
+        finally:
+            try:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                os.rmdir(temp_dir)
+            except OSError:
+                pass
         return filepath
 
 
@@ -236,14 +248,19 @@ class RemoteCacheManager(CacheManager):
         grp_filepath = self.get_file(grp_filename)
         if grp_filepath is None:
             return None
-        with open(grp_filepath) as f:
-            grp_data = json.load(f)
+        try:
+            with open(grp_filepath, encoding="utf-8") as f:
+                grp_data = json.load(f)
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if not isinstance(grp_data, dict):
+            return None
         child_paths = grp_data.get("child_paths", None)
 
         result = None
 
         # Found group data.
-        if child_paths is not None:
+        if isinstance(child_paths, list):
             result = {}
             for child_path, data in self._backend.get(child_paths).items():
                 result[child_path] = self._materialize(child_path, data)
