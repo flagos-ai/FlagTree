@@ -5728,15 +5728,14 @@ static DenseSet<Operation *> collectWritebackAddressDefs(FuncOp func) {
   return defs;
 }
 
-// A bound from llvm.assume applies only where the assume executes first.
-// Retain the assumption in the IR so later passes can also use it.
-static void foldProvenSingleTileCounts(FuncOp func, bool writebackOnly) {
-  struct Division {
-    Operation *op;
-    Value width;
-    int64_t maxWidth;
-  };
-  SmallVector<Division> divisions;
+struct SingleTileDivision {
+  Operation *op;
+  Value width;
+  int64_t maxWidth;
+};
+
+static SmallVector<SingleTileDivision> findSingleTileDivisions(FuncOp func) {
+  SmallVector<SingleTileDivision> divisions;
   func.walk([&](Operation *op) {
     auto signedDiv = dyn_cast<arith::DivSIOp>(op);
     auto ceilDiv = dyn_cast<arith::CeilDivSIOp>(op);
@@ -5762,12 +5761,99 @@ static void foldProvenSingleTileCounts(FuncOp func, bool writebackOnly) {
     else if (getConstantIntValue(getAsOpFoldResult(add.getLhs())) == bias)
       divisions.push_back({op, add.getRhs(), maxWidth});
   });
+  return divisions;
+}
+
+// Find tile counts for scalar launch parameters that feed store addresses or
+// masks.
+static SmallVector<SingleTileDivision> findWritebackTileCounts(FuncOp func) {
+  auto divisions = findSingleTileDivisions(func);
+  if (divisions.empty() || !triton::isKernel(func))
+    return {};
+  auto defs = collectWritebackAddressDefs(func);
+  llvm::erase_if(divisions, [&](const SingleTileDivision &division) {
+    auto arg = dyn_cast<BlockArgument>(division.width);
+    return !arg || arg.getOwner() != &func.getBody().front() ||
+           !llvm::any_of(
+               division.op->getResult(0).getUses(), [&](OpOperand &use) {
+                 return use.getOperandNumber() == 1 &&
+                        defs.contains(use.getOwner()) &&
+                        isa<arith::DivSIOp, arith::RemSIOp>(use.getOwner());
+               });
+  });
+  return divisions;
+}
+
+static Value buildSingleTilePredicate(OpBuilder &b, Location loc, Value width,
+                                      int64_t maxWidth) {
+  Value one = arith::ConstantIntOp::create(b, loc, 1, 32);
+  Value upper = arith::ConstantIntOp::create(b, loc, maxWidth, 32);
+  Value above =
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sge, width, one);
+  Value below =
+      arith::CmpIOp::create(b, loc, arith::CmpIPredicate::sle, width, upper);
+  return arith::AndIOp::create(b, loc, above, below);
+}
+
+static void versionWritebackCoordinateArithmetic(FuncOp func) {
+  auto candidates = findWritebackTileCounts(func);
+  if (candidates.size() != 1)
+    return;
+  auto &division = candidates.front();
+  Operation *count = division.op;
+  if (count->getBlock() != &func.getBody().front())
+    return;
+  Operation *first = nullptr;
+  Value dividend;
+  SmallVector<Operation *> users;
+  bool hasQuotient = false, hasRemainder = false;
+  for (OpOperand &use : count->getResult(0).getUses()) {
+    Operation *op = use.getOwner();
+    if (use.getOperandNumber() != 1 || op->getBlock() != count->getBlock() ||
+        !isa<arith::DivSIOp, arith::RemSIOp>(op) ||
+        (dividend && dividend != op->getOperand(0)))
+      return;
+    dividend = op->getOperand(0);
+    if (!first || op->isBeforeInBlock(first))
+      first = op;
+    users.push_back(op);
+    hasQuotient |= isa<arith::DivSIOp>(op);
+    hasRemainder |= isa<arith::RemSIOp>(op);
+  }
+  if (!hasQuotient || !hasRemainder)
+    return;
+  OpBuilder b(first);
+  auto loc = first->getLoc();
+  Value cond =
+      buildSingleTilePredicate(b, loc, division.width, division.maxWidth);
+  auto branch =
+      scf::IfOp::create(b, loc, TypeRange{b.getI32Type(), b.getI32Type()}, cond,
+                        /*withElseRegion=*/true);
+  b.setInsertionPointToStart(&branch.getThenRegion().front());
+  Value zero = arith::ConstantIntOp::create(b, loc, 0, 32);
+  scf::YieldOp::create(b, loc, ValueRange{dividend, zero});
+  b.setInsertionPointToStart(&branch.getElseRegion().front());
+  Value slowCount = b.clone(*count)->getResult(0);
+  Value quotient = arith::DivSIOp::create(b, loc, dividend, slowCount);
+  Value remainder = arith::RemSIOp::create(b, loc, dividend, slowCount);
+  scf::YieldOp::create(b, loc, ValueRange{quotient, remainder});
+  for (Operation *op : users) {
+    op->getResult(0).replaceAllUsesWith(
+        branch.getResult(isa<arith::DivSIOp>(op) ? 0 : 1));
+    op->erase();
+  }
+  count->erase();
+}
+
+// A bound from llvm.assume applies only where the assume executes first.
+static void foldProvenSingleTileCounts(FuncOp func, bool writebackOnly) {
+  auto divisions = findSingleTileDivisions(func);
   if (divisions.empty())
     return;
   DenseSet<Operation *> writebackDefs;
   if (writebackOnly) {
     writebackDefs = collectWritebackAddressDefs(func);
-    llvm::erase_if(divisions, [&](const Division &division) {
+    llvm::erase_if(divisions, [&](const SingleTileDivision &division) {
       return !writebackDefs.contains(division.op);
     });
     if (divisions.empty())
@@ -5810,7 +5896,7 @@ static void foldProvenSingleTileCounts(FuncOp func, bool writebackOnly) {
 
   DominanceInfo dominance(func);
   SmallVector<Operation *> folded;
-  for (const Division &division : divisions) {
+  for (const SingleTileDivision &division : divisions) {
     auto bounds = ConstantIntRanges::maxRange(32);
     auto *lattice =
         solver->lookupState<dataflow::IntegerValueRangeLattice>(division.width);
@@ -6008,6 +6094,7 @@ public:
     if (enhance)
       m.walk([](FuncOp func) {
         foldProvenSingleTileCounts(func, /*writebackOnly=*/true);
+        versionWritebackCoordinateArithmetic(func);
       });
     // The phase extensions consult the real address pattern of loads (see
     // isOrderIndifferentAccess); the analysis is only built when they
