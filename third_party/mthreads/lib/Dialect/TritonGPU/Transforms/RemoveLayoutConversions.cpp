@@ -1,6 +1,8 @@
 #include "TritonMUSACommon/RlcAttrs.h"
+#include "mlir/Analysis/DataFlow/IntegerRangeAnalysis.h"
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Analysis/TopologicalSortUtils.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Dominance.h"
@@ -13,12 +15,14 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/Transforms/FoldUtils.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/TritonGPUInterfaces.h"
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
@@ -27,6 +31,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include <cstdlib>
 #include <deque>
 #include <optional>
 
@@ -61,6 +66,11 @@ constexpr int kCachedLoadCostPerByte = 8;
 constexpr int kCheapMathCostPerByte = 1;
 constexpr int kExpensiveMathCostPerByte = 8;
 constexpr int kInterWarpReduceCost = 8;
+
+static bool tracePhase2Costs() {
+  const char *enabled = std::getenv("FLAGTREE_MUSA_RLC_COST_TRACE");
+  return enabled && StringRef(enabled) == "1";
+}
 
 static bool isExplicitLayoutConversion(Operation *op) {
 #ifdef __TLE__
@@ -1199,6 +1209,11 @@ bool LayoutPropagation::shouldAcceptProposal(const Proposal &proposal) const {
                                         /*useProposal=*/true);
   }
 
+  if (tracePhase2Costs())
+    llvm::errs() << "[rlc-cost] phase2-proposal values=" << proposal.size()
+                 << " cvt_estimate_before=" << beforeCost
+                 << " cvt_estimate_after=" << afterCost
+                 << " passes_cost_gate=" << (afterCost < beforeCost) << '\n';
   return afterCost < beforeCost;
 }
 
@@ -1378,10 +1393,13 @@ bool LayoutPropagation::proposalDecoalescesContiguousStore(
                                             ptrType.getDimSize(order.front()));
       if (rawContig <= currentContig)
         continue;
-      // If the alignment backs the wider width the store still vectorizes; only
-      // a width past the alignment decoalesces it.
-      unsigned align = axisInfoAnalysis->getAlignment(storeOp.getPtr());
-      if (int64_t(targetContig) > int64_t(align))
+      // The store lowering needs both aligned addresses and a uniform
+      // predicate across the vector. A wider register run cannot bypass
+      // either limit.
+      unsigned width = axisInfoAnalysis->getAlignment(storeOp.getPtr());
+      if (Value mask = storeOp.getMask())
+        width = std::min(width, axisInfoAnalysis->getMaskAlignment(mask));
+      if (targetContig > width)
         return true;
     }
   }
@@ -2144,12 +2162,156 @@ static bool widensPastVectorAccess(ModuleAxisInfoAnalysis *axisInfo, Value ptr,
   return contiguity > current;
 }
 
+// Packing a pair into each lane reduces consecutive lane coverage if
+// alignment or the predicate still forces two separate stores.
+static bool losesCoalescedScalarStorePairs(StoreOp store, Attribute encoding,
+                                           ModuleAxisInfoAnalysis &axisInfo) {
+  auto module = store->getParentOfType<ModuleOp>();
+  auto target = module->getAttrOfType<StringAttr>("ttg.target");
+  if (!target || target.getValue() != "musa:31")
+    return false;
+
+  Value ptr = store.getPtr();
+  auto type = dyn_cast<RankedTensorType>(ptr.getType());
+  if (!type || !isa_and_nonnull<BlockedEncodingAttr>(type.getEncoding()) ||
+      !isa_and_nonnull<BlockedEncodingAttr>(encoding))
+    return false;
+  auto proposed = type.cloneWithEncoding(encoding);
+  auto order = getOrderForMemory(type);
+  auto proposedOrder = getOrderForMemory(proposed);
+  if (order.empty() || proposedOrder.empty() ||
+      order.front() != proposedOrder.front() ||
+      getContigAlongMemoryOrder(type) != 1 ||
+      getContigAlongMemoryOrder(proposed) != 2)
+    return false;
+
+  unsigned axis = order.front();
+  const auto *pointerFacts = axisInfo.getAxisInfo(ptr);
+  if (!pointerFacts || pointerFacts->getContiguity(axis) < 2 ||
+      getThreadsPerWarp(proposed)[axis] >= getThreadsPerWarp(type)[axis])
+    return false;
+
+  // The memory axis stays the same, so reuse the logical alignment and
+  // predicate facts. The old layout's per-thread contiguity would cap the
+  // projected vector at one even for a fully aligned pair.
+  unsigned width = axisInfo.getAlignment(ptr);
+  if (Value mask = store.getMask())
+    width = std::min(width, axisInfo.getMaskAlignment(mask));
+  return width < 2;
+}
+
 static bool preservesStoreMemoryAccess(StoreOp storeOp,
                                        Attribute targetEncoding) {
   return preservesWritebackMemoryAccess(
       dyn_cast<RankedTensorType>(storeOp.getPtr().getType()),
       dyn_cast<RankedTensorType>(storeOp.getValue().getType()), targetEncoding,
       /*allowNarrowerContiguity=*/false);
+}
+
+// Count logical runs per warp issue. Non-contiguous axes remain separate
+// because AxisInfo alone cannot give their byte strides. Runtime predicates
+// are left unapplied; replay the real addresses and masks offline for sectors.
+static void traceStoreLayout(StoreOp store, Attribute encoding,
+                             ModuleAxisInfoAnalysis &axisInfo, StringRef side) {
+  Value ptr = store.getPtr();
+  auto type = dyn_cast<RankedTensorType>(ptr.getType());
+  auto facts = axisInfo.getAxisInfo(ptr);
+  if (!type || !facts || !isa_and_nonnull<BlockedEncodingAttr>(encoding))
+    return;
+  auto proposed = type.cloneWithEncoding(encoding);
+  auto linear = toLinearEncoding(proposed);
+  unsigned axis = linear.getOrder().front();
+  // The vector axis can change when all per-thread contiguities tie. Use
+  // the same logical address axis for comparing runs in both layouts.
+  unsigned runAxis = 0;
+  for (unsigned d = 1; d < type.getRank(); ++d)
+    if (facts->getContiguity(d) > facts->getContiguity(runAxis))
+      runAxis = d;
+  unsigned bits = getPointeeBitWidth(proposed);
+  if (!bits || facts->getContiguity(runAxis) < 2)
+    return;
+
+  unsigned alignment = std::max<int64_t>(1, facts->getDivisibility(axis) /
+                                                std::max(1u, bits / 8));
+  Value mask = store.getMask();
+  unsigned maskAlignment = 1;
+  if (mask) {
+    auto maskType = dyn_cast<RankedTensorType>(mask.getType());
+    if (auto maskFacts = axisInfo.getAxisInfo(mask)) {
+      if (maskType) {
+        auto maskLinear =
+            toLinearEncoding(maskType.cloneWithEncoding(encoding));
+        maskAlignment = std::max<int64_t>(
+            1, maskFacts->getConstancy(maskLinear.getOrder().front()));
+      }
+    }
+  }
+
+  auto layout = toLinearLayout(proposed);
+  auto name = [&](StringRef key) {
+    return StringAttr::get(type.getContext(), key);
+  };
+  auto reg = name("register"), lane = name("lane"), warp = name("warp"),
+       block = name("block");
+  unsigned regs = layout.getInDimSize(reg);
+  unsigned lanes = layout.getInDimSize(lane);
+  unsigned warps = layout.getInDimSize(warp);
+  if (layout.getInDimSize(block) != 1 || uint64_t(regs) * lanes * warps > 4096)
+    return;
+  unsigned vec = std::min({alignment, unsigned(facts->getContiguity(axis)),
+                           linear.getContigPerThread()[axis], regs,
+                           std::max(1u, 128 / bits)});
+  if (mask)
+    vec = std::min(vec, maskAlignment);
+  while (vec > 1 && regs % vec)
+    vec /= 2;
+
+  auto free = layout.getFreeVariableMasks();
+  unsigned slots = 0, runs = 0;
+  for (unsigned w = 0; w < warps; ++w) {
+    if (w & free.lookup(warp))
+      continue;
+    for (unsigned r = 0; r < regs; r += vec) {
+      if (r & free.lookup(reg))
+        continue;
+      SmallVector<SmallVector<int32_t>> points;
+      for (unsigned l = 0; l < lanes; ++l) {
+        if (l & free.lookup(lane))
+          continue;
+        for (unsigned i = 0; i < vec; ++i) {
+          auto coords =
+              layout.apply({{reg, r + i}, {lane, l}, {warp, w}, {block, 0}});
+          SmallVector<int32_t> point;
+          for (unsigned d = 0; d < coords.size(); ++d)
+            if (d != runAxis)
+              point.push_back(coords[d].second);
+          point.push_back(coords[runAxis].second);
+          points.push_back(std::move(point));
+        }
+      }
+      ++slots;
+      llvm::sort(points, [](const auto &a, const auto &b) {
+        return std::lexicographical_compare(a.begin(), a.end(), b.begin(),
+                                            b.end());
+      });
+      for (unsigned i = 0; i < points.size(); ++i) {
+        if (i && points[i] == points[i - 1])
+          continue;
+        if (!i ||
+            ArrayRef(points[i]).drop_back() !=
+                ArrayRef(points[i - 1]).drop_back() ||
+            points[i].back() != points[i - 1].back() + 1)
+          ++runs;
+      }
+    }
+  }
+  llvm::errs() << "[rlc-cost] phase2-store side=" << side << " bits=" << bits
+               << " vec_axis=" << axis << " run_axis=" << runAxis
+               << " vec_estimate=" << vec << " alignment=" << alignment
+               << " mask_alignment=" << (mask ? maskAlignment : 0)
+               << " tile_slots=" << slots << " tile_runs=" << runs
+               << " loop_weight=" << getOpLoopFrequencyWeight(store)
+               << " loc=" << store.getLoc() << " layout=" << encoding << '\n';
 }
 
 // Number of threads that own at least one element of `type`, i.e. the store's
@@ -2389,7 +2551,19 @@ bool LayoutPropagation::solveSmallComponents() {
       return collectStoreAddressOperand(proposal, operand, encoding);
     };
     if (auto storeOp = dyn_cast<StoreOp>(user)) {
-      if (!preservesStoreMemoryAccess(storeOp, encoding) ||
+      if (!preservesStoreMemoryAccess(storeOp, encoding))
+        return false;
+      bool losesScalarPairs =
+          axisInfoAnalysis &&
+          losesCoalescedScalarStorePairs(storeOp, encoding, *axisInfoAnalysis);
+      if (axisInfoAnalysis && tracePhase2Costs()) {
+        traceStoreLayout(storeOp, getTensorEncoding(storeOp.getPtr()),
+                         *axisInfoAnalysis, "current");
+        traceStoreLayout(storeOp, encoding, *axisInfoAnalysis, "proposed");
+        llvm::errs() << "[rlc-cost] phase2-store-guard scalar_pair_veto="
+                     << losesScalarPairs << " loc=" << storeOp.getLoc() << '\n';
+      }
+      if (losesScalarPairs ||
           widensPastVectorAccess(
               axisInfoAnalysis, storeOp.getPtr(), storeOp.getMask(),
               getElementTypeOrSelf(storeOp.getValue().getType()), encoding))
@@ -5534,206 +5708,149 @@ static bool packReductionWritebackRows(FuncOp funcOp) {
   return true;
 }
 
-// The matched coordinates must both participate in each store's address or
-// mask through a bounded, side-effect-free slice in the same block. Unknown
-// data flow leaves the existing writeback unchanged.
-static bool coordinatesReachDualWriteback(Value row, Value column,
-                                          ArrayRef<StoreOp> stores,
-                                          Block *block) {
-  constexpr unsigned maxSliceOperations = 256;
-  for (StoreOp store : stores) {
-    SmallVector<Value> pending{store.getPtr(), store.getMask()};
-    llvm::SmallPtrSet<Operation *, 32> visited;
-    bool foundRow = false, foundColumn = false;
-    while (!pending.empty()) {
-      Value value = pending.pop_back_val();
-      if (!value)
-        continue;
-      if (value == row) {
-        foundRow = true;
-        continue;
-      }
-      if (value == column) {
-        foundColumn = true;
-        continue;
-      }
-      if (auto arg = dyn_cast<BlockArgument>(value)) {
-        if (arg.getOwner() != block)
-          return false;
-        continue;
-      }
-      Operation *def = value.getDefiningOp();
-      if (!def || def->getBlock() != block || def->getNumRegions() != 0 ||
-          !isMemoryEffectFree(def))
-        return false;
-      if (!visited.insert(def).second)
-        continue;
-      if (visited.size() > maxSliceOperations)
-        return false;
-      for (Value operand : def->getOperands())
-        pending.push_back(operand);
-    }
-    if (!foundRow || !foundColumn)
-      return false;
+static DenseSet<Operation *> collectWritebackAddressDefs(FuncOp func) {
+  SmallVector<Value> pending;
+  func.walk([&](StoreOp store) {
+    if (!isBlockedOrBlockedSliceEncoding(getTensorEncoding(store.getPtr())))
+      return;
+    pending.push_back(store.getPtr());
+    if (Value mask = store.getMask())
+      pending.push_back(mask);
+  });
+  DenseSet<Operation *> defs;
+  while (!pending.empty()) {
+    Operation *def = pending.pop_back_val().getDefiningOp();
+    if (!def || def->getNumRegions() || !isMemoryEffectFree(def) ||
+        isExplicitLayoutConversion(def) || !defs.insert(def).second)
+      continue;
+    pending.append(def->operand_begin(), def->operand_end());
   }
-  return true;
+  return defs;
 }
 
-// Retarget only a matched dual writeback with a launch-time bounded-width
-// proof. Unproved shapes retain the existing layout and writeback path.
-static void specializeBoundedDualWriteback(FuncOp funcOp) {
-  ModuleOp module = funcOp->getParentOfType<ModuleOp>();
-  auto target = module->getAttrOfType<StringAttr>("ttg.target");
-  if (!target || target.getValue() != "musa:31" ||
-      !funcOp.getBody().hasOneBlock())
-    return;
-  Block &block = funcOp.getBody().front();
-  SmallVector<StoreOp> stores;
-  Operation *lastLoad = nullptr;
-  for (Operation &op : block) {
-    if (isa<ConvertLayoutOp, scf::IfOp, scf::ForOp, scf::WhileOp>(&op))
-      return;
-    if (isa<LoadOp>(&op))
-      lastLoad = &op;
-    if (auto store = dyn_cast<StoreOp>(&op))
-      stores.push_back(store);
-  }
-  if (!lastLoad || stores.size() != 2 || !stores[0].getMask() ||
-      stores[0].getMask() != stores[1].getMask())
-    return;
-  bool hasFloat = false, hasIndex = false;
-  Attribute encoding;
-  for (StoreOp store : stores) {
-    auto ptrTy = dyn_cast<RankedTensorType>(store.getPtr().getType());
-    auto valTy = dyn_cast<RankedTensorType>(store.getValue().getType());
-    if (!ptrTy || !valTy || ptrTy.getRank() != 2 ||
-        !isa<BlockedEncodingAttr>(ptrTy.getEncoding()) ||
-        getContigAlongMemoryOrder(ptrTy) != 2)
-      return;
-    if (encoding && encoding != ptrTy.getEncoding())
-      return;
-    encoding = ptrTy.getEncoding();
-    Type elem = valTy.getElementType();
-    hasFloat |= elem.isF16() || elem.isBF16() || elem.isF32();
-    hasIndex |= elem.isInteger(64);
-  }
-  if (!hasFloat || !hasIndex)
-    return;
-
-  auto constantInt = [](Value value) -> std::optional<int64_t> {
-    auto c = value.getDefiningOp<arith::ConstantOp>();
-    if (!c)
-      return std::nullopt;
-    auto attr = dyn_cast<IntegerAttr>(c.getValue());
-    if (!attr)
-      return std::nullopt;
-    return attr.getInt();
+// A bound from llvm.assume applies only where the assume executes first.
+// Retain the assumption in the IR so later passes can also use it.
+static void foldProvenSingleTileCounts(FuncOp func, bool writebackOnly) {
+  struct Division {
+    Operation *op;
+    Value width;
+    int64_t maxWidth;
   };
-
-  // Only a pair with a matching launch proof can participate in ambiguity.
-  // Other div/rem pairs must remain intact without hiding a proven pair.
-  auto provedDivisor = [&](BlockArgument widthArg,
-                           int64_t tile) -> std::optional<int64_t> {
-    auto proofBound = funcOp.getArgAttrOfType<IntegerAttr>(
-        widthArg.getArgNumber(), "musa.rlc_positive_even_block_upper_bound");
-    auto proofDivisor = funcOp.getArgAttrOfType<IntegerAttr>(
-        widthArg.getArgNumber(), "musa.rlc_positive_even_divisor");
-    if (!proofBound || proofBound.getInt() != tile || !proofDivisor)
-      return std::nullopt;
-    int64_t divisor = proofDivisor.getInt();
-    if (divisor != 2 && divisor != 4 && divisor != 8 && divisor != 16)
-      return std::nullopt;
-    auto existingDivisor = funcOp.getArgAttrOfType<IntegerAttr>(
-        widthArg.getArgNumber(), "tt.divisibility");
-    if (existingDivisor) {
-      int64_t prior = existingDivisor.getInt();
-      if (prior <= 0 || (prior % divisor != 0 && divisor % prior != 0))
-        return std::nullopt;
-      if (prior > divisor)
-        divisor = prior;
+  SmallVector<Division> divisions;
+  func.walk([&](Operation *op) {
+    auto signedDiv = dyn_cast<arith::DivSIOp>(op);
+    auto ceilDiv = dyn_cast<arith::CeilDivSIOp>(op);
+    if ((!signedDiv && !ceilDiv) || !op->getResult(0).getType().isInteger(32))
+      return;
+    auto tile = getConstantIntValue(getAsOpFoldResult(op->getOperand(1)));
+    if (!tile || *tile <= 1)
+      return;
+    Value numerator = op->getOperand(0);
+    if (ceilDiv) {
+      divisions.push_back({op, numerator, *tile});
+      return;
     }
-    return divisor;
-  };
+    // Triton also emits the expanded form of ceiling division. Its add
+    // must stay within the signed type before the identity holds.
+    auto add = numerator.getDefiningOp<arith::AddIOp>();
+    if (!add)
+      return;
+    int64_t bias = *tile - 1;
+    int64_t maxWidth = std::min(*tile, int64_t{INT32_MAX} - bias);
+    if (getConstantIntValue(getAsOpFoldResult(add.getRhs())) == bias)
+      divisions.push_back({op, add.getLhs(), maxWidth});
+    else if (getConstantIntValue(getAsOpFoldResult(add.getLhs())) == bias)
+      divisions.push_back({op, add.getRhs(), maxWidth});
+  });
+  if (divisions.empty())
+    return;
+  DenseSet<Operation *> writebackDefs;
+  if (writebackOnly) {
+    writebackDefs = collectWritebackAddressDefs(func);
+    llvm::erase_if(divisions, [&](const Division &division) {
+      return !writebackDefs.contains(division.op);
+    });
+    if (divisions.empty())
+      return;
+  }
 
-  arith::DivSIOp div;
-  arith::RemSIOp rem;
-  arith::DivSIOp blocks;
-  arith::AddIOp numerator;
-  Value width;
-  int64_t divisor = 0;
-  // Match div/rem of the same program coordinate by ceildiv(width, tile).
-  // The guarded one-block simplification is valid for any positive tile.
-  for (Operation &op : block) {
-    auto candidate = dyn_cast<arith::DivSIOp>(&op);
-    if (!candidate)
-      continue;
-    auto inner = candidate.getRhs().getDefiningOp<arith::DivSIOp>();
-    if (!inner)
-      continue;
-    auto size = constantInt(inner.getRhs());
-    auto add = inner.getLhs().getDefiningOp<arith::AddIOp>();
-    if (!size || *size < 2 || *size > 1024 || !add)
-      continue;
-    Value possibleWidth;
-    if (constantInt(add.getRhs()) == *size - 1)
-      possibleWidth = add.getLhs();
-    else if (constantInt(add.getLhs()) == *size - 1)
-      possibleWidth = add.getRhs();
-    if (!possibleWidth || !isa<BlockArgument>(possibleWidth) ||
-        !possibleWidth.getType().isInteger(32))
-      continue;
-    auto candidateDivisor =
-        provedDivisor(cast<BlockArgument>(possibleWidth), *size);
-    if (!candidateDivisor)
-      continue;
-    if (!add.getResult().hasOneUse() ||
-        !llvm::hasNItems(inner.getResult().getUses(), 2))
-      continue;
-    // Match by SSA use, not instruction adjacency: independent operations may
-    // be scheduled between the quotient and remainder without changing either.
-    arith::RemSIOp matchedRem;
-    for (OpOperand &use : inner.getResult().getUses()) {
-      auto candidateRem = dyn_cast<arith::RemSIOp>(use.getOwner());
-      if (candidateRem && candidateRem->getBlock() == &block &&
-          candidateRem.getLhs() == candidate.getLhs() &&
-          candidateRem.getRhs() == inner.getResult()) {
-        matchedRem = candidateRem;
-        break;
+  auto solver = createDataFlowSolver();
+  solver->load<dataflow::IntegerRangeAnalysis>();
+  if (failed(solver->initializeAndRun(func)))
+    return;
+
+  struct AssumedRange {
+    Operation *assume;
+    ConstantIntRanges bounds;
+  };
+  DenseMap<Value, SmallVector<AssumedRange>> assumedRanges;
+  func.walk([&](LLVM::AssumeOp assume) {
+    SmallVector<Value> pending{assume.getCond()};
+    DenseSet<Value> visited;
+    while (!pending.empty()) {
+      Value cond = pending.pop_back_val();
+      if (!visited.insert(cond).second)
+        continue;
+      if (auto conjunction = cond.getDefiningOp<arith::AndIOp>()) {
+        pending.append({conjunction.getLhs(), conjunction.getRhs()});
+        continue;
+      }
+      auto cmp = cond.getDefiningOp<arith::CmpIOp>();
+      if (!cmp || !cmp.getLhs().getType().isInteger(32))
+        continue;
+      auto lhs = getConstantIntValue(getAsOpFoldResult(cmp.getLhs()));
+      auto rhs = getConstantIntValue(getAsOpFoldResult(cmp.getRhs()));
+      if (lhs.has_value() == rhs.has_value())
+        continue;
+      Value value = lhs ? cmp.getRhs() : cmp.getLhs();
+      if (auto bounds = getBoundFromCmpOp(cmp, value))
+        assumedRanges[value].push_back({assume, *bounds});
+    }
+  });
+
+  DominanceInfo dominance(func);
+  SmallVector<Operation *> folded;
+  for (const Division &division : divisions) {
+    auto bounds = ConstantIntRanges::maxRange(32);
+    auto *lattice =
+        solver->lookupState<dataflow::IntegerValueRangeLattice>(division.width);
+    if (lattice && !lattice->getValue().isUninitialized())
+      bounds = lattice->getValue().getValue();
+    if (auto it = assumedRanges.find(division.width); it != assumedRanges.end())
+      for (const AssumedRange &fact : it->second)
+        if (dominance.properlyDominates(fact.assume, division.op))
+          bounds = bounds.intersection(fact.bounds);
+    int64_t min = bounds.smin().getSExtValue();
+    int64_t max = bounds.smax().getSExtValue();
+    if (min >= 1 && min <= max && max <= division.maxWidth)
+      folded.push_back(division.op);
+  }
+  // Fold the coordinate users as well, so AxisInfo sees the original
+  // program id or a constant zero instead of a division or remainder by one.
+  llvm::SetVector<Operation *> coordinateUsers;
+  for (Operation *division : folded) {
+    if (writebackOnly) {
+      for (OpOperand &use : division->getResult(0).getUses()) {
+        Operation *user = use.getOwner();
+        if (use.getOperandNumber() == 1 && writebackDefs.contains(user) &&
+            isa<arith::DivSIOp, arith::RemSIOp>(user))
+          coordinateUsers.insert(user);
       }
     }
-    if (!matchedRem)
-      continue;
-    if (div)
-      return; // Ambiguous candidate; keep the original code.
-    div = candidate;
-    rem = matchedRem;
-    blocks = inner;
-    numerator = add;
-    width = possibleWidth;
-    divisor = *candidateDivisor;
+    OpBuilder b(division);
+    Value one = arith::ConstantIntOp::create(b, division->getLoc(), 1, 32);
+    division->getResult(0).replaceAllUsesWith(one);
+    division->erase();
   }
-  if (!div || !rem || !blocks || !numerator || !width)
-    return;
-  if (!coordinatesReachDualWriteback(div.getResult(), rem.getResult(), stores,
-                                     &block))
-    return;
-  // The replacement coordinate must dominate the insertion point.
-  if (Operation *coordDef = div.getLhs().getDefiningOp())
-    if (coordDef->getBlock() != &block ||
-        !coordDef->isBeforeInBlock(numerator.getOperation()))
-      return;
-  auto widthArg = cast<BlockArgument>(width);
-  // The matching launch proof is carried in the specialization key.
-  OpBuilder b(numerator);
-  funcOp.setArgAttr(widthArg.getArgNumber(), "tt.divisibility",
-                    b.getI32IntegerAttr(divisor));
-  Value zero = arith::ConstantIntOp::create(b, numerator.getLoc(), 0, 32);
-  div.getResult().replaceAllUsesWith(div.getLhs());
-  rem.getResult().replaceAllUsesWith(zero);
-  rem.erase();
-  div.erase();
-  blocks.erase();
-  numerator.erase();
+  if (!coordinateUsers.empty()) {
+    OperationFolder folder(func.getContext());
+    for (Operation *user : coordinateUsers)
+      (void)folder.tryToFold(user);
+  }
+  if (writebackOnly && !folded.empty() && tracePhase2Costs())
+    llvm::errs() << "[rlc-cost] before-layout-writeback-fold divisions="
+                 << folded.size()
+                 << " coordinate_users=" << coordinateUsers.size() << '\n';
 }
 
 // Express a contiguous register group's address once, ahead of store lowering.
@@ -5888,6 +6005,10 @@ public:
 
   LogicalResult runRlc(ModuleOp m, bool enhance) {
     MLIRContext *context = &getContext();
+    if (enhance)
+      m.walk([](FuncOp func) {
+        foldProvenSingleTileCounts(func, /*writebackOnly=*/true);
+      });
     // The phase extensions consult the real address pattern of loads (see
     // isOrderIndifferentAccess); the analysis is only built when they
     // are enabled.
@@ -5896,6 +6017,36 @@ public:
       axisInfoAnalysis.emplace(m);
     ModuleAxisInfoAnalysis *axisInfo =
         axisInfoAnalysis ? &*axisInfoAnalysis : nullptr;
+    const bool trace = enhance && tracePhase2Costs();
+    auto traceConversions = [&](StringRef stage) {
+      unsigned local = 0, shuffle = 0, shared = 0, unknown = 0, div = 0,
+               rem = 0;
+      m.walk([&](Operation *op) {
+        div += isa<arith::DivSIOp, arith::DivUIOp>(op);
+        rem += isa<arith::RemSIOp, arith::RemUIOp>(op);
+        auto cvt = dyn_cast<ConvertLayoutOp>(op);
+        if (!cvt || cvt->use_empty())
+          return;
+        auto src = cvt.getSrc().getType();
+        auto dst = cvt.getType();
+        if (!isa_and_nonnull<DistributedEncodingTrait>(src.getEncoding()) ||
+            !isa_and_nonnull<DistributedEncodingTrait>(dst.getEncoding()))
+          ++unknown;
+        else if (cvtReordersRegisters(src, dst))
+          ++local;
+        else if (cvtNeedsWarpShuffle(src, dst))
+          ++shuffle;
+        else
+          ++shared;
+      });
+      llvm::errs() << "[rlc-cost] rlc-ir stage=" << stage
+                   << " register=" << local << " shuffle=" << shuffle
+                   << " shared_or_distributed=" << shared
+                   << " unclassified=" << unknown << " div=" << div
+                   << " rem=" << rem << '\n';
+    };
+    if (trace)
+      traceConversions("entry");
     m.walk([enhance, axisInfo](FuncOp funcOp) {
       LayoutPropagation layoutPropagation(funcOp, enhance, axisInfo);
       layoutPropagation.initAnchorLayout();
@@ -5915,6 +6066,8 @@ public:
 
     if (failed(cleanupConvertOps(m)))
       return failure();
+    if (trace)
+      traceConversions("after-propagation-cleanup");
 
     bool changed = false;
     do {
@@ -5976,8 +6129,10 @@ public:
     if (enhance)
       m.walk([](FuncOp funcOp) {
         packReductionWritebackRows(funcOp);
-        specializeBoundedDualWriteback(funcOp);
+        foldProvenSingleTileCounts(funcOp, /*writebackOnly=*/false);
       });
+    if (trace)
+      traceConversions("exit");
     LLVM_DEBUG({
       DBGS() << "Module after final cleanups:\n";
       m.dump();

@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 
 _DEFAULT_MUSA_PREFIX = "/usr/local/musa"
-_RLC_POLICY_CACHE_VERSION = "musa-rlc-v6"
+_RLC_POLICY_CACHE_VERSION = "musa-rlc-v7"
 
 # FlagGems uses this feature level to distinguish a backend that turns known
 # MTGPU register-allocation failures into recoverable autotuning failures from
@@ -862,17 +862,6 @@ class MUSABackend(BaseBackend):
     @staticmethod
     def parse_attr(desc):
         assert isinstance(desc, str)
-        proof = re.fullmatch(r"(?:(D|D2|D4|D8):)?RLC2B([0-9]+)D(2|4|8|16)", desc)
-        if proof:
-            base, tile, divisor = proof.groups()
-            tile, divisor = int(tile), int(divisor)
-            if 2 <= tile <= 1024:
-                # Keep native facts visible before RLC validates the extra proof.
-                return MUSABackend.parse_attr(base or "") + [
-                    ["musa.rlc_positive_even_divisor", divisor],
-                    ["musa.rlc_positive_even_block_upper_bound", tile],
-                ]
-            return []
         if desc == "D":
             return [["tt.divisibility", 16]]
         if desc in {"D8", "D4", "D2"}:
@@ -936,95 +925,6 @@ class MUSABackend(BaseBackend):
         return cached
 
     @staticmethod
-    def _find_bounded_writeback_plan(source, params):
-        """Find a possible bounded-width dual store; the RLC pass rechecks IR."""
-        try:
-            tree = ast.parse(source)
-        except (SyntaxError, TypeError):
-            return None
-
-        def names(node):
-            return {n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
-
-        definitions, stores, cdivs = {}, [], []
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
-                for target in (node.targets if isinstance(node, ast.Assign) else [node.target]):
-                    for name in ast.walk(target):
-                        if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store):
-                            definitions.setdefault(name.id, set()).update(names(node.value))
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                continue
-            if not isinstance(node.func.value, ast.Name) or node.func.value.id != "tl":
-                continue
-            if node.func.attr == "cdiv" and len(node.args) == 2 and all(isinstance(x, ast.Name) for x in node.args):
-                cdivs.append((node.args[0].id, node.args[1].id))
-            if node.func.attr == "store" and len(node.args) >= 2:
-                mask = next((k.value for k in node.keywords if k.arg == "mask"),
-                            node.args[2] if len(node.args) > 2 else None)
-                if mask is None:
-                    return None
-                stores.append((node.args[0], mask))
-
-        if len(stores) != 2:
-            return None
-        param_names = {p.name for p in params}
-
-        def roots(expr):
-            pending, seen, found = list(names(expr)), set(), set()
-            while pending:
-                name = pending.pop()
-                if name in seen:
-                    continue
-                seen.add(name)
-                if name in param_names:
-                    found.add(name)
-                pending.extend(definitions.get(name, ()))
-            return found
-
-        store_roots = [(roots(ptr), roots(mask)) for ptr, mask in stores]
-        indices = {p.name: i for i, p in enumerate(params)}
-        return {(width, tile, indices[width], indices[tile]) for width, tile in cdivs
-                if width in indices and tile in indices
-                and all(width in ptr and width in mask for ptr, mask in store_roots)}
-
-    def _refine_bounded_writeback(self, bound_args, params, specialization, jit_function):
-        if jit_function is None:
-            return specialization
-        # Cache only source facts; evaluate per-parameter opt-outs on each call.
-        cache_key = ("bounded-writeback", jit_function.cache_key)
-        if cache_key not in self._device_descriptor_use_cache:
-            self._device_descriptor_use_cache[cache_key] = self._find_bounded_writeback_plan(jit_function.src, params)
-        selected = None
-        for width, tile_name, width_idx, tile_idx in self._device_descriptor_use_cache[cache_key] or ():
-            if width_idx >= len(params) or tile_idx >= len(params):
-                return specialization
-            p, t = params[width_idx], params[tile_idx]
-            if p.name != width or t.name != tile_name:
-                return specialization
-            if p.is_constexpr or p.do_not_specialize or p.do_not_specialize_on_alignment or not t.is_constexpr:
-                continue
-            if selected is not None:
-                return specialization
-            selected = width, tile_name, width_idx
-        if selected is None:
-            return specialization
-        width, tile_name, i = selected
-        value, tile = bound_args[width], bound_args[tile_name]
-        ty, key = specialization[i]
-        if type(value) is not int or type(tile) is not int or ty != "i32":
-            return specialization
-        if key not in {None, "", "D", "D2", "D4", "D8"}:
-            return specialization
-        if not 2 <= tile <= 1024 or not 0 < value <= tile or value % 2:
-            return specialization
-        # Same 2/4/8/16 alignment classes as get_int_specialization().
-        divisor = min(value & -value, 16)
-        result = list(specialization)
-        result[i] = (ty, f"{key + ':' if key else ''}RLC2B{tile}D{divisor}")
-        return result
-
-    @staticmethod
     def _refine_specialization_key(arg, ty, key, align, refine_ints):
         if isinstance(arg, tuple) and isinstance(ty, tuple):
             old_keys = key if isinstance(key, tuple) else (None, ) * len(arg)
@@ -1065,13 +965,6 @@ class MUSABackend(BaseBackend):
                     refine_ints=refine_ints,
                 ),
             )
-        if knobs.musa.rlc_enhance:
-            try:
-                is_target = _capability_from_arch(self.target.arch) == 31
-            except (ValueError, TypeError):
-                is_target = False
-            if is_target:
-                refined = self._refine_bounded_writeback(bound_args, params, refined, jit_function)
         return refined
 
     @staticmethod
