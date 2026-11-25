@@ -800,8 +800,8 @@ def _remote_dot_gcu_share_dsm_kernel_prefetch(
     B_SLOTS: tl.constexpr,
 ):
     CLUSTER_SIZE: tl.constexpr = CLUSTER_M * CLUSTER_N
-    rank_x = tl.program_id(0) % CLUSTER_N   # hw-x, N-axis
-    rank_y = tl.program_id(1) % CLUSTER_M   # hw-y, M-axis
+    rank_x = tl.program_id(0) % CLUSTER_N  # hw-x, N-axis
+    rank_y = tl.program_id(1) % CLUSTER_M  # hw-y, M-axis
     hw_linear = rank_x + rank_y * CLUSTER_N
 
     offs_m = tl.program_id(1) * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
@@ -813,12 +813,10 @@ def _remote_dot_gcu_share_dsm_kernel_prefetch(
     b_rows_full = tl.broadcast_to(tl.arange(0, BLOCK_SIZE_K)[:, None], (BLOCK_SIZE_K, BLOCK_SIZE_N))
     b_cols_full = tl.broadcast_to(tl.arange(0, BLOCK_SIZE_N)[None, :], (BLOCK_SIZE_K, BLOCK_SIZE_N))
 
-    a_buf = tle.gpu.alloc([A_SLOTS, BLOCK_SIZE_M, BLOCK_SIZE_K], dtype=tl.float16, layout=None,
-                          scope=tle.gpu.smem, nv_mma_shared_layout=False,
-                          sharding=tle.sharding(mesh, split=(("cluster_y", ), [])))
-    b_buf = tle.gpu.alloc([B_SLOTS, BLOCK_SIZE_K, BLOCK_SIZE_N], dtype=tl.float16, layout=None,
-                          scope=tle.gpu.smem, nv_mma_shared_layout=False,
-                          sharding=tle.sharding(mesh, split=(("cluster_x", ), [])))
+    a_buf = tle.gpu.alloc([A_SLOTS, BLOCK_SIZE_M, BLOCK_SIZE_K], dtype=tl.float16, layout=None, scope=tle.gpu.smem,
+                          nv_mma_shared_layout=False, sharding=tle.sharding(mesh, split=(("cluster_y", ), [])))
+    b_buf = tle.gpu.alloc([B_SLOTS, BLOCK_SIZE_K, BLOCK_SIZE_N], dtype=tl.float16, layout=None, scope=tle.gpu.smem,
+                          nv_mma_shared_layout=False, sharding=tle.sharding(mesh, split=(("cluster_x", ), [])))
 
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
@@ -922,8 +920,8 @@ def _remote_dot_gcu_share_dsm_kernel(
     # hw coordinates: program_id(0) covers N (fast), program_id(1) covers M (slow)
     # rank_x/rank_y = cluster-local CTA coordinate on hw x/y axis
     CLUSTER_SIZE: tl.constexpr = CLUSTER_M * CLUSTER_N
-    rank_x = tl.program_id(0) % CLUSTER_N   # hw-x, N-axis, range [0, CLUSTER_N)
-    rank_y = tl.program_id(1) % CLUSTER_M   # hw-y, M-axis, range [0, CLUSTER_M)
+    rank_x = tl.program_id(0) % CLUSTER_N  # hw-x, N-axis, range [0, CLUSTER_N)
+    rank_y = tl.program_id(1) % CLUSTER_M  # hw-y, M-axis, range [0, CLUSTER_M)
     hw_linear = rank_x + rank_y * CLUSTER_N  # hw col-major linear CTA ID
 
     offs_m = tl.program_id(1) * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
@@ -934,13 +932,10 @@ def _remote_dot_gcu_share_dsm_kernel(
     b_rows = tl.broadcast_to(tl.arange(0, BLOCK_SIZE_K)[:, None], (BLOCK_SIZE_K, BLOCK_SIZE_N))
     b_cols = tl.broadcast_to(tl.arange(0, BLOCK_SIZE_N)[None, :], (BLOCK_SIZE_K, BLOCK_SIZE_N))
 
-
-    a_buf = tle.gpu.alloc([BLOCK_SIZE_M, BLOCK_SIZE_K], dtype=tl.float16, layout=None,
-                          scope=tle.gpu.smem, nv_mma_shared_layout=False,
-                          sharding=tle.sharding(mesh, split=(("cluster_y", ), [])))
-    b_buf = tle.gpu.alloc([BLOCK_SIZE_K, BLOCK_SIZE_N], dtype=tl.float16, layout=None,
-                          scope=tle.gpu.smem, nv_mma_shared_layout=False,
-                          sharding=tle.sharding(mesh, split=(("cluster_x", ), [])))
+    a_buf = tle.gpu.alloc([BLOCK_SIZE_M, BLOCK_SIZE_K], dtype=tl.float16, layout=None, scope=tle.gpu.smem,
+                          nv_mma_shared_layout=False, sharding=tle.sharding(mesh, split=(("cluster_y", ), [])))
+    b_buf = tle.gpu.alloc([BLOCK_SIZE_K, BLOCK_SIZE_N], dtype=tl.float16, layout=None, scope=tle.gpu.smem,
+                          nv_mma_shared_layout=False, sharding=tle.sharding(mesh, split=(("cluster_x", ), [])))
 
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
 
@@ -956,7 +951,7 @@ def _remote_dot_gcu_share_dsm_kernel(
         # B slot = hw_linear % CLUSTER_N (hw-x coordinate, sharding split cluster_x)
         if hw_linear < CLUSTER_M:
             # Load A row[a_row]. Build global M offset for the target row.
-            a_row = hw_linear   # target hw-y = a_row
+            a_row = hw_linear  # target hw-y = a_row
             a_load_offs_m = (tl.program_id(1) - rank_y + a_row) * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
             a_ptrs = a_ptr + a_load_offs_m[:, None] * stride_am + (k0 + offs_k)[None, :] * stride_ak
             a_mask = (a_load_offs_m[:, None] < M) & ((k0 + offs_k)[None, :] < K)
@@ -968,7 +963,7 @@ def _remote_dot_gcu_share_dsm_kernel(
 
         if hw_linear >= CLUSTER_M and hw_linear < CLUSTER_M + CLUSTER_N:
             # Load B col[b_col]. Build global N offset for the target col.
-            b_col = hw_linear - CLUSTER_M   # target hw-x = b_col
+            b_col = hw_linear - CLUSTER_M  # target hw-x = b_col
             b_load_offs_n = (tl.program_id(0) - rank_x + b_col) * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
             b_ptrs = b_ptr + (k0 + offs_k)[:, None] * stride_bk + b_load_offs_n[None, :] * stride_bn
             b_mask = ((k0 + offs_k)[:, None] < K) & (b_load_offs_n[None, :] < N)
@@ -2162,7 +2157,10 @@ class TestTLEDistributed:
         num_cluster_n = triton.cdiv(num_pid_n, cluster_n)
         print("num_cluster_m", num_cluster_m)
         print("num_cluster_n", num_cluster_n)
-        grid = (num_cluster_n, num_cluster_m, )
+        grid = (
+            num_cluster_n,
+            num_cluster_m,
+        )
 
         a = torch.randn((m, k), device="cuda", dtype=torch.float16)
         b = torch.randn((k, n), device="cuda", dtype=torch.float16)
@@ -2222,83 +2220,87 @@ class TestTLEDistributed:
 
         ref = torch.matmul(a, b)
         torch.testing.assert_close(c, ref, atol=1e-1, rtol=1e-1)
+
     def test_remote_dot_gcu_share_dsm_full_grid(self):
-            """Dual-remote matmul: A shared along cluster_y, B shared along cluster_x."""
-            bm = 256
-            bn = 256
-            bk = 512
-            cluster_m = 3  # cluster_y dimension
-            cluster_n = 2  # cluster_x dimension
-            cluster_size = cluster_m * cluster_n  # 6
-            m = bm * cluster_m * 6  # 192
-            n = bn * cluster_n * 4  # 128
-            k = 8192
-            num_pid_m = triton.cdiv(m, bm)
-            num_pid_n = triton.cdiv(n, bn)
-            num_cluster_m = triton.cdiv(num_pid_m, cluster_m)
-            num_cluster_n = triton.cdiv(num_pid_n, cluster_n)
-            print("num_cluster_m", num_cluster_m)
-            print("num_cluster_n", num_cluster_n)
-            grid = (num_cluster_n, num_cluster_m,)
+        """Dual-remote matmul: A shared along cluster_y, B shared along cluster_x."""
+        bm = 256
+        bn = 256
+        bk = 512
+        cluster_m = 3  # cluster_y dimension
+        cluster_n = 2  # cluster_x dimension
+        cluster_size = cluster_m * cluster_n  # 6
+        m = bm * cluster_m * 6  # 192
+        n = bn * cluster_n * 4  # 128
+        k = 8192
+        num_pid_m = triton.cdiv(m, bm)
+        num_pid_n = triton.cdiv(n, bn)
+        num_cluster_m = triton.cdiv(num_pid_m, cluster_m)
+        num_cluster_n = triton.cdiv(num_pid_n, cluster_n)
+        print("num_cluster_m", num_cluster_m)
+        print("num_cluster_n", num_cluster_n)
+        grid = (
+            num_cluster_n,
+            num_cluster_m,
+        )
 
-            a = torch.randn((m, k), device="cuda", dtype=torch.float16)
-            b = torch.randn((k, n), device="cuda", dtype=torch.float16)
-            c = torch.empty((m, n), device="cuda", dtype=torch.float16)
+        a = torch.randn((m, k), device="cuda", dtype=torch.float16)
+        b = torch.randn((k, n), device="cuda", dtype=torch.float16)
+        c = torch.empty((m, n), device="cuda", dtype=torch.float16)
 
-            compiled = _remote_dot_gcu_share_dsm_kernel.warmup(
-                a,
-                b,
-                c,
-                m,
-                n,
-                k,
-                a.stride(0),
-                a.stride(1),
-                b.stride(0),
-                b.stride(1),
-                c.stride(0),
-                c.stride(1),
-                mesh=BLOCK_CLUSTER_MESH_3X2,
-                BLOCK_SIZE_M=bm,
-                BLOCK_SIZE_N=bn,
-                BLOCK_SIZE_K=bk,
-                CLUSTER_M=cluster_m,
-                CLUSTER_N=cluster_n,
-                grid=grid,
-                num_ctas=1,
-                num_warps=1,
-            )
-            assert compiled.metadata.cluster_dims == (2, 3, 1)
-            torch.cuda.synchronize()
-            print("num_cluster_m2", num_cluster_m)
-            print("num_cluster_n2", num_cluster_n)
+        compiled = _remote_dot_gcu_share_dsm_kernel.warmup(
+            a,
+            b,
+            c,
+            m,
+            n,
+            k,
+            a.stride(0),
+            a.stride(1),
+            b.stride(0),
+            b.stride(1),
+            c.stride(0),
+            c.stride(1),
+            mesh=BLOCK_CLUSTER_MESH_3X2,
+            BLOCK_SIZE_M=bm,
+            BLOCK_SIZE_N=bn,
+            BLOCK_SIZE_K=bk,
+            CLUSTER_M=cluster_m,
+            CLUSTER_N=cluster_n,
+            grid=grid,
+            num_ctas=1,
+            num_warps=1,
+        )
+        assert compiled.metadata.cluster_dims == (2, 3, 1)
+        torch.cuda.synchronize()
+        print("num_cluster_m2", num_cluster_m)
+        print("num_cluster_n2", num_cluster_n)
 
-            _remote_dot_gcu_share_dsm_kernel[grid](
-                a,
-                b,
-                c,
-                m,
-                n,
-                k,
-                a.stride(0),
-                a.stride(1),
-                b.stride(0),
-                b.stride(1),
-                c.stride(0),
-                c.stride(1),
-                mesh=BLOCK_CLUSTER_MESH_3X2,
-                BLOCK_SIZE_M=bm,
-                BLOCK_SIZE_N=bn,
-                BLOCK_SIZE_K=bk,
-                CLUSTER_M=cluster_m,
-                CLUSTER_N=cluster_n,
-                num_ctas=1,
-                num_warps=1,
-            )
-            torch.cuda.synchronize()
+        _remote_dot_gcu_share_dsm_kernel[grid](
+            a,
+            b,
+            c,
+            m,
+            n,
+            k,
+            a.stride(0),
+            a.stride(1),
+            b.stride(0),
+            b.stride(1),
+            c.stride(0),
+            c.stride(1),
+            mesh=BLOCK_CLUSTER_MESH_3X2,
+            BLOCK_SIZE_M=bm,
+            BLOCK_SIZE_N=bn,
+            BLOCK_SIZE_K=bk,
+            CLUSTER_M=cluster_m,
+            CLUSTER_N=cluster_n,
+            num_ctas=1,
+            num_warps=1,
+        )
+        torch.cuda.synchronize()
 
-            ref = torch.matmul(a, b)
-            torch.testing.assert_close(c, ref, atol=1e-1, rtol=1e-1)
+        ref = torch.matmul(a, b)
+        torch.testing.assert_close(c, ref, atol=1e-1, rtol=1e-1)
 
     def test_remote_dot_gcu_share_dsm_prefetch(self):
         """Dual-remote matmul with prefetching: A shared along cluster_y, B shared along cluster_x."""
@@ -2318,7 +2320,10 @@ class TestTLEDistributed:
         num_pid_n = triton.cdiv(n, bn)
         num_cluster_m = triton.cdiv(num_pid_m, cluster_m)
         num_cluster_n = triton.cdiv(num_pid_n, cluster_n)
-        grid = (num_cluster_n, num_cluster_m,)
+        grid = (
+            num_cluster_n,
+            num_cluster_m,
+        )
 
         a = torch.randn((m, k), device="cuda", dtype=torch.float16)
         b = torch.randn((k, n), device="cuda", dtype=torch.float16)
