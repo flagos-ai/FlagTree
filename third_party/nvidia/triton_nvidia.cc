@@ -108,6 +108,9 @@ void init_triton_hopper_passes(py::module &&m) {
   // Meta's autoWS
   ADD_PASS_OPTION_WRAPPER_2("add_hopper_warpspec",
                             mlir::createNVGPUWarpSpecialization, int, bool);
+#ifdef __TLE__
+  ADD_PASS_WRAPPER_0("add_lower_ws_tokens", mlir::createNVGPULowerWSTokens);
+#endif
 }
 
 static void checkMatmulConstraints(const std::string &A_dtype,

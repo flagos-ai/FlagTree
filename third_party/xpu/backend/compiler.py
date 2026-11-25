@@ -571,8 +571,29 @@ class XPUBackend(BaseBackend):
         try:
             pm.run(mod, 'make_ttxir')
         except Exception as e:
+            # Unsupported lowerings are not resource limits. Keep the original
+            # message and exception type. The marker is kUnsupportedOnXPU in
+            # TritonToTritonXPUPass.cpp.
+            if "[unsupported-on-xpu]" in str(e):
+                raise RuntimeError(str(e)) from e
             from triton import OutOfResources
-            raise OutOfResources(0, 0, f"uni_sram {e}")
+            # Only a real on-chip buffer budget overflow should become
+            # OutOfResources, and the multi-buffer pass names the pool, the
+            # minimum footprint and the capacity:
+            #   "Buffer alloc failed in <sram>: min required = <N> bytes (...);
+            #    hardware limit = <M> bytes; ..."
+            # Every other failure (verifier error, unsupported op, a pass crash
+            # caught by MLIR crash recovery) must keep its own message. Turning
+            # those into OutOfResources actively hides bugs: the autotuner
+            # silently prunes OutOfResources configs, and the reported
+            # "uni_sram, Required: 0, Hardware limit: 0" points triage at a
+            # memory budget that was never the problem.
+            msg = str(e)
+            budget = re.search(r"Buffer alloc failed in (\w+): min required = (\d+) bytes"
+                               r".*?hardware limit = (\d+)", msg, re.DOTALL)
+            if budget is None:
+                raise
+            raise OutOfResources(int(budget.group(2)), int(budget.group(3)), f"{budget.group(1)} ({msg})") from e
 
         return mod
 

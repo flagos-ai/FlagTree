@@ -18,6 +18,7 @@ add_triton_library(TritonTLETransforms
   TleLogicalDomains.cpp
   TleLowerAsyncLoad.cpp
   TleLowerPipeToNvws.cpp
+  TleRestorePipeFunctionCalls.cpp
   TleLowerBarriers.cpp
   TleAllocateNamedBarriers.cpp
   TleTileToLLVMUtils.cpp
@@ -42,6 +43,7 @@ add_triton_library(TritonTLETransforms
   TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
+  MLIRControlFlowDialect
   TritonTLEAnalysis
   TritonGPUIR
   TritonAnalysis

@@ -648,7 +648,9 @@ static LogicalResult verifyPipeAttrs(Operation *op, OperandRange fields) {
   if (fieldNamesAttr.size() != fields.size())
     return op->emitOpError("expects field_names size to match field operands");
 
-  if (failed(verifyPipeNameArray(op, fieldNamesAttr, "field", false)))
+  // Fieldless pipes carry control only, with either a cyclic or one-shot
+  // protocol. Instance identity is independent of payload fields.
+  if (failed(verifyPipeNameArray(op, fieldNamesAttr, "field", true)))
     return failure();
 
   if (auto readersAttr = op->getAttrOfType<ArrayAttr>("readers")) {
@@ -660,9 +662,6 @@ static LogicalResult verifyPipeAttrs(Operation *op, OperandRange fields) {
     if (!isValidPublicPipeName(readerNameAttr.getValue()))
       return op->emitOpError("expects valid public pipe reader_name");
   }
-
-  if (fields.empty())
-    return op->emitOpError("expects at least one pipe field");
 
   llvm::SmallBitVector tiledFields(fields.size());
   if (auto tiledAttr =
@@ -721,6 +720,28 @@ LogicalResult PipeCreateOp::verify() {
   return verifyPipeAttrs(getOperation(), getFields());
 }
 
+LogicalResult PipeCallBeginOp::verify() {
+  if (getArguments().size() != getAliases().size())
+    return emitOpError("expects one alias result for every call argument");
+  for (auto [index, argument, alias] :
+       llvm::enumerate(getArguments(), getAliases())) {
+    if (argument.getType() != alias.getType())
+      return emitOpError("expects call argument and alias result ")
+             << index << " to have the same type";
+  }
+  return success();
+}
+
+LogicalResult PipeCallReturnOp::verify() {
+  if (getValues().size() != getAliases().size())
+    return emitOpError("expects one alias result for every returned value");
+  for (auto [value, alias] : llvm::zip(getValues(), getAliases()))
+    if (value.getType() != alias.getType())
+      return emitOpError(
+          "expects returned value and alias to have the same type");
+  return success();
+}
+
 LogicalResult PipeWriterAcquireOp::verify() {
   if (failed(verifyPipeAttrs(getOperation(), getFields())))
     return failure();
@@ -755,6 +776,10 @@ LogicalResult PipeReaderReleaseOp::verify() {
   return verifyPipeStage(getOperation(), getStage());
 }
 
+LogicalResult PipeDrainOp::verify() {
+  return verifyPipeAttrs(getOperation(), getFields());
+}
+
 void PipeReaderReleaseOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
         &effects) {
@@ -763,6 +788,19 @@ void PipeReaderReleaseOp::getEffects(
   for (unsigned i = 0, e = fields.size(); i < e; ++i)
     effects.emplace_back(MemoryEffects::Free::get(), &fields[i],
                          triton::gpu::SharedMemory::get());
+}
+
+void PipeDrainOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  effects.emplace_back(MemoryEffects::Write::get());
+  MutableOperandRange fields = getFieldsMutable();
+  for (unsigned i = 0, e = fields.size(); i < e; ++i) {
+    effects.emplace_back(MemoryEffects::Read::get(), &fields[i],
+                         triton::gpu::SharedMemory::get());
+    effects.emplace_back(MemoryEffects::Write::get(), &fields[i],
+                         triton::gpu::SharedMemory::get());
+  }
 }
 
 // ============================================================================
