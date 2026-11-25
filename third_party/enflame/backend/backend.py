@@ -759,12 +759,14 @@ class GcuLauncher(object):
         # case; "*" arguments accept None as nullptr, exactly like nvidia.
         if _distributed_lite_mode():
             signature = {i: ty for i, ty in enumerate(["*i64", "*i64"] + list(signature.values()))}
+
             # Constant keys are indices or index paths (tuples) into the kernel
             # arguments; only the leading argument index moves.
             def _shift_key(key):
                 if isinstance(key, tuple) and key:
-                    return (key[0] + 2,) + key[1:]
+                    return (key[0] + 2, ) + key[1:]
                 return key + 2
+
             constants = {_shift_key(k): v for k, v in constants.items()}
             ptr_int_args = {p + 2 for p in ptr_int_args}
         src = generate_launcher(constants, signature, metadata.arch, redundant_sip=redundant_sip,

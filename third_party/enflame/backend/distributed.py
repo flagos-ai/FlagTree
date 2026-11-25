@@ -5,7 +5,6 @@ from importlib.machinery import PathFinder
 from pathlib import Path
 
 from .gcu_communication import GcuCommunicationRuntime
-
 '''
 FlagCX distributed runtime configuration module (Enflame GCU backend).
 

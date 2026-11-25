@@ -70,7 +70,6 @@ if enabled:
         torch.cuda.set_device(local_rank)
         return local_rank
 
-
     def _libflagcx_path():
         return Path(FLAGCX_LIB_PATH) / "libflagcx.so"
 
@@ -93,7 +92,6 @@ if enabled:
     atexit.register(_cleanup_flagcx_allocator_wrapper)
     flagcx = FLAGCXLibrary(so_file=_libflagcx_path())
     global comm, rank, dev_mem, dev_comm, win
-
 
 flagcx_allocator_source = """
 #include <flagcx.h>

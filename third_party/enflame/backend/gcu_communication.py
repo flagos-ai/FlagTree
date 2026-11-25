@@ -17,7 +17,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-
 """GCU implementation of the TLE FlagCX communication runtime hooks.
 
 `triton.experimental.tle.language.communication` is backend neutral: it asks
@@ -95,15 +94,25 @@ class GcuCommunicationRuntime:
             stream.write(ALLOCATOR_SOURCE_C)
         compiler = os.environ.get("CC", "gcc")
         cmd = [
-            compiler, "-shared", "-fPIC", "-O2",
-            "-I", include_path,
-            "-I", os.path.join(tops_home, "include"),
+            compiler,
+            "-shared",
+            "-fPIC",
+            "-O2",
+            "-I",
+            include_path,
+            "-I",
+            os.path.join(tops_home, "include"),
             source_path,
-            "-L", lib_dir, "-lflagcx",
-            "-L", os.path.join(tops_home, "lib"), "-ltopsrt",
+            "-L",
+            lib_dir,
+            "-lflagcx",
+            "-L",
+            os.path.join(tops_home, "lib"),
+            "-ltopsrt",
             f"-Wl,-rpath,{lib_dir}",
             f"-Wl,-rpath,{os.path.join(tops_home, 'lib')}",
-            "-o", lib_path,
+            "-o",
+            lib_path,
         ]
         subprocess.check_call(cmd)
 

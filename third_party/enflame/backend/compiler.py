@@ -168,6 +168,7 @@ def _enable_i64_pass_option(options):
             return ''
     return ' enable_i64=true'
 
+
 def _distributed_lite_mode():
     """True when the TLE distributed parameter injection is active."""
     try:
@@ -244,9 +245,8 @@ def make_ttir(mod, metadata, options):
         from triton._C.libtriton import tle as _tle
         add_params = getattr(_tle.passes, "add_params_for_distribution", None)
         if add_params is None:
-            raise RuntimeError(
-                "TLE distributed parameters require add_params_for_distribution "
-                "in this libtriton build")
+            raise RuntimeError("TLE distributed parameters require add_params_for_distribution "
+                               "in this libtriton build")
         add_params(pm)
     # Triton 3.8 removed this pass; use it only when available.
     if options.arch == "gcu500":
@@ -778,8 +778,7 @@ class GCUOptions:
         # The prebuilt extern bitcodes were previously left out of the key, so
         # swapping libdevice/efshmem/flagcx bitcode could reuse stale kernels.
         extern_libs = getattr(self, 'extern_libs', ()) or ()
-        lib_key = tuple((name, file_hash(path) if path and os.path.isfile(path) else "")
-                        for name, path in extern_libs)
+        lib_key = tuple((name, file_hash(path) if path and os.path.isfile(path) else "") for name, path in extern_libs)
         version_key = _version_key()
         key = (version_key + '_' + '_'.join([f'{name}-{val}' for name, val in self.__dict__.items()]) +
                '_extern_libs-' + repr(lib_key) + '_flagcx-' + _flagcx_bitcode_hash())
