@@ -74,7 +74,6 @@ void populateBarrierOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                      PatternBenefit benefit);
 #endif
 
-
 #ifdef __TLE__
 // RDNA lowering of tle.distributed_barrier (group_kind grid / grid_axis).
 // Declared only when the TLE plugin is built (__TLE__).

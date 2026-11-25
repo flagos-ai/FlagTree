@@ -30,8 +30,8 @@ pytestmark = pytest.mark.skipif(
     reason="warp_specialize wave-id partition + RDNA mbarrier handshake require an AMD RDNA GPU",
 )
 
-
 # --- fieldless control pipe: a pure acquire/commit/wait/release ping-pong ------
+
 
 @triton.jit(noinline=True)
 def _cyclic_consumer(handoff_writer, output):
@@ -62,18 +62,16 @@ def _cyclic_kernel(output):
     )
 
 
-@pytest.mark.require_tle("pipe", "gpu.warp_specialize")
+@pytest.mark.skip_if_tle_unsupported("pipe", "gpu.warp_specialize")
 def test_fieldless_cyclic_handoff_runs_on_rdna(with_allocator):
     output = torch.zeros(8, dtype=torch.int32, device="cuda")
-    compiled = _cyclic_kernel.warmup(output, grid=(1,), num_warps=8)
+    compiled = _cyclic_kernel.warmup(output, grid=(1, ), num_warps=8)
     # 8 default waves + 1 worker wave must be launched.
     assert compiled.metadata.num_warps == 9
 
-    _cyclic_kernel[(1,)](output, num_warps=8)
+    _cyclic_kernel[(1, )](output, num_warps=8)
     torch.cuda.synchronize()
-    torch.testing.assert_close(
-        output.cpu(), torch.arange(1, 9, dtype=torch.int32)
-    )
+    torch.testing.assert_close(output.cpu(), torch.arange(1, 9, dtype=torch.int32))
 
 
 # --- payload pipe: producer fills an LDS field, consumer transforms it --------
@@ -130,13 +128,13 @@ def _payload_kernel(in_ptr, out_ptr):
     )
 
 
-@pytest.mark.require_tle("pipe", "gpu.warp_specialize", "gpu.alloc", "gpu.local_ptr")
+@pytest.mark.skip_if_tle_unsupported("pipe", "gpu.warp_specialize", "gpu.alloc", "gpu.local_ptr")
 def test_pipe_payload_dataflow_runs_on_rdna(with_allocator):
     total = 8 * 16 * 4
     torch.manual_seed(0)
     inp = torch.randn(total, dtype=torch.float32, device="cuda")
-    out = torch.full((total,), -1.0, dtype=torch.float32, device="cuda")
+    out = torch.full((total, ), -1.0, dtype=torch.float32, device="cuda")
 
-    _payload_kernel[(1,)](inp, out, num_warps=8)
+    _payload_kernel[(1, )](inp, out, num_warps=8)
     torch.cuda.synchronize()
     torch.testing.assert_close(out, inp * 2.0 + 1.0)

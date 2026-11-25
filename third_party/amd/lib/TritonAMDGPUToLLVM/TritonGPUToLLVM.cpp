@@ -93,7 +93,7 @@ static bool isAMDLoweredTleOp(Operation *op) {
   StringRef name = op->getName().getStringRef();
   return name == "tle.local_pointers" || name == "tle.extract_tile" ||
          name == "tle.insert_tile" || name == "tle.exclusive_cumsum" ||
-         name == "tle.distributed_barrier";
+         name == "tle.memdesc_alias" || name == "tle.distributed_barrier";
 }
 #endif
 
@@ -153,11 +153,8 @@ struct ConvertTritonAMDGPUToLLVM
       mod.walk([&](Operation *op) {
         if (op->getName().getDialectNamespace() == "tle" &&
             !isAMDLoweredTleOp(op)) {
-          op->emitOpError()
-              << "has no AMD/RDNA lowering yet (arch " << this->arch.getValue()
-              << "); only tle.local_pointers / extract_tile / insert_tile / "
-                 "exclusive_cumsum are supported on this backend today "
-                 "(FlagMega-on-Radeon roadmap).";
+          op->emitOpError() << "has no AMD/RDNA lowering yet (arch "
+                            << this->arch.getValue() << ")";
           hasUnsupportedTleOp = true;
         }
       });

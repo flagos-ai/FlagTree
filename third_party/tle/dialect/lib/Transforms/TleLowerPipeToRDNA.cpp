@@ -32,10 +32,10 @@
 // The AMD backend is only present in builds that enable the amd codegen
 // backend; the TLE transforms library is shared across backends. We therefore
 // gate everything that touches the AMD dialect behind TLE_AMD_PIPE (set by the
-// TLE CMake only when amd is built). The pass and its tablegen-generated factory
-// still exist on every backend (so GEN_PASS_REGISTRATION resolves); on non-amd
-// builds runOnOperation is a no-op and any surviving tle.pipe op is diagnosed by
-// the backend that owns it.
+// TLE CMake only when amd is built). The pass and its tablegen-generated
+// factory still exist on every backend (so GEN_PASS_REGISTRATION resolves); on
+// non-amd builds runOnOperation is a no-op and any surviving tle.pipe op is
+// diagnosed by the backend that owns it.
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -45,8 +45,8 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "tle/dialect/include/IR/Dialect.h"
-#include "tle/dialect/include/Transforms/PipeReaderContract.h"
 #include "tle/dialect/include/Transforms/Passes.h"
+#include "tle/dialect/include/Transforms/PipeReaderContract.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
@@ -137,7 +137,8 @@ static bool containsPipeLifecycleOp(tt::FuncOp func) {
 static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee,
                                     int64_t callId) {
   if (callee.isExternal())
-    return call.emitOpError("cannot inline external callee containing pipe ops");
+    return call.emitOpError(
+        "cannot inline external callee containing pipe ops");
   Region &body = callee.getBody();
   if (!body.hasOneBlock())
     return call.emitOpError("cannot inline multi-block callee containing pipe "
@@ -153,9 +154,9 @@ static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee,
   OpBuilder builder(call);
   SmallVector<Type> argumentTypes = llvm::to_vector(llvm::map_range(
       call.getOperands(), [](Value value) { return value.getType(); }));
-  auto begin = PipeCallBeginOp::create(builder, call.getLoc(), argumentTypes,
-                                       call.getOperands(), callee.getName(),
-                                       callId);
+  auto begin =
+      PipeCallBeginOp::create(builder, call.getLoc(), argumentTypes,
+                              call.getOperands(), callee.getName(), callId);
   IRMapping mapping;
   for (auto [arg, alias] : llvm::zip(block.getArguments(), begin.getAliases()))
     mapping.map(arg, alias);
@@ -165,9 +166,14 @@ static LogicalResult inlinePipeCall(tt::CallOp call, tt::FuncOp callee,
     builder.clone(op, mapping);
   }
   PipeCallEndOp::create(builder, call.getLoc(), callee.getName(), callId);
-  for (auto [result, returned] :
-       llvm::zip(call.getResults(), returnOp.getOperands()))
-    result.replaceAllUsesWith(mapping.lookupOrDefault(returned));
+  if (call.getNumResults()) {
+    SmallVector<Value> returned;
+    for (Value value : returnOp.getOperands())
+      returned.push_back(mapping.lookupOrDefault(value));
+    auto resultMarker = PipeCallReturnOp::create(
+        builder, call.getLoc(), call.getResultTypes(), returned, callId);
+    call.replaceAllUsesWith(resultMarker.getAliases());
+  }
   call.erase();
   return success();
 }
@@ -204,8 +210,9 @@ static LogicalResult inlinePipeHelperCalls(ModuleOp module) {
       continue;
     }
     if (func.getVisibility() != SymbolTable::Visibility::Public)
-      return func.emitOpError("contains pipe ops but still has call sites after "
-                              "pipe helper inlining");
+      return func.emitOpError(
+          "contains pipe ops but still has call sites after "
+          "pipe helper inlining");
   }
   return success();
 }
@@ -228,8 +235,8 @@ static Value canonicalizePipeField(Value field) {
     if (auto blockArg = dyn_cast<BlockArgument>(field)) {
       if (auto partitions = dyn_cast_or_null<ttg::WarpSpecializePartitionsOp>(
               blockArg.getOwner()->getParentOp())) {
-        if (auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(
-                partitions->getParentOp())) {
+        if (auto wsOp =
+                dyn_cast<ttg::WarpSpecializeOp>(partitions->getParentOp())) {
           field = wsOp.getExplicitCaptures()[blockArg.getArgNumber()];
           continue;
         }
@@ -267,8 +274,8 @@ static bool isOneShotPipe(PipeCreateOp op) {
 // Thread count of the partition (or the whole CTA, with no warp specialization)
 // that `op` runs in. lookupNumWarps is warp-specialization-aware: inside a
 // warp_specialize partition it returns that partition's num_warps. Each thread
-// arrives with count 1, so a barrier sized to this count flips after exactly the
-// partition's threads arrive.
+// arrives with count 1, so a barrier sized to this count flips after exactly
+// the partition's threads arrive.
 static FailureOr<int32_t> getThreadCount(Operation *op) {
   auto module = op->getParentOfType<ModuleOp>();
   int numWarps = ttg::lookupNumWarps(op);
@@ -386,7 +393,8 @@ static Value barrierSlot(OpBuilder &builder, Location loc,
                          const RDNAPipeState &st, Value array, Value stage,
                          Operation *source) {
   array = getWarpSpecializeCaptureForUse(source, array);
-  return ttg::MemDescIndexOp::create(builder, loc, st.barSlotType, array, stage);
+  return ttg::MemDescIndexOp::create(builder, loc, st.barSlotType, array,
+                                     stage);
 }
 
 static Value i32Const(OpBuilder &builder, Location loc, int64_t v) {
@@ -394,7 +402,8 @@ static Value i32Const(OpBuilder &builder, Location loc, int64_t v) {
 }
 
 // tle.pipe $phase is an i1 parity; the AMD WaitBarrier takes an i32 phase. With
-// the 1-bit phase field (see BarrierOpToLLVM.cpp) the parity maps straight over.
+// the 1-bit phase field (see BarrierOpToLLVM.cpp) the parity maps straight
+// over.
 static Value phaseToI32(OpBuilder &builder, Location loc, Value phaseI1) {
   return arith::ExtUIOp::create(builder, loc, builder.getI32Type(), phaseI1);
 }
@@ -462,16 +471,17 @@ static FailureOr<RDNAPipeState> createPipeState(PipeCreateOp op,
   st.oneShot = isOneShotPipe(op);
   st.barSlotType = getBarrierSlotType(context);
 
-  st.fullArray =
-      ttg::LocalAllocOp::create(builder, loc, getBarrierArrayType(context, st.capacity));
-  st.emptyArray =
-      ttg::LocalAllocOp::create(builder, loc, getBarrierArrayType(context, st.capacity));
+  st.fullArray = ttg::LocalAllocOp::create(
+      builder, loc, getBarrierArrayType(context, st.capacity));
+  st.emptyArray = ttg::LocalAllocOp::create(
+      builder, loc, getBarrierArrayType(context, st.capacity));
 
   // Init each stage's `full` with the producer count (phase 0: the producer
   // arrives to publish) and `empty` with the consumer count but already flipped
   // (init_phase = 1: slots start free, so the first writer_acquire on parity 0
-  // proceeds). Seeding the phase at init replaces an all-waves pre-arrive, which
-  // would miscount once producer/consumer are warp-specialized sub-groups.
+  // proceeds). Seeding the phase at init replaces an all-waves pre-arrive,
+  // which would miscount once producer/consumer are warp-specialized
+  // sub-groups.
   for (int64_t s = 0; s < st.capacity; ++s) {
     Value idx = i32Const(builder, loc, s);
     Value full = barrierSlot(builder, loc, st, st.fullArray, idx, op);
@@ -488,15 +498,14 @@ static FailureOr<RDNAPipeState> createPipeState(PipeCreateOp op,
     // The i64 barrier arrays above are memdescs, not tensors, so they can stay
     // at the logical capacity.
     int64_t controlCapacity = llvm::PowerOf2Ceil(st.capacity);
-    st.closeTagSlotType =
-        ttg::MemDescType::get({1}, builder.getI32Type(), getSharedEncoding(context, 1),
-                              ttg::SharedMemorySpaceAttr::get(context),
-                              /*mutableMemory=*/true);
-    auto closeTagArrayType =
-        ttg::MemDescType::get({controlCapacity, 1}, builder.getI32Type(),
-                              getSharedEncoding(context, 2),
-                              ttg::SharedMemorySpaceAttr::get(context),
-                              /*mutableMemory=*/true);
+    st.closeTagSlotType = ttg::MemDescType::get(
+        {1}, builder.getI32Type(), getSharedEncoding(context, 1),
+        ttg::SharedMemorySpaceAttr::get(context),
+        /*mutableMemory=*/true);
+    auto closeTagArrayType = ttg::MemDescType::get(
+        {controlCapacity, 1}, builder.getI32Type(),
+        getSharedEncoding(context, 2), ttg::SharedMemorySpaceAttr::get(context),
+        /*mutableMemory=*/true);
     RankedTensorType initType =
         closeTagTensorType(op, builder, {controlCapacity, 1});
     Value init = closeTagSplat(builder, loc, initType, /*value=*/false);
@@ -549,13 +558,13 @@ struct TritonTleLowerPipeToRDNA
     // Readers are identified by their LOGICAL reader name (the pipe contract:
     // `tle.pipe.create {readers = [...]}` + per-op `reader_name`), NOT by the
     // physical region they run in -- mirroring the NVWS lowering so every
-    // backend sizes the empty barrier identically. Each DISTINCT declared reader
-    // arrives before a slot can be reused, so the empty barrier sums the distinct
-    // readers (two 128-thread named readers need 256, even in one partition). An
-    // unnamed pipe has a single reader identity ("" ). getPipeReaderName enforces
-    // the same reader-declaration diagnostics as NVWS. Writers are summed per
-    // distinct partition. Two ops of one participant (a reader's wait+release)
-    // must agree on the thread count.
+    // backend sizes the empty barrier identically. Each DISTINCT declared
+    // reader arrives before a slot can be reused, so the empty barrier sums the
+    // distinct readers (two 128-thread named readers need 256, even in one
+    // partition). An unnamed pipe has a single reader identity ("" ).
+    // getPipeReaderName enforces the same reader-declaration diagnostics as
+    // NVWS. Writers are summed per distinct partition. Two ops of one
+    // participant (a reader's wait+release) must agree on the thread count.
     std::map<std::string, PipeCounts> countsByKey;
     std::map<std::string, std::map<Region *, int32_t>> writerEndpoints;
     std::map<std::string, std::map<std::string, int32_t>> readerCounts;
@@ -626,8 +635,8 @@ struct TritonTleLowerPipeToRDNA
         sum += reader.second;
       countsByKey[entry.first].consumerCnt = sum;
     }
-    // Degenerate pipes (missing a writer or reader) fall back to the create op's
-    // own thread count.
+    // Degenerate pipes (missing a writer or reader) fall back to the create
+    // op's own thread count.
     for (Operation *op : ops) {
       if (!isa<PipeCreateOp>(op))
         continue;
@@ -647,8 +656,7 @@ struct TritonTleLowerPipeToRDNA
     for (Operation *op : ops) {
       std::string key = getPipeKey(op);
       if (auto create = dyn_cast<PipeCreateOp>(op)) {
-        FailureOr<RDNAPipeState> st =
-            createPipeState(create, countsByKey[key]);
+        FailureOr<RDNAPipeState> st = createPipeState(create, countsByKey[key]);
         if (failed(st))
           return signalPassFailure();
         states[key] = *st;

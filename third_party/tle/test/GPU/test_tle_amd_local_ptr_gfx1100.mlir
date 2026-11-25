@@ -34,4 +34,16 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 16 : i32, ttg.tar
     %vals = tt.load %ptrs : tensor<512x4x!tt.ptr<i32, 3>, #blocked>
     tt.return
   }
+
+  // CHECK-LABEL: llvm.func @alias_lds_to_llvm
+  // CHECK: llvm.getelementptr
+  // CHECK-NOT: tle.memdesc_alias
+  tt.func public @alias_lds_to_llvm() {
+    %src = ttg.local_alloc : () -> !ttg.memdesc<4096xi32, #shared, #smem, mutable>
+    %alias = tle.memdesc_alias %src {offset_bytes = 128 : i64} : !ttg.memdesc<4096xi32, #shared, #smem, mutable> -> !ttg.memdesc<512xi32, #shared, #smem, mutable>
+    %c0 = arith.constant 0 : i32
+    %ptr = "tle.local_pointers"(%alias, %c0) : (!ttg.memdesc<512xi32, #shared, #smem, mutable>, i32) -> !tt.ptr<i32, 3>
+    %loaded = tt.load %ptr : !tt.ptr<i32, 3>
+    tt.return
+  }
 }

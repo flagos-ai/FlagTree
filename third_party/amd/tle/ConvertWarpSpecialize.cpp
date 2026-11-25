@@ -139,8 +139,8 @@ static LogicalResult lowerWarpSpecialize(ttg::WarpSpecializeOp ws) {
   // Everything after the op becomes the post-join continuation.
   Block *afterBlk = predBlock->splitBlock(std::next(ws->getIterator()));
 
-  // Rejoin block: CTA-wide barrier, then (after the stores are visible) load the
-  // broadcast yield results and fall into the continuation.
+  // Rejoin block: CTA-wide barrier, then (after the stores are visible) load
+  // the broadcast yield results and fall into the continuation.
   Block *rejoin = new Block();
   fnRegion->getBlocks().insert(Region::iterator(afterBlk), rejoin);
   {
@@ -161,7 +161,8 @@ static LogicalResult lowerWarpSpecialize(ttg::WarpSpecializeOp ws) {
   defReg.walk([&](ttg::WarpYieldOp y) {
     OpBuilder yb(y);
     for (auto [i, operand] : llvm::enumerate(y.getOperands())) {
-      Value splat = tt::SplatOp::create(yb, y.getLoc(), yieldTensorTys[i], operand);
+      Value splat =
+          tt::SplatOp::create(yb, y.getLoc(), yieldTensorTys[i], operand);
       ttg::LocalStoreOp::create(yb, y.getLoc(), splat, yieldSlots[i]);
     }
     cf::BranchOp::create(yb, y.getLoc(), rejoin);
@@ -212,8 +213,10 @@ static LogicalResult lowerWarpSpecialize(ttg::WarpSpecializeOp ws) {
     Value lo = arith::ConstantIntOp::create(cb, loc, startIds[i], 32);
     Value hi =
         arith::ConstantIntOp::create(cb, loc, startIds[i] + numWarps[i], 32);
-    Value ge = arith::CmpIOp::create(cb, loc, arith::CmpIPredicate::uge, wid, lo);
-    Value lt = arith::CmpIOp::create(cb, loc, arith::CmpIPredicate::ult, wid, hi);
+    Value ge =
+        arith::CmpIOp::create(cb, loc, arith::CmpIPredicate::uge, wid, lo);
+    Value lt =
+        arith::CmpIOp::create(cb, loc, arith::CmpIPredicate::ult, wid, hi);
     Value in = arith::AndIOp::create(cb, loc, ge, lt);
     cf::CondBranchOp::create(cb, loc, in, partEntry[i], chk[i + 1]);
   }

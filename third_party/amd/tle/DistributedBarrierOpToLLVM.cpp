@@ -88,14 +88,16 @@ struct DistributedBarrierOpConversion
     auto func = op->getParentOfType<LLVM::LLVMFuncOp>();
     if (!func)
       return op.emitOpError("grid lowering requires LLVM function context");
-    int32_t argIdx = (int32_t)func.getNumArguments() + kGlobalScratchBufferOffset;
+    int32_t argIdx =
+        (int32_t)func.getNumArguments() + kGlobalScratchBufferOffset;
     if (argIdx < 0 || argIdx >= (int32_t)func.getNumArguments())
       return op.emitOpError("cannot locate global scratch argument");
     Value scratchBase = func.getArgument((unsigned)argIdx);
     auto basePtrTy = dyn_cast<LLVM::LLVMPointerType>(scratchBase.getType());
     if (!basePtrTy)
       return op.emitOpError("global scratch argument must be an LLVM pointer");
-    auto i32PtrTy = LLVM::LLVMPointerType::get(ctx, basePtrTy.getAddressSpace());
+    auto i32PtrTy =
+        LLVM::LLVMPointerType::get(ctx, basePtrTy.getAddressSpace());
 
     ModuleOp mod = op->getParentOfType<ModuleOp>();
     // Triton never launches a partial workgroup, so the workgroup count is
@@ -105,11 +107,10 @@ struct DistributedBarrierOpConversion
     // acquire invalidates L0/GL1, so on gfx1100 the first barrier of every
     // call stalled ~5 us on that reload. Invariant aligned loads stay scalar.
     auto constPtrTy = LLVM::LLVMPointerType::get(ctx, 4);
-    Value implicitArgs =
-        LLVM::createLLVMIntrinsicCallOp(rewriter, loc,
-                                        "llvm.amdgcn.implicitarg.ptr",
-                                        TypeRange{constPtrTy}, ValueRange{})
-            .getResult(0);
+    Value implicitArgs = LLVM::createLLVMIntrinsicCallOp(
+                             rewriter, loc, "llvm.amdgcn.implicitarg.ptr",
+                             TypeRange{constPtrTy}, ValueRange{})
+                             .getResult(0);
     auto gridDim = [&](int32_t index) -> Value {
       Value ptr = b.gep(constPtrTy, i32Ty, implicitArgs, b.i32_val(index));
       return LLVM::LoadOp::create(rewriter, loc, i32Ty, ptr, /*alignment=*/4,
@@ -181,8 +182,8 @@ struct DistributedBarrierOpConversion
 
     Value scratchByteOffset = b.i32_val(scratchOffset);
     if (isAxisGroup)
-      scratchByteOffset = b.add(scratchByteOffset,
-                                b.mul(groupIndex, b.i32_val(kGridScratchBytes)));
+      scratchByteOffset = b.add(
+          scratchByteOffset, b.mul(groupIndex, b.i32_val(kGridScratchBytes)));
     Value arrivedBytePtr =
         b.gep(basePtrTy, i8Ty, scratchBase, scratchByteOffset);
     Value arrivedPtr = b.bitcast(arrivedBytePtr, i32PtrTy);
@@ -199,8 +200,7 @@ struct DistributedBarrierOpConversion
     }
 
     Value totalCTAs = b.mul(b.mul(gridDimX, gridDimY), gridDimZ);
-    Value expectedCTAs =
-        isAxisGroup ? b.i32_val(participantCount) : totalCTAs;
+    Value expectedCTAs = isAxisGroup ? b.i32_val(participantCount) : totalCTAs;
 
     Block *curBlock = rewriter.getInsertionBlock();
     Block *endBlock = curBlock->splitBlock(rewriter.getInsertionPoint());

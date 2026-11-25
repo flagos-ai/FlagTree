@@ -463,6 +463,8 @@ class HIPBackend(BaseBackend):
 
         # Get some metadata
         metadata["shared"] = src.get_int_attr("ttg.shared")
+        # A TLE grid barrier can request a cooperative launch during AST lowering.
+        metadata["launch_cooperative_grid"] = options.launch_cooperative_grid
         metadata["global_scratch_size"] = src.get_int_attr("ttg.global_scratch_memory_size") or 0
         metadata["global_scratch_align"] = src.get_int_attr("ttg.global_scratch_memory_alignment") or 1
         metadata["profile_scratch_size"] = src.get_int_attr("ttg.profile_scratch_memory_size") or 0

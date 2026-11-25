@@ -829,12 +829,10 @@ def _clear_cooperative_grid_scratch(global_scratch):
         return
     if getattr(global_scratch, "pre_zeroed", False):
         return
-    raise RuntimeError(
-        "Cooperative grid launch requires a zero-initialized global scratch "
-        "(the distributed_barrier counter assumes a zero start), but the scratch "
-        "allocator returned a buffer exposing neither zero_()/fill_() nor a "
-        "truthy pre_zeroed marker."
-    )
+    raise RuntimeError("Cooperative grid launch requires a zero-initialized global scratch "
+                       "(the distributed_barrier counter assumes a zero start), but the scratch "
+                       "allocator returned a buffer exposing neither zero_()/fill_() nor a "
+                       "truthy pre_zeroed marker.")
 
 
 class HIPLauncher(object):
@@ -864,8 +862,7 @@ class HIPLauncher(object):
                 return alloc_fn(alloc_size, align, stream)
             return None
 
-        global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align,
-                                          _allocation._allocator)
+        global_scratch = allocate_scratch(self.global_scratch_size, self.global_scratch_align, _allocation._allocator)
         # The grid distributed_barrier uses a sense-reversing counter that assumes
         # a zero initial state; allocators may return uninitialized storage, so
         # clear it before a cooperative launch.

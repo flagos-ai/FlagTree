@@ -1,6 +1,6 @@
-#include "Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "../lib/TritonAMDGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "../lib/TritonAMDGPUToLLVM/TargetInfo.h"
+#include "Dialect/TritonAMDGPU/IR/Dialect.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -94,8 +94,8 @@ struct ArriveBarrierOpConversion
 
     if (targetInfo.getISAFamily() == AMD::ISAFamily::GFX1250) {
       // Hardware named-barrier arrive. The intrinsic
-      // `ds.atomic.barrier.arrive.rtn.b64` only exists on gfx12.5+ (verified via
-      // `llc -mcpu=`: every other AMD family, RDNA1-4 and CDNA1-4, reports
+      // `ds.atomic.barrier.arrive.rtn.b64` only exists on gfx12.5+ (verified
+      // via `llc -mcpu=`: every other AMD family, RDNA1-4 and CDNA1-4, reports
       // "Cannot select"), so it is gated here and emulated below otherwise.
       // NOTE: The LLVM intrisic expects an i64_ty for count (update value)
       // But count cannot be more than 32bits according to ISA docs.
@@ -104,10 +104,10 @@ struct ArriveBarrierOpConversion
               rewriter, loc, "llvm.amdgcn.ds.atomic.barrier.arrive.rtn.b64",
               i64_ty, {base, b.i64_val(count)})
               .getResult(0);
-      Value priorPhase = b.and_(
-          i32_ty, b.i32_val(kBarrierPhaseMask),
-          b.trunc(i32_ty,
-                  b.lshr(priorState, b.i64_val(kBarrierCountBitWidth))));
+      Value priorPhase =
+          b.and_(i32_ty, b.i32_val(kBarrierPhaseMask),
+                 b.trunc(i32_ty,
+                         b.lshr(priorState, b.i64_val(kBarrierCountBitWidth))));
       rewriter.replaceOp(op, priorPhase);
       return success();
     }
