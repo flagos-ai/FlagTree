@@ -17,24 +17,28 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "AMDGCN_ENABLE_DUMP",
     "AMDGCN_USE_BUFFER_ATOMICS",
     "AMDGCN_USE_BUFFER_OPS",
-    "ALLOW_LHS_TMEM_LAYOUT_CONVERSION",
-    "DISABLE_FAST_REDUCTION",
     "DISABLE_LLVM_OPT",
     "DISABLE_MMA_V3",
     "DISABLE_MMA_V5",
     "DISABLE_PTXAS_OPT",
-    "LLVM_EXTRACT_DI_LOCAL_VARIABLES",
     "LLVM_IR_ENABLE_DUMP",
     "LLVM_ENABLE_TIMING",
     "LLVM_PASS_PLUGIN_PATH",
+    "LLVM_EXTRACT_DI_LOCAL_VARIABLES",
     "MLIR_ENABLE_DIAGNOSTICS",
     "MLIR_ENABLE_DUMP",
     "MLIR_DUMP_PATH",
     "MLIR_ENABLE_TIMING",
     "MLIR_DISABLE_MULTITHREADING",
     "TRITON_DEFAULT_FP_FUSION",
+    "TRITON_DISABLE_ASYNC_COPY",
+    "TRITON_XCN_DISABLE_ASYNC_BARRIER_RELAX",
+    "TRITON_XCN_DISABLE_WAR_BARRIER_RELAX",
+    "TRITON_XCN_ASYNC_VGPR_BUDGET",
     "TRITON_DISABLE_LINE_INFO",
-    "TRITON_DISABLE_RESHAPE_ENCODING_INFERENCE",
+    "TRITON_DISABLE_LOOP_PEELING",
+    "TRITON_DISABLE_WARP_REDUNDANT_REDUCE",
+    "TRITON_DISABLE_HOIST_LOADS",
     "TRITON_DUMP_MIR",
     "TRITON_ENABLE_LLVM_DEBUG",
     "TRITON_HIP_USE_ASYNC_COPY",
@@ -44,42 +48,65 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "TRITON_ENABLE_ASAN",
     "TRITON_OVERRIDE_ARCH",
     "USE_IR_LOC",
-    "USE_TTGIR_LOC",
     "NVPTX_ENABLE_DUMP",
+    "ALLOW_LHS_TMEM_LAYOUT_CONVERSION",
     "TRITON_F32_DEFAULT",
     "TRITON_PREFER_TMEM_16x256_LAYOUT",
     "TRITON_ENABLE_EXPERIMENTAL_CONSAN",
+    "TRITONXPU_HP_MODE",
     "TRITONXPU_BF16_ROUND_MID",
     "TRITONXPU_BF16_FAST",
     "TRITONXPU_FP16_FAST",
-    "LLVM_ERROR_LM_SIZE",
-    "TRITON_TUNE_BUFFER_LM_SIZE",
-    "TRITON_PRINT_HW_ID",
-    "TRITON_PRINT_VERBOSE",
-    "TRITON_XCN_DUMP_PREFIX",
-    "TRITONXPU_HP_MODE",
     "TRITONXPU_PROBE_BOUNDARY",
     "TRITONXPU_LM_WAR_FENCE",
     "TRITONXPU_LIVE_RANGE",
     "TRITONXPU_PROBE_SIDE",
-    "TRITON_DISABLE_CRASH_RECOVERY",
-    "TRITONXPU_TILE_DECIDE",
-    "TRITONXPU_VEC_HYPO_COVER",
-    "TRITONXPU_TILE_REPORT",
-    "TRITONXPU_LM_REPORT",
-    "TRITONXPU_REDUCE_REGION",
-    "USE_FAST_MATH",
-    "TRITON_DISABLE_LOOP_PEELING",
+    "TRITON_PRINT_VERBOSE",
+    "TRITON_TUNE_BUFFER_LM_SIZE",
     "TRITON_TLE_STACK_MARGIN",
+    "TRITONJUPITER_ARG_HINT",
+    "TRITONJUPITER_INLINE_HINT",
+    "TRITONJUPITER_TILE_VGPR_BUDGET",
+    "TRITONJUPITER_TILE_SPLIT_REDUCTIONS",
+    "TRITONJUPITER_TILE_PRESSURE_FLOOR",
+    "LLVM_ERROR_LM_SIZE",
+    "TRITONXCN_AMD_MODE_FDIV",
+    "TRITONJUPITER_AMD_MODE_FDIV",
+    "USE_FAST_MATH",
+    "TRITONJUPITER_EXPAND_TANH",
+    "TRITONJUPITER_EXPAND_GELU",
+    "TRITONJUPITER_EXPAND_LOG1P",
+    "TRITONJUPITER_REDUCE_AXISINFO",
+    "TRITONXCN_EXPAND_TANH",
+    "TRITONXCN_EXPAND_GELU",
     // clang-format on
 };
 
 inline const std::set<std::string> CACHE_NEUTRAL_ENV_VARS = {
-    "TRITON_REPRODUCER_PATH",  "TRITON_ENABLE_PYTHON_STACKTRACE",
-    "TRITONXPU_UNROLL_DRYRUN", "TRITONXPU_REDUCE_BOUNDARY",
-    "TRITONXPU_VEC_COST",      "TRITONXPU_VEC_REPORT",
-    "TRITONXPU_TILE_PLAN",     "TRITONXPU_VFLOW_REPORT",
-    "TRITONXPU_REDUCE_VEC",    "TRITONXPU_SCAN_VEC",
+    // clang-format off
+    "TRITON_REPRODUCER_PATH",
+    "TRITON_DISABLE_CRASH_RECOVERY",
+    "TRITON_ENABLE_PYTHON_STACKTRACE",
+    "TRITONXPU_UNROLL_DRYRUN",
+    "TRITONXPU_REDUCE_BOUNDARY",
+    "TRITONXPU_REDUCE_REGION",
+    "TRITONXPU_REDUCE_VEC",
+    "TRITONXPU_SCAN_VEC",
+    "TRITONXPU_VEC_COST",
+    "TRITONXPU_LM_REPORT",
+    "TRITONXPU_TILE_REPORT",
+    "TRITONXPU_VEC_REPORT",
+    "TRITONXPU_TILE_PLAN",
+    "TRITONXPU_TILE_DECIDE",
+    "TRITONXPU_VFLOW_REPORT",
+    "TRITONXPU_VEC_HYPO_COVER",
+    "TRITONJUPITER_TILE_REPORT",
+    // clang-format on
+    "TRITON_DISABLE_RESHAPE_ENCODING_INFERENCE",
+    "TRITON_PRINT_HW_ID",
+    "TRITON_XCN_DUMP_PREFIX",
+    "DISABLE_FAST_REDUCTION",
+    "USE_TTGIR_LOC",
 };
 
 namespace tools {
@@ -98,7 +125,10 @@ inline void assertIsRecognized(const std::string &env) {
          errmsg.c_str());
 }
 
+static std::mutex getenv_mutex;
+
 inline std::string getStrEnv(const std::string &env) {
+  std::lock_guard<std::mutex> lock(getenv_mutex);
   assertIsRecognized(env);
   const char *cstr = std::getenv(env.c_str());
   if (!cstr)
@@ -109,6 +139,7 @@ inline std::string getStrEnv(const std::string &env) {
 
 // return value of a cache-invalidating boolean environment variable
 inline bool getBoolEnv(const std::string &env) {
+  std::lock_guard<std::mutex> lock(getenv_mutex);
   assertIsRecognized(env);
   const char *s = std::getenv(env.c_str());
   std::string str(s ? s : "");
@@ -125,29 +156,6 @@ inline std::optional<bool> isEnvValueBool(std::string str) {
   if (str == "off" || str == "false" || str == "0")
     return false;
   return std::nullopt;
-}
-
-// XPU-private env helpers.
-//
-// `getStrEnv`/`getBoolEnv` are header-only `inline` functions, so they emit
-// weak symbols. At link time the upstream (main-tree) definition wins via weak
-// deduplication and it does NOT whitelist the `TRITONXPU_*` vars, which makes
-// its `assertIsRecognized` abort at runtime. To keep reading env vars without
-// touching the main tree, XPU code calls these distinctly-named helpers which
-// allow the `TRITONXPU_` prefix and never assert.
-inline std::string getStrEnvXPU(const std::string &env) {
-  const char *cstr = std::getenv(env.c_str());
-  if (!cstr)
-    return "";
-  return std::string(cstr);
-}
-
-inline bool getBoolEnvXPU(const std::string &env) {
-  const char *s = std::getenv(env.c_str());
-  std::string str(s ? s : "");
-  std::transform(str.begin(), str.end(), str.begin(),
-                 [](unsigned char c) { return std::tolower(c); });
-  return str == "on" || str == "true" || str == "1";
 }
 } // namespace tools
 } // namespace mlir::triton
