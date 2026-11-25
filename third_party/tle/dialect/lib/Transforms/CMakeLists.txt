@@ -43,6 +43,7 @@ add_triton_library(TritonTLETransforms
   TritonGPUOpInterfacesIncGen
 
   LINK_LIBS PUBLIC
+  MLIRControlFlowDialect
   TritonTLEAnalysis
   TritonGPUIR
   TritonAnalysis
