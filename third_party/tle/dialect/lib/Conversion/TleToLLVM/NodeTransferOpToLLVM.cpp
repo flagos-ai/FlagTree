@@ -139,7 +139,8 @@ lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
 }
 
 struct RemotePutOpConversion : public ConvertOpToLLVMPattern<tle::RemotePutOp> {
-  RemotePutOpConversion(LLVMTypeConverter &typeConverter, PatternBenefit benefit)
+  RemotePutOpConversion(LLVMTypeConverter &typeConverter,
+                        PatternBenefit benefit)
       : ConvertOpToLLVMPattern(typeConverter, benefit) {}
 
   LogicalResult
@@ -159,7 +160,8 @@ struct RemotePutOpConversion : public ConvertOpToLLVMPattern<tle::RemotePutOp> {
 };
 
 struct RemoteGetOpConversion : public ConvertOpToLLVMPattern<tle::RemoteGetOp> {
-  RemoteGetOpConversion(LLVMTypeConverter &typeConverter, PatternBenefit benefit)
+  RemoteGetOpConversion(LLVMTypeConverter &typeConverter,
+                        PatternBenefit benefit)
       : ConvertOpToLLVMPattern(typeConverter, benefit) {}
 
   LogicalResult
@@ -183,6 +185,6 @@ struct RemoteGetOpConversion : public ConvertOpToLLVMPattern<tle::RemoteGetOp> {
 void mlir::triton::tle::populateNodeTransferOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
-  patterns.add<RemotePutOpConversion, RemoteGetOpConversion>(
-      typeConverter, benefit);
+  patterns.add<RemotePutOpConversion, RemoteGetOpConversion>(typeConverter,
+                                                             benefit);
 }
