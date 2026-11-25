@@ -274,10 +274,10 @@ struct TritonTleLowerBarriers
           Block *definingBlock = alloc.getParentBlock();
           Block *aliasBlock =
               scope->findAncestorBlockInRegion(*value.getParentBlock());
-          bool outsideScope =
-              !aliasBlock || !dominance.dominates(definingBlock, aliasBlock) ||
-              (isa<BlockArgument>(value) &&
-               value.getParentBlock() == definingBlock);
+          bool outsideScope = !aliasBlock ||
+                              !dominance.dominates(definingBlock, aliasBlock) ||
+                              (isa<BlockArgument>(value) &&
+                               value.getParentBlock() == definingBlock);
           bool returnedFromScope =
               llvm::any_of(value.getUsers(), [&](Operation *user) {
                 return user->getParentRegion() == scope &&
@@ -334,13 +334,12 @@ struct TritonTleLowerBarriers
     for (const auto &[edge, slots] : edgeRetirements) {
       Operation *terminator = edge.first->getTerminator();
       Block *successor = terminator->getSuccessor(edge.second);
-      auto argLocs = llvm::map_to_vector(successor->getArguments(),
-                                        [](BlockArgument arg) {
-                                          return arg.getLoc();
-                                        });
+      auto argLocs =
+          llvm::map_to_vector(successor->getArguments(),
+                              [](BlockArgument arg) { return arg.getLoc(); });
       OpBuilder builder(terminator);
-      Block *retire =
-          builder.createBlock(successor, successor->getArgumentTypes(), argLocs);
+      Block *retire = builder.createBlock(
+          successor, successor->getArgumentTypes(), argLocs);
       builder.create<cf::BranchOp>(terminator->getLoc(), successor,
                                    retire->getArguments());
       terminator->setSuccessor(retire, edge.second);
