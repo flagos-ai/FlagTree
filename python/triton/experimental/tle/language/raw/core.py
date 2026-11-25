@@ -113,7 +113,7 @@ if _detect_backend() == "ascend":
     from triton.language.extra.cann.extension import builtin as _ascend_builtin
 
     @_ascend_builtin
-    def call(op, *args, output_indices=None, out=(), _semantic=None):
+    def call(op, *args, output_indices=None, out=(), _semantic=None, _generator=None):
         op = getattr(op, "value", op)
         if isinstance(op, str):
             backend, _, name = op.partition("_")
@@ -124,6 +124,7 @@ if _detect_backend() == "ascend":
         if isinstance(op, CANNJITFunction):
             if len(args) == 1 and isinstance(args[0], (list, tuple, tl.tuple)):
                 args = tuple(args[0])
+            op.mark_kernel_launch_hook(_semantic, _generator)
             from triton.language.extra.cann.extension import custom_object_semantic
             return custom_object_semantic(op, args, output_indices or (), _semantic=_semantic)
         raise ValueError(f"unsupported tle_raw.call target: {op!r}")

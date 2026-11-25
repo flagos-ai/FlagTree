@@ -82,6 +82,8 @@ def min_dot_size(target: GPUTarget):
 def make_ttir(mod, metadata, opt):
     if "hash" not in metadata:
         metadata["hash"] = hashlib.sha256(f"{mod}-{metadata}".encode()).hexdigest()
+    kernel_launch_hooks = mod.get_operation().get_str_attr("tle.raw.kernel_launch_hooks")
+    metadata["kernel_launch_hooks"] = kernel_launch_hooks.split(",") if kernel_launch_hooks else []
     # the same optimize pass for triton-ir as all other backends
     pm = ir.pass_manager(mod.context)
     pm.enable_debug()
@@ -140,7 +142,6 @@ def ttir_to_linalg(mod, metadata, opt, *, named_ops=False):
             passes.common.add_canonicalizer(pm)
 
         # commonir: lower tile.* ops and inline unresolved !tile.buf signatures.
-        ascend.passes.ttir.add_commonir_tv_ptr_legalize(pm)
         ascend.passes.ttir.add_commonir_to_hivm(pm)
         passes.common.add_inliner(pm)
         passes.common.add_canonicalizer(pm)
@@ -542,6 +543,8 @@ def linalg_to_bin_enable_npu_compile_910_95(linalg: str, metadata, opt):
             for bitcode in bitcodes:
                 _compile_option_list += \
                     [f"--link-aicore-bitcode={bitcode}"]
+        for bitcode in get_extra_link_bitcodes():
+            _compile_option_list += [f"--link-aicore-bitcode={bitcode}"]
 
         disable_auto_cv_work_space_manage = metadata.get("disable_auto_cv_work_space_manage")
         if disable_auto_cv_work_space_manage is not None:
@@ -791,6 +794,8 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
             for bitcode in bitcodes:
                 _compile_option_list += \
                     [f"--link-aicore-bitcode={bitcode}"]
+        for bitcode in get_extra_link_bitcodes():
+            _compile_option_list += [f"--link-aicore-bitcode={bitcode}"]
 
         _compile_option_list += [f"--link-aicore-bitcode={get_libdevice()}"]
 
@@ -872,6 +877,17 @@ def linalg_to_bin_enable_npu_compile_A2_A3(linalg: str, metadata, opt):
 def get_libdevice():
     current = os.path.dirname(__file__)
     return os.path.join(current, "lib/libdevice.10.bc")
+
+
+def get_extra_link_bitcodes():
+    """Extra --link-aicore-bitcode paths (cann op mix BCs, etc.)."""
+    paths: list[str] = []
+    try:
+        from triton.experimental.tle.raw.cann.runtime import get_op_extra_link_bitcodes
+        paths.extend(get_op_extra_link_bitcodes())
+    except ImportError:
+        pass
+    return paths
 
 
 @dataclass(frozen=True)
