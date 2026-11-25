@@ -5,10 +5,17 @@
 
 #include <optional>
 #include <set>
+#ifdef __TLE__
+#include <functional>
+#include <map>
+#endif
 
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/RegionUtils.h"
+#ifdef __TLE__
+#include "nvidia/hopper/include/Transforms/Passes.h"
+#endif
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Types.h"
@@ -634,6 +641,11 @@ static void coalesceMBarrierInitBarriers(Operation *parentOp) {
   for (Region &region : parentOp->getRegions())
     coalesceMBarrierInitBarriersInRegion(region);
 }
+#ifdef __TLE__
+
+#include "tle/dialect/include/Transforms/LowerTokenCalls.h"
+
+#endif
 
 #ifdef __TLE__
 LogicalResult lowerTokenOperations(Operation *parentOp, int numCTAs,
@@ -643,6 +655,9 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
                           int numConsumerGroups)
 #endif
 {
+#ifdef __TLE__
+  return lowerTokenOperationsThroughCalls(parentOp, numCTAs);
+#else
   SmallVector<Operation *> deprecatedOps;
   SmallVector<Operation *> deprecatedTokenOps;
   DenseSet<Operation *> warpSpecOps;
@@ -962,6 +977,7 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
 #ifdef __TLE__
   return success();
 #endif
+#endif
 }
 
 #ifdef __TLE__
@@ -982,4 +998,26 @@ void doTokenLowering(triton::FuncOp &funcOp, unsigned numConsumerGroups)
 #endif
 }
 
+#ifdef __TLE__
+#define GEN_PASS_DEF_NVGPULOWERWSTOKENS
+#include "nvidia/hopper/include/Transforms/Passes.h.inc"
+
+class NVGPULowerWSTokensPass
+    : public impl::NVGPULowerWSTokensBase<NVGPULowerWSTokensPass> {
+public:
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    bool hasToken = false;
+    module.walk([&](ttnvws::CreateTokenOp) { hasToken = true; });
+    if (!hasToken)
+      return;
+
+    int numCTAs = ttg::TritonGPUDialect::getNumCTAs(module);
+    if (failed(lowerTokenOperations(module, numCTAs,
+                                    /*numConsumerGroups=*/1)))
+      signalPassFailure();
+  }
+};
+
+#endif
 } // namespace mlir
