@@ -169,6 +169,48 @@ def _enable_i64_pass_option(options):
     return ' enable_i64=true'
 
 
+def _distributed_lite_mode():
+    """True when the TLE distributed parameter injection is active."""
+    try:
+        from triton.runtime._distributed import DistributedRtContext
+        return DistributedRtContext().is_lite_mode
+    except Exception:
+        return False
+
+
+def _uses_tle_distributed(mod):
+    """Whether this TTIR uses FlagCX-backed TLE distributed operations."""
+    text = str(mod)
+    return any(op in text for op in (
+        "tle.distributed_barrier",
+        "tle.remote_pointers",
+        "tle.get_device_id",
+        "tle.get_num_pes",
+        "tle.get_world_rank",
+        "tle.signal",
+        "tle.node_put",
+        "tle.node_get",
+    ))
+
+
+@functools.lru_cache(None)
+def file_hash(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def _flagcx_bitcode_hash():
+    try:
+        from triton.backends.enflame.distributed import flagcx_rt_conf
+        if flagcx_rt_conf.is_available:
+            path = str(flagcx_rt_conf.bitcode_path)
+            if os.path.isfile(path):
+                return file_hash(path)
+    except Exception:
+        pass
+    return ""
+
+
 def make_ttir(mod, metadata, options):
     # flagtree tle raw: post-compile kernel init hooks (e.g. efshmem cumodule
     # init), stamped by the TOPS EDSL via tle.raw.kernel_init_hooks. Without
@@ -178,6 +220,11 @@ def make_ttir(mod, metadata, options):
     # flagtree tle raw: efshmem device bitcode is a per-kernel decision, stamped
     # by the TOPS EDSL as `tle.raw.efshmem_device_bc`; make_llir attaches it.
     metadata['tle_raw_efshmem'] = bool(mod.get_operation().get_str_attr("tle.raw.efshmem_device_bc"))
+    # flagtree tle distributed: kernels that use FlagCX-backed TLE ops need
+    # libflagcx_device.bc for the flagcxDev* calls they lower to. The two
+    # leading i64 parameters are added by add_params_for_distribution below.
+    metadata['tle_flagcx'] = _uses_tle_distributed(mod)
+
     metadata['ptr_int_args'] = sorted(collect_ptr_int_args(str(mod)))
     # Validate num_warps constraints
     if options.arch in ("gcu400", "gcu410") and options.num_warps > 4:
@@ -190,6 +237,17 @@ def make_ttir(mod, metadata, options):
     pm.enable_debug()
 
     passes.common.add_inliner(pm)
+    # flagtree tle distributed: prepend the two device-pointer parameters to
+    # every kernel, following the nvidia/iluvatar route. The GCU launcher
+    # (GcuLauncher) adds the matching "*i64" slots; jit.run supplies the two
+    # values in front of the bound arguments.
+    if _distributed_lite_mode():
+        from triton._C.libtriton import tle as _tle
+        add_params = getattr(_tle.passes, "add_params_for_distribution", None)
+        if add_params is None:
+            raise RuntimeError("TLE distributed parameters require add_params_for_distribution "
+                               "in this libtriton build")
+        add_params(pm)
     # Triton 3.8 removed this pass; use it only when available.
     if options.arch == "gcu500":
         rewrite_pass = getattr(passes.ttir, "add_rewrite_tensor_pointer", None)
@@ -358,6 +416,13 @@ def make_llir(mod, metadata, options):
             raise RuntimeError("efshmem kernel requires libefshmem_device.bc: set EFSHMEM_HOME "
                                "(or EFSHMEM_LIBDEVICE_PATH) to the efshmem install")
         extern_libs += list(efshmem_libs.items())
+    if metadata.get('tle_flagcx'):
+        from triton.backends.enflame.distributed import Distributed
+        flagcx_libs = Distributed().get_extern_libs()
+        if not flagcx_libs:
+            raise RuntimeError("FlagCX kernel requires libflagcx_device.bc: install FlagCX or set "
+                               "FLAGCX_BITCODE_PATH / FLAGCX_MODULE_PATH")
+        extern_libs += list(flagcx_libs.items())
     passes = []
     if toolkit.get_bool_env("MLIR_ENABLE_DUMP"):
         passes.append('-mlir-print-ir-after-all')
@@ -704,16 +769,19 @@ class GCUOptions:
             nvshmem_libdevice_path = os.getenv("NVSHMEM_LIBDEVICE_PATH", None)
             if nvshmem_libdevice_path and os.path.isfile(nvshmem_libdevice_path):
                 extern_libs['libnvshmem_device'] = nvshmem_libdevice_path
+
         object.__setattr__(self, 'extern_libs', tuple(extern_libs.items()))
 
         pass
 
     def hash(self):
-        ## Restore the code below, when we have libdevice.bc
-        #hash_dict = dict(self.__dict__)
-        #hash_dict["extern_libs"] = tuple((k, file_hash(v)) for k, v in sorted(hash_dict["extern_libs"]))
+        # The prebuilt extern bitcodes were previously left out of the key, so
+        # swapping libdevice/efshmem/flagcx bitcode could reuse stale kernels.
+        extern_libs = getattr(self, 'extern_libs', ()) or ()
+        lib_key = tuple((name, file_hash(path) if path and os.path.isfile(path) else "") for name, path in extern_libs)
         version_key = _version_key()
-        key = version_key + '_' + '_'.join([f'{name}-{val}' for name, val in self.__dict__.items()])
+        key = (version_key + '_' + '_'.join([f'{name}-{val}' for name, val in self.__dict__.items()]) +
+               '_extern_libs-' + repr(lib_key) + '_flagcx-' + _flagcx_bitcode_hash())
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 

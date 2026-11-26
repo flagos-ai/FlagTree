@@ -209,6 +209,19 @@ def collect_ptr_int_args(ttir_text):
     return roots
 
 
+def _distributed_lite_mode():
+    """True when the TLE distributed parameters must be injected.
+
+    Mirrors the nvidia/iluvatar gate: the compiler pass prepends two i64
+    parameters to every kernel and the launcher exposes the matching slots.
+    """
+    try:
+        from triton.runtime._distributed import DistributedRtContext
+        return DistributedRtContext().is_lite_mode
+    except Exception:
+        return False
+
+
 def ty_to_cpp(ty):
     if ty[0] == '*':
         return "void*"
@@ -739,6 +752,23 @@ class GcuLauncher(object):
             ptr_int_args = set(metadata.get('ptr_int_args', ()))
         else:
             ptr_int_args = set(getattr(metadata, 'ptr_int_args', ()))
+        # flagtree tle distributed: nvidia/iluvatar-compatible injection. The
+        # compiler pass prepends two i64 parameters to the kernel, so the
+        # launcher needs the two matching "*i64" slots. jit.run passes
+        # [ctx.comm_ptr, ctx.mem_ptr] for them, which are None in the usual
+        # case; "*" arguments accept None as nullptr, exactly like nvidia.
+        if _distributed_lite_mode():
+            signature = {i: ty for i, ty in enumerate(["*i64", "*i64"] + list(signature.values()))}
+
+            # Constant keys are indices or index paths (tuples) into the kernel
+            # arguments; only the leading argument index moves.
+            def _shift_key(key):
+                if isinstance(key, tuple) and key:
+                    return (key[0] + 2, ) + key[1:]
+                return key + 2
+
+            constants = {_shift_key(k): v for k, v in constants.items()}
+            ptr_int_args = {p + 2 for p in ptr_int_args}
         src = generate_launcher(constants, signature, metadata.arch, redundant_sip=redundant_sip,
                                 ptr_int_args=ptr_int_args)
         mod = compile_module_from_src(src, "__triton_launcher")

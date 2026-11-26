@@ -30,6 +30,12 @@ try:
 except Exception:
     enabled = False
 
+# Defaults overridden below when the backend publishes its FlagCX config.
+# Kept at module scope so the module-level helpers below can always resolve
+# these names, even when FlagCX is disabled at import time.
+FLAGCX_LIB_PATH = ""
+FLAGCX_INCLUDE_PATH = ""
+
 if enabled:
     from .flagcx_wrapper import (
         FLAGCXLibrary,
@@ -41,12 +47,28 @@ if enabled:
     import tempfile
     import torch
     import torch.distributed as dist
-    from torch.cuda.memory import CUDAPluggableAllocator
-    from torch.utils.cpp_extension import load_inline
     from pathlib import Path
 
     FLAGCX_LIB_PATH = str(flagcx_rt_conf.shared_lib_path.parent)
     FLAGCX_INCLUDE_PATH = str(flagcx_rt_conf.include_path)
+
+    # Optional backend runtime: device module, ProcessGroup backend, allocator
+    # and memory pool. nvidia/iluvatar leave it unset and keep the CUDA/NCCL
+    # path below; the enflame backend publishes a GCU runtime from its
+    # distributed.py.
+    _runtime = getattr(flagcx_rt_conf, "communication_runtime", None)
+
+    def _default_torch_dist_backend():
+        """ProcessGroup backend for the bootstrap (unique-id broadcast only)."""
+        if _runtime is not None:
+            return _runtime.dist_backend()
+        return "nccl"
+
+    def _set_device(local_rank):
+        if _runtime is not None:
+            return _runtime.set_device(local_rank)
+        torch.cuda.set_device(local_rank)
+        return local_rank
 
     def _libflagcx_path():
         return Path(FLAGCX_LIB_PATH) / "libflagcx.so"
@@ -71,27 +93,27 @@ if enabled:
     flagcx = FLAGCXLibrary(so_file=_libflagcx_path())
     global comm, rank, dev_mem, dev_comm, win
 
-    flagcx_allocator_source = """
-    #include <flagcx.h>
-    extern "C" {
+flagcx_allocator_source = """
+#include <flagcx.h>
+extern "C" {
 
-    void* flagcx_alloc_plug(size_t size, int device, void* stream) {
+void* flagcx_alloc_plug(size_t size, int device, void* stream) {
     void* ptr = nullptr;
     flagcxResult_t err = flagcxMemAlloc(&ptr, size);
     if (err != flagcxSuccess) {
         return nullptr;
     }
     return ptr;
-    }
+}
 
-    void flagcx_free_plug(void* ptr, size_t size, int device, void* stream) {
+void flagcx_free_plug(void* ptr, size_t size, int device, void* stream) {
     if (ptr != nullptr) {
         flagcxMemFree(ptr);
     }
-    }
+}
 
-    }
-    """
+}
+"""
 
 
 def compile_flagcx_allocator():
@@ -109,20 +131,24 @@ def compile_flagcx_allocator():
                 flush=True,
             )
 
-            load_inline(
-                name=lib_name,
-                cpp_sources=flagcx_allocator_source,
-                with_cuda=True,
-                extra_ldflags=[
-                    f"-L{FLAGCX_LIB_PATH}",
-                    "-lflagcx",
-                    f"-Wl,-rpath,{FLAGCX_LIB_PATH}",
-                ],
-                verbose=True,
-                is_python_module=False,
-                build_directory=out_dir,
-                extra_include_paths=[FLAGCX_INCLUDE_PATH],
-            )
+            if _runtime is not None:
+                _runtime.compile_allocator(lib_path, FLAGCX_INCLUDE_PATH, FLAGCX_LIB_PATH)
+            else:
+                from torch.utils.cpp_extension import load_inline
+                load_inline(
+                    name=lib_name,
+                    cpp_sources=flagcx_allocator_source,
+                    with_cuda=True,
+                    extra_ldflags=[
+                        f"-L{FLAGCX_LIB_PATH}",
+                        "-lflagcx",
+                        f"-Wl,-rpath,{FLAGCX_LIB_PATH}",
+                    ],
+                    verbose=True,
+                    is_python_module=False,
+                    build_directory=out_dir,
+                    extra_include_paths=[FLAGCX_INCLUDE_PATH],
+                )
         else:
             print(
                 f"[INFO] Using cached FlagCX allocator: {lib_path}",
@@ -135,11 +161,19 @@ def compile_flagcx_allocator():
         if not os.path.isfile(lib_path):
             raise FileNotFoundError(f"FlagCX allocator library not found after compilation: {lib_path}")
 
-        _allocator_wrapper = CUDAPluggableAllocator(
-            lib_path,
-            "flagcx_alloc_plug",
-            "flagcx_free_plug",
-        )
+        if _runtime is not None:
+            _allocator_wrapper = _runtime.pluggable_allocator(
+                lib_path,
+                "flagcx_alloc_plug",
+                "flagcx_free_plug",
+            )
+        else:
+            from torch.cuda.memory import CUDAPluggableAllocator
+            _allocator_wrapper = CUDAPluggableAllocator(
+                lib_path,
+                "flagcx_alloc_plug",
+                "flagcx_free_plug",
+            )
 
         _allocator = _allocator_wrapper.allocator()
 
@@ -158,7 +192,10 @@ def get_mem_pool():
     if _mem_pool is None and not _flagcx_allocator_failed_to_compile:
         compile_flagcx_allocator()
         if _allocator is not None:
-            _mem_pool = torch.cuda.MemPool(_allocator)
+            if _runtime is not None:
+                _mem_pool = _runtime.make_mem_pool(_allocator)
+            else:
+                _mem_pool = torch.cuda.MemPool(_allocator)
     return _mem_pool
 
 
@@ -191,15 +228,16 @@ def init_communicator():
     global comm, rank, _init_communicator_
     if enabled and _init_communicator_:
         return
-    dist.init_process_group(backend="nccl")
+    dist.init_process_group(backend=_default_torch_dist_backend())
     rank = dist.get_rank()
     world_size = dist.get_world_size()
     local_rank = int(os.environ.get("LOCAL_RANK", rank))
-    torch.cuda.set_device(local_rank)
+    device_index = _set_device(local_rank)
 
-    print(f"[Rank {rank}] Starting (world_size={world_size})")
+    print(f"[Rank {rank}] Starting (world_size={world_size}, device={device_index})")
 
-    # Create unique ID on rank 0 and broadcast
+    # Create unique ID on rank 0 and broadcast. GCU keeps this on the host:
+    # the composite cpu:gloo backend carries the 256-byte payload.
     if rank == 0:
         unique_id = flagcx.flagcxGetUniqueId()
         id_bytes = bytes(unique_id.internal)
@@ -207,7 +245,10 @@ def init_communicator():
         id_bytes = b"\x00" * 256
 
     # Broadcast unique_id bytes via torch distributed
-    id_tensor = torch.frombuffer(bytearray(id_bytes), dtype=torch.uint8).cuda()
+    if _runtime is not None:
+        id_tensor = _runtime.prepare_uid_tensor(id_bytes)
+    else:
+        id_tensor = torch.frombuffer(bytearray(id_bytes), dtype=torch.uint8).cuda()
     dist.broadcast(id_tensor, src=0)
     id_bytes = id_tensor.cpu().numpy().tobytes()
 
