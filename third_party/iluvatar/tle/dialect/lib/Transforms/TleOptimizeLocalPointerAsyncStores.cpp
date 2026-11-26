@@ -561,8 +561,13 @@ static bool shouldDeferToPipeliner(AsyncStoreCandidate &candidate,
   // The buffer has to outlive the iteration and be written whole, which is what
   // promote's dominance and shape checks require of the staging it rewrites.
   Operation *baseDef = candidate.match.baseMemDesc.getDefiningOp();
-  if (!baseDef || forOp->isAncestor(baseDef))
+  if (!baseDef || forOp->isAncestor(baseDef)) {
+    llvm::errs() << "[DEFER-DEBUG] baseDef=" << (baseDef ? "yes" : "no")
+                 << " isAncestor=" << (baseDef && forOp->isAncestor(baseDef))
+                 << " storeKind=" << candidate.store->getName().getStringRef()
+                 << "\n";
     return false;
+  }
   auto memDescTy =
       cast<ttg::MemDescType>(candidate.match.baseMemDesc.getType());
   if (candidate.match.valueType.getShape() != memDescTy.getShape())
@@ -576,13 +581,23 @@ static bool shouldDeferToPipeliner(AsyncStoreCandidate &candidate,
   auto ptrTy = dyn_cast<RankedTensorType>(candidate.load.getPtr().getType());
   auto blocked =
       ptrTy ? dyn_cast<ttg::BlockedEncodingAttr>(ptrTy.getEncoding()) : nullptr;
-  if (!shared || !blocked || shared.getOrder()[0] != blocked.getOrder()[0])
+  if (!shared || !blocked || shared.getOrder()[0] != blocked.getOrder()[0]) {
+    llvm::errs() << "[DEFER-DEBUG] shared=" << (shared ? "yes" : "no")
+                 << " blocked=" << (blocked ? "yes" : "no") << " storeKind="
+                 << candidate.store->getName().getStringRef() << "\n";
     return false;
+  }
   if (shared.getOrder()[0] == 0 &&
-      !planSmeCopy(candidate, candidate.match.baseMemDesc, useSme))
+      !planSmeCopy(candidate, candidate.match.baseMemDesc, useSme)) {
+    llvm::errs() << "[DEFER-DEBUG] planSmeCopy failed storeKind="
+                 << candidate.store->getName().getStringRef() << "\n";
     return false;
+  }
 
-  return readsBackIntoDot(candidate.storeTarget);
+  bool rb = readsBackIntoDot(candidate.storeTarget);
+  llvm::errs() << "[DEFER-DEBUG] readsBackIntoDot=" << rb << " storeKind="
+               << candidate.store->getName().getStringRef() << "\n";
+  return rb;
 }
 
 static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group,
