@@ -684,6 +684,12 @@ struct TritonTleLowerPipeToRDNA
             barrierSlot(builder, loc, st, st.fullArray, commit.getStage(), op);
         amdg::ArriveBarrierOp::create(builder, loc, slot, /*count=*/1);
       } else if (auto close = dyn_cast<PipeWriterCloseOp>(op)) {
+        // Close publishes a terminal stage in the same ring as data. Wait
+        // until the previous reader releases this slot before updating its tag.
+        Value empty =
+            barrierSlot(builder, loc, st, st.emptyArray, close.getStage(), op);
+        amdg::WaitBarrierOp::create(builder, loc, empty,
+                                    phaseToI32(builder, loc, close.getPhase()));
         if (!st.oneShot)
           storeCloseTag(builder, loc, st, close.getStage(), /*value=*/true, op);
         // Publish so a waiting reader wakes and observes the close tag.

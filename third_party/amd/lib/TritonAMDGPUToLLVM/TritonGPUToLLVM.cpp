@@ -185,8 +185,15 @@ struct ConvertTritonAMDGPUToLLVM
       AMD::annotateLocalLoadsSyncedViaAsyncWait(mod);
 
     AMD::addLocalBarrierAfterAmdGpuAsyncWait(mod);
+#ifdef __TLE__
+    SymbolTableCollection tables;
+    SymbolUserMap users(tables, mod);
+    ModuleMembarAnalysis membarPass(&allocation,
+                                    AMD::makeMembarFilter(users, allocation));
+#else
     ModuleMembarAnalysis membarPass(&allocation,
                                     mlir::triton::AMD::membarFilter);
+#endif
     membarPass.run();
 
     // Lower functions

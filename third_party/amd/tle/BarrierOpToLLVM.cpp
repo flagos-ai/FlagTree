@@ -99,6 +99,8 @@ struct ArriveBarrierOpConversion
       // "Cannot select"), so it is gated here and emulated below otherwise.
       // NOTE: The LLVM intrisic expects an i64_ty for count (update value)
       // But count cannot be more than 32bits according to ISA docs.
+      LLVM::FenceOp::create(rewriter, loc, LLVM::AtomicOrdering::release,
+                            StringRef("workgroup"));
       Value priorState =
           LLVM::createLLVMIntrinsicCallOp(
               rewriter, loc, "llvm.amdgcn.ds.atomic.barrier.arrive.rtn.b64",
@@ -133,9 +135,10 @@ struct ArriveBarrierOpConversion
         curBlock->getParent(), std::next(Region::iterator(curBlock)));
     loopBlock->addArgument(i64_ty, loc); // current expected barrier word
 
-    // Seed the loop with a plain read of the barrier word.
     rewriter.setInsertionPointToEnd(curBlock);
-    Value seed = b.load(i64_ty, base);
+    auto seed = LLVM::LoadOp::create(rewriter, loc, i64_ty, base, 8);
+    seed.setOrdering(LLVM::AtomicOrdering::monotonic);
+    seed.setSyncscope("workgroup");
     LLVM::BrOp::create(rewriter, loc, ValueRange{seed}, loopBlock);
 
     rewriter.setInsertionPointToStart(loopBlock);
@@ -203,7 +206,12 @@ struct WaitBarrierOpConversion
     // Sleep for the minimum number of clocks. 64*SIMM16[6:0] = 64 * 1 = 64
     // clocks.
     ROCDL::SSleepOp::create(rewriter, loc, 1);
-    Value curState = b.load(i64_ty, smemObj.getBase());
+    // A wait acquires payload stores published by the participants arriving
+    // on this phase. A plain LDS load cannot synchronize with their atomics.
+    auto curState =
+        LLVM::LoadOp::create(rewriter, loc, i64_ty, smemObj.getBase(), 8);
+    curState.setOrdering(LLVM::AtomicOrdering::acquire);
+    curState.setSyncscope("workgroup");
     Value curPhase = b.and_(
         i32_ty, b.i32_val(kBarrierPhaseMask),
         b.trunc(i32_ty, b.lshr(curState, b.i64_val(kBarrierCountBitWidth))));

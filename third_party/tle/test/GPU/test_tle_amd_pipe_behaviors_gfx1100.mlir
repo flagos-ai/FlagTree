@@ -56,8 +56,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 8 : i32, ttg.targ
 
 // -----
 
-// Close on a non-zero stage: writer_close writes the close tag into the close
-// ring slot for that stage, then publishes on that stage's full mbarrier.
+// Close on a non-zero stage acquires the empty slot, writes its close tag,
+// and then publishes on that stage's full mbarrier.
 
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 #smem = #ttg.shared_memory
@@ -66,7 +66,10 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK-LABEL: @pipe_close_stage1
   // close tag ring is allocated (non-one-shot) and written by writer_close
   // CHECK: ttg.local_alloc %{{.*}} : (tensor<2x1xi32{{.*}}>) -> !ttg.memdesc<2x1xi32
+  // CHECK: amdg.arrive_barrier
+  // CHECK: amdg.wait_barrier
   // CHECK: ttg.local_store
+  // CHECK: amdg.arrive_barrier
   // CHECK-NOT: tle.pipe
   tt.func public @pipe_close_stage1() {
     %c0 = arith.constant 0 : i32

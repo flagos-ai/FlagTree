@@ -10,6 +10,12 @@ import triton.language as tl
 import triton.experimental.tle.language as tle
 
 
+def _require_sm100_plus():
+    if (not torch.cuda.is_available() or triton.runtime.driver.active.get_current_target().backend != 'cuda'
+            or torch.cuda.get_device_capability()[0] < 10):
+        pytest.skip('requires Blackwell or newer CUDA GPU')
+
+
 @triton.jit(noinline=True)
 def _producer(writer):
     for stage in range(13):
@@ -39,8 +45,7 @@ def _kernel(output):
 @pytest.mark.skip_if_tle_unsupported('pipe', 'gpu.warp_specialize')
 @pytest.mark.parametrize('warps', [4, 8])
 def test_explicit_pipe_wrap_noinline_and_close(warps):
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 10:
-        pytest.skip('requires Blackwell or newer CUDA GPU')
+    _require_sm100_plus()
     output = torch.full((3, 416), -1, dtype=torch.int32, device='cuda')
     kernel = _kernel[(3, )](output, num_warps=warps)
     torch.cuda.synchronize()
@@ -53,8 +58,7 @@ def test_explicit_pipe_wrap_noinline_and_close(warps):
 @pytest.mark.skip_if_tle_unsupported('pipe', 'gpu.warp_specialize')
 def test_explicit_pipe_from_ttir(tmp_path):
     """An IR entry must not depend on frontend module markers for lowering."""
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 10:
-        pytest.skip('requires Blackwell or newer CUDA GPU')
+    _require_sm100_plus()
     output = torch.full((3, 416), -1, dtype=torch.int32, device='cuda')
     source_kernel = _kernel.warmup(output, grid=(3, ), num_warps=4)
     source = tmp_path / 'pipe.ttir'

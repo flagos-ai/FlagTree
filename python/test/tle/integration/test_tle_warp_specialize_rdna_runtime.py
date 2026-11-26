@@ -1,5 +1,5 @@
 # flagtree tle
-"""FlagMega-on-Radeon runtime coverage for warp_specialize + pipe on RDNA.
+"""AMD runtime coverage for warp_specialize and pipe.
 
 These exercise the P1-B wave-id partition and P1-A LDS mbarrier handshake on a
 real GPU -- the paths lit cannot check. The worker partition occupies waves
@@ -16,18 +16,17 @@ import triton.language as tl
 import triton.experimental.tle.language as tle
 
 
-def _is_amd_rdna() -> bool:
+def _is_hip() -> bool:
     try:
         target = triton.runtime.driver.active.get_current_target()
     except Exception:
         return False
-    arch = str(getattr(target, "arch", ""))
-    return target.backend == "hip" and arch.startswith("gfx1")
+    return target.backend == "hip"
 
 
 pytestmark = pytest.mark.skipif(
-    not _is_amd_rdna(),
-    reason="warp_specialize wave-id partition + RDNA mbarrier handshake require an AMD RDNA GPU",
+    not _is_hip(),
+    reason="requires the HIP backend",
 )
 
 # --- fieldless control pipe: a pure acquire/commit/wait/release ping-pong ------
@@ -63,7 +62,7 @@ def _cyclic_kernel(output):
 
 
 @pytest.mark.skip_if_tle_unsupported("pipe", "gpu.warp_specialize")
-def test_fieldless_cyclic_handoff_runs_on_rdna(with_allocator):
+def test_fieldless_cyclic_handoff_runs_on_amd(with_allocator):
     output = torch.zeros(8, dtype=torch.int32, device="cuda")
     compiled = _cyclic_kernel.warmup(output, grid=(1, ), num_warps=8)
     # 8 default waves + 1 worker wave must be launched.
@@ -101,10 +100,14 @@ def _payload_consumer(reader, out_ptr):
     row = tl.broadcast_to(tl.arange(0, _ROWS)[:, None], (_ROWS, _COLS))
     col = tl.broadcast_to(tl.arange(0, _COLS)[None, :], (_ROWS, _COLS))
     lin = row * _COLS + col
-    for t in tl.range(0, _N_TILES):
+    for t in tl.range(0, _N_TILES + 1):
         ready = reader.wait(t)
-        v = tl.load(tle.gpu.local_ptr(ready.slot.buf, (row, col), [_ROWS, _COLS]))
-        tl.store(out_ptr + t * _TILE + lin, v * 2.0 + 1.0)
+        if t < _N_TILES:
+            if not ready.is_closed:
+                v = tl.load(tle.gpu.local_ptr(ready.slot.buf, (row, col), [_ROWS, _COLS]))
+                tl.store(out_ptr + t * _TILE + lin, v * 2.0 + 1.0)
+        else:
+            tl.store(out_ptr + _N_TILES * _TILE, ready.is_closed.to(tl.float32))
         reader.release(t)
 
 
@@ -129,12 +132,13 @@ def _payload_kernel(in_ptr, out_ptr):
 
 
 @pytest.mark.skip_if_tle_unsupported("pipe", "gpu.warp_specialize", "gpu.alloc", "gpu.local_ptr")
-def test_pipe_payload_dataflow_runs_on_rdna(with_allocator):
+def test_pipe_payload_dataflow_runs_on_amd(with_allocator):
     total = 8 * 16 * 4
     torch.manual_seed(0)
     inp = torch.randn(total, dtype=torch.float32, device="cuda")
-    out = torch.full((total, ), -1.0, dtype=torch.float32, device="cuda")
+    out = torch.full((total + 1, ), -1.0, dtype=torch.float32, device="cuda")
 
     _payload_kernel[(1, )](inp, out, num_warps=8)
     torch.cuda.synchronize()
-    torch.testing.assert_close(out, inp * 2.0 + 1.0)
+    torch.testing.assert_close(out[:-1], inp * 2.0 + 1.0)
+    assert out[-1].item() == 1.0
