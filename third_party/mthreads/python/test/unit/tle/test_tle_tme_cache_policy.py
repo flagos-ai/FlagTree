@@ -183,10 +183,10 @@ def test_tme_cache_policy_rejects_unsupported_direction(store):
                                    "constexpr"}, constexprs={"STORE": store})
 
 
-@pytest.mark.parametrize("enabled,common_ir", [(False, False), (True, True)])
-def test_tme_cache_policy_rejects_other_backends(monkeypatch, enabled, common_ir):
+@pytest.mark.parametrize("common_ir", [False, True])
+def test_tme_cache_policy_rejects_other_backends(monkeypatch, common_ir):
     from triton.experimental.tle.language.gpu import core
-    monkeypatch.setattr(core.mthreads_common, "enabled", lambda: enabled)
+    monkeypatch.setattr(core.mthreads_common, "enabled", lambda: False)
     monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", common_ir)
     with pytest.raises(ValueError, match="copy cache_policy"):
         core.copy(None, None, (), cache_policy=tle.gpu.mthreads.TMECachePolicy(inner="once", outer="none"),
