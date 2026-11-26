@@ -76,6 +76,13 @@ jobs:
           export FLAGTREE_BACKEND=hcu
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
 
+      - name: HCU IR regression tests
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          BUILD_DIR=$(find build -maxdepth 1 -type d -name 'cmake.*' -print -quit)
+          lit -sv "$BUILD_DIR/third_party/hcu/test"
+
       - name: Clear cache if ClearCache label present
         if: steps.check_backend.outputs.should_skip != 'true'
         id: clear_cache
