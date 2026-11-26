@@ -380,96 +380,99 @@ static LogicalResult convertBufferViewsAndLoops(
     SmallVectorImpl<UnrealizedConversionCastOp> &temporaryCasts,
     SmallVectorImpl<Operation *> &eraseOps) {
   // Visit loop block arguments before the subviews that use them.
-  WalkResult result = module.walk<WalkOrder::PreOrder>([&](Operation
-                                                               *operation) {
-    if (auto loop = dyn_cast<scf::ForOp>(operation))
-      return convertLoopBuffers(loop, mapped, convertedValueTypes,
-                                temporaryCasts);
-    auto op = dyn_cast<tile::SubViewOp>(operation);
-    if (!op)
-      return WalkResult::advance();
-    auto source = lookupBuffer(op, op.getSource(), mapped);
-    auto resultType =
-        getMemDescType(op, cast<tile::BufType>(op.getResult().getType()));
-    if (failed(source) || failed(resultType))
-      return WalkResult::interrupt();
+  WalkResult result =
+      module.walk<WalkOrder::PreOrder>([&](Operation *operation) {
+        if (auto loop = dyn_cast<scf::ForOp>(operation))
+          return convertLoopBuffers(loop, mapped, convertedValueTypes,
+                                    temporaryCasts);
+        auto op = dyn_cast<tile::SubViewOp>(operation);
+        if (!op)
+          return WalkResult::advance();
+        auto source = lookupBuffer(op, op.getSource(), mapped);
+        auto resultType =
+            getMemDescType(op, cast<tile::BufType>(op.getResult().getType()));
+        if (failed(source) || failed(resultType))
+          return WalkResult::interrupt();
 
-    OpBuilder builder(op);
-    auto sourceType = cast<ttg::MemDescType>((*source).getType());
-    if (op.getOffsets().size() != sourceType.getRank() ||
-        op.getSizes().size() != resultType->getRank() ||
-        op.getStrides().size() != resultType->getRank()) {
-      op.emitError("GPU tile.subview requires source-rank offsets and "
-                   "result-rank sizes and strides");
-      return WalkResult::interrupt();
-    }
-    for (auto [size, dim] : llvm::zip(op.getSizes(), resultType->getShape())) {
-      if (cast<IntegerAttr>(size).getInt() != dim) {
-        op.emitError("tile.subview sizes must match its result shape");
-        return WalkResult::interrupt();
-      }
-    }
-    if (llvm::any_of(op.getStrides(), [](Attribute stride) {
-          return cast<IntegerAttr>(stride).getInt() != 1;
-        })) {
-      op.emitError("GPU tile.subview requires unit strides");
-      return WalkResult::interrupt();
-    }
-    Value converted;
-    if (sourceType.getRank() == resultType->getRank() + 1) {
-      if (sourceType.getShape().drop_front() != resultType->getShape()) {
-        op.emitError("rank-reducing tile.subview must preserve trailing shape");
-        return WalkResult::interrupt();
-      }
-      for (Value offset : op.getOffsets().drop_front()) {
-        auto constant = getConstantOffset(offset);
-        if (failed(constant) || *constant != 0) {
-          op.emitError(
-              "rank-reducing tile.subview requires zero trailing offsets");
+        OpBuilder builder(op);
+        auto sourceType = cast<ttg::MemDescType>((*source).getType());
+        if (op.getOffsets().size() != sourceType.getRank() ||
+            op.getSizes().size() != resultType->getRank() ||
+            op.getStrides().size() != resultType->getRank()) {
+          op.emitError("GPU tile.subview requires source-rank offsets and "
+                       "result-rank sizes and strides");
           return WalkResult::interrupt();
         }
-      }
-      auto leading = getConstantOffset(op.getOffsets().front());
-      if (succeeded(leading) &&
-          (*leading < 0 || *leading >= sourceType.getShape().front())) {
-        op.emitError("tile.subview offset is outside the source buffer");
-        return WalkResult::interrupt();
-      }
-      auto index = castToI32(builder, op.getLoc(), op.getOffsets().front());
-      if (failed(index))
-        return WalkResult::interrupt();
-      converted = builder.create<ttg::MemDescIndexOp>(op.getLoc(), *resultType,
-                                                      *source, *index);
-    } else if (sourceType.getRank() == resultType->getRank()) {
-      SmallVector<int32_t> offsets;
-      offsets.reserve(op.getOffsets().size());
-      for (auto [axis, offset] : llvm::enumerate(op.getOffsets())) {
-        auto constant = getConstantOffset(offset);
-        if (failed(constant)) {
-          op.emitError(
-              "same-rank tile.subview currently requires static offsets");
+        for (auto [size, dim] :
+             llvm::zip(op.getSizes(), resultType->getShape())) {
+          if (cast<IntegerAttr>(size).getInt() != dim) {
+            op.emitError("tile.subview sizes must match its result shape");
+            return WalkResult::interrupt();
+          }
+        }
+        if (llvm::any_of(op.getStrides(), [](Attribute stride) {
+              return cast<IntegerAttr>(stride).getInt() != 1;
+            })) {
+          op.emitError("GPU tile.subview requires unit strides");
           return WalkResult::interrupt();
         }
-        if (*constant < 0 || *constant > std::numeric_limits<int32_t>::max() ||
-            *constant >
-                sourceType.getShape()[axis] - resultType->getShape()[axis]) {
-          op.emitError("tile.subview offset is outside the source buffer");
+        Value converted;
+        if (sourceType.getRank() == resultType->getRank() + 1) {
+          if (sourceType.getShape().drop_front() != resultType->getShape()) {
+            op.emitError(
+                "rank-reducing tile.subview must preserve trailing shape");
+            return WalkResult::interrupt();
+          }
+          for (Value offset : op.getOffsets().drop_front()) {
+            auto constant = getConstantOffset(offset);
+            if (failed(constant) || *constant != 0) {
+              op.emitError(
+                  "rank-reducing tile.subview requires zero trailing offsets");
+              return WalkResult::interrupt();
+            }
+          }
+          auto leading = getConstantOffset(op.getOffsets().front());
+          if (succeeded(leading) &&
+              (*leading < 0 || *leading >= sourceType.getShape().front())) {
+            op.emitError("tile.subview offset is outside the source buffer");
+            return WalkResult::interrupt();
+          }
+          auto index = castToI32(builder, op.getLoc(), op.getOffsets().front());
+          if (failed(index))
+            return WalkResult::interrupt();
+          converted = builder.create<ttg::MemDescIndexOp>(
+              op.getLoc(), *resultType, *source, *index);
+        } else if (sourceType.getRank() == resultType->getRank()) {
+          SmallVector<int32_t> offsets;
+          offsets.reserve(op.getOffsets().size());
+          for (auto [axis, offset] : llvm::enumerate(op.getOffsets())) {
+            auto constant = getConstantOffset(offset);
+            if (failed(constant)) {
+              op.emitError(
+                  "same-rank tile.subview currently requires static offsets");
+              return WalkResult::interrupt();
+            }
+            if (*constant < 0 ||
+                *constant > std::numeric_limits<int32_t>::max() ||
+                *constant > sourceType.getShape()[axis] -
+                                resultType->getShape()[axis]) {
+              op.emitError("tile.subview offset is outside the source buffer");
+              return WalkResult::interrupt();
+            }
+            offsets.push_back(static_cast<int32_t>(*constant));
+          }
+          converted = builder.create<ttg::MemDescSubsliceOp>(
+              op.getLoc(), *resultType, *source,
+              builder.getDenseI32ArrayAttr(offsets));
+        } else {
+          op.emitError("unsupported tile.subview rank change");
           return WalkResult::interrupt();
         }
-        offsets.push_back(static_cast<int32_t>(*constant));
-      }
-      converted = builder.create<ttg::MemDescSubsliceOp>(
-          op.getLoc(), *resultType, *source,
-          builder.getDenseI32ArrayAttr(offsets));
-    } else {
-      op.emitError("unsupported tile.subview rank change");
-      return WalkResult::interrupt();
-    }
 
-    mapped[op.getResult()] = converted;
-    eraseOps.push_back(op);
-    return WalkResult::advance();
-  });
+        mapped[op.getResult()] = converted;
+        eraseOps.push_back(op);
+        return WalkResult::advance();
+      });
   return failure(result.wasInterrupted());
 }
 
