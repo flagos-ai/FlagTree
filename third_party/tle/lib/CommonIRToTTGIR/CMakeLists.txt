@@ -12,3 +12,7 @@ add_triton_library(TleCommonIRToTTGIR
   TritonIR
   TritonGPUIR
 )
+
+if(FLAGTREE_BACKEND STREQUAL "mthreads")
+  target_compile_definitions(TleCommonIRToTTGIR PRIVATE FLAGTREE_COMMON_IR_MTHREADS)
+endif()

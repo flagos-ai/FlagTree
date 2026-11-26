@@ -6,6 +6,7 @@ import triton
 import triton.experimental.tle as tle_api
 import triton.language as tl
 import triton.experimental.tle.language as tle
+from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 
 from test_tle_utils import compile_musa, compile_to_ttir, require_mthreads_libtriton
 
@@ -170,10 +171,11 @@ def _partitioned_sqmma_kernel(a_top_desc, a_bottom_desc, b_desc, out):
     )
 
 
-@pytest.mark.parametrize(
-    "start,length,dim",
-    [(0, 1, 0), (1, 1, -2), (64, 64, 1), (64, 64, -1)],
-)
+_SUBSLICE_CASES = [(0, 1, 0), (1, 1, -2), (64, 64, 1), (64, 64, -1)]
+
+
+@pytest.mark.skipif(COMMON_IR_ENABLED, reason="checks native frontend IR")
+@pytest.mark.parametrize("start,length,dim", _SUBSLICE_CASES)
 def test_tle_buffered_tensor_subslice_builds_native_memdesc_view(start, length, dim):
     ttir = compile_to_ttir(
         _staged_subslice_kernel,
@@ -186,6 +188,20 @@ def test_tle_buffered_tensor_subslice_builds_native_memdesc_view(start, length, 
     )
     assert "ttg.memdesc_index" in ttir
     assert "ttg.memdesc_subslice" in ttir
+
+
+@pytest.mark.skipif(not COMMON_IR_ENABLED, reason="requires CommonIR")
+@pytest.mark.parametrize("start,length,dim", _SUBSLICE_CASES)
+def test_tle_buffered_tensor_subslice_lowers_common_ir_views(start, length, dim):
+    signature = {"out": "*i32"}
+    constexprs = {"START": start, "LENGTH": length, "DIM": dim}
+    ttir = compile_to_ttir(_staged_subslice_kernel, signature, constexprs)
+    assert ttir.count("tile.subview") == 2, ttir
+
+    lowered = compile_to_ttir(_staged_subslice_kernel, signature, constexprs, lower_common_ir=True)
+    assert "ttg.memdesc_index" in lowered, lowered
+    assert "ttg.memdesc_subslice" in lowered, lowered
+    assert "tile.subview" not in lowered, lowered
 
 
 def test_tle_buffered_tensor_subslice_lowers_to_llvm():
