@@ -1,0 +1,632 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+# What happens after one of the workflows below fails: rerun it if the failure
+# is a known transient one, and otherwise tell the author, in Feishu, that
+# their CI failed.
+#
+# Centralised rather than a step in each workflow: one implementation covers
+# every workflow listed below, and adding a backend's CI means adding a line
+# here instead of editing its workflow.
+#
+# Rerunning and notifying used to be two workflows (auto-rerun.yml and
+# notify-pr-owner.yml) watching the same list. They were merged because they
+# draw on the same small pool of GitHub-hosted runners: every failure started
+# two jobs, and the notifier's first act was to sleep three minutes to see
+# whether the rerun watchdog had acted -- a runner slot held doing nothing,
+# once per failure, while PR gating workflows like Code-Format-Check queued
+# behind it. In one workflow the rerun decision is simply known, so the wait
+# is gone and a failure costs one short job.
+#
+# Staying cheap is the point of the shape here, and two rules come out of it:
+#
+#   * The jobs API is called once and its payload reused for both the rerun
+#     decision and the list of what broke. Job logs are read only for jobs
+#     whose failed step could carry one of the patterns, and only the first
+#     LOG_BYTES of those, because every pattern describes a failure the runner
+#     reports before any build output. A genuine build or test failure, which
+#     is the common case, costs one API call and no log download.
+#   * No cross-run concurrency group. All 49 watched workflows can fail at
+#     once, and a shared group would not queue them: GitHub keeps a single
+#     pending run per group and cancels any earlier pending one, so most of
+#     those failures would be dropped without a trace. The burst is made
+#     harmless by the jobs being seconds long, not by throttling it.
+#
+# Quiet by design. A failure notifies nobody unless the author has a row in
+# the ci_contacts Bitable, so this can be rolled out one person at a time, and
+# a workflow listed in ci_notify_skip stays silent while it is known broken.
+#
+# Reruns DO notify again. GitHub fires workflow_run once per attempt, so a
+# rerun that fails again is a new event and a new message -- which is what the
+# author needs, since they usually reran precisely to see whether it sticks.
+
+name: CI-Watchdog
+
+on:
+  workflow_run:
+    types: [completed]
+    workflows:
+      - "Amd3.6-Build-And-Test"
+      - "Amd3.6-Gems-Baseline"
+      - "Amd3.6-Gems-Test"
+      - "Code-Format-Check"
+      - "Enflame3.6-GCU300-Build-And-Test"
+      - "Enflame3.6-GCU300-Gems-Baseline"
+      - "Enflame3.6-GCU300-Gems-Test"
+      - "Enflame3.6-GCU400-Build-And-Test"
+      - "Enflame3.6-Qwen-Benchmark"
+      - "FlagCICD-NV3.6-Build-And-Test"
+      - "Hcu3.6"
+      - "Hcu3.6-Gems-Baseline"
+      - "Hcu3.6-Gems-Test"
+      - "Hcu3.6-Qwen-Benchmark"
+      - "Hcu3.6-Dist"
+      - "Iluvatar3.6-Build-And-Test"
+      - "Iluvatar3.6-Gems-Baseline"
+      - "Iluvatar3.6-Gems-Test"
+      - "Iluvatar3.6-Qwen-Benchmark"
+      - "Iluvatar3.6-TLE-Build-And-Test"
+      - "Metax3.6-Build-And-Test"
+      - "Metax3.6-Gems-Baseline"
+      - "Metax3.6-Gems-Test"
+      - "Metax3.6-Qwen-Benchmark"
+      - "Mthreads3.6-Build-And-Test"
+      - "Mthreads3.6-Gems-Baseline"
+      - "Mthreads3.6-Gems-Test"
+      - "Mthreads3.6-Qwen-Benchmark"
+      - "Nvidia3.6-Build-And-Test"
+      - "Nvidia3.6-Gems-Baseline"
+      - "Nvidia3.6-Gems-Test"
+      - "Nvidia3.6-Qwen-Benchmark"
+      - "Nvidia3.6-Single-Dist-Test"
+      - "Ppu3.6-Build-And-Test"
+      - "Ppu3.6-Core-Build-And-Test"
+      - "Ppu3.6-Gems-Baseline"
+      - "Ppu3.6-Gems-Test"
+      - "Ppu3.6-Qwen-Benchmark"
+      - "Rpu3.6-Build-And-Test"
+      - "Spacemit3.6-Build-And-Test"
+      - "Sunrise3.6-Build-And-Test"
+      - "Thrive3.6-Build-And-Test"
+      - "TileIR3.6-Build-And-Test"
+      - "Tsingmicro3.6-Build-And-Test"
+      - "Tsingmicro3.6-Gems-Baseline"
+      - "Tsingmicro3.6-Gems-Test"
+      - "Xpu3.6-Build-And-Test"
+      - "Xpu3.6-Gems-Baseline"
+      - "Xpu3.6-Gems-Test"
+      - "Xpu3.6-Qwen-Benchmark"
+
+# Name each run after the run it is watching, so the Actions list shows which
+# workflow / trigger / branch it came from instead of 50 identical rows.
+# pull_requests[] is empty for fork PRs, hence the '?' fallback; every other
+# trigger (push / schedule / workflow_dispatch) is labelled by event + branch.
+run-name: >-
+  Watchdog [${{ github.event.workflow_run.name }}]
+  ${{ github.event.workflow_run.event == 'pull_request'
+  && format('PR #{0}', github.event.workflow_run.pull_requests[0].number || '?')
+  || format('{0} {1}', github.event.workflow_run.event, github.event.workflow_run.head_branch) }}:
+  ${{ github.event.workflow_run.display_title }}
+
+permissions:
+  actions: write       # rerun the failed jobs; read the watched run's state
+  contents: read
+  pull-requests: read  # resolve the PR author
+
+concurrency:
+  # One per watched run attempt, so a re-delivered event cannot rerun or
+  # notify twice, while a genuine rerun is a different attempt and gets its
+  # own verdict. Deliberately not grouped any wider than this -- see the note
+  # on concurrency at the top of this file.
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    # A fork clone has neither the runner pool nor the Feishu credentials this
+    # needs, and a run that did not fail has nothing to triage.
+    if: >-
+      github.repository == 'flagos-ai/flagtree' &&
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      # 'true' only when a rerun was actually accepted by the API.
+      rerun: ${{ steps.triage.outputs.rerun }}
+      pattern: ${{ steps.triage.outputs.pattern }}
+      # "job / step @ host" for every failed job, for the notification card.
+      failed: ${{ steps.triage.outputs.failed }}
+    steps:
+      - name: Decide whether this failure is transient
+        id: triage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          # A PR may carry its own edit of the workflow it runs, so the name
+          # is author-controlled: it travels as an env var rather than being
+          # interpolated into the script below.
+          WF_NAME: ${{ github.event.workflow_run.name }}
+          # run_attempt counts manual reruns as well as the watchdog's own, so
+          # once it reaches this the watchdog stops intervening and the author
+          # hears about the failure instead.
+          MAX_ATTEMPTS: 5
+          # How much of a job log is read. Every pattern below matches a line
+          # the runner prints while setting the job up, long before any build
+          # output, and `head -c` closing the pipe ends the transfer: a build
+          # log runs to tens of megabytes, none of which is worth moving.
+          LOG_BYTES: 262144
+          # Logs are read for at most this many failed jobs. A matrix that
+          # fails wholesale fails the same way in every leg, and one match is
+          # all it takes to rerun the lot.
+          MAX_LOG_JOBS: 10
+        run: |
+          set -uo pipefail
+
+          echo "Triaging run $RUN_ID (attempt $ATTEMPT)"
+
+          # Named transient-failure patterns, as "name|step-glob|regex".
+          #
+          # step-glob is matched against the names of the steps that failed,
+          # and decides whether the job's log is worth downloading at all. A
+          # glob of '*' means "could be anywhere, always read the log". Keep
+          # it as narrow as the failure really is: this is what makes a real
+          # build or test failure cost a single API call.
+          #
+          # regex is matched against the downloaded prefix of the log. Keep it
+          # anchored enough not to match a real build or test failure.
+          #
+          # Add a line to cover another stage or failure kind.
+          PATTERNS=(
+            # "Set up job" exhausted its retries (the runner gives up):
+            #   Error: Failed to download archive '...' after N attempts.
+            # Do NOT match the per-attempt "Warning" lines.
+            "set-up-job-download-exhausted|Set up job|Failed to download archive .* after [0-9]+ (attempts|retries)"
+            # "Set up job" download timeout:
+            #   Error: Action '...' download has timed out.
+            "set-up-job-download-timeout|Set up job|Action .* download has timed out"
+          )
+
+          # Workflows this watchdog never reruns, whatever the log says.
+          #
+          # Code-Format-Check is the one: it fixes what it can and pushes the
+          # result itself, and the run on that new commit is the retry. A
+          # failure it could not fix is one only the author can fix, and
+          # rerunning the same commit would just reproduce it.
+          NO_RERUN=(
+            "Code-Format-Check"
+          )
+
+          # The one call everything below is built on: the rerun decision and
+          # the card's list of what broke both come out of this payload.
+          # --slurp keeps the pages as one array, so jq sees the whole run
+          # rather than being re-run per page.
+          for i in 1 2; do
+            if gh api --paginate --slurp \
+                 "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+                 > jobs.json 2>/dev/null && [ -s jobs.json ]; then
+              break
+            fi
+            echo "jobs API returned nothing (attempt $i)"
+            if [ "$i" -lt 2 ]; then sleep 2; fi
+          done
+
+          # "job / step @ host" rather than the job alone: the job name is the
+          # backend, which the title already says, while the step separates a
+          # build break from a failing test, and the host matters because
+          # several self-hosted runners share one label -- a failure on one
+          # machine and not its siblings points at the machine. Steps the
+          # runner skipped after the failure are ignored: only `failure`
+          # counts, not `cancelled`. runner_name is absent on a queued or
+          # cancelled job, so it is only appended when present.
+          NAMES=$(jq -r '
+            [ [.[].jobs[]][]
+              | select(.conclusion == "failure")
+              | . as $job
+              | ( [ $job.steps[]? | select(.conclusion == "failure") | .name ] ) as $steps
+              | ( if ($steps | length) > 0
+                  then "\($job.name) / \($steps | join(" + "))"
+                  else $job.name
+                  end ) as $what
+              | if ($job.runner_name // "") != ""
+                then "\($what) @ \($job.runner_name)"
+                else $what
+                end
+            ] | join("; ")' jobs.json 2>/dev/null || echo "")
+
+          # Keep the card readable: the run link carries the full detail.
+          if [[ ${#NAMES} -gt 300 ]]; then
+            NAMES="${NAMES:0:297}..."
+          fi
+          echo "failed=${NAMES:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "Failed: ${NAMES:-unknown}"
+
+          # Checked before any log is read: a workflow that is never rerun,
+          # or an attempt budget already spent, leaves no rerun to decide and
+          # so nothing to read the logs for.
+          for wf in "${NO_RERUN[@]}"; do
+            if [ "$WF_NAME" = "$wf" ]; then
+              echo "$WF_NAME is never rerun by this watchdog. Leaving it to the author."
+              echo "rerun=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then
+            echo "Attempt $ATTEMPT has reached the budget of $MAX_ATTEMPTS. Not rerunning."
+            echo "rerun=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # One line per (failed job, failed step), as "job id<TAB>step name".
+          # A failed job that reports no failed step of its own prints an empty
+          # step field: the runner does that for some setup failures, and
+          # treating "no step" as "nothing to see" would quietly retire the
+          # watchdog, so those jobs are always read.
+          jq -r '
+            [.[].jobs[]][]
+            | select(.conclusion == "failure")
+            | .id as $id
+            | ( [ .steps[]? | select(.conclusion == "failure") | .name ] ) as $s
+            | if ($s | length) == 0 then "\($id)\t" else ($s[] | "\($id)\t\(.)") end
+          ' jobs.json > steps.tsv 2>/dev/null || : > steps.tsv
+
+          if [ ! -s steps.tsv ]; then
+            echo "No failed jobs found (or the API was unavailable). Not rerunning."
+            echo "rerun=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # job id -> indices of the patterns worth testing against its log.
+          declare -A WANT=()
+          while IFS=$'\t' read -r jid step; do
+            [ -n "$jid" ] || continue
+            for idx in "${!PATTERNS[@]}"; do
+              rest="${PATTERNS[$idx]#*|}"
+              glob="${rest%%|*}"
+              # Unquoted on purpose: $glob is a pattern, not a literal.
+              if [ -z "$step" ] || [ "$glob" = "*" ] || [[ "$step" == $glob ]]; then
+                case " ${WANT[$jid]:-} " in
+                  *" $idx "*) ;;
+                  *) WANT[$jid]="${WANT[$jid]:-}${WANT[$jid]:+ }$idx" ;;
+                esac
+              fi
+            done
+          done < steps.tsv
+
+          if [ ${#WANT[@]} -eq 0 ]; then
+            echo "Nothing failed in a step that could carry a transient failure. Not rerunning."
+            echo "rerun=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pattern=""
+          read_jobs=0
+          for jid in $(printf '%s\n' "${!WANT[@]}" | sort -n); do
+            if [ "$read_jobs" -ge "$MAX_LOG_JOBS" ]; then
+              echo "Read $MAX_LOG_JOBS logs already, that is enough to judge this run."
+              break
+            fi
+            read_jobs=$((read_jobs + 1))
+
+            # `head -c` closes the pipe once it has its prefix, which ends the
+            # download; the `|| true` absorbs the write error gh then gets.
+            gh api "repos/$REPO/actions/jobs/$jid/logs" 2>/dev/null \
+              | head -c "$LOG_BYTES" > "job-$jid.log" || true
+            echo "job $jid: read $(wc -c < "job-$jid.log") bytes, testing pattern(s) ${WANT[$jid]}"
+
+            for idx in ${WANT[$jid]}; do
+              name="${PATTERNS[$idx]%%|*}"
+              rest="${PATTERNS[$idx]#*|}"
+              regex="${rest#*|}"
+              if grep -qE "$regex" "job-$jid.log"; then
+                echo "MATCH: job $jid hit '$name' -- transient, safe to rerun."
+                pattern="$name"
+                break 2
+              fi
+            done
+            echo "job $jid: no match"
+          done
+
+          rerun=false
+          if [ -n "$pattern" ]; then
+            echo "Rerunning the failed jobs of run $RUN_ID ..."
+            if gh api -X POST "repos/$REPO/actions/runs/$RUN_ID/rerun-failed-jobs"; then
+              rerun=true
+              echo "Rerun triggered."
+            else
+              # Somebody reran it by hand, or the API refused. Either way this
+              # watchdog retried nothing, so the author should still hear.
+              echo "Rerun request failed; leaving this failure to the notification."
+            fi
+          fi
+
+          {
+            echo "rerun=$rerun"
+            echo "pattern=$pattern"
+          } >> "$GITHUB_OUTPUT"
+
+  notify:
+    needs: triage
+    # Deliberately not `needs.triage.result == 'success'`: a triage that
+    # crashed or timed out has rerun nothing, and this project would rather
+    # send a message too many than swallow a failure. `rerun` is 'true' only
+    # when a rerun was really accepted, and the conclusion is restated because
+    # a skipped `needs` would otherwise let this run after a green run.
+    if: >-
+      !cancelled() &&
+      github.repository == 'flagos-ai/flagtree' &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      needs.triage.outputs.rerun != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the failure still stands
+        id: settled
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          # head_branch and head_repository are author-controlled strings for
+          # a fork PR, so they travel as env vars: interpolating them into the
+          # script below would let a branch name break out into shell.
+          WF_NAME: ${{ github.event.workflow_run.name }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          HEAD_REF: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -uo pipefail
+
+          # The triage job already said it is not retrying this one, so there
+          # is nothing to wait for -- this used to be a three-minute sleep
+          # while the rerun watchdog, then a separate workflow, made up its
+          # mind. What is left is somebody reruning the run by hand in the
+          # meantime: the attempt they start fires its own completed event,
+          # and that one gets to decide whether to notify.
+          INFO=$(gh api "repos/$REPO/actions/runs/$RUN_ID" \
+            --jq '"\(.status) \(.run_attempt)"' 2>/dev/null || echo "")
+          read -r STATUS ATTEMPT_NOW <<<"${INFO}"
+          echo "Run $RUN_ID is status='${STATUS}' attempt='${ATTEMPT_NOW}' (event carried attempt $ATTEMPT)"
+
+          # An unreadable state falls through to notifying, on the same
+          # principle: a message too many is noise, a failure swallowed is
+          # worse.
+          if [[ -n "$STATUS" && "$STATUS" != "completed" ]]; then
+            echo "Running again already, leaving it to that attempt."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -n "$ATTEMPT_NOW" && "$ATTEMPT_NOW" != "$ATTEMPT" ]]; then
+            echo "Already on attempt $ATTEMPT_NOW, this event is stale."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Code-Format-Check fixes what it can and pushes the result itself,
+          # inside the failing job, so by the time this event arrives the
+          # branch may already carry a newer commit. A superseded failure is
+          # either already fixed or about to be re-judged by the run on that
+          # newer commit: either way this message would be stale.
+          #
+          # Deliberately limited to this workflow and to pull_request.
+          #
+          # Only this workflow pushes a fix itself, so only here does a moved
+          # head mean the failing code was changed.
+          #
+          # The event restriction matters for this workflow too, since it also
+          # runs on push to main: there the head is refs/heads/main, which
+          # moves whenever anyone merges any PR, so a moved head says nothing
+          # about this failure and checking it would silence real format
+          # failures on main. A pull_request run follows a feature branch,
+          # which only this PR's own commits can move, so a moved head does
+          # mean this failure has been superseded.
+          #
+          # Unreadable head means notify: a message too many is noise, a
+          # failure swallowed is worse.
+          if [[ "$WF_NAME" == "Code-Format-Check" && "$EVENT" == "pull_request" ]]; then
+            if [[ -n "$HEAD_REPO" && -n "$HEAD_REF" ]]; then
+              CURRENT=$(gh api "repos/$HEAD_REPO/branches/$HEAD_REF" --jq '.commit.sha' 2>/dev/null | tr -d '\n' || true)
+              # gh prints the JSON error body on stdout for a 4xx, so a deleted
+              # branch arrives as `{"message":"Branch not found",...}` with a
+              # non-zero status. Only a real commit id may suppress; anything
+              # else falls through to notifying.
+              if [[ "$CURRENT" =~ ^[0-9a-f]{40}$ && "$CURRENT" != "$HEAD_SHA" ]]; then
+                echo "Head moved from $HEAD_SHA to $CURRENT, this failure is superseded."
+                echo "proceed=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "Head is still ${HEAD_SHA} (read '${CURRENT}'), nothing fixed it automatically."
+            else
+              echo "No head repository or branch on this run, cannot check for a fix; notifying."
+            fi
+          fi
+
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Identify who to tell
+        id: author
+        if: steps.settled.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          REPO=${{ github.repository }}
+          SHA=${{ github.event.workflow_run.head_sha }}
+          EVENT=${{ github.event.workflow_run.event }}
+          ACTOR='${{ github.event.workflow_run.actor.login }}'
+
+          LOGIN=""
+          PR_NUMBER=""
+          PR_URL=""
+          TELL=""
+
+          # A scheduled run executes whatever is at the head of the branch,
+          # so the commit it lands on resolves to the last PR merged -- an
+          # author who had nothing to do with the failure, and who would keep
+          # being paged until somebody else merged something. It belongs to
+          # whoever looks after CI instead, which is a standing list rather
+          # than anything derivable from the run.
+          if [[ "$EVENT" == "schedule" ]]; then
+            echo "Scheduled run: notifying the admins rather than an author."
+            {
+              echo "logins="
+              echo "admins=true"
+              echo "pr-number="
+              echo "pr-url="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A manual run has an obvious owner: whoever started it. No standing
+          # list needed, and no reason to tell anyone else.
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            echo "Manual run started by ${ACTOR:-<unknown>}."
+            {
+              echo "logins=$ACTOR"
+              echo "admins=false"
+              echo "pr-number="
+              echo "pr-url="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Anything else without a change behind it has nobody to tell.
+          if [[ "$EVENT" != "pull_request" && "$EVENT" != "push" ]]; then
+            echo "Trigger is '$EVENT', which belongs to nobody. Not notifying."
+            {
+              echo "logins="
+              echo "admins=false"
+              echo "pr-number="
+              echo "pr-url="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Asked for a push too, not just pull_request: a merge arrives as a
+          # push whose actor is the maintainer who pressed the button, and the
+          # commit still belongs to the PR it came from. Squash merges also
+          # record `GitHub` as the committer, so the commit itself does not say
+          # who wrote the change -- the PR does.
+          #
+          # Two lookups, tried in order:
+          #
+          # 1. The commits/$SHA/pulls endpoint. One call, and it covers the
+          #    common cases: a PR from a branch in this repo, and a push after
+          #    a merge, whose PR is already closed. It only knows commits that
+          #    exist in this repo, so it finds nothing for a fork PR.
+          #    `first` yields null rather than failing when a commit belongs to
+          #    no PR, which is the normal case for a direct push.
+          #
+          # 2. The open-pulls list filtered by head SHA, for fork PRs: the PR
+          #    itself lives in this repo even though its commit does not.
+          #    Paginated, since there can be more open PRs than one page holds;
+          #    sorted by last update, so the PR that was just pushed to is
+          #    almost always on the first page, and `head -n1` stops the paging
+          #    as soon as it has a match. `gh` applies --jq to each page
+          #    separately, which is why there is no `first(...) // ""` here: a
+          #    page without a match would print an empty line ahead of the real
+          #    one.
+          #
+          # workflow_run.pull_requests[] is intentionally empty for fork PRs
+          # (GitHub security restriction), so we never rely on it.
+          PR_FIELDS=$(gh api "repos/$REPO/commits/$SHA/pulls" \
+            --jq 'first(.[] | "\(.user.login) \(.number) \(.html_url)") // ""' 2>/dev/null || echo "")
+          if [[ -z "$PR_FIELDS" && "$EVENT" == "pull_request" ]]; then
+            PR_FIELDS=$(gh api --paginate "repos/$REPO/pulls?state=open&sort=updated&direction=desc&per_page=100" \
+              --jq ".[] | select(.head.sha == \"$SHA\") | \"\(.user.login) \(.number) \(.html_url)\"" \
+              2>/dev/null | head -n1 || echo "")
+          fi
+          read -r LOGIN PR_NUMBER PR_URL <<<"${PR_FIELDS}"
+
+          [[ -n "$LOGIN" ]] && TELL="$LOGIN"
+
+          # Fork PRs: the commit lives in the fork repo, so neither API above
+          # finds the author from the commit side. Fall back to the actor, who
+          # is the person who pushed the head branch of the PR.
+          if [[ "$EVENT" == "pull_request" && -z "$LOGIN" && -n "$ACTOR" ]]; then
+            TELL="$ACTOR"
+          fi
+
+          # The maintainer who merged it also wants to know, since they are the
+          # one who just changed the branch. Skipped when they are the author,
+          # so self-merging does not arrive twice.
+          if [[ "$EVENT" == "push" && -n "$ACTOR" && "$ACTOR" != "$LOGIN" ]]; then
+            TELL="${TELL:+$TELL }$ACTOR"
+          fi
+
+          {
+            echo "logins=$TELL"
+            echo "admins=false"
+            echo "pr-number=$PR_NUMBER"
+            echo "pr-url=$PR_URL"
+          } >> "$GITHUB_OUTPUT"
+          echo "Author: ${LOGIN:-<none>} Actor: ${ACTOR:-<none>} PR: ${PR_NUMBER:-none}"
+          echo "Will tell: ${TELL:-<nobody>}"
+
+      - name: Resolve the Feishu recipient
+        id: contact
+        if: ${{ steps.settled.outputs.proceed == 'true' && (steps.author.outputs.logins != '' || steps.author.outputs.admins == 'true') }}
+        continue-on-error: true
+        uses: flagos-ai/FlagTree/.github/actions/lookup-feishu-contact@main
+        with:
+          login: ${{ steps.author.outputs.logins }}
+          admins: ${{ steps.author.outputs.admins }}
+          workflow: ${{ github.event.workflow_run.name }}
+          app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
+          app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
+          app-token: ${{ secrets.FLAGTREE_FEISHU_BITABLE_APP_TOKEN }}
+
+      # One message per recipient rather than one shared card: a direct
+      # message is read in the recipient's own chat with the bot, so there is
+      # nothing to share. The ids are already de-duplicated by the lookup.
+      #
+      # What failed comes from the triage job, which already has the jobs
+      # payload: asking the API for it a second time is what the old split
+      # into two workflows cost.
+      - name: Notify them
+        if: ${{ steps.contact.outputs.open-ids != '' }}
+        continue-on-error: true
+        uses: flagos-ai/FlagTree/.github/actions/notify-feishu@main
+        with:
+          open-id: ${{ steps.contact.outputs.open-ids }}
+          title: "CI failed: ${{ github.event.workflow_run.name }}"
+          color: orange
+          text: |
+            **${{ github.event.workflow_run.display_title }}**
+
+            **Failed**
+            ${{ needs.triage.outputs.failed || 'unknown' }}
+
+            **Trigger** ${{ github.event.workflow_run.event }} on `${{ github.event.workflow_run.head_branch }}`${{ steps.author.outputs.pr-number != '' && format(' (PR #{0})', steps.author.outputs.pr-number) || '' }}
+            **Attempt** ${{ github.event.workflow_run.run_attempt }}${{ steps.author.outputs.admins == 'true' && '
+
+            _Sent to the CI admins: a scheduled run belongs to the branch, not to any one change._' || '' }}
+          link-url: ${{ github.event.workflow_run.html_url }}
+          link-text: Open run
+          # Second button only when the change came from a PR. The run link
+          # answers "what broke"; the PR link answers "how is the rest of my
+          # CI doing", which is the next thing anyone asks.
+          link2-url: ${{ steps.author.outputs.pr-url }}
+          link2-text: Open PR
+          app-id: ${{ secrets.FLAGTREE_FEISHU_APP_ID }}
+          app-secret: ${{ secrets.FLAGTREE_FEISHU_APP_SECRET }}
