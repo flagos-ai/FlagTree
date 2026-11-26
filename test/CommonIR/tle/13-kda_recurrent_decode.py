@@ -42,7 +42,7 @@ q|k|v 打包在 `mixed_qkv`（`[B, 2*H*K + HV*V]`），gate/beta 在核内由 a/
     124 spills，慢 7 倍）；K=V=64 时也慢 1.5 倍。默认 bv=16 + 1 warp。
 
 用法（两条路径都自包含，不依赖任何外部算子库）：
-    python 13-kda_recurrent_decode.py              # 精度自测：8 个形状 × 3 条 TLE 路径 = 24 行
+    python 13-kda_recurrent_decode.py              # 精度自测：每个形状覆盖 3 条 TLE 路径
     python 13-kda_recurrent_decode.py --benchmark  # 延迟对比（mcoplib 基线已内联在第 4 节）
 """
 
@@ -231,6 +231,9 @@ def fused_recurrent_gated_delta_rule_fwd(
         raise ValueError(f"推不出合法 head 配置：H={H}, HV={HV}")
 
     BK = triton.next_power_of_2(K)
+    if use_qk_l2norm_in_kernel:
+        # Q/K 归一化使用完整的 MACA warp，不足 64 列时由 mask_k 补零。
+        BK = max(BK, 64)
     if triton.cdiv(K, BK) != 1:
         raise ValueError(f"仅支持 NK=1（K={K}, BK={BK}）")
     # BV 跟随 warp 数：每 warp 管 16 行（w1→BV16, w2→32, w4→64）。显式给 num_warps
@@ -395,6 +398,7 @@ PACKED_CASES = [
     # 边界：V 不是 BV 的倍数 / K 不是 2 的幂 / bf16 state
     ("B16 H4 HV8 K64 V48", dict(B=16, H=4, HV=8, K=64, V=48)),
     ("B16 H4 HV8 K96 V64", dict(B=16, H=4, HV=8, K=96, V=64)),
+    ("B3 H2 HV4 K17 V23", dict(B=3, H=2, HV=4, K=17, V=23)),
     ("B16 H4 HV8 K64 V64 bf16state", dict(B=16, H=4, HV=8, K=64, V=64, state_dtype=torch.bfloat16)),
     # idx 语义：有效/无效混合 + padded slot stride
     ("idx=[2,-1,0] padded", dict(B=3, H=2, HV=4, K=128, V=128, idx=[2, -1, 0], padded_slot=True)),

@@ -58,7 +58,8 @@ Run:
   python3 17-fused_moe.py --accuracy        # reference cross-check + tier sweep
   python3 17-fused_moe.py --perf            # TLE latency only
   python3 17-fused_moe.py --ab              # flaggems and mcoplib speedups
-  python3 17-fused_moe.py                   # all of the above
+  python3 17-fused_moe.py --native          # official vLLM-MetaX BF16 MoE (mctlassEx)
+  python3 17-fused_moe.py                   # accuracy, perf and --ab
 """
 import sys
 import os
@@ -1140,9 +1141,58 @@ def _bench_interleaved(fns, rounds=3, warmup=10, rep=50):
     return [sorted(a)[len(a) // 2] for a in acc]
 
 
-def bench_ab(only_m=None, rounds=3):
-    gems = _load_flaggems()
-    mc = _load_mcoplib()
+def _bench_native(hs, w1, w2, tw, ti, fn_tle, expected, rounds):
+    from contextlib import nullcontext
+    from importlib.metadata import version
+    from vllm_metax import envs as mx_envs
+    from vllm_metax.model_executor.layers.fused_moe import fused_moe as moe
+
+    if not mx_envs.MACA_VLLM_ENABLE_MCTLASS_FUSED_MOE or not getattr(
+        mx_envs, "MACA_VLLM_ENABLE_MCTLASS_PYTHON_API", True
+    ):
+        raise RuntimeError("The native benchmark requires the vLLM-MetaX mctlassEx BF16 path")
+
+    config = nullcontext()
+    expert_map = None
+    if version("vllm_metax").split("+")[0] == "0.21.0":
+        # 0.21 uses Triton block sizes for BF16 routing. Match the sorted-token
+        # blocks to each native GEMM, as newer vLLM-MetaX versions do internally.
+        from mctlassEx import FusedMoeGEMM
+        from vllm.model_executor.layers.fused_moe import override_config
+
+        m, k = ti.shape
+        experts = w1.size(0)
+        gemm = FusedMoeGEMM()
+        stages = moe.initialize_staged_config(
+            moe.try_get_optimal_moe_config(w1.size(), w2.size(), k, None, m))
+
+        def block_m(a, b, topk, weighted):
+            out = hs.new_empty((m, k, b.size(1)))
+            return gemm.get_kernel_m(
+                a, b, out, experts, a.size(0), b.size(1), a.size(1), topk, mul_weight=weighted)
+
+        stages[0]["BLOCK_SIZE_M"] = block_m(hs, w1, k, False)
+        stages[1]["BLOCK_SIZE_M"] = block_m(hs.new_empty((m * k, w2.size(2))), w2, 1, True)
+        # Select the Python API's BF16 GEMM for stage 2. The legacy 128x128x64
+        # shortcut calls a different binding that this API does not export.
+        if not hasattr(moe.mctlass_ops, "cutlass_moe_bf16_mm"):
+            stages[1]["BLOCK_SIZE_N"] = 64
+        config = override_config(dict(stage1=stages[0], stage2=stages[1]))
+        if m * k * 4 <= experts:
+            # An identity map requests aligned token IDs even for tiny batches.
+            expert_map = torch.arange(experts, device=hs.device, dtype=torch.int32)
+
+    def fn_native():
+        return moe.fused_experts_impl(hs, w1, w2, tw, ti, inplace=False, expert_map=expert_map)
+
+    with config:
+        torch.testing.assert_close(fn_native(), expected, atol=0.001, rtol=0.02)
+        return _bench_interleaved([fn_tle, fn_native], rounds=rounds)
+
+
+def bench_ab(only_m=None, rounds=3, native=False):
+    gems = None if native else _load_flaggems()
+    mc = None if native else _load_mcoplib()
     mc_impl = _McoplibMoE(mc, _load_silu()) if mc else None
 
     shapes = [
@@ -1157,9 +1207,12 @@ def bench_ab(only_m=None, rounds=3):
     if only_m:
         shapes = [s for s in shapes if s[0] in only_m]
 
-    print(f"{'M':>6} {'TLE ms':>9} "
-          f"{'flaggems ms':>11} {'gems/TLE':>8} "
-          f"{'mcop ms':>9} {'mcp/TLE':>8} {'match':>6}  mcoplib config")
+    if native:
+        print(f"{'M':>6} {'TLE ms':>9} {'vLLM-MetaX ms':>14} {'native/TLE':>11}")
+    else:
+        print(f"{'M':>6} {'TLE ms':>9} "
+              f"{'flaggems ms':>11} {'gems/TLE':>8} "
+              f"{'mcop ms':>9} {'mcp/TLE':>8} {'match':>6}  mcoplib config")
     print("-" * 97)
 
     for M, E, N, K, topk in shapes:
@@ -1170,10 +1223,18 @@ def bench_ab(only_m=None, rounds=3):
         gating = torch.randn(M, E, device="cuda", dtype=torch.float32)
         tw, ti = torch.topk(torch.softmax(gating, dim=-1), topk, dim=-1)
         tw = (tw / tw.sum(dim=-1, keepdim=True)).to(torch.bfloat16).contiguous()
+        if native:
+            # The native GEMM reads FP32 routing weights. Give both paths the same input.
+            tw = tw.float()
         ti = ti.to(torch.int32).contiguous()
 
         fn_t = lambda: fused_experts_impl(hs, w1, w2, tw, ti, inplace=False)
         out_t = fn_t()
+
+        if native:
+            tle_ms, native_ms = _bench_native(hs, w1, w2, tw, ti, fn_t, out_t, rounds)
+            print(f"{M:6d} {tle_ms:9.4f} {native_ms:14.4f} {native_ms / tle_ms:11.3f}")
+            continue
 
         fns = [fn_t]
         out_g = out_m = None
@@ -1231,8 +1292,9 @@ def bench_ab(only_m=None, rounds=3):
         print(f"{M:>6} {t_tle:9.4f} {ms_g:11.4f} {fmt(s_g)} "
               f"{ms_m:9.4f} {fmt(s_m)} {match:>6}  {cfgstr}")
 
-    print("\nmatch: 'g' = TLE==flaggems, 'm' = TLE==mcoplib, 'x' = mismatch")
-    print("both speedup columns > 1 means the shape needs no further work")
+    if not native:
+        print("\nmatch: 'g' = TLE==flaggems, 'm' = TLE==mcoplib, 'x' = mismatch")
+        print("both speedup columns > 1 means the shape needs no further work")
 
 
 if __name__ == "__main__":
@@ -1245,7 +1307,8 @@ if __name__ == "__main__":
             "  python3 17-fused_moe.py --accuracy       # accuracy only\n"
             "  python3 17-fused_moe.py --perf           # TLE latency only\n"
             "  python3 17-fused_moe.py --ab             # three-way speedup only\n"
-            "  python3 17-fused_moe.py                  # everything\n"
+            "  python3 17-fused_moe.py --native         # TLE vs vLLM-MetaX mctlassEx\n"
+            "  python3 17-fused_moe.py                  # accuracy, perf and --ab\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1256,16 +1319,20 @@ if __name__ == "__main__":
                     help="TLE latency only (no baselines)")
     ap.add_argument("--ab", action="store_true",
                     help="three-way speedup only (flaggems and mcoplib vs TLE)")
+    ap.add_argument("--native", action="store_true",
+                    help="compare TLE with the full vLLM-MetaX BF16 MoE using mctlassEx")
     ap.add_argument("--shapes", default="",
-                    help="comma separated M values for --perf / --ab, "
+                    help="comma separated M values for --perf / --ab / --native, "
                          "e.g. 64,512")
     ap.add_argument("--rounds", type=int, default=3,
                     help="interleaved A/B rounds (default 3)")
     a = ap.parse_args()
 
     only = {int(x) for x in a.shapes.split(",") if x.strip()} or None
-    # No selector -> run everything.
-    run_all = not (a.accuracy or a.perf or a.ab)
+    if a.native:
+        os.environ.setdefault("MACA_VLLM_ENABLE_MCTLASS_FUSED_MOE", "1")
+        os.environ.setdefault("MACA_VLLM_ENABLE_MCTLASS_PYTHON_API", "1")
+    run_all = not (a.accuracy or a.perf or a.ab or a.native)
 
     if a.accuracy or run_all:
         test_reference_equivalence()
@@ -1274,3 +1341,5 @@ if __name__ == "__main__":
         bench(only_m=only)
     if a.ab or run_all:
         bench_ab(only_m=only, rounds=a.rounds)
+    if a.native:
+        bench_ab(only_m=only, rounds=a.rounds, native=True)

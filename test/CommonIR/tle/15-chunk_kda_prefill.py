@@ -19,12 +19,12 @@
     重复调用间漂移，而这三块每个 CTA 只读一次，本来也没有重叠收益。
   * g_last 走全局而非 smem：3-D (1,1,K) 的 smem 往返带布局嫌疑且会漂。
 
-支持范围：K == V == 128、bf16、HV == H（无 GVA）、chunk_size=16、BV=64。
+支持范围：K == V，维度为 64 或 128，bf16/fp16，HV 为 H 的正整数倍，chunk_size=16、BV=64。
 超范围组合在 chunk_kda_prefill_tle 里 assert。
 
 ============================== 两条基线 ==============================
 
-都内联在本文件内，bench 一次打印两列 speedup（gems/TLE、mcoplib/TLE）。
+都内联在本文件内，bench 打印 gems/TLE 加速比及历史 mcoplib 基线时延。
 
   flaggems  FlagGems-vllm 自带的整条 chunk_kda（BT=16，plain-Triton 后端，
             L2norm / 门控 / beta 全部融在 kernel 内），与 TLE 同构，是两列里
@@ -52,14 +52,13 @@ flaggems 列是软依赖：源码树缺失、上游改动导致 patch 点为 0�
 
 ============================== 精度口径 ==============================
 
-safe_gate 的 chunk 内 cumsum 会 clamp_min(-16)，而每步门控 ≈ -3.6，于是 BT=16
-的 chunk 从第 5 个 token 起就压到地板、BT=64 不会 —— chunk 大小本身改变数学
-语义（同输入下 ref(BT=16) 与 ref(BT=64) 差 5.1e-2，|o| 量级 1.4e-2）。flaggems
-的 kernel 根本不 clamp，是第三个函数（同输入与 clamp 版差 3.4e-2，|o| 量级
-2.3e-2）。所以每列只能对比同 chunk 大小、同 clamp 语义的 fp32 参考，三方输出
-不可直接互比：
+TLE 与 FlagGems 对激活后的 gate 做块内累加，保留完整累计值。
+将累计值截到 -16 会改变 token 之间的衰减权重，因此生产 kernel 和默认参考
+都不做这次截断。test_gate_decay 用逐 token 的标量递推检查这个行为。
+历史 mcoplib 基线的前处理仍带截断，仅与其带截断参考比较；该列不能作为
+与当前 TLE 等价计算的加速比。
 
-    TLE → BT=16+clamp    mcoplib → BT=64+clamp    flaggems → BT=16 无 clamp
+    TLE → BT=16 无 clamp    mcoplib → BT=64+clamp    flaggems → BT=16 无 clamp
 
 本文件有两个 fp32 参考，不是重复：
   reference_chunk_kda       逐 token、逐 slot 的标量循环，慢但直白，BT=16 固定。
@@ -76,7 +75,7 @@ test_reference_equivalence 先用它俩在小形状上互锁（差 ~1e-6），�
 
 ============================== 实测 ==============================
 
-2026-11-18，C550，同一份代码连跑 3 轮：
+2026-11-18，C550，旧的带截断版本连跑 3 轮（不代表当前版本）：
 
   精度: tle 2.17e-4~2.21e-4 / mc 2.24e-4~3.73e-4 / fg 7.0e-5~1.4e-4
 
@@ -123,7 +122,7 @@ from triton._common_ir import ENABLED
 
 LOG2E = 1.4426950408889634
 L2NORM_EPS = 1e-6
-GC_CLAMP = -16.0  # 保守 clamp：exp2(16)=65536，bf16 完全安全
+GC_CLAMP = -16.0  # Historical mcoplib baseline only.
 LOWER_BOUND = -5.0
 
 
@@ -138,7 +137,7 @@ def _kda_fwd_intra_tle_kernel(
     q_ptr, k_ptr, g_ptr, beta_ptr,
     A_log_ptr, dt_bias_ptr,
     Aqk_ptr, Akk_ptr, ws_ptr, g_last_ptr,
-    lower_bound, g_scale, scale, l2norm_eps, gc_clamp,
+    lower_bound, g_scale, scale, l2norm_eps,
     T_orig, T_pad,
     H: tl.constexpr, HV: tl.constexpr,
     K: tl.constexpr, BT: tl.constexpr,
@@ -188,18 +187,17 @@ def _kda_fwd_intra_tle_kernel(
 
     lower_tri = tl.where(o_i[:, None] >= o_i[None, :], 1.0, 0.0)
     b_gc = tl.dot(lower_tri.to(in_dt), b_g.to(in_dt), input_precision="tf32")
-    b_gc = tl.maximum(b_gc, gc_clamp)
 
     b_gq = tl.exp2(b_gc)
     b_gk = tl.exp2(-b_gc)
 
-    # 三个归一化-门控乘积各算一次：b_kgp 供 Akk / w / kg 共用，b_qg_bf 供
-    # Aqk 与 qg store 共用。乘数结合顺序与逐位精度都和展开写法一致。
     b_qgp = b_qf * b_q_rstd[:, None]
     b_kgp = b_kf * b_k_rstd[:, None]
-    b_qg_bf = (b_qgp * b_gq).to(in_dt)
-    b_kg_bf = (b_kgp * b_gk).to(in_dt)
-    b_kk_bf = (b_kgp * b_gq).to(in_dt)
+    b_qg = b_qgp * b_gq
+    # 累计 gate 的逆衰减因子可使加权 K 超出 fp16 范围。两次 dot 用 bf16 输入。
+    b_qg_bf = b_qg.to(tl.bfloat16)
+    b_kg_bf = (b_kgp * b_gk).to(tl.bfloat16)
+    b_kk_bf = (b_kgp * b_gq).to(tl.bfloat16)
 
     b_Aqk_raw = tl.dot(b_qg_bf, tl.trans(b_kg_bf), input_precision="tf32")
     b_Akk_raw = tl.dot(b_kk_bf, tl.trans(b_kg_bf), input_precision="tf32")
@@ -248,7 +246,7 @@ def _kda_fwd_intra_tle_kernel(
     b_kb = (b_kgp * b_beta[:, None] * b_gq).to(in_dt)
     b_w_raw = tl.dot(b_Ai, b_kb, input_precision="tf32")
     b_w = tl.where(b_w_raw == b_w_raw, b_w_raw, 0.0).to(ws_ptr.dtype.element_ty)
-    b_qg_val = b_qg_bf
+    b_qg_val = b_qg.to(in_dt)
     b_kg_val = (b_kgp * tl.exp2(b_g_last[None, :] - b_gc)).to(in_dt)
 
     ws_offs = ((i_b * T_pad + i_t * BT) * HV + i_hv) * (3 * K)
@@ -453,9 +451,9 @@ def chunk_kda_prefill_tle(
     HV = v.shape[2]
     V = v.shape[-1]
     BT = chunk_size
-    assert K == 128 and V == 128, "先只支持 K=V=128"
-    assert q.dtype == torch.bfloat16, "先只支持 bf16"
-    assert HV == H, "先只支持无 GVA（HV==H）"
+    assert K == V and K in (64, 128), "需要 K=V=64 或 K=V=128"
+    assert q.dtype in (torch.bfloat16, torch.float16), "需要 bf16 或 fp16 输入"
+    assert H > 0 and HV > 0 and HV % H == 0, "HV 必须是 H 的正整数倍"
     assert A_log is not None and dt_bias is not None
     assert beta.ndim == 3 and beta.shape == (B, T_orig, HV)
 
@@ -477,7 +475,7 @@ def chunk_kda_prefill_tle(
         q_p, k_p, g_p, beta_p,
         A_log, dt_bias,
         Aqk, Akk, ws, g_last,
-        float(lower_bound), float(LOG2E), float(scale), float(L2NORM_EPS), float(GC_CLAMP),
+        float(lower_bound), float(LOG2E), float(scale), float(L2NORM_EPS),
         T_orig, T_pad,
         H=H, HV=HV, K=K, BT=BT,
         num_warps=num_warps, num_stages=2, pipeline="cpasync",
@@ -557,7 +555,6 @@ def reference_chunk_kda(q, k, v, g, beta, A_log, dt_bias, lower_bound, scale=Non
     for i_t in range(NT):
         t0, t1 = i_t * BT, (i_t + 1) * BT
         gc = torch.cumsum(b_g[:, t0:t1], dim=1)
-        gc = torch.clamp(gc, min=GC_CLAMP)
         gq = torch.exp2(gc)
         gk = torch.exp2(-gc)
 
@@ -607,11 +604,11 @@ def reference_chunk_kda(q, k, v, g, beta, A_log, dt_bias, lower_bound, scale=Non
 # =============================================================================
 
 
-def reference_chunk_kda_fast(x, scale, BT=64, clamp=GC_CLAMP):
+def reference_chunk_kda_fast(x, scale, BT=16, clamp=None):
     """fp32 参考；BT 必须与待测实现的 chunk 大小一致（见文件头的精度口径）。
 
-    clamp=None 给出"无 gate 下界保护"的变体（flaggems 的语义）；TLE/mcoplib
-    路径用 clamp=GC_CLAMP。两者是两个不同函数，只能各自与自己的参考比。
+    默认保留 gate 累计值，与 TLE/FlagGems 一致。历史 mcoplib 基线显式传入
+    clamp=GC_CLAMP，单独与其参考比较。
     """
     q, k, v = x["q"], x["k"], x["v"]
     g, beta = x["g"], x["beta"]
@@ -824,7 +821,7 @@ def mcoplib_pipeline(mc, fg_o, x, scale):
     BT, BC = 64, 16
     assert T % BT == 0, f"mcoplib 路径要求 T%{BT}==0，当前 T={T}"
 
-    # ---- torch 前处理（与 TLE kernel 内语义一致）----
+    # ---- 历史基线的 torch 前处理（保留其 gate 截断）----
     qn = F.normalize(q.float(), dim=-1).to(q.dtype).contiguous()
     kn = F.normalize(k.float(), dim=-1).to(k.dtype).contiguous()
     A = torch.exp(x["A_log"].float())
@@ -874,8 +871,8 @@ def mcoplib_pipeline(mc, fg_o, x, scale):
 def fg_pipeline(fg_full, x, scale):
     """flaggems-vllm 全流水线（BT=16, safe_gate=True），与 TLE 同构。
 
-    safe_gate=True 让 cuDNN/gate 的激活与 cumsum 融在 kernel 内；注意 fg 的
-    safe_gate 不含 clamp_min(-16)，语义见文件头的精度口径。返回 o（[B,T,H,V] bf16）。
+    safe_gate=True 将 gate 激活与 cumsum 融在 kernel 内，保留累计值。
+    返回 o（[B,T,H,V] bf16）。
     """
     with torch.no_grad():
         return fg_full(
@@ -940,8 +937,7 @@ def test_reference_equivalence():
         o_slow, h_slow = reference_chunk_kda(q, k, v, g, beta, A_log, dt_bias,
                                              LOWER_BOUND)
         x = dict(q=q, k=k, v=v, g=g, beta=beta, A_log=A_log, dt_bias=dt_bias)
-        o_fast, h_fast = reference_chunk_kda_fast(x, 128 ** -0.5, BT=16,
-                                                  clamp=GC_CLAMP)
+        o_fast, h_fast = reference_chunk_kda_fast(x, 128 ** -0.5, BT=16)
         d_o = (o_slow.float() - o_fast).abs().max().item()
         d_h = (h_slow - h_fast).abs().max().item()
         mag = o_slow.abs().max().item()
@@ -956,6 +952,33 @@ def test_reference_equivalence():
     print(f"test_reference_equivalence: {'passed' if ok else 'FAILED'}")
     assert ok, "KDA reference implementations disagree"
     return ok
+
+
+def test_gate_decay():
+    """Check strong gates against a scalar recurrence across two chunks."""
+    q = torch.zeros(1, 32, 1, 128, device="cuda", dtype=torch.bfloat16)
+    q[..., 0] = 1
+    v = torch.ones_like(q)
+    g = torch.full_like(q, 30)
+    beta = torch.zeros(1, 32, 1, device="cuda", dtype=q.dtype)
+    A_log = torch.zeros(1, device="cuda")
+    dt_bias = torch.zeros(1, 128, device="cuda")
+    out, final = chunk_kda_prefill_tle(
+        q, q, v, g, beta, A_log=A_log, dt_bias=dt_bias,
+        output_final_state=True,
+    )
+    decay = torch.exp(torch.tensor(-5.0)).item()
+    state = 0.0
+    expected = []
+    for _ in range(32):
+        state = 0.5 * decay * state + 0.5
+        expected.append(state * 128 ** -0.5)
+    expected = torch.tensor(expected, device=q.device).view(1, 32, 1, 1)
+    expected_final = torch.zeros_like(final)
+    expected_final[..., 0, :] = state
+    torch.testing.assert_close(out.float(), expected.expand_as(out), atol=2e-4, rtol=0.02)
+    torch.testing.assert_close(final, expected_final, atol=2e-4, rtol=0.02)
+    print("test_gate_decay: passed")
 
 
 def test_correctness():
@@ -1013,7 +1036,7 @@ def test_ab_accuracy(mc, fg_o, fg_full):
         scale = K ** -0.5
         x = _make_ab_inputs(B, T, H, K, V, seed=7)
         o_ref, _ = reference_chunk_kda_fast(x, scale, BT=16)                # TLE
-        o_ref64, _ = reference_chunk_kda_fast(x, scale, BT=64)              # mcoplib
+        o_ref64, _ = reference_chunk_kda_fast(x, scale, BT=64, clamp=GC_CLAMP)  # mcoplib
         o_ref_nc, _ = reference_chunk_kda_fast(x, scale, BT=16, clamp=None)  # fg
 
         o = tle_pipeline(_clone_inputs(x), scale)
@@ -1043,8 +1066,7 @@ def test_ab_accuracy(mc, fg_o, fg_full):
               f"| {d_tle:.3g} "
               f"| {o_ref64.abs().max().item():.3g} | {d_mc:.3g} "
               f"| {o_ref_nc.abs().max().item():.3g} | {d_fg:.3g} |")
-    print("  注：tle/mc 对带 clamp 参考，fg 对无 clamp 参考；三方输出不互比"
-          "（见文件头精度口径）。")
+    print("  注：TLE/FlagGems 对无截断参考；历史 mcoplib 基线对带截断参考。")
 
 
 BENCH_SHAPES = [(1, 512, 16), (1, 2048, 16), (4, 2048, 16), (1, 8192, 16)]
@@ -1132,12 +1154,12 @@ def bench_ab(mc, fg_o, fg_full, only_t=None, rounds=3):
 
         t_tle = ms["tle"]
         s_g = ms["fg"] / t_tle if "fg" in ms else float("nan")
-        s_m = ms["mc"] / t_tle if "mc" in ms else float("nan")
+        s_m = float("nan")  # The historical baseline clips gate sums.
         tag = ("g" if s_g > 1 else "") + ("m" if s_m > 1 else "")
         print(f"{f'B{B}T{T}H{H}':>12} {t_tle:9.4f} "
               f"{ms.get('fg', float('nan')):12.4f} {fmt(s_g):>9} "
               f"{ms.get('mc', float('nan')):9.4f} {fmt(s_m):>8}  {tag or '-'}")
-    print(f"\n交替测量 {rounds} 轮取中位数；两列 speedup 都 >1 才算该形状收敛。")
+    print(f"\n交替测量 {rounds} 轮取中位数；mcoplib 保留历史截断语义，加速比记为 n/a。")
     print("mcoplib 列补了 torch 前处理 + flaggems o kernel，fg 列打了 fp32-accum "
           "patch —— 两处都只会让基线更慢。")
 
@@ -1165,6 +1187,7 @@ if __name__ == "__main__":
     run_all = not (args.accuracy or args.perf or args.ab)
     if run_all or args.accuracy:
         test_reference_equivalence()
+        test_gate_decay()
         test_correctness()
 
     if run_all or args.ab:

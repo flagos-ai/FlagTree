@@ -111,8 +111,7 @@ def _flash_fwd_tile(
         score0 = score0 * scale_log2
         score1 = score1 * scale_log2
 
-    # Match copy_reg_to_share_V before the next-K prefetch.  Keep each N32
-    # fragment in the ordinary Dot-B shared contract consumed below.
+    # Store the two N32 V fragments before prefetching the next K tile.
     v_fragments.slot(0).store(tle.extract_tile(v_register, (0, 0), [32, BLOCK_D]))
     v_fragments.slot(1).store(tle.extract_tile(v_register, (1, 0), [32, BLOCK_D]))
 
@@ -161,14 +160,13 @@ def _flash_fwd_tile(
 
     # Scheduling hints
     # config_3/4 retain compiler defaults for shared stores / other instructions.
-    tle.gpu.metax.iglp(
-        config_0=2,  # mxcc instruction-group scheduling mode (0 selects automatically).
-        config_1=16, # Prefetched shared-load instructions.
-        config_2=4,  # MMA instructions between shared-load groups.
-        config_5=1,  # Shared-load instructions per group.
-        config_6=1,  # MMA instructions between global loads.
-        config_7=8,  # MMA instructions between the last shared load and ARRIVE.
-    )
+    tle.gpu.metax.iglp(config_0=2,  # mxcc instruction-group scheduling mode (0 selects automatically).
+                       config_1=16,  # Prefetched shared-load instructions.
+                       config_2=4,  # MMA instructions between shared-load groups.
+                       config_5=1,  # Shared-load instructions per group.
+                       config_6=1,  # MMA instructions between global loads.
+                       config_7=8,  # MMA instructions between the last shared load and ARRIVE.
+                       )
     return next_k_register, acc_o, m_i, l_i
 
 
@@ -220,8 +218,7 @@ def flash_fwd_hdim128_generic_kernel(
     o_head = o_ptr + pid_b * o_stride_b + pid_h * o_stride_h
     lse_head = lse_ptr + pid_b * lse_stride_b + pid_h * lse_stride_h
 
-    # CommonIR selects every shared layout from its consumers. Separate
-    # buffers replace Gluon's explicit lifetime-disjoint arena aliases.
+    # Leave shared layouts and memory reuse to the compiler.
     q_smem = tle.gpu.alloc((BLOCK_M, BLOCK_D), q_ptr.dtype.element_ty)
 
     q_load_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
@@ -251,7 +248,7 @@ def flash_fwd_hdim128_generic_kernel(
         first_valid = (first_n_block >= 0) & (first_n[:, None] < SK)
         k_register = tl.load(first_k_ptrs, mask=first_valid, other=0.0)
 
-    # C prologue: gQ -> rQ -> sQ, then publish and retain the MMA Q fragment.
+    # Load Q through shared memory into MMA registers for reuse in the KV loop.
     q_smem.store(q_register)
     tle.gpu.metax.barrier_shared()
     q_for_score = q_smem.load()
@@ -278,10 +275,8 @@ def flash_fwd_hdim128_generic_kernel(
         masking_steps: tl.constexpr = 1
 
     masked_blocks = min(active_n_blocks, masking_steps)
-    # The even causal M64 specialization executes C's first masked tile as a
-    # straight-line stage. Clamp the block only for active=0 CTAs; its causal
-    # point mask is then all false. Uneven M64 retains a dynamic guard, while
-    # M128 keeps its original range(0, masked_blocks) structure below.
+    # Full causal M64 tiles need at most one masked iteration. Execute it
+    # directly; clamp the index for CTAs with no active keys, whose mask is false.
     if BLOCK_M == 64 and CAUSAL and EVEN_MN:
         n_block = max(first_n_block, 0)
         k_register, acc_o, m_i, l_i = _flash_fwd_tile(
@@ -414,20 +409,15 @@ def flash_fwd_hdim128_generic_kernel(
         float("inf"),
     )
 
-    # Retain the source's shared-memory output staging; infer its layout.
+    # Stage the accumulator in shared memory before the coalesced output store.
     o_smem = tle.gpu.alloc((BLOCK_M, BLOCK_D), o_ptr.dtype.element_ty)
     tle.gpu.metax.barrier_shared()
     o_smem.store(out.to(o_ptr.dtype.element_ty))
     tle.gpu.metax.barrier_shared()
-    # Leave the register owner open.  Candidate construction must satisfy both
-    # the shared-memory reader map and the D-contiguous global store; this
-    # is the complete physical boundary that the user previously had to encode
-    # as a hand-written BlockedLayout.
+    # Let the compiler choose a register layout for the D-contiguous output store.
     out_coalesced = o_smem.load()
 
-    # The shared round-trip changes ownership from the PV accumulator to a
-    # D-contiguous global writer.  Rebuild offsets and mask in that ownership
-    # domain instead of propagating the QK row layout into the final store.
+    # Build fresh output indices so the store does not inherit the QK row layout.
     o_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     o_d = tl.arange(0, BLOCK_D)
     o_ptrs = (o_head + o_m[:, None] * o_stride_m + o_d[None, :] * o_stride_d)
@@ -523,8 +513,7 @@ def launch_flash_fwd(q, k, v, out=None, lse=None, scale=None, causal=False):
         BLOCK_N=BN,
         BLOCK_D=head_dim,
         CAUSAL=causal,
-        # Mirrors C's Is_even_MN specialization.  Only proven full tiles can
-        # select the dense noncausal load/score path without point masks.
+        # Omit boundary masks only when both sequence lengths fill whole tiles.
         EVEN_MN=(seqlen_q % block_m == 0 and seqlen_k % BN == 0),
         num_warps=NUM_WARPS,
         num_stages=2,
@@ -628,8 +617,7 @@ def _benchmark(args, dtype):
             generator = torch.Generator(device="cuda").manual_seed(0)
             q, k, v = [
                 torch.randn((args.batch, length, args.heads, args.head_dim), device="cuda", dtype=dtype,
-                            generator=generator)
-                for length in (seq_q, seq_k, seq_k)
+                            generator=generator) for length in (seq_q, seq_k, seq_k)
             ]
             # Same BSHD storage for both kernels; TLE takes BHSD views.
             q_tle, k_tle, v_tle = (tensor.transpose(1, 2) for tensor in (q, k, v))
@@ -713,8 +701,7 @@ def main():
         q, k, v = _make_inputs(args.batch, args.heads, seq_q, seq_k, args.head_dim, dtype)
         _, _, errors = _check(q, k, v, args.causal)
         shape = f"{args.batch}x{args.heads}x{seq_q}x{seq_k}x{args.head_dim}"
-        print(f"| {shape} | {args.dtype} | {args.causal} | {errors[0]:.6g} | {errors[1]:.6g} | True |",
-              flush=True)
+        print(f"| {shape} | {args.dtype} | {args.causal} | {errors[0]:.6g} | {errors[1]:.6g} | True |", flush=True)
 
 
 if __name__ == "__main__":

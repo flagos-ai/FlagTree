@@ -171,14 +171,13 @@ def _flash_fwd_tile(
 
     # Scheduling hints
     # config_3/4 retain compiler defaults for shared stores / other instructions.
-    tle.gpu.metax.iglp(
-        config_0=2,  # mxcc instruction-group scheduling mode (0 selects automatically).
-        config_1=16, # Prefetched shared-load instructions.
-        config_2=4,  # MMA instructions between shared-load groups.
-        config_5=1,  # Shared-load instructions per group.
-        config_6=1,  # MMA instructions between global loads.
-        config_7=8,  # MMA instructions between the last shared load and ARRIVE.
-    )
+    tle.gpu.metax.iglp(config_0=2,  # mxcc instruction-group scheduling mode (0 selects automatically).
+                       config_1=16,  # Prefetched shared-load instructions.
+                       config_2=4,  # MMA instructions between shared-load groups.
+                       config_5=1,  # Shared-load instructions per group.
+                       config_6=1,  # MMA instructions between global loads.
+                       config_7=8,  # MMA instructions between the last shared load and ARRIVE.
+                       )
     return next_k_register, acc_o, m_i, l_i
 
 
@@ -500,9 +499,8 @@ def _validate_inputs(q, k, v):
     return batch, heads, seqlen_q, k.shape[2]
 
 
-def launch_flash_fwd(q, k, v, out=None, lse=None, scale=None, causal=False,
-                     block_m=None, num_stages=2, pipeline="cpasync",
-                     num_warps=NUM_WARPS):
+def launch_flash_fwd(q, k, v, out=None, lse=None, scale=None, causal=False, block_m=None, num_stages=2,
+                     pipeline="cpasync", num_warps=NUM_WARPS):
     batch, heads, seqlen_q, seqlen_k = _validate_inputs(q, k, v)
     head_dim = q.shape[-1]
     if out is None:
@@ -686,8 +684,7 @@ def _benchmark(args, dtype):
             generator = torch.Generator(device="cuda").manual_seed(0)
             q, k, v = [
                 torch.randn((args.batch, length, args.heads, args.head_dim), device="cuda", dtype=dtype,
-                            generator=generator)
-                for length in (seq_q, seq_k, seq_k)
+                            generator=generator) for length in (seq_q, seq_k, seq_k)
             ]
             # Same BSHD storage for both kernels; TLE takes BHSD views.
             q_tle, k_tle, v_tle = (tensor.transpose(1, 2) for tensor in (q, k, v))
@@ -771,10 +768,8 @@ def main():
         q, k, v = _make_inputs(args.batch, args.heads, seq_q, seq_k, args.head_dim, dtype)
         _, _, errors = _check(q, k, v, args.causal)
         shape = f"{args.batch}x{args.heads}x{seq_q}x{seq_k}x{args.head_dim}"
-        print(f"| {shape} | {args.dtype} | {args.causal} | {errors[0]:.6g} | {errors[1]:.6g} | True |",
-              flush=True)
+        print(f"| {shape} | {args.dtype} | {args.causal} | {errors[0]:.6g} | {errors[1]:.6g} | True |", flush=True)
 
 
 if __name__ == "__main__":
     main()
-

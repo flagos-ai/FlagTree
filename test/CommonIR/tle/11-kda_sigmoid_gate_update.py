@@ -25,12 +25,14 @@ KDA 模式下 decay 是 [K] 向量（逐 k 列），普通模式下是标量。
   * SMEM 路径无尾块掩码，TT 必须整除 T 且 ≥2，否则自动退回 bare。
 
 用法：
-    python kda_sigmoid_gating_tle.py
+    python 11-kda_sigmoid_gate_update.py
+    python 11-kda_sigmoid_gate_update.py --benchmark  # 与 mcoplib Triton 对比
 """
 
 from __future__ import annotations
 
 import argparse
+import statistics
 import traceback
 
 import torch
@@ -787,9 +789,83 @@ def run_accuracy(atol=2e-2, rtol=2e-2):
             print(f"| {name} | pool | ERR | - |")
 
 
+# #135 的普通 GDN 表未列头数，这里沿用已有复测的 H=HV=8；KDA 表为 H=HV=48。
+# (is_kda, B, T, H, K, V)
+BENCH_CASES = [
+    (False, 32, 512, 8, 64, 64),
+    (False, 32, 512, 8, 128, 64),
+    (False, 32, 512, 8, 128, 128),
+    (False, 32, 1024, 8, 128, 128),
+    (False, 64, 512, 8, 128, 128),
+    (True, 85, 256, 48, 128, 128),
+    (True, 177, 8, 48, 128, 128),
+    (True, 256, 256, 48, 128, 128),
+    (True, 1328, 8, 48, 128, 128),
+]
+
+
+def _check_benchmark_pair(tle_update, mcop, state, initial):
+    expected_out = mcop()
+    expected_state = state.clone()
+    state.copy_(initial)
+    actual_out = tle_update()
+    for actual, expected in ((actual_out, expected_out), (state, expected_state)):
+        assert actual.shape == expected.shape
+        for x, y in zip(actual.split(8), expected.split(8)):
+            torch.testing.assert_close(x, y, atol=2.5e-4, rtol=0.02)
+
+
+def benchmark_case(mcop_update, is_kda, B, T, H, K, V):
+    A_log, a, dt_bias, q, k, v, b = _make_inputs(B, T, H, H, K, V, kda=is_kda)
+    args = (A_log, a, dt_bias, 1.0, 20.0, q, k, v, b)
+    options = dict(is_kda=is_kda, lower_bound=-5.0 if is_kda else None)
+    initial = torch.randn(B, H, V, K, device=q.device, dtype=torch.float32) * 0.01
+    state = initial.clone()
+    indices = torch.arange(B, device=q.device, dtype=torch.int32)
+
+    def mcop():
+        return mcop_update(*args, state, indices, use_qk_l2norm_in_kernel=True, **options)
+
+    def tle_update():
+        # mcoplib 的状态布局是 [B,H,V,K]，将适配和写回计入端到端耗时。
+        pool = state.transpose(-1, -2).contiguous()
+        out = sigmoid_gating_delta_rule_pc(*args, initial_state_source=pool, initial_state_indices=indices,
+                                           qk_l2norm=True, **options)
+        state.copy_(pool.transpose(-1, -2))
+        return out.to(v.dtype)
+
+    _check_benchmark_pair(tle_update, mcop, state, initial)
+    samples = {tle_update: [], mcop: []}
+    start, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+    for i in range(14):
+        for fn in ((tle_update, mcop) if i % 2 == 0 else (mcop, tle_update)):
+            state.copy_(initial)
+            start.record()
+            fn()
+            end.record()
+            end.synchronize()
+            if i >= 3:
+                samples[fn].append(start.elapsed_time(end))
+    return statistics.median(samples[tle_update]), statistics.median(samples[mcop])
+
+
+def run_benchmark():
+    from mcoplib.triton_fused_sigmoid_gating_delta_rule_update import fused_sigmoid_gating_delta_rule_update
+
+    print("mode B T H=HV K V TLE_ms mcoplib_ms speedup")
+    for is_kda, B, T, H, K, V in BENCH_CASES:
+        tle_ms, mc_ms = benchmark_case(fused_sigmoid_gating_delta_rule_update, is_kda, B, T, H, K, V)
+        print(f"{'KDA' if is_kda else 'GDN'} {B} {T} {H} {K} {V} {tle_ms:.4f} {mc_ms:.4f} {mc_ms / tle_ms:.3f}x",
+              flush=True)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--atol", type=float, default=2e-2)
     parser.add_argument("--rtol", type=float, default=2e-2)
+    parser.add_argument("--benchmark", action="store_true")
     args = parser.parse_args()
-    run_accuracy(atol=args.atol, rtol=args.rtol)
+    if args.benchmark:
+        run_benchmark()
+    else:
+        run_accuracy(atol=args.atol, rtol=args.rtol)

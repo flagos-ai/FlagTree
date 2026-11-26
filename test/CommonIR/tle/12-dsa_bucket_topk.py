@@ -1,7 +1,7 @@
 # dsa_bucket_topk — TLE bucket sort implementation (single-file submission)
 #
 # Operator: dsa_bucket_topk
-# Interface: bucket_sort_topk(inputs, starts, ends, topk) -> int32 [B, topk]
+# Interface: bucket_sort_topk(inputs, starts, ends, topk, *, out=None) -> int32 [B, topk]
 #            absolute indices; pad with -1 when a row is shorter than topk
 # TLE variant: tle_bucket_sort_topk; kernel: kernel_tle_bucket_sort_topk
 #
@@ -1258,12 +1258,13 @@ def _tile_size(vocab_size):
     return 1024 if vocab_size >= WIDE_TILE_VOCAB else 512
 
 
-def tle_bucket_sort_topk(inputs, starts, ends, topk):
+def tle_bucket_sort_topk(inputs, starts, ends, topk, *, out=None):
     """TLE variant (same name as FlagGems bin_topk.py): absolute indices, with
     -1 padding when a row is shorter than topk.
 
     inputs: [B, S] fp32 (supports stride0 padding, stride1 == 1)
     starts/ends: [B] int32, valid row range [start, end)
+    out: optional contiguous int32 [B, topk] on the input device, disjoint from the inputs.
     """
     # Match upstream: validate inputs and cast non-fp32 inputs to float32.
     # torch.empty is safe: the kernel writes every slot in [0, topk) on both
@@ -1276,7 +1277,11 @@ def tle_bucket_sort_topk(inputs, starts, ends, topk):
         raise ValueError("starts and ends must be 1D tensors")
     inputs = inputs.float() if inputs.dtype != torch.float32 else inputs
     num_rows, vocab_size = inputs.shape
-    out = torch.empty((num_rows, topk), dtype=torch.int32, device=inputs.device)
+    if out is None:
+        out = torch.empty((num_rows, topk), dtype=torch.int32, device=inputs.device)
+    elif (out.shape != (num_rows, topk) or out.dtype != torch.int32
+          or out.device != inputs.device or not out.is_contiguous()):
+        raise ValueError("out must be contiguous int32 [B, topk] on the input device")
 
     block = _tile_size(vocab_size)
     num_warps = _num_warps(block)
@@ -1324,14 +1329,14 @@ def tle_bucket_sort_topk(inputs, starts, ends, topk):
     return out
 
 
-def bucket_sort_topk(inputs, starts, ends, topk):
+def bucket_sort_topk(inputs, starts, ends, topk, *, out=None):
     """Interface name (submission ABI): bin_topk. This file implements only the TLE path."""
-    return tle_bucket_sort_topk(inputs, starts, ends, topk)
+    return tle_bucket_sort_topk(inputs, starts, ends, topk, out=out)
 
 
-def dsa_bucket_topk(inputs, starts, ends, topk):
+def dsa_bucket_topk(inputs, starts, ends, topk, *, out=None):
     """Operator name (submission)."""
-    return bucket_sort_topk(inputs, starts, ends, topk)
+    return bucket_sort_topk(inputs, starts, ends, topk, out=out)
 
 
 # ---------------------------------------------------------------------------
