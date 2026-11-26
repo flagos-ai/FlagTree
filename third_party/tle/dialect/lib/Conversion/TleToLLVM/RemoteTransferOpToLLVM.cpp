@@ -41,7 +41,7 @@ using namespace mlir::triton;
 enum class RemoteTransferKind { Put, Get };
 
 static LLVM::LLVMFuncOp getOrInsertTransfer(ModuleOp module, MLIRContext *ctx,
-                                           RemoteTransferKind kind) {
+                                            RemoteTransferKind kind) {
   const char *funcName =
       kind == RemoteTransferKind::Put ? "flagcxDevPut" : "flagcxDevGet";
   if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
@@ -73,10 +73,11 @@ static std::optional<int64_t> getConstantInt(Value value) {
 
 static LogicalResult lowerRemoteTransfer(
     Location loc, Operation *op, Value srcHandle, Value dstHandle,
-    Value commHandle, Value peer, Value srcOffset, Value dstOffset, Value nelems,
-    int32_t contextId, int64_t elemBytes, tle::FlagCXTeamKind teamKind,
-    tle::FlagCXCoopKind coopKind, RemoteTransferKind kind,
-    std::optional<int64_t> constantNelems, ConversionPatternRewriter &rewriter) {
+    Value commHandle, Value peer, Value srcOffset, Value dstOffset,
+    Value nelems, int32_t contextId, int64_t elemBytes,
+    tle::FlagCXTeamKind teamKind, tle::FlagCXCoopKind coopKind,
+    RemoteTransferKind kind, std::optional<int64_t> constantNelems,
+    ConversionPatternRewriter &rewriter) {
   ModuleOp module = op->getParentOfType<ModuleOp>();
   if (!module)
     return rewriter.notifyMatchFailure(op, "expected a parent module");
