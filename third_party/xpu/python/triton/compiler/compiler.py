@@ -237,7 +237,7 @@ class CompileTimer:
         )
 
 
-def compile(src, target=None, options=None, _env_vars=None):
+def _compile_impl(src, target=None, options=None, _env_vars=None, _force_options=None, _state=None):
     compilation_listener = knobs.compilation.listener
     if compilation_listener:
         timer = CompileTimer()
@@ -258,9 +258,19 @@ def compile(src, target=None, options=None, _env_vars=None):
     # below) can rebuild the options through the same entry point instead of
     # patching the frozen dataclass in place.
     raw_options = dict(options or dict(), **extra_options)
+    # A retry gets the last word: `_force_options` must beat both the caller's
+    # options and the source scan (ASTSource.parse_options turns any tl.dot into
+    # is_sdnn=True, which is exactly the pipeline that just failed).
+    if _force_options:
+        raw_options.update(_force_options)
     options = backend.parse_options(raw_options)
+    if _state is not None:
+        _state.update(backend=backend, target=target, options=options,
+                      raw_options=raw_options)
     # create cache manager
     env_vars = get_cache_invalidating_env_vars() if _env_vars is None else _env_vars
+    if _state is not None:
+        _state["env_vars"] = env_vars
     key = get_cache_key(src, backend, options, env_vars=env_vars)
     hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
     fn_cache_manager = get_cache_manager(hash)
@@ -389,6 +399,8 @@ def compile(src, target=None, options=None, _env_vars=None):
         if extra := refine(module, options):
             raw_options = {**raw_options, **extra}
             options = backend.parse_options(raw_options)
+            if _state is not None:
+                _state.update(options=options, raw_options=raw_options)
             metadata.update(options.__dict__)
             stages = dict()
             backend.add_stages(stages, options, src.language)
@@ -397,6 +409,22 @@ def compile(src, target=None, options=None, _env_vars=None):
         # it re-creates the module through src.make_ir and needs to start over
         # from ttir.
         first_stage = list(stages.keys()).index("ttir") + 1
+
+    # The TTIR reaching here is post-inline and post-combine, so this is the
+    # same view the pipeline selection used.  Only the SDNN pipeline can ask
+    # for a fallback, so do not pay for the walk on the vector path.
+    if _state is not None and options.is_sdnn:
+        _state["has_dot"] = backend.ttir_has_dot(module)
+
+    # A backend may decide that part of this kernel belongs on a different core
+    # type and has to be compiled through the other pipeline. It then compiles
+    # the pieces itself (re-entering compile() with .ttir entry points) and
+    # returns a kernel-like object that launches them in order; None keeps the
+    # single-kernel path untouched.
+    split = getattr(backend, "try_split_kernel", None)
+    if split is not None and src.ext == "ttir" and not ir_source:
+        if (split_kernel := split(module, options, src, target, raw_options)) is not None:
+            return split_kernel
 
     if target.backend in ("cuda", "xpu", os.environ.get("TRITON_XPU_TARGET_BACKEND", "cuda")):
         # Match the same set as XPUBackend.supports_target (configured string
@@ -480,6 +508,50 @@ def compile(src, target=None, options=None, _env_vars=None):
                              cache_hit=False)
     # return handle to compiled kernel
     return CompiledKernel(src, metadata_group, hash)
+
+
+def compile(src, target=None, options=None, _env_vars=None):
+    """Compile `src`, retrying once through a backend's fallback pipeline.
+
+    A backend may expose `fallback_options(options)`; it is consulted only
+    after a stage raised, and its overrides win over both the caller's options
+    and `src.parse_options()`.  One retry is attempted, with the same source and
+    target.  If that also fails, the original exception is re-raised (with the
+    retry attached as its context) so the failure that explains *why* the fast
+    pipeline was rejected stays visible.
+    """
+    state = {}
+    try:
+        return _compile_impl(src, target=target, options=options,
+                             _env_vars=_env_vars, _state=state)
+    except Exception as primary:
+        backend = state.get("backend")
+        attempted = state.get("options")
+        fallback = getattr(backend, "fallback_options", None)
+        if attempted is None or fallback is None:
+            raise
+        forced = fallback(attempted, state)
+        if not forced:
+            raise
+        import warnings
+        name = os.path.basename(src) if isinstance(src, str) else getattr(src, "name", "<kernel>")
+        detail = str(primary)
+        if len(detail) > 500:
+            detail = detail[:500] + "..."
+        warnings.warn(
+            f"{name}: {backend.__class__.__name__} failed to compile; retrying "
+            f"through its fallback pipeline ({type(primary).__name__}: {detail})",
+            stacklevel=2,
+        )
+        retry_options = dict(state.get("raw_options") or {})
+        retry_options.update(forced)
+        try:
+            return _compile_impl(src, target=state.get("target", target),
+                                 options=retry_options,
+                                 _env_vars=state.get("env_vars", _env_vars),
+                                 _force_options=forced, _state={})
+        except Exception as secondary:
+            raise primary from secondary
 
 
 def make_backend(target: GPUTarget) -> BaseBackend:
