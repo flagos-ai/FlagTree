@@ -645,8 +645,10 @@ class TestBufferedTensor:
         assert hasattr(tle.gpu.buffered_tensor, 'subslice')
 
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot")
-    def test_buffered_tensor_slot_indexes_leading_dimension(self):
+    def test_buffered_tensor_slot_indexes_leading_dimension(self, monkeypatch):
         """slot(stage) returns a typed view with the leading stage dimension removed."""
+        from triton.experimental.tle.language.gpu import core
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", False)
         buffer, semantic = self._make_buffer([4, 16, 32])
 
         slot = buffer.slot(1, _semantic=semantic)
@@ -690,7 +692,9 @@ class TestBufferedTensor:
             buffer.slot(stage, _semantic=semantic)
 
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
-    def test_buffered_tensor_subslice_preserves_rank_layout_and_alloc_shape(self):
+    def test_buffered_tensor_subslice_preserves_rank_layout_and_alloc_shape(self, monkeypatch):
+        from triton.experimental.tle.language.gpu import core
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", False)
         buffer, semantic = self._make_buffer([4, 16, 32])
 
         subslice = buffer.subslice(4, 8, 1, _semantic=semantic)
@@ -707,7 +711,9 @@ class TestBufferedTensor:
         )
 
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot", "gpu.buffered_tensor.subslice")
-    def test_buffered_tensor_subslice_slot_preserves_backing_allocation_shape(self):
+    def test_buffered_tensor_subslice_slot_preserves_backing_allocation_shape(self, monkeypatch):
+        from triton.experimental.tle.language.gpu import core
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", False)
         buffer, semantic = self._make_buffer([4, 16, 32])
 
         slot = buffer.subslice(4, 8, 1, _semantic=semantic).slot(1, _semantic=semantic)
@@ -719,6 +725,40 @@ class TestBufferedTensor:
             "subslice_handle",
             "stage_1",
         )
+
+    @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot", "gpu.buffered_tensor.subslice")
+    def test_common_ir_buffered_tensor_subviews_preserve_metadata(self, monkeypatch):
+        from triton.experimental.tle.language.gpu import core
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
+        buffer, semantic = self._make_buffer([4, 16, 32])
+        builder = semantic.builder
+
+        slot = buffer.slot(1, _semantic=semantic)
+
+        assert isinstance(slot, tle.gpu.buffered_tensor)
+        assert slot.handle == "tile_subview_handle"
+        assert slot.shape == [16, 32]
+        assert slot.dtype == tl.float16
+        assert slot.type.storage is tle.gpu.smem
+        assert builder.swizzled_encoding_args == (1, 1, 1, [1, 0], [1, 1], [1, 1], [1, 0])
+        assert builder.tile_subview_args == ("base", ["stage_1", "stage_0", "stage_0"], [16, 32], [1, 1], "fake_layout")
+
+        subslice = buffer.subslice(4, 8, 1, _semantic=semantic)
+
+        assert isinstance(subslice, tle.gpu.buffered_tensor)
+        assert subslice.handle == "tile_subview_handle"
+        assert subslice.shape == [4, 8, 32]
+        assert subslice.type.layout is buffer.type.layout
+        assert subslice.type.alloc_shape == [4, 16, 32]
+        assert builder.tile_subview_args == ("base", ["stage_0", "stage_4", "stage_0"], [4, 8, 32], [1, 1,
+                                                                                                     1], "fake_layout")
+
+        slot = subslice.slot(1, _semantic=semantic)
+
+        assert slot.shape == [8, 32]
+        assert slot.type.alloc_shape == [4, 16, 32]
+        assert builder.tile_subview_args == ("tile_subview_handle", ["stage_1", "stage_0",
+                                                                     "stage_0"], [8, 32], [1, 1], "fake_layout")
 
     @pytest.mark.parametrize("start,length,dim", [(-1, 1, 0), (0, 0, 0), (12, 8, 1), (0, 1, 3)])
     def test_buffered_tensor_subslice_rejects_invalid_ranges(self, start, length, dim):
