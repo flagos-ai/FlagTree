@@ -160,7 +160,7 @@ void getOpLine(ModuleOp &m, DenseMap<mlir::Operation *, unsigned> &op2Line);
 
 int64_t getTensorSize(Type type);
 
-template <typename opType>
+template <typename... opTypes>
 Operation *findUserOpImpl(Operation *op,
                           llvm::SetVector<Operation *> &visitedOps) {
   if (!op || op->use_empty() || visitedOps.contains(op))
@@ -168,12 +168,12 @@ Operation *findUserOpImpl(Operation *op,
 
   visitedOps.insert(op);
 
-  if (isa<opType>(op)) {
+  if (isa<opTypes...>(op)) {
     return op;
   }
 
   for (Operation *user : op->getUsers()) {
-    Operation *userOp = findUserOpImpl<opType>(user, visitedOps);
+    Operation *userOp = findUserOpImpl<opTypes...>(user, visitedOps);
     if (userOp) {
       return userOp;
     }
@@ -182,9 +182,9 @@ Operation *findUserOpImpl(Operation *op,
   return nullptr;
 }
 
-template <typename opType> Operation *findUserOp(Operation *op) {
+template <typename... opTypes> Operation *findUserOp(Operation *op) {
   llvm::SetVector<Operation *> visitedOps;
-  return findUserOpImpl<opType>(op, visitedOps);
+  return findUserOpImpl<opTypes...>(op, visitedOps);
 }
 
 template <typename opType>
