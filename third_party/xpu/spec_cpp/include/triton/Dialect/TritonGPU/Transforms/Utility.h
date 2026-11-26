@@ -70,17 +70,6 @@ SmallVector<unsigned, 4> argSort(const SmallVector<int64_t> &arr);
 // Return the operand used to access the memory in the operation
 Value getMemAccessPtr(Operation *op);
 
-// Ops from a backend dialect that a TTIR module can already carry, because a
-// frontend emits them at trace time -- before the compiling backend is known
-// and long before any of these passes run (`tle.gpu.copy` on the cluster path
-// emits `jupiter.async_copy_local_to_global`).  Their tensor operands arrive
-// unencoded and are converted, coalesced and rewritten like any `tt` op's, but
-// their dialects live in third_party and core must not link them, so they are
-// matched by name: `TritonGPUConversionTarget` makes them dynamically legal,
-// `populateTritonPatterns` gives each a type-converting pattern, and
-// `getMemAccessPtr` hands their pointer tensor to the coalescer.  An op whose
-// dialect was never loaded simply never appears in a module.
-llvm::ArrayRef<llvm::StringRef> getForeignTensorOpNames();
 
 // Return bitwidth of tensor element
 unsigned getElementBitWidth(RankedTensorType type);

@@ -487,7 +487,7 @@ private:
 
   /// Keeps a buffer whose raw address escaped alive for the rest of the
   /// function.  An op with `SharedAddressEscapeTrait`
-  /// (`jupiter.local_base_ptr`, behind `tle.gpu.local_ptr`) hands out the
+  /// (behind `tle.gpu.local_ptr`) hands out the
   /// buffer's address, and every access after it names that pointer instead of
   /// the memdesc, so the value's liveness ends right there.  Measured without
   /// this: a second `tle.gpu.alloc` got the same offset and the pointer read

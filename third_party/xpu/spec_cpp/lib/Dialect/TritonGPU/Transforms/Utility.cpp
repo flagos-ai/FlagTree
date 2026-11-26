@@ -236,24 +236,7 @@ Value getMemAccessPtr(Operation *op) {
     return copy.getSrc();
   if (auto store = dyn_cast<triton::StoreOp>(op))
     return store.getPtr();
-  // A backend op the frontend emitted at trace time: matched by name, since
-  // its dialect is not linked here, and its pointer operand found by type --
-  // these ops carry exactly one tensor of pointers.
-  if (llvm::is_contained(getForeignTensorOpNames(),
-                         op->getName().getStringRef()))
-    for (Value operand : op->getOperands())
-      if (auto ty = dyn_cast<RankedTensorType>(operand.getType()))
-        if (isa<PointerType>(ty.getElementType()))
-          return operand;
   return nullptr;
-}
-
-llvm::ArrayRef<llvm::StringRef> getForeignTensorOpNames() {
-  // `tle.gpu.copy(buf -> ptrs)` on the jupiter cluster path.  The op is
-  // declared in third_party/jupiter/include/Dialect/TritonJupiter and lowered
-  // by that backend only; core needs nothing from it but its name.
-  static const llvm::StringRef names[] = {"jupiter.async_copy_local_to_global"};
-  return names;
 }
 
 unsigned getElementBitWidth(RankedTensorType type) {

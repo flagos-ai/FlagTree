@@ -236,7 +236,7 @@ class XPUOptions:
     # specialised-but-annotated form (`: tl.int32` receiving 1) is common in
     # hand-written kernels (wph_dense fused_moe_router / sparse_moe_permute)
     # and silently miscompiles without the fold.
-    # Kept as an option (jupiter declares the same field) rather than a bare env
+    # Kept as an option (another backend declares the same field) rather than a bare env
     # read so that it stays in the compile cache key: folded and unfolded
     # binaries must never alias.
     fold_equal_to_one: bool = True

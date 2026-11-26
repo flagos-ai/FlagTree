@@ -85,7 +85,7 @@ struct AssertOpConversion : public ConvertOpToLLVMPattern<triton::AssertOp> {
     targetInfo.assertFail(rewriter, loc, message, file, func, line);
 
     // Split a block after the call.  `assertFail` is allowed to insert control
-    // flow of its own -- Jupiter's device-printf sequence splits the current
+    // flow of its own -- another backend's device-printf sequence splits the current
     // block and leaves the insertion point at the start of the block holding
     // `op` -- so split from where the lowering actually stopped, not from the
     // original `ifBlock` (which may already end in a branch).
