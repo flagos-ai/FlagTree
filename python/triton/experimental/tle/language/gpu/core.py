@@ -1611,11 +1611,6 @@ def copy(
             if tl._unwrap_if_constexpr(offsets) is not None:
                 raise ValueError(
                     "GPU CommonIR normal copy does not support offsets; offset the global pointers instead")
-            if iluvatar_enabled and direction == CopyDirection.GM_TO_LOCAL:
-                # Iluvatar's async and SME passes match stores through local
-                # pointers, so keep the ordinary pointer-tensor copy for
-                # global-to-local instead of the CommonIR tile copy.
-                return normcopy(src, dst, shape, direction, mask, other, _semantic)
         return tle_semantic.copy(
             src,
             dst,
