@@ -4,31 +4,43 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Transforms/DialectConversion.h"
 
-namespace mlir::triton::xpu {
+#include <cstdint>
 
-enum class FlagcxDeviceFunction {
-  Init,
-  GetIntraRank,
-  GetIntraSize,
-  GetIntraPointer,
-  IntraBarrierArrive,
-  IntraBarrierWait,
-  IntraBarrierSync,
-  SignalInc,
-  SignalAdd,
-  WaitSignal,
-  WaitCounter,
-  WaitSignalMeetShadow,
-};
+namespace mlir::triton::xpu {
 
 LLVM::LLVMPointerType getFlagcxGlobalPtrType(MLIRContext *context);
 
-// The first argument of every entry point is a device communicator or memory
-// handle, represented as an integer in the XPU dialect.
+FailureOr<LLVM::CallOp> getDeviceInitFuncCall(Operation *op,
+                                             ConversionPatternRewriter &rewriter,
+                                             Value comm, Value scratch);
+
+FailureOr<LLVM::CallOp> getLocalPeFuncCall(Operation *op,
+                                          ConversionPatternRewriter &rewriter,
+                                          Value comm);
+
+FailureOr<LLVM::CallOp> getNumPesFuncCall(Operation *op,
+                                         ConversionPatternRewriter &rewriter,
+                                         Value comm);
+
 FailureOr<LLVM::CallOp>
-createFlagcxDeviceCall(Operation *op, ConversionPatternRewriter &rewriter,
-                       FlagcxDeviceFunction function, Value handle,
-                       ValueRange args = {});
+getIntraPointerFuncCall(Operation *op, ConversionPatternRewriter &rewriter,
+                        Value memory, Value byteOffset, Value peer);
+
+FailureOr<LLVM::CallOp>
+getIntraBarrierFuncCall(Operation *op, ConversionPatternRewriter &rewriter,
+                        Value comm, int32_t coopKind, int32_t barrierIndex,
+                        int32_t order, StringRef barrierKind);
+
+FailureOr<LLVM::CallOp>
+getSignalFuncCall(Operation *op, ConversionPatternRewriter &rewriter, Value comm,
+                  int32_t teamKind, Value peer, Value slot, Value addend,
+                  int32_t contextId, int32_t coopKind, int32_t scope);
+
+FailureOr<LLVM::CallOp>
+getDevNetWaitFuncCallByKind(Operation *op, ConversionPatternRewriter &rewriter,
+                            Value comm, Value slot, Value least,
+                            int32_t contextId, int32_t coopKind, int32_t order,
+                            StringRef waitKind);
 
 } // namespace mlir::triton::xpu
 

@@ -9,8 +9,6 @@ using namespace mlir;
 
 namespace {
 
-using triton::xpu::createFlagcxDeviceCall;
-using triton::xpu::FlagcxDeviceFunction;
 using triton::xpu::getFlagcxGlobalPtrType;
 
 struct RemotePointerConversion
@@ -30,10 +28,8 @@ struct RemotePointerConversion
         rewriter.getI64IntegerAttr(op.getElementBytes()));
     Value byteOffset =
         rewriter.create<LLVM::MulOp>(loc, adaptor.getOffset(), elementBytes);
-    auto call = createFlagcxDeviceCall(op, rewriter,
-                                      FlagcxDeviceFunction::GetIntraPointer,
-                                      adaptor.getMemory(),
-                                      {byteOffset, adaptor.getPeer()});
+    auto call = triton::xpu::getIntraPointerFuncCall(
+        op, rewriter, adaptor.getMemory(), byteOffset, adaptor.getPeer());
     if (failed(call))
       return failure();
     rewriter.replaceOp(op, call->getResult());

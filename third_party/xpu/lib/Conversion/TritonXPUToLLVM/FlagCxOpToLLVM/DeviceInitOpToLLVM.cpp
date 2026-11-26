@@ -9,9 +9,6 @@ using namespace mlir;
 
 namespace {
 
-using triton::xpu::createFlagcxDeviceCall;
-using triton::xpu::FlagcxDeviceFunction;
-
 // XSHMEMI_LOCAL_BUF_LEN / __simd__ from the vendor's xshmem_common.h.
 // flagcxDevInit takes the scratch as an argument because XTDK's __local__ is
 // only an alignment attribute, so it has to come from the kernel's own frame.
@@ -32,8 +29,8 @@ struct DeviceInitOpConversion
         rewriter.getI32IntegerAttr(kXshmemLocalBufBytes));
     Value buf = rewriter.create<LLVM::AllocaOp>(
         loc, bufTy, rewriter.getI8Type(), size, kXshmemLocalBufAlign);
-    if (failed(createFlagcxDeviceCall(op, rewriter, FlagcxDeviceFunction::Init,
-                                     adaptor.getComm(), {buf})))
+    if (failed(triton::xpu::getDeviceInitFuncCall(op, rewriter,
+                                                 adaptor.getComm(), buf)))
       return failure();
     rewriter.eraseOp(op);
     return success();
