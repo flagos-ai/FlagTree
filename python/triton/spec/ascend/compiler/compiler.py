@@ -260,21 +260,27 @@ def compile(src, target=None, options=None, _env_vars=None):
     # the file name to 150 characters to be safe.
     file_name = src.name[:150]
     metadata_filename = f"{file_name}.json"
+    binary_filename = f"{file_name}.{backend.binary_ext}"
     metadata_group = fn_cache_manager.get_group(metadata_filename) or {}
-    metadata_path = metadata_group.get(metadata_filename)
     always_compile = knobs.compilation.always_compile
-    if not always_compile and metadata_path is not None:
+    cached_kernel = None
+    if not always_compile and metadata_filename in metadata_group and binary_filename in metadata_group:
+        try:
+            cached_kernel = CompiledKernel(src, metadata_group, hash)
+        except FileNotFoundError:
+            # A cache file may be evicted after resolving the group.
+            metadata_group = {}
+    if cached_kernel is not None and cached_kernel.kernel:
         # cache hit!
-        res = CompiledKernel(src, metadata_group, hash)
         if compilation_listener:
             compilation_listener(
                 src=src,
-                metadata=res.metadata._asdict(),
+                metadata=cached_kernel.metadata._asdict(),
                 metadata_group=metadata_group,
                 times=timer.end(),
                 cache_hit=True,
             )
-        return res
+        return cached_kernel
 
     # initialize metadata
     metadata = {
