@@ -5,6 +5,7 @@
 #include "tle/include/CommonIRToTTGIR/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -319,13 +320,14 @@ convertBufferBridges(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
   return failure(result.wasInterrupted());
 }
 
-static void finalizeConvertedArguments(
-    ModuleOp module, const llvm::DenseMap<Value, Type> &convertedArgumentTypes,
-    ArrayRef<UnrealizedConversionCastOp> argumentCasts) {
-  for (auto [value, type] : convertedArgumentTypes)
-    cast<BlockArgument>(value).setType(type);
+static void
+finalizeConvertedValues(ModuleOp module,
+                        const llvm::DenseMap<Value, Type> &convertedValueTypes,
+                        ArrayRef<UnrealizedConversionCastOp> temporaryCasts) {
+  for (auto [value, type] : convertedValueTypes)
+    value.setType(type);
 
-  for (UnrealizedConversionCastOp cast : argumentCasts) {
+  for (UnrealizedConversionCastOp cast : temporaryCasts) {
     cast.getResult(0).replaceAllUsesWith(cast.getInputs().front());
     cast.erase();
   }
@@ -340,10 +342,49 @@ static void finalizeConvertedArguments(
   }
 }
 
-static LogicalResult convertSubviews(ModuleOp module,
-                                     llvm::DenseMap<Value, Value> &mapped,
-                                     SmallVectorImpl<Operation *> &eraseOps) {
-  WalkResult result = module.walk([&](tile::SubViewOp op) {
+static WalkResult convertLoopBuffers(
+    scf::ForOp loop, llvm::DenseMap<Value, Value> &mapped,
+    llvm::DenseMap<Value, Type> &convertedValueTypes,
+    SmallVectorImpl<UnrealizedConversionCastOp> &temporaryCasts) {
+  OpBuilder builder(loop);
+  // Keep the original SCF types until all TileIR users have been rewritten.
+  auto bridgeValue = [&](Value value, Type type) {
+    auto cast = builder.create<UnrealizedConversionCastOp>(
+        value.getLoc(), TypeRange{type}, ValueRange{value});
+    mapped[value] = cast.getResult(0);
+    convertedValueTypes[value] = type;
+    temporaryCasts.push_back(cast);
+  };
+  for (auto [init, argument, result] : llvm::zip(
+           loop.getInitArgs(), loop.getRegionIterArgs(), loop.getResults())) {
+    if (!isa<tile::BufType>(init.getType()))
+      continue;
+    auto converted = lookupBuffer(loop, init, mapped);
+    if (failed(converted))
+      return WalkResult::interrupt();
+    Type type = (*converted).getType();
+    builder.setInsertionPointToStart(loop.getBody());
+    bridgeValue(argument, type);
+    builder.setInsertionPointAfter(loop);
+    bridgeValue(result, type);
+  }
+  return WalkResult::advance();
+}
+
+static LogicalResult convertBufferViewsAndLoops(
+    ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
+    llvm::DenseMap<Value, Type> &convertedValueTypes,
+    SmallVectorImpl<UnrealizedConversionCastOp> &temporaryCasts,
+    SmallVectorImpl<Operation *> &eraseOps) {
+  // Visit loop block arguments before the subviews that use them.
+  WalkResult result = module.walk<WalkOrder::PreOrder>([&](Operation
+                                                               *operation) {
+    if (auto loop = dyn_cast<scf::ForOp>(operation))
+      return convertLoopBuffers(loop, mapped, convertedValueTypes,
+                                temporaryCasts);
+    auto op = dyn_cast<tile::SubViewOp>(operation);
+    if (!op)
+      return WalkResult::advance();
     auto source = lookupBuffer(op, op.getSource(), mapped);
     auto resultType =
         getMemDescType(op, cast<tile::BufType>(op.getResult().getType()));
@@ -627,20 +668,22 @@ public:
   void runOnOperation() override {
     ModuleOp module = getOperation();
     llvm::DenseMap<Value, Value> mapped;
-    llvm::DenseMap<Value, Type> convertedArgumentTypes;
+    llvm::DenseMap<Value, Type> convertedValueTypes;
     SmallVector<Operation *> eraseOps;
     SmallVector<ttg::AsyncCopyGlobalToLocalOp> copies;
-    SmallVector<UnrealizedConversionCastOp> argumentCasts;
+    SmallVector<UnrealizedConversionCastOp> temporaryCasts;
 
     recordNativeBufferBridges(module, mapped, eraseOps);
 
     if (failed(convertAllocations(module, mapped, eraseOps)) ||
         failed(convertWarpSpecializeCaptures(
-            module, mapped, convertedArgumentTypes, argumentCasts)) ||
-        failed(convertFunctionArguments(module, mapped, convertedArgumentTypes,
-                                        argumentCasts)) ||
-        failed(convertSubviews(module, mapped, eraseOps)) ||
-        failed(convertBufferBridges(module, mapped, argumentCasts, eraseOps)) ||
+            module, mapped, convertedValueTypes, temporaryCasts)) ||
+        failed(convertFunctionArguments(module, mapped, convertedValueTypes,
+                                        temporaryCasts)) ||
+        failed(convertBufferViewsAndLoops(module, mapped, convertedValueTypes,
+                                          temporaryCasts, eraseOps)) ||
+        failed(
+            convertBufferBridges(module, mapped, temporaryCasts, eraseOps)) ||
         failed(convertTileUsers(module, mapped, eraseOps, enableAsyncCopy,
                                 copies))) {
       signalPassFailure();
@@ -659,7 +702,7 @@ public:
       op->erase();
     }
 
-    finalizeConvertedArguments(module, convertedArgumentTypes, argumentCasts);
+    finalizeConvertedValues(module, convertedValueTypes, temporaryCasts);
     combineCopyWaits(copies);
 
     bool hasRemainingGpuTileOps = false;
