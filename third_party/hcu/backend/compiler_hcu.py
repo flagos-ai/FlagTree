@@ -384,26 +384,20 @@ class HIPBackend(BaseBackend):
             options_args.extend(version_args[clang_major])
 
         if options.sched_latency != 'none':
-            sched_latency_args = {
-                "mmac5-ds10":
-                ["-mllvm=-enable-latency-hack=true", "-mllvm=-mmac-latency=5", "-mllvm=-ds-load-store-latency=10"],
-                "mmac5-ds6":
-                ["-mllvm=-enable-latency-hack=true", "-mllvm=-mmac-latency=5", "-mllvm=-ds-load-store-latency=6"],
-                # Deeper LDS latency estimates, for loops whose ds_reads the
-                # scheduler is still leaving adjacent to their consumers.
-                "mmac5-ds16":
-                ["-mllvm=-enable-latency-hack=true", "-mllvm=-mmac-latency=5", "-mllvm=-ds-load-store-latency=16"],
-                "mmac5-ds24":
-                ["-mllvm=-enable-latency-hack=true", "-mllvm=-mmac-latency=5", "-mllvm=-ds-load-store-latency=24"],
-                "mmac5-ds32":
-                ["-mllvm=-enable-latency-hack=true", "-mllvm=-mmac-latency=5", "-mllvm=-ds-load-store-latency=32"],
-                "mmac10-ds24":
-                ["-mllvm=-enable-latency-hack=true", "-mllvm=-mmac-latency=10", "-mllvm=-ds-load-store-latency=24"],
-            }
-            if options.sched_latency in sched_latency_args:
-                options_args.extend(sched_latency_args[options.sched_latency])
-            else:
+            # "mmac<N>-ds<M>": tell the scheduler an mmac takes N cycles and an
+            # LDS access M. The useful values are not a short list - an
+            # attention loop whose ds_reads the scheduler leaves adjacent to
+            # their consumers wants an M far above the real latency, and the
+            # response to M is not monotonic - so the tier is parsed rather
+            # than enumerated.
+            match = re.fullmatch(r"mmac(\d+)-ds(\d+)", options.sched_latency)
+            if match is None:
                 raise ValueError(f"Unsupported scheduling latency: {options.sched_latency}")
+            options_args.extend([
+                "-mllvm=-enable-latency-hack=true",
+                f"-mllvm=-mmac-latency={match.group(1)}",
+                f"-mllvm=-ds-load-store-latency={match.group(2)}",
+            ])
 
         clang_args = [
             "-target",
