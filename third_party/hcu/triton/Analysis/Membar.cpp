@@ -160,6 +160,31 @@ void MembarOrFenceAnalysis::visitTerminator(
   llvm_unreachable("Unknown terminator encountered in membar analysis");
 }
 
+#ifdef __TLE__
+static bool isAtomicWithoutScratch(Operation *op,
+                                   ModuleAllocation *moduleAllocation) {
+  if (!isa<triton::AtomicRMWOp, triton::AtomicCASOp>(op))
+    return false;
+  // Call summaries retain callee operations. Query their owning function:
+  // an absent ID in the caller does not prove that they have no scratch.
+  auto funcOp = op->getParentOfType<FunctionOpInterface>();
+  auto *ownerAllocation = moduleAllocation->getFuncData(funcOp);
+  return ownerAllocation->getBufferId(op) == Allocation::InvalidBufferId;
+}
+
+ModuleMembarAnalysis::ModuleMembarAnalysis(ModuleAllocation *moduleAllocation,
+                                           MembarFilterFn filter)
+    : ModuleMembarOrFenceAnalysis<MembarAnalysis>(
+          moduleAllocation, [moduleAllocation, filter](Operation *lhs,
+                                                       Operation *rhs) {
+            // Atomicity does not order shared scratch broadcasts of returns.
+            if (isAtomicWithoutScratch(lhs, moduleAllocation) &&
+                isAtomicWithoutScratch(rhs, moduleAllocation))
+              return true;
+            return filter ? filter(lhs, rhs) : false;
+          }) {}
+#endif
+
 void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
   OpBuilder::InsertionGuard g(*builder);
   auto barrierOp = triton::gpu::LocalBarrierOp::create(*builder, op->getLoc());
@@ -228,18 +253,6 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     scratchBufferId = allocation->getBufferId(op);
   }
 
-#ifdef __TLE__
-  // Preserve the 3.5 behavior for atomic chains in TLE mode: consecutive
-  // atomics on overlapping shared intervals do not require an extra CTA
-  // barrier here.
-  auto effectiveFilter = [&](Operation *lhs, Operation *rhs) -> bool {
-    if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(lhs) &&
-        isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs))
-      return true;
-    return filter ? filter(lhs, rhs) : false;
-  };
-#endif
-
   // Scratch buffer operations consist of a series of shared memory operations
   // starting from a shared memory write, followed by a series of shared memory
   // read/write operations, and ending with a shared memory read, i.e., shared
@@ -271,12 +284,7 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
 #endif
     auto interval = allocation->getAllocatedInterval(scratchBufferId);
     curBlockInfo.syncWriteIntervals[interval].insert(op);
-#ifdef __TLE__
-    auto insertCTABarrier =
-        blockInfo->isIntersected(curBlockInfo, effectiveFilter);
-#else
     auto insertCTABarrier = blockInfo->isIntersected(curBlockInfo, filter);
-#endif
     if (insertCTABarrier) {
       builder->setInsertionPoint(op);
       insertBarrier(op, builder);
@@ -286,11 +294,7 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     if (insertCTABarrier || !isWarpSync)
       blockInfo->sync();
     curBlockInfo.syncReadIntervals[interval].insert(op);
-#ifdef __TLE__
-  } else if (blockInfo->isIntersected(curBlockInfo, effectiveFilter)) {
-#else
   } else if (blockInfo->isIntersected(curBlockInfo, filter)) {
-#endif
     builder->setInsertionPoint(op);
     insertBarrier(op, builder);
     blockInfo->sync();

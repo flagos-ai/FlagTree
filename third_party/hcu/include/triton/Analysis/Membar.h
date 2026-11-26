@@ -206,7 +206,15 @@ private:
   MembarFilterFn filter;
 };
 
+#ifdef __TLE__
+class ModuleMembarAnalysis : public ModuleMembarOrFenceAnalysis<MembarAnalysis> {
+public:
+  ModuleMembarAnalysis(ModuleAllocation *moduleAllocation,
+                       MembarFilterFn filter = nullptr);
+};
+#else
 typedef ModuleMembarOrFenceAnalysis<MembarAnalysis> ModuleMembarAnalysis;
+#endif
 
 } // namespace mlir
 
