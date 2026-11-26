@@ -116,7 +116,7 @@ def Dsa_RemotePointersOp : Dsa_Op<"remote_pointers", [Pure]> {
 // dsa.to_tensor / dsa.to_buffer: buffer <-> tensor bridging.
 //===----------------------------------------------------------------------===//
 
-def Dsa_ToTensorOp : Dsa_Op<"to_tensor", [Pure]> {
+def Dsa_ToTensorOp : Dsa_Op<"to_tensor", [MemoryEffects<[MemRead]>]> {
   let summary = "Convert a DSA local buffer (memref) to a tl.tensor view";
   let arguments = (ins AnyRankedOrUnrankedMemRef:$src, BoolAttr:$writable);
   let results = (outs TT_Tensor:$result);

@@ -1,0 +1,7 @@
+add_subdirectory(TritonArithToLinalg)
+add_subdirectory(StructuredToMemref)
+add_subdirectory(ConvertTritonPtr)
+add_subdirectory(TritonToCoreDialects)
+
+add_subdirectory(ReconcilePtrCasts)
+add_subdirectory(UnstructuredToMK)

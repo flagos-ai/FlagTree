@@ -1,0 +1,35 @@
+//===------------------------ lut16.c -------------------------------------===//
+//
+// Copyright (C) 2020-2025 Terapines Technology (Wuhan) Co., Ltd
+// All rights reserved.
+//
+//===----------------------------------------------------------------------===//
+//
+// Runtime API of MLIR operation tx::Lut16 see Tx81Ops.td for detail.
+//
+//===----------------------------------------------------------------------===//
+
+#include "tx81_run.h"
+
+void __Lut16(uint64_t *src, uint64_t *dst, uint64_t *lut16,
+             uint32_t src_elem_count, uint32_t lut_elem_count) {
+  INTRNISIC_RUN_SWITCH;
+  // Create command buffer.
+  RcsPeripheral *cmd = g_intrinsic()->peripheral_pointer;
+  RcsPeripheralInstr inst = {I_CGRA,
+                             {
+                                 0,
+                             },
+                             {
+                                 0,
+                             }};
+  ;
+
+  cmd->Lut16(&inst, (uint64_t)src, (uint64_t)dst, (uint64_t)lut16,
+             src_elem_count, lut_elem_count);
+
+  // Dispatch the command to accelerator
+  RcsExecute(&inst);
+  SYNCHRONOUS_INTRINSIC_SWITCH;
+  // Destroy the command buffer.
+}

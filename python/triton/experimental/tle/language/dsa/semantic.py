@@ -82,6 +82,7 @@ class DSASemantic:
     @staticmethod
     def validate_alloc_scope(scope) -> tle.scope:
         """Validate *scope* for ``alloc()``."""
+        scope = tl._unwrap_if_constexpr(scope)
         if scope is None:
             return tle.spm  # default
         if not isinstance(scope, tle.scope):
