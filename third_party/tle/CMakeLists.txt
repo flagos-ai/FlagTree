@@ -12,7 +12,7 @@ if((("$ENV{FLAGTREE_BACKEND}" STREQUAL "metax") OR ("$ENV{FLAGTREE_BACKEND}" STR
   if(TARGET CommonIRIR)
     list(APPEND _slim_common_ir_libs CommonIRIR)
   endif()
-  # [metax+CommonIR] 编译并链接通用 CommonIRToTTGIR(仅 Arith/CommonIRIR/TritonIR/TritonGPUIR,无 Hopper)
+  # Build the shared CommonIRToTTGIR pass with Arith, CommonIRIR, TritonIR, and TritonGPUIR.
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
   include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
   if(TARGET CommonIRIR)
@@ -32,8 +32,8 @@ if((("$ENV{FLAGTREE_BACKEND}" STREQUAL "metax") OR ("$ENV{FLAGTREE_BACKEND}" STR
   if(TARGET TleCommonIRToTTGIRPassIncGen)
     add_dependencies(TritonTLE TleCommonIRToTTGIRPassIncGen)
   endif()
-  # bin/ 的 CLI 工具经 TRITON_LIBS 仍引用这三个老 tle 库名（瘦身路不建它们）。
-  # 建三个空 stub 库满足链接（bin 已剥 __TLE__，不需要它们的符号）。
+  # CLI tools still reference these three legacy TLE libraries through TRITON_LIBS.
+  # Provide empty stubs for linking because the CLI tools are built without __TLE__.
   set(_tle_stub "${CMAKE_CURRENT_BINARY_DIR}/tle_stub.cpp")
   file(WRITE "${_tle_stub}" "")
   foreach(_stub TritonTLEAnalysis TleToLLVM TritonTLETransforms)

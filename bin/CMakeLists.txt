@@ -1,4 +1,4 @@
-# [metax+CommonIR] bin 工具剥掉全局 __TLE__：不注册未构建的 tle 方言（保留 CommonIR/tile）
+# [MetaX CommonIR] Disable __TLE__ in CLI tools while keeping CommonIR (tile) registration.
 if("$ENV{FLAGTREE_BACKEND}" STREQUAL "metax")
   remove_definitions(-D__TLE__)
   list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
