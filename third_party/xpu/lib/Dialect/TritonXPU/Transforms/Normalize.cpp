@@ -27,6 +27,8 @@
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+
+#include <functional>
 // clang-format on
 
 #define DEBUG_TYPE "tritonxpu-normalize"
@@ -183,6 +185,40 @@ struct TritonXPUNormalize
         for (auto user : extUIOp.getOut().getUsers()) {
           if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(user)) {
             if (auto outTensorTy = dyn_cast<RankedTensorType>(outTy)) {
+              // The fused form only compiles if Vectorize actually retypes the
+              // compare into a vcmpf. It refuses the whole store chain when a
+              // producer has no vector form, and the one reachable here is a
+              // 64-bit int -> f32 sitofp/uitofp (VSIToFPOpConversion only
+              // lowers i32 -> f32; VectorizabilityAnalysis gates the same
+              // pair). Fusing anyway leaves a full-length triton_xpu.cmpf
+              // behind that ConvertTritonXPUToLLVM then rejects with
+              // "explicitly marked illegal" -- the flag_gems
+              // arange(i64) >= top_ks(i32) sampler mask. Stay scalar there.
+              std::function<bool(Value)> hasUnsignedSitofp =
+                  [&](Value v) -> bool {
+                Operation *def = v.getDefiningOp();
+                if (!def)
+                  return false;
+                if (auto castOp = dyn_cast<arith::SIToFPOp>(def)) {
+                  Type inTy = getElementTypeOrSelf(castOp.getIn().getType());
+                  if (inTy.isIntOrIndex() && !inTy.isInteger(32))
+                    return true;
+                  return false;
+                }
+                if (auto castOp = dyn_cast<arith::UIToFPOp>(def)) {
+                  Type inTy = getElementTypeOrSelf(castOp.getIn().getType());
+                  if (inTy.isIntOrIndex() && !inTy.isInteger(32))
+                    return true;
+                  return false;
+                }
+                for (Value operand : def->getOperands())
+                  if (hasUnsignedSitofp(operand))
+                    return true;
+                return false;
+              };
+              if (hasUnsignedSitofp(cmpFOp.getLhs()) ||
+                  hasUnsignedSitofp(cmpFOp.getRhs()))
+                return;
               auto lhsTy = cmpFOp.getLhs().getType();
               auto lhsElemTy =
                   getElementTypeOrSelf(getElementTypeOrSelf(lhsTy));

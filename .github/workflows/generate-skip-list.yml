@@ -103,6 +103,15 @@ on:
         type: boolean
         required: false
         default: false
+      PUBLISH_BASELINE:
+        description: >-
+          Also publish the final round as the FlagGems baseline on the runner,
+          replacing ~/flaggems_ci/Baseline/best_<library>_<tag>. Only applies to
+          backends whose generation succeeded, and is ignored when SOURCE_RUN_ID
+          is set (no rounds are run in that mode).
+        type: boolean
+        required: false
+        default: false
 
 # Three ways to use this workflow:
 #
@@ -120,6 +129,9 @@ on:
 #
 # Generation is skipped whenever SOURCE_RUN_ID is set, so a typo'd run id
 # fails fast at the download step instead of silently re-running for an hour.
+#
+# PUBLISH_BASELINE is orthogonal to the three modes, but only has an effect in
+# modes 1 and 3: mode 2 runs no rounds, so there is no log directory to publish.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.run_id }}
@@ -304,6 +316,11 @@ jobs:
   # fail-fast is off: one backend failing must not cancel the others.
   # ---------------------------------------------------------------------
   generate:
+    # Without an explicit name GitHub renders every matrix value into the job
+    # title -- "generate (xpu, xpu3.6, CUDA_VISIBLE_DEVICES, export FLAGTREE_
+    # BACKEND=xpu MAX_JOBS=32 ...)", which is unreadable in the sidebar.
+    # Naming it keeps the backend visible and the title short.
+    name: generate (${{ matrix.backend }})
     needs: prepare
     # Skipped when SOURCE_RUN_ID is given: that mode reuses an earlier run's
     # artifacts, so spending an hour regenerating would defeat the purpose.
@@ -320,6 +337,9 @@ jobs:
         env:
           GPU_ENV_VAR: ${{ matrix.gpu_env }}
           INPUT_REPO_KIND: ${{ inputs.REPO_KIND }}
+          INPUT_FLAGGEMS_REF: ${{ inputs.FLAGGEMS_REF }}
+          INPUT_VLLM_REF: ${{ inputs.FLAGGEMS_VLLM_REF }}
+          RUNNER_LABEL: ${{ matrix.runner }}
         run: |
           source ~/env.sh
           env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
@@ -338,6 +358,23 @@ jobs:
           # artifact location is predictable across runs.
           WORK_DIR="$HOME/flaggems_ci/skip_list/${REPO_KIND}_skip_list"
           echo "work_dir=$WORK_DIR" >> $GITHUB_OUTPUT
+
+          # Baseline paths, used only when PUBLISH_BASELINE is set. Names match
+          # template-gems-baseline.yml so gems-test finds them unchanged: the
+          # vllm library carries a marker in every directory, and the archive is
+          # keyed by runner because two runners can share a host.
+          CI_DIR="$HOME/flaggems_ci"
+          case "$REPO_KIND" in
+            flaggems-vllm)
+              echo "best_dir=${CI_DIR}/Baseline/best_FlagGemsVllm_${INPUT_VLLM_REF}" >> $GITHUB_OUTPUT
+              echo "best_archive_dir=${CI_DIR}/Baseline/best_archive_vllm_${RUNNER_LABEL}" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "best_dir=${CI_DIR}/Baseline/best_FlagGems_${INPUT_FLAGGEMS_REF}" >> $GITHUB_OUTPUT
+              echo "best_archive_dir=${CI_DIR}/Baseline/best_archive_${RUNNER_LABEL}" >> $GITHUB_OUTPUT
+              ;;
+          esac
+          echo "date=$(date +'%Y%m%d_%H%M%S')" >> $GITHUB_OUTPUT
 
       - name: Smart Checkout
         uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
@@ -407,6 +444,62 @@ jobs:
             --flaky-rounds "$FLAKY_ROUNDS" \
             --max-detection-rounds "$MAX_DETECTION_ROUNDS"
 
+      # Deliberately not `!cancelled()`: a baseline is only meaningful when the
+      # rounds converged, so this is skipped whenever generation failed.
+      - name: Publish baseline
+        if: ${{ success() && inputs.PUBLISH_BASELINE }}
+        shell: bash
+        env:
+          BACKEND: ${{ matrix.backend }}
+          WORK_DIR: ${{ steps.env.outputs.work_dir }}
+          BEST_DIR: ${{ steps.env.outputs.best_dir }}
+          BEST_ARCHIVE_DIR: ${{ steps.env.outputs.best_archive_dir }}
+          DATE: ${{ steps.env.outputs.date }}
+          COMMIT_ID: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # The last round the detection ran is the one that matches the skip
+          # list it produced, so that is what becomes the baseline. Rounds are
+          # numbered globally across both phases, so the highest number wins;
+          # sort -V keeps round_9 before round_10.
+          LAST_ROUND=$(find "$WORK_DIR/output" -maxdepth 2 -type d -name 'round_*' \
+                       | sort -V | tail -1)
+          if [ -z "$LAST_ROUND" ]; then
+            echo "::error::No round directory under $WORK_DIR/output; nothing to publish."
+            exit 1
+          fi
+
+          # Same guard as template-gems-baseline.yml: a round without a usable
+          # summary.json cannot serve as a baseline.
+          if [ ! -s "$LAST_ROUND/summary.json" ]; then
+            echo "::error::$LAST_ROUND/summary.json is missing or empty; refusing to publish a baseline."
+            exit 1
+          fi
+          echo "Publishing $LAST_ROUND as the baseline for ${BACKEND}."
+
+          # Archive the previous baseline rather than deleting it, so a bad
+          # update can be rolled back.
+          if [ -d "$BEST_DIR" ]; then
+            ARCHIVE_DIR="${BEST_ARCHIVE_DIR}/${DATE}"
+            echo "Archiving existing baseline to $ARCHIVE_DIR"
+            mkdir -p "$ARCHIVE_DIR"
+            mv "$BEST_DIR" "$ARCHIVE_DIR"
+          fi
+
+          mkdir -p "$BEST_DIR"
+          cp -raf "$LAST_ROUND"/* "$BEST_DIR/"
+          echo "$DATE : $COMMIT_ID" > "$BEST_DIR/commit_id.txt"
+
+          {
+            echo "### Baseline published for \`${BACKEND}\`"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Source round | \`$LAST_ROUND\` |"
+            echo "| Baseline | \`$BEST_DIR\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload skip list
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -455,13 +548,39 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # Needed to download artifacts produced by an earlier run
+      # (SOURCE_RUN_ID). Unspecified permissions default to none.
+      actions: read
+      # NOTE: the skip lists live under .github/workflows/, which GitHub treats
+      # as workflow files. Pushing them REQUIRES a token with the `workflow`
+      # scope -- and GITHUB_TOKEN can never have it (`workflows` is not even a
+      # valid key here, and no other scope grants it). BOT_PAT_TOKEN must be
+      # configured with that scope; without it the push is rejected with
+      # "refusing to allow a GitHub App to create or update workflow ...".
+      # The step below fails early rather than letting that surface as a
+      # confusing push error.
     steps:
+      # Checkout must come before the download: actions/checkout runs
+      # `git clean -ffdx`, which deletes untracked files in the workspace.
+      # Downloading first and checking out afterwards silently wipes the
+      # artifacts, leaving every downstream step with an empty result.
+      # Checkout with the PAT, not via smart-checkout: actions/checkout persists
+      # the token it was given and every later git push reuses it. Left at the
+      # default GITHUB_TOKEN, the push authenticates as the GitHub App, which
+      # can never write under .github/workflows/. Same approach as
+      # code-format-check.yml.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.BOT_PAT_TOKEN || github.token }}
+
       - name: Download all skip list artifacts
         if: ${{ !cancelled() }}
         uses: actions/download-artifact@v7
         with:
           pattern: skip-list-*
-          path: ./artifacts
+          # Outside the workspace, so no later git operation can remove it.
+          path: ${{ runner.temp }}/skip-list-artifacts
           # Empty input falls back to this run's own artifacts. A non-empty
           # value pulls the reviewed artifacts from that earlier run instead,
           # so the committed content is exactly what was inspected.
@@ -471,20 +590,21 @@ jobs:
       - name: Check whether anything was produced
         id: check
         shell: bash
+        env:
+          ARTIFACTS_DIR: ${{ runner.temp }}/skip-list-artifacts
         run: |
-          if [ -z "$(ls -A ./artifacts 2>/dev/null)" ]; then
-            echo "No artifacts produced by any backend."
-            echo "found=false" >> $GITHUB_OUTPUT
-          else
-            find ./artifacts -name '*.yaml' | sed 's/^/  /'
-            echo "found=true" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          if [ -z "$(ls -A "$ARTIFACTS_DIR" 2>/dev/null)" ]; then
+            echo "::error::No skip list artifacts found in run '${{ inputs.SOURCE_RUN_ID || github.run_id }}'. Check that the source run completed its generate jobs and that its artifacts have not expired."
+            exit 1
           fi
-
-      - name: Checkout
-        if: steps.check.outputs.found == 'true'
-        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
-        with:
-          checkout_version: 'v6'
+          YAMLS=$(find "$ARTIFACTS_DIR" -name '*.yaml')
+          if [ -z "$YAMLS" ]; then
+            echo "::error::Artifacts were downloaded but contain no .yaml files."
+            exit 1
+          fi
+          echo "$YAMLS" | sed 's/^/  /'
+          echo "found=true" >> $GITHUB_OUTPUT
 
       - name: Stage skip lists
         id: stage
@@ -493,6 +613,7 @@ jobs:
         env:
           REPO_KIND: ${{ inputs.REPO_KIND }}
           FLAGGEMS_REF: ${{ inputs.FLAGGEMS_REF }}
+          ARTIFACTS_DIR: ${{ runner.temp }}/skip-list-artifacts
         run: |
           set -euo pipefail
 
@@ -531,20 +652,42 @@ jobs:
           fi
 
           CHANGED=()
-          for f in $(find ./artifacts -name '*.yaml'); do
+          for f in $(find "$ARTIFACTS_DIR" -name '*.yaml'); do
             backend=$(basename "$f" .yaml)
-            cp "$f" "$DEST_DIR/${backend}.yaml"
-            if ! git diff --quiet -- "$DEST_DIR/${backend}.yaml"; then
-              CHANGED+=("$backend")
-              echo "Updated $DEST_DIR/${backend}.yaml"
+            dest="$DEST_DIR/${backend}.yaml"
+            if [ -e "$dest" ]; then action=Updated; else action=Added; fi
+            cp "$f" "$dest"
+            # Stage before comparing. `git diff` only inspects tracked files, so
+            # the very first skip list for a backend -- the case that matters
+            # most -- used to look "Unchanged" and was silently never committed.
+            git add "$dest"
+            if git diff --cached --quiet -- "$dest"; then
+              echo "Unchanged $dest"
             else
-              echo "Unchanged $DEST_DIR/${backend}.yaml"
+              CHANGED+=("$backend")
+              echo "$action $dest"
             fi
           done
 
           if [ ${#CHANGED[@]} -eq 0 ]; then
             echo "Every generated skip list matches what is already committed."
             echo "changed=false" >> $GITHUB_OUTPUT
+
+            # Make this visible on the run page. Without it, "job went green but
+            # no PR appeared" looks identical to a failure, which is exactly how
+            # a real bug once went unnoticed.
+            UNCHANGED=$(cd "$ARTIFACTS_DIR" && find . -name '*.yaml' -exec basename {} .yaml \; | sort | tr '\n' ' ')
+            {
+              echo "### No PR opened: nothing to commit"
+              echo
+              echo "Generated skip lists are identical to what is already committed"
+              echo "in \`.github/workflows/${KIND_DIR}/${FLAGGEMS_REF}/skip_list/\`:"
+              echo
+              echo "\`${UNCHANGED% }\`"
+              echo
+              echo "This is a normal outcome — the skip list had already converged."
+              echo "A PR is only opened when a backend's content actually changes."
+            } >> "$GITHUB_STEP_SUMMARY"
           else
             printf 'changed=true\n' >> $GITHUB_OUTPUT
             printf 'backends=%s\n' "$(IFS=,; echo "${CHANGED[*]}")" >> $GITHUB_OUTPUT
@@ -559,8 +702,17 @@ jobs:
           REPO_KIND: ${{ inputs.REPO_KIND }}
           FLAGGEMS_REF: ${{ inputs.FLAGGEMS_REF }}
           GH_TOKEN: ${{ secrets.BOT_PAT_TOKEN || github.token }}
+          HAS_PAT: ${{ secrets.BOT_PAT_TOKEN != '' }}
         run: |
           set -euo pipefail
+
+          # Fail here rather than at `git push`, where GitHub reports it as a
+          # generic "refusing to allow a GitHub App to create or update
+          # workflow" rejection with no hint about what to do.
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::error::BOT_PAT_TOKEN secret is not set. The skip lists live under .github/workflows/, which GitHub treats as workflow files, so pushing them needs a token with the 'workflow' scope. GITHUB_TOKEN can never have that scope; add a personal access token with 'repo' and 'workflow' scopes as the BOT_PAT_TOKEN secret."
+            exit 1
+          fi
 
           BRANCH="ci/generate-skip-list-${GITHUB_RUN_ID}"
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
@@ -569,22 +721,21 @@ jobs:
           git config user.email "flagtree_ai@163.com"
           git checkout -b "$BRANCH"
 
-          # smart-checkout does not take a token, so authenticate the push
-          # explicitly (same idiom as the delivery workflows).
-          git remote set-url origin \
-            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-
           KIND=$(printf '%s' "$REPO_KIND" | tr '[:upper:]' '[:lower:]')
           case "$KIND" in
-            flaggems)      KIND_DIR=gems ;;
-            flaggems-vllm) KIND_DIR=gems-vllm ;;
+            flaggems)      KIND_DIR=gems;      LIB_NAME=FlagGems ;;
+            flaggems-vllm) KIND_DIR=gems-vllm; LIB_NAME=FlagGems-vllm ;;
           esac
           git add ".github/workflows/${KIND_DIR}/${FLAGGEMS_REF}/skip_list/"
 
+          # Single-line commit subject: tag first for scanning, backends in
+          # brackets because a comma list gets long as more are added.
           git commit \
-            -m "[CI] Update ${KIND_DIR} skip list for ${FLAGGEMS_REF} (${BACKENDS})" \
-            -m "Generated by .github/workflows/generate-skip-list.yml (run ${GITHUB_RUN_ID})."
+            -m "[CI] Update ${LIB_NAME} ${FLAGGEMS_REF} skip list (${BACKENDS})"
 
+          # Authenticated by the PAT that the Checkout step persisted. Adding
+          # another Authorization header here makes git send two, which GitHub
+          # rejects with "Duplicate header" / HTTP 400.
           git push origin "$BRANCH"
 
       - name: Open pull request
@@ -604,8 +755,8 @@ jobs:
 
           KIND=$(printf '%s' "$REPO_KIND" | tr '[:upper:]' '[:lower:]')
           case "$KIND" in
-            flaggems)      KIND_DIR=gems ;;
-            flaggems-vllm) KIND_DIR=gems-vllm ;;
+            flaggems)      KIND_DIR=gems;      LIB_NAME=FlagGems ;;
+            flaggems-vllm) KIND_DIR=gems-vllm; LIB_NAME=FlagGems-vllm ;;
           esac
 
           {
@@ -613,7 +764,7 @@ jobs:
             echo
             echo "| | |"
             echo "|---|---|"
-            echo "| Operator library | \`$KIND\` (\`$FLAGGEMS_URL\`) |"
+            echo "| Operator library | \`$LIB_NAME\` (\`$FLAGGEMS_URL\`) |"
             echo "| Tag under test | \`$FLAGGEMS_REF\` |"
             echo "| FlagTree ref | \`$FLAGTREE_REF\` |"
             echo "| Backends regenerated | \`$BACKENDS\` |"
@@ -624,5 +775,5 @@ jobs:
           gh pr create \
             --base "${{ github.ref_name }}" \
             --head "$BRANCH" \
-            --title "[CI] Update ${KIND_DIR} skip list for ${FLAGGEMS_REF} (${BACKENDS})" \
+            --title "[CI] Update ${LIB_NAME} ${FLAGGEMS_REF} skip list (${BACKENDS})" \
             --body-file /tmp/pr-body.md
