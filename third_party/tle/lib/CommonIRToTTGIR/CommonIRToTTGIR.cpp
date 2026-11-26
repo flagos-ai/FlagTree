@@ -253,6 +253,7 @@ static LogicalResult checkCopy(tile::CopyOp op, Value pointers,
 
 static LogicalResult
 convertAllocations(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
+                   llvm::SmallPtrSetImpl<Operation *> &foldedInitializers,
                    SmallVectorImpl<Operation *> &eraseOps) {
   WalkResult result = module.walk([&](tile::AllocOp op) {
     auto memDescType =
@@ -260,7 +261,21 @@ convertAllocations(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
     if (failed(memDescType))
       return WalkResult::interrupt();
     OpBuilder builder(op);
-    auto alloc = builder.create<ttg::LocalAllocOp>(op.getLoc(), *memDescType);
+    Value initialValue;
+    if (auto store = dyn_cast_or_null<tile::StoreTensorOp>(op->getNextNode());
+        op->hasAttr("musa_tle.initialized_alloc") && store &&
+        store.getDst() == op.getResult()) {
+      initialValue = store.getSrc();
+      if (failed(checkTensorType(store, initialValue.getType(), *memDescType)))
+        return WalkResult::interrupt();
+      foldedInitializers.insert(store);
+    }
+    // Preserve the producer link that the MUSA SQMMA layout analysis uses.
+    auto alloc =
+        initialValue
+            ? builder.create<ttg::LocalAllocOp>(op.getLoc(), *memDescType,
+                                                initialValue)
+            : builder.create<ttg::LocalAllocOp>(op.getLoc(), *memDescType);
     constexpr char autoSharedLayoutAttr[] = "musa_tle.auto_shared_layout";
     if (Attribute layout = op->getAttr(autoSharedLayoutAttr))
       alloc->setAttr(autoSharedLayoutAttr, layout);
@@ -492,6 +507,7 @@ static LogicalResult convertBufferViewsAndRegions(
 
 static LogicalResult
 convertTileUsers(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
+                 const llvm::SmallPtrSetImpl<Operation *> &foldedInitializers,
                  SmallVectorImpl<Operation *> &eraseOps, bool enableAsyncCopy,
                  SmallVectorImpl<ttg::AsyncCopyGlobalToLocalOp> &copies) {
   bool failedConversion = false;
@@ -522,6 +538,10 @@ convertTileUsers(ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
     }
 
     if (auto op = dyn_cast<tile::StoreTensorOp>(operation)) {
+      if (foldedInitializers.contains(op)) {
+        eraseOps.push_back(op);
+        return;
+      }
       auto destination = lookupBuffer(op, op.getDst(), mapped);
       if (failed(destination)) {
         failedConversion = true;
@@ -701,18 +721,20 @@ public:
     SmallVector<Operation *> eraseOps;
     SmallVector<ttg::AsyncCopyGlobalToLocalOp> copies;
     SmallVector<UnrealizedConversionCastOp> temporaryCasts;
+    llvm::SmallPtrSet<Operation *, 8> foldedInitializers;
 
     recordNativeBufferBridges(module, mapped, eraseOps);
 
-    if (failed(convertAllocations(module, mapped, eraseOps)) ||
+    if (failed(
+            convertAllocations(module, mapped, foldedInitializers, eraseOps)) ||
         failed(convertFunctionArguments(module, mapped, convertedValueTypes,
                                         temporaryCasts)) ||
         failed(convertBufferViewsAndRegions(module, mapped, convertedValueTypes,
                                             temporaryCasts, eraseOps)) ||
         failed(
             convertBufferBridges(module, mapped, temporaryCasts, eraseOps)) ||
-        failed(convertTileUsers(module, mapped, eraseOps, enableAsyncCopy,
-                                copies))) {
+        failed(convertTileUsers(module, mapped, foldedInitializers, eraseOps,
+                                enableAsyncCopy, copies))) {
       signalPassFailure();
       return;
     }

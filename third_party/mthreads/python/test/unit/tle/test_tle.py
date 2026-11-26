@@ -76,7 +76,9 @@ def test_tle_copy_mthreads_bindings_are_backend_local():
     assert hasattr(builder, "create_local_pointers")
     assert hasattr(builder, "create_tma_copy")
     assert hasattr(libtriton, "mthreads")
-    assert not hasattr(libtriton, "tle")
+    if hasattr(libtriton, "tle"):
+        assert hasattr(libtriton.tle.passes.commonir, "add_to_ttgir")
+        assert not hasattr(libtriton.tle, "ir")
     assert hasattr(
         libtriton.mthreads.passes.ttgpuir,
         "add_tle_optimize_local_pointer_async_stores",

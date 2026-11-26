@@ -81,7 +81,9 @@ def test_tle_cumsum_builder_binding_is_backend_local():
 
     assert hasattr(builder, "create_exclusive_cumsum")
     assert hasattr(libtriton, "mthreads")
-    assert not hasattr(libtriton, "tle")
+    if hasattr(libtriton, "tle"):
+        assert hasattr(libtriton.tle.passes.commonir, "add_to_ttgir")
+        assert not hasattr(libtriton.tle, "ir")
 
 
 def test_tle_cumsum_ttir_uses_musa_tle_op():

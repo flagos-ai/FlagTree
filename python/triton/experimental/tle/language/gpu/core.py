@@ -472,6 +472,8 @@ def alloc(
     storage = scope
     if tle_semantic.COMMON_IR_ENABLED:
         if storage is not tle.smem:
+            if storage is tle.tmem and mthreads_common.enabled():
+                raise ValueError("mthreads TLE alloc does not support tmem storage")
             raise ValueError("GPU CommonIR currently supports only shared-memory buffers")
         if alias is not None and not hasattr(_semantic.builder, "create_tile_buffer_from_memdesc"):
             raise ValueError("GPU CommonIR alloc does not yet support alias buffers")
@@ -596,6 +598,8 @@ def alloc(
             )
             if mthreads_auto_sqmma_shared_layout:
                 buffer.handle.set_attr("musa_tle.auto_shared_layout", _semantic.builder.get_unit_attr())
+            if init_value is not None and mthreads_common.enabled():
+                buffer.handle.set_attr("musa_tle.initialized_alloc", _semantic.builder.get_unit_attr())
             return buffer
 
         if storage == tle.smem:
@@ -1585,6 +1589,12 @@ def copy(
             if descriptor is None or direction != CopyDirection.GM_TO_LOCAL:
                 raise ValueError("TMA copy barrier is only supported for global-to-shared TMA copy")
             barrier_slot = _tma_completion_barrier_slot(barrier, _semantic)
+        if mthreads_enabled:
+            if descriptor is None:
+                mthreads_copy.validate_normal_copy(src, dst, shape, direction)
+            else:
+                buffer = dst if src is descriptor else src
+                offsets = mthreads_copy.validate_descriptor_copy(descriptor, buffer, shape, offsets)
         if descriptor is not None:
             if offsets is None:
                 raise ValueError("TMA copy requires offsets")

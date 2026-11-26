@@ -98,11 +98,8 @@ def normalize_cache_policy(cache_policy):
     return tuple(_TME_CACHE_POLICIES.index(value) for value in (cache_policy.inner, cache_policy.outer))
 
 
-def tmacopy(src, dst, direction, shape, offsets, barrier=None, cache_policy=None, _semantic=None) -> None:
+def validate_descriptor_copy(desc, buffer, shape, offsets):
     shape = normalize_copy_shape(shape)
-    desc = src if direction.name == "GM_TO_LOCAL" else dst
-    buffer = dst if direction.name == "GM_TO_LOCAL" else src
-
     validate_copy_buffer(buffer, shape)
     desc_shape = tuple(int(tl._unwrap_if_constexpr(dim)) for dim in desc.block_shape)
     if desc_shape != shape:
@@ -110,8 +107,14 @@ def tmacopy(src, dst, direction, shape, offsets, barrier=None, cache_policy=None
     if desc.dtype != buffer.dtype:
         raise ValueError(f"copy dtype mismatch: descriptor stores {desc.dtype}, buffer stores {buffer.dtype}")
 
-    offset_values = normalize_offsets(offsets, len(desc_shape))
-    offset_values = _semantic._convert_to_ir_values(offset_values, require_i64=False)
+    return normalize_offsets(offsets, len(desc_shape))
+
+
+def tmacopy(src, dst, direction, shape, offsets, barrier=None, cache_policy=None, _semantic=None) -> None:
+    desc = src if direction.name == "GM_TO_LOCAL" else dst
+    buffer = dst if direction.name == "GM_TO_LOCAL" else src
+    offsets = validate_descriptor_copy(desc, buffer, shape, offsets)
+    offset_values = _semantic._convert_to_ir_values(offsets, require_i64=False)
     if not hasattr(_semantic.builder, "create_tma_copy"):
         raise RuntimeError("TLE TMA copy builder binding is not available")
     if barrier is not None:
