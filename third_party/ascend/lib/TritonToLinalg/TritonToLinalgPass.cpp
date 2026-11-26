@@ -27,24 +27,24 @@
 #include "TritonToGraph/LayoutMemoryOptimization.h"
 #include "TritonToLinalg/BlockPtrAnalysis.h"
 #include "ascend/include/Dialect/TritonAscend/IR/TritonAscendDialect.h"
-#include "triton-shared/Conversion/TritonToLinalgGeneric/ArgMinMaxConverter.h"
 #include "ascend/include/TritonToLinalg/CanonicalizeDebugLocationsPass.h"
 #include "ascend/include/TritonToLinalg/DeduplicateDebugNopsPass.h"
 #include "ascend/include/TritonToLinalg/DescriptorConverter.h"
 #include "ascend/include/TritonToLinalg/DevicePrintOffsetRewrite.h"
 #include "ascend/include/TritonToLinalg/FunctionConverter.h"
-#include "triton-shared/Conversion/TritonToLinalgGeneric/HoistBroadcast.h"
 #include "ascend/include/TritonToLinalg/ImplicitPermute.h"
 #include "ascend/include/TritonToLinalg/LoadStoreConverter.h"
 #include "ascend/include/TritonToLinalg/MarkTensorKindPass.h"
 #include "ascend/include/TritonToLinalg/TritonOpConverter.h"
 #include "ascend/include/TritonToLinalg/TritonToLinalgPass.h"
-#include "triton-shared/Conversion/TritonToLinalgGeneric/UseAnalysis.h"
-#include "triton-shared/Conversion/TritonToLinalgGeneric/GenericDebug.h"
 #include "ascend/include/TritonToStructured/CannonicalizerConverter.h"
 #include "ascend/include/TritonToUnstructure/UnstructureConversionPass.h"
 #include "ascend/include/Utils/DebugUtils.h"
 #include "ascend/include/Utils/InterleaveOptimization.h"
+#include "triton-shared/Conversion/TritonToLinalgGeneric/ArgMinMaxConverter.h"
+#include "triton-shared/Conversion/TritonToLinalgGeneric/GenericDebug.h"
+#include "triton-shared/Conversion/TritonToLinalgGeneric/HoistBroadcast.h"
+#include "triton-shared/Conversion/TritonToLinalgGeneric/UseAnalysis.h"
 
 #include "bishengir/Dialect/HFusion/IR/HFusion.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
@@ -1712,7 +1712,8 @@ TritonToLinalgPass::processPtrBroadcastOperations(ModuleOp moduleOp) {
 
   // --- Patterns ---
   mlir::RewritePatternSet patterns(&getContext());
-  patterns.add<TTOpConverters::HoistBroadcast::BroadcastConverter>(patterns.getContext());
+  patterns.add<TTOpConverters::HoistBroadcast::BroadcastConverter>(
+      patterns.getContext());
 
   if (failed(applyPartialConversion(moduleOp, target, std::move(patterns)))) {
     moduleOp->emitError("failed to convert ptr broadcast operations");
@@ -1811,12 +1812,10 @@ static TTOpConverters::UseAnalysisHooks buildAscendUseAnalysisHooks() {
   TTOpConverters::UseAnalysisHooks hooks;
 
   hooks.classifyBackendUse =
-      [](Operation *op)
-      -> std::optional<llvm::SmallVector<OperandUse>> {
+      [](Operation *op) -> std::optional<llvm::SmallVector<OperandUse>> {
     if (auto store = dyn_cast<triton::ascend::IndirectStoreOp>(op)) {
-      llvm::SmallVector<OperandUse> uses{{0, UseType::MetaUse},
-                                         {1, UseType::DataUse},
-                                         {2, UseType::DataUse}};
+      llvm::SmallVector<OperandUse> uses{
+          {0, UseType::MetaUse}, {1, UseType::DataUse}, {2, UseType::DataUse}};
       if (store.getMask())
         uses.push_back({3, UseType::DataUse});
       return uses;
