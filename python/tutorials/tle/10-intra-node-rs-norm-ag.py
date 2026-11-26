@@ -20,7 +20,11 @@ Every send is followed by one flag write on the successor, so the receiver waits
 flag >= base + step. Flags only grow and are written with absolute values, so calls may
 launch different grids. The parity of the data slots flips every call: a predecessor that
 runs ahead into call n + 1 never touches what call n still reads. Every rank must make the
-same calls in the same order on one stream (eager only).
+same calls in the same order on one stream.
+
+RingComm(cuda_graph=True) keeps (parity, base) on the device so calls can be captured: the
+last program of a call advances it for the next one. False (default) passes them as host
+scalars and refuses capture.
 
 At setup RingComm selects the host platform, ring orders and peer transport. The
 launchers pass the peer address, receive load, remote store and flag operations as
@@ -57,6 +61,34 @@ try:
     import triton.experimental.tle.language as tle
 except ImportError:  # vendor Triton without TLE: only the IPC path
     tle = None
+
+
+@triton.jit
+def _epoch_begin(state_ptr, host_parity, host_base, DEVICE_EPOCH: tl.constexpr):
+    # (seq, parity, base) of this call: from call_state in graph mode, host scalars otherwise
+    if DEVICE_EPOCH:
+        seq = tl.load(state_ptr, cache_modifier=".cg")
+        base = tl.load(state_ptr + 1, cache_modifier=".cg")
+        parity = seq & 1
+    else:
+        seq = host_parity
+        parity = host_parity
+        base = host_base
+    return seq, parity, base
+
+
+@triton.jit
+def _epoch_end(state_ptr, seq, base, signals, DEVICE_EPOCH: tl.constexpr):
+    # graph mode: the last program to arrive advances call_state for the next call. Every
+    # program read it at entry, before its arrival, so none of this call sees the new value;
+    # the next call is a later kernel on the same stream and does.
+    if DEVICE_EPOCH:
+        tl.debug_barrier()
+        arrived = tl.atomic_add(state_ptr + 2, 1)
+        if arrived == tl.num_programs(0) - 1:
+            tl.store(state_ptr, seq + 1)
+            tl.store(state_ptr + 1, base + signals)
+            tl.store(state_ptr + 2, 0)
 
 
 @triton.jit
@@ -102,7 +134,8 @@ def _remote_store(ptr, value, mask):
 
 
 @triton.jit(do_not_specialize=[
-    "num_tokens", "chunk", "slot_elems", "par_elems", "flag_off", "rank", "nchan", "eps", "base", "max_spin"
+    "num_tokens", "chunk", "slot_elems", "parity_elems", "flag_off", "host_parity", "host_base", "rank", "nchan",
+    "eps", "max_spin"
 ])
 def rs_norm_ag_ring_kernel(
     x_ptr,  # [T, H] partial sums
@@ -119,12 +152,14 @@ def rs_norm_ag_ring_kernel(
     num_tokens,
     chunk,
     slot_elems,
-    par_elems,  # parity * slots per parity * slot_elems
     flag_off,  # int32 offset of the flags in the shared buffer
+    parity_elems,  # elements of one parity of data slots
+    call_state_ptr,  # int32 [4] seq, base, arrivals (graph mode)
+    host_parity,  # eager mode: parity and flag base of this call (int32, wraps)
+    host_base,
     rank,
     nchan,
     eps,
-    base,  # flag value at the start of this call (int32, wraps)
     max_spin,
     WORLD: tl.constexpr,
     H: tl.constexpr,
@@ -135,6 +170,7 @@ def rs_norm_ag_ring_kernel(
     REMOTE_STORE: tl.constexpr,
     SIGNAL: tl.constexpr,
     WAIT: tl.constexpr,
+    DEVICE_EPOCH: tl.constexpr,  # graph mode
 ):
     pid = tl.program_id(0)
     G = tl.num_programs(0)
@@ -147,7 +183,8 @@ def rs_norm_ag_ring_kernel(
     ring = order_ptr + c * WORLD
     nxt_rank = tl.load(ring + (p + 1) % WORLD)
 
-    pe = par_elems.to(tl.int64)
+    seq, parity, base = _epoch_begin(call_state_ptr, host_parity, host_base, DEVICE_EPOCH)
+    pe = parity.to(tl.int64) * parity_elems
     se = slot_elems.to(tl.int64)
     my_flag = flag_ptr + pid
     mine = buf_ptr + pe
@@ -213,11 +250,14 @@ def rs_norm_ag_ring_kernel(
                     REMOTE_STORE(nxt + (WORLD - 1 + t) * se + row + cols, v, mask=m)
             if t < WORLD - 1:
                 SIGNAL(succ_flag, base + WORLD + t)
+        _epoch_end(call_state_ptr, seq, base, 2 * WORLD - 2, DEVICE_EPOCH)
+    else:
+        _epoch_end(call_state_ptr, seq, base, WORLD - 1, DEVICE_EPOCH)
 
 
 @triton.jit(do_not_specialize=[
-    "num_tokens", "chunk", "slot_elems", "par_elems", "flag_off", "rank", "nchan", "q_eps", "kv_eps", "base",
-    "max_spin"
+    "num_tokens", "chunk", "slot_elems", "parity_elems", "flag_off", "host_parity", "host_base", "rank", "nchan",
+    "q_eps", "kv_eps", "max_spin"
 ])
 def qkv_norm_ag_ring_kernel(
     x_ptr,  # [rows of this rank, D] qkv_a output: [q | kv | rest]
@@ -234,13 +274,15 @@ def qkv_norm_ag_ring_kernel(
     num_tokens,
     chunk,
     slot_elems,
-    par_elems,  # parity * slots per parity * slot_elems
     flag_off,
+    parity_elems,  # elements of one parity of data slots
+    call_state_ptr,  # int32 [4] seq, base, arrivals (graph mode)
+    host_parity,  # eager mode: parity and flag base of this call (int32, wraps)
+    host_base,
     rank,
     nchan,
     q_eps,
     kv_eps,
-    base,  # flag value at the start of this call (int32, wraps)
     max_spin,
     WORLD: tl.constexpr,
     D: tl.constexpr,
@@ -252,6 +294,7 @@ def qkv_norm_ag_ring_kernel(
     REMOTE_STORE: tl.constexpr,
     SIGNAL: tl.constexpr,
     WAIT: tl.constexpr,
+    DEVICE_EPOCH: tl.constexpr,  # graph mode
 ):
     # owner: norm q and kv of my rows, keep them, send them to succ slot 0;
     # AG step t = 1 .. W-1: chunk order[p - t] arrives in slot t - 1, keep it, pass it on
@@ -268,7 +311,8 @@ def qkv_norm_ag_ring_kernel(
     ring = order_ptr + c * WORLD
     nxt_rank = tl.load(ring + (p + 1) % WORLD)
 
-    pe = par_elems.to(tl.int64)
+    seq, parity, base = _epoch_begin(call_state_ptr, host_parity, host_base, DEVICE_EPOCH)
+    pe = parity.to(tl.int64) * parity_elems
     se = slot_elems.to(tl.int64)
     my_flag = flag_ptr + pid
     mine = buf_ptr + pe
@@ -304,6 +348,7 @@ def qkv_norm_ag_ring_kernel(
                 REMOTE_STORE(nxt + t * se + row + cols, v, mask=in_row)
         if t < WORLD - 1:
             SIGNAL(succ_flag, base + t + 1)
+    _epoch_end(call_state_ptr, seq, base, WORLD - 1, DEVICE_EPOCH)
 
 
 def ppu810e_rings(phys_ids: Sequence[int]) -> List[List[int]]:
@@ -563,7 +608,8 @@ class RingComm:
     (TLE keeps one window per process, which is why every op lives in this buffer); "ipc"
     uses the platform allocator and IPC handles; "auto" takes tle when supported.
     rings: rank orders, one per distinct ring (default from platform); nchannels: channels per
-    call, the rings repeat to fill them. Creation runs collectives: call it on every rank.
+    call, the rings repeat to fill them. cuda_graph: see the module docstring. Creation runs
+    collectives: call it on every rank.
     """
 
     def __init__(
@@ -574,6 +620,7 @@ class RingComm:
         nchannels: int = 16,
         max_spin: int = 1 << 22,
         platform="auto",
+        cuda_graph: bool = False,
     ):
         self.platform = platform if isinstance(platform, _Platform) else _platform(platform)
         can_tle = self.platform.tle_supported and tle is not None and tle.communication.enabled
@@ -591,6 +638,7 @@ class RingComm:
         self.world_size, self.rank = W, rank
         self.max_spin = max_spin
         self.device = torch.device(self.platform.device_type, self.platform.api.current_device())
+        self.cuda_graph = bool(cuda_graph)
         self._seq = 0
         self._signals = 0
         self.closed = False
@@ -621,6 +669,8 @@ class RingComm:
         self.flags = self.buf[data_bytes:].view(torch.int32)
         self.flag_off = data_bytes // 4
         self.err = torch.zeros(1, dtype=torch.int32, device=self.device)
+        # graph mode: seq, flag base, programs arrived; local, every rank advances its own copy
+        self.call_state = torch.zeros(4, dtype=torch.int32, device=self.device)
         # every flag buffer is zeroed before any peer can signal into it
         self.platform.api.synchronize()
         dist.barrier()
@@ -628,13 +678,18 @@ class RingComm:
     def data(self, dtype: torch.dtype) -> torch.Tensor:
         return self.buf[:2 * self.parity_bytes].view(dtype)
 
-    def next_call(self, signals: int) -> Tuple[int, int]:
-        """(parity, flag base) of the next call, which signals `signals` times."""
-        parity = self._seq & 1
-        base = _wrap_i32(self._signals)
+    def call_args(self, signals: int) -> dict:
+        """Kernel args locating the next call, which signals `signals` times."""
+        if self.cuda_graph:
+            return dict(call_state_ptr=self.call_state, host_parity=0, host_base=0, DEVICE_EPOCH=True)
+        capturing = getattr(self.platform.api, "is_current_stream_capturing", None)
+        if capturing is not None and capturing():
+            raise RuntimeError("capturing a RingComm(cuda_graph=False) call: its replays would reuse the "
+                               "parity and flag base of the capture; create it with cuda_graph=True")
+        parity, base = self._seq & 1, _wrap_i32(self._signals)
         self._seq += 1
         self._signals += signals
-        return parity, base
+        return dict(call_state_ptr=self.call_state, host_parity=parity, host_base=base, DEVICE_EPOCH=False)
 
     def row_range(self, num_tokens: int) -> Tuple[int, int]:
         return row_range(num_tokens, self.world_size, self.rank)
@@ -718,7 +773,7 @@ class fused_rs_add_rms_norm_ag:
             return out
 
         # RS + AG: 2W - 2 signals; RS only: the W - 1 RS hops
-        parity, base = comm.next_call(2 * W - 2 if gather else W - 1)
+        epoch = comm.call_args(2 * W - 2 if gather else W - 1)
         nchan, grid = comm.launch_shape(T)
         BLOCK_H = triton.next_power_of_2(H)
         rs_norm_ag_ring_kernel[(grid, )](
@@ -735,18 +790,18 @@ class fused_rs_add_rms_norm_ag:
             num_tokens=T,
             chunk=triton.cdiv(T, W),
             slot_elems=self.slot_elems,
-            par_elems=parity * self.parity_elems,
+            parity_elems=self.parity_elems,
             flag_off=comm.flag_off,
             rank=comm.rank,
             nchan=nchan,
             eps=eps,
-            base=base,
             max_spin=comm.max_spin,
             WORLD=W,
             H=H,
             BLOCK_H=BLOCK_H,
             DO_AG=gather,
             num_warps=comm.platform.num_warps(BLOCK_H),
+            **epoch,
             **comm.launch_args(),
         )
         return out
@@ -809,7 +864,7 @@ class fused_qkv_norm_ag:
         if T == 0:
             return out
 
-        parity, base = comm.next_call(W - 1)
+        epoch = comm.call_args(W - 1)
         nchan, grid = comm.launch_shape(T)
         BLOCK = triton.next_power_of_2(D)
         qkv_norm_ag_ring_kernel[(grid, )](
@@ -826,13 +881,12 @@ class fused_qkv_norm_ag:
             num_tokens=T,
             chunk=triton.cdiv(T, W),
             slot_elems=self.slot_elems,
-            par_elems=parity * self.parity_elems,
+            parity_elems=self.parity_elems,
             flag_off=comm.flag_off,
             rank=comm.rank,
             nchan=nchan,
             q_eps=q_eps,
             kv_eps=kv_eps,
-            base=base,
             max_spin=comm.max_spin,
             WORLD=W,
             D=D,
@@ -840,6 +894,7 @@ class fused_qkv_norm_ag:
             KV=self.kv_dim,
             BLOCK=BLOCK,
             num_warps=comm.platform.num_warps(BLOCK),
+            **epoch,
             **comm.launch_args(),
         )
         return out
