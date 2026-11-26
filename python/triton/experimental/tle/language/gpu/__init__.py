@@ -19,6 +19,8 @@
 # SOFTWARE.
 
 # flagtree tle
+from triton._flagtree_backend import FLAGTREE_BACKEND
+
 from . import mthreads
 from .core import (
     range,
@@ -30,8 +32,6 @@ from .core import (
     async_commit_group,
     async_wait_group,
     copy,
-    store_tensor,
-    to_tensor,
     memory_space,
     local_ptr,
     warp_specialize,
@@ -59,8 +59,6 @@ __all__ = [
     "async_commit_group",
     "async_wait_group",
     "copy",
-    "to_tensor",
-    "store_tensor",
     "local_ptr",
     "warp_specialize",
     "wgmma",
@@ -90,3 +88,9 @@ __all__ = [
     "smem",
     "tmem",
 ]
+
+# AMD exposes full-buffer access through buffered_tensor methods.
+if FLAGTREE_BACKEND != "amd":
+    from .core import store_tensor, to_tensor
+
+    __all__ += ["to_tensor", "store_tensor"]

@@ -18,6 +18,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+from triton._flagtree_backend import FLAGTREE_BACKEND
+
 TLE_PRIMITIVES = frozenset({
     ## TLE-Raw
     "raw.call",
@@ -53,8 +55,6 @@ TLE_PRIMITIVES = frozenset({
     "gpu.buffered_tensor.subslice",
     "gpu.alloc",
     "gpu.copy",
-    "gpu.to_tensor",
-    "gpu.store_tensor",
     "gpu.local_ptr",
     "gpu.memory_space",
     "gpu.set_layout",
@@ -129,5 +129,8 @@ TLE_PRIMITIVES = frozenset({
     "make_partition_view",
     "make_view",
 })
+
+if FLAGTREE_BACKEND != "amd":
+    TLE_PRIMITIVES |= {"gpu.to_tensor", "gpu.store_tensor"}
 
 __all__ = ["TLE_PRIMITIVES"]
