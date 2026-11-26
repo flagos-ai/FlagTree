@@ -1,7 +1,7 @@
 """XPU TLE mesh metadata and explicit-handle FlagCX device operations.
 
-Device operations need XPU FlagCX bitcode at compilation and a registered
-communicator or memory handle at launch.
+Pass the context returned by create_dist_tensor as an ordinary kernel argument
+to supply both FlagCX device handles at launch.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence
 
 import triton.language as tl
 from triton.language.core import _unwrap_if_constexpr, builtin
+from triton.runtime import DistributedRtContext
 
 from ._gluon import gluon_builder
 
@@ -208,40 +209,32 @@ class device_mesh:
         return f"DeviceMesh(shape={self._shape}, names={self._dim_names})"
 
 
-def _comm_handle(comm, builder):
-    comm = _unwrap_if_constexpr(comm)
-    if comm is None:
-        return None
-    if isinstance(comm, tl.tensor) and comm.dtype == tl.int64:
-        return comm.handle
-    from triton.runtime._distributed import DistributedRtContext
-    if isinstance(comm, DistributedRtContext) and comm[1] is not None:
-        return builder.get_int64(int(comm[1]))
-    raise TypeError("comm must be a runtime i64 or a FlagCX DistributedRtContext")
-
-
-def _memory_handle(memory, builder):
-    memory = _unwrap_if_constexpr(memory)
-    if isinstance(memory, tl.tensor) and memory.dtype == tl.int64:
-        return memory.handle
-    from triton.runtime._distributed import DistributedRtContext
-    if isinstance(memory, DistributedRtContext) and memory[0] is not None:
-        return builder.get_int64(int(memory[0]))
-    raise TypeError("memory must be a runtime i64 or a registered FlagCX DistributedRtContext")
+def _parse_src_arg(builder, src, index, name):
+    src = _unwrap_if_constexpr(src)
+    if isinstance(src, tl.tuple):
+        src = src[index]
+    if isinstance(src, tl.tensor) and src.dtype == tl.int64:
+        return src.handle
+    if isinstance(src, DistributedRtContext) and src[index] is not None:
+        return builder.get_int64(int(src[index]))
+    raise TypeError(f"{name} must be a runtime i64 or a FlagCX DistributedRtContext")
 
 
 @builtin
 def _get_local_rank(comm=None, _semantic=None, _generator=None):
     """Read the intra-node rank from an explicit FlagCX device communicator."""
     builder = gluon_builder(_semantic, _generator, "get_device_id")
-    return tl.tensor(builder.get_device_id(tl.int32.to_ir(builder), _comm_handle(comm, builder)), tl.int32)
+    comm = _unwrap_if_constexpr(comm)
+    handle = None if comm is None else _parse_src_arg(builder, comm, 1, "comm")
+    return tl.tensor(builder.get_device_id(tl.int32.to_ir(builder), handle), tl.int32)
 
 
 @builtin
 def n_pes(comm, _semantic=None, _generator=None):
     """Read the intra-node device count from an explicit FlagCX communicator."""
     builder = gluon_builder(_semantic, _generator, "get_n_pes")
-    return tl.tensor(builder.get_n_pes(tl.int32.to_ir(builder), _comm_handle(comm, builder)), tl.int32)
+    handle = _parse_src_arg(builder, comm, 1, "comm")
+    return tl.tensor(builder.get_n_pes(tl.int32.to_ir(builder), handle), tl.int32)
 
 
 @builtin
@@ -253,38 +246,9 @@ def shard_id(mesh, axis, device_dptr=None, _semantic=None, _generator=None):
         raise TypeError("mesh must be a device_mesh")
     if axis != "device":
         raise NotImplementedError(f"XPU TLE shard_id axis {axis!r} is not implemented")
-    if device_dptr is None:
+    if _unwrap_if_constexpr(device_dptr) is None:
         raise ValueError("device_dptr is required for the device axis")
     return _get_local_rank(device_dptr, _semantic=_semantic, _generator=_generator)
-
-
-@builtin
-def distributed_barrier(mesh=None, device_dptr=None, *, space=None, barrier_kind="sync", group_kind="block",
-                        barrier_index=0, order="acq_rel", _semantic=None, _generator=None):
-    """Synchronize an intra-node FlagCX device group using an explicit comm."""
-    mesh = _unwrap_if_constexpr(mesh)
-    space = _unwrap_if_constexpr(space)
-    barrier_kind = _unwrap_if_constexpr(barrier_kind)
-    group_kind = _unwrap_if_constexpr(group_kind)
-    barrier_index = _unwrap_if_constexpr(barrier_index)
-    order = _unwrap_if_constexpr(order)
-    if space != "device" or not isinstance(mesh, device_mesh) or "device" not in mesh.dim_names:
-        raise NotImplementedError("XPU TLE supports only an explicit device-space barrier on a device mesh")
-    if device_dptr is None:
-        raise ValueError("device_dptr is required for a device-space barrier")
-    if barrier_kind not in ("sync", "arrive", "wait"):
-        raise ValueError("barrier_kind must be sync, arrive, or wait")
-    coop_kinds = {"thread": 0, "warp": 1, "block": 2}
-    if group_kind not in coop_kinds:
-        raise NotImplementedError(f"XPU TLE does not support group_kind {group_kind!r}")
-    orders = {"relaxed": 0, "acquire": 1, "release": 2, "acq_rel": 3}
-    if order not in orders:
-        raise ValueError(f"invalid memory order {order!r}")
-    if not isinstance(barrier_index, int) or barrier_index < 0 or barrier_index > 0x7FFFFFFF:
-        raise ValueError("barrier_index must be a non-negative int32")
-    builder = gluon_builder(_semantic, _generator, "create_distributed_barrier")
-    builder.create_distributed_barrier(_comm_handle(device_dptr, builder), barrier_kind, coop_kinds[group_kind],
-                                       barrier_index, orders[order])
 
 
 _COOP_KINDS = {"thread": 0, "warp": 1, "block": 2}
@@ -293,37 +257,49 @@ _MEMORY_ORDERS = {"relaxed": 0, "acquire": 1, "release": 2, "acq_rel": 3}
 _MEMORY_SCOPES = {"system": 0, "device": 1, "block": 2, "thread": 3}
 
 
-def _signal_scalar(value, name, dtype, _semantic):
-    """Normalize one signal operand to a scalar tensor of `dtype`."""
-    value = value if isinstance(value, tl.tensor) else _semantic.to_tensor(_unwrap_if_constexpr(value))
+def _enum_value(options, value, name):
+    value = _unwrap_if_constexpr(value)
+    if value not in options:
+        raise ValueError(f"{name} must be one of {', '.join(options)}, got {value!r}")
+    return options[value]
+
+
+@builtin
+def distributed_barrier(mesh=None, device_dptr=None, *, space=None, barrier_kind="sync", group_kind="block",
+                        barrier_index=0, order="acq_rel", _semantic=None, _generator=None):
+    """Synchronize an intra-node FlagCX device group using an explicit comm."""
+    mesh = _unwrap_if_constexpr(mesh)
+    space = _unwrap_if_constexpr(space)
+    if space != "device" or not isinstance(mesh, device_mesh) or "device" not in mesh.dim_names:
+        raise NotImplementedError("XPU TLE supports only an explicit device-space barrier on a device mesh")
+    builder = gluon_builder(_semantic, _generator, "create_distributed_barrier")
+    builder.create_distributed_barrier(
+        _parse_src_arg(builder, device_dptr, 1, "comm"), _unwrap_if_constexpr(barrier_kind),
+        _enum_value(_COOP_KINDS, group_kind, "group_kind"), _unwrap_if_constexpr(barrier_index),
+        _enum_value(_MEMORY_ORDERS, order, "order"))
+
+
+def _scalar_int_handle(value, name, dtype, _semantic):
+    value = _semantic.to_tensor(_unwrap_if_constexpr(value))
     if value.shape != () or not value.dtype.is_int():
         raise TypeError(f"{name} must be a scalar integer")
     if value.dtype != dtype:
         value = tl.cast(value, dtype, _semantic=_semantic)
-    return value
+    return value.handle
 
 
 def _signal_context_id(context_id):
     context_id = _unwrap_if_constexpr(context_id)
     if not isinstance(context_id, int) or isinstance(context_id, bool):
         raise TypeError(f"context_id must be a compile-time int, got {type(context_id).__name__}")
-    if context_id < 0 or context_id > 0x7FFFFFFF:
-        raise ValueError(f"context_id must be a non-negative int32, got {context_id}")
     return context_id
-
-
-def _signal_coop_kind(group_kind):
-    group_kind = _unwrap_if_constexpr(group_kind)
-    if group_kind not in _COOP_KINDS:
-        raise NotImplementedError(f"XPU TLE does not support group_kind {group_kind!r}")
-    return _COOP_KINDS[group_kind]
 
 
 @builtin
 def init(device_dptr, _semantic=None, _generator=None):
     """Select the communicator for XPU kernel initialization explicitly."""
     builder = gluon_builder(_semantic, _generator, "create_device_init")
-    builder.create_device_init(_comm_handle(device_dptr, builder))
+    builder.create_device_init(_parse_src_arg(builder, device_dptr, 1, "comm"))
 
 
 @builtin
@@ -335,32 +311,20 @@ def signal(device_dptr, peer, slot_id, value=None, op="inc", space="intra_node",
     ``peer`` indexes; ``context_id`` picks the arena ``slot_id`` lives in.
     """
     op = _unwrap_if_constexpr(op)
-    if op not in ("inc", "add"):
-        raise ValueError(f"op must be 'inc' or 'add', got {op!r}")
-    space = _unwrap_if_constexpr(space)
-    if space not in _TEAM_KINDS:
-        raise ValueError(f"space must be intra_node, inter_node, or world, got {space!r}")
-    scope = _unwrap_if_constexpr(scope)
-    if scope not in _MEMORY_SCOPES:
-        raise ValueError(f"invalid memory scope {scope!r}")
-    coop_kind = _signal_coop_kind(group_kind)
-    context_id = _signal_context_id(context_id)
-    if device_dptr is None:
-        raise ValueError("device_dptr is required for a FlagCX signal")
-
     value = _unwrap_if_constexpr(value)
     if op == "add" and value is None:
         raise ValueError("op='add' requires value")
     if op == "inc" and value is not None:
         raise ValueError("op='inc' takes no value")
-
     builder = gluon_builder(_semantic, _generator, "create_signal")
-    peer_tensor = _signal_scalar(peer, "peer", tl.int32, _semantic)
-    slot_tensor = _signal_scalar(slot_id, "slot_id", tl.int32, _semantic)
-    addend = None if value is None else _signal_scalar(value, "value", tl.int64, _semantic)
-    builder.create_signal(_comm_handle(device_dptr, builder), peer_tensor.handle, slot_tensor.handle,
-                          None if addend is None else addend.handle, op, _TEAM_KINDS[space], coop_kind, context_id,
-                          _MEMORY_SCOPES[scope])
+    builder.create_signal(
+        _parse_src_arg(builder, device_dptr, 1, "comm"),
+        _scalar_int_handle(peer, "peer", tl.int32, _semantic),
+        _scalar_int_handle(slot_id, "slot_id", tl.int32, _semantic),
+        None if value is None else _scalar_int_handle(value, "value", tl.int64, _semantic),
+        op, _enum_value(_TEAM_KINDS, space, "space"),
+        _enum_value(_COOP_KINDS, group_kind, "group_kind"), _signal_context_id(context_id),
+        _enum_value(_MEMORY_SCOPES, scope, "scope"))
 
 
 @builtin
@@ -372,28 +336,18 @@ def signal_wait(device_dptr, slot_id, wait_kind, target=None, group_kind="block"
     namespace; ``"shadow"`` reads the target from FlagCX and takes no ``target``.
     """
     wait_kind = _unwrap_if_constexpr(wait_kind)
-    if wait_kind not in ("signal", "counter", "shadow"):
-        raise ValueError(f"wait_kind must be signal, counter, or shadow, got {wait_kind!r}")
-    order = _unwrap_if_constexpr(order)
-    if order not in _MEMORY_ORDERS:
-        raise ValueError(f"invalid memory order {order!r}")
-    coop_kind = _signal_coop_kind(group_kind)
-    context_id = _signal_context_id(context_id)
-    if device_dptr is None:
-        raise ValueError("device_dptr is required for a FlagCX signal wait")
-
     target = _unwrap_if_constexpr(target)
     if wait_kind == "shadow" and target is not None:
-        raise ValueError("wait_kind='shadow' reads its target from the shadow buffer and takes no target")
-    if wait_kind != "shadow" and target is None:
+        raise ValueError("wait_kind='shadow' takes no target")
+    if wait_kind in ("signal", "counter") and target is None:
         raise ValueError(f"wait_kind={wait_kind!r} requires target")
-
     builder = gluon_builder(_semantic, _generator, "create_signal_wait")
-    slot_tensor = _signal_scalar(slot_id, "slot_id", tl.int32, _semantic)
-    least = None if target is None else _signal_scalar(target, "target", tl.int64, _semantic)
-    builder.create_signal_wait(_comm_handle(device_dptr,
-                                            builder), slot_tensor.handle, None if least is None else least.handle,
-                               wait_kind, coop_kind, context_id, _MEMORY_ORDERS[order])
+    builder.create_signal_wait(
+        _parse_src_arg(builder, device_dptr, 1, "comm"),
+        _scalar_int_handle(slot_id, "slot_id", tl.int32, _semantic),
+        None if target is None else _scalar_int_handle(target, "target", tl.int64, _semantic),
+        wait_kind, _enum_value(_COOP_KINDS, group_kind, "group_kind"),
+        _signal_context_id(context_id), _enum_value(_MEMORY_ORDERS, order, "order"))
 
 
 @builtin
@@ -416,23 +370,16 @@ def remote(tensor, shard_id=None, scope=None, space="cluster", dtype=None, offse
     bits = int(dtype.primitive_bitwidth)
     if bits < 8 or bits % 8:
         raise ValueError("remote pointee type must be byte addressable")
-    peer = shard_id if isinstance(shard_id, tl.tensor) else _semantic.to_tensor(_unwrap_if_constexpr(shard_id))
-    if peer.shape != () or not peer.dtype.is_int():
-        raise TypeError("shard_id must be a scalar integer")
-    if peer.dtype != tl.int32:
-        peer = tl.cast(peer, tl.int32, _semantic=_semantic)
-    offset_tensor = offset if isinstance(offset, tl.tensor) else _semantic.to_tensor(_unwrap_if_constexpr(offset))
-    if offset_tensor.shape != () or not offset_tensor.dtype.is_int():
-        raise TypeError("offset must be a scalar integer")
-    if offset_tensor.dtype != tl.int64:
-        offset_tensor = tl.cast(offset_tensor, tl.int64, _semantic=_semantic)
     builder = gluon_builder(_semantic, _generator, "create_remote_pointers")
     ptr_type = tl.pointer_type(dtype, 1)
     memory = _unwrap_if_constexpr(tensor)
-    from triton.runtime._distributed import DistributedRtContext
-    comm = _comm_handle(memory, builder) if isinstance(memory, DistributedRtContext) and memory[1] is not None else None
-    result = builder.create_remote_pointers(ptr_type.to_ir(builder), _memory_handle(memory, builder), peer.handle,
-                                            offset_tensor.handle, bits // 8, comm)
+    comm = None
+    if isinstance(memory, tl.tuple) or (isinstance(memory, DistributedRtContext) and memory[1] is not None):
+        comm = _parse_src_arg(builder, memory, 1, "comm")
+    result = builder.create_remote_pointers(
+        ptr_type.to_ir(builder), _parse_src_arg(builder, memory, 0, "memory"),
+        _scalar_int_handle(shard_id, "shard_id", tl.int32, _semantic),
+        _scalar_int_handle(offset, "offset", tl.int64, _semantic), bits // 8, comm)
     return tl.tensor(result, ptr_type)
 
 

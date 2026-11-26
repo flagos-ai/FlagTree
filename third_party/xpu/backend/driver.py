@@ -7,10 +7,11 @@ import functools
 from typing import List
 from pathlib import Path
 
-from triton.runtime.build import _build
-from triton.runtime.cache import get_cache_manager
+from triton._utils import find_paths_if, get_iterable_path
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import GPUDriver
+from triton.runtime.build import _build
+from triton.runtime.cache import get_cache_manager
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 
@@ -542,19 +543,15 @@ def ty_to_cpp(ty):
     }[ty]
 
 
-def make_launcher(constants, signature, ids, metadata):
+def make_launcher(signature, metadata):
     xpu_arch = metadata.xpu_arch
     is_sdnn = metadata.is_sdnn
     ewtable = metadata.ewtable
     tensor_args = metadata.tensor_args
     kernel_name = metadata.name
 
-    # Triton 3.6 keeps constexpr parameters in the signature dict; they are not
-    # runtime arguments to the kernel ABI. The XPU LLVM kernel takes only the
-    # non-constexpr params; gridX/gridY/gridZ are appended by the LoopGrid pass
-    # and injected at device-launch time (see device/xpu3/launch.cpp), so they
-    # must NOT be passed via the python launcher either.
-    signature = {i: ty for i, ty in signature.items() if ty != "constexpr"}
+    # The launcher receives only flattened runtime parameters. Grid dimensions
+    # appended by LoopGrid are injected separately by xpuLaunchKernel.
     if getattr(metadata, "flagcx_implicit_args", False):
         signature = {0: "i64", 1: "i64", **{i + 2: ty for i, ty in enumerate(signature.values())}}
 
@@ -956,26 +953,18 @@ class XPULauncher(object):
         self._fn_name = _get_launcher_fn_name(src)
         self._signature = dict(src.signature) if hasattr(src, 'signature') else {}
         self._constants = dict(src.constants) if hasattr(src, 'constants') else {}
-        ids = {"ids_of_const_exprs": src.fn.constexprs if hasattr(src, "fn") else tuple()}
-        constants = src.constants if hasattr(src, "constants") else dict()
-
-        def cst_key(i):
-            if isinstance(i, str):
-                return src.fn.arg_names.index(i)
-            if isinstance(i, tuple):
-                assert len(i) == 1, f"unexpected nested constant key: {i}"
-                return i[0]
-            return i
-
-        constants = {cst_key(key): value for key, value in constants.items()}
-        signature = {cst_key(key): value for key, value in src.signature.items()}
+        # Use the same leaf order for the launcher signature and its values.
+        # A DistributedRtContext supplies its two handles through indexing.
+        arg_types = tuple(self._signature.values())
+        self._runtime_arg_paths = find_paths_if(arg_types, lambda _, ty: ty != "constexpr")
+        signature = {i: get_iterable_path(arg_types, path) for i, path in enumerate(self._runtime_arg_paths)}
         # Must match make_launcher's descriptor expansion (T-1): the cluster (non-SDNN)
         # path converts TensorDescType to a single ptr<1>, so only rank .shape (i32) +
         # rank .strides (i64) follow the base pointer -- the old unconditional SDNN-style
         # expansion doubled the args and zeroed the trailing grid params.
         self._is_sdnn = bool(getattr(metadata, "is_sdnn", False))
         self._implicit_dist = bool(getattr(metadata, "flagcx_implicit_args", False))
-        src = make_launcher(constants, signature, ids, metadata)
+        src = make_launcher(signature, metadata)
         mod = compile_module_from_src(src, "__triton_launcher_xpu", metadata.xpu_arch)
         self.launch = mod.launch
 
@@ -989,7 +978,6 @@ class XPULauncher(object):
         # xpuLaunchKernel itself (LoopGrid pass appended them as kernel args).
         fixed = args[:9]
         kernel_args = args[9:]
-        filtered = [arg for arg, ty in zip(kernel_args, self._signature.values()) if ty != "constexpr"]
         # A TensorDescriptor expands to (4*rank + 2) flat arguments, matching
         # tensor_descriptor_type._flatten_ir: the handle group (base pointer,
         # shape and strides as i64, padding flag) followed by the Python-visible
@@ -997,7 +985,8 @@ class XPULauncher(object):
         # therefore passed twice, with the same values.
         from triton.tools.tensor_descriptor import TensorDescriptor
         expanded = []
-        for arg in filtered:
+        for path in self._runtime_arg_paths:
+            arg = kernel_args[path[0]] if len(path) == 1 else get_iterable_path(kernel_args, path)
             if isinstance(arg, TensorDescriptor):
                 expanded.append(arg.base)  # tensor with data_ptr/numel
                 # Must match make_launcher's expansion: only SDNN adds the handle group

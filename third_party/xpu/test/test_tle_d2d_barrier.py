@@ -1,7 +1,7 @@
 """Exercise FlagCX remote stores and the device barrier with two local torchrun ranks.
 
-Set up the XPU FlagCX runtime and prebuild the allocator in the ranks' shared
-temporary directory before launching the test.
+Run test_tle_d2d_barrier.sh to configure the XPU runtime and prepare the
+shared allocator before launching the ranks.
 """
 
 import os
@@ -18,7 +18,7 @@ N = 8
 
 
 @triton.jit
-def _store_and_barrier(device_dptr: tl.constexpr, mesh: tl.constexpr):
+def _store_and_barrier(device_dptr, mesh: tl.constexpr):
     offset = tl.program_id(0)
     rank = tle.shard_id(mesh, "device", device_dptr=device_dptr)
     peer = (rank + 1) % mesh.shape[0]

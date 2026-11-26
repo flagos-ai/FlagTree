@@ -7,9 +7,9 @@ import triton.experimental.tle.language as tle
 
 
 @triton.jit
-def lsa_put_kernel(input_ptr, device_dptr: tl.constexpr, MY_RANK: tl.constexpr, N_RANKS: tl.constexpr):
+def lsa_put_kernel(input_ptr, device_dptr, MY_RANK: tl.constexpr):
     pid = tl.program_id(0)
-    peer = (MY_RANK + 1) % N_RANKS
+    peer = (MY_RANK + 1) % tle.n_pes(device_dptr)
     remote_mem = tle.remote(device_dptr, space="device", dtype=tl.float32, shard_id=peer, offset=pid)
     value = tl.load(input_ptr + pid)
     if tl.cast(remote_mem, tl.uint64) != 0:
@@ -30,7 +30,7 @@ def main():
     source = (values + rank * 1000).to("cuda")
     device_dptr = tle.create_dist_tensor(receive)
     try:
-        lsa_put_kernel[(n,)](source, device_dptr, rank, world_size, num_ctas=1, num_warps=4)
+        lsa_put_kernel[(n,)](source, device_dptr, rank, num_ctas=1, num_warps=4)
         torch.cuda.synchronize()
         dist.barrier()
 

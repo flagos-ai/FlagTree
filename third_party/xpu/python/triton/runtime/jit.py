@@ -17,6 +17,7 @@ from types import ModuleType
 from .. import knobs
 from .driver import driver
 from . import _async_compile
+from ._distributed import DistributedRtContext
 from .._utils import find_paths_if, get_iterable_path, type_canonicalisation_dict, is_namedtuple
 from .cache import get_cache_key
 from triton._C.libtriton import get_cache_invalidating_env_vars, native_specialize_impl
@@ -398,6 +399,14 @@ def serialize_specialization_data(name, signature, constants, attrs, options, ke
     return serialized_obj
 
 
+def _specialize_xpu_argument(backend, arg, is_const, specialize, align):
+    if isinstance(arg, DistributedRtContext):
+        # Match the context's indexing order (DevMem, DevComm). Keep both
+        # handles in the kernel signature and out of the specialization key.
+        return ("i64", "i64"), (None, None)
+    return native_specialize_impl(backend, arg, is_const, specialize, align)
+
+
 def create_function_from_signature(sig, kparams, backend):
     """
     Equivalent to sig.bind followed by apply_defaults. This generates a
@@ -446,7 +455,7 @@ def dynamic_func({", ".join(list(map(arg, sig.parameters.items())) + ["**options
         if param.default is not inspect.Parameter.empty
     }
 
-    specialize_impl = native_specialize_impl
+    specialize_impl = _specialize_xpu_argument if backend.binary_ext == "xpubin" else native_specialize_impl
     func_namespace["specialize_impl"] = specialize_impl
     func_namespace["backend"] = backend
     func_namespace["JITCallable"] = JITCallable
