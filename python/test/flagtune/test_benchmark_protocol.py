@@ -1,4 +1,3 @@
-import contextlib
 import inspect
 import sys
 from types import SimpleNamespace
@@ -7,7 +6,6 @@ import pytest
 import triton.testing as triton_testing
 
 from triton.flagtune.runtime import benchmark_protocol as benchmark_module
-from triton.flagtune.runtime import graph_benchmark as graph_benchmark_module
 from triton.testing import do_bench_cudagraph
 
 
@@ -103,7 +101,7 @@ def test_cudagraph_helper_waits_for_caller_stream(use_default_stream):
         (
             "triton.backends.hcu.driver",
             "hip",
-            "triton_hcu_graph_calibrated_currentstream_adaptivewarmup_v5",
+            "triton_hcu_graph_replay_v1",
         ),
     ],
 )
@@ -111,8 +109,6 @@ def test_replay_splits_total_measurement_budget(monkeypatch, module_name, backen
     active = _driver_for(module_name, backend)
     monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
     monkeypatch.setattr(triton_testing, "do_bench_cudagraph", active.replay_benchmark)
-    if module_name == "triton.backends.hcu.driver":
-        monkeypatch.setattr(graph_benchmark_module, "do_bench_hcu_graph", active.replay_benchmark)
     launches = []
 
     resolved = benchmark_module.resolve_benchmarker(
@@ -125,14 +121,11 @@ def test_replay_splits_total_measurement_budget(monkeypatch, module_name, backen
 
     assert result == [1.0, 0.8, 1.2]
     assert launches == [True]
-    expected_observed = {
+    assert active.observed == {
         "rep": 10.0,
         "quantiles": (0.5, 0.2, 0.8),
         "n_retries": 10,
     }
-    if module_name == "triton.backends.hcu.driver":
-        expected_observed.update(warmup_ms=25, device_interface=active.device_interface)
-    assert active.observed == expected_observed
     assert resolved.protocol.as_dict() == {
         "requested_mode": "replay",
         "resolved_mode": "replay",
@@ -388,301 +381,3 @@ def test_replay_rejects_invalid_retry_count(monkeypatch, n_retries):
             measurement_ms=20,
             n_retries=n_retries,
         )
-
-
-class _HcuModelStream:
-
-    def __init__(self, api, name):
-        self.api, self.name = api, name
-        self.dependencies = set()
-
-    def wait_stream(self, other):
-        self.dependencies.update({other, *other.dependencies})
-        self.api.waits.append((self, other))
-
-
-class _HcuTimingModel:
-
-    def __init__(self, gpu_ms, host_ms, *, use_default_stream=True):
-        self.gpu_ms, self.host_ms = gpu_ms, host_ms
-        self.time, self.capture, self.calls, self.lengths = 0., None, 0, []
-        self.default = _HcuModelStream(self, "default")
-        self.caller = self.default if use_default_stream else _HcuModelStream(self, "existing_caller")
-        self.active = self.caller
-        self.stream_constructions, self.waits, self.callback_streams = 0, [], []
-        self.incoming_observations = 0
-
-    def current_stream(self):
-        return self.active
-
-    def Stream(self):
-        self.stream_constructions += 1
-        return _HcuModelStream(self, f"side_{self.stream_constructions}")
-
-    @contextlib.contextmanager
-    def stream(self, stream):
-        assert stream.api is self
-        previous, self.active = self.active, stream
-        try:
-            yield
-        finally:
-            self.active = previous
-
-    def synchronize(self):
-        pass
-
-    def _assert_incoming_dependency(self):
-        # Same-stream issue order already preserves incoming caller work. A new
-        # side stream instead requires a dependency on that particular caller.
-        assert self.active is self.caller or self.caller in self.active.dependencies, (
-            "incoming producer stream dependency must precede callbacks")
-
-    def fn(self):
-        self._assert_incoming_dependency()
-        self.incoming_observations += 1
-        self.callback_streams.append(self.active)
-        self.calls += 1
-        if self.capture is not None:
-            self.capture.n += 1
-        else:
-            self.time += self.gpu_ms + self.host_ms
-
-    def Event(self, **kwargs):
-        api = self
-
-        class E:
-
-            def record(self):
-                self.time = api.time
-
-            def elapsed_time(self, other):
-                return other.time - self.time
-
-        return E()
-
-    def CUDAGraph(self):
-        api = self
-
-        class G:
-            n = 0
-
-            def replay(self):
-                api._assert_incoming_dependency()
-                api.time += self.n * api.gpu_ms + .008
-
-        return G()
-
-    @contextlib.contextmanager
-    def graph(self, graph):
-        assert self.capture is None
-        self.capture = graph
-        try:
-            yield
-        finally:
-            self.lengths.append(graph.n)
-            self.capture = None
-
-
-@pytest.mark.parametrize("device_ms,host_ms", [(0.006, 0.3), (0.006, 0.03), (0.0072, 0.03), (2.0, 0.3)])
-def test_hcu_graph_calibration_excludes_python_submission_gaps(device_ms, host_ms):
-    api = _HcuTimingModel(device_ms, host_ms)
-    result = graph_benchmark_module.do_bench_hcu_graph(
-        api.fn,
-        rep=1.,
-        quantiles=(0.5, 0.2, 0.8),
-        n_retries=2,
-        device_interface=api,
-    )[0]
-    assert abs(result / device_ms - 1.) < 0.025
-    if device_ms < 0.01:
-        assert api.lengths[-1] >= 80
-
-
-def test_hcu_graph_ranking_survives_tenfold_difference_in_host_overhead():
-    measured = []
-    for device_ms, host_ms in [(0.006, 0.3), (0.0072, 0.03)]:
-        api = _HcuTimingModel(device_ms, host_ms)
-        measured.append(
-            graph_benchmark_module.do_bench_hcu_graph(
-                api.fn,
-                rep=1.,
-                quantiles=(0.5, 0.2, 0.8),
-                n_retries=2,
-                device_interface=api,
-            )[0])
-    assert measured[0] < measured[1]
-
-
-def test_hcu_graph_calibration_bounds_finite_near_zero_timings(monkeypatch):
-    api = _HcuTimingModel(0.006, 0.3)
-    monkeypatch.setattr(graph_benchmark_module, "_HCU_MAX_GRAPH_CALLS", 64)
-    original = graph_benchmark_module._capture_hcu_graph_duration
-
-    def near_zero_pilot(fn, count, interface):
-        assert 0 < count <= 64
-        graph, _ = original(fn, count, interface)
-        return graph, 1e-300
-
-    monkeypatch.setattr(graph_benchmark_module, "_capture_hcu_graph_duration", near_zero_pilot)
-    result = graph_benchmark_module.do_bench_hcu_graph(
-        api.fn,
-        rep=1.,
-        n_retries=2,
-        device_interface=api,
-    )
-    assert result > 0
-    assert api.lengths[-1] == 64
-
-
-@pytest.mark.parametrize("use_default_stream", [False, True])
-def test_hcu_graph_preserves_incoming_work_on_current_caller(use_default_stream):
-    api = _HcuTimingModel(0.006, 0.03, use_default_stream=use_default_stream)
-    caller = api.current_stream()
-    result = graph_benchmark_module.do_bench_hcu_graph(
-        api.fn,
-        rep=1.,
-        n_retries=2,
-        device_interface=api,
-    )
-    assert result > 0
-    assert api.incoming_observations == api.calls > 0
-    assert api.current_stream() is caller
-
-
-@pytest.mark.parametrize("use_default_stream", [False, True])
-def test_hcu_timing_model_rejects_unordered_side_stream(use_default_stream):
-    api = _HcuTimingModel(0.006, 0.03, use_default_stream=use_default_stream)
-    caller, side = api.current_stream(), api.Stream()
-    with api.stream(side):
-        with pytest.raises(AssertionError, match="incoming producer stream dependency"):
-            api.fn()
-        side.wait_stream(caller)
-        api.fn()
-    assert api.current_stream() is caller
-    assert api.calls == api.incoming_observations == 1
-
-
-@pytest.mark.parametrize("use_default_stream", [False, True])
-def test_hcu_graph_repeated_calls_reuse_current_stream(use_default_stream):
-    # Actual runlist oversubscription motivated this resource regression. This
-    # CPU model counts explicit helper Stream() requests, not HIP queue count;
-    # the graph API's internal capture-stream behavior is deliberately unchanged.
-    api = _HcuTimingModel(0.006, 0.03, use_default_stream=use_default_stream)
-    caller, initial = api.current_stream(), api.stream_constructions
-    for _ in range(6):
-        graph_benchmark_module.do_bench_hcu_graph(
-            api.fn,
-            rep=1.,
-            n_retries=2,
-            device_interface=api,
-        )
-    assert api.stream_constructions == initial
-    assert all(stream is caller for stream in api.callback_streams)
-    assert api.current_stream() is caller
-
-
-@pytest.mark.parametrize("measurement_ms", [10, 50])
-def test_hcu_currentstream_protocol_isolates_legacy_selection_and_timing_cache(monkeypatch, measurement_ms):
-    """MM/splitK and MV must not reuse side-stream-era cache identities."""
-    import hashlib
-    from dataclasses import replace
-
-    active = _driver_for("triton.backends.hcu.driver", "hip")
-    monkeypatch.setattr(benchmark_module, "driver", SimpleNamespace(active=active))
-    monkeypatch.setattr(graph_benchmark_module, "do_bench_hcu_graph", active.replay_benchmark)
-    resolved = benchmark_module.resolve_benchmarker(
-        "replay",
-        warmup_ms=5,
-        measurement_ms=measurement_ms,
-        n_retries=10,
-    )
-    protocol = resolved.protocol
-    current = protocol.cache_key()
-    legacy = replace(protocol, implementation="triton_hcu_graph_calibrated_v2").cache_key()
-    assert current == ("triton_hcu_graph_calibrated_currentstream_adaptivewarmup_v5", 5, measurement_ms, 10,
-                       measurement_ms / 10.0)
-    assert current[1:] == legacy[1:]
-
-    # ConfigCache namespaces hash the complete protocol; BenchmarkCache keys
-    # append it to the shape/dtype. Exercise both consumer key forms without
-    # importing FlagGems or requiring a device or a persistent database.
-    selection_suffix = lambda key: hashlib.sha256(repr(tuple(key)).encode("utf-8")).hexdigest()[:12]
-    shape_dtype = (224, 256, 2048, "torch.bfloat16")
-    selected_cache = {selection_suffix(legacy): "legacy-best-config"}
-    timing_cache = {shape_dtype + legacy: (8.0, 7.9, 8.1)}
-    assert selected_cache.get(selection_suffix(current)) is None
-    assert timing_cache.get(shape_dtype + current) is None
-    selected_cache[selection_suffix(current)] = "current-best-config"
-    timing_cache[shape_dtype + current] = (7.8, 7.7, 7.9)
-    assert selected_cache[selection_suffix(legacy)] == "legacy-best-config"
-    assert timing_cache[shape_dtype + legacy] == (8.0, 7.9, 8.1)
-
-    calls = []
-    resolved.benchmark(lambda: calls.append(True), (0.5, 0.2, 0.8))
-    assert calls == [True]
-    assert active.observed == dict(rep=measurement_ms / 10.0, quantiles=(0.5, 0.2, 0.8), n_retries=10, warmup_ms=5,
-                                   device_interface=active.device_interface)
-
-
-# Warmup follows completed device work rather than host submission speed.
-
-
-class AsyncClock:
-    """Submission is free; only device synchronization advances the clock."""
-
-    def __init__(self, seconds_per_launch):
-        self.now = 0.0
-        self.seconds_per_launch = seconds_per_launch
-        self.pending = 0
-        self.batches = []
-
-    def launch(self):
-        self.pending += 1
-
-    def synchronize(self):
-        self.batches.append(self.pending)
-        self.now += self.pending * self.seconds_per_launch
-        self.pending = 0
-
-
-@pytest.mark.parametrize("seconds_per_launch", [0.001, 0.5, 1.7])
-def test_warmup_sizes_batches_from_completed_device_work(monkeypatch, seconds_per_launch):
-    clock = AsyncClock(seconds_per_launch)
-    monkeypatch.setattr(graph_benchmark_module, "time", SimpleNamespace(perf_counter=lambda: clock.now))
-    graph_benchmark_module._timed_warmup(clock.launch, 5, clock)
-
-    assert clock.batches[:2] == [0, 1]
-    assert clock.pending == 0
-    assert clock.now >= 0.005
-    assert clock.now <= max(0.005, seconds_per_launch) + 1e-12
-    if seconds_per_launch > 0.005:
-        assert clock.batches == [0, 1]
-
-
-def test_fast_warmup_batches_launches_and_reaches_requested_duration(monkeypatch):
-    clock = AsyncClock(0.00002)
-    monkeypatch.setattr(graph_benchmark_module, "time", SimpleNamespace(perf_counter=lambda: clock.now))
-    graph_benchmark_module._timed_warmup(clock.launch, 5, clock)
-
-    assert clock.pending == 0
-    assert 0.005 <= clock.now <= 0.005 + max(clock.batches) * clock.seconds_per_launch
-    assert any(batch > 1 for batch in clock.batches)
-
-
-def test_zero_warmup_does_not_launch_or_synchronize():
-    clock = AsyncClock(1.0)
-    graph_benchmark_module._timed_warmup(clock.launch, 0, clock)
-    assert clock.batches == []
-    assert clock.pending == 0
-
-
-def test_warmup_propagates_launch_failure(monkeypatch):
-    clock = AsyncClock(0.001)
-    monkeypatch.setattr(graph_benchmark_module, "time", SimpleNamespace(perf_counter=lambda: clock.now))
-
-    def launch():
-        raise RuntimeError("device launch failed")
-
-    with pytest.raises(RuntimeError, match="device launch failed"):
-        graph_benchmark_module._timed_warmup(launch, 5, clock)
-    assert clock.batches == [0]
