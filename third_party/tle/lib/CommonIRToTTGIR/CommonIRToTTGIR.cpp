@@ -396,6 +396,15 @@ static LogicalResult convertBufferViewsAndLoops(
 
         OpBuilder builder(op);
         auto sourceType = cast<ttg::MemDescType>((*source).getType());
+        // A subslice and a slot of a subslice use the backing allocation's
+        // strides. A slot of an unsliced buffer uses its compact shape.
+        if (sourceType.getRank() == resultType->getRank() ||
+            sourceType.getAllocShape() != sourceType.getShape()) {
+          *resultType = ttg::MemDescType::get(
+              resultType->getShape(), resultType->getElementType(),
+              resultType->getEncoding(), resultType->getMemorySpace(),
+              resultType->getMutableMemory(), sourceType.getAllocShape());
+        }
         if (op.getOffsets().size() != sourceType.getRank() ||
             op.getSizes().size() != resultType->getRank() ||
             op.getStrides().size() != resultType->getRank()) {
