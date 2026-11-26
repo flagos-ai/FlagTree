@@ -7,6 +7,7 @@ add_triton_library(TleCommonIRToTTGIR
   LINK_LIBS PUBLIC
   MLIRArithDialect
   MLIRSCFDialect
+  MLIRTransformUtils
   CommonIRIR
   TritonIR
   TritonGPUIR

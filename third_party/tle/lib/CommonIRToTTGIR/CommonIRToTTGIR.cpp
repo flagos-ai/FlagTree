@@ -8,6 +8,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 
@@ -26,6 +27,14 @@ namespace {
 
 namespace tile = mlir::triton::tile;
 namespace ttg = mlir::triton::gpu;
+
+struct TileAllocInlinerInterface final : public DialectInlinerInterface {
+  using DialectInlinerInterface::DialectInlinerInterface;
+
+  bool isLegalToInline(Operation *op, Region *, bool, IRMapping &) const final {
+    return isa<tile::AllocOp>(op);
+  }
+};
 
 static FailureOr<ttg::MemDescType> getMemDescType(Operation *op,
                                                   tile::BufType bufferType) {
@@ -675,6 +684,15 @@ class CommonIRToTTGIRPass
     : public impl::TleCommonIRToTTGIRBase<CommonIRToTTGIRPass> {
 public:
   using TleCommonIRToTTGIRBase::TleCommonIRToTTGIRBase;
+
+  void getDependentDialects(DialectRegistry &registry) const override {
+    TleCommonIRToTTGIRBase::getDependentDialects(registry);
+    // Let the preceding inliner expose allocations returned by Triton helpers.
+    registry.addExtension(+[](MLIRContext *, tile::CommonIRDialect *dialect) {
+      if (!dialect->getRegisteredInterface<DialectInlinerInterface>())
+        dialect->addInterfaces<TileAllocInlinerInterface>();
+    });
+  }
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
