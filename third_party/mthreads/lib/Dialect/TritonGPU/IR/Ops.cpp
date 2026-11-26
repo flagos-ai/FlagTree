@@ -949,7 +949,7 @@ LogicalResult TMACopyOp::verify() {
 
   auto descTy = globalToLocal ? srcDescTy : dstDescTy;
   auto memDescTy = globalToLocal ? dstMemDescTy : srcMemDescTy;
-  auto blockTy = descTy.getBlockType();
+  auto blockTy = descTy.getSignlessBlockType();
   if (getIndices().size() != static_cast<size_t>(blockTy.getRank())) {
     return emitOpError("expects ")
            << blockTy.getRank() << " indices, got " << getIndices().size();

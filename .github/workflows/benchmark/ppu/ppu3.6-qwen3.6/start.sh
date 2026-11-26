@@ -29,6 +29,7 @@ echo "[INFO] vLLM $(python3 -m pip show vllm |grep Version)"
 echo "[INFO] vllm-plugin-fl $(python3 -m pip show vllm-plugin-FL |grep Version)"
 echo "[INFO] Torch $(python3 -m pip show torch |grep Version)"
 echo "[INFO] FlagGems $(python3 -m pip show flag_gems |grep Version)"
+echo "[INFO] FlagGems-vllm $(python3 -m pip show flaggems_vllm |grep Version)"
 echo "[INFO] FlagTree $(python3 -m pip show flagtree |grep Version)"
 
 PID_FILE="pid.txt"
@@ -47,6 +48,7 @@ if [[ -f "$PID_FILE" ]]; then
     fi
 fi
 bash "${SCRIPT_DIR}/clear_fuser_process.sh"
+rm -f /dev/shm/* 2>/dev/null || true
 
 start=$(date +%s)
 
@@ -59,8 +61,9 @@ nohup vllm serve ./Qwen3.6-27B/  \
     --max-model-len 32768 \
     --trust-remote-code \
     --limit-mm-per-prompt '{"image": 1}' \
-    --gpu-memory-utilization 0.65 \
-    --dtype bfloat16 2>&1 >vllm.log &
+    --max-num-seqs 256 \
+    --gpu-memory-utilization 0.8 \
+    --dtype bfloat16 >vllm.log 2>&1 &
 echo "$!" >pid.txt
 
 PID_FILE="pid.txt"

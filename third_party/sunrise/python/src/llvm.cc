@@ -20,6 +20,7 @@
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Passes/StandardInstrumentations.h"
 #include "llvm/Support/CodeGen.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
@@ -415,6 +416,19 @@ std::string translateLLVMIRToASM(llvm::Module &module,
 using ret = py::return_value_policy;
 
 void init_triton_llvm(py::module &&m) {
+  // Install a custom LLVM fatal error handler so that report_fatal_error()
+  // throws a C++ exception instead of calling exit(1).  pybind11 translates
+  // std::runtime_error into Python RuntimeError, allowing callers (e.g.
+  // llvm.translate_to_asm) to catch the error in Python.
+  static bool handler_installed = false;
+  if (!handler_installed) {
+    llvm::install_fatal_error_handler(
+        [](void * /*user_data*/, const char *reason, bool /*gen_crash_diag*/) {
+          throw std::runtime_error(reason);
+        },
+        nullptr);
+    handler_installed = true;
+  }
 
   py::class_<llvm::LLVMContext>(m, "context", py::module_local())
       .def(py::init<>());

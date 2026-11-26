@@ -978,7 +978,11 @@ unsigned ReduceOpHelper::getXPUScratchSizeInBytes() {
     bytesPerElem +=
         ceil<unsigned>(getElementTypeOrSelf(ty).getIntOrFloatBitWidth(), 8);
   }
-  return bytesPerElem * elems;
+  // ReduceOpToLLVM::getSmemBases places one persistent loop-result-cache slot
+  // per operand just past the partials when the reduce carries a loopIndex;
+  // count it so later buffers cannot overlap the cache.
+  unsigned cacheSlots = xpu_op.getLoopIndex() ? 1 : 0;
+  return bytesPerElem * (elems + cacheSlots);
 }
 
 } // namespace mlir

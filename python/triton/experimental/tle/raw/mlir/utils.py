@@ -24,8 +24,10 @@ import base64
 from hashlib import blake2s
 import inspect
 import os
+import re
 from typing import TYPE_CHECKING, Any, Final, List
 from typing_extensions import override
+from triton.runtime.driver import driver
 
 from mlir import ir
 from mlir.dialects import arith, func, llvm, scf
@@ -93,8 +95,75 @@ class VPrintf(ExternalCall):
         return func.call([ir.IntegerType.get_signless(32)], ir.FlatSymbolRefAttr.get(funcop.name.value), [fptr, alloca])
 
 
-def vprintf(*args) -> VPrintf:
-    return VPrintf(args)
+def _is_hip_target() -> bool:
+    forced = os.environ.get("TLE_RAW_PRINTF")  # "ockl" | "vprintf"
+    if forced:
+        return forced == "ockl"
+    return driver.active.get_current_target().backend == "hip"
+
+
+def _to_i64(val):
+    i64 = ir.IntegerType.get_signless(64)
+    f64 = ir.F64Type.get()
+    s = str(val.type)
+    if m := re.fullmatch(r"i(\d+)", s):
+        return val if int(m.group(1)) == 64 else arith.extui(i64, val)
+    if s == "f64":
+        return arith.bitcast(i64, val)
+    if s in ("f32", "f16", "bf16"):
+        return arith.bitcast(i64, arith.extf(f64, val))
+    if s == "index":
+        return arith.index_cast(i64, val)
+    if s.startswith("!llvm.ptr"):
+        return llvm.ptrtoint(i64, val)
+    raise NotImplementedError(f"vprintf: unsupported argument type {s}")
+
+
+class AMDGPUPrintf(ExternalCall):
+    """HIP device printf through the ROCm-Device-Libs hostcall (ockl)."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__("__ockl_printf_begin", *args, **kwargs)
+
+    def build(self) -> func.FuncOp:
+        i64 = ir.IntegerType.get_signless(64)
+        return func.FuncOp(self.keyword, ir.FunctionType.get([i64], [i64]), visibility="private")
+
+    @staticmethod
+    def _decl(codegen, name, ins, outs):
+        with ir.InsertionPoint.at_block_begin(codegen.module.body):
+            fn = codegen.decls.get(name) or func.FuncOp(name, ir.FunctionType.get(ins, outs), visibility="private")
+            codegen.decls[name] = fn
+        return fn
+
+    def call(self, codegen):
+        fmt, *args = self.args
+        i32, i64 = ir.IntegerType.get_signless(32), ir.IntegerType.get_signless(64)
+        ptr = ir.Type.parse("!llvm.ptr")
+        begin = self._decl(codegen, "__ockl_printf_begin", [i64], [i64])
+        s_app = self._decl(codegen, "__ockl_printf_append_string_n", [i64, ptr, i64, i32], [i64])
+        a_app = self._decl(codegen, "__ockl_printf_append_args", [i64, i32, *[i64] * 7, i32], [i64])
+        sym = lambda f: ir.FlatSymbolRefAttr.get(f.name.value)
+        c = lambda t, v: arith.constant(t, v)
+
+        fmt_z = fmt + "\0"  # hostcall needs the NUL terminator
+        g = self.global_string(fmt_z, codegen)
+        fptr = llvm.AddressOfOp(ptr, g.sym_name.value)
+
+        vals = [_to_i64(a) for a in args]
+        desc = func.call([i64], sym(begin), [c(i64, 0)])
+        desc = func.call([i64], sym(s_app), [desc, fptr, c(i64, len(fmt_z.encode())), c(i32, 0 if vals else 1)])
+        zero = c(i64, 0)
+        for off in range(0, len(vals), 7):
+            chunk = vals[off:off + 7]
+            pad = [zero] * (7 - len(chunk))
+            last = int(off + 7 >= len(vals))
+            desc = func.call([i64], sym(a_app), [desc, c(i32, len(chunk)), *chunk, *pad, c(i32, last)])
+        return desc
+
+
+def vprintf(*args):
+    return AMDGPUPrintf(args) if _is_hip_target() else VPrintf(args)
 
 
 class Assert(ExternalCall):

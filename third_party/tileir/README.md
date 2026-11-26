@@ -91,9 +91,13 @@ result is:
 ```text
 non-`cuda` Triton target                      -> unchanged
 `cuda` target, Triton kernel uses no TLE      -> TileIR
-`cuda` target, supported top-level `tle` subset only -> TileIR
+`cuda` target, only TileIR tle_supported TLE  -> TileIR
 `cuda` target, other or unknown TLE usage     -> native NVIDIA
 ```
+
+`is_tle_supported` / `require_tle` take the list of TLE primitives a kernel
+uses, pick the backend that list routes to by the same rules, and check it
+against that backend's `backend/tle_supported.py` whitelist.
 
 For routing diagnostics:
 
@@ -138,7 +142,8 @@ files and adds 4 files:
   supported top-level TLE API set.
 - **TLE frontend:** Added `backend/extend_core.py` and
   `backend/extend_semantic.py`; `CudaTileSemantic` extends `TritonSemantic` with
-  the view/token operations exposed as `tle.<name>` through `tl.ext`. Modified
+  memory-token operations: view-based load/store, pointer-based load/store,
+  and pointer-based atomics, exposed as `tle.<name>` through `tl.ext`. Modified
   `backend/code_generator.py` to use it for TileIR kernels and
   `triton_tileir.cc` to expose the corresponding C++ builder methods.
 - **Release builds:** Modified `lib/TritonToTileIR/Utils.cpp` so its unsupported

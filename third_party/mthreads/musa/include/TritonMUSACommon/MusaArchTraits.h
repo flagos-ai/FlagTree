@@ -45,6 +45,14 @@ struct MusaWmmaArchTraits {
   unsigned waveSize;
   bool supportsNativeFp8Wmma;
   bool supportsContiguousRank2FastPath;
+  // PH1/PH1S distribute WMMA fragments over independent wave32 warp axes and
+  // therefore require an exact per-warp M/N partition for ordinary operands.
+  // QY2 uses a separate wave128/multi-wave layout contract.
+  bool requiresExactWarpPartition;
+  // F32 + TF32 has an explicit legacy excess-warp contract.  Keep this
+  // separate from ordinary low-precision admission; the layout clamp used by
+  // that contract must not become a general WMMA fallback.
+  bool supportsTf32Overcoverage;
   llvm::ArrayRef<MusaWmmaInstrShapeGroup> instrShapeGroups;
 };
 
@@ -65,8 +73,16 @@ inline constexpr MusaWmmaInstrShapeGroup kWmmaShapeGroupsPH1[] = {
     {32, kWmmaShapesPH1x32}, {16, kWmmaShapesPH1x16}, {8, kWmmaShapesPH1x8}};
 
 inline const MusaWmmaArchTraits kMusaWmmaArchTraits[] = {
-    {MusaArch::QY2, 2, 2, 128, false, false, kWmmaShapeGroupsQY2},
-    {MusaArch::PH1, 3, 1, 32, true, true, kWmmaShapeGroupsPH1},
+    {MusaArch::QY2, /*versionMajor=*/2, /*versionMinor=*/2, /*waveSize=*/128,
+     /*supportsNativeFp8Wmma=*/false,
+     /*supportsContiguousRank2FastPath=*/false,
+     /*requiresExactWarpPartition=*/false,
+     /*supportsTf32Overcoverage=*/false, kWmmaShapeGroupsQY2},
+    {MusaArch::PH1, /*versionMajor=*/3, /*versionMinor=*/1, /*waveSize=*/32,
+     /*supportsNativeFp8Wmma=*/true,
+     /*supportsContiguousRank2FastPath=*/true,
+     /*requiresExactWarpPartition=*/true,
+     /*supportsTf32Overcoverage=*/true, kWmmaShapeGroupsPH1},
 };
 
 } // namespace detail

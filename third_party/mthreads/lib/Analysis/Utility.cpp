@@ -50,6 +50,31 @@ unsigned ReduceOpHelper::getThreadOffsetOnReductionAxis() {
   return offset;
 }
 
+SmallVector<unsigned> ReduceOpHelper::getReductionLaneMasks() {
+  auto linearLayout = toLinearLayout(srcTy);
+  auto kLane = mlir::StringAttr::get(srcEncoding.getContext(), "lane");
+  auto it = linearLayout.getBases().find(kLane);
+  if (it == linearLayout.getBases().end())
+    return {};
+
+  SmallVector<unsigned> masks;
+  for (auto [bit, basis] : llvm::enumerate(it->second)) {
+    if (basis[axis] == 0)
+      continue;
+    bool onlyReductionAxis = true;
+    for (unsigned dim = 0; dim < basis.size(); ++dim) {
+      if (dim != static_cast<unsigned>(axis) && basis[dim] != 0) {
+        onlyReductionAxis = false;
+        break;
+      }
+    }
+    if (!onlyReductionAxis)
+      return {};
+    masks.push_back(1u << bit);
+  }
+  return masks;
+}
+
 // Cases where distributed shared memory is not required in ConvertLayout:
 // (1) numCTAs == 1
 // (2) numCTAs > 1 but srcCGALayout == dstCGALayout
@@ -1026,12 +1051,48 @@ bool cvtNeedsWarpShuffle(RankedTensorType srcTy, RankedTensorType dstTy) {
   if (to_vector(layout.getOutDimNames()) ==
       SmallVector<StringAttr, 2>{kRegister, kLane}) {
     auto factors = getWarpLayoutConvertDecomposition(srcTy, dstTy, 32);
+#ifdef __TLE__
+    // Small PH1 SQMMA row slices need only register/lane exchanges. Two
+    // mixed transpositions cost three shuffles for four FP32 values, while
+    // the generic heuristic would materialize a shared-memory round trip.
+    // Keep the existing policy for full tiles, other types, and other ISAs.
+    auto isSqmmaSlice = [](Attribute encoding) {
+      auto slice = dyn_cast<triton::gpu::SliceEncodingAttr>(encoding);
+      return slice &&
+             isa<triton::gpu::MUSASqmmaEncodingAttr>(slice.getParent());
+    };
+    if (srcTy.getRank() == 1 && srcTy.getElementType().isF32() &&
+        (isSqmmaSlice(srcTy.getEncoding()) ||
+         isSqmmaSlice(dstTy.getEncoding())) &&
+        factors.mixedTranspositions.size() == 2 &&
+        factors.pReg.getInDimSize(kRegister) <= 4)
+      return true;
+#endif
     return (factors.mixedTranspositions.size() < 2);
   }
   return false;
 }
 
 bool cvtNeedsSharedMemory(RankedTensorType srcTy, RankedTensorType dstTy) {
+#ifdef __TLE__
+  // Match the native-to-linear identity fast path in MUSA LLVM conversion.
+  // Reserving scratch for an unchanged register mapping wastes shared memory
+  // and can reduce the number of resident CTAs even though no accesses remain.
+  auto hasLinearEncoding = [](Attribute encoding) {
+    while (auto slice =
+               dyn_cast<mlir::triton::gpu::SliceEncodingAttr>(encoding))
+      encoding = slice.getParent();
+    return isa<mlir::triton::gpu::LinearEncodingAttr>(encoding);
+  };
+  if ((hasLinearEncoding(srcTy.getEncoding()) ||
+       hasLinearEncoding(dstTy.getEncoding())) &&
+      srcTy.getElementType() == dstTy.getElementType() &&
+      mlir::triton::gpu::getTotalElemsPerThread(srcTy) ==
+          mlir::triton::gpu::getTotalElemsPerThread(dstTy) &&
+      mlir::triton::gpu::toLinearLayout(srcTy) ==
+          mlir::triton::gpu::toLinearLayout(dstTy))
+    return false;
+#endif
   return !cvtReordersRegisters(srcTy, dstTy) &&
          !cvtNeedsWarpShuffle(srcTy, dstTy);
 }

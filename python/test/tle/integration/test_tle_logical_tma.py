@@ -4,11 +4,10 @@ import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
 
-from triton._flagtree_backend import get_active_backend_name
+from triton._flagtree_backend import FLAGTREE_BACKEND
 
 pytestmark = pytest.mark.skipif(
-    get_active_backend_name() != "nvidia" or not torch.cuda.is_available()
-    or torch.cuda.get_device_capability()[0] != 9,
+    FLAGTREE_BACKEND != "" or not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 9,
     reason="logical TMA and WGMMA require NVIDIA Hopper",
 )
 
@@ -49,7 +48,7 @@ def _logical_tma_gemm_kernel(A, B, C, STAGES: tl.constexpr, POINTER_COPY: tl.con
     tl.store(C + rows[:, None] * 80 + cols[None, :], acc, cols[None, :] < 80)
 
 
-@pytest.mark.require_tle(
+@pytest.mark.skip_if_tle_unsupported(
     "gpu.alloc",
     "gpu.alloc_barrier",
     "gpu.barrier_wait",
@@ -96,7 +95,7 @@ def _logical_initialized_gemm_kernel(C, STAGES: tl.constexpr, PER_STAGE: tl.cons
     tl.store(C + rows[:, None] * 80 + cols[None, :], acc, cols[None, :] < 80)
 
 
-@pytest.mark.require_tle("gpu.alloc", "gpu.buffered_tensor.slot", "gpu.wgmma", "gpu.wgmma_wait")
+@pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.buffered_tensor.slot", "gpu.wgmma", "gpu.wgmma_wait")
 @pytest.mark.parametrize("stages,per_stage", [(0, False), (2, False), (2, True), (3, False), (3, True)])
 def test_logical_alloc_initializer(stages, per_stage):
     c = torch.empty((64, 80), device="cuda", dtype=torch.float32)

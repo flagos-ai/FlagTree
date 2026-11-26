@@ -3,6 +3,7 @@
 #include "TritonMUSAGPUTransforms/Passes.h"
 
 #include "Dialect/MUSATLE/IR/Dialect.h"
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -28,10 +29,9 @@ namespace mlir {
 
 namespace {
 
-constexpr StringLiteral kBarrierGroupAttr = "musa_tle.barrier_group";
-
 namespace ttg = mlir::triton::gpu;
 namespace tle = mlir::triton::tle;
+namespace musa_tle = mlir::triton::musa_tle;
 
 static Value stripConvertLayouts(Value value) {
   Value current = value;
@@ -80,7 +80,8 @@ static std::optional<int64_t> getBarrierGroup(Value memdesc) {
   auto alloc = root.getDefiningOp<ttg::LocalAllocOp>();
   if (!alloc)
     return std::nullopt;
-  auto group = alloc->getAttrOfType<IntegerAttr>(kBarrierGroupAttr);
+  auto group =
+      alloc->getAttrOfType<IntegerAttr>(musa_tle::kMUSATLEBarrierGroupAttr);
   if (!group)
     return std::nullopt;
   return group.getInt();
@@ -282,7 +283,8 @@ class InsertLocalPointerBarriersPass
   void collectTrackedPointers(ModuleOp module) {
     llvm::SmallVector<Value> worklist;
     module.walk([&](triton::musa_tle::LocalPointersOp op) {
-      auto groupAttr = op->getAttrOfType<IntegerAttr>(kBarrierGroupAttr);
+      auto groupAttr =
+          op->getAttrOfType<IntegerAttr>(musa_tle::kMUSATLEBarrierGroupAttr);
       if (!groupAttr)
         return;
       Value ptr = op.getResult();
@@ -378,6 +380,16 @@ class InsertLocalPointerBarriersPass
         // redundant back-to-back barriers for consecutive loads from different
         // tracked groups.
         dirtyGroups.clear();
+      } else if (auto acquire =
+                     dyn_cast<triton::musa_tle::PipeWriterAcquireOp>(&op)) {
+        // Acquiring a writer slot is the reuse edge for its payload fields:
+        // every reader of the previous epoch has released that slot. Do not
+        // carry a local-pointer dirty bit across this protocol boundary and
+        // manufacture a second, partition-local barrier for the same reuse.
+        for (Value field : acquire.getFields()) {
+          if (std::optional<int64_t> group = lookupMemDescGroup(field))
+            dirtyGroups.erase(*group);
+        }
       } else if (auto wait =
                      dyn_cast<triton::musa_tle::PipeReaderWaitOp>(&op)) {
         // A pipe full-barrier wait is the acquire edge for its payload fields.

@@ -32,7 +32,7 @@ void MagicKernelDialect::initialize() {
       mk::UnEqualVV, mk::EqualVV, mk::EqualVS, mk::LessThenVS, mk::BoolEqualVS,
       mk::ReduceMaxOp, mk::ReduceMinOp, mk::ReduceSumOp, mk::DequantOp,
       mk::CumsumOp, mk::RandGenOp, mk::BitcastOp, mk::AddVS, mk::SubVS,
-      mk::MulVS>();
+      mk::MulVS, mk::MaxVS, mk::MinVS>();
 }
 
 //===----------------------------------------------------------------------===//

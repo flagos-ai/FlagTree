@@ -27,6 +27,7 @@ import sys
 from dataclasses import dataclass
 from typing import Type, TypeVar, Union
 from types import ModuleType
+from triton._flagtree_backend import FLAGTREE_BACKEND
 
 from triton._flagtree_spec import spec_path
 
@@ -65,10 +66,9 @@ class Backend:
 
 def _discover_backends() -> dict[str, Backend]:
     backends = dict()
+    # flagtree: FLAGTREE_BACKEND
     active_backend = os.environ.get("FLAGTREE_BACKEND", "")
     if not active_backend:
-        from triton._flagtree_backend import FLAGTREE_BACKEND  # type: ignore
-
         active_backend = FLAGTREE_BACKEND
 
     # Fast path: optionally skip entry point discovery (which can be slow) and
@@ -108,6 +108,7 @@ def _discover_backends() -> dict[str, Backend]:
 backends: dict[str, Backend] = _discover_backends()
 
 
+# flagtree tileir: refactor the implementation of `make_backend`
 def get_backend(target) -> Backend:
     compatible = [backend for backend in backends.values() if backend.compiler.supports_target(target)]
     if len(compatible) != 1:
@@ -116,6 +117,7 @@ def get_backend(target) -> Backend:
     return compatible[0]
 
 
+# flagtree tileir: support routing from `GPUTarget("cuda")` to `GPUTarget("tileir")`
 def route_target(target, jit_fn):
     routes = []
     for name, backend in backends.items():
@@ -131,6 +133,7 @@ def route_target(target, jit_fn):
 _target_drivers = {}
 
 
+# flagtree tileir: Replace `triton.runtime.driver.driver.active`
 def get_driver(target, active_driver):
     driver_cls = get_backend(target).driver
     if isinstance(active_driver, driver_cls):
@@ -140,6 +143,7 @@ def get_driver(target, active_driver):
     return _target_drivers[driver_cls]
 
 
+# flagtree tileir: support language extension
 class _LanguageExtensions:
 
     def __init__(self):

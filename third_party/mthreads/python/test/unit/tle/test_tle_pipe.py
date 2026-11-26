@@ -48,6 +48,56 @@ def _pipe_producer(writer, desc, BLOCK: tl.constexpr, ITERATIONS: tl.constexpr):
 
 
 @triton.jit
+def _constant_expr_pipe_consumer(reader, out, ITERATIONS: tl.constexpr):
+    for iteration in tl.range(0, ITERATIONS + 0, num_stages=1):
+        wait = reader.wait(iteration)
+        tl.store(out + iteration, iteration + tl.where(wait.is_closed, 1000, 0))
+        reader.release(iteration)
+
+
+@triton.jit
+def _constant_expr_pipe_producer(
+    writer,
+    desc,
+    BLOCK: tl.constexpr,
+    ITERATIONS: tl.constexpr,
+):
+    for iteration in tl.range(0, ITERATIONS + 0, num_stages=1):
+        slot = writer.acquire(iteration)
+        tle.gpu.copy(desc, slot.data, (BLOCK, ), (iteration * BLOCK, ))
+        writer.commit(iteration)
+
+
+@triton.jit
+def _constant_expr_pipe_kernel(
+    desc,
+    out,
+    STAGES: tl.constexpr,
+    BLOCK: tl.constexpr,
+    ITERATIONS: tl.constexpr,
+):
+    smem = tle.gpu.alloc(
+        (STAGES, BLOCK),
+        dtype=tl.float16,
+        layout=None,
+        scope=tle.gpu.smem,
+        nv_mma_shared_layout=False,
+    )
+    pipe = tle.pipe(capacity=STAGES, scope="cta", data=smem)
+    tle.gpu.warp_specialize(
+        [
+            (_constant_expr_pipe_consumer, (pipe.reader(), out, ITERATIONS)),
+            (
+                _constant_expr_pipe_producer,
+                (pipe.writer(), desc, BLOCK, ITERATIONS),
+            ),
+        ],
+        worker_num_warps=[4],
+        worker_num_regs=[24],
+    )
+
+
+@triton.jit
 def _pipe_tme_store_consumer(reader, desc, BLOCK: tl.constexpr, ITERATIONS: tl.constexpr):
     for iteration in tl.static_range(0, ITERATIONS):
         wait = reader.wait(iteration)
@@ -2448,6 +2498,67 @@ def _ws_named_partition_worker1_writer_kernel(
 
 
 @triton.jit
+def _ws_implicit_partition_worker1_writer_kernel(
+    half_src_desc,
+    float_src_desc,
+    half_output,
+    float_dst_desc,
+    idle_marker,
+    flags,
+    STAGES: tl.constexpr,
+    ITERATIONS: tl.constexpr,
+    HALF_M: tl.constexpr,
+    HALF_N: tl.constexpr,
+    FLOAT_M: tl.constexpr,
+    FLOAT_N: tl.constexpr,
+):
+    half_smem = tle.gpu.alloc((STAGES, HALF_M, HALF_N), dtype=tl.float16, nv_mma_shared_layout=False)
+    float_smem = tle.gpu.alloc((STAGES, FLOAT_M, FLOAT_N), dtype=tl.float32, nv_mma_shared_layout=False)
+    pipe = tle.pipe(
+        capacity=STAGES,
+        name="ws_implicit_partition_worker1_writer",
+        a=half_smem,
+        b=float_smem,
+    )
+    tle.gpu.warp_specialize(
+        [
+            (
+                _ws_named_partition_default_left_reader,
+                (pipe.reader(), half_output, flags, ITERATIONS, HALF_M, HALF_N),
+            ),
+            (_ws_idle_worker, (idle_marker, float_src_desc)),
+            (
+                _ws_named_partition_writer,
+                (
+                    pipe.writer(),
+                    half_src_desc,
+                    float_src_desc,
+                    STAGES,
+                    ITERATIONS,
+                    HALF_M,
+                    HALF_N,
+                    FLOAT_M,
+                    FLOAT_N,
+                ),
+            ),
+            (
+                _ws_named_partition_right_reader,
+                (
+                    pipe.reader(),
+                    float_dst_desc,
+                    flags + ITERATIONS,
+                    ITERATIONS,
+                    FLOAT_M,
+                    FLOAT_N,
+                ),
+            ),
+        ],
+        worker_num_warps=[1, 4, 4],
+        worker_num_regs=[24, 24, 24],
+    )
+
+
+@triton.jit
 def _ws_named_payload_close_writer(
     writer,
     half_src_desc,
@@ -2877,6 +2988,7 @@ def _compile_invalid_pipeline(
     kind=None,
     desc_type="tensordesc<fp16[128]>",
     signature=None,
+    constant_arithmetic_bounds_path=None,
 ):
     target, backend = mthreads_backend()
     options = backend.parse_options({"num_warps": 16, "num_stages": 1})
@@ -2912,7 +3024,76 @@ def _compile_invalid_pipeline(
     backend.add_stages(compiler_stages, options, Language.TRITON)
     metadata = {}
     module = compiler_stages["ttir"](module, metadata)
+    if constant_arithmetic_bounds_path is not None:
+        # Do this after the Python frontend: a constexpr expression such as
+        # ``ITERATIONS + 0`` is folded before it reaches MLIR and therefore
+        # does not exercise the pipeliner's scalar constant evaluator.
+        loop_header = re.compile(r"^(?P<indent>\s*)scf\.for (?P<iv>%[-\w.$]+) = "
+                                 r"(?P<lb>%[-\w.$]+) to (?P<ub>%[-\w.$]+) step "
+                                 r"(?P<step>%[-\w.$]+)(?P<tail>\s+:\s+(?P<ty>index|i\d+)\s*\{.*)$")
+        rewritten = []
+        rewritten_loops = 0
+        for line in str(module).splitlines():
+            match = loop_header.match(line)
+            if match:
+                arithmetic_bound = f"%constant_arithmetic_ub_{rewritten_loops}"
+                rewritten.append(f"{match['indent']}{arithmetic_bound} = arith.addi "
+                                 f"{match['ub']}, {match['lb']} : {match['ty']}")
+                line = (f"{match['indent']}scf.for {match['iv']} = {match['lb']} "
+                        f"to {arithmetic_bound} step {match['step']}{match['tail']}")
+                rewritten_loops += 1
+            rewritten.append(line)
+        assert rewritten_loops >= 2
+        constant_arithmetic_bounds_path.write_text("\n".join(rewritten))
+        module = ir.parse_mlir_module(str(constant_arithmetic_bounds_path), context)
+        # Parsed modules do not expose the convenience ``context`` property
+        # expected by the backend stage wrapper.  Run the exact front half of
+        # that stage explicitly, through TLE pipe lowering, using the context
+        # that parsed the fixture.
+        pm = ir.pass_manager(context)
+        passes = libtriton.passes
+        mthreads_passes = libtriton.mthreads.passes.ttgpuir
+        passes.ttir.add_convert_to_ttgpuir(
+            pm,
+            "musa:ph1",
+            options.num_warps,
+            options.warp_size,
+            options.num_ctas,
+        )
+        passes.ttgpuir.add_coalesce(pm)
+        passes.ttgpuir.add_f32_dot_tc(pm, True)
+        passes.ttgpuir.add_remove_layout_conversions(pm)
+        passes.ttgpuir.add_optimize_thread_locality(pm)
+        for pass_name in (
+                "add_tle_optimize_local_pointer_async_stores",
+                "add_tle_early_assign_memory_space",
+                "add_tle_select_encodings",
+                "add_tle_lower_exclusive_cumsum",
+                "add_tle_insert_local_pointer_barriers",
+                "add_tle_optimize_local_pointer_loads",
+                "add_tle_optimize_local_pointer_stores",
+                "add_tle_lower_sqmma",
+        ):
+            if hasattr(mthreads_passes, pass_name):
+                getattr(mthreads_passes, pass_name)(pm)
+        mthreads_passes.add_tle_lower_pipe(pm)
+        pm.run(module, "constant_arithmetic_pipe_bounds")
+        return module
     return compiler_stages["ttgir"](module, metadata)
+
+
+def test_mthreads_pipeline_recognizes_constant_arithmetic_loop_bounds(tmp_path):
+    fixture_path = tmp_path / "constant_arithmetic_bounds.ttir"
+    module = _compile_invalid_pipeline(
+        _constant_expr_pipe_kernel,
+        constant_arithmetic_bounds_path=fixture_path,
+    )
+    fixture = fixture_path.read_text()
+    assert fixture.count("arith.addi") >= 2, fixture
+    assert fixture.count("to %constant_arithmetic_ub_") >= 2, fixture
+    ttgir = str(module)
+    assert "ttg.mask" not in ttgir, ttgir
+    assert "musa_tle.pipe." not in ttgir, ttgir
 
 
 def _assert_pipe_lowering_clean(compiled, *, static_ws=False, num_warps=None):
@@ -3401,6 +3582,70 @@ def test_musa_ws_named_reader_worker1_writer_partition_runtime(stages):
         idle_marker.fill_(-1)
         flags.fill_(-1)
         _ws_named_partition_worker1_writer_kernel[(1, )](
+            half_source_desc,
+            float_source_desc,
+            half_output,
+            float_destination_desc,
+            idle_marker,
+            flags,
+            STAGES=stages,
+            ITERATIONS=iterations,
+            HALF_M=half_m,
+            HALF_N=half_n,
+            FLOAT_M=float_m,
+            FLOAT_N=float_n,
+            num_warps=16,
+            num_stages=1,
+        )
+        torch.musa.synchronize()
+        assert torch.equal(half_output, half_source)
+        assert torch.equal(float_output, float_source)
+        assert torch.equal(idle_marker, torch.zeros_like(idle_marker))
+        assert torch.equal(flags, torch.zeros_like(flags))
+
+
+@pytest.mark.parametrize("stages", [1, 2, 3], ids=["stage1", "stage2", "stage3"])
+def test_musa_ws_implicit_readers_use_partition_endpoints_runtime(stages):
+    iterations = 2 * stages + 1
+    half_m, half_n = 16, 32
+    float_m, float_n = 8, 16
+    half_source = torch.arange(iterations * half_m * half_n, dtype=torch.float16,
+                               device="musa").reshape(iterations * half_m, half_n)
+    float_source = torch.arange(iterations * float_m * float_n, dtype=torch.float32,
+                                device="musa").reshape(iterations * float_m, float_n)
+    half_output = torch.empty_like(half_source)
+    float_output = torch.empty_like(float_source)
+    idle_marker = torch.full((1, ), -1, dtype=torch.int32, device="musa")
+    flags = torch.empty((2 * iterations, ), dtype=torch.int32, device="musa")
+    half_source_desc = TensorDescriptor.from_tensor(half_source, [half_m, half_n])
+    float_source_desc = TensorDescriptor.from_tensor(float_source, [float_m, float_n])
+    float_destination_desc = TensorDescriptor.from_tensor(float_output, [float_m, float_n])
+
+    compiled = _ws_implicit_partition_worker1_writer_kernel.warmup(
+        half_source_desc,
+        float_source_desc,
+        half_output,
+        float_destination_desc,
+        idle_marker,
+        flags,
+        STAGES=stages,
+        ITERATIONS=iterations,
+        HALF_M=half_m,
+        HALF_N=half_n,
+        FLOAT_M=float_m,
+        FLOAT_N=float_n,
+        grid=(1, ),
+        num_warps=16,
+        num_stages=1,
+    )
+    _assert_pipe_lowering_clean(compiled, static_ws=True, num_warps=25)
+
+    for _ in range(4):
+        half_output.fill_(float("nan"))
+        float_output.fill_(float("nan"))
+        idle_marker.fill_(-1)
+        flags.fill_(-1)
+        _ws_implicit_partition_worker1_writer_kernel[(1, )](
             half_source_desc,
             float_source_desc,
             half_output,

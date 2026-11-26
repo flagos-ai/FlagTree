@@ -35,9 +35,15 @@
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#if defined(__TLE__) || defined(__ILUVATAR_TLE__)
+#include "triton/Dialect/TritonGPU/IR/ExplicitLayout.h"
+#endif
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include "triton/Tools/LayoutUtils.h"
+#ifdef __TLE__
+#include "tle/dialect/include/Analysis/GatherLayout.h"
+#endif
 
 namespace mlir {
 namespace triton {
@@ -47,14 +53,6 @@ namespace gpu {
 #include "triton/Dialect/TritonGPU/Transforms/Passes.h.inc"
 
 namespace {
-#ifdef __TLE__
-static bool hasTleExplicitResultEncoding(Operation *op) {
-  return llvm::any_of(op->getResults(), [&](OpResult result) {
-    return getTleExplicitResultEncoding(op, result.getResultNumber());
-  });
-}
-#endif
-
 // Change the destination layout of reshape ops allowing reorder when used by a
 // reduction in order to minimize the amount of cross thread communication for
 // the reduction.
@@ -64,12 +62,12 @@ struct OptimizeReshapeLayoutPattern : public OpRewritePattern<ReshapeOp> {
 
   LogicalResult matchAndRewrite(ReshapeOp viewOp,
                                 PatternRewriter &rewriter) const override {
-    if (!viewOp.getAllowReorder())
-      return failure();
-#ifdef __TLE__
-    if (hasTleExplicitResultEncoding(viewOp))
+#if defined(__TLE__) || defined(__ILUVATAR_TLE__)
+    if (hasTleExplicitEncoding(viewOp))
       return failure();
 #endif
+    if (!viewOp.getAllowReorder())
+      return failure();
     std::optional<int> reductionAxis;
     for (Operation *user : viewOp.getResult().getUsers()) {
       if (auto reduceOp = dyn_cast<triton::ReduceOp>(user)) {
@@ -265,11 +263,17 @@ struct OptimizeGatherLayoutPattern : public mlir::OpRewritePattern<GatherOp> {
 
   LogicalResult matchAndRewrite(GatherOp op,
                                 PatternRewriter &rewriter) const override {
+#if defined(__TLE__) || defined(__ILUVATAR_TLE__)
+    if (hasTleExplicitEncoding(op))
+      return failure();
+#endif
     if (op.getEfficientLayout())
       return failure();
 #ifdef __TLE__
-    if (hasTleExplicitResultEncoding(op))
-      return failure();
+    if (tle::hasUniformWarpLocalGather(op)) {
+      rewriter.modifyOpInPlace(op, [&] { op.setEfficientLayout(true); });
+      return success();
+    }
 #endif
     return setOptimizedGatherLayout(op, rewriter);
   }
@@ -322,9 +326,8 @@ class TritonGPUOptimizeThreadLocalityPass
       if (!reduce->hasOneUse())
         return;
       Operation *user = *(reduce->getUsers().begin());
-#ifdef __TLE__
-      if (hasTleExplicitResultEncoding(reduce) ||
-          hasTleExplicitResultEncoding(user))
+#if defined(__TLE__) || defined(__ILUVATAR_TLE__)
+      if (hasTleExplicitEncoding(reduce) || hasTleExplicitEncoding(user))
         return;
 #endif
       if (!user->hasOneUse())

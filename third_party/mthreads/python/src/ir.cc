@@ -829,6 +829,7 @@ void init_triton_ir(py::module &&m) {
           },
           ret::reference)
       //  .def("has_attr", &::FuncOp::hasAttr)
+      .def("finalize", [](FuncOp &self) -> void {})
       .def_property_readonly("type", &FuncOp::getFunctionType)
       .def("reset_type", &FuncOp::setType);
 
@@ -1511,6 +1512,14 @@ void init_triton_ir(py::module &&m) {
              return self.create<LoadOp>(ptrs, cacheModifier, evictionPolicy,
                                         isVolatile);
            })
+      .def("create_load",
+           [](TritonOpBuilder &self, Value &ptrs, CacheModifier cacheModifier,
+              EvictionPolicy evictionPolicy, bool isVolatile,
+              std::optional<std::string> flagtree_hints) -> Value {
+             (void)flagtree_hints;
+             return self.create<LoadOp>(ptrs, cacheModifier, evictionPolicy,
+                                        isVolatile);
+           })
       .def("create_store",
            [](TritonOpBuilder &self, Value &ptrs, Value &value,
               CacheModifier cacheModifier,
@@ -1527,6 +1536,18 @@ void init_triton_ir(py::module &&m) {
                                         cacheModifier, evictionPolicy,
                                         isVolatile);
            })
+      .def("create_tensor_pointer_load",
+           [](TritonOpBuilder &self, Value &ptr,
+              std::vector<int32_t> &boundaryCheck,
+              std::optional<PaddingOption> paddingOption,
+              CacheModifier cacheModifier, EvictionPolicy evictionPolicy,
+              bool isVolatile,
+              std::optional<std::string> flagtree_hints) -> Value {
+             (void)flagtree_hints;
+             return self.create<LoadOp>(ptr, boundaryCheck, paddingOption,
+                                        cacheModifier, evictionPolicy,
+                                        isVolatile);
+           })
       .def("create_tensor_pointer_store",
            [](TritonOpBuilder &self, Value &ptr, Value &val,
               std::vector<int32_t> &boundaryCheck, CacheModifier cacheModifier,
@@ -1538,6 +1559,16 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value &ptrs, Value &mask,
               std::optional<Value> &other, CacheModifier cacheModifier,
               EvictionPolicy evictionPolicy, bool isVolatile) -> Value {
+             return self.create<LoadOp>(ptrs, mask, other.value_or(Value()),
+                                        cacheModifier, evictionPolicy,
+                                        isVolatile);
+           })
+      .def("create_masked_load",
+           [](TritonOpBuilder &self, Value &ptrs, Value &mask,
+              std::optional<Value> &other, CacheModifier cacheModifier,
+              EvictionPolicy evictionPolicy, bool isVolatile,
+              std::optional<std::string> flagtree_hints) -> Value {
+             (void)flagtree_hints;
              return self.create<LoadOp>(ptrs, mask, other.value_or(Value()),
                                         cacheModifier, evictionPolicy,
                                         isVolatile);

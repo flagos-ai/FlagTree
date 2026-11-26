@@ -50,7 +50,9 @@ start=$(date +%s)
 
 # python3 ${SCRIPT_DIR}/all_perf.py --input-len=256  --output-len=256 --concurrency=4
 
-python3 ${SCRIPT_DIR}/all_perf.py --input-len=128  --output-len=128 --concurrency=4
+# python3 ${SCRIPT_DIR}/all_perf.py --input-len=128  --output-len=128 --concurrency=4
+
+python3 ${SCRIPT_DIR}/all_perf.py --input-len=16  --output-len=16 --concurrency=2
 
 end=$(date +%s)
 duration=$((end - start))

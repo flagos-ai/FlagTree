@@ -162,10 +162,10 @@ public:
   }
 
   // Plain callers still get a fully materialized SSA descriptor. WGMMA lowering
-  // should use localizedSmemLoad instead, so the final WGMMA PTX block can
-  // materialize the descriptor immediately before the instruction that consumes
-  // it. That preserves ptxas' canonical descriptor recognition while avoiding a
-  // long-lived SSA descriptor value under high register pressure.
+  // should use localizedSmemLoad instead, so NVGPU-to-LLVM combines its fields
+  // at the consumer as a complete SSA operand. This keeps construction late
+  // without hiding descriptor dataflow in block-local PTX registers during loop
+  // peeling and unrolling.
   Value smemLoad(int a, int b, ConversionPatternRewriter &rewriter,
                  Location loc, bool localizeDescriptor = false) const {
     auto tb = TritonLLVMOpBuilder(loc, rewriter);

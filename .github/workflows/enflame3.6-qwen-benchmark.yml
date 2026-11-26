@@ -67,7 +67,7 @@ jobs:
         run: |
           set -x
           export FLAGTREE_BACKEND=enflame
-          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v --break-system-packages
+          MAX_JOBS=64 python3 -m pip install . --no-build-isolation -v --break-system-packages
 
       - name: Clear cache if ClearCache label present
         if: steps.check_backend.outputs.should_skip != 'true'

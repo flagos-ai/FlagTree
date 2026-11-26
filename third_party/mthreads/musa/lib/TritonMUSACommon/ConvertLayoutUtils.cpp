@@ -23,6 +23,8 @@ static bool isNonSingleCtaMusaSqmmaDotOperand(Attribute layout) {
 }
 
 bool isMusaSqmmaLike(Attribute layout) {
+  while (auto slice = dyn_cast<ttg::SliceEncodingAttr>(layout))
+    layout = slice.getParent();
   return isa<ttg::MUSASqmmaEncodingAttr>(layout);
 }
 
@@ -31,6 +33,21 @@ bool isPlainBlockedLike(Attribute layout) {
 }
 
 bool useMusaReplicatedScratch(Attribute srcLayout, Attribute dstLayout) {
+#ifdef __TLE__
+  // Instruction K does not participate in the accumulator's register/lane
+  // mapping. Do not allocate a replicated shared tile for this identity cast.
+  auto srcMma = dyn_cast<ttg::MUSASqmmaEncodingAttr>(srcLayout);
+  auto dstMma = dyn_cast<ttg::MUSASqmmaEncodingAttr>(dstLayout);
+  if (srcMma && dstMma &&
+      srcMma.getVersionMajor() == dstMma.getVersionMajor() &&
+      srcMma.getVersionMinor() == dstMma.getVersionMinor() &&
+      srcMma.getWarpsPerCTA() == dstMma.getWarpsPerCTA() &&
+      srcMma.getCGALayout() == dstMma.getCGALayout() &&
+      srcMma.getInstrShape().take_front(2) ==
+          dstMma.getInstrShape().take_front(2))
+    return false;
+#endif
+
   return (isMusaSqmmaLike(srcLayout) || isMusaSqmmaLike(dstLayout)) &&
          isa<ttg::MmaEncodingTrait, ttg::BlockedEncodingAttr,
              ttg::SliceEncodingAttr>(srcLayout) &&
@@ -40,7 +57,7 @@ bool useMusaReplicatedScratch(Attribute srcLayout, Attribute dstLayout) {
 
 bool isMusaSqmmaAccumulatorToBlockedLike(Attribute srcLayout,
                                          Attribute dstLayout) {
-  return isa<ttg::MUSASqmmaEncodingAttr>(srcLayout) &&
+  return isMusaSqmmaLike(srcLayout) &&
          isa<ttg::BlockedEncodingAttr, ttg::SliceEncodingAttr>(dstLayout);
 }
 

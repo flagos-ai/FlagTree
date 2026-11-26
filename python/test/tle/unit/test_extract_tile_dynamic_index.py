@@ -37,7 +37,7 @@ def simple_extract_kernel(x_ptr, out_ptr, stride_xb, stride_xm, stride_xn, strid
 # ------------------------------------------------------------
 
 
-@pytest.mark.require_tle("extract_tile")
+@pytest.mark.skip_if_tle_unsupported("extract_tile")
 def test_simple_extract_kernel_cuda():
     if not torch.cuda.is_available():
         pytest.skip("CUDA is not available; skipping Triton CUDA test.")

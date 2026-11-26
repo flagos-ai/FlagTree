@@ -1,12 +1,17 @@
 """Compile and runtime coverage for the MUSA TLE warp-specialize container."""
 
 import re
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
+from triton.experimental.tle.language.gpu.mthreads import (
+    warp_specialize as mthreads_warp_specialize, )
 from triton._C import libtriton
 from triton._C.libtriton import ir
 from triton.backends.compiler import Language
@@ -276,6 +281,9 @@ def _compile_ws_ir(
     signature=None,
     constexprs=None,
     consumer_warps=16,
+    include_late=False,
+    reserved_ids=None,
+    lowering_target=None,
 ):
     target, backend = mthreads_backend()
     options = backend.parse_options({"num_warps": consumer_warps, "num_stages": 1})
@@ -302,6 +310,25 @@ def _compile_ws_ir(
     ttir = module.str_nodebug()
     module = stages["ttgir"](module, metadata)
     ttgir = module.str_nodebug()
+    if include_late:
+        builder = ir.builder(context)
+        if reserved_ids is not None:
+            function = module.get_function(module.get_entry_func_name())
+            for name in ("musa.next_bar_id", "musa.max_bar_id"):
+                function.set_attr(name, builder.get_int32_attr(reserved_ids))
+        pm = ir.pass_manager(context)
+        libtriton.passes.convert.add_scf_to_cf(pm)
+        libtriton.passes.convert.add_index_to_llvmir(pm)
+        libtriton.mthreads.passes.ttgpuir.add_allocate_shared_memory(pm, 31)
+        libtriton.mthreads.passes.ttgpuir.add_mtgpu_to_llvm(pm, 31)
+        libtriton.mthreads.passes.ttgpuir.add_to_llvmir(pm, 31)
+        pm.run(module, "lower_static_ws_to_llvm_cfg")
+        if lowering_target is not None:
+            module.set_attr("ttg.target", builder.get_string_attr(lowering_target))
+        pm = ir.pass_manager(context)
+        libtriton.mthreads.passes.ttgpuir.add_tle_lower_warp_specialize(pm)
+        pm.run(module, "lower_partition_barriers")
+        return ttir, ttgir, module.str_nodebug()
     return ttir, ttgir
 
 
@@ -350,7 +377,25 @@ def test_tle_warp_specialize_multi_worker_barrier_runtime():
 
 def test_tle_warp_specialize_musa_container_contract():
     builder = libtriton.ir.builder
+    expected_capabilities = {
+        "mthreads_tle_pipe_sqmma_version": 2,
+        "mthreads_tle_multifield_pipe_version": 3,
+        "mthreads_tle_one_shot_pipe_version": 1,
+        "mthreads_tle_spmc_pipe_version": 2,
+        "mthreads_tle_dynamic_loops_version": 1,
+        "mthreads_tle_split_m_sqmma_version": 1,
+        "mthreads_tle_split128_sqmma_version": 1,
+        "mthreads_tle_local_barrier_version": 1,
+        "mthreads_tle_persistent_ordered_sqmma_version": 1,
+        "mthreads_tle_dynamic_partition_sync_version": 1,
+        "mthreads_tle_grouped_completion_version": 1,
+        "mthreads_tle_16_warp_persistent_version": 1,
+        "mthreads_tle_fused_pipe_consumer_version": 1,
+    }
+    for capability, minimum in expected_capabilities.items():
+        assert getattr(builder, capability, 0) >= minimum
     for method in (
+            "create_mthreads_local_barrier",
             "create_warp_specialize",
             "create_warp_specialize_partitions",
             "create_warp_yield",
@@ -370,6 +415,20 @@ def test_tle_warp_specialize_musa_container_contract():
         compiled[(1, 1, 1)](out, value, 7)
         torch.musa.synchronize()
         torch.testing.assert_close(out.cpu(), torch.tensor([value + 1, value + 7, value + 8], dtype=torch.int32))
+
+
+def test_tle_warp_specialize_keeps_old_builder_call_compatible():
+
+    class OldBuilder:
+
+        def create_warp_specialize(self, result_types, worker_num_warps):
+            return result_types, worker_num_warps
+
+    builder = OldBuilder()
+    assert mthreads_warp_specialize.create_op(builder, ["result"], [4]) == (
+        ["result"],
+        [4],
+    )
 
 
 @pytest.mark.parametrize(
@@ -564,7 +623,7 @@ def test_tle_warp_specialize_dialect_rejects_invalid_structure(tmp_path, capfd, 
 
 
 @triton.jit
-def _ws_cta_barrier_idle_role():
+def _ws_implicit_tme_idle_role():
     pass
 
 
@@ -575,27 +634,29 @@ def _ws_implicit_tme_role(desc):
 
 
 @triton.jit
-def _ws_cta_barrier_probe(desc, MODE: tl.constexpr):
+def _ws_implicit_tme_barrier_probe(desc, MODE: tl.constexpr):
     if MODE == 0:
-        tle.gpu.warp_specialize([(_ws_implicit_tme_role, (desc, )), (_ws_cta_barrier_idle_role, ())], [4], [24])
+        tle.gpu.warp_specialize([(_ws_implicit_tme_role, (desc, )), (_ws_implicit_tme_idle_role, ())], [4], [24])
     elif MODE == 1:
-        tle.gpu.warp_specialize([(_ws_cta_barrier_idle_role, ()), (_ws_implicit_tme_role, (desc, ))], [4], [24])
+        tle.gpu.warp_specialize([(_ws_implicit_tme_idle_role, ()), (_ws_implicit_tme_role, (desc, ))], [4], [24])
     else:
         _ws_implicit_tme_role(desc)
-        tle.gpu.warp_specialize([(_ws_cta_barrier_idle_role, ()), (_ws_cta_barrier_idle_role, ())], [4], [24])
+        tle.gpu.warp_specialize([(_ws_implicit_tme_idle_role, ()), (_ws_implicit_tme_idle_role, ())], [4], [24])
 
 
 @pytest.mark.parametrize("mode", [0, 1])
-def test_unknown_cta_barrier_in_partition_rejected(mode, capfd):
-    # Compile only: an unmatched CTA barrier must never be launched.
-    with pytest.raises(RuntimeError):
-        compile_musa(_ws_cta_barrier_probe, {"desc": "tensordesc<fp16[16, 64]>"}, {"MODE": mode})
-    assert "CTA barrier inside MUSA TLE static warp_specialize partition" in capfd.readouterr().err
+def test_implicit_tme_smem_barrier_in_partition_accepted(mode):
+    compiled = compile_musa(_ws_implicit_tme_barrier_probe, {"desc": "tensordesc<fp16[16, 64]>"}, {"MODE": mode})
+    llir = compiled.asm["llir"]
+    assert "call void @llvm.musa.syncthreads.lm()" in llir, llir
+    assert "call void @llvm.musa.barrier0()" not in llir, llir
 
 
-def test_cta_barrier_before_dispatch_preserved():
-    compiled = compile_musa(_ws_cta_barrier_probe, {"desc": "tensordesc<fp16[16, 64]>"}, {"MODE": 2})
-    assert "call void @llvm.musa.barrier0()" in compiled.asm["llir"]
+def test_implicit_tme_smem_barrier_before_dispatch_preserved():
+    compiled = compile_musa(_ws_implicit_tme_barrier_probe, {"desc": "tensordesc<fp16[16, 64]>"}, {"MODE": 2})
+    llir = compiled.asm["llir"]
+    assert "call void @llvm.musa.syncthreads.lm()" in llir, llir
+    assert "call void @llvm.musa.barrier0()" not in llir, llir
 
 
 # Partition synchronization must retain local-memory completion semantics.
@@ -655,3 +716,157 @@ def test_ws_shared_completion_runtime():
         _ws_lma_kernel[(3, )](x, out, iters, num_warps=8)
         torch.musa.synchronize()
         torch.testing.assert_close(out.cpu(), expected, atol=0, rtol=0)
+
+
+@triton.jit
+def _ws_barrier_idle():
+    return
+
+
+@triton.jit
+def _ws_barrier_sequence(out, trips):
+    value = tl.load(out + tl.arange(0, 128))
+    for iteration in range(trips):
+        result = 0
+        for inner in range(iteration % 3 + 1):
+            if (iteration + inner) % 2:
+                result += tl.sum(value + inner, 0)
+            else:
+                result += tl.max(value + inner, 0)
+        tl.store(out + 128 + iteration, result)
+
+
+@triton.jit
+def _ws_barrier_sequence_kernel(out, trips):
+    tle.gpu.warp_specialize([(_ws_barrier_sequence, (out, trips)), (_ws_barrier_idle, ())], worker_num_warps=[1],
+                            worker_num_regs=[24])
+
+
+@pytest.mark.parametrize("reserved_ids, target", [
+    (61, "musa:31"),
+    (61, "musa:ph1"),
+    (62, "musa:22"),
+])
+def test_ws_barrier_reservation_boundary(reserved_ids, target):
+    _compile_ws_ir(_ws_barrier_sequence_kernel, signature={"out": "*i32", "trips": "i32"}, constexprs={},
+                   consumer_warps=4, include_late=True, reserved_ids=reserved_ids, lowering_target=target)
+
+
+@pytest.mark.parametrize("target", ["musa:31", "musa:ph1"])
+def test_ws_paired_barrier_exhaustion(target, capfd):
+    with pytest.raises(RuntimeError):
+        _compile_ws_ir(_ws_barrier_sequence_kernel, signature={"out": "*i32", "trips": "i32"}, constexprs={},
+                       consumer_warps=4, include_late=True, reserved_ids=62, lowering_target=target)
+    diagnostic = capfd.readouterr().err
+    assert "requires 2 barrier slots (2 per synchronization group)" in diagnostic
+    assert "available hardware barrier slots: 1" in diagnostic
+
+
+@triton.jit
+def _ws_late_wait_part(out):
+    value = tl.load(out + tl.arange(0, 128))
+    tl.store(out + 128, tl.sum(value, 0))
+
+
+@triton.jit
+def _ws_late_wait_kernel(out):
+    tle.gpu.warp_specialize([(_ws_late_wait_part, (out, )), (_ws_barrier_idle, ())], worker_num_warps=[1],
+                            worker_num_regs=[24])
+
+
+def _run_late_wait_probe():
+    from triton import knobs
+
+    def hook(*args):
+        if not args:
+            return ("ws-late-wait-regression", "v1")
+        _, stages, _, _, _ = args
+        original = stages["llir"]
+
+        def instrument(source, metadata):
+            llir = original(source, metadata)
+            sites = 0
+
+            def replace(match):
+                nonlocal sites
+                sites += 1
+                if sites == 1:
+                    return (match[1] + "  call void @__ws_delay(ptr addrspace(1) %0)\n" + match[2] +
+                            "\n  call void @__ws_delay(ptr addrspace(1) %0)")
+                return (match[0] + f"\n  call void @__ws_check(i32 {match[3]}, i32 {match[4]}, "
+                        "ptr addrspace(1) %0)")
+
+            llir = re.sub(
+                r"((?:tail )?call void @llvm\.musa\.async\.arrive\.none\.phaseid\(i32 [^)]+\)[^\n]*\n)"
+                r"\s*((?:tail )?call void @llvm\.musa\.async\.wait\(i32 ([^,]+), i32 ([^)]+)\)[^\n]*)", replace, llir)
+            assert sites == 2
+            # Only delay and observe the production lowering. Do not rewrite
+            # its IDs, phases, arrivals, waits, or initialization.
+            llir += """
+declare <2 x i32> @llvm.musa.async.read.bar(i32) convergent
+define internal void @__ws_delay(ptr addrspace(1) %out) alwaysinline convergent {
+entry:
+  %tid = call i32 @llvm.musa.read.ptx.sreg.tid.x()
+  %warp = lshr i32 %tid, 5
+  %slow = icmp eq i32 %warp, 1
+  %index = add i32 %tid, 256
+  %scratch = getelementptr i32, ptr addrspace(1) %out, i32 %index
+  br i1 %slow, label %loop, label %done
+loop:
+  %i = phi i32 [ 0, %entry ], [ %next, %loop ]
+  store volatile i32 %i, ptr addrspace(1) %scratch
+  %next = add i32 %i, 1
+  %more = icmp ult i32 %next, 256
+  br i1 %more, label %loop, label %done
+done:
+  ret void
+}
+define internal void @__ws_check(i32 %bar, i32 %old, ptr addrspace(1) %out) alwaysinline convergent {
+entry:
+  %state = call <2 x i32> @llvm.musa.async.read.bar(i32 %bar)
+  %low = extractelement <2 x i32> %state, i32 0
+  %phase = and i32 %low, 1
+  %incomplete = icmp eq i32 %phase, %old
+  %flag = zext i1 %incomplete to i32
+  %tid = call i32 @llvm.musa.read.ptx.sreg.tid.x()
+  %ptr = getelementptr i32, ptr addrspace(1) %out, i32 %tid
+  store i32 %flag, ptr addrspace(1) %ptr
+  ret void
+}
+"""
+            return llir
+
+        stages["llir"] = instrument
+
+    out = torch.zeros((512, ), dtype=torch.int32, device="musa")
+    with knobs.runtime.scope():
+        knobs.runtime.add_stages_inspection_hook = hook
+        for _ in range(20):
+            out.zero_()
+            _ws_late_wait_kernel[(1, )](out, num_warps=4, num_stages=1, llc_options="-enable-misched=false")
+            assert not out[:128].cpu().any(), "WAIT returned before its phase completed"
+    # The production state must follow dynamic branches and nested loop edges.
+    values = torch.arange(128, dtype=torch.int32)
+    out[:128] = values.to("musa")
+    _ws_barrier_sequence_kernel[(1, )](out, 5, num_warps=4, num_stages=1)
+    expected = []
+    for iteration in range(5):
+        result = 0
+        for inner in range(iteration % 3 + 1):
+            current = values + inner
+            result += int(current.sum() if (iteration + inner) % 2 else current.max())
+        expected.append(result)
+    assert out[128:133].cpu().tolist() == expected
+
+
+@pytest.mark.skipif(not torch.musa.is_available(), reason="MUSA device is not available")
+def test_ws_late_wait_and_nested_loops_runtime(tmp_path):
+    import os
+
+    directory = str(Path(__file__).resolve().parent)
+    command = (f"import sys; sys.path.insert(0, {directory!r}); "
+               "from test_tle_warp_specialize import _run_late_wait_probe; _run_late_wait_probe()")
+    environment = dict(os.environ, TRITON_CACHE_DIR=str(tmp_path / "cache"))
+    result = subprocess.run([sys.executable, "-c", command], env=environment, capture_output=True, text=True,
+                            timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr

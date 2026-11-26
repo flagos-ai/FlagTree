@@ -56,6 +56,5 @@ python run_tests.py
 ## Learn More
 
 See integration examples in `python/test/tle/integration/`:
-- `test_tle_pipeline_e2e.py` - Pipeline usage
 - `test_tle_gemm.py` - GEMM with TLE
 - `test_tle_tma_copy.py` - TMA operations

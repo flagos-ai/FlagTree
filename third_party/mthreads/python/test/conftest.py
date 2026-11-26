@@ -29,11 +29,11 @@ def fresh_triton_cache():
 @pytest.fixture
 def fresh_knobs():
     """
-    Resets all knobs except ``build``, ``nvidia``, and ``amd`` (preserves
+    Resets all knobs except ``build``, ``nvidia``, ``amd``, and ``musa`` (preserves
     library paths needed to compile kernels).
     """
     from triton._internal_testing import _fresh_knobs_impl
-    fresh_function, reset_function = _fresh_knobs_impl(skipped_attr={"build", "nvidia", "amd"})
+    fresh_function, reset_function = _fresh_knobs_impl(skipped_attr={"build", "nvidia", "amd", "musa"})
     try:
         yield fresh_function()
     finally:

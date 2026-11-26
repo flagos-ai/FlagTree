@@ -348,11 +348,17 @@ def TritonTleLowerBarriers
 
   let description = [{
     This pass lowers the public ``tle.gpu`` barrier API IR.  Mbarrier-backed
-    barriers become shared i64 allocations plus ttng init/wait/arrive ops.
+    barriers become region-owned shared i64 allocations plus ttng init/wait/arrive
+    ops. Initialization is published to the participating threads. When control
+    leaves the initialized scope, owned barriers are invalidated between
+    rendezvous before their shared storage can be reused. Caller-provided
+    barriers remain borrowed.
     Named barriers become statically numbered ttng named barrier ops.
   }];
 
   let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::cf::ControlFlowDialect",
+                           "mlir::gpu::GPUDialect",
                            "mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
                            "mlir::triton::tle::TleDialect"];
@@ -364,11 +370,12 @@ def TritonTleAllocateNamedBarriers
 
   let description = [{
     This pass rewrites TLE virtual named barrier ids into physical NVIDIA
-    hardware named barrier ids. TLE frontend ids start at 16 so each user
-    barrier remains distinguishable in IR before this late pass. The pass
-    reserves the barrier ids used by warp-specialization lowering, preserves
-    existing physical ids in the 0..15 range, and assigns virtual ids to free
-    physical ids.
+    hardware named barrier ids. TLE frontend ids start at 16 and are unique
+    within a codegen module, so each user barrier remains distinguishable
+    across outlined helper calls before this late pass. The pass reserves the
+    barrier ids used by warp-specialization lowering across the module,
+    preserves existing physical ids in the 0..15 range, and assigns virtual
+    ids to free physical ids with one module-wide map.
   }];
 
   let dependentDialects = ["mlir::arith::ArithDialect",
@@ -408,8 +415,10 @@ def TritonTleLowerPipeToNvws
   }];
 
   let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::gpu::GPUDialect",
                            "mlir::triton::TritonDialect",
                            "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect",
                            "mlir::triton::nvws::NVWSDialect"];
 }
 
@@ -436,6 +445,38 @@ def TritonTlePlanLogicalDomains
                            "mlir::triton::tle::TleDialect"];
 }
 #endif // __TLE_TILED_SMEM__
+def TritonTleRestorePipeFunctionCalls
+    : Pass<"triton-tle-restore-pipe-function-calls", "mlir::ModuleOp"> {
+  let summary = "restore noinline pipe helper calls after NVWS state materialization";
+
+  let description = [{
+    Pipe analysis temporarily inlines private helpers so each pipe lifecycle
+    operation can be associated with its concrete NVWS control state. After
+    NVWS token lowering has materialized barriers and task metadata, this pass
+    outlines the marked call scopes again. Repeated calls to one specialized
+    helper share one private function and pass the concrete control state as
+    ordinary TTGIR operands.
+  }];
+
+  let dependentDialects = ["mlir::triton::tle::TleDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::gpu::TritonGPUDialect",
+                           "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect"];
+}
+
+def TritonTleSharedOffsetFunctionABI
+    : Pass<"triton-tle-shared-offset-function-abi", "mlir::ModuleOp"> {
+  let summary = "Pass Shared device-function arguments as arena-relative offsets";
+  let description = [{
+    After NVIDIA LLVM lowering, convert Shared pointer leaves of internal
+    device-function arguments to 32-bit offsets from global_smem. Callers
+    encode and callees decode, including nested memdesc structures. Constant
+    call-site offsets no longer keep absolute Shared addresses live from pipe
+    initialization through an entire persistent entry. Returns and external
+    function interfaces retain their existing representation.
+  }];
+  let dependentDialects = ["mlir::LLVM::LLVMDialect"];
+}
 
 def TritonTleLowerExtractTile
     : Pass<"triton-tle-lower-extract-tile", "mlir::ModuleOp"> {

@@ -1,32 +1,14 @@
-GCU300 * 4
+GCU300 * 2
 harbor.baai.ac.cn/flagtree/flagtree-enflame-py312-gcu300-1.9.29-ubuntu24.04:202610-3.6-torch2.11.0-vllm0.24.0
 Driver Version: 1.9.29
 vllm==0.24.0+empty
 torch==2.11.0+cpu
 
-[2026/10/19] vllm-plugin-fl==0.3.0rc2.post1+g3a27a6fb2 (2026/09/25), flag_gems==5.4.0.dev0 (2026/08/20), flagtree===0.7.0+enflame3.6 (2026/09/28)
-# 服务冷启动时间: 17分22秒, 服务热启动时间: 2分10秒
-# 输入长度: 1K, 输出长度: 1K, 并发数: 4
-  Output token throughput (tok/s): 7.97
-  Total token throughput (tok/s): 15.95
-  Median TTFT (ms): 8829.91
-  Median TPOT (ms): 493.35
-  Median ITL (ms): 492.29
-# 输入长度: 512, 输出长度: 512, 并发数: 4
-  Output token throughput (tok/s): 7.92
-  Total token throughput (tok/s): 15.85
-  Median TTFT (ms): 5022.05
-  Median TPOT (ms): 495.59
-  Median ITL (ms): 493.97
-# 输入长度: 256, 输出长度: 256, 并发数: 4
-  Output token throughput (tok/s): 7.91
-  Total token throughput (tok/s): 15.81
-  Median TTFT (ms): 3223.96
-  Median TPOT (ms): 494.77
-  Median ITL (ms): 492.72
-# 输入长度: 128, 输出长度: 128, 并发数: 4
-  Output token throughput (tok/s): 6.91
-  Total token throughput (tok/s): 13.82
-  Median TTFT (ms): 11539.12
-  Median TPOT (ms): 515.88
-  Median ITL (ms): 496.93
+[2026/10/22] vllm-plugin-fl==0.3.0rc2.post1+g3a27a6fb2 (2026/09/25), flag_gems==5.4.0.dev0 (2026/08/20), flagtree===0.7.0+enflame3.6 (2026/09/28)
+# 服务冷启动时间: 15分31秒, 服务热启动时间: 2分20秒
+# 输入长度: 16, 输出长度: 16, 并发数: 2
+  Output token throughput (tok/s): 2.92
+  Total token throughput (tok/s): 5.84
+  Median TTFT (ms): 1434.49
+  Median TPOT (ms): 624.49
+  Median ITL (ms): 616.29

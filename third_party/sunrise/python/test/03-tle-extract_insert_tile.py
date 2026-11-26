@@ -228,7 +228,6 @@ def insert_tile_thin_kernel(x_ptr, y_ptr, out_ptr, M: tl.constexpr, N: tl.conste
 @pytest.mark.parametrize("M,N,TM,TN", [(32, 32, 2, 32), (32, 32, 4, 32)])
 def test_extract_tile_static_nonaligned(M, N, TM, TN):
     """Static index + thin tile -> SMEM relay path (non-aligned)."""
-    torch.manual_seed(3)
     x = torch.arange(M * N, device=DEVICE, dtype=torch.float32).reshape(M, N)
     out = torch.zeros((TM, TN), device=DEVICE, dtype=torch.float32)
 
@@ -242,7 +241,6 @@ def test_extract_tile_static_nonaligned(M, N, TM, TN):
 @pytest.mark.parametrize("M,N,TM,TN", [(32, 32, 2, 32), (32, 32, 4, 32)])
 def test_insert_tile_static_nonaligned(M, N, TM, TN):
     """Static index + thin tile insert -> SMEM relay path (non-aligned)."""
-    torch.manual_seed(4)
     x = torch.arange(M * N, device=DEVICE, dtype=torch.float32).reshape(M, N)
     y = (100000 + torch.arange(TM * TN, device=DEVICE, dtype=torch.float32)).reshape(TM, TN)
     out = torch.empty_like(x)

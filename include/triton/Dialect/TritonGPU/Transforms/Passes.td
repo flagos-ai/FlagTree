@@ -48,6 +48,22 @@ def TritonGPUPipeline : Pass<"tritongpu-pipeline", "mlir::ModuleOp"> {
     Option<"dumpIntermediateSteps", "dump-intermediate-steps",
            "bool", /*default*/"false",
            "Dump intermediate steps">
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+    , Option<"enablePipelineEnhance", "enable-pipeline-enhance",
+             "bool", /*default*/"false",
+             "Enable the FlagTree pipelining fixes (FLAGTREE_PIPELINE_ENHANCE)">,
+    Option<"hoistAsyncCopy", "hoist-async-copy",
+           "bool", /*default*/"false",
+           "Issue the prefetch of the next block before the in-loop "
+           "warp_group_dot_wait {pendings = 0} it does not depend on "
+           "(requires enable-pipeline-enhance)">,
+    Option<"wgmmaCarry", "wgmma-carry",
+           "bool", /*default*/"false",
+           "Keep the loop-carried wgmma accumulator groups in flight across "
+           "the back-edge instead of waiting for them at the end of every "
+           "iteration; tiles with N < 64 or K < 64 bytes are left alone "
+           "(requires enable-pipeline-enhance)">
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   ];
 }
 
@@ -62,8 +78,40 @@ def TritonGPUAssignLatencies : Pass<"tritongpu-assign-latencies", "mlir::ModuleO
   let options = [
     Option<"numStages", "num-stages", "int32_t", /*default*/"3",
            "number of pipeline stages">
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+    , Option<"prefetchIndexLoads", "prefetch-index-loads",
+             "bool", /*default*/"true",
+             "Prefetch the index loads of indirect loads too (the upstream "
+             "rule). When false the index loads stay synchronous and the "
+             "data loads get the whole prefetch depth (num-stages - 1)">
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
   ];
 }
+
+#ifdef __FLAGTREE_PIPELINE_ENHANCE__
+def TritonGPUMergeDuplicateLoads : Pass<"tritongpu-merge-duplicate-loads", "mlir::ModuleOp"> {
+  let summary = "merge loads of a loop that differ only in their layout";
+
+  let description = [{
+    RemoveLayoutConversions re-materializes cheap loads in every layout they
+    are used with, so the same global memory is read several times per
+    iteration and the pipeliner multi-buffers, copies and waits for each copy
+    separately. This FlagTree pass runs after `tritongpu-assign-latencies`
+    and, in every loop body, replaces loads that have equivalent pointers,
+    masks, other values and attributes (and no global store in between) with
+    one load plus layout conversions. The kept load is a pipelined copy when
+    there is one, so the latencies assigned before are preserved.
+  }];
+
+  let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect"];
+
+  let options = [
+    Option<"mode", "mode", "std::string", /*default*/"\"all\"",
+           "all: only merge groups whose copies are all pipelined; "
+           "any: also merge groups that mix pipelined and synchronous copies">
+  ];
+}
+#endif // __FLAGTREE_PIPELINE_ENHANCE__
 
 def TritonGPUScheduleLoops : Pass<"tritongpu-schedule-loops", "mlir::ModuleOp"> {
   let summary = "software pipeline loop scheduling";
@@ -357,7 +405,6 @@ def TritonGPURemoveLayoutConversions : Pass<"tritongpu-remove-layout-conversions
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect"];
-
 #ifdef __FLAGTREE_RLC_ENHANCE__
   let options = [
     Option<"enableRlcEnhance", "enable-rlc-enhance",

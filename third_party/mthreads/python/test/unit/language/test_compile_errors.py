@@ -380,6 +380,10 @@ def test_fp8_support(fresh_triton_cache, dtype):
                                match=r"the use of fp8e4b15 is deprecated on Hopper and later architectures")
         elif is_hip_cdna4():
             ctx = pytest.warns(UserWarning, match=r"AMD gfx942 specific and not supported on gfx950")
+        else:
+            # QY2 accepts the dtype but does not emit the CUDA/HIP-specific
+            # warning used by the shared test.  Still compile it normally.
+            ctx = contextlib.nullcontext()
     elif dtype in supported_dtypes:
         ctx = contextlib.nullcontext()
     else:

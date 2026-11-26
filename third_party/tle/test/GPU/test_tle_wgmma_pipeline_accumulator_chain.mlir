@@ -126,11 +126,11 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
       // CHECK: %[[DOT:.+]] = ttng.warp_group_dot
       %dot = ttng.warp_group_dot %a, %b_view, %acc {inputPrecision = 0 : i32, isAsync = true} : !ttg.memdesc<64x64xbf16, #shared, #smem> * !ttg.memdesc<64x64xbf16, #shared1, #smem> -> tensor<64x64xf32, #mma>
       // CHECK-NEXT: ttng.warp_group_dot_commit
-      // CHECK-NEXT: %[[WAIT1:.+]] = ttng.warp_group_dot_wait %[[DOT]]
+      // CHECK-NEXT: %[[WAIT1:[0-9]+]]:3 = ttng.warp_group_dot_wait %[[DOT]]
       // CHECK-SAME: {pendings = 1 : i32}
       %wait1 = ttng.warp_group_dot_wait %dot {pendings = 1 : i32} : tensor<64x64xf32, #mma>
       // CHECK-NOT: ttng.warp_group_dot_wait
-      // CHECK: scf.yield %[[WAIT1]]
+      // CHECK: scf.yield %[[WAIT1]]#0
       scf.yield %wait1 : tensor<64x64xf32, #mma>
     }
     // CHECK: %[[WAIT0:.+]] = ttng.warp_group_dot_wait %[[RES]]
@@ -590,6 +590,7 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
       %out0: tensor<64x64x!tt.ptr<f32>, #mma>,
       %out1: tensor<64x64x!tt.ptr<f32>, #mma>,
       %idx: i32) {
+    %pipe = tle.pipe.create %slots {capacity = 2 : i32, field_names = ["kv"], pipe_name = "pipe_release_branch", scope = "cta"} : !ttg.memdesc<2x64x64xbf16, #shared1, #smem, mutable>
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c8 = arith.constant 8 : index
@@ -611,13 +612,13 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
         // CHECK-SAME: {pendings = 1 : i32}
         // CHECK-NEXT: tle.pipe.reader_release
         // CHECK: ttng.warp_group_dot_wait %[[NEXT]]
-        tle.pipe.reader_release %slots[%idx] {capacity = 2 : i32, field_names = ["kv"], pipe_name = "pipe_release_branch", scope = "cta"} : !ttg.memdesc<2x64x64xbf16, #shared1, #smem, mutable>
+        tle.pipe.reader_release %pipe, %slots[%idx] {capacity = 2 : i32, field_names = ["kv"], pipe_name = "pipe_release_branch", scope = "cta"} : !ttg.memdesc<2x64x64xbf16, #shared1, #smem, mutable>
         tt.store %out1, %next : tensor<64x64x!tt.ptr<f32>, #mma>
       } else {
         // CHECK: %[[WAIT_ELSE:.+]]:{{.*}} = ttng.warp_group_dot_wait %[[DOT]]
         // CHECK-SAME: {pendings = 0 : i32}
         // CHECK-NEXT: tle.pipe.reader_release
-        tle.pipe.reader_release %slots[%idx] {capacity = 2 : i32, field_names = ["kv"], pipe_name = "pipe_release_branch", scope = "cta"} : !ttg.memdesc<2x64x64xbf16, #shared1, #smem, mutable>
+        tle.pipe.reader_release %pipe, %slots[%idx] {capacity = 2 : i32, field_names = ["kv"], pipe_name = "pipe_release_branch", scope = "cta"} : !ttg.memdesc<2x64x64xbf16, #shared1, #smem, mutable>
       }
       // CHECK: scf.yield %[[DOT]]
       scf.yield %dot, %dot : tensor<64x64xf32, #mma>, tensor<64x64xf32, #mma>
@@ -772,15 +773,16 @@ module attributes {"ttg.target" = "cuda:90", "ttg.num-ctas" = 1 : i32, "ttg.num-
       // CHECK: %[[DOT:.+]] = ttng.warp_group_dot
       %dot = ttng.warp_group_dot %a, %b, %acc {inputPrecision = 0 : i32} : !ttg.memdesc<64x64xbf16, #shared, #smem> * !ttg.memdesc<64x64xbf16, #shared1, #smem, mutable> -> tensor<64x64xf32, #mma>
       // CHECK-NEXT: ttng.warp_group_dot_commit
-      // CHECK-NEXT: %[[DEPTH:.+]]:{{.*}} = ttng.warp_group_dot_wait %[[DOT]]{{.*}} {pendings = 1 : i32}
+      // A plain arrive has no released storage operand, so it does not impose
+      // an input-lifetime wait. The ordinary accumulator drain remains after it.
       // CHECK-NEXT: ttng.arrive_barrier {{.*}} {release_fence = true}
+      // CHECK-NEXT: %[[DEPTH:[0-9]+]]:3 = ttng.warp_group_dot_wait %[[DOT]]{{.*}} {pendings = 0 : i32}
       ttng.arrive_barrier %barrier, 128 {release_fence = true} : !ttg.memdesc<1xi64, #barrier_shared, #smem, mutable>
       // CHECK-NEXT: scf.yield %[[DEPTH]]#0
       scf.yield %dot : tensor<64x64xf32, #mma>
     }
     // CHECK-NEXT: }
-    // CHECK-NEXT: %[[FINAL:.+]] = ttng.warp_group_dot_wait %[[RES]] {pendings = 0 : i32}
-    // CHECK-NEXT: tt.store %{{.*}}, %[[FINAL]]
+    // CHECK-NEXT: tt.store %{{.*}}, %[[RES]]
     tt.store %out, %res : tensor<64x64x!tt.ptr<f32>, #mma>
     tt.return
   }

@@ -45,6 +45,7 @@
 #endif // __FLAGTREE_RLC_ENHANCE__
 #include "triton/Analysis/Utility.h"
 #ifdef __TLE__
+#include "tle/dialect/include/Analysis/CompatibleProposalMerge.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -58,6 +59,7 @@
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 #include <deque>
+
 #ifdef __FLAGTREE_RLC_ENHANCE__
 #include "llvm/ADT/EquivalenceClasses.h"
 #include <optional>
@@ -695,6 +697,16 @@ SmallVector<Value> LayoutPropagation::propagateToUsers(Value value,
     }
     if (auto yieldOp = dyn_cast<scf::YieldOp>(user)) {
       auto parent = yieldOp->getParentOp();
+#ifdef __TLE__
+      // A while yield feeds the before arguments, whose signature is
+      // independent of the condition-forwarded values that define the while
+      // results.
+      if (auto whileOp = dyn_cast<scf::WhileOp>(parent)) {
+        setEncoding({whileOp.getBeforeArguments()[use.getOperandNumber()]},
+                    info, changed, user);
+        continue;
+      }
+#endif // __TLE__
       SmallVector<Value> valuesToPropagate;
       if (isa<scf::ForOp, scf::IfOp, scf::WhileOp>(parent))
         valuesToPropagate.push_back(parent->getResult(use.getOperandNumber()));
@@ -945,7 +957,12 @@ bool LayoutPropagation::collectProducerClosure(Proposal &proposal, Value target,
   if (auto scanOp = dyn_cast<ScanOp>(defOp)) {
     if (scanOp.getSrcs().size() != 1)
       return false;
-    return collectProducerClosure(proposal, scanOp.getSrcs()[0], encoding,
+    // Scan lowering supports blocked layouts only; inferSrcEncoding rejects
+    // any other target.
+    Attribute srcEncoding = inferSrcEncoding(defOp, encoding);
+    if (!srcEncoding)
+      return false;
+    return collectProducerClosure(proposal, scanOp.getSrcs()[0], srcEncoding,
                                   depth - 1, stopAtConvertSrc, allowBlockArgs);
   }
   if (isSmallComponentForbiddenOp(defOp))
@@ -2537,6 +2554,10 @@ bool LayoutPropagation::solveSmallComponents() {
                                    bool rejectReachableReductionOrScan = true,
                                    bool restrictWeakStoreProposals = false) {
     bool localChanged = false;
+#ifdef __TLE__
+    proposals = triton::tle::mergeCompatibleProposals(
+        std::move(proposals), proposalsOverlapAndCompatible, mergeProposalInto);
+#else
     bool merged = true;
     while (merged) {
       merged = false;
@@ -2551,6 +2572,7 @@ bool LayoutPropagation::solveSmallComponents() {
         }
       }
     }
+#endif
     for (Proposal &proposal : proposals)
       localChanged |= commitIfProfitable(proposal, /*requireBenefit=*/true,
                                          rejectReachableReductionOrScan,
@@ -2654,6 +2676,14 @@ collectUseTargets(OpOperand &use, Attribute enc,
   }
   if (auto yieldOp = dyn_cast<scf::YieldOp>(user)) {
     auto parent = yieldOp->getParentOp();
+#ifdef __TLE__
+    // Keep the cost model on the same region edge as forward propagation.
+    if (auto whileOp = dyn_cast<scf::WhileOp>(parent)) {
+      targets.push_back(
+          {whileOp.getBeforeArguments()[use.getOperandNumber()], enc});
+      return;
+    }
+#endif // __TLE__
     if (isa<scf::ForOp, scf::IfOp, scf::WhileOp>(parent))
       targets.push_back({parent->getResult(use.getOperandNumber()), enc});
     if (auto forOp = dyn_cast<scf::ForOp>(parent))
@@ -3761,6 +3791,9 @@ Operation *LayoutPropagation::rewriteOp(Operation *op) {
 }
 
 bool canBeRemat(Operation *op) {
+  // flagtree: backport from Triton main: triton/pull/11001, triton/pull/12268
+  if (hasEffect<MemoryEffects::Write>(op))
+    return false;
 #ifdef __TLE__
   if (hasTleExplicitResultEncoding(op))
     return false;
@@ -3788,6 +3821,9 @@ static bool isDuplicableLoadInEncoding(Operation *op, Attribute encoding,
                                        ModuleAxisInfoAnalysis *axisInfo) {
   auto loadOp = dyn_cast<LoadOp>(op);
   if (!loadOp || !encoding)
+    return false;
+  // A volatile load must not be duplicated either (see canBeRemat).
+  if (loadOp.getIsVolatile())
     return false;
 #ifdef __TLE__
   if (hasTleExplicitResultEncoding(op) || getTleExplicitMemoryEncoding(op))
@@ -4261,7 +4297,14 @@ void LayoutRematerialization::backwardRematerialization(
 #endif
   // DotOperand is hoisted by hoistDotOperand
   RankedTensorType targetType = convertOp.getType();
+#ifdef __TLE__
+  // Address/mask DAGs use generic rematerialization, not matrix-data hoisting.
+  if (isa<DotOperandEncodingAttr>(targetType.getEncoding()) &&
+      !isa<triton::PointerType>(targetType.getElementType()) &&
+      !targetType.getElementType().isInteger(1))
+#else
   if (isa<DotOperandEncodingAttr>(targetType.getEncoding()))
+#endif
     return;
   Value oldV = convertOp.getSrc();
   LDBG("check backward remat with source " << oldV << " encoding "
@@ -5270,7 +5313,7 @@ public:
       // slices may additionally duplicate small access-preserving vector
       // loads (a per-row vector consumed in two layouts).
       changed = backwardRematerialization(m, storeLayoutRemat);
-#else
+#else  // __FLAGTREE_RLC_ENHANCE__
       // producer operation to avoid having to convert.
       changed = backwardRematerialization(m);
 #endif // __FLAGTREE_RLC_ENHANCE__

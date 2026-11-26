@@ -155,3 +155,97 @@ def install_extension(*args, **kargs):
                     shutil.rmtree(mlir_dst)
                 shutil.copytree(mlir_src, mlir_dst)
                 print(f"Copied MLIR Python bindings from {mlir_src} to {mlir_dst}", file=sys.stderr)
+                _stage_multipython_mlir(mlir_dst)
+
+
+def _stage_multipython_mlir(mlir_dst):
+    """Add the MLIR extension modules built for the other python versions.
+
+    The package copied from the LLVM syspath only carries the extension modules
+    of the interpreter LLVM was built with.  build.sh's mlir_python step builds
+    the same modules once per version the wheel promises and leaves them in
+    FLAGTREE_MLIR_PY_DIR, where this copies them from; their file names carry
+    each interpreter's EXT_SUFFIX, so python loads the one built for it.
+
+    Every module the wheel ships has to exist for every version (anything else
+    breaks the py3-none-any promise), so the modules that are not in the list the
+    step wrote are removed: the two python_test modules are among them, as they
+    cannot be built outside of LLVM at all.
+    """
+    staging_dir = os.environ.get("FLAGTREE_MLIR_PY_DIR")
+    if not staging_dir:
+        return
+
+    modules_file = os.path.join(staging_dir, "modules.txt")
+    if not os.path.isfile(modules_file):
+        raise RuntimeError(f"FLAGTREE_MLIR_PY_DIR is set to {staging_dir}, but it holds no "
+                           "modules.txt: run `.pipeline/build.sh mlir_python` before building "
+                           "the wheel")
+    with open(modules_file, encoding="utf-8") as stream:
+        modules = {line.strip() for line in stream if line.strip()}
+
+    libs_dst = os.path.join(mlir_dst, "_mlir_libs")
+    copied = 0
+    for name in sorted(os.listdir(staging_dir)):
+        if name.endswith(".so"):
+            shutil.copy2(os.path.join(staging_dir, name), os.path.join(libs_dst, name))
+            copied += 1
+
+    removed = 0
+    for name in sorted(os.listdir(libs_dst)):
+        if not name.endswith(".so") or name.startswith("libMLIRPythonCAPI"):
+            continue
+        if name.split(".")[0] not in modules:
+            os.remove(os.path.join(libs_dst, name))
+            removed += 1
+
+    print(f"Staged {copied} per-version MLIR modules in {libs_dst} "
+          f"({removed} removed that no version can supply)", file=sys.stderr)
+
+
+# Language extension packages that are aliased onto the GCU one when the wheel
+# is packaged.  GCU has no CUDA/HIP semantics, but upstream code imports these
+# names directly, so both are replaced by a copy of the sibling `gcu` package.
+LANGUAGE_EXTRA_ALIASES = ("cuda", "hip")
+
+
+def _remove_path(path):
+    """Drop whatever sits at `path`: a symlink, a plain file or a directory."""
+    if os.path.islink(path) or os.path.isfile(path):
+        os.unlink(path)
+    elif os.path.isdir(path):
+        shutil.rmtree(path)
+
+
+def finalize_build_tree(build_lib):
+    """Fill triton/language/extra/{cuda,hip} with the GCU package.
+
+    setup.py calls this right after build_py has staged the tree, at which point
+    every backend's `language` directory has been copied under its vendor name:
+    `triton/language/extra/cuda` comes from the NVIDIA backend and `hip` from the
+    AMD one.  Neither is GCU code, yet the names are imported by upstream code,
+    so each is dropped and replaced by a copy of the sibling `gcu` package.
+
+    A copy is used instead of a symlink on purpose: build_py copies *through* a
+    link, so the vendor files of the next packaging run would land inside `gcu`,
+    and bdist_wheel resolves the links anyway (dir_util.copy_tree keeps no
+    symlinks), so the wheel always ends up carrying real files.  Copying keeps
+    the staging tree equal to the wheel and leaves nothing to clean up later.
+    """
+    extra_dir = os.path.join(build_lib, "triton", "language", "extra")
+    if not os.path.isdir(extra_dir):
+        print(f"[enflame] no {extra_dir}, skipping language extra aliases")
+        return
+
+    gcu_dir = os.path.join(extra_dir, "gcu")
+    # Without a gcu package there is nothing to copy: an empty directory would
+    # ship less than what is there now.
+    if not os.path.isdir(gcu_dir):
+        print(f"[enflame] no gcu package in {extra_dir}, skipping language extra aliases")
+        return
+
+    for name in LANGUAGE_EXTRA_ALIASES:
+        alias_path = os.path.join(extra_dir, name)
+        _remove_path(alias_path)
+        shutil.copytree(gcu_dir, alias_path)
+        print(f"[enflame] triton/language/extra/{name} <- gcu")

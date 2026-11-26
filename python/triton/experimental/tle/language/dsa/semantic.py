@@ -87,3 +87,45 @@ class DSASemantic:
         if not isinstance(scope, tle.scope):
             raise DSASemanticError(f"alloc: scope must be a tle.scope instance, got {type(scope).__name__}")
         return scope
+
+
+def _convert_index_to_ir(elem, builder):
+    elem = tl._unwrap_if_constexpr(elem)
+    if isinstance(elem, int):
+        return builder.get_int32(elem)
+    if isinstance(elem, tl.tensor):
+        return elem.handle
+    raise TypeError(f"Unsupported index element type: {type(elem)}")
+
+
+def _prepare_tv_indices(view, index, builder):
+    tile = list(view.tile)
+    rank = len(tile)
+    assert rank > 0, "tensor_view has no encoding; use `make_partition_view` first"
+    idx = list(index)
+    assert len(idx) == rank, f"Expected {rank} entries in `index`, got {len(idx)}"
+    return [_convert_index_to_ir(i, builder) for i in idx], tile
+
+
+def _space_to_ir_attr(space, builder):
+    if space is None:
+        get_null = getattr(builder, "dsa_get_null_attr", None)
+        return get_null() if get_null is not None else None
+    return space.to_ir(builder)
+
+
+def tile_load(src, index, dst_space, builder):
+    assert index is not None, "`index` is required"
+    index_handles, tile = _prepare_tv_indices(src, index, builder)
+    result_ty = tl.block_type(src.dtype, tile)
+    space_attr = _space_to_ir_attr(dst_space, builder)
+    handle = builder.create_tile_load(src.handle, index_handles, result_ty.to_ir(builder), space_attr)
+    return tl.tensor(handle, result_ty)
+
+
+def tile_store(src, dst, value, index, builder, src_space=None):
+    assert value is not None, "`value` is required"
+    assert index is not None, "`index` is required"
+    index_handles, _ = _prepare_tv_indices(src, index, builder)
+    space_attr = _space_to_ir_attr(src_space, builder)
+    builder.create_tile_store(value.handle, src.handle, index_handles, space_attr)

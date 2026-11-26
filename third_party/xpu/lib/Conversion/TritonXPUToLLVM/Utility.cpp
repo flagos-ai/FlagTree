@@ -42,7 +42,7 @@ Type getFunctionType(mlir::OpBuilder &builder, ValueRange operands) {
 }
 
 Value createDeviceCall(StringRef funcName, ConversionPatternRewriter &rewriter,
-                       Operation *op, Type &elemTy, ValueRange &operands,
+                       Operation *op, Type &elemTy, ValueRange operands,
                        Location &loc) {
   Type funcType = mlir::triton::gpu::getFunctionType(elemTy, operands);
   LLVM::LLVMFuncOp funcOp = mlir::triton::gpu::appendOrGetExternFuncOp(
@@ -51,7 +51,7 @@ Value createDeviceCall(StringRef funcName, ConversionPatternRewriter &rewriter,
 }
 
 void createDeviceCall(StringRef funcName, ConversionPatternRewriter &rewriter,
-                      Operation *op, ValueRange &operands, Location &loc) {
+                      Operation *op, ValueRange operands, Location &loc) {
   OpBuilder builder(op);
   Type funcType = getFunctionType(builder, operands);
   LLVM::LLVMFuncOp funcOp = mlir::triton::gpu::appendOrGetExternFuncOp(

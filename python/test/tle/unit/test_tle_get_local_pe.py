@@ -17,7 +17,7 @@ def _tle_local_pe_kernel(out_ptr, device_dptr: tl.constexpr, mesh: tl.constexpr,
 
 class TestLocalPeCount:
 
-    @pytest.mark.require_tle("shard_id")
+    @pytest.mark.skip_if_tle_unsupported("shard_id")
     def test_tle_local_pe_kernel(self):
         block = 64
         grid = 2

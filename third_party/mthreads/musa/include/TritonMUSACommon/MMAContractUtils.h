@@ -14,6 +14,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 
+#include <cstdlib>
 #include <optional>
 #include <string>
 
@@ -373,6 +374,37 @@ inline bool isSupportedSqmma(SQMMAEltType eltTypeA, SQMMAEltType eltTypeB,
     return false;
   }
   if (!supported)
+    return false;
+  if (elemBytes != 0 &&
+      !isSqmmaInstrLdmSupported(layoutA, layoutB, elemBytes, aIsShared,
+                                bIsShared, m, n, k))
+    return false;
+  return true;
+}
+
+// PH1 exposes two narrow FP16/BF16 logical K=128 forms. The bundled MTGPU
+// llc cannot expand their native K=128 intrinsic reliably, so the LLVM
+// lowering implements them as two adjacent K=64 operations. Keep this
+// compatibility contract explicitly opt-in and separate from the ordinary
+// architecture trait table.
+inline bool isSupportedSqmmaWithK128Compatibility(
+    SQMMAEltType eltTypeA, SQMMAEltType eltTypeB, SQMMAEltType eltTypeC,
+    unsigned m, unsigned n, unsigned k, const MusaSqmmaArchTraits &traits,
+    SQMMALayout layoutA = SQMMALayout::row,
+    SQMMALayout layoutB = SQMMALayout::row, unsigned elemBytes = 0,
+    bool aIsShared = true, bool bIsShared = true) {
+  if (isSupportedSqmma(eltTypeA, eltTypeB, eltTypeC, m, n, k, traits, layoutA,
+                       layoutB, elemBytes, aIsShared, bIsShared))
+    return true;
+  if (traits.arch != MusaArch::PH1 || eltTypeA != eltTypeB ||
+      eltTypeC != SQMMAEltType::f32 || k != 128)
+    return false;
+  if (eltTypeA != SQMMAEltType::f16 && eltTypeA != SQMMAEltType::bf16)
+    return false;
+  if (!((m == 16 && n == 64) || (m == 64 && n == 16)))
+    return false;
+  const char *enableK128 = std::getenv("TRITON_MUSA_ENABLE_K128_SQMMA");
+  if (!enableK128 || StringRef(enableK128) != "1")
     return false;
   if (elemBytes != 0 &&
       !isSqmmaInstrLdmSupported(layoutA, layoutB, elemBytes, aIsShared,

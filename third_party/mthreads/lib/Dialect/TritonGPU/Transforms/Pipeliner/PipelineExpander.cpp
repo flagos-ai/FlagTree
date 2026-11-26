@@ -28,8 +28,14 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
+
+#include <algorithm>
+#include <functional>
+#include <limits>
+#include <optional>
 
 #include "triton/Dialect/TritonGPU/Transforms/PipelineExpander.h"
 
@@ -127,6 +133,104 @@ static SetVector<Value> getNestedOperands(Operation *op) {
   return operands;
 }
 
+// Triton emits loop bounds either as index constants or as integer constants
+// cast to index. TLE may also leave a small scalar arithmetic expression (for
+// example `2 * STAGES`) until after pipelining. Evaluate only expressions
+// whose signed int64 value is proven without overflow; otherwise retain the
+// dynamic-loop path.
+static std::optional<int64_t> getConstantIntValue(Value value) {
+  llvm::SmallPtrSet<Operation *, 16> visiting;
+  std::function<std::optional<int64_t>(Value)> evaluate =
+      [&](Value current) -> std::optional<int64_t> {
+    Operation *def = current.getDefiningOp();
+    if (!def || !visiting.insert(def).second)
+      return std::nullopt;
+
+    auto fitsResultType = [&](int64_t candidate) {
+      Type resultType = def->getResultTypes().empty()
+                            ? Type()
+                            : def->getResultTypes().front();
+      if (resultType.isIndex())
+        return true;
+      auto integerType = dyn_cast<IntegerType>(resultType);
+      if (!integerType)
+        return false;
+      unsigned width = integerType.getWidth();
+      if (width == 0 || width >= 64)
+        return width == 64;
+      int64_t minValue = -(int64_t(1) << (width - 1));
+      int64_t maxValue = (int64_t(1) << (width - 1)) - 1;
+      return candidate >= minValue && candidate <= maxValue;
+    };
+
+    std::optional<int64_t> result;
+    if (auto cst = dyn_cast<arith::ConstantIndexOp>(def)) {
+      result = cst.value();
+    } else if (auto cst = dyn_cast<arith::ConstantOp>(def)) {
+      if (auto attr = dyn_cast<IntegerAttr>(cst.getValue())) {
+        unsigned width = attr.getType().isIndex()
+                             ? 64
+                             : attr.getType().getIntOrFloatBitWidth();
+        if (width > 0 && width <= 64)
+          result = attr.getValue().sextOrTrunc(64).getSExtValue();
+      }
+    } else if (auto cast = dyn_cast<arith::IndexCastOp>(def)) {
+      auto input = evaluate(cast.getIn());
+      if (input && fitsResultType(*input))
+        result = *input;
+    } else if (auto add = dyn_cast<arith::AddIOp>(def)) {
+      auto lhs = evaluate(add.getLhs());
+      auto rhs = evaluate(add.getRhs());
+      int64_t sum;
+      if (lhs && rhs && !llvm::AddOverflow(*lhs, *rhs, sum) &&
+          fitsResultType(sum))
+        result = sum;
+    } else if (auto sub = dyn_cast<arith::SubIOp>(def)) {
+      auto lhs = evaluate(sub.getLhs());
+      auto rhs = evaluate(sub.getRhs());
+      int64_t difference;
+      if (lhs && rhs && !llvm::SubOverflow(*lhs, *rhs, difference) &&
+          fitsResultType(difference))
+        result = difference;
+    } else if (auto mul = dyn_cast<arith::MulIOp>(def)) {
+      auto lhs = evaluate(mul.getLhs());
+      auto rhs = evaluate(mul.getRhs());
+      int64_t product;
+      if (lhs && rhs && !llvm::MulOverflow(*lhs, *rhs, product) &&
+          fitsResultType(product))
+        result = product;
+    } else if (auto div = dyn_cast<arith::DivSIOp>(def)) {
+      auto lhs = evaluate(div.getLhs());
+      auto rhs = evaluate(div.getRhs());
+      if (lhs && rhs && *rhs != 0 &&
+          !(*lhs == std::numeric_limits<int64_t>::min() && *rhs == -1) &&
+          fitsResultType(*lhs / *rhs))
+        result = *lhs / *rhs;
+    } else if (auto rem = dyn_cast<arith::RemSIOp>(def)) {
+      auto lhs = evaluate(rem.getLhs());
+      auto rhs = evaluate(rem.getRhs());
+      if (lhs && rhs && *rhs != 0 &&
+          !(*lhs == std::numeric_limits<int64_t>::min() && *rhs == -1) &&
+          fitsResultType(*lhs % *rhs))
+        result = *lhs % *rhs;
+    } else if (auto min = dyn_cast<arith::MinSIOp>(def)) {
+      auto lhs = evaluate(min.getLhs());
+      auto rhs = evaluate(min.getRhs());
+      if (lhs && rhs && fitsResultType(std::min(*lhs, *rhs)))
+        result = std::min(*lhs, *rhs);
+    } else if (auto max = dyn_cast<arith::MaxSIOp>(def)) {
+      auto lhs = evaluate(max.getLhs());
+      auto rhs = evaluate(max.getRhs());
+      if (lhs && rhs && fitsResultType(std::max(*lhs, *rhs)))
+        result = std::max(*lhs, *rhs);
+    }
+
+    visiting.erase(def);
+    return result;
+  };
+  return evaluate(value);
+}
+
 bool LoopPipelinerInternal::initializeLoopInfo(
     ForOp op, const triton::PipeliningOption &options) {
   LDBG("Start initializeLoopInfo");
@@ -150,19 +254,28 @@ bool LoopPipelinerInternal::initializeLoopInfo(
   }
 
   dynamicLoop = true;
-  auto upperBoundCst = ub.getDefiningOp<arith::ConstantIndexOp>();
-  auto lowerBoundCst = lb.getDefiningOp<arith::ConstantIndexOp>();
-  auto stepCst = step.getDefiningOp<arith::ConstantIndexOp>();
+  std::optional<int64_t> upperBoundCst = getConstantIntValue(ub);
+  std::optional<int64_t> lowerBoundCst = getConstantIntValue(lb);
+  std::optional<int64_t> stepCst = getConstantIntValue(step);
   if (!upperBoundCst || !lowerBoundCst || !stepCst) {
     if (!options.supportDynamicLoops) {
       LDBG("--dynamic loop not supported -> BAIL");
       return false;
     }
   } else {
-    int64_t ubImm = upperBoundCst.value();
-    int64_t lbImm = lowerBoundCst.value();
-    int64_t stepImm = stepCst.value();
-    int64_t numIteration = llvm::divideCeilSigned(ubImm - lbImm, stepImm);
+    int64_t ubImm = *upperBoundCst;
+    int64_t lbImm = *lowerBoundCst;
+    int64_t stepImm = *stepCst;
+    if (stepImm <= 0) {
+      LDBG("--non-positive loop step -> BAIL");
+      return false;
+    }
+    int64_t span = 0;
+    if (llvm::SubOverflow(ubImm, lbImm, span) || span < 0) {
+      LDBG("--invalid loop bound span -> BAIL");
+      return false;
+    }
+    int64_t numIteration = llvm::divideCeilSigned(span, stepImm);
     if (numIteration >= maxStage) {
       dynamicLoop = false;
     } else if (!options.supportDynamicLoops) {

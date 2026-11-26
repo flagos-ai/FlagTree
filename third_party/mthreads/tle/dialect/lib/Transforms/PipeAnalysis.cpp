@@ -30,6 +30,10 @@ namespace ttg = triton::gpu;
 
 namespace {
 
+// One MThreads asynchronous transaction barrier accounts for at most 64 KiB.
+// Larger logical pipe payloads are published through multiple full rings.
+static constexpr int32_t kMaxAsyncTransactionBytes = 64 * 1024;
+
 static int64_t getCapacity(Operation *op) {
   return op->getAttrOfType<IntegerAttr>("capacity").getInt();
 }
@@ -878,6 +882,29 @@ private:
     return success();
   }
 
+  // The first MThreads TLE pipe API did not expose named readers.  A single
+  // `pipe.reader()` value could therefore be materialized in more than one
+  // static warp-specialize partition, with every partition contributing to
+  // the empty-barrier arrival count.  Keep that source-compatible behavior
+  // for unnamed pipes by assigning one implicit endpoint per static
+  // partition.  Explicitly named readers retain the stricter one-name /
+  // one-partition contract handled by recordReader above.
+  LogicalResult recordImplicitReader(PipeState &state, Operation *op) {
+    FailureOr<PipeStaticPartitionInfo> placement = getEndpointPlacement(op);
+    if (failed(placement))
+      return failure();
+
+    unsigned endpointIndex = state.endpoints.size();
+    for (const PipeEndpointState &endpoint : state.endpoints) {
+      if (endpoint.role == PipeEndpointRole::Reader &&
+          samePlacement(endpoint, *placement)) {
+        endpointIndex = endpoint.index;
+        break;
+      }
+    }
+    return recordReader(state, op, endpointIndex, "");
+  }
+
   LogicalResult verifyReaderName(Operation *op,
                                  ArrayRef<StringAttr> declaredReaders) {
     auto readerName = op->getAttrOfType<StringAttr>("reader_name");
@@ -931,11 +958,11 @@ private:
 
       if (declaredReaders.empty()) {
         for (PipeReaderWaitOp wait : state.waits) {
-          if (failed(recordReader(state, wait, /*endpointIndex=*/1, "")))
+          if (failed(recordImplicitReader(state, wait)))
             return failure();
         }
         for (PipeReaderReleaseOp release : state.releases) {
-          if (failed(recordReader(state, release, /*endpointIndex=*/1, "")))
+          if (failed(recordImplicitReader(state, release)))
             return failure();
         }
       } else {
@@ -1072,7 +1099,7 @@ private:
       }
       group.completionSources.push_back({kind, op, field->index,
                                          stage.value_or(group.stage), region,
-                                         bytes, owner, externalRoot});
+                                         bytes, owner, 0, externalRoot});
       return success();
     };
 
@@ -1135,6 +1162,8 @@ private:
         std::reverse(group->completionSources.begin(),
                      group->completionSources.end());
         int64_t bytes = 0;
+        int32_t segmentBytes = 0;
+        group->segmentTransactionBytes.push_back(0);
         for (const auto &source : group->completionSources) {
           bytes += source.transactionBytes;
           if (bytes > std::numeric_limits<int32_t>::max())
@@ -1144,6 +1173,25 @@ private:
             group->tmeGroupArrivalCount = 1;
           else
             group->localStoreArrivalCount = state.endpoints.front().warpCount;
+        }
+        // Greedily retain lexical field order while keeping every hardware
+        // transaction barrier at or below its 64-KiB accounting limit.
+        for (PipeCompletionSource &source : group->completionSources) {
+          if (source.transactionBytes < 0 ||
+              source.transactionBytes > kMaxAsyncTransactionBytes)
+            return source.operation->emitOpError(
+                "pipe completion source exceeds the 64-KiB MThreads "
+                "transaction-barrier limit");
+          if (source.transactionBytes > 0 && segmentBytes > 0 &&
+              segmentBytes >
+                  kMaxAsyncTransactionBytes - source.transactionBytes) {
+            group->segmentTransactionBytes.push_back(0);
+            segmentBytes = 0;
+          }
+          source.fullBarrierSegment =
+              static_cast<unsigned>(group->segmentTransactionBytes.size() - 1);
+          segmentBytes += source.transactionBytes;
+          group->segmentTransactionBytes.back() = segmentBytes;
         }
         group->totalTransactionBytes = bytes;
         // Empty/unknown synchronous effects still have a well-defined ready
@@ -1340,9 +1388,19 @@ private:
       }
       int32_t tmeArrivals = 0;
       int32_t localArrivals = 0;
+      size_t fullSegmentCount = 1;
+      if (!state.commitGroups.empty())
+        fullSegmentCount =
+            state.commitGroups.front()->segmentTransactionBytes.size();
+      if (fullSegmentCount == 0)
+        return state.create.emitOpError(
+            "pipe analysis produced no full-barrier segment");
       Value external;
       bool internalTME = false;
       for (auto &group : state.commitGroups) {
+        if (group->segmentTransactionBytes.size() != fullSegmentCount)
+          return group->commit.emitOpError(
+              "all pipe commits must use the same full-barrier segmentation");
         tmeArrivals = std::max(tmeArrivals, group->tmeGroupArrivalCount);
         if (group->localStoreArrivalCount)
           localArrivals = state.endpoints.front().warpCount;
@@ -1364,9 +1422,26 @@ private:
       if (external && internalTME)
         return state.create.emitOpError("external completion barrier must be "
                                         "bound to every TME source");
+      if (fullSegmentCount > 1) {
+        if (!state.closes.empty())
+          return state.create.emitOpError(
+              "segmented full barriers do not support writer.close");
+        if (external)
+          return state.create.emitOpError(
+              "segmented full barriers require pipe-owned completion storage");
+        for (auto &group : state.commitGroups)
+          for (const PipeCompletionSource &source : group->completionSources)
+            if (source.kind != PipeTransportKind::TME)
+              return source.operation->emitOpError(
+                  "segmented full barriers currently require TME-only "
+                  "completion sources");
+      }
       state.barrierPlan.full.arrivalCount = tmeArrivals + localArrivals;
       // Transaction bytes are added at the actual copy, not fixed for a ring.
       state.barrierPlan.full.transactionBytes = 0;
+      state.barrierPlan.additionalFull.clear();
+      for (size_t segment = 1; segment < fullSegmentCount; ++segment)
+        state.barrierPlan.additionalFull.push_back(state.barrierPlan.full);
       for (auto &group : state.commitGroups) {
         group->tmeGroupArrivalCount = tmeArrivals;
         group->localStoreArrivalCount = localArrivals;

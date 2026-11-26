@@ -86,7 +86,10 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         self.constexpr_params = set[str]()  # constexpr params
         self.var_definitions = dict[str, ast.AST]()  # var -> latest definition node
         # for input-constexpr dependencies analyze
-        self.load_addresses = list[ast.AST]()  # tl.load address expressions
+        # (address, mask) for each tl.load. Keeping the mask associated with
+        # its load prevents unrelated semantic comparisons from being treated
+        # as tensor-bound evidence for every load in the kernel.
+        self.load_records = list[tuple[ast.AST, ast.AST | None]]()
         # for TMA descriptor load dependencies analyze
         self.tma_load_assignments = list[dict[str, str | list[ast.AST]]]()
         self.transpose_args_nodes = list[ast.AST]()  # tl.trans args
@@ -201,7 +204,12 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
     # at the Call level here.)
     def visit_Call(self, node):
         if self._is_tl_load(node) and node.args:
-            self.load_addresses.append(node.args[0])
+            mask_node = node.args[1] if len(node.args) >= 2 else None
+            for kw in node.keywords:
+                if kw.arg == 'mask':
+                    mask_node = kw.value
+                    break
+            self.load_records.append((node.args[0], mask_node))
         elif self._is_tl_transpose(node) and node.args:
             self.transpose_args_nodes.append(node.args[0])
         elif self._is_tl_dot(node):
@@ -244,32 +252,6 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             is_range = (isinstance(it.func, ast.Name) and it.func.id == 'range') or self._is_tl_func(it, 'range')
             if is_range:
                 self._maybe_add_virtual_cdiv(stop_node=it.args[1], step_node=it.args[2])
-        self.generic_visit(node)
-
-    # `arange-derived < X` (or any inequality direction) where the arange-derived
-    # side traces back to exactly one BLOCK_X and X is an input/constexpr
-    # parameter is the canonical out-of-bounds-mask construction pattern. This
-    # provides the same (X, BLOCK_X) pairing signal as `tl.cdiv(X, BLOCK_X)`,
-    # used by kernels without a cdiv call (e.g. mthreads gemv_kernel:
-    #   `row_mask = row_offset < M`, `k_mask = k_offset < K`).
-    def visit_Compare(self, node):
-        if len(node.ops) == 1 and isinstance(node.ops[0], (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
-            left, right = node.left, node.comparators[0]
-            # Try both directions; the arange-derived side could be on either side.
-            for arange_side, x_side in ((left, right), (right, left)):
-                if not isinstance(x_side, ast.Name):
-                    continue
-                if (x_side.id not in self.input_params and x_side.id not in self.constexpr_params):
-                    continue
-                bs_set = set[str]()
-                for v in VariableCollector.collect(arange_side):
-                    bs_set.update(self._extract_arange_bs_recursive(v))
-                # Only act when exactly one BLOCK_X is implicated; an ambiguous
-                # bs_set could otherwise pair the wrong block size with X.
-                if len(bs_set) == 1:
-                    bs_name = next(iter(bs_set))
-                    if self._maybe_add_virtual_cdiv(stop_node=x_side, step_node=ast.Name(id=bs_name, ctx=ast.Load())):
-                        break  # don't add twice when both directions happen to match
         self.generic_visit(node)
 
     # Synthesize `tl.cdiv(stop, step)` and append it to `cdiv_calls` when both
@@ -860,6 +842,53 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             return x_name
         return None
 
+    def _find_mask_x(self, mask_node: ast.AST | None, bs_name: str) -> str | None:
+        """Find the dimension paired with ``bs_name`` in one tl.load mask.
+
+        Comparisons are weak pairing evidence: ``offs < X`` may be an
+        out-of-bounds mask, but it may also implement unrelated kernel
+        semantics. Only comparisons reachable from this load's mask are
+        considered. Bare mask variables are followed through all recorded
+        definitions so combined and precomputed masks remain supported.
+        """
+        if mask_node is None:
+            return None
+
+        candidates = set[str]()
+        visited_vars = set[str]()
+
+        def visit_mask_expr(node: ast.AST):
+            if isinstance(node, ast.Name) and node.id in self.var_all_definitions:
+                if node.id in visited_vars:
+                    return
+                visited_vars.add(node.id)
+                for definition in self.var_all_definitions[node.id]:
+                    visit_mask_expr(definition)
+                return
+
+            if (isinstance(node, ast.Compare) and len(node.ops) == 1
+                    and isinstance(node.ops[0], (ast.Lt, ast.LtE, ast.Gt, ast.GtE))):
+                left, right = node.left, node.comparators[0]
+                for arange_side, x_side in ((left, right), (right, left)):
+                    if not isinstance(x_side, ast.Name):
+                        continue
+                    x_name = x_side.id
+                    if x_name not in self.input_params and x_name not in self.constexpr_params:
+                        continue
+                    bs_set = self._extract_arange_bs(arange_side)
+                    for var_name in VariableCollector.collect(arange_side):
+                        bs_set.update(self._extract_arange_bs_recursive(var_name))
+                    if bs_set == {bs_name} and x_name != bs_name:
+                        candidates.add(x_name)
+
+            for child in ast.iter_child_nodes(node):
+                visit_mask_expr(child)
+
+        visit_mask_expr(mask_node)
+        if len(candidates) == 1:
+            return next(iter(candidates))
+        return None
+
     # Analyzer 1: tl.load
     def analyze_tl_load_bs(self) -> dict[str, str]:
         """Map BLOCK_X (used in any tl.load address) to its tensor-dim arg X.
@@ -867,8 +896,9 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
         Algorithm (driven by tl.load):
           1. For each `tl.load(addr)` address expression, find BLOCK_X actually
              used through the `tl.arange(0, BLOCK_X)` chain.
-          2. For each such BLOCK_X, look up a `tl.cdiv(X, BLOCK_X)` call somewhere
-             in the kernel and adopt its first argument as the paired tensor-dim X.
+          2. For each such BLOCK_X, prefer a strong `tl.cdiv(X, BLOCK_X)` pairing
+             elsewhere in the kernel. If none exists, inspect only this load's
+             mask for an `arange`-derived comparison against X.
 
         Examples in a typical mm kernel (any of these establishes the pair)::
 
@@ -882,7 +912,7 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             (e.g. `import triton.language as L; L.cdiv(...)`) are not recognized.
         """
         load_map = dict[str, str]()  # [bs_name, ts_name]
-        for addr_expr in self.load_addresses:
+        for addr_expr, mask_expr in self.load_records:
             # BLOCK_X referenced from this load address (via tl.arange chain)
             used_bs = set[str]()
             for var_name in VariableCollector.collect(addr_expr):
@@ -890,6 +920,8 @@ class KernelDependencyAnalyzer(ast.NodeVisitor):
             # Look up X for each BLOCK_X via tl.cdiv(X, BLOCK_X)
             for bs_name in used_bs:
                 ts_name = self._find_cdiv_x(bs_name)
+                if ts_name is None:
+                    ts_name = self._find_mask_x(mask_expr, bs_name)
                 if ts_name is not None:
                     load_map[bs_name] = ts_name
         if knobs.autotuning.print:
@@ -1339,22 +1371,22 @@ def auto_adjust_block_sizes(nargs, fn, configs, current, config):
     if ge_k_map:  # tl.dot with general tl.load
         if FLAGTREE_BACKEND == "":
             if knobs.autotuning.print:
-                print("[AABS] 4. adjust bs in tl.dot with general tl.load")
+                print("[AABS] 4. adjust bs in tl.dot with general tl.load on nvidia")
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_k_map, 16)
         elif FLAGTREE_BACKEND == "ppu":
             if knobs.autotuning.print:
-                print("[AABS] 4. adjust bs in tl.dot with general tl.load")
-            adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_k_map, 32)
+                print(f"[AABS] 4. adjust bs in tl.dot with general tl.load on {FLAGTREE_BACKEND}")
+            adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_k_map, 16)
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_m_map, 16)
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_n_map, 16)
         elif FLAGTREE_BACKEND == "hcu":
             if knobs.autotuning.print:
-                print("[AABS] 4. adjust bs in tl.dot with general tl.load")
+                print(f"[AABS] 4. adjust bs in tl.dot with general tl.load on {FLAGTREE_BACKEND}")
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_m_map, 16)
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_n_map, 16)
         elif FLAGTREE_BACKEND == "metax":
             if knobs.autotuning.print:
-                print("[AABS] 4. adjust bs in tl.dot with general tl.load")
+                print(f"[AABS] 4. adjust bs in tl.dot with general tl.load on {FLAGTREE_BACKEND}")
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_m_map, 16)
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_n_map, 16)
         elif FLAGTREE_BACKEND == "sunrise":
@@ -1364,16 +1396,18 @@ def auto_adjust_block_sizes(nargs, fn, configs, current, config):
             # at least min_dot_size so AABS never produces a config that violates
             # the dot constraint checked in semantic.py.
             if knobs.autotuning.print:
-                print("[AABS] 4. adjust bs in tl.dot with general tl.load")
+                print(f"[AABS] 4. adjust bs in tl.dot with general tl.load on {FLAGTREE_BACKEND}")
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_k_map, 16)
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_m_map, 8)
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_n_map, 8)
         elif FLAGTREE_BACKEND == "iluvatar":
             if knobs.autotuning.print:
-                print("[AABS] 4. adjust bs in tl.dot with general tl.load")
+                print(f"[AABS] 4. adjust bs in tl.dot with general tl.load on {FLAGTREE_BACKEND}")
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_k_map, 16)
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_m_map, 16)
             adjust_block_size_general_dot_mn_dim(nargs, current, config, ge_n_map, 16)
+        else:
+            pass
 
     if knobs.autotuning.print:
         nargs_str = ''

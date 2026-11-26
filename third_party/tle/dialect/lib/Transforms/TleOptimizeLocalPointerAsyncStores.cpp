@@ -21,6 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "tle/dialect/include/IR/CopyFill.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/IR/ExactSMEM.h"
 #include "tle/dialect/include/IR/SMEMPlan.h"
@@ -29,6 +30,7 @@
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -295,6 +297,10 @@ matchAsyncStoreCandidate(triton::StoreOp store) {
   if (!load || !load->hasOneUse())
     return std::nullopt;
   if (load.getIsVolatile())
+    return std::nullopt;
+  // cp.async zero-fills bytes, not floating values. Preserve signed zero and
+  // nonzero fills, while recognizing bytewise zero through layout changes.
+  if (load.getOther() && !hasZeroFillBits(load.getOther()))
     return std::nullopt;
   if (!isa<RankedTensorType>(load.getType()))
     return std::nullopt;

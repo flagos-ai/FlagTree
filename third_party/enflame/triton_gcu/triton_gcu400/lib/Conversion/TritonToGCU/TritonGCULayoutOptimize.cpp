@@ -79,7 +79,7 @@ void TritonGCULayoutOptimizePass::reWriteGcuLoadLayout(
 void TritonGCULayoutOptimizePass::reWriteGcuStoreLayout(
     triton::gcu::StoreOp store) {
   auto src = store.getValue().getDefiningOp();
-  if (auto convetLayout = dyn_cast<triton::gpu::ConvertLayoutOp>(src)) {
+  if (auto convetLayout = dyn_cast_or_null<triton::gpu::ConvertLayoutOp>(src)) {
     auto users = src->getUsers();
     auto userNumber = std::distance(users.begin(), users.end());
     // only one user delete and fusion convert layout to store

@@ -916,49 +916,53 @@ void init_triton_llvm(py::module &&m) {
     std::call_once(init_flag, []() { initializeTritonLLVMTargets(); });
   });
 
-  m.def("link_extern_libs", [](llvm::Module *dstMod,
-                               const std::vector<std::string> &paths) {
-    if (paths.empty())
-      return;
+  m.def(
+      "link_extern_libs",
+      [](llvm::Module *dstMod, const std::vector<std::string> &paths,
+         bool forceInline) {
+        if (paths.empty())
+          return;
 
-    LLVMContext &ctx = dstMod->getContext();
-    llvm::Linker linker(*dstMod);
-    for (const std::string &path : paths) {
-      llvm::SMDiagnostic err;
-      std::unique_ptr<llvm::Module> libMod = llvm::parseIRFile(path, err, ctx);
-      if (!libMod) {
-        std::string message = "Failed to parse library at " + path;
-        throw std::invalid_argument(message);
-      }
-      libMod->setTargetTriple(Triple(dstMod->getTargetTriple()));
-      libMod->setDataLayout(dstMod->getDataLayout());
+        LLVMContext &ctx = dstMod->getContext();
+        llvm::Linker linker(*dstMod);
+        for (const std::string &path : paths) {
+          llvm::SMDiagnostic err;
+          std::unique_ptr<llvm::Module> libMod =
+              llvm::parseIRFile(path, err, ctx);
+          if (!libMod) {
+            std::string message = "Failed to parse library at " + path;
+            throw std::invalid_argument(message);
+          }
+          libMod->setTargetTriple(Triple(dstMod->getTargetTriple()));
+          libMod->setDataLayout(dstMod->getDataLayout());
 
-      std::unordered_set<std::string> externalFns;
-      for (llvm::Function &fn : libMod->functions()) {
-        if (!fn.isDeclaration())
-          externalFns.insert(fn.getName().str());
-        if (fn.hasFnAttribute(llvm::Attribute::NoInline)) {
-          fn.removeFnAttr(llvm::Attribute::NoInline);
-          fn.removeFnAttr(llvm::Attribute::OptimizeNone);
-          fn.addFnAttr(llvm::Attribute::AlwaysInline);
+          std::unordered_set<std::string> externalFns;
+          for (llvm::Function &fn : libMod->functions()) {
+            if (!fn.isDeclaration())
+              externalFns.insert(fn.getName().str());
+            if (forceInline && fn.hasFnAttribute(llvm::Attribute::NoInline)) {
+              fn.removeFnAttr(llvm::Attribute::NoInline);
+              fn.removeFnAttr(llvm::Attribute::OptimizeNone);
+              fn.addFnAttr(llvm::Attribute::AlwaysInline);
+            }
+          }
+
+          if (linker.linkInModule(std::move(libMod),
+                                  llvm::Linker::Flags::LinkOnlyNeeded)) {
+            std::string message = "Failed to link library at " + path;
+            throw std::invalid_argument(message);
+          }
+
+          // Mark linked-in functions as internal because backends use external
+          // linkage as a signifier of kernel functions.
+          for (llvm::Function &fn : dstMod->functions()) {
+            if (externalFns.count(fn.getName().str())) {
+              fn.setLinkage(llvm::GlobalValue::InternalLinkage);
+            }
+          }
         }
-      }
-
-      if (linker.linkInModule(std::move(libMod),
-                              llvm::Linker::Flags::LinkOnlyNeeded)) {
-        std::string message = "Failed to link library at " + path;
-        throw std::invalid_argument(message);
-      }
-
-      // Mark linked-in functions as internal because backends use external
-      // linkage as a signifier of kernel functions.
-      for (llvm::Function &fn : dstMod->functions()) {
-        if (externalFns.count(fn.getName().str())) {
-          fn.setLinkage(llvm::GlobalValue::InternalLinkage);
-        }
-      }
-    }
-  });
+      },
+      py::arg("dst_mod"), py::arg("paths"), py::arg("force_inline") = true);
 }
 
 void triton_stacktrace_signal_handler(void *) {
