@@ -40,8 +40,7 @@ def test_remote_device_write_compiles_through_llvm(dtype, scale):
         assert "triton_xpu.remote_pointer" in compiled.asm["ttir"]
     if compiled.asm["llir"]:
         assert "triton_xpu.remote_pointer" not in compiled.asm["llir"]
-        assert "flagcxGetIntraPointerWithAccessC" in compiled.asm["llir"]
-        assert "@flagcxGetIntraPointerC(" not in compiled.asm["llir"]
+        assert "@flagcxGetIntraPointerC(" in compiled.asm["llir"]
         assert re.search(rf"\b(?:shl|mul)\b[^\n]*, (?:{scale}|{1 << scale})\b", compiled.asm["llir"])
 
 

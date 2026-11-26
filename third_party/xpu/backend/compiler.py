@@ -436,6 +436,7 @@ class XPUBackend(BaseBackend):
                 # arguments that xpuLaunchKernel passes at the end of kernel_params.
                 xpu.passes.ttxpuir.add_tritonxpu_cf_to_scf_pass(pm)
                 xpu.passes.ttxpuir.add_tritonxpu_loop_grid_pass(pm)
+            xpu.passes.ttxpuir.add_tritonxpu_insert_device_init_pass(pm)
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
             passes.common.add_symbol_dce(pm)

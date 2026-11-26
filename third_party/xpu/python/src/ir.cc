@@ -971,11 +971,12 @@ void init_triton_ir(py::module &&m) {
            })
       .def("create_remote_pointers",
            [](TritonOpBuilder &self, Type resultTy, Value memory, Value peer,
-              Value offset, int32_t elementBytes) -> Value {
+              Value offset, int32_t elementBytes,
+              std::optional<Value> comm) -> Value {
              auto &builder = self.getBuilder();
              return self.create<triton::xpu::RemotePointerOp>(
                  resultTy, memory, peer, offset,
-                 builder.getI32IntegerAttr(elementBytes));
+                 builder.getI32IntegerAttr(elementBytes), comm.value_or(Value()));
            })
       // insertion block/point
       .def("set_insertion_point_to_start",

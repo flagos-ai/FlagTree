@@ -1,5 +1,4 @@
 from pathlib import Path
-import re
 
 import pytest
 import triton
@@ -38,6 +37,21 @@ def _remote(inp, mem):
 
 
 @triton.jit
+def _device_init(out, comm):
+    tle.init(comm)
+    pid = tl.program_id(0)
+    if pid > 0:
+        tle.init(comm)
+    tl.store(out + pid, pid)
+
+
+@triton.jit
+def _remote_context(inp, context: tl.constexpr):
+    ptr = tle.remote(context, space="device", dtype=tl.float32, shard_id=1, offset=tl.program_id(0))
+    tl.store(ptr, tl.load(inp))
+
+
+@triton.jit
 def _implicit_rank(out):
     tl.store(out, tle._get_local_rank(None))
 
@@ -59,14 +73,18 @@ def _ir_text(module, path: Path):
         (_size, {"out": "*i32", "comm": "i64"}, {}, "get_num_pes", "flagcxDevCommGetIntraSize", False),
         (_barrier, {"out": "*i32", "comm": "i64", "mesh": "constexpr"
                     }, {"mesh": MESH}, "distributed_barrier", "flagcxIntraBarrierSyncS", False),
-        (_remote, {"inp": "*fp32", "mem": "i64"}, {}, "remote_pointer", "flagcxGetIntraPointerWithAccessC", False),
+        (_remote, {"inp": "*fp32", "mem": "i64"}, {}, "remote_pointer", "flagcxGetIntraPointerC", False),
+        (_remote_context, {"inp": "*fp32", "context": "constexpr"}, {}, "remote_pointer", "flagcxGetIntraPointerC", False),
+        (_device_init, {"out": "*i32", "comm": "i64"}, {}, "device_init", "flagcxDevInit", False),
         (_implicit_rank, {"out": "*i32"}, {}, "get_device_id", "flagcxDevCommGetIntraRank", True),
     ],
-    ids=["rank", "size", "barrier", "remote", "implicit-rank"],
+    ids=["rank", "size", "barrier", "remote", "remote-context", "device-init", "implicit-rank"],
 )
 def test_tle_flagcx_lowers_without_device(tmp_path, monkeypatch, fn, signature, constexprs, op, symbol, lite):
     monkeypatch.setenv("FLAGTREE_LITE_DIST", "1" if lite else "0")
     monkeypatch.setattr(DistributedRtContext, "_init_count", 1 if lite else 0)
+    if fn is _remote_context:
+        constexprs = {"context": DistributedRtContext(4096, 8192)}
 
     target = GPUTarget("xpu", 3, 1)
     backend = XPUBackend(target)
@@ -86,6 +104,11 @@ def test_tle_flagcx_lowers_without_device(tmp_path, monkeypatch, fn, signature, 
     module = backend.make_ttxir(module, metadata, options)
     ttxir = _ir_text(module, tmp_path / "kernel.ttxir")
     assert f"triton_xpu.{op}" in ttxir
+    if fn is not _remote:
+        assert ttxir.count("triton_xpu.device_init") == 1
+        assert ttxir.index("triton_xpu.device_init") < ttxir.index("scf.for")
+    else:
+        assert "triton_xpu.device_init" not in ttxir
     if lite:
         assert 'tt.name = "device_comm_ptr"' in ttxir
         assert 'tt.name = "device_mem_ptr"' in ttxir
@@ -97,10 +120,7 @@ def test_tle_flagcx_lowers_without_device(tmp_path, monkeypatch, fn, signature, 
     pm.run(module, "lower")
     llvm_dialect = _ir_text(module, tmp_path / "kernel.llvm.mlir")
     assert f"llvm.call @{symbol}" in llvm_dialect
+    assert llvm_dialect.count("llvm.call @flagcxDevInit") == int(fn is not _remote)
     if op == "remote_pointer":
-        assert "@flagcxGetIntraPointerC(" not in llvm_dialect
-        call = re.search(rf"llvm.call @{symbol}\(([^)]*)\)", llvm_dialect)
-        args = [arg.strip() for arg in call.group(1).split(",")]
-        assert len(args) == 4
-        assert re.search(rf"{re.escape(args[-1])} = llvm\.mlir\.constant\(1 : i32\)", llvm_dialect)
-        assert "(!llvm.ptr<1>, i64, i32, i32) -> !llvm.ptr<1>" in llvm_dialect
+        call = next(line for line in llvm_dialect.splitlines() if f"llvm.call @{symbol}(" in line)
+        assert "(!llvm.ptr<1>, i64, i32) -> !llvm.ptr<1>" in call

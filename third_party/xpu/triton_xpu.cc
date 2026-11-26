@@ -158,6 +158,10 @@ void init_triton_xpu_passes_transform(py::module &&m) {
     self.addPass(mlir::triton::xpu::createTritonXPULoopGrid());
   });
 
+  m.def("add_tritonxpu_insert_device_init_pass", [](mlir::PassManager &self) {
+    self.addPass(mlir::triton::xpu::createTritonXPUInsertDeviceInit());
+  });
+
   m.def(
       "add_tritonxpu_loop_invariant_staging_pass", [](mlir::PassManager &self) {
         self.addPass(mlir::triton::xpu::createTritonXPULoopInvariantStaging());

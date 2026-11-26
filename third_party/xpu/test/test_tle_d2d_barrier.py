@@ -19,7 +19,6 @@ N = 8
 
 @triton.jit
 def _store_and_barrier(device_dptr: tl.constexpr, mesh: tl.constexpr):
-    tle.init(device_dptr)
     offset = tl.program_id(0)
     rank = tle.shard_id(mesh, "device", device_dptr=device_dptr)
     peer = (rank + 1) % mesh.shape[0]
@@ -48,6 +47,8 @@ def test_tle_d2d_barrier():
         assert compiled.metadata.xpu_uses_flagcx
         ttxir = compiled.asm.get("ttxir")
         if ttxir:
+            assert ttxir.count("triton_xpu.device_init") == 1
+            assert ttxir.index("triton_xpu.device_init") < ttxir.index("scf.for")
             assert "triton_xpu.remote_pointer" in ttxir
             assert "triton_xpu.distributed_barrier" in ttxir
         peer = (rank + 1) % dist.get_world_size()

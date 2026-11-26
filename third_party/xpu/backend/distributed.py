@@ -151,14 +151,14 @@ def link_flagcx_device_ir(kernel_ir: str, bitcode_path: str) -> str:
         signatures = {
             "flagcxDevCommGetIntraRank": ("ptr addrspace(1)", ),
             "flagcxDevCommGetIntraSize": ("ptr addrspace(1)", ),
-            "flagcxGetIntraPointerWithAccessC": ("ptr addrspace(1)", "i64", "i32", "i32"),
+            "flagcxGetIntraPointerC": ("ptr addrspace(1)", "i64", "i32"),
             "flagcxIntraBarrierArriveS": ("ptr addrspace(1)", "i32", "i32", "i1", "i32"),
             "flagcxIntraBarrierWaitS": ("ptr addrspace(1)", "i32", "i32", "i1", "i32"),
             "flagcxIntraBarrierSyncS": ("ptr addrspace(1)", "i32", "i32", "i1", "i32"),
         }
         symbols = set(
             re.findall(
-                r"@(flagcx(?:DevCommGetIntra(?:Rank|Size)|IntraBarrier(?:Sync|Arrive|Wait)S|GetIntraPointerWithAccessC))\(",
+                r"@(flagcx(?:DevCommGetIntra(?:Rank|Size)|IntraBarrier(?:Sync|Arrive|Wait)S|GetIntraPointerC))\(",
                 kernel_ir))
         for symbol in symbols:
             definition = re.search(rf"(?m)^define\b[^\n]*@{re.escape(symbol)}\(", linked_ir)
@@ -176,6 +176,6 @@ def link_flagcx_device_ir(kernel_ir: str, bitcode_path: str) -> str:
             if len(actual) != len(expected) or any(not re.match(r"^\s*" + re.escape(ty) + r"(?:\s|$)", param)
                                                    for param, ty in zip(actual, expected)):
                 raise RuntimeError(f"XPU FlagCX device bitcode {bitcode_path} has an incompatible {symbol} ABI")
-            if symbol == "flagcxGetIntraPointerWithAccessC" and "ptr addrspace(1)" not in definition.group(0).split("@")[0]:
+            if symbol == "flagcxGetIntraPointerC" and "ptr addrspace(1)" not in definition.group(0).split("@")[0]:
                 raise RuntimeError(f"XPU FlagCX device bitcode {bitcode_path} has an incompatible {symbol} return type")
         return linked_ir

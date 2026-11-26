@@ -10,7 +10,14 @@ The frontend accepts a runtime `i64` communicator handle for rank, size, and
 barrier operations. A `DistributedRtContext` may be passed as a constexpr;
 rank and barrier use its communicator pointer, while remote uses its registered
 memory pointer. Remote offsets count elements; the lowering multiplies them by
-the pointee size before calling `flagcxGetIntraPointerC`.
+the pointee size before calling `flagcxGetIntraPointerC`. The KunlunXin
+wrapper resolves the write-only XSHMEM peer address.
+
+The XPU compiler inserts one `device_init` at the kernel entry, before the
+grid-stride loop, using the communicator carried by the distributed operations.
+Kernels that pass only a raw memory handle can supply the communicator with
+`tle.init(comm)`. Existing explicit initializers for the same communicator
+are consolidated into the entry call.
 
 The XPU setup hook builds `libflagcx_device.bc` from the downloaded FlagCX sources
 and installs it under `third_party/xpu/backend/lib`. `FLAGCX_BITCODE_PATH` can

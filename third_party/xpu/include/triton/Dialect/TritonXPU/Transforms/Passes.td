@@ -46,6 +46,12 @@ def TritonXPUAddDistributedParams
   let summary = "Add FlagCX communicator and memory parameters to TLE kernels.";
 }
 
+def TritonXPUInsertDeviceInit
+    : Pass<"tritonxpu-insert-device-init", "mlir::ModuleOp"> {
+  let summary = "Bind FlagCX device state once at the XPU kernel entry.";
+  let dependentDialects = ["mlir::triton::xpu::TritonXPUDialect"];
+}
+
 def TritonXPULegalize : Pass<"tritonxpu-legalize", "mlir::ModuleOp"> {
   let summary = "Legalize for XPU.";
 

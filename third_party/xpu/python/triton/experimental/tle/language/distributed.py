@@ -321,9 +321,7 @@ def _signal_coop_kind(group_kind):
 
 @builtin
 def init(device_dptr, _semantic=None, _generator=None):
-    """Bind this kernel's FlagCX device state. Required once, before the first
-    signal / signal_wait / distributed_barrier in the kernel: the device entry
-    points do not bind on their own."""
+    """Select the communicator for XPU kernel initialization explicitly."""
     builder = gluon_builder(_semantic, _generator, "create_device_init")
     builder.create_device_init(_comm_handle(device_dptr, builder))
 
@@ -430,8 +428,11 @@ def remote(tensor, shard_id=None, scope=None, space="cluster", dtype=None, offse
         offset_tensor = tl.cast(offset_tensor, tl.int64, _semantic=_semantic)
     builder = gluon_builder(_semantic, _generator, "create_remote_pointers")
     ptr_type = tl.pointer_type(dtype, 1)
-    result = builder.create_remote_pointers(ptr_type.to_ir(builder), _memory_handle(tensor, builder), peer.handle,
-                                            offset_tensor.handle, bits // 8)
+    memory = _unwrap_if_constexpr(tensor)
+    from triton.runtime._distributed import DistributedRtContext
+    comm = _comm_handle(memory, builder) if isinstance(memory, DistributedRtContext) and memory[1] is not None else None
+    result = builder.create_remote_pointers(ptr_type.to_ir(builder), _memory_handle(memory, builder), peer.handle,
+                                            offset_tensor.handle, bits // 8, comm)
     return tl.tensor(result, ptr_type)
 
 

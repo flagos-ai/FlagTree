@@ -8,7 +8,6 @@ import triton.experimental.tle.language as tle
 
 @triton.jit
 def lsa_put_kernel(input_ptr, device_dptr: tl.constexpr, MY_RANK: tl.constexpr, N_RANKS: tl.constexpr):
-    tle.init(device_dptr)
     pid = tl.program_id(0)
     peer = (MY_RANK + 1) % N_RANKS
     remote_mem = tle.remote(device_dptr, space="device", dtype=tl.float32, shard_id=peer, offset=pid)

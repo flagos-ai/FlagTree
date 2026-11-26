@@ -5,6 +5,7 @@ add_triton_library(TritonXPUTransforms
   CoreTiling.cpp
   CreateGM2LM.cpp
   DtypeConvert.cpp
+  InsertDeviceInit.cpp
   Legalize.cpp
   TLEDtypeConvert.cpp
   TLELegalize.cpp

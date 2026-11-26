@@ -823,7 +823,7 @@ def TTX_DistributedBarrierOp : TTX_Op<"distributed_barrier"> {
 
 def TTX_RemotePointerOp : TTX_Op<"remote_pointer", [Pure]> {
   let arguments = (ins I64:$memory, I32:$peer, I64:$offset,
-                   I32Attr:$elementBytes);
+                   I32Attr:$elementBytes, Optional<I64>:$comm);
   let results = (outs TT_Ptr:$result);
   let hasVerifier = 1;
 }

@@ -94,10 +94,8 @@ struct TritonXPULoopGrid
       // => behaviour is byte-identical to before.
       llvm::SetVector<Operation *> hoistSet;
       // Collect the defining cone of `v` inside the loop body into `cone`.
-      // Returns false if any op of that cone cannot be hoisted (it has memory
-      // effects), in which case the CALLER MUST ABANDON the whole hoist: moving
-      // a copy out while one of its operands stays inside the loop would break
-      // dominance and fail the verifier.
+      // Reject memory effects and values that depend on the loop's program ID.
+      // Moving an op out while leaving an operand inside would break dominance.
       std::function<bool(Value, llvm::SetVector<Operation *> &)> collectCone =
           [&](Value v, llvm::SetVector<Operation *> &cone) -> bool {
         Operation *def = v.getDefiningOp();
@@ -106,8 +104,8 @@ struct TritonXPULoopGrid
                        // dominates.
         if (hoistSet.contains(def) || cone.contains(def))
           return true;
-        if (!isMemoryEffectFree(def))
-          return false; // only pure ops are safe to pull out via the cone.
+        if (!isMemoryEffectFree(def) || isa<triton::GetProgramIdOp>(def))
+          return false;
         cone.insert(def);
         for (Value operand : def->getOperands())
           if (!collectCone(operand, cone))
