@@ -164,8 +164,8 @@ struct DistributedBarrierOpConversion
         Value coord = linearBlockId;
         if (strides[axis] != 1)
           coord = b.udiv(coord, b.i32_val(strides[axis]));
-        if (domainShape[axis] != 1)
-          coord = b.urem(coord, b.i32_val(domainShape[axis]));
+        // A singleton axis must contribute zero to the group index.
+        coord = b.urem(coord, b.i32_val(domainShape[axis]));
         int32_t extent = extentByAxis[axis];
         int32_t groupsOnAxis = domainShape[axis] / extent;
         Value groupCoord = coord;

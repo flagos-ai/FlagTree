@@ -42,3 +42,23 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     tt.return
   }
 }
+
+// -----
+
+// A singleton domain axis contributes coordinate zero. For the barrier
+// pairing workgroups (0, 2) and (1, 3), the middle coordinate must not carry
+// the outer coordinate into the scratch index.
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: llvm.func @grid_axis_barrier_unit_dim
+  // CHECK-COUNT-2: llvm.urem
+  // CHECK: %[[QUOTIENT:[0-9]+]] = llvm.udiv
+  // CHECK-NEXT: %[[ONE:[0-9]+]] = llvm.mlir.constant(1 : i32)
+  // CHECK-NEXT: %[[SINGLETON:[0-9]+]] = llvm.urem %[[QUOTIENT]], %[[ONE]]
+  // CHECK: llvm.add {{.*}}, %[[SINGLETON]]
+  // CHECK: llvm.atomicrmw add {{.*}} syncscope("agent") release
+  tt.func public @grid_axis_barrier_unit_dim() {
+    "tle.distributed_barrier"() <{group_kind = "grid_axis", group_rank = 1 : i32, group_shape = array<i32: 2>, group_axes = array<i32: 0>, group_domain_shape = array<i32: 2, 1, 2>}> : () -> ()
+    tt.return
+  }
+}
