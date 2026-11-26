@@ -25,8 +25,6 @@ TLE_SUPPORTED_PRIMITIVES = [
     ## TLE-Struct GPU
     "gpu.alloc",
     "gpu.copy",
-    "gpu.to_tensor",
-    "gpu.store_tensor",
     "gpu.local_ptr",
     "gpu.memory_space",
     "gpu.warp_specialize",

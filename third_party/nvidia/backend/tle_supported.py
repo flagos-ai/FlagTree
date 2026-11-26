@@ -1,3 +1,5 @@
+from triton._common_ir import AVAILABLE as COMMON_IR_AVAILABLE
+
 TLE_SUPPORTED_PRIMITIVES = [
     ## TLE-Raw
     "raw.call",
@@ -33,8 +35,6 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.buffered_tensor.subslice",
     "gpu.alloc",
     "gpu.copy",
-    "gpu.to_tensor",
-    "gpu.store_tensor",
     "gpu.local_ptr",
     "gpu.memory_space",
     "gpu.set_layout",
@@ -48,3 +48,6 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.wgmma",
     "gpu.wgmma_wait",
 ]
+
+if COMMON_IR_AVAILABLE:
+    TLE_SUPPORTED_PRIMITIVES += ["gpu.to_tensor", "gpu.store_tensor"]

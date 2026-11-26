@@ -19,7 +19,7 @@
 # SOFTWARE.
 
 # flagtree tle
-from triton._flagtree_backend import FLAGTREE_BACKEND
+from ..primitives import _EXPORT_BUFFER_ACCESS_ALIASES
 
 from . import mthreads
 from .core import (
@@ -89,8 +89,7 @@ __all__ = [
     "tmem",
 ]
 
-# AMD exposes full-buffer access through buffered_tensor methods.
-if FLAGTREE_BACKEND != "amd":
+if _EXPORT_BUFFER_ACCESS_ALIASES:
     from .core import store_tensor, to_tensor
 
     __all__ += ["to_tensor", "store_tensor"]
