@@ -993,8 +993,8 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         # Only the first 8 hex chars of the digest are compared (see
         # setup_helper.check_file). Use the file's md5, not BOS's multipart ETag
         # (an ETag prefixed with '-' is not the file md5).
-        # sha256 7350d6e2d1147e75fb00211c13d2c4b2d6cae8832d2bc66fbdf11116eb883724
-        md5_digest="09b36d7a", version="v0.3.6.9.3",
+        # sha256 6a76080c0c24b023b594234e1122b6fead1869a0e7f440b53db3efcb481cd637
+        md5_digest="c6c71091", version="v0.3.6.9.3",
         post_hook=lambda path: install_python_impl(path, cache.flagtree_dir))
     cache.store(
         file="xtdk-llvm19_20261013",
