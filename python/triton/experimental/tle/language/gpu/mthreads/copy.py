@@ -91,9 +91,7 @@ def normalize_cache_policy(cache_policy):
     cache_policy = tl._unwrap_if_constexpr(cache_policy)
     if cache_policy is None:
         return None
-    # Import lazily because gpu.semantic also imports this module.
-    from .. import semantic as tle_semantic
-    if not common.enabled() or tle_semantic.COMMON_IR_ENABLED:
+    if not common.enabled():
         raise ValueError("copy cache_policy is only supported by the MUSA TLE backend")
     if not isinstance(cache_policy, TMECachePolicy):
         raise ValueError("cache_policy must be a compile-time tle.gpu.mthreads.TMECachePolicy")

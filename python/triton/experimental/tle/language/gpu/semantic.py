@@ -166,7 +166,8 @@ def alloc(shape, dtype, storage, layout, layout_handle, init_value, _semantic):
     return result
 
 
-def copy(src, dst, shape, offsets, direction, _semantic, completion_barrier=None, eviction_policy=""):
+def copy(src, dst, shape, offsets, direction, _semantic, completion_barrier=None, eviction_policy="",
+         cache_policy=None):
     descriptor = src if isinstance(src,
                                    tl.tensor_descriptor) else dst if isinstance(dst, tl.tensor_descriptor) else None
 
@@ -188,12 +189,14 @@ def copy(src, dst, shape, offsets, direction, _semantic, completion_barrier=None
         src_handle = src.handle if src is descriptor else memdesc
         dst_handle = dst.handle if dst is descriptor else memdesc
         eviction = _semantic._str_to_eviction_policy(eviction_policy) if eviction_policy else None
-        eviction_kwargs = {} if eviction is None else {"eviction_policy": eviction}
+        copy_kwargs = {} if eviction is None else {"eviction_policy": eviction}
+        if cache_policy is not None:
+            copy_kwargs["cachePolicy"] = cache_policy
         if completion_barrier is None:
-            _semantic.builder.create_tma_copy(src_handle, dst_handle, indices, **eviction_kwargs)
+            _semantic.builder.create_tma_copy(src_handle, dst_handle, indices, **copy_kwargs)
         else:
             _semantic.builder.create_tma_copy(src_handle, dst_handle, indices, completion_barrier.handle,
-                                              completion_barrier.expect_bytes, **eviction_kwargs)
+                                              completion_barrier.expect_bytes, **copy_kwargs)
         return
 
     if descriptor is not None:
