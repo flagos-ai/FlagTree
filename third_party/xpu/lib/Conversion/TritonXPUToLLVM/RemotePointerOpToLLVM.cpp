@@ -1,13 +1,17 @@
+#include "FlagCxOpToLLVM/FlagcxUtils.h"
 #include "PatternTritonXPUOpToLLVM.h"
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 
 using namespace mlir;
 
 namespace {
+
+using triton::xpu::createFlagcxDeviceCall;
+using triton::xpu::FlagcxDeviceFunction;
+using triton::xpu::getFlagcxGlobalPtrType;
 
 struct RemotePointerConversion
     : public ConvertOpToLLVMPattern<triton::xpu::RemotePointerOp> {
@@ -17,34 +21,22 @@ struct RemotePointerConversion
   matchAndRewrite(triton::xpu::RemotePointerOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    auto *ctx = rewriter.getContext();
-    auto ptrTy = LLVM::LLVMPointerType::get(ctx, /*addressSpace=*/1);
-    auto i64Ty = rewriter.getI64Type();
-    auto i32Ty = rewriter.getI32Type();
-    if (getTypeConverter()->convertType(op.getType()) != ptrTy)
+    if (getTypeConverter()->convertType(op.getType()) !=
+        getFlagcxGlobalPtrType(rewriter.getContext()))
       return op.emitOpError(
           "remote pointer must use XPU global address space 1");
-    auto fnTy = LLVM::LLVMFunctionType::get(ptrTy, {ptrTy, i64Ty, i32Ty});
-    auto mod = op->getParentOfType<ModuleOp>();
-    constexpr auto symbol = "flagcxGetIntraPointerC";
-    auto func = mod.lookupSymbol<LLVM::LLVMFuncOp>(symbol);
-    if (!func) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(mod.getBody());
-      func = rewriter.create<LLVM::LLVMFuncOp>(loc, symbol, fnTy);
-    } else if (func.getFunctionType() != fnTy) {
-      return rewriter.notifyMatchFailure(
-          op, "FlagCX remote pointer signature mismatch");
-    }
-    Value memory =
-        rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, adaptor.getMemory());
     Value elementBytes = rewriter.create<LLVM::ConstantOp>(
-        loc, i64Ty, rewriter.getI64IntegerAttr(op.getElementBytes()));
+        loc, rewriter.getI64Type(),
+        rewriter.getI64IntegerAttr(op.getElementBytes()));
     Value byteOffset =
         rewriter.create<LLVM::MulOp>(loc, adaptor.getOffset(), elementBytes);
-    auto result = rewriter.create<LLVM::CallOp>(
-        loc, func, ValueRange{memory, byteOffset, adaptor.getPeer()});
-    rewriter.replaceOp(op, result.getResult());
+    auto call = createFlagcxDeviceCall(op, rewriter,
+                                      FlagcxDeviceFunction::GetIntraPointer,
+                                      adaptor.getMemory(),
+                                      {byteOffset, adaptor.getPeer()});
+    if (failed(call))
+      return failure();
+    rewriter.replaceOp(op, call->getResult());
     return success();
   }
 };

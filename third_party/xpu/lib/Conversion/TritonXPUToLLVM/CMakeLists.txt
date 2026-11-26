@@ -9,6 +9,7 @@ add_triton_library(TritonXPUToLLVM
   RawOpToLLVM.cpp
   RemotePointerOpToLLVM.cpp
   FlagCxOpToLLVM/FlagCxOpToLLVM.cpp
+  FlagCxOpToLLVM/FlagcxUtils.cpp
   FlagCxOpToLLVM/GetLocalRankOpToLLVM.cpp
   GetDeviceIdToFlagCX.cpp
   FlagCxOpToLLVM/DeviceInitOpToLLVM.cpp
