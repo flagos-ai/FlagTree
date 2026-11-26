@@ -175,8 +175,8 @@ static bool isAtomicWithoutScratch(Operation *op,
 ModuleMembarAnalysis::ModuleMembarAnalysis(ModuleAllocation *moduleAllocation,
                                            MembarFilterFn filter)
     : ModuleMembarOrFenceAnalysis<MembarAnalysis>(
-          moduleAllocation, [moduleAllocation, filter](Operation *lhs,
-                                                       Operation *rhs) {
+          moduleAllocation,
+          [moduleAllocation, filter](Operation *lhs, Operation *rhs) {
             // Atomicity does not order shared scratch broadcasts of returns.
             if (isAtomicWithoutScratch(lhs, moduleAllocation) &&
                 isAtomicWithoutScratch(rhs, moduleAllocation))

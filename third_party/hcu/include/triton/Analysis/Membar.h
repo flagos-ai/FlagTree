@@ -207,7 +207,8 @@ private:
 };
 
 #ifdef __TLE__
-class ModuleMembarAnalysis : public ModuleMembarOrFenceAnalysis<MembarAnalysis> {
+class ModuleMembarAnalysis
+    : public ModuleMembarOrFenceAnalysis<MembarAnalysis> {
 public:
   ModuleMembarAnalysis(ModuleAllocation *moduleAllocation,
                        MembarFilterFn filter = nullptr);
