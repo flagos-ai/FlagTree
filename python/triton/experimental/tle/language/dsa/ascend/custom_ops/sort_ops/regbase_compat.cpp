@@ -8,8 +8,8 @@
 // BASE sort implementation; the A5-specific sort paths do not call them.
 
 #include "Utils.h"
-#include "Vector/VecUtils.h"
 #include "Vector/Arange/ArangeUtils.h"
+#include "Vector/VecUtils.h"
 
 template <typename T>
 __aiv__ void arange_1d(memref_t<__ubuf__ T, 1> *dst, int64_t offset,
