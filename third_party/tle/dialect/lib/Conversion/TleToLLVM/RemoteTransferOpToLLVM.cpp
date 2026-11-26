@@ -21,7 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "tle/dialect/include/Conversion/TleToLLVM/NodeTransferOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/RemoteTransferOpToLLVM.h"
 
 #include <optional>
 
@@ -38,12 +38,12 @@ namespace {
 using namespace mlir;
 using namespace mlir::triton;
 
-enum class NodeTransferKind { Put, Get };
+enum class RemoteTransferKind { Put, Get };
 
 static LLVM::LLVMFuncOp getOrInsertTransfer(ModuleOp module, MLIRContext *ctx,
-                                            NodeTransferKind kind) {
+                                           RemoteTransferKind kind) {
   const char *funcName =
-      kind == NodeTransferKind::Put ? "flagcxDevPut" : "flagcxDevGet";
+      kind == RemoteTransferKind::Put ? "flagcxDevPut" : "flagcxDevGet";
   if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName))
     return func;
 
@@ -71,14 +71,12 @@ static std::optional<int64_t> getConstantInt(Value value) {
   return integer.getInt();
 }
 
-static LogicalResult
-lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
-                  Value commHandle, Value peer, Value srcOffset,
-                  Value dstOffset, Value nelems, int32_t contextId,
-                  int64_t elemBytes, tle::FlagCXTeamKind teamKind,
-                  tle::FlagCXCoopKind coopKind, NodeTransferKind kind,
-                  std::optional<int64_t> constantNelems,
-                  ConversionPatternRewriter &rewriter) {
+static LogicalResult lowerRemoteTransfer(
+    Location loc, Operation *op, Value srcHandle, Value dstHandle,
+    Value commHandle, Value peer, Value srcOffset, Value dstOffset, Value nelems,
+    int32_t contextId, int64_t elemBytes, tle::FlagCXTeamKind teamKind,
+    tle::FlagCXCoopKind coopKind, RemoteTransferKind kind,
+    std::optional<int64_t> constantNelems, ConversionPatternRewriter &rewriter) {
   ModuleOp module = op->getParentOfType<ModuleOp>();
   if (!module)
     return rewriter.notifyMatchFailure(op, "expected a parent module");
@@ -127,7 +125,7 @@ lowerNodeTransfer(Location loc, Operation *op, Value srcHandle, Value dstHandle,
   Value order = makeI32(static_cast<int32_t>(tle::MemoryOrder::RELAXED));
 
   LLVM::LLVMFuncOp transfer = getOrInsertTransfer(module, ctx, kind);
-  bool isPut = kind == NodeTransferKind::Put;
+  bool isPut = kind == RemoteTransferKind::Put;
   rewriter.create<LLVM::CallOp>(
       loc, TypeRange{}, FlatSymbolRefAttr::get(transfer),
       ValueRange{comm, isPut ? dstMem : srcMem,
@@ -146,13 +144,13 @@ struct RemotePutOpConversion : public ConvertOpToLLVMPattern<tle::RemotePutOp> {
   LogicalResult
   matchAndRewrite(tle::RemotePutOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (failed(lowerNodeTransfer(
+    if (failed(lowerRemoteTransfer(
             op.getLoc(), op.getOperation(), adaptor.getSrc(),
             adaptor.getDstMem(), adaptor.getComm(), adaptor.getPeer(),
             adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
             static_cast<int32_t>(op.getContextIdAttr().getInt()),
             op.getElemBytesAttr().getInt(), op.getTeamKind(), op.getCoopKind(),
-            NodeTransferKind::Put, getConstantInt(op.getNelems()), rewriter)))
+            RemoteTransferKind::Put, getConstantInt(op.getNelems()), rewriter)))
       return failure();
     rewriter.eraseOp(op);
     return success();
@@ -167,13 +165,13 @@ struct RemoteGetOpConversion : public ConvertOpToLLVMPattern<tle::RemoteGetOp> {
   LogicalResult
   matchAndRewrite(tle::RemoteGetOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (failed(lowerNodeTransfer(
+    if (failed(lowerRemoteTransfer(
             op.getLoc(), op.getOperation(), adaptor.getSrc(),
             adaptor.getDstMem(), adaptor.getComm(), adaptor.getPeer(),
             adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
             static_cast<int32_t>(op.getContextIdAttr().getInt()),
             op.getElemBytesAttr().getInt(), op.getTeamKind(), op.getCoopKind(),
-            NodeTransferKind::Get, getConstantInt(op.getNelems()), rewriter)))
+            RemoteTransferKind::Get, getConstantInt(op.getNelems()), rewriter)))
       return failure();
     rewriter.eraseOp(op);
     return success();
@@ -182,7 +180,7 @@ struct RemoteGetOpConversion : public ConvertOpToLLVMPattern<tle::RemoteGetOp> {
 
 } // namespace
 
-void mlir::triton::tle::populateNodeTransferOpToLLVMPatterns(
+void mlir::triton::tle::populateRemoteTransferOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
   patterns.add<RemotePutOpConversion, RemoteGetOpConversion>(typeConverter,

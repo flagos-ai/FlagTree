@@ -28,8 +28,8 @@
 #include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/GetDeviceIdToFlagCX.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
-#include "tle/dialect/include/Conversion/TleToLLVM/NodeTransferOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/PackOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/RemoteTransferOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/SignalOpToLLVM.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #endif
@@ -231,8 +231,8 @@ struct ConvertTritonGPUToLLVM
         typeConverter, targetInfo, patterns, benefit);
     mlir::triton::tle::populateRemotePointersOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, benefit + 1);
-    mlir::triton::tle::populateNodeTransferOpToLLVMPatterns(typeConverter,
-                                                            patterns, benefit);
+    mlir::triton::tle::populateRemoteTransferOpToLLVMPatterns(
+        typeConverter, patterns, benefit);
 #endif
     mlir::triton::populateReduceOpToLLVMPatterns(typeConverter, patterns,
                                                  targetInfo, benefit);

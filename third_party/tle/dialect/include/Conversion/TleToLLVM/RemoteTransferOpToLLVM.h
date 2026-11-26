@@ -21,13 +21,13 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#ifndef TLE_RAW_CONVERSION_TLETOLLVM_NODETRANSFEROPTOLLVM_H
-#define TLE_RAW_CONVERSION_TLETOLLVM_NODETRANSFEROPTOLLVM_H
+#ifndef TLE_RAW_CONVERSION_TLETOLLVM_REMOTETRANSFEROPTOLLVM_H
+#define TLE_RAW_CONVERSION_TLETOLLVM_REMOTETRANSFEROPTOLLVM_H
 
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 
 namespace mlir::triton::tle {
-void populateNodeTransferOpToLLVMPatterns(
+void populateRemoteTransferOpToLLVMPatterns(
     mlir::LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit);
 } // namespace mlir::triton::tle
