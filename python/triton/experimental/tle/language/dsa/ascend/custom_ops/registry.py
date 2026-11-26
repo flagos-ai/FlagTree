@@ -1,4 +1,5 @@
 # Copyright 2026- Xcoresigma Technology Co., Ltd
+import functools
 from pathlib import Path
 
 import triton.language as tl
@@ -29,7 +30,46 @@ def custom_ops_arch_family() -> str:
     return "c220"
 
 
-al.set_custom_op_arch_resolver(custom_ops_arch_family)
+def _check_arch_supported(op_class):
+    supported = getattr(op_class, "supported_arches", None)
+    if not supported:
+        return
+    arch = custom_ops_arch_family()
+    if arch in supported:
+        return
+    name = getattr(op_class, "name", op_class.__name__)
+    reason = getattr(op_class, "unsupported_arch_reasons", {}).get(arch)
+    detail = f": {reason}" if reason else "."
+    raise NotImplementedError(f"custom op '{name}' does not support architecture family '{arch}' "
+                              f"(supported: {', '.join(sorted(supported))}){detail}")
+
+
+def supports_arches(*arches, reasons=None):
+    """Declare the ccec arch families a custom op is built for.
+
+    The active family is resolved when the op is instantiated (that is, when
+    the kernel is compiled), so the check uses the same target as the bitcode.
+    """
+    supported = tuple(arches)
+    assert supported and all(isinstance(arch, str) and arch
+                             for arch in supported), ("'supports_arches' requires non-empty string arch family names")
+    assert reasons is None or isinstance(reasons, dict), "'reasons' must be a dict"
+
+    def decorate(op_class):
+        op_class.supported_arches = supported
+        if reasons is not None:
+            op_class.unsupported_arch_reasons = dict(reasons)
+        original_init = op_class.__init__
+
+        @functools.wraps(original_init)
+        def __init__(self, *args, **kwargs):
+            _check_arch_supported(op_class)
+            original_init(self, *args, **kwargs)
+
+        op_class.__init__ = __init__
+        return op_class
+
+    return decorate
 
 
 def custom_ops_bitcode() -> str:
@@ -57,6 +97,7 @@ def _gather_dtype_suffix(value, op_name):
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class duplicate_bitwise_mask:
     """
     /*
@@ -79,7 +120,6 @@ class duplicate_bitwise_mask:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMD
-    supported_arches = ("c220", "c310")
 
     def __init__(self, scalar_value, mask, repeat_times, dst_block_stride, dst_repeat_stride, out=None):
         assert out
@@ -99,6 +139,14 @@ class duplicate_bitwise_mask:
 
 
 @al.register_custom_op
+@supports_arches(
+    "c220",
+    reasons={
+        "c310":
+        "custom-op-written L1 tiles are not marked tightly coupled, so "
+        "the AIC/AIV split leaves tl.dot reading uninitialized L1",
+    },
+)
 class gather_gm_to_l1:
     """
     /*
@@ -129,11 +177,6 @@ class gather_gm_to_l1:
     core = al.CORE.CUBE
     pipe = al.PIPE.PIPE_MTE2
     mode = al.MODE.SIMD
-    supported_arches = ("c220", )
-    unsupported_arch_reasons = {
-        "c310": "custom-op-written L1 tiles are not marked tightly coupled, so "
-                "the AIC/AIV split leaves tl.dot reading uninitialized L1",
-    }
 
     def __init__(self, src, index, tile_size, D, out=None):
         assert out is not None, "out buffer is required"
@@ -147,6 +190,7 @@ class gather_gm_to_l1:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class gather_gm_to_ub:
     """
     /*
@@ -178,7 +222,6 @@ class gather_gm_to_ub:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_MTE2
     mode = al.MODE.SIMD
-    supported_arches = ("c220", "c310")
 
     def __init__(self, src, index, tile_size, D, out=None):
         assert out is not None, "out buffer is required"
@@ -192,6 +235,7 @@ class gather_gm_to_ub:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class gather_mask_builtin_pattern:
     """
     /*
@@ -218,7 +262,6 @@ class gather_mask_builtin_pattern:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMD
-    supported_arches = ("c220", "c310")
 
     def __init__(self, src0, src1_pattern, reduce_mode, mask, src0_block_stride, repeat_times, src0_repeat_stride,
                  src1_repeat_stride, out=None):
@@ -250,6 +293,7 @@ class gather_mask_builtin_pattern:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class gather_mask_custom_pattern:
     """
     /*
@@ -276,7 +320,6 @@ class gather_mask_custom_pattern:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMD
-    supported_arches = ("c220", "c310")
 
     def __init__(self, src0, src1_pattern, reduce_mode, mask, src0_block_stride, repeat_times, src0_repeat_stride,
                  src1_repeat_stride, out=None):
@@ -316,6 +359,7 @@ class gather_mask_custom_pattern:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class pair_reduce_sum_continuous_mask:
     """
     /*
@@ -338,7 +382,6 @@ class pair_reduce_sum_continuous_mask:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMD
-    supported_arches = ("c220", "c310")
 
     def __init__(self, src, repeat_times, mask, dst_rep_stride, src_blk_stride, src_rep_stride, out=None):
         assert out
@@ -356,6 +399,7 @@ class pair_reduce_sum_continuous_mask:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class sort32:
     """
     /*
@@ -375,7 +419,6 @@ class sort32:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMD
-    supported_arches = ("c220", "c310")
 
     def __init__(self, src0, src1, repeat_times, out=None):
         assert _element_dtype(src0) == tl.float32, (f"sort32 only supports fp32 value, got {_element_dtype(src0)}")
@@ -388,6 +431,7 @@ class sort32:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class sort_1d_pack:
     """
     /*
@@ -417,7 +461,6 @@ class sort_1d_pack:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMD
-    supported_arches = ("c220", "c310")
 
     def __init__(self, src, tmp_buf, descending, TOPK, index_offset, sort_impl, out=None):
         assert out
@@ -431,6 +474,7 @@ class sort_1d_pack:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class merge_exhaust_sort4:
     """
     /*
@@ -468,7 +512,6 @@ class merge_exhaust_sort4:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMD
-    supported_arches = ("c220", "c310")
 
     def __init__(self, src_proposals, ways, off0, off1, off2, off3, len0, len1, len2, len3, out=None):
         assert out
@@ -486,6 +529,7 @@ class merge_exhaust_sort4:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class mrgsort:
     """
     /*
@@ -511,7 +555,6 @@ class mrgsort:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMD
-    supported_arches = ("c220", "c310")
 
     def __init__(self, src_proposals, off0, off1, off2, off3, len0, len1, len2, len3, if_exhausted_suspension,
                  valid_bit, repeat_times, out=None):
@@ -525,6 +568,7 @@ class mrgsort:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class unpack_sort:
     """
     /*
@@ -553,7 +597,6 @@ class unpack_sort:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMD
-    supported_arches = ("c220", "c310")
 
     def __init__(self, src_proposals, topk, out=None):
         assert out
@@ -588,6 +631,7 @@ def _check_mask_buffer(mask, size, op_name):
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class compare_scalar:
     """Packed scalar comparison of contiguous FP16/FP32 UB values.
 
@@ -608,7 +652,6 @@ class compare_scalar:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMD
-    supported_arches = ("c220", "c310")
 
     def __init__(self, src, scalar, cmpMode, count, out=None):
         assert out is not None, "compare_scalar requires an output bitmask"
@@ -631,6 +674,7 @@ class compare_scalar:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class cast_int4_to_fp16:
     """Unpack signed INT4 values from a 1D uint8 UB tensor into FP16.
 
@@ -652,7 +696,6 @@ class cast_int4_to_fp16:
     core = al.CORE.VECTOR
     pipe = al.PIPE.PIPE_V
     mode = al.MODE.SIMD
-    supported_arches = ("c220", "c310")
 
     def __init__(self, src, roundMode, count, out=None):
         assert out is not None, "cast_int4_to_fp16 requires an output buffer"

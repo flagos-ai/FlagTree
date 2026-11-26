@@ -143,7 +143,7 @@ tile_k = tle_raw.call(
 
 > **注意**：c220 上调用本算子的 kernel 必须传编译选项 `enable_legacy_insert_load_store_for_mix_cv=True`（kernel launch kwarg，后端转发为 bishengir-compile 的 `--enable-legacy-insert-load-store-for-mix-cv`，把 `InsertLoadStoreForMixCV` 整个 pass 回退到重构前的老版本）。CANN 9.1/9.2 重构了 `InsertLoadStoreForMixCV`，重构版把 PIPE_MTE2 custom op 的 out 规划到 GM workspace，回退到老版本 pass 即可绕开。
 >
-> c310（950）**不支持本算子**：BishengIR 只为 `hivm.copy` 的目的 buffer 打 tightly-coupled 标记，custom op 写入的 L1 buffer 在 AIC/AIV 拆分后无法与 `tl.dot` 的 L1 读取配对（重构版报 `read before first write`，legacy 版让 dot 读到未初始化的 L1，结果为 NaN）。c310 上 registry 会直接抛出 `NotImplementedError`，本算子的 c310 实现也不再编译/链接；行 gather 请改用 `gather_gm_to_ub`。`test_custom_ops.py` 在 c310 跳过本算子。
+> c310（950）**不支持本算子**：BishengIR 只为 `hivm.copy` 的目的 buffer 打 tightly-coupled 标记，custom op 写入的 L1 buffer 在 AIC/AIV 拆分后无法与 `tl.dot` 的 L1 读取配对（重构版报 `read before first write`，legacy 版让 dot 读到未初始化的 L1，结果为 NaN）。c310 上 registry 会直接抛出 `NotImplementedError`，本算子的 c310 实现也不再编译/链接；行 gather 请改用 `gather_gm_to_ub`。`test_custom_ops.py` 在 c310 上改用 `triton.language.extra.cann.extension.gather_out_to_ub`（GM→UB）再 `tl.dot`，由编译器插入 UB→L1 紧耦合 copy 来验证 gather→dot。
 
 完整示例见 `python/tutorials/tle/custom/test_custom_ops.py`（`test_gather_gm_to_l1`）。
 
@@ -437,11 +437,14 @@ c310 教程已验证除 `gather_gm_to_l1` 外的全部已注册算子：
 `duplicate_bitwise_mask`、`gather_gm_to_ub`、`gather_mask_builtin_pattern`、
 `gather_mask_custom_pattern`、`pair_reduce_sum_continuous_mask`、`sort32`、
 `sort_1d_pack`、`merge_exhaust_sort4`、`mrgsort`、`unpack_sort`、
-`compare_scalar`、`cast_int4_to_fp16`。这些算子显式声明
-`supported_arches = ("c220", "c310")`。`gather_gm_to_l1` 是例外：它写入的
-L1 tile 在 c310 上无法与 `tl.dot` 配对，因此声明
-`supported_arches = ("c220",)`，c310 上直接 gate，且不再编译/链接其 c310
-实现（见上文）。
+`compare_scalar`、`cast_int4_to_fp16`。这些算子用
+`@supports_arches("c220", "c310")` 声明可用架构。`gather_gm_to_l1` 是例外：
+它写入的 L1 tile 在 c310 上无法与 `tl.dot` 配对，因此声明
+`@supports_arches("c220", reasons={"c310": ...})`，c310 上在实例化时直接抛
+`NotImplementedError`，且不再编译/链接其 c310 实现（见上文）。c310 上需要
+gather→`tl.dot` 时，用 `gather_gm_to_ub` 或
+`triton.language.extra.cann.extension.gather_out_to_ub` 把数据落到 UB，编译器会
+自动插入 UB→L1 的紧耦合 copy。
 
 c310 使用注意：
 
@@ -459,6 +462,9 @@ c310 使用注意：
 - c310 上 `duplicate_bitwise_mask` 的调用需要在 custom op 之前加
   `tl.debug_barrier()`，确保 mask / scalar / out 的 UB 写入完成；否则首次或
   部分调用会偶发丢失 duplicate 的写入。
+- c310 上不要用 custom op 直接写 L1 再交给 `tl.dot`；先把 gather 结果放进 UB
+  （`gather_gm_to_ub` 或 `triton.language.extra.cann.extension.gather_out_to_ub`），
+  让 `InsertCVTightCoupledBuffer` 插入 UB→L1 的紧耦合 copy。
 
 
 ## compare_scalar

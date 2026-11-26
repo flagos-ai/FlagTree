@@ -52,7 +52,6 @@ from .custom_op import (
     custom,
     custom_semantic,
     register_custom_op,
-    set_custom_op_arch_resolver,
     SyncEventSlot,
 )
 
@@ -132,7 +131,6 @@ __all__ = [
     "custom",
     "custom_semantic",
     "register_custom_op",
-    "set_custom_op_arch_resolver",
     "SyncEventSlot",
 
     # math ops

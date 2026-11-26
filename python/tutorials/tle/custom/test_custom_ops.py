@@ -21,9 +21,9 @@ import numpy as np
 import torch
 import torch_npu
 import triton
-import triton.experimental.tle as tle
 import triton.experimental.tle.language.raw as tle_raw
 import triton.language as tl
+import triton.language.extra.cann.extension as al
 from triton.experimental.tle.language.dsa.ascend.custom_ops import (
     SORT_IMPL_BASE,
     SORT_IMPL_S4096_K1_128_K2048,
@@ -113,6 +113,35 @@ def gather_gm_to_l1_dot_kernel(
 
 
 @triton.jit
+def gather_gm_to_l1_dot_kernel_c310(src, src_index, query, output, NUM_ROWS: tl.constexpr, TILE_SIZE: tl.constexpr,
+                                    D: tl.constexpr, DTYPE: tl.constexpr):
+    rows = tl.load(src_index + tl.arange(0, TILE_SIZE))
+    index_2d = tl.zeros((TILE_SIZE, D), tl.int32) + rows[:, None]
+    tile_k = al.gather_out_to_ub(src, index_2d, NUM_ROWS, 0, (D, 1), (TILE_SIZE, D), (0, 0))
+
+    query_2d = tl.make_block_ptr(
+        base=query,
+        shape=(TILE_SIZE, D),
+        strides=(D, 1),
+        offsets=(0, 0),
+        block_shape=(TILE_SIZE, D),
+        order=(1, 0),
+    )
+    tile_q = tl.load(query_2d)
+    result = tl.dot(tile_q, tl.trans(tile_k))
+
+    output_2d = tl.make_block_ptr(
+        base=output,
+        shape=(TILE_SIZE, TILE_SIZE),
+        strides=(TILE_SIZE, 1),
+        offsets=(0, 0),
+        block_shape=(TILE_SIZE, TILE_SIZE),
+        order=(1, 0),
+    )
+    tl.store(output_2d, result)
+
+
+@triton.jit
 def gather_gm_to_ub_store_kernel(
     src,
     src_index,
@@ -175,9 +204,8 @@ def gather_mask_builtin_pattern_kernel(src, dst, rsvd_cnt):
     src1_repeat_stride = 0
     out0 = tl.zeros([ONE_REPEAT_SORT_NUM], dtype=tl.float32)
     out1 = tl.zeros([1], dtype=tl.int64)
-    out0, out1 = tle_raw.call("ascend_gather_mask_builtin_pattern", src_t, src1_pattern,
-                              reduce_mode, mask, src0_block_stride, repeat_times, src0_repeat_stride,
-                              src1_repeat_stride, out=[out0, out1])
+    out0, out1 = tle_raw.call("ascend_gather_mask_builtin_pattern", src_t, src1_pattern, reduce_mode, mask,
+                              src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride, out=[out0, out1])
     tl.store(dst + dst_offs, out0)
     tl.store(rsvd_cnt + tl.arange(0, 1), out1)
 
@@ -200,8 +228,8 @@ def gather_mask_custom_pattern_kernel(src, dst, rsvd_cnt):
     src1_repeat_stride = 0
     out0 = tl.zeros([NUM_GROUPS * 2], dtype=tl.float32)
     out1 = tl.zeros([1], dtype=tl.int64)
-    out0, out1 = tle_raw.call("ascend_gather_mask_custom_pattern", src_t, src1, reduce_mode, mask,
-                              src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride, out=[out0, out1])
+    out0, out1 = tle_raw.call("ascend_gather_mask_custom_pattern", src_t, src1, reduce_mode, mask, src0_block_stride,
+                              repeat_times, src0_repeat_stride, src1_repeat_stride, out=[out0, out1])
     tl.store(dst + dst_offs, out0)
     tl.store(rsvd_cnt + tl.arange(0, 1), out1)
 
@@ -256,9 +284,8 @@ def merge_exhaust_kernel(SrcGM, OutGM, ConsGM, WAY_CAP: tl.constexpr, WAYS: tl.c
     out_t = tl.zeros([OUT_P2], dtype=tl.float32)
     cons = tl.zeros([4], dtype=tl.int32)
 
-    out_t, cons = tle_raw.call("ascend_merge_exhaust_sort4", in_t, WAYS,
-                               0 * WAY_CAP, 1 * WAY_CAP, 2 * WAY_CAP, 3 * WAY_CAP, L0, L1, L2, L3,
-                               out=[out_t, cons])
+    out_t, cons = tle_raw.call("ascend_merge_exhaust_sort4", in_t, WAYS, 0 * WAY_CAP, 1 * WAY_CAP, 2 * WAY_CAP,
+                               3 * WAY_CAP, L0, L1, L2, L3, out=[out_t, cons])
 
     tl.store(OutGM + tl.arange(0, OUT_P2), out_t)
     tl.store(ConsGM + tl.arange(0, 4), cons)
@@ -276,9 +303,8 @@ def mrgsort_kernel(src, dst, TOP_K: tl.constexpr):
     offs = tl.arange(0, BLOCK_SIZE)
     src_t = tl.load(src + offs)
     pair = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
-    pair = tle_raw.call("ascend_mrgsort", src_t, 0, GROUP_SIZE,
-                        GROUP_SIZE * 2, GROUP_SIZE * 3, TOP_K, TOP_K, TOP_K, TOP_K,
-                        IF_EXHAUSTED_SUSPENSION, VALID_BIT, REPEAT_TIMES, out=pair)
+    pair = tle_raw.call("ascend_mrgsort", src_t, 0, GROUP_SIZE, GROUP_SIZE * 2, GROUP_SIZE * 3, TOP_K, TOP_K, TOP_K,
+                        TOP_K, IF_EXHAUSTED_SUSPENSION, VALID_BIT, REPEAT_TIMES, out=pair)
     tl.store(dst + offs, pair, mask=offs < TOP_K * 2)
 
 
@@ -370,16 +396,8 @@ def _print_failed_mlir(exc):
 
 
 def test_gather_gm_to_l1(torch_dtype, tol):
-    if custom_ops_arch_family() == "c310":
-        # BishengIR only marks L1 buffers that are hivm.copy destinations as
-        # tightly coupled. A custom-op-written L1 tile is therefore unpaired
-        # across the AIC/AIV split: the refactored mix-CV pass rejects it with
-        # "memref.alloc: read before first write", and the legacy pass leaves
-        # tl.dot reading uninitialized L1. Row-gather correctness is covered by
-        # gather_gm_to_ub on this target.
-        print("[SKIP] gather_gm_to_l1 dot hand-off on c310 "
-              "(BishengIR tightly-coupled-buffer limitation; see CUSTOM_OP_USAGE_cn.md)")
-        return
+    arch = custom_ops_arch_family()
+    kernel = gather_gm_to_l1_dot_kernel_c310 if arch == "c310" else gather_gm_to_l1_dot_kernel
     torch.manual_seed(0)
     src = torch.randn((NUM_ROWS, D), dtype=torch_dtype, device=DEVICE)
     query = torch.randn((TILE_SIZE, D), dtype=torch_dtype, device=DEVICE)
@@ -387,7 +405,7 @@ def test_gather_gm_to_l1(torch_dtype, tol):
     src_index = torch.tensor(L1_INDEX, dtype=torch.int32, device=DEVICE)
 
     try:
-        gather_gm_to_l1_dot_kernel[(1, )](
+        kernel[(1, )](
             src,
             src_index,
             query,
@@ -408,7 +426,7 @@ def test_gather_gm_to_l1(torch_dtype, tol):
     print(f"[gather_gm_to_l1] output max={output.abs().max().item():.4f} "
           f"expected max={expected.abs().max().item():.4f}")
     torch.testing.assert_close(output.cpu(), expected.cpu(), rtol=tol, atol=tol)
-    print(f"[PASS] gather_gm_to_l1 dot correctness ({torch_dtype})")
+    print(f"[PASS] gather_gm_to_l1 dot correctness ({torch_dtype}, {arch})")
 
 
 def test_gather_gm_to_ub(torch_dtype):
@@ -704,13 +722,15 @@ def test_duplicate():
     torch_npu.npu.synchronize()
 
     expected = np.array([sentinel] * n_groups + [fill] * (ONE_REPEAT_SORT_NUM - n_groups), dtype=np.float32)
-    np.testing.assert_array_equal(expected, out.cpu().numpy(), err_msg="duplicate_bitwise_mask dst mismatch (tail fill)")
+    np.testing.assert_array_equal(expected,
+                                  out.cpu().numpy(), err_msg="duplicate_bitwise_mask dst mismatch (tail fill)")
 
     duplicate_bitwise_mask_kernel[(1, )](out, MASK0=(1 << n_groups) - 1, SCALAR=fill, INIT=sentinel)
     torch_npu.npu.synchronize()
 
     expected = np.array([fill] * n_groups + [sentinel] * (ONE_REPEAT_SORT_NUM - n_groups), dtype=np.float32)
-    np.testing.assert_array_equal(expected, out.cpu().numpy(), err_msg="duplicate_bitwise_mask dst mismatch (head fill)")
+    np.testing.assert_array_equal(expected,
+                                  out.cpu().numpy(), err_msg="duplicate_bitwise_mask dst mismatch (head fill)")
     print("[PASS] duplicate correctness")
 
 
