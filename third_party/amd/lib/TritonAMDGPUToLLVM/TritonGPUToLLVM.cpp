@@ -214,6 +214,8 @@ struct ConvertTritonAMDGPUToLLVM
           typeConverter, tlePatterns, targetInfo, commonBenefit);
       mlir::triton::tle::populateExclusiveCumsumOpToLLVMPatterns(
           typeConverter, targetInfo, tlePatterns, commonBenefit);
+      mlir::triton::tle::populateMemDescAliasOpToLLVMPatterns(
+          typeConverter, tlePatterns, commonBenefit);
       if (failed(
               applyPartialConversion(mod, tleTarget, std::move(tlePatterns))))
         return signalPassFailure();

@@ -13,6 +13,7 @@
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir::triton::tle {
 namespace ttg = mlir::triton::gpu;
@@ -52,6 +53,25 @@ static void markPlannedInputTiles(const LogicalDomainPlan &plan) {
 }
 
 constexpr llvm::StringLiteral kTiledFields("tiled_smem_fields");
+
+// Pipe ops carry an `identity` operand before their variadic `fields`, so an
+// operand's position is not a `field_names` index. Return the position within
+// the declared field operand list instead.
+static unsigned pipeFieldIndex(OpOperand &operand) {
+  Operation *op = operand.getOwner();
+  unsigned begin = llvm::TypeSwitch<Operation *, unsigned>(op)
+                       .Case<tle::PipeCreateOp, tle::PipeWriterAcquireOp,
+                             tle::PipeWriterCommitOp, tle::PipeWriterCloseOp,
+                             tle::PipeReaderWaitOp, tle::PipeReaderReleaseOp,
+                             tle::PipeDrainOp>([](auto pipe) {
+                         return pipe.getFieldsMutable()
+                             .getAsOperandRange()
+                             .getBeginOperandIndex();
+                       })
+                       .Default([](Operation *) { return 0u; });
+  return operand.getOperandNumber() - begin;
+}
+
 static void addTiledPipeField(Operation *op, unsigned fieldIndex,
                               OpBuilder &builder) {
   SmallVector<int32_t> fields;
@@ -345,8 +365,10 @@ static void applyRootRewrite(LogicalRootRewriteAction &action) {
     unsigned fieldIndex = use->getOperandNumber();
     assert(use->get().getType() == exactType &&
            "forwarded exact-SMEM use must have rewritten storage type");
+    // tiled_smem_fields indexes the pipe's `fields` operand list, which starts
+    // after any preceding operands (pipe ops put their SSA identity first).
     if (memdescUse.markTiledPipeField)
-      addTiledPipeField(use->getOwner(), fieldIndex, builder);
+      addTiledPipeField(use->getOwner(), pipeFieldIndex(*use), builder);
   }
 
   if (oldType.getRank() == 2) {
@@ -450,6 +472,8 @@ static void applyRootRewrite(LogicalRootRewriteAction &action) {
         if (copy.getBarrier())
           expectBytes = copyBuilder.getI32IntegerAttr(0);
 #endif
+        if (Attribute eviction = copy->getAttr("evict"))
+          tiledCopy->setAttr("evict", eviction);
         int64_t elementBytes =
             oldType.getElementType().getIntOrFloatBitWidth() / 8;
         tiledCopy->setAttr(

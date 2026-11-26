@@ -51,6 +51,7 @@ jobs:
       backend: hcu
       gpu-env-var: HIP_VISIBLE_DEVICES
       flaggems-tag: 'v5.3.5'
+      flaggems-vllm-tag: 'v0.2.1.dev1'
       flagtree-build-command: |
         set -x
         source ~/env.sh

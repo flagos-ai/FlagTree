@@ -32,6 +32,12 @@ inputs:
       merge, which is both the author's change and the maintainer's push.
     required: false
     default: ''
+  admins:
+    description: >-
+      Resolve everyone marked is_admin instead of a login. For a failure that
+      belongs to the branch rather than to a change somebody made.
+    required: false
+    default: 'false'
   workflow:
     description: >-
       Workflow name to check against the skip list. Use the workflow's
@@ -92,6 +98,7 @@ runs:
         FEISHU_BITABLE_APP_TOKEN: ${{ inputs.app-token }}
         LOGIN: ${{ inputs.login }}
         WORKFLOW: ${{ inputs.workflow }}
+        ADMINS: ${{ inputs.admins }}
         CREATE_MISSING: ${{ inputs.create-missing }}
         PYTHON: ${{ inputs.python }}
       run: |
@@ -106,7 +113,7 @@ runs:
           echo "skip-reason="
         } >> "$GITHUB_OUTPUT"
 
-        if [[ -z "${LOGIN}" && -z "${WORKFLOW}" ]]; then
+        if [[ -z "${LOGIN}" && -z "${WORKFLOW}" && "${ADMINS}" != "true" ]]; then
           echo "Nothing to look up."
           exit 0
         fi
@@ -135,6 +142,7 @@ runs:
 
         args=()
         [[ -n "${LOGIN}" ]] && args+=(--login "${LOGIN}")
+        [[ "${ADMINS}" == "true" ]] && args+=(--admins)
         [[ -n "${WORKFLOW}" ]] && args+=(--workflow "${WORKFLOW}")
         [[ "${CREATE_MISSING}" == "true" ]] && args+=(--create-missing)
 

@@ -29,12 +29,22 @@
 #include "mlir/Support/LLVM.h"
 #include "triton/Analysis/AxisInfo.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#ifdef __TLE__
+#include "llvm/ADT/DenseSet.h"
+#endif
 
 namespace mlir::triton::gpu {
 BlockedEncodingAttr buildCoalescedEncoding(
     MLIRContext *context, ModuleAxisInfoAnalysis &axisInfoAnalysis,
     Operation *op, int numWarps, int threadsPerWarp,
     triton::gpu::CTAEncodingAttr CTALayout, SmallVector<int64_t> shapePerCTA);
+#ifdef __TLE__
+BlockedEncodingAttr buildCoalescedEncoding(
+    MLIRContext *context, ModuleAxisInfoAnalysis &axisInfoAnalysis,
+    Operation *op, int numWarps, int threadsPerWarp,
+    triton::gpu::CTAEncodingAttr CTALayout, SmallVector<int64_t> shapePerCTA,
+    const llvm::DenseSet<Block *> &nonExecutableBlocks);
+#endif
 } // namespace mlir::triton::gpu
 
 #endif // TRITON_DIALECT_TRITONGPU_TRANSFORMS_COALESCINGUTILS_H_

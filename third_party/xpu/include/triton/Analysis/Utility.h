@@ -138,10 +138,21 @@ public:
   unsigned getReduceNum() { return reduceNum; }
 
   void setSMOffsets(unsigned _reduceId, SmallVector<int64_t> &_offsets) {
-    // Store the local footprint. The lowering uses the previous reduction's
-    // endOffset as the base, matching the sync source's scratch reuse policy.
+    // Each reduction's scratch must start where the previous reduction's
+    // scratch ends, so the recorded endOffset is cumulative across all
+    // reductions in the kernel. Hardcoding startOffset=0 made every endOffset
+    // equal to just this reduction's own size, so getSmemBases (which places
+    // reduction k at base + getSMOffsets(k-1)->endOffset) collapsed reductions
+    // 1..N onto the same slot -> concurrent reductions clobbered each other and
+    // overran the scratch (719 on >=3 co-axial reductions, e.g. det/ldl step
+    // kernels and adaptive_avg_pool2d's int kernel). Chain from the previous
+    // reduction's endOffset instead, giving each reduction a distinct slot.
+    int64_t startOffset = 0;
+    if (_reduceId != 0)
+      if (const auto *prev = getSMOffsets(_reduceId - 1))
+        startOffset = prev->endOffset;
     reduceSMOffsetMap[_reduceId] =
-        std::make_unique<redSMOffsetInfo>(0, _offsets);
+        std::make_unique<redSMOffsetInfo>(startOffset, _offsets);
   }
 
   redSMOffsetInfo *getSMOffsets(unsigned _reduceId) {
@@ -303,6 +314,17 @@ public:
   unsigned getScanNum() { return scanNum; }
 
   Location getXPULoc() { return xpu_op.getLoc(); }
+
+  // Mirrors ReduceOpHelper::isVectorized: every data operand's element type
+  // is a vector once Vectorize admits the scan.
+  bool isVectorized() {
+    for (auto type : xpu_op.getInputTypes()) {
+      if (!isa<VectorType>(getElementTypeOrSelf(type))) {
+        return false;
+      }
+    }
+    return true;
+  }
 
   unsigned getXPUAxis() { return xpu_op.getAxis(); }
 

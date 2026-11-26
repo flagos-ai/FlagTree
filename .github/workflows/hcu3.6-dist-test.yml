@@ -1,0 +1,116 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: Hcu3.6-Dist
+
+on:
+  schedule:
+    - cron: '30 20 * * *'
+  push:
+    branches: [ "main", "triton_v3.6.x" ]
+  pull_request:
+    branches: [ "main", "triton_v3.6.x" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hcu36x:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [hcu3.6-bw1100-dist]
+    runs-on: ${{ matrix.runner }}
+    if: ${{ github.repository == 'flagos-ai/flagtree' && github.event.pull_request.draft == false }}
+    steps:
+      - name: Setup environment
+        shell: bash
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check if backend-relevant files changed
+        id: check_backend
+        if: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
+        uses: flagos-ai/FlagTree/.github/actions/check-backend-changed@main
+        with:
+          backend: hcu
+
+      - name: Cleanup FlagTree Environment
+        if: steps.check_backend.outputs.should_skip != 'true'
+        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
+
+      - name: Build FlagTree
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          export FLAGTREE_BACKEND=hcu
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
+
+      - name: Clear cache if ClearCache label present
+        if: steps.check_backend.outputs.should_skip != 'true'
+        id: clear_cache
+        uses: flagos-ai/FlagTree/.github/actions/clear-cache-if-labeled@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          backend: hcu
+
+      - name: TLE-Distributed Test
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          source ~/env.sh
+          # Silence ProcessGroupNCCL INFO (LOG(INFO) via glog). HCU torch is
+          # built with C10_USE_GLOG; TORCH_CPP_LOG_LEVEL cannot raise glog's
+          # minloglevel (UpdateLoggingLevelsFromFlags only std::min's it).
+          export GLOG_minloglevel=2
+          export PYTHONPATH=~/.flagtree/hcu/hcu-llvm22-188a510-glibc2.35-glibcxx3.4.30-ubuntu-x86_64/python_packages/mlir_core/:$PYTHONPATH
+          cd third_party/hcu/python/tutorials/tle/raw/dushmem
+          # Avoid default 29500 collisions on shared self-hosted runners.
+          # Same strategy as nvidia3.6-single-dist-test.yml / python/test/tle/unit/test_tle_*.sh:
+          # probe with ss, then +2.
+          pick_free_master_port() {
+            local port="${1:-29500}"
+            while ss -ltn | grep -q ":${port} "; do
+              echo "Port ${port} is occupied, trying next..." >&2
+              port=$((port + 2))
+            done
+            echo "Using master_port=${port}" >&2
+            printf '%s' "${port}"
+          }
+          master_port="$(pick_free_master_port 29500)"
+          torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr=127.0.0.1 --master_port="${master_port}" 01-simple-shift/simple-shift.py
+          master_port="$(pick_free_master_port $((master_port + 2)))"
+          torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr=127.0.0.1 --master_port="${master_port}" 02-allgather-gemm/ag-gemm.py
+          master_port="$(pick_free_master_port $((master_port + 2)))"
+          torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr=127.0.0.1 --master_port="${master_port}" 03-gemm-allreduce/gemm-ar.py

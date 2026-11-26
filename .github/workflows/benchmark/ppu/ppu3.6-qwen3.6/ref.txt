@@ -1,4 +1,39 @@
 810E * 2
+harbor.baai.ac.cn/flagtree/flagtree-ppu-py312-torch2.10.0-sdk2.1.0-cu130-ubuntu24.04:202611-3.6-vllm0.32.0
+Driver Version: 1.3.2-d7f5a2
+hggc==13.0
+vllm==0.32.0+empty
+torch==2.10.0
+
+[2026/11/25] vllm-plugin-fl==0.5.0.dev0+g814b6d3e5 (2026/11/17), flag_gems==5.4.0 (2026/09/22), flaggems_vllm==814b6d3 (2026/11/17), flagtree===0.7.1+ppu3.6 (2026/11/17)
+# 服务冷启动时间: 13分41秒, 服务热启动时间: 4分10秒
+# 输入长度: 1K, 输出长度: 1K, 并发数: 4
+  Output token throughput (tok/s): 135.00
+  Total token throughput (tok/s): 269.99
+  Median TTFT (ms): 480.56
+  Median TPOT (ms): 29.18
+  Median ITL (ms): 29.04
+# 输入长度: 512, 输出长度: 512, 并发数: 4
+  Output token throughput (tok/s): 125.39
+  Total token throughput (tok/s): 250.78
+  Median TTFT (ms): 1522.47
+  Median TPOT (ms): 29.30
+  Median ITL (ms): 28.89
+# 输入长度: 256, 输出长度: 256, 并发数: 4
+  Output token throughput (tok/s): 128.31
+  Total token throughput (tok/s): 256.62
+  Median TTFT (ms): 528.82
+  Median TPOT (ms): 29.20
+  Median ITL (ms): 28.88
+# 输入长度: 128, 输出长度: 128, 并发数: 4
+Output token throughput (tok/s): 111.65
+  Total token throughput (tok/s): 223.29
+  Median TTFT (ms): 485.32
+  Median TPOT (ms): 32.39
+  Median ITL (ms): 30.96
+
+
+810E * 2
 harbor.baai.ac.cn/flagtree/flagtree-ppu-py312-torch2.10.0-sdk2.1.0-cu130-ubuntu24.04:202607-3.6-vllm0.24.0
 Driver Version: 1.3.2-d7f5a2
 hggc==13.0

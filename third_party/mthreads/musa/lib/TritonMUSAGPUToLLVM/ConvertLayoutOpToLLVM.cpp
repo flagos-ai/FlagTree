@@ -123,6 +123,42 @@ public:
     Attribute srcLayout = srcTy.getEncoding();
     Attribute dstLayout = dstTy.getEncoding();
 
+#ifdef __TLE__
+    // FP8 and BF16 SQMMA can differ in instruction K while assigning every
+    // accumulator element to the same register. Preserve that accumulator
+    // instead of routing an equivalent layout through shared memory.
+    if (isa_and_nonnull<triton::gpu::MUSASqmmaEncodingAttr>(srcLayout) &&
+        isa_and_nonnull<triton::gpu::MUSASqmmaEncodingAttr>(dstLayout) &&
+        toLinearLayout(srcTy) == toLinearLayout(dstTy)) {
+      rewriter.replaceOp(op, adaptor.getSrc());
+      return success();
+    }
+#endif // __TLE__
+
+    // Let the common lowering reorder/broadcast SSA registers when its
+    // physical-layout proof excludes any exchange across lanes/warps/CTAs.
+    // In particular, sliced MMA/linear encodings must not enter the
+    // conservative replicated shared-memory path just because of their kind.
+    if (isa<DistributedEncodingTrait>(srcLayout) &&
+        isa<DistributedEncodingTrait>(dstLayout) &&
+        cvtReordersRegisters(srcTy, dstTy))
+      return failure();
+
+    // A native MMA encoding and its inferred linear spelling can describe
+    // exactly the same registers. Do not route that representational cast
+    // through the conservative shared-memory carrier path below.
+    auto hasLinearEncoding = [](Attribute encoding) {
+      while (auto slice = dyn_cast<triton::gpu::SliceEncodingAttr>(encoding))
+        encoding = slice.getParent();
+      return isa<triton::gpu::LinearEncodingAttr>(encoding);
+    };
+    if ((hasLinearEncoding(srcLayout) || hasLinearEncoding(dstLayout)) &&
+        toLinearLayout(srcTy) == toLinearLayout(dstTy) &&
+        adaptor.getSrc().getType() == getTypeConverter()->convertType(dstTy)) {
+      rewriter.replaceOp(op, adaptor.getSrc());
+      return success();
+    }
+
     if (musa::useMusaReplicatedScratch(srcLayout, dstLayout)) {
       if (musa::isMusaSqmmaAccumulatorToBlockedLike(srcLayout, dstLayout))
         return lowerSqmmaBlockSwizzling(op, adaptor, rewriter);

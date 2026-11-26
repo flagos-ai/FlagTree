@@ -32,9 +32,10 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
   // CHECK-NOT: llvm.insertvalue
   // CHECK: nvg.wgmma
   // LLVM-LABEL: @dot_nonzero_acc_precedes_wgmma_fence
+  // LLVM: llvm.add
+  // LLVM: llvm.add
+  // LLVM-NOT: __tle_wgmma_desc
   // LLVM: "wgmma.fence.sync.aligned;
-  // LLVM-SAME: add.u64 __tle_wgmma_desc_a
-  // LLVM-SAME: add.u64 __tle_wgmma_desc_b
   // LLVM-SAME: wgmma.mma_async.sync.aligned
   tt.func @dot_nonzero_acc_precedes_wgmma_fence(%a: !ttg.memdesc<64x64xf16, #shared, #smem>, %b: !ttg.memdesc<64x64xf16, #shared, #smem>, %acc: tensor<64x64xf32, #mma>) {
     %m = ttng.warp_group_dot %a, %b, %acc { inputPrecision = 0 : i32 }:

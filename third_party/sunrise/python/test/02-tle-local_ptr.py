@@ -95,7 +95,6 @@ class TestTLELocalPtrRoundtrip:
         (64, 64),
     ])
     def test_roundtrip(self, XBLOCK, YBLOCK):
-        torch.manual_seed(0)
         xnumel, ynumel = 256, YBLOCK * 4
 
         src = torch.randn(xnumel, ynumel, device=DEVICE, dtype=torch.float32)

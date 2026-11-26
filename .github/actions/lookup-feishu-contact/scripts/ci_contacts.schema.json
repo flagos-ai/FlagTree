@@ -23,7 +23,12 @@
     "name           for humans reading the table. Never used for routing, so a",
     "               typo here is harmless.",
     "enabled        unchecked pauses notifications for this person without",
-    "               losing their mapping."
+    "               losing their mapping.",
+    "is_admin       also notified when a scheduled run fails. A nightly runs",
+    "               on whatever is at the head of the branch, so it belongs",
+    "               to nobody in particular: without a standing list there",
+    "               is nobody to tell, and the alternative -- blaming",
+    "               whoever merged last -- pages someone unrelated."
   ],
   "table_name": "ci_contacts",
   "dedup_field": "github_login",
@@ -42,6 +47,10 @@
     },
     {
       "field_name": "enabled",
+      "type": 7
+    },
+    {
+      "field_name": "is_admin",
       "type": 7
     }
   ]

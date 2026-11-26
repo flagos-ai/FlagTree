@@ -22,14 +22,21 @@
  */
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "tle/dialect/include/Transforms/Passes.h"
+#include "triton/Analysis/Alias.h"
+#include "triton/Analysis/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 
 namespace mlir::triton::tle {
 
@@ -111,6 +118,7 @@ struct TritonTleLowerBarriers
     SmallVector<BarrierWaitOp> waits;
     SmallVector<BarrierArriveOp> arrives;
     SmallVector<BarrierAllocOp> allocs;
+    llvm::MapVector<Value, SmallVector<Value>> ownedBarrierSlots;
     module.walk([&](Operation *op) {
       if (auto wait = dyn_cast<BarrierWaitOp>(op))
         waits.push_back(wait);
@@ -217,10 +225,137 @@ struct TritonTleLowerBarriers
           Value slot = createBarrierSlot(builder, loc, alloc, i);
           builder.create<ttng::InitBarrierOp>(
               loc, slot, static_cast<uint32_t>(arriveCount));
+          ownedBarrierSlots[alloc].push_back(slot);
         }
+        // InitBarrierOp is executed by one thread. Publish initialization
+        // before other threads wait or begin TMA transactions. Named-only
+        // handles have no mbarrier state to publish.
+        builder.create<mlir::gpu::BarrierOp>(loc);
       }
       op.getResult().replaceAllUsesWith(alloc);
       op.erase();
+    }
+
+    if (ownedBarrierSlots.empty())
+      return;
+
+    // Follow descriptor aliases before ending the lifetime. Borrowed
+    // descriptors never appear in ownedBarrierSlots.
+    llvm::MapVector<Operation *, SmallVector<Value>> functionBarriers;
+    for (const auto &[alloc, slots] : ownedBarrierSlots) {
+      Operation *def = alloc.getDefiningOp();
+      auto function = def->getParentOfType<FunctionOpInterface>();
+      Region *scope = def->getParentRegion();
+      if (!function ||
+          (!scope->hasOneBlock() && scope != &function.getFunctionBody())) {
+        def->emitOpError(
+            "owned mbarriers require a function body or a single-block "
+            "defining region");
+        return signalPassFailure();
+      }
+      functionBarriers[function.getOperation()].push_back(alloc);
+    }
+    DominanceInfo dominance;
+    for (const auto &entry : functionBarriers) {
+      Operation *function = entry.first;
+      const auto &barriers = entry.second;
+      auto solver = createDataFlowSolver();
+      auto *aliases = solver->load<SharedMemoryAliasAnalysis>();
+      if (failed(solver->initializeAndRun(function)))
+        return signalPassFailure();
+      DenseSet<Value> escaped;
+      auto checkValue = [&](Value value) {
+        auto *lattice = aliases->getLatticeElement(value);
+        for (Value alloc : barriers) {
+          if (escaped.contains(alloc) ||
+              !lattice->getValue().getAllocs().contains(alloc))
+            continue;
+          Region *scope = alloc.getParentRegion();
+          Block *definingBlock = alloc.getParentBlock();
+          Block *aliasBlock =
+              scope->findAncestorBlockInRegion(*value.getParentBlock());
+          bool outsideScope = !aliasBlock ||
+                              !dominance.dominates(definingBlock, aliasBlock) ||
+                              (isa<BlockArgument>(value) &&
+                               value.getParentBlock() == definingBlock);
+          bool returnedFromScope =
+              llvm::any_of(value.getUsers(), [&](Operation *user) {
+                return user->getParentRegion() == scope &&
+                       user->hasTrait<OpTrait::IsTerminator>() &&
+                       user->getNumSuccessors() == 0;
+              });
+          if (outsideScope || returnedFromScope) {
+            alloc.getDefiningOp()->emitOpError(
+                "owned mbarrier cannot escape its defining region; allocate "
+                "the barrier in the caller and pass it as a borrowed argument");
+            escaped.insert(alloc);
+          }
+        }
+      };
+      function->walk([&](Operation *operation) {
+        for (Value value : operation->getResults())
+          checkValue(value);
+        for (Region &region : operation->getRegions())
+          for (Block &block : region)
+            for (Value value : block.getArguments())
+              checkValue(value);
+      });
+      if (!escaped.empty())
+        return signalPassFailure();
+    }
+
+    llvm::MapVector<Block *, SmallVector<Value>> blockRetirements;
+    llvm::MapVector<std::pair<Block *, unsigned>, SmallVector<Value>>
+        edgeRetirements;
+    for (const auto &[alloc, slots] : ownedBarrierSlots) {
+      Block *definingBlock = alloc.getDefiningOp()->getBlock();
+      if (!dominance.isReachableFromEntry(definingBlock))
+        continue;
+      for (Block &block : *definingBlock->getParent()) {
+        if (!dominance.isReachableFromEntry(&block) ||
+            !dominance.dominates(definingBlock, &block))
+          continue;
+        if (block.getNumSuccessors() == 0) {
+          blockRetirements[&block].append(slots);
+          continue;
+        }
+        // Retire on paths that leave the initialized scope, including a
+        // backedge that would execute the initializer again.
+        for (auto [index, successor] : llvm::enumerate(block.getSuccessors())) {
+          if (dominance.properlyDominates(definingBlock, successor))
+            continue;
+          if (block.getNumSuccessors() == 1)
+            blockRetirements[&block].append(slots);
+          else
+            edgeRetirements[{&block, index}].append(slots);
+        }
+      }
+    }
+    for (const auto &[edge, slots] : edgeRetirements) {
+      Operation *terminator = edge.first->getTerminator();
+      Block *successor = terminator->getSuccessor(edge.second);
+      auto argLocs =
+          llvm::map_to_vector(successor->getArguments(),
+                              [](BlockArgument arg) { return arg.getLoc(); });
+      OpBuilder builder(terminator);
+      Block *retire = builder.createBlock(
+          successor, successor->getArgumentTypes(), argLocs);
+      builder.create<cf::BranchOp>(terminator->getLoc(), successor,
+                                   retire->getArguments());
+      terminator->setSuccessor(retire, edge.second);
+      blockRetirements[retire].append(slots);
+    }
+    for (const auto &[block, slots] : blockRetirements) {
+      Operation *terminator = block->getTerminator();
+      OpBuilder builder(terminator);
+      Location loc = terminator->getLoc();
+      // All users must finish before thread zero invalidates the hardware
+      // objects. All threads must observe invalidation before the allocator
+      // can reuse these bytes for a later helper's unrelated shared storage.
+      builder.create<mlir::gpu::BarrierOp>(loc);
+      for (Value slot : slots)
+        builder.create<ttng::InvalBarrierOp>(loc, slot);
+      builder.create<mlir::gpu::BarrierOp>(loc);
     }
   }
 };

@@ -6,7 +6,6 @@ Tests core functionality of TLE module, including:
 - Memory allocation (alloc)
 - Async copy (copy)
 - Local pointer materialization (local_ptr)
-- Pipeline iterator (pipeline)
 - Type system
 """
 
@@ -20,7 +19,7 @@ import triton.experimental.tle.language as tle
 from triton._filecheck import run_parser
 from triton.backends.compiler import GPUTarget
 from triton._internal_testing import is_ampere_or_newer
-from triton.language.core import base_value
+from triton.language.core import base_value, builtin
 from triton.runtime.jit import MockTensor
 from triton.experimental.tle.language.gpu.core import _deduplicate_warp_specialize_captures
 from triton.experimental.tle.language.gpu.semantic import TLESemanticError, TLESemantic
@@ -151,6 +150,10 @@ def _cuda_backend_available():
 class TestLayoutEncoding:
     """Test layout encoding"""
 
+    def test_layout_attachment_uses_existing_gpu_api(self):
+        assert callable(tle.gpu.set_layout)
+        assert not hasattr(tle, "encoding")
+
     def test_swizzled_shared_layout_default(self):
         """Test default swizzled shared layout creation"""
         layout = tle.gpu.swizzled_shared_layout.make_default(2)
@@ -217,10 +220,13 @@ class TestCopyFrontend:
     def test_copy_signature(self):
         parameters = inspect.signature(tle.gpu.copy).parameters
         assert list(parameters) == [
-            "src", "dst", "shape", "offsets", "barrier", "mask", "cache_policy", "other", "_semantic"
+            "src", "dst", "shape", "offsets", "barrier", "mask", "cache_policy", "other", "is_async", "eviction_policy",
+            "_semantic"
         ]
         assert parameters["cache_policy"].default is None
         assert parameters["other"].default is None
+        assert parameters["is_async"].default is False
+        assert parameters["eviction_policy"].default == ""
 
     @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
     @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy")
@@ -268,7 +274,7 @@ class TestCopyFrontend:
         return tl.tensor(None, tl.pointer_type(tl.float32))
 
     @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
-    @pytest.mark.require_tle("gpu.alloc", "gpu.copy")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy")
     def test_masked_copy_uses_explicit_other(self):
         src = MockTensor(torch.float32)
         target = GPUTarget("cuda", 90, 32)
@@ -284,7 +290,7 @@ class TestCopyFrontend:
         assert "tt.load" in ir
 
     @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
-    @pytest.mark.require_tle("gpu.alloc", "gpu.copy")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy")
     def test_masked_copy_casts_explicit_other_to_destination_dtype(self):
         src = MockTensor(torch.float16)
         target = GPUTarget("cuda", 90, 32)
@@ -305,7 +311,7 @@ class TestCopyFrontend:
         not is_ampere_or_newer(),
         reason="cp.async regression guard requires NVIDIA Ampere or newer",
     )
-    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_masked_copy_explicit_other_end_to_end(self):
         src = torch.arange(1, 17, device="cuda", dtype=torch.float32)
         dst = torch.full_like(src, -1)
@@ -321,7 +327,7 @@ class TestCopyFrontend:
         not is_ampere_or_newer(),
         reason="cp.async regression guard requires NVIDIA Ampere or newer",
     )
-    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_masked_copy_other_dtype_conversion_end_to_end(self):
         src = torch.arange(1, 17, device="cuda", dtype=torch.float16)
         dst = torch.full_like(src, -1)
@@ -331,7 +337,7 @@ class TestCopyFrontend:
         torch.testing.assert_close(dst, expected, atol=0, rtol=0)
         assert torch.isneginf(dst[8:]).all()
 
-    @pytest.mark.require_tle("gpu.copy")
+    @pytest.mark.skip_if_tle_unsupported("gpu.copy")
     def test_copy_other_requires_mask(self):
         src = self._make_global_tensor()
         buffer, semantic = self._make_copy_buffer()
@@ -339,7 +345,7 @@ class TestCopyFrontend:
         with pytest.raises(ValueError, match="copy other requires a mask"):
             tle.gpu.copy(src, buffer, [16], other=float("-inf"), _semantic=semantic)
 
-    @pytest.mark.require_tle("gpu.copy")
+    @pytest.mark.skip_if_tle_unsupported("gpu.copy")
     def test_copy_other_rejects_local_to_global(self):
         buffer, semantic = self._make_copy_buffer()
         dst = self._make_global_tensor()
@@ -347,15 +353,18 @@ class TestCopyFrontend:
         with pytest.raises(ValueError, match="only supported for standard pointer-tensor global-to-local"):
             tle.gpu.copy(buffer, dst, [16], mask=True, other=float("-inf"), _semantic=semantic)
 
-    @pytest.mark.require_tle("gpu.copy")
-    def test_copy_other_rejects_tma_copy(self):
+    @pytest.mark.skip_if_tle_unsupported("gpu.copy")
+    @pytest.mark.parametrize("mask", [None, True])
+    def test_copy_other_rejects_tma_copy(self, mask):
         desc = object.__new__(tl.tensor_descriptor)
         buffer, semantic = self._make_copy_buffer()
 
-        with pytest.raises(ValueError, match="only supported for standard pointer-tensor global-to-local"):
-            tle.gpu.copy(desc, buffer, [16], mask=True, other=float("-inf"), _semantic=semantic)
+        match = ("only supported for standard pointer-tensor global-to-local"
+                 if mask is None else "copy mask is only supported for standard pointer-tensor copies")
+        with pytest.raises(ValueError, match=match):
+            tle.gpu.copy(desc, buffer, [16], mask=mask, other=float("-inf"), _semantic=semantic)
 
-    @pytest.mark.require_tle("gpu.copy")
+    @pytest.mark.skip_if_tle_unsupported("gpu.copy")
     def test_copy_other_rejects_common_ir(self, monkeypatch):
         from triton.experimental.tle.language.gpu import core
 
@@ -366,36 +375,26 @@ class TestCopyFrontend:
         with pytest.raises(ValueError, match="GPU CommonIR copy does not yet support other"):
             tle.gpu.copy(src, buffer, [16], mask=True, other=float("-inf"), _semantic=semantic)
 
+    @pytest.mark.skip_if_tle_unsupported("gpu.copy")
+    @pytest.mark.parametrize("option,value,match", [
+        ("is_async", True, "GPU CommonIR copy does not support explicit async transport"),
+        ("eviction_policy", "evict_last", "GPU CommonIR copy does not support eviction policies"),
+    ])
+    def test_copy_rejects_unsupported_common_ir_transport(self, monkeypatch, option, value, match):
+        from triton.experimental.tle.language.gpu import core
 
-class TestPipeline:
-    """Test pipeline iterator"""
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
+        monkeypatch.setattr(core.mthreads_common, "enabled", lambda: False)
+        monkeypatch.setattr(core.iluvatar_copy, "enabled", lambda: False)
 
-    def test_pipeline_single_arg(self):
-        """Test single argument pipeline creation"""
-        pipe = tle.gpu.pipeline(10)
-        assert pipe.start == 0
-        assert pipe.end == 10
-        assert pipe.step == 1
+        def unexpected_copy(*args, **kwargs):
+            raise AssertionError("unsupported explicit contract must be rejected before emitting a copy")
 
-    def test_pipeline_range_args(self):
-        """Test range argument pipeline creation"""
-        pipe = tle.gpu.pipeline(2, 8)
-        assert pipe.start == 2
-        assert pipe.end == 8
-        assert pipe.step == 1
-
-    def test_pipeline_with_step(self):
-        """Test pipeline creation with step"""
-        pipe = tle.gpu.pipeline(0, 10, 2)
-        assert pipe.start == 0
-        assert pipe.end == 10
-        assert pipe.step == 2
-
-    def test_pipeline_with_options(self):
-        """Test pipeline creation with options"""
-        pipe = tle.gpu.pipeline(0, 10, 1, num_stages=2, loop_unroll_factor=4)
-        assert pipe.num_stages == 2
-        assert pipe.loop_unroll_factor == 4
+        monkeypatch.setattr(core.tle_semantic, "copy", unexpected_copy)
+        buffer, semantic = self._make_copy_buffer()
+        source = tl.tensor("global", tl.block_type(tl.pointer_type(tl.float32), [16]))
+        with pytest.raises(ValueError, match=match):
+            tle.gpu.copy(source, buffer, [16], _semantic=semantic, **{option: value})
 
 
 class TestWarpSpecializeFrontend:
@@ -562,8 +561,10 @@ class TestBufferedTensor:
             self.memdesc_subslice_args = (result_ty, src, list(offsets))
             return "subslice_handle"
 
-        def create_tma_copy(self, src, dst, offsets, barrier=None, expect_bytes=-1):
+        def create_tma_copy(self, src, dst, offsets, barrier=None, expect_bytes=-1, eviction_policy=None):
             self.tma_copy_args = (src, dst, list(offsets), barrier, expect_bytes)
+            if eviction_policy is not None:
+                self.tma_copy_args += (eviction_policy, )
 
         def create_tile_get_memdesc(self, result_ty, buffer):
             return buffer
@@ -571,29 +572,33 @@ class TestBufferedTensor:
         def create_pipe_create(self, fields, capacity, scope, pipe_name, field_names, reader_names, one_shot):
             self.pipe_create_args = (list(fields), capacity, scope, pipe_name, list(field_names), list(reader_names),
                                      one_shot)
+            return "pipe_identity"
 
-        def create_pipe_writer_acquire(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        def create_pipe_writer_acquire(self, identity, fields, stage, phase, capacity, scope, pipe_name, field_names):
             self.pipe_ops.append(
-                ("writer_acquire", list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
+                ("writer_acquire", identity, list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
 
-        def create_pipe_writer_commit(self, fields, stage, capacity, scope, pipe_name, field_names):
-            self.pipe_ops.append(("writer_commit", list(fields), stage, capacity, scope, pipe_name, list(field_names)))
-
-        def create_pipe_writer_close(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        def create_pipe_writer_commit(self, identity, fields, stage, capacity, scope, pipe_name, field_names):
             self.pipe_ops.append(
-                ("writer_close", list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
+                ("writer_commit", identity, list(fields), stage, capacity, scope, pipe_name, list(field_names)))
 
-        def create_pipe_reader_wait(self, fields, stage, phase, capacity, scope, pipe_name, field_names, reader_name,
-                                    reader_field_names):
-            self.pipe_ops.append(("reader_wait", list(fields), stage, phase, capacity, scope, pipe_name,
+        def create_pipe_writer_close(self, identity, fields, stage, phase, capacity, scope, pipe_name, field_names):
+            self.pipe_ops.append(
+                ("writer_close", identity, list(fields), stage, phase, capacity, scope, pipe_name, list(field_names)))
+
+        def create_pipe_reader_wait(self, identity, fields, stage, phase, capacity, scope, pipe_name, field_names,
+                                    reader_name, reader_field_names):
+            self.pipe_ops.append(("reader_wait", identity, list(fields), stage, phase, capacity, scope, pipe_name,
                                   list(field_names), reader_name, list(reader_field_names)))
             return "is_closed"
 
-        def create_pipe_reader_release(self, fields, stage, capacity, scope, pipe_name, field_names, reader_name,
-                                       reader_field_names):
-            self.pipe_ops.append(
-                ("reader_release", list(fields), stage, capacity, scope, pipe_name, list(field_names), reader_name,
-                 list(reader_field_names)))
+        def create_pipe_reader_release(self, identity, fields, stage, capacity, scope, pipe_name, field_names,
+                                       reader_name, reader_field_names):
+            self.pipe_ops.append(("reader_release", identity, list(fields), stage, capacity, scope, pipe_name,
+                                  list(field_names), reader_name, list(reader_field_names)))
+
+        def create_pipe_drain(self, identity, fields, capacity, scope, pipe_name, field_names):
+            self.pipe_ops.append(("drain", identity, list(fields), capacity, scope, pipe_name, list(field_names)))
 
     class _FakeSemantic:
 
@@ -611,6 +616,9 @@ class TestBufferedTensor:
 
         def _convert_to_ir_values(self, values, require_i64=False):
             return [self.to_tensor(value).handle for value in values]
+
+        def _str_to_eviction_policy(self, policy):
+            return policy
 
     def _make_buffer(self, shape):
         semantic = self._FakeSemantic()
@@ -633,6 +641,7 @@ class TestBufferedTensor:
         assert hasattr(tle.gpu.buffered_tensor, '_flatten_ir')
         assert hasattr(tle.gpu.buffered_tensor, 'make_permute')
         assert hasattr(tle.gpu.buffered_tensor, 'slot')
+        assert hasattr(tle.gpu.buffered_tensor, 'subslice')
 
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot")
     def test_buffered_tensor_slot_indexes_leading_dimension(self):
@@ -717,6 +726,36 @@ class TestBufferedTensor:
         with pytest.raises(ValueError, match="out of range"):
             buffer.subslice(start, length, dim, _semantic=semantic)
 
+    @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.subslice")
+    def test_buffered_tensor_subslice_preserves_allocation_shape(self):
+        buffer, semantic = self._make_buffer([32, 1024])
+
+        view = buffer.subslice([16, 0], [8, 1024], _semantic=semantic)
+
+        assert view.handle == "subslice_handle"
+        assert view.shape == [8, 1024]
+        assert view.type.alloc_shape == [32, 1024]
+        assert semantic.builder.memdesc_subslice_args == (
+            ("memdesc", (8, 1024), "fp16", "fake_layout", "smem", (32, 1024)),
+            "base",
+            [16, 0],
+        )
+
+    @pytest.mark.parametrize(
+        ("offsets", "shape", "message"),
+        [
+            ((0, ), (8, 1024), "match the buffer rank"),
+            ((25, 0), (8, 1024), "outside extent"),
+            ((4, 0), (8, 1024), "aligned power-of-two"),
+            ((0, 0), (6, 1024), "aligned power-of-two"),
+        ],
+    )
+    def test_buffered_tensor_subslice_rejects_invalid_static_views(self, offsets, shape, message):
+        buffer, semantic = self._make_buffer([32, 1024])
+
+        with pytest.raises(ValueError, match=message):
+            buffer.subslice(offsets, shape, _semantic=semantic)
+
 
 class TestCachePolicyFrontend:
 
@@ -775,8 +814,32 @@ class TestCachePolicyFrontend:
         assert core.mthreads_copy.normalize_cache_policy(policy) == (1, 0)
 
 
+@builtin
+def _legacy_tma_shape_copy(desc, buffer, _semantic=None):
+    zero = _semantic.to_tensor(0).handle
+    _semantic.builder.create_tma_copy(desc.handle, buffer.handle, [zero, zero], None, -1, [16, 16])
+
+
+@triton.jit
+def _legacy_tma_shape_kernel(base):
+    desc = tl.make_tensor_descriptor(base, [16, 16], [16, 1], [16, 16])
+    buffer = tle.gpu.alloc([16, 16], tl.float16, scope=tle.gpu.smem)
+    _legacy_tma_shape_copy(desc, buffer)
+
+
 class TestTmaCopyBarrierFrontend:
     """Test TMA copy explicit completion barrier validation."""
+
+    @pytest.mark.skipif(not _cuda_backend_available(), reason="requires cuda backend")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy")
+    def test_tma_builder_preserves_positional_logical_shape(self):
+        module = run_parser(
+            _legacy_tma_shape_kernel,
+            args=(MockTensor(torch.float16), ),
+            kwargs={"num_warps": 4},
+            target=GPUTarget("cuda", 90, 32),
+        )
+        assert "tle.logical_copy_shape = array<i64: 16, 16>" in str(module)
 
     def _make_desc_buffer_semantic(self, shape):
         semantic = TestBufferedTensor._FakeSemantic()
@@ -802,13 +865,18 @@ class TestTmaCopyBarrierFrontend:
         )
 
     @pytest.mark.skip_if_tle_unsupported("gpu.copy")
-    def test_copy_accepts_explicit_tma_completion_barrier(self):
+    @pytest.mark.parametrize("eviction_policy", ["", "evict_first", "evict_last"])
+    def test_copy_accepts_explicit_tma_completion_barrier(self, eviction_policy):
         desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
         barrier = self._make_barrier(semantic, 512, shape=[1, 1])
 
-        tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, _semantic=semantic)
+        tle.gpu.copy(desc, buffer, (16, 16), (0, 0), barrier=barrier, eviction_policy=eviction_policy,
+                     _semantic=semantic)
 
-        assert semantic.builder.tma_copy_args == ("desc", "smem", ["stage_0", "stage_0"], "slot_handle", 512)
+        expected = ("desc", "smem", ["stage_0", "stage_0"], "slot_handle", 512)
+        if eviction_policy:
+            expected += (eviction_policy, )
+        assert semantic.builder.tma_copy_args == expected
         assert semantic._tle_barrier_backend_uses == {("bar", 0): "mbarrier"}
 
     @pytest.mark.parametrize("backend", ["generic", "iluvatar", "common_ir"])
@@ -827,11 +895,15 @@ class TestTmaCopyBarrierFrontend:
         monkeypatch.setattr(core.mthreads_copy, "tmacopy", unexpected_mthreads_copy)
         monkeypatch.setattr(core.mthreads_copy, "normalize_cache_policy", unexpected_mthreads_copy)
         desc, buffer, semantic = self._make_desc_buffer_semantic([16, 16])
+
+        def legacy_tma_copy(src, dst, offsets, barrier=None, expect_bytes=-1):
+            semantic.builder.tma_copy_args = (src, dst, list(offsets), barrier, expect_bytes)
+
+        monkeypatch.setattr(semantic.builder, "create_tma_copy", legacy_tma_copy)
         kwargs = {"cache_policy": None} if explicit_none else {}
         if with_barrier:
             kwargs["barrier"] = self._make_barrier(semantic, 512, shape=[1, 1])
-        # This fake builder deliberately retains the other backends' original
-        # five-argument signature. Passing MUSA's sixth argument is an error.
+        # The default path must retain the five-argument builder contract.
         tle.gpu.copy(desc, buffer, (16, 16), (0, 0), _semantic=semantic, **kwargs)
         expected_barrier = "slot_handle" if with_barrier else None
         expected_bytes = 512 if with_barrier else -1
@@ -932,14 +1004,12 @@ class TestPipeFrontend:
         with pytest.raises(ValueError, match="compile-time bool"):
             tle.pipe(capacity=4, one_shot="yes", a=a, _semantic=semantic)
 
-    def test_pipe_rejects_missing_or_invalid_fields(self):
+    def test_pipe_rejects_invalid_fields(self):
         a, semantic = self._make_buffer([4, 16])
         tmem, _ = self._make_buffer([4, 16], storage=tle.gpu.tmem)
         wrong_capacity, _ = self._make_buffer([2, 16])
         rank_one, _ = self._make_buffer([4])
 
-        with pytest.raises(ValueError, match="at least one"):
-            tle.pipe(capacity=4, _semantic=semantic)
         with pytest.raises(ValueError, match="reserved"):
             tle.pipe(capacity=4, fields=a, _semantic=semantic)
         with pytest.raises(ValueError, match="buffered_tensor"):
@@ -1009,10 +1079,10 @@ class TestPipeFrontend:
         assert result.slot.b.shape == [32, 16]
         assert not hasattr(result.slot, "a")
         assert result.slot.type.fields == [("b", result.slot.b.type)]
-        assert semantic.builder.pipe_ops[0] == ("reader_wait", ["base", "base"], "stage_0", "pred_False", 4, "cta", "",
-                                                ["a", "b"], "right", ["b"])
-        assert semantic.builder.pipe_ops[1] == ("reader_release", ["base", "base"], "stage_0", 4, "cta", "", ["a", "b"],
-                                                "right", ["b"])
+        assert semantic.builder.pipe_ops[0] == ("reader_wait", "pipe_identity", ["base", "base"], "stage_0",
+                                                "pred_False", 4, "cta", "", ["a", "b"], "right", ["b"])
+        assert semantic.builder.pipe_ops[1] == ("reader_release", "pipe_identity", ["base", "base"], "stage_0", 4,
+                                                "cta", "", ["a", "b"], "right", ["b"])
 
     def test_pipe_reader_rejects_invalid_field_subset(self):
         a, semantic = self._make_buffer([4, 16])
@@ -1064,10 +1134,10 @@ class TestPipeFrontend:
             "reader_wait",
             "reader_release",
         ]
-        assert semantic.builder.pipe_ops[0] == ("writer_acquire", ["base"], "stage_0", "pred_False", 4, "cta", "a",
-                                                ["a"])
-        assert semantic.builder.pipe_ops[3] == ("reader_wait", ["base"], "stage_0", "pred_False", 4, "cta", "a", ["a"],
-                                                "", ["a"])
+        assert semantic.builder.pipe_ops[0] == ("writer_acquire", "pipe_identity", ["base"], "stage_0", "pred_False", 4,
+                                                "cta", "a", ["a"])
+        assert semantic.builder.pipe_ops[3] == ("reader_wait", "pipe_identity", ["base"], "stage_0", "pred_False", 4,
+                                                "cta", "a", ["a"], "", ["a"])
 
     @pytest.mark.skip_if_tle_unsupported("pipe")
     def test_pipe_one_shot_keeps_frontend_contract(self):
@@ -1088,6 +1158,57 @@ class TestPipeFrontend:
         with pytest.raises(ValueError, match="one_shot"):
             writer.close(0, _semantic=semantic)
 
+    @pytest.mark.skip_if_tle_unsupported("pipe")
+    def test_pipe_fieldless_one_shot_is_a_control_handoff(self):
+        _, semantic = self._make_buffer([1, 16])
+        pipe = tle.pipe(capacity=1, name="ready", one_shot=True, _semantic=semantic)
+        writer = pipe.writer(_semantic=semantic)
+        reader = pipe.reader(_semantic=semantic)
+
+        writer.commit(0, _semantic=semantic)
+        wait_result = reader.wait(0, _semantic=semantic)
+
+        assert pipe.fields == {}
+        assert pipe.type.fields == []
+        assert semantic.builder.pipe_create_args == ([], 1, "cta", "ready", [], [], True)
+        assert semantic.builder.pipe_ops[0] == ("writer_commit", "pipe_identity", [], "stage_0", 1, "cta", "ready", [])
+        assert semantic.builder.pipe_ops[1] == ("reader_wait", "pipe_identity", [], "stage_0", "pred_False", 1, "cta",
+                                                "ready", [], "", [])
+        assert wait_result.slot.fields == {}
+
+    @pytest.mark.skip_if_tle_unsupported("pipe")
+    def test_pipe_fieldless_cyclic_control_handoff_and_drain(self):
+        _, semantic = self._make_buffer([1, 16])
+        pipe = tle.pipe(capacity=1, name="handoff", _semantic=semantic)
+        writer = pipe.writer(_semantic=semantic)
+        reader = pipe.reader(_semantic=semantic)
+
+        writer.acquire(3, _semantic=semantic)
+        writer.commit(3, _semantic=semantic)
+        reader.wait(3, _semantic=semantic)
+        reader.release(3, _semantic=semantic)
+        writer.close(4, _semantic=semantic)
+        pipe.wait_drained(_semantic=semantic)
+
+        assert pipe.fields == {}
+        assert semantic.builder.pipe_create_args == ([], 1, "cta", "handoff", [], [], False)
+        assert [op[0] for op in semantic.builder.pipe_ops] == [
+            "writer_acquire",
+            "writer_commit",
+            "reader_wait",
+            "reader_release",
+            "writer_close",
+            "drain",
+        ]
+
+    @pytest.mark.skip_if_tle_unsupported("pipe")
+    def test_one_shot_pipe_rejects_drain(self):
+        _, semantic = self._make_buffer([1, 16])
+        pipe = tle.pipe(capacity=1, one_shot=True, _semantic=semantic)
+
+        with pytest.raises(ValueError, match="one_shot"):
+            pipe.wait_drained(_semantic=semantic)
+
 
 class TestIntegration:
     """Integration tests"""
@@ -1104,7 +1225,6 @@ class TestIntegration:
         assert not hasattr(tle.gpu, 'pipe')
         assert hasattr(tle.gpu, 'copy')
         assert hasattr(tle.gpu, 'local_ptr')
-        assert hasattr(tle.gpu, 'pipeline')
         assert hasattr(tle.gpu, 'storage_kind')
         assert hasattr(tle.gpu, 'buffered_tensor')
         assert hasattr(tle.gpu, 'alloc_barriers')
@@ -1115,6 +1235,7 @@ class TestIntegration:
         assert hasattr(tle.gpu, 'READY')
         assert not hasattr(tle.gpu, 'barrier_expect_bytes')
         assert "barrier" in inspect.signature(tle.gpu.copy).parameters
+        assert "shape" in inspect.signature(tle.gpu.local_ptr).parameters
 
     def test_tle_functions_have_docstrings(self):
         """Test TLE functions have docstrings"""
@@ -1123,7 +1244,6 @@ class TestIntegration:
         assert tle.gpu.alloc.__doc__ is not None
         assert tle.gpu.copy.__doc__ is not None
         assert tle.gpu.local_ptr.__doc__ is not None
-        assert tle.gpu.pipeline.__doc__ is not None
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CUDA GPU")
     def test_tle_with_cuda(self):
@@ -1168,3 +1288,151 @@ class TestErrorHandling:
 if __name__ == "__main__":
     # Run tests
     pytest.main([__file__, "-v"])
+
+
+class _MusaBuilder(TestBufferedTensor._FakeBuilder):
+    mark_musa_tle_auto_shared_layout = True
+
+    def create_pipe_create(self, fields, capacity, scope, pipe_name, field_names, readers, one_shot):
+        super().create_pipe_create(fields, capacity, scope, pipe_name, field_names, readers, one_shot)
+
+    def create_pipe_writer_acquire(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("acquire", fields, stage, phase))
+
+    def create_pipe_writer_commit(self, fields, stage, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("commit", fields, stage))
+
+    def create_pipe_writer_close(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("close", fields, stage, phase))
+
+    def create_pipe_reader_wait(self, fields, stage, phase, capacity, scope, pipe_name, field_names, reader_name,
+                                reader_field_names):
+        self.pipe_ops.append(("wait", fields, stage, phase))
+        return "is_closed"
+
+    def create_pipe_reader_release(self, fields, stage, capacity, scope, pipe_name, field_names, reader_name,
+                                   reader_field_names):
+        self.pipe_ops.append(("release", fields, stage))
+
+
+def test_musa_native_pipe_uses_existing_field_only_signature(monkeypatch):
+    from triton.experimental.tle.language.gpu import types
+    from triton.experimental.tle.language.gpu.mthreads import common
+    monkeypatch.setattr(common, "enabled", lambda: True)
+    semantic = TestBufferedTensor._FakeSemantic()
+    semantic.builder = _MusaBuilder()
+    field = types.buffered_tensor("base", tl.float16, [2, 16], types.smem,
+                                  tle.gpu.swizzled_shared_layout.make_default(rank=2), semantic)
+    edge = tle.pipe(capacity=2, data=field, _semantic=semantic)
+    writer, reader = edge.writer(_semantic=semantic), edge.reader(_semantic=semantic)
+    writer.acquire(0, _semantic=semantic)
+    writer.commit(0, _semantic=semantic)
+    writer.close(1, _semantic=semantic)
+    reader.wait(0, _semantic=semantic)
+    reader.release(0, _semantic=semantic)
+    assert [x[0] for x in semantic.builder.pipe_ops] == ["acquire", "commit", "close", "wait", "release"]
+    values = []
+    edge._flatten_ir(values)
+    assert values == ["base"]
+    copied, cursor = edge.type._unflatten_ir(values, 0)
+    assert cursor == 1 and copied.fields["data"].handle == "base"
+
+
+class _IluvatarBuilder:
+    """The field-only ``create_pipe_*`` signatures ``iluvatar_tle`` binds.
+
+    Stands in for the Iluvatar builder's pipe methods only; the frontend picks
+    this ABI from the backend identity, which no synthetic builder can carry.
+    """
+
+    def __init__(self):
+        self._base = TestBufferedTensor._FakeBuilder()
+        self.pipe_ops = []
+        self.pipe_create_args = None
+
+    def __getattr__(self, name):
+        # Buffer helpers (memdesc types, tile accessors) come from the shared
+        # fake; only the pipe methods below are field-only.
+        return getattr(self._base, name)
+
+    def create_pipe_create(self, fields, capacity, scope, pipe_name, field_names, readers, one_shot):
+        self.pipe_create_args = (list(fields), capacity, scope, pipe_name, list(field_names), list(readers), one_shot)
+
+    def create_pipe_writer_acquire(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("acquire", list(fields), stage, phase))
+
+    def create_pipe_writer_commit(self, fields, stage, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("commit", list(fields), stage))
+
+    def create_pipe_writer_close(self, fields, stage, phase, capacity, scope, pipe_name, field_names):
+        self.pipe_ops.append(("close", list(fields), stage, phase))
+
+    def create_pipe_reader_wait(self, fields, stage, phase, capacity, scope, pipe_name, field_names, reader_name,
+                                reader_field_names):
+        self.pipe_ops.append(("wait", list(fields), stage, phase))
+        return "is_closed"
+
+    def create_pipe_reader_release(self, fields, stage, capacity, scope, pipe_name, field_names, reader_name,
+                                   reader_field_names):
+        self.pipe_ops.append(("release", list(fields), stage))
+
+
+def test_iluvatar_pipe_detection_follows_backend_and_rejects_synthetic_builders(monkeypatch):
+    """The ABI follows the build's backend, and only for a real builder.
+
+    Capability probes on the builder cannot separate the two ABIs (an Iluvatar
+    build links the shared TLE IR library as well), so detection reads the
+    backend. Synthetic builders must keep the shared model because the portable
+    frontend tests run on every backend, Iluvatar included.
+    """
+    from triton._C.libtriton import ir
+    from triton.experimental.tle.language.gpu.iluvatar import pipe as iluvatar_pipe
+
+    real_builder = ir.builder.__new__(ir.builder)
+    monkeypatch.setattr(iluvatar_pipe, "_is_iluvatar_backend", lambda: True)
+    assert iluvatar_pipe.is_backend_builder(real_builder)
+    assert not iluvatar_pipe.is_backend_builder(_IluvatarBuilder())
+    assert not iluvatar_pipe.is_backend_builder(object())
+
+    monkeypatch.setattr(iluvatar_pipe, "_is_iluvatar_backend", lambda: False)
+    assert not iluvatar_pipe.is_backend_builder(real_builder)
+
+
+def test_iluvatar_native_pipe_uses_field_only_signature(monkeypatch):
+    from triton.compiler.code_generator import flatten_values_to_ir, unflatten_ir_values
+    from triton.experimental.tle.language.gpu import types
+    from triton.experimental.tle.language.gpu.iluvatar import pipe as iluvatar_pipe
+    # The ABI follows the active backend; stand in the Iluvatar builder.
+    monkeypatch.setattr(iluvatar_pipe, "is_backend_builder", lambda builder: True)
+    semantic = TestBufferedTensor._FakeSemantic()
+    semantic.builder = _IluvatarBuilder()
+    field = types.buffered_tensor("base", tl.float16, [2, 16], types.smem,
+                                  tle.gpu.swizzled_shared_layout.make_default(rank=2), semantic)
+    edge = tle.pipe(capacity=2, data=field, _semantic=semantic)
+    writer, reader = edge.writer(_semantic=semantic), edge.reader(_semantic=semantic)
+    # JIT calls and warp-specialize captures reconstruct endpoints from IR.
+    handles = flatten_values_to_ir((writer, reader))
+    assert handles == ["base", "base"]
+    writer, reader = unflatten_ir_values(handles, [writer.type, reader.type])
+    writer.acquire(0, _semantic=semantic)
+    writer.commit(0, _semantic=semantic)
+    writer.close(1, _semantic=semantic)
+    reader.wait(0, _semantic=semantic)
+    reader.release(0, _semantic=semantic)
+
+    # iluvatar_tle keeps the field-only ABI: no SSA identity is threaded through.
+    assert semantic.builder.pipe_create_args == (["base"], 2, "cta", "", ["data"], [], False)
+    assert [x[0] for x in semantic.builder.pipe_ops] == ["acquire", "commit", "close", "wait", "release"]
+    # The first operand after the op name is the pipe's field handle list.
+    assert all(isinstance(x[1], list) and x[1] == ["base"] for x in semantic.builder.pipe_ops)
+    assert edge.identity is None
+    values = []
+    edge._flatten_ir(values)
+    assert values == ["base"]
+    copied, cursor = edge.type._unflatten_ir(values, 0)
+    assert cursor == 1 and copied.fields["data"].handle == "base"
+
+    with pytest.raises(NotImplementedError, match="wait_drained"):
+        edge.wait_drained(_semantic=semantic)
+    with pytest.raises(ValueError, match="at least one payload field"):
+        tle.pipe(capacity=1, name="p", one_shot=True, _semantic=semantic)
