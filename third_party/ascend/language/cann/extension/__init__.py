@@ -38,6 +38,7 @@ from .core import (
     sync_block_all,
     sync_block_set,
     sync_block_wait,
+    inplaced_elemop_gm,
     SYNC_IN_VF,
     conv1d,
 )
@@ -134,6 +135,7 @@ __all__ = [
     # aux ops
     "sync_block_set",
     "sync_block_wait",
+    "inplaced_elemop_gm",
     "parallel",
     "compile_hint",
     "multibuffer",

@@ -227,6 +227,38 @@ def sync_block_all(mode, event_id, _semantic=None):
     _semantic.builder.sync_block_all(mode, event_id)
 
 
+def _atomic_dtype_to_ir(dtype, _semantic=None):
+    dtype = _unwrap_if_constexpr(dtype)
+    if not isinstance(dtype, tl.dtype):
+        raise TypeError(f"dtype must be a tl.dtype (e.g. tl.float32), got {type(dtype)}")
+    if not (dtype.is_fp16() or dtype.is_bf16() or dtype.is_fp32() or dtype.is_int8()
+            or dtype.is_int16() or dtype.is_int32()):
+        raise ValueError(f"unsupported atomic dtype: {dtype}, only supports "
+                         "fp16/bf16/fp32/int8/int16/int32")
+    return dtype.to_ir(_semantic.builder)
+
+
+@builtin
+def inplaced_elemop_gm(kind, dtype=tl.float32, _semantic=None):
+    """
+    Open or close the in-place element-wise GM update mode: with a mode open,
+    every subsequent store to global memory (including fixpipe writes from
+    L0C) updates C[i] in place via C[i] = C[i] <kind> X[i] instead of
+    overwriting, until the mode is closed with kind='none'.
+
+    :param kind: 'add'/'max'/'min' opens the corresponding update mode;
+                 'none' closes it and restores plain overwriting stores
+    :param dtype: element type of the updated values, defaults to fp32; must
+                  match the element type of the bracketed store (ignored for
+                  'none')
+    :type dtype: tl.dtype
+    """
+    kind = _unwrap_if_constexpr(kind)
+    if kind not in ("add", "max", "min", "none"):
+        raise ValueError(f"kind only supports 'add'/'max'/'min'/'none', got {kind!r}")
+    _semantic.builder.inplaced_elemop_gm(kind, _atomic_dtype_to_ir(dtype, _semantic))
+
+
 class FixpipeDMAMode(enum.Enum):
     NZ2DN = ascend_ir.FixpipeDMAMode.NZ2DN
     NZ2ND = ascend_ir.FixpipeDMAMode.NZ2ND

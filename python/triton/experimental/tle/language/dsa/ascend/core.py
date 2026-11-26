@@ -2,7 +2,8 @@
 
 from dataclasses import dataclass
 
-from triton.language.extra.cann.extension.core import ascend_address_space, sub_vec_id, sub_vec_num, sync_block_set, sync_block_wait, sync_block_all
+from triton.language.extra.cann.extension.core import (ascend_address_space, sub_vec_id, sub_vec_num, sync_block_set,
+                                                       sync_block_wait, sync_block_all, inplaced_elemop_gm)
 import triton.language.extra.cann.extension as ascend_langugage_cann_extension
 from triton.language.extra.cann.extension import compile_hint, custom as raw, multibuffer
 
@@ -17,6 +18,7 @@ sub_vec_num = sub_vec_num
 sync_block_set = sync_block_set
 sync_block_wait = sync_block_wait
 sync_block_all = sync_block_all
+inplaced_elemop_gm = inplaced_elemop_gm
 compile_hint = compile_hint
 raw = raw
 multibuffer = multibuffer

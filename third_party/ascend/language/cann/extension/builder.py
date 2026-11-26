@@ -81,5 +81,6 @@ def setup_unified_builder(main_builder, ascend_builder):
         "sync_block_wait",
         "create_convert_layout",
         'sync_block_all',
+        "inplaced_elemop_gm",
     ]
     attach_builder_methods(main_builder, ascend_builder, ascend_methods)

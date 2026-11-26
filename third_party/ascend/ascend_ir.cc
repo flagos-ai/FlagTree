@@ -136,6 +136,28 @@ void buildSyncBlockOp(AscendNPUIROpBuilder &self, const std::string &opName,
   }
 }
 
+void buildInplacedElemopGm(AscendNPUIROpBuilder &self, const std::string &kind,
+                           Type dtype) {
+  auto *ctx = self.getBuilder().getContext();
+  hivm::AtomicKind atomicKind;
+  if (kind == "add") {
+    atomicKind = hivm::AtomicKind::ADD;
+  } else if (kind == "max") {
+    atomicKind = hivm::AtomicKind::MAX;
+  } else if (kind == "min") {
+    atomicKind = hivm::AtomicKind::MIN;
+  } else if (kind == "none") {
+    atomicKind = hivm::AtomicKind::NONE;
+  } else {
+    throw std::runtime_error(
+        "inplaced_elemop_gm only supports kind 'add'/'max'/'min'/'none', got: " + kind);
+  }
+  auto kindAttr = hivm::AtomicKindAttr::get(ctx, atomicKind);
+  // 'type' is semantically meaningless for 'none', but emitting an empty
+  // TypeAttr trips a downstream dyn_cast assertion, so always attach one.
+  self.create<hivm::SetAtomicOp>(kindAttr, TypeAttr::get(dtype));
+}
+
 ModeAndPipes GetSyncBlockModeAndPipes(MLIRContext *ctx,
                                       const std::string &mode) {
   hivm::SyncBlockModeAttr modeAttr = {};
@@ -762,6 +784,11 @@ void init_ascend_ir(py::module &&m) {
               hivm::PIPE receiverPipe) -> void {
              buildSyncBlockOp(self, "sync_block_wait", sender, receiver, id,
                               senderPipe, receiverPipe);
+           })
+      .def("inplaced_elemop_gm",
+           [](AscendNPUIROpBuilder &self, std::string &kind,
+              Type dtype) -> void {
+             buildInplacedElemopGm(self, kind, dtype);
            })
       .def("get_target_attribute",
            [](AscendNPUIROpBuilder &self,
