@@ -157,6 +157,29 @@ inline std::optional<bool> isEnvValueBool(std::string str) {
     return false;
   return std::nullopt;
 }
+
+// XPU-private env helpers.
+//
+// `getStrEnv`/`getBoolEnv` are header-only `inline` functions, so they emit
+// weak symbols. At link time the upstream (main-tree) definition wins via weak
+// deduplication and it does NOT whitelist the `TRITONXPU_*` vars, which makes
+// its `assertIsRecognized` abort at runtime. To keep reading env vars without
+// touching the main tree, XPU code calls these distinctly-named helpers which
+// allow the `TRITONXPU_` prefix and never assert.
+inline std::string getStrEnvXPU(const std::string &env) {
+  const char *cstr = std::getenv(env.c_str());
+  if (!cstr)
+    return "";
+  return std::string(cstr);
+}
+
+inline bool getBoolEnvXPU(const std::string &env) {
+  const char *s = std::getenv(env.c_str());
+  std::string str(s ? s : "");
+  std::transform(str.begin(), str.end(), str.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  return str == "on" || str == "true" || str == "1";
+}
 } // namespace tools
 } // namespace mlir::triton
 
