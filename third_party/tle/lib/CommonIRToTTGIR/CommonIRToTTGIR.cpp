@@ -145,37 +145,30 @@ auto getWarpSpecializeExplicitCaptures(Op op, long)
 }
 } // namespace
 
-static LogicalResult convertWarpSpecializeCaptures(
-    ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
-    llvm::DenseMap<Value, Type> &convertedArgumentTypes,
-    SmallVectorImpl<UnrealizedConversionCastOp> &argumentCasts) {
-  bool failedConversion = false;
-  module.walk([&](ttg::WarpSpecializeOp op) {
-    if (failedConversion)
-      return;
-    auto captures = getWarpSpecializeExplicitCaptures(op, 0);
-    for (Region *region : op.getPartitionRegions()) {
-      for (auto [index, capture] : llvm::enumerate(captures)) {
-        BlockArgument argument = region->getArgument(index);
-        if (!isa<tile::BufType>(argument.getType()))
-          continue;
-        auto converted = lookupBuffer(op, capture, mapped);
-        if (failed(converted)) {
-          failedConversion = true;
-          return;
-        }
-        OpBuilder builder(op.getContext());
-        builder.setInsertionPointToStart(&region->front());
-        auto cast = builder.create<UnrealizedConversionCastOp>(
-            argument.getLoc(), TypeRange{(*converted).getType()},
-            ValueRange{argument});
-        mapped[argument] = cast.getResult(0);
-        convertedArgumentTypes[argument] = (*converted).getType();
-        argumentCasts.push_back(cast);
-      }
+static WalkResult convertWarpSpecializeCaptures(
+    ttg::WarpSpecializeOp op, llvm::DenseMap<Value, Value> &mapped,
+    llvm::DenseMap<Value, Type> &convertedValueTypes,
+    SmallVectorImpl<UnrealizedConversionCastOp> &temporaryCasts) {
+  auto captures = getWarpSpecializeExplicitCaptures(op, 0);
+  for (Region *region : op.getPartitionRegions()) {
+    for (auto [index, capture] : llvm::enumerate(captures)) {
+      BlockArgument argument = region->getArgument(index);
+      if (!isa<tile::BufType>(argument.getType()))
+        continue;
+      auto converted = lookupBuffer(op, capture, mapped);
+      if (failed(converted))
+        return WalkResult::interrupt();
+      OpBuilder builder(op.getContext());
+      builder.setInsertionPointToStart(&region->front());
+      Type type = (*converted).getType();
+      auto cast = builder.create<UnrealizedConversionCastOp>(
+          argument.getLoc(), TypeRange{type}, ValueRange{argument});
+      mapped[argument] = cast.getResult(0);
+      convertedValueTypes[argument] = type;
+      temporaryCasts.push_back(cast);
     }
-  });
-  return failure(failedConversion);
+  }
+  return WalkResult::advance();
 }
 
 static bool isPointerLike(Type type) {
@@ -374,17 +367,20 @@ static WalkResult convertLoopBuffers(
   return WalkResult::advance();
 }
 
-static LogicalResult convertBufferViewsAndLoops(
+static LogicalResult convertBufferViewsAndRegions(
     ModuleOp module, llvm::DenseMap<Value, Value> &mapped,
     llvm::DenseMap<Value, Type> &convertedValueTypes,
     SmallVectorImpl<UnrealizedConversionCastOp> &temporaryCasts,
     SmallVectorImpl<Operation *> &eraseOps) {
-  // Visit loop block arguments before the subviews that use them.
+  // Map outer buffer views before converting loop and warp region arguments.
   WalkResult result =
       module.walk<WalkOrder::PreOrder>([&](Operation *operation) {
         if (auto loop = dyn_cast<scf::ForOp>(operation))
           return convertLoopBuffers(loop, mapped, convertedValueTypes,
                                     temporaryCasts);
+        if (auto warp = dyn_cast<ttg::WarpSpecializeOp>(operation))
+          return convertWarpSpecializeCaptures(
+              warp, mapped, convertedValueTypes, temporaryCasts);
         auto op = dyn_cast<tile::SubViewOp>(operation);
         if (!op)
           return WalkResult::advance();
@@ -691,12 +687,10 @@ public:
     recordNativeBufferBridges(module, mapped, eraseOps);
 
     if (failed(convertAllocations(module, mapped, eraseOps)) ||
-        failed(convertWarpSpecializeCaptures(
-            module, mapped, convertedValueTypes, temporaryCasts)) ||
         failed(convertFunctionArguments(module, mapped, convertedValueTypes,
                                         temporaryCasts)) ||
-        failed(convertBufferViewsAndLoops(module, mapped, convertedValueTypes,
-                                          temporaryCasts, eraseOps)) ||
+        failed(convertBufferViewsAndRegions(module, mapped, convertedValueTypes,
+                                            temporaryCasts, eraseOps)) ||
         failed(
             convertBufferBridges(module, mapped, temporaryCasts, eraseOps)) ||
         failed(convertTileUsers(module, mapped, eraseOps, enableAsyncCopy,
