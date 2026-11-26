@@ -584,7 +584,7 @@ def alloc(
             # Use provided layout
             layout_handle = layout.to_ir(_semantic.builder)
 
-        if tle_semantic.COMMON_IR_ENABLED:
+        if tle_semantic.COMMON_IR_ENABLED and alias is None:
             buffer = tle_semantic.alloc(
                 unwrapped_shape,
                 dtype,
@@ -601,7 +601,10 @@ def alloc(
         if storage == tle.smem:
             if alias is not None:
                 alias_ty = _semantic.builder.get_memdesc_type(storage_shape, elem_type, layout_handle, "smem")
-                tensor_handle = _semantic.builder.create_memdesc_alias(alias_ty, alias.handle, alias_offset_bytes)
+                # Under CommonIR the source buffer handle is a tile.buf, but
+                # tle.memdesc_alias consumes a MemDesc: unwrap it first.
+                alias_handle = tle_semantic.get_memdesc(alias, _semantic)
+                tensor_handle = _semantic.builder.create_memdesc_alias(alias_ty, alias_handle, alias_offset_bytes)
             else:
                 if init_value is None:
                     tensor_handle = _semantic.builder.create_local_alloc(storage_shape, elem_type, layout_handle)
@@ -646,7 +649,7 @@ def alloc(
             raise ValueError(f"Storage type {storage} not yet supported")
 
         if use_mthreads_buffer:
-            return mthreads_buffer.create_buffered_tensor(
+            buffer = mthreads_buffer.create_buffered_tensor(
                 tensor_handle,
                 dtype,
                 unwrapped_shape,
@@ -654,7 +657,15 @@ def alloc(
                 layout,
                 _semantic,
             )
-        return tle.buffered_tensor(tensor_handle, dtype, storage_shape, storage, layout, _semantic)
+        else:
+            buffer = tle.buffered_tensor(tensor_handle, dtype, storage_shape, storage, layout, _semantic)
+        if tle_semantic.COMMON_IR_ENABLED:
+            # An alias is still created as a raw MemDesc alias (the tile dialect has no
+            # byte-offset buffer alias op); bridge it to a tile buffer so it round-trips
+            # through the shared CommonIRToTTGIR pass like any other CommonIR allocation.
+            buffer.handle = _semantic.builder.create_tile_buffer_from_memdesc(buffer.type.to_ir(_semantic.builder),
+                                                                              buffer.handle)
+        return buffer
 
     except Exception as e:
         raise RuntimeError(f"Memory allocation failed: {str(e)}") from e

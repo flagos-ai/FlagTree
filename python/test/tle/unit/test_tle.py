@@ -659,8 +659,8 @@ class TestBufferedTensor:
         assert slot.dtype == tl.float16
         assert slot.type.storage is tle.gpu.smem
         assert semantic.builder.swizzled_encoding_args == (1, 1, 1, [1, 0], [1, 1], [1, 1], [1, 0])
-        assert semantic.builder.tile_subview_args == ("base", ["stage_1", "stage_0", "stage_0"], [16, 32], [1, 1],
-                                                      "fake_layout")
+        assert semantic.builder.tile_subview_args == ("base", ["stage_1", "stage_0",
+                                                               "stage_0"], [16, 32], [1, 1], "fake_layout")
 
     def test_buffered_tensor_slot_rejects_rank_zero_buffer(self):
         """slot(stage) only indexes a real leading stage dimension."""
@@ -700,8 +700,8 @@ class TestBufferedTensor:
         assert subslice.shape == [4, 8, 32]
         assert subslice.type.layout is buffer.type.layout
         assert subslice.type.alloc_shape == [4, 16, 32]
-        assert semantic.builder.tile_subview_args == ("base", ["stage_0", "stage_4", "stage_0"], [4, 8, 32], [1, 1, 1],
-                                                      "fake_layout")
+        assert semantic.builder.tile_subview_args == ("base", ["stage_0", "stage_4",
+                                                               "stage_0"], [4, 8, 32], [1, 1, 1], "fake_layout")
 
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot", "gpu.buffered_tensor.subslice")
     def test_buffered_tensor_subslice_slot_preserves_backing_allocation_shape(self, monkeypatch):
@@ -713,8 +713,9 @@ class TestBufferedTensor:
 
         assert slot.shape == [8, 32]
         assert slot.type.alloc_shape == [4, 16, 32]
-        assert semantic.builder.tile_subview_args == ("tile_subview_handle", ["stage_1", "stage_0", "stage_0"], [8, 32],
-                                                      [1, 1], "fake_layout")
+        assert semantic.builder.tile_subview_args == ("tile_subview_handle", ["stage_1", "stage_0",
+                                                                              "stage_0"], [8, 32], [1,
+                                                                                                    1], "fake_layout")
 
     @pytest.mark.skip_if_tle_unsupported("gpu.buffered_tensor.slot", "gpu.buffered_tensor.subslice")
     def test_common_ir_buffered_tensor_subviews_preserve_metadata(self, monkeypatch):
@@ -822,7 +823,7 @@ class TestCachePolicyFrontend:
         policy = tl.constexpr(None) if wrapped else None
         assert core.mthreads_copy.normalize_cache_policy(policy) is None
 
-    @pytest.mark.parametrize("enabled,common_ir", [(False, False), (False, True), (True, True)])
+    @pytest.mark.parametrize("enabled,common_ir", [(False, False), (False, True)])
     @pytest.mark.parametrize("wrapped", [False, True])
     def test_normalize_rejects_unsupported_backend(self, monkeypatch, enabled, common_ir, wrapped):
         from triton.experimental.tle.language.gpu import core
@@ -833,11 +834,12 @@ class TestCachePolicyFrontend:
         with pytest.raises(ValueError, match="only supported by the MUSA TLE backend"):
             core.mthreads_copy.normalize_cache_policy(policy)
 
+    @pytest.mark.parametrize("common_ir", [False, True])
     @pytest.mark.parametrize("wrapped", [False, True])
-    def test_normalize_accepts_musa_policy(self, monkeypatch, wrapped):
+    def test_normalize_accepts_musa_policy(self, monkeypatch, common_ir, wrapped):
         from triton.experimental.tle.language.gpu import core
         monkeypatch.setattr(core.mthreads_common, "enabled", lambda: True)
-        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", False)
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", common_ir)
         policy = tle.gpu.mthreads.TMECachePolicy("once", "none")
         policy = tl.constexpr(policy) if wrapped else policy
         assert core.mthreads_copy.normalize_cache_policy(policy) == (1, 0)
