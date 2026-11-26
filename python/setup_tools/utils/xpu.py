@@ -719,7 +719,7 @@ def check_pybind11_abi(cache):
     """Verify the env pybind11 ABI matches the prebuilt SDNN objects."""
     scan_dir = None
     try:
-        scan_dir = Path(cache.get("xpu-sdnn-objects_v0.3.6.9.1"))
+        scan_dir = Path(cache.get("xpu-sdnn-objects_v0.3.6.9.2"))
     except KeyError:
         scan_dir = None
     if scan_dir is None or not scan_dir.is_dir():
@@ -965,19 +965,20 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
                 copy_src_path=f"{cache.dir_path}/{flagtree_backend}/xpu-device-libs",
                 copy_dst_path=f"third_party/{flagtree_backend}/device")
     cache.store(
-        file="xpu-sdnn-objects_v0.3.6.9.1", condition=is_xpu,
-        # v0.3.6.9.1: prebuilt SDNN objects (TritonSDNN dialect / conversions /
+        file="xpu-sdnn-objects_v0.3.6.9.2", condition=is_xpu,
+        # v0.3.6.9.2: prebuilt SDNN objects (TritonSDNN dialect / conversions /
         # analysis) plus libTritonSharedForXPU.a, linked into libtriton at build
         # time. libTritonSharedForXPU.a is a CMake IMPORTED target with no build
         # rule of its own, so it must be present for a cold-cache build to link.
-        url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.9.1.tar.gz",
+        url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-sdnn-objects_v0.3.6.9.2.tar.gz",
         # Only the first 8 hex chars of the digest are compared (see
         # setup_helper.check_file). Use the file's md5, not BOS's multipart ETag
         # (an ETag prefixed with '-' is not the file md5).
-        md5_digest="bf4a67e0", version="v0.3.6.9.1",
+        # sha256 0b4b56329a633691b3fd945078c236b131c1f7538e6c3dfd6f9333ac8610ec8c
+        md5_digest="7e28986d", version="v0.3.6.9.2",
         post_hook=lambda path: install_sdnn_objects(path, cache.flagtree_dir))
     cache.store(
-        file="xpu-python-impl-so_v0.3.6.9.2", condition=is_xpu,
+        file="xpu-python-impl-so_v0.3.6.9.3", condition=is_xpu,
         # The XPU Python implementation, compiled to extension modules.  abi3
         # (`Py_LIMITED_API`) is what makes this shippable as a prebuilt artifact
         # at all: one `.so` serves every CPython >= 3.8, so the package does not
@@ -988,11 +989,12 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         # The `.py` it replaces are absent from the tree on purpose -- this
         # download is the only source for them, so a fetch failure must surface
         # rather than fall back to readable sources that no longer exist.
-        url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-python-impl-so_v0.3.6.9.2.tar.gz",
+        url="https://klx-sdk-release-public.su.bcebos.com/XTriton/xpu-python-impl-so_v0.3.6.9.3.tar.gz",
         # Only the first 8 hex chars of the digest are compared (see
         # setup_helper.check_file). Use the file's md5, not BOS's multipart ETag
         # (an ETag prefixed with '-' is not the file md5).
-        md5_digest="98126024", version="v0.3.6.9.2",
+        # sha256 7350d6e2d1147e75fb00211c13d2c4b2d6cae8832d2bc66fbdf11116eb883724
+        md5_digest="09b36d7a", version="v0.3.6.9.3",
         post_hook=lambda path: install_python_impl(path, cache.flagtree_dir))
     cache.store(
         file="xtdk-llvm19_20261013",
