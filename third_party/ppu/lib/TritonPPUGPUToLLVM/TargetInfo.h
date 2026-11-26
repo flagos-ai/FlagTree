@@ -42,6 +42,11 @@ public:
   void barrier(Location loc, RewriterBase &rewriter,
                bool isWarpSync = false) const override;
 
+  bool preferDirectInterWarpReduceGather() const override { return true; }
+
+  bool subgroupBarrier(Location loc, RewriterBase &rewriter, Value subgroupId,
+                       unsigned numSubgroupThreads) const override;
+
   void storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
                     std::optional<Value> ctaId, Value val,
                     Value pred) const override;

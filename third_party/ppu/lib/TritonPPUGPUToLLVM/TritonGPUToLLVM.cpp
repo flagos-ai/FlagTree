@@ -34,14 +34,14 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
-#ifdef __TLE__
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#endif
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/Support/MathExtras.h"
 #ifdef __TLE__
 #include "tle/dialect/include/Analysis/AxisInfoExt.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/DSLRegionOpToLLVM.h"
@@ -75,6 +75,38 @@ using namespace mlir;
 using namespace mlir::triton::ppu;
 
 namespace {
+
+struct SubgroupLocalBarrierOpConversion
+    : public ConvertOpToLLVMPattern<triton::gpu::LocalBarrierOp> {
+  SubgroupLocalBarrierOpConversion(const LLVMTypeConverter &converter,
+                                   const ppu::TargetInfo &targetInfo,
+                                   PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::gpu::LocalBarrierOp>(converter, benefit),
+        targetInfo(targetInfo) {}
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::LocalBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto sgAttr = op->getAttrOfType<DenseI32ArrayAttr>("ppu.subgroup_barrier");
+    if (!sgAttr)
+      return failure();
+    ArrayRef<int32_t> vals = sgAttr.asArrayRef();
+    if (vals.size() != 2)
+      return failure();
+    Location loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
+    Value subgroupId = b.lshr(warpId, b.i32_val(vals[0]));
+    if (!targetInfo.subgroupBarrier(loc, rewriter, subgroupId,
+                                    static_cast<unsigned>(vals[1])))
+      return failure();
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  const ppu::TargetInfo &targetInfo;
+};
 
 class TritonLLVMFunctionConversionTarget : public ConversionTarget {
 public:
@@ -367,6 +399,128 @@ struct ConvertTritonGPUToLLVMPPU
         typeConverter, patterns, computeCapability, benefit);
     mlir::triton::populateInstrumentationToLLVMPatterns(
         typeConverter, targetInfo, patterns, benefit);
+    // Register with higher benefit than default and backend local barrier
+    // patterns so tagged inter-reduce barriers lower to subgroup syncs.
+    patterns.add<SubgroupLocalBarrierOpConversion>(typeConverter, targetInfo,
+                                                   benefit + 2);
+
+    // Scope Membar-inserted LocalBarrierOps that strictly separate two
+    // matching disjoint-subgroup tt.reduce ops to hardware subgroup barriers.
+    {
+      unsigned numLanes = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
+      auto getDisjointSubgroup = [&](triton::ReduceOp red)
+          -> std::optional<std::pair<unsigned, unsigned>> {
+        unsigned numWarps = triton::gpu::lookupNumWarps(red);
+        if (numWarps <= 1 || !llvm::isPowerOf2_32(numWarps))
+          return std::nullopt;
+        unsigned axis = red.getAxis();
+        auto srcLL = mlir::triton::gpu::toLinearLayout(red.getInputTypes()[0]);
+        auto kWarp = StringAttr::get(context, "warp");
+        if (!srcLL.hasInDim(kWarp))
+          return std::nullopt;
+        const auto &warpBases = srcLL.getBases().lookup(kWarp);
+        if (warpBases.size() != llvm::Log2_32(numWarps))
+          return std::nullopt;
+        unsigned k = 0;
+        while (k < warpBases.size()) {
+          const auto &basis = warpBases[k];
+          if (basis[axis] == 0)
+            break;
+          for (unsigned d = 0; d < basis.size(); ++d)
+            if (d != axis && basis[d] != 0)
+              return std::nullopt;
+          ++k;
+        }
+        if (k == 0 || k >= warpBases.size())
+          return std::nullopt;
+        for (unsigned bit = k; bit < warpBases.size(); ++bit) {
+          if (warpBases[bit][axis] != 0)
+            return std::nullopt;
+        }
+        unsigned sizeInterWarps = 1u << k;
+        if (sizeInterWarps != 2 && sizeInterWarps != 4 && sizeInterWarps != 8)
+          return std::nullopt;
+        unsigned numSubgroups = numWarps / sizeInterWarps;
+        if (1 + numSubgroups > 16)
+          return std::nullopt;
+        for (unsigned i = 0; i < red.getNumOperands(); ++i) {
+          Type elemTy =
+              cast<RankedTensorType>(red.getInputTypes()[i]).getElementType();
+          if (!elemTy.isIntOrFloat())
+            return std::nullopt;
+          unsigned bw = elemTy.getIntOrFloatBitWidth();
+          if ((bw != 16 && bw != 32 && bw != 64) ||
+              ((sizeInterWarps * bw) % 32 != 0))
+            return std::nullopt;
+        }
+        return std::make_pair(k, sizeInterWarps * numLanes);
+      };
+      mod.walk([&](FunctionOpInterface func) {
+        bool hasNamedOrWS = false;
+        func.walk([&](Operation *child) {
+          StringRef name = child->getName().getStringRef();
+          if (name == "ttg.warp_specialize" || name.contains("barrier_named"))
+            hasNamedOrWS = true;
+        });
+        if (hasNamedOrWS)
+          return;
+        func.walk([&](triton::gpu::LocalBarrierOp barOp) {
+          auto isPureRegOp = [](Operation *op) {
+            if (op->getNumRegions() > 0)
+              return false;
+            if (isMemoryEffectFree(op))
+              return true;
+            return isa<triton::ExpandDimsOp, triton::BroadcastOp,
+                       triton::SplatOp, triton::TransOp, triton::BitcastOp>(op);
+          };
+          Operation *prev = barOp->getPrevNode();
+          while (prev && isPureRegOp(prev))
+            prev = prev->getPrevNode();
+          auto prevRed = dyn_cast_or_null<triton::ReduceOp>(prev);
+          if (!prevRed)
+            return;
+          Operation *next = barOp->getNextNode();
+          while (next && isPureRegOp(next))
+            next = next->getNextNode();
+          auto nextRed = dyn_cast_or_null<triton::ReduceOp>(next);
+          if (!nextRed)
+            return;
+          auto sgPrev = getDisjointSubgroup(prevRed);
+          auto sgNext = getDisjointSubgroup(nextRed);
+          if (!sgPrev || !sgNext || *sgPrev != *sgNext)
+            return;
+          // Ensure no cross-subgroup SMEM write before prevRed relies on barOp,
+          // and no SMEM buffer read before prevRed is overwritten after nextRed
+          // before the next full barrier.
+          DenseSet<Value> readBeforePrev;
+          for (Operation *cur = prevRed->getPrevNode(); cur;
+               cur = cur->getPrevNode()) {
+            if (isa<triton::gpu::LocalBarrierOp, mlir::gpu::BarrierOp>(cur))
+              break;
+            if (isa<triton::gpu::LocalStoreOp,
+                    triton::gpu::AsyncCopyGlobalToLocalOp>(cur))
+              return;
+            if (auto load = dyn_cast<triton::gpu::LocalLoadOp>(cur))
+              readBeforePrev.insert(load.getSrc());
+          }
+          for (Operation *cur = nextRed->getNextNode(); cur;
+               cur = cur->getNextNode()) {
+            if (isa<triton::gpu::LocalBarrierOp, mlir::gpu::BarrierOp>(cur))
+              break;
+            if (auto st = dyn_cast<triton::gpu::LocalStoreOp>(cur))
+              if (readBeforePrev.contains(st.getDst()))
+                return;
+            if (auto cp = dyn_cast<triton::gpu::AsyncCopyGlobalToLocalOp>(cur))
+              if (readBeforePrev.contains(cp.getResult()))
+                return;
+          }
+          barOp->setAttr("ppu.subgroup_barrier",
+                         DenseI32ArrayAttr::get(
+                             context, {static_cast<int32_t>(sgPrev->first),
+                                       static_cast<int32_t>(sgPrev->second)}));
+        });
+      });
+    }
 
     TritonLLVMConversionTarget convTarget(*context);
     if (failed(applyPartialConversion(mod, convTarget, std::move(patterns))))
