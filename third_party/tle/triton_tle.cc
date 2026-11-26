@@ -1088,8 +1088,8 @@ void init_triton_tle_ir(py::module &&m) {
              Value shardId, const std::string &space,
              std::optional<Value> offset, std::optional<Value> comm,
              std::optional<int32_t> contextId,
-             std::optional<tle::FlagCXCoopKind> coopKind,
-             bool transfer, std::optional<tle::MemoryOrder> order) -> OpState {
+             std::optional<tle::FlagCXCoopKind> coopKind, bool transfer,
+             std::optional<tle::MemoryOrder> order) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
                 "cluster", "chiplet", "device", "node"};

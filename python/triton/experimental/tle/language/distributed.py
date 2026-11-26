@@ -1768,8 +1768,8 @@ def remote(
         if offset is not None:
             raise TypeError(f'tle.remote(..., space="{space}") in transfer mode does not accept offset; '
                             'add element offsets to the returned pointer')
-        remote_ptr = _create_transfer_remote_pointer(tensor, shard_id, scope, space, dtype, coopkind, context_id,
-                                                     order, _semantic)
+        remote_ptr = _create_transfer_remote_pointer(tensor, shard_id, scope, space, dtype, coopkind, context_id, order,
+                                                     _semantic)
         if space == "device" and scope is not None:
             _apply_mesh_cluster_launch(scope, _semantic)
         return remote_ptr

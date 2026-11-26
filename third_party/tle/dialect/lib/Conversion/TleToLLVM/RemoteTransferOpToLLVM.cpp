@@ -71,14 +71,15 @@ static std::optional<int64_t> getConstantInt(Value value) {
   return integer.getInt();
 }
 
-static LogicalResult lowerRemoteTransfer(
-    Location loc, Operation *op, Value srcHandle, Value dstHandle,
-    Value commHandle, Value peer, Value srcOffset, Value dstOffset,
-    Value nelems, int32_t contextId, int64_t elemBytes,
-    tle::FlagCXTeamKind teamKind, tle::FlagCXCoopKind coopKind,
-    tle::MemoryOrder order, RemoteTransferKind kind,
-    std::optional<int64_t> constantNelems,
-    ConversionPatternRewriter &rewriter) {
+static LogicalResult
+lowerRemoteTransfer(Location loc, Operation *op, Value srcHandle,
+                    Value dstHandle, Value commHandle, Value peer,
+                    Value srcOffset, Value dstOffset, Value nelems,
+                    int32_t contextId, int64_t elemBytes,
+                    tle::FlagCXTeamKind teamKind, tle::FlagCXCoopKind coopKind,
+                    tle::MemoryOrder order, RemoteTransferKind kind,
+                    std::optional<int64_t> constantNelems,
+                    ConversionPatternRewriter &rewriter) {
   ModuleOp module = op->getParentOfType<ModuleOp>();
   if (!module)
     return rewriter.notifyMatchFailure(op, "expected a parent module");
