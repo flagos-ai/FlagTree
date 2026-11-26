@@ -176,7 +176,7 @@ void TargetInfo::barrier(Location loc, RewriterBase &rewriter,
 }
 
 namespace {
-constexpr unsigned kPPUBarrierFenceShared = 1;
+constexpr unsigned kSubgroupBarrierSharedFence = 1;
 
 LLVM::LLVMFuncOp getPPUBarrierSyncBuiltin(RewriterBase &rewriter,
                                           Location loc) {
@@ -209,7 +209,7 @@ bool TargetInfo::subgroupBarrier(Location loc, RewriterBase &rewriter,
   Value barId = b.add(b.i32_val(1), subgroupId);
   auto func = getPPUBarrierSyncBuiltin(rewriter, loc);
   Value args[] = {barId, b.i32_val(numSubgroupThreads),
-                  b.i32_val(kPPUBarrierFenceShared)};
+                  b.i32_val(kSubgroupBarrierSharedFence)};
   LLVM::CallOp::create(rewriter, loc, func, args);
   return true;
 }
