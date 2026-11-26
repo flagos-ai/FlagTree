@@ -527,6 +527,10 @@ static std::optional<SmeCopyPlan> planSmeCopy(AsyncStoreCandidate &candidate,
 
 static bool readsBackIntoDot(Value storePtr) {
   Value root = stripConvertLayouts(storePtr);
+  llvm::errs() << "[READBACK-DEBUG] root=" << root.getType() << " users:";
+  for (Operation *u : root.getUsers())
+    llvm::errs() << " " << u->getName().getStringRef();
+  llvm::errs() << "\n";
   SmallVector<Value> worklist{root};
   llvm::DenseSet<Value> seen{root};
   while (!worklist.empty()) {
@@ -537,6 +541,8 @@ static bool readsBackIntoDot(Value storePtr) {
         continue;
       }
       if (auto reader = dyn_cast<ttg::LocalLoadOp>(user)) {
+        llvm::errs() << "[READBACK-DEBUG] local_load reachesDot="
+                     << reachesDot(reader.getResult()) << "\n";
         if (reachesDot(reader.getResult()))
           return true;
         continue;
