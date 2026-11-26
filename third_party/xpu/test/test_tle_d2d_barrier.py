@@ -34,8 +34,7 @@ def _store_and_barrier(device_dptr: tl.constexpr, mesh: tl.constexpr):
     reason="requires two local torchrun ranks with the XPU FlagCX runtime",
 )
 def test_tle_d2d_barrier():
-    # Gloo coordinates the host ranks. The kernel uses FlagCX for device communication.
-    mem_pool = tle.get_mem_pool(backend="gloo")
+    mem_pool = tle.get_mem_pool()
     rank = dist.get_rank()
     with torch.cuda.use_mem_pool(mem_pool):
         receive = torch.full((N,), -1.0, dtype=torch.float32).to("cuda")

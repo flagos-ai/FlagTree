@@ -10,16 +10,6 @@ from importlib.machinery import PathFinder
 from pathlib import Path
 
 
-def flagcx_packages_detector() -> bool:
-    try:
-        from . import flagcx_wrapper
-    except (ImportError, OSError):
-        return False
-    return all(
-        hasattr(flagcx_wrapper, name)
-        for name in ("FLAGCXLibrary", "flagcxDevCommRequirements", "flagcxUniqueId", "FLAGCX_WIN_COLL_SYMMETRIC"))
-
-
 class FlagcxRuntimeConfig:
     bt_name = "libflagcx_device.bc"
     shared_name = "libflagcx.so"
@@ -32,7 +22,7 @@ class FlagcxRuntimeConfig:
         self.host_files_available = False
         self.is_available = False
 
-        env_keys = ("USE_FLAGCX", "USE_DIST", "USE_DISTRIBUTED", "USE_TLE_DIST", "USE_TLE_DISTRIBUTED")
+        env_keys = ("USE_FLAGCX")
         disabled = any(os.environ.get(key, "").strip().lower() in ("off", "0", "false") for key in env_keys)
         if disabled:
             return
@@ -44,6 +34,7 @@ class FlagcxRuntimeConfig:
         backend_dir = Path(__file__).parent
         source_triton_dir = backend_dir.parent / "python" / "triton"
         triton_dir = source_triton_dir if source_triton_dir.is_dir() else backend_dir.parent.parent
+        language_dir = triton_dir / "experimental" / "tle" / "language"
 
         def in_dir(directory, name):
             return directory / name if directory else None
@@ -58,11 +49,12 @@ class FlagcxRuntimeConfig:
              wheel_dir / "lib" / self.shared_name if wheel_dir else None, cache_dir / self.shared_name), path_order,
             file=True, name=self.shared_name)
         self.include_path = self._first_existing(
-            (os.environ.get("FLAGCX_INCLUDE_PATH"), in_dir(
-                module_dir, self.include_name), triton_dir / "experimental" / "tle" / "language" / "include",
+            (os.environ.get("FLAGCX_INCLUDE_PATH"), in_dir(module_dir, self.include_name), language_dir / self.include_name,
              wheel_dir / "lib" / self.include_name if wheel_dir else None, cache_dir / self.include_name), path_order,
             file=False)
-        self.host_files_available = bool(self.shared_lib_path and self.include_path and flagcx_packages_detector())
+        # Importing the TLE package here would recurse into this runtime config.
+        self.host_files_available = bool(self.shared_lib_path and self.include_path
+                                         and (language_dir / "flagcx_wrapper.py").is_file())
         self.is_available = bool(self.bitcode_path and self.host_files_available)
 
     @staticmethod

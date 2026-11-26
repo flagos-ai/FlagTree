@@ -24,6 +24,7 @@ import shutil
 import inspect
 import re
 import subprocess
+import tempfile
 import importlib.machinery
 import importlib.util
 from pathlib import Path
@@ -68,9 +69,6 @@ def relocate_flagcx(*args, **kwargs):
     if flagcx is not None:
         flagcx.dst_path = os.path.join(flagtree_configs.flagtree_submodule_dir, _FLAGCX_RELATIVE_PATH)
 
-
-# TODO(KLX): Verify these SDK/XCCL file layouts on a KLX build host, and
-# confirm whether both dependencies are required to build FlagCX.
 def _has_xpu_sdk(path):
     path = Path(path).expanduser()
     return ((path / "include" / "xpu" / "runtime.h").is_file()
@@ -177,38 +175,30 @@ class XPUFlagCXRegistrar(FlagCXRegistrar):
 
     def _get_required_src_files_paths(self):
         return {
-            "wrapper": Path(self.flagcx_src_dir) / "plugin" / "interservice" / "flagcx_wrapper.py",
+            "wrapper": Path(self.flagcx_src_dir) / "src" / "flagcx" / "api.py",
             "include": Path(self.flagcx_src_dir) / "flagcx" / "include",
         }
 
     def _get_required_dst_files_paths(self):
-        xpu_root = Path(self.flagtree_dir) / "third_party" / "xpu"
-        language_dir = xpu_root / "python" / "triton" / "experimental" / "tle" / "language"
+        root = Path(self.flagtree_dir)
+        language = Path("triton") / "experimental" / "tle" / "language"
         return {
-            "wrapper": (language_dir / "flagcx_wrapper.py", xpu_root / "backend" / "flagcx_wrapper.py"),
-            "include": (language_dir / "include", ),
+            "wrapper": (root / FLAGTREE_PYTHON_ROOT / language / "flagcx_wrapper.py", ),
+            "include": (root / XPU_PYTHON_ROOT / language / "include", ),
         }
 
     def _copy_required_files(self):
-        for destinations in self._get_required_dst_files_paths().values():
-            for destination in destinations:
-                destination.parent.mkdir(parents=True, exist_ok=True)
         super()._copy_required_files()
-        self._pin_flagcx_api_path()
-
-    def _pin_flagcx_api_path(self):
-        api_path = str(Path(self.flagcx_src_dir) / "src" / "flagcx" / "api.py")
-        for destinations in self._get_required_dst_files_paths().values():
-            for destination in destinations:
-                if destination.name != "flagcx_wrapper.py":
-                    continue
-                text = destination.read_text()
-                text = re.sub(
-                    r'(os\.environ\.get\(\s*"FLAGCX_API_PATH",\s*\n\s*)"[^"]*"',
-                    rf'\g<1>"{api_path}"',
-                    text,
-                )
-                destination.write_text(text)
+        paths = self._get_required_dst_files_paths()
+        wrapper, = paths["wrapper"]
+        xpu_include, = paths["include"]
+        xpu_wrapper = xpu_include.parent / wrapper.name
+        # XPU packages its TLE overlay. Link the shared wrapper like communication.py.
+        with tempfile.TemporaryDirectory(dir=xpu_wrapper.parent) as tmpdir:
+            link = Path(tmpdir) / wrapper.name
+            link.symlink_to(os.path.relpath(wrapper, xpu_wrapper.parent))
+            link.replace(xpu_wrapper)
+        (Path(self.flagtree_dir) / BACKEND_ROOT / wrapper.name).unlink(missing_ok=True)
 
 
 def handle_flagcx(*args, **kwargs):
