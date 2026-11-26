@@ -165,6 +165,37 @@ jobs:
           #               .github/workflows/<backend>3.6-build-and-test.yml
           INSTALL = "MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v"
 
+          # tsingmicro's triton driver reads these at import time, so the same
+          # env must be present on every test round, not only during the build.
+          # Shared between build_cmd and test_env to avoid drift.
+          TSM_RUNTIME = (
+              "export TX8_DEPS_ROOT=~/.flagtree/tsingmicro/tx8_deps\n"
+              "export LLVM_SYSPATH=~/.flagtree/tsingmicro/tsingmicro-llvm22\n"
+              "export LLVM_BINARY_DIR=${LLVM_SYSPATH}/bin\n"
+              "export PYTHONPATH=${LLVM_SYSPATH}/python_packages/mlir_core:$PYTHONPATH\n"
+              "export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH\n"
+              "export PATH=${LLVM_BINARY_DIR}:${PATH}"
+          )
+
+          # iluvatar needs its corex libs (and a libgomp preload on aarch64)
+          # present when the backend loads during tests. Copied verbatim from
+          # iluvatar3.6-gems-test.yml's flaggems-pre-command.
+          ILUVATAR_RUNTIME = (
+              "export LD_LIBRARY_PATH=/usr/local/corex-4.5.0/lib64/:${LD_LIBRARY_PATH}\n"
+              'if [[ "$(uname -m)" == "aarch64" ]]; then\n'
+              "  libgomp_path=$(find /usr/lib /usr/lib64 /lib /lib64 -type f "
+              "-name 'libgomp.so*' 2>/dev/null | head -n 1)\n"
+              '  if [[ -n "$libgomp_path" ]]; then\n'
+              '    export LD_PRELOAD="$libgomp_path${LD_PRELOAD:+:$LD_PRELOAD}"\n'
+              "  fi\n"
+              "fi"
+          )
+
+          # build_cmd: run once in the build step.
+          # test_env (optional): runtime-only env sourced before every test
+          #   round via --pre-command, mirroring the gems-test template's
+          #   flaggems-pre-command. Omit it when the build leaves nothing the
+          #   runtime needs (the common case: ppu, mthreads, xpu, ...).
           BACKENDS = {
               "xpu": {
                   "runner": "xpu3.6",
@@ -211,6 +242,10 @@ jobs:
                       'export FLAGCX_ILUVATAR_SDK="${FLAGCX_ILUVATAR_SDK:-$(dirname "$(dirname "$(realpath "$FLAGCX_ILUVATAR_CLANG")")")}"\n'
                       f"{INSTALL}"
                   ),
+                  # Runtime only: both iluvatar3.6-build-and-test.yml and
+                  # iluvatar3.6-gems-test.yml set corex/libgomp in their test
+                  # steps, never in the build. Keep it out of build_cmd.
+                  "test_env": ILUVATAR_RUNTIME,
               },
               "hcu": {
                   "runner": "hcu3.6",
@@ -234,14 +269,10 @@ jobs:
                   "build_cmd": (
                       "export FLAGTREE_BACKEND=tsingmicro\n"
                       'export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"\n'
-                      "export TX8_DEPS_ROOT=~/.flagtree/tsingmicro/tx8_deps\n"
-                      "export LLVM_SYSPATH=~/.flagtree/tsingmicro/tsingmicro-llvm22\n"
-                      "export LLVM_BINARY_DIR=${LLVM_SYSPATH}/bin\n"
-                      "export PYTHONPATH=${LLVM_SYSPATH}/python_packages/mlir_core:$PYTHONPATH\n"
-                      "export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH\n"
-                      "export PATH=${LLVM_BINARY_DIR}:${PATH}\n"
+                      f"{TSM_RUNTIME}\n"
                       "python3 -m pip install . --no-build-isolation -v"
                   ),
+                  "test_env": TSM_RUNTIME,
               },
               "sunrise": {
                   "runner": "sunrise3.6",
@@ -301,7 +332,10 @@ jobs:
               {"backend": name,
                "runner": BACKENDS[name]["runner"],
                "gpu_env": BACKENDS[name]["gpu_env"],
-               "build_cmd": BACKENDS[name]["build_cmd"]}
+               "build_cmd": BACKENDS[name]["build_cmd"],
+               # Runtime-only env for backends whose driver needs it at import
+               # time; empty string for the common case.
+               "test_env": BACKENDS[name].get("test_env", "")}
               for name in selected
           ]
           matrix = json.dumps({"include": include})
@@ -403,6 +437,9 @@ jobs:
           REPO_KIND: ${{ steps.env.outputs.repo_kind }}
           WORK_DIR: ${{ steps.env.outputs.work_dir }}
           GPUS: ${{ steps.env.outputs.gpus }}
+          # Runtime-only env (empty for most backends). Sourced before every
+          # test round; tsingmicro/iluvatar drivers read it at import time.
+          TEST_ENV: ${{ matrix.test_env }}
           FLAGGEMS_REF: ${{ inputs.FLAGGEMS_REF }}
           FLAGGEMS_URL: ${{ inputs.FLAGGEMS_URL }}
           FLAGGEMS_VLLM_REF: ${{ inputs.FLAGGEMS_VLLM_REF }}
@@ -428,6 +465,12 @@ jobs:
             fi
             EXTRA_ARGS+=(--flaggems-vllm-ref "$FLAGGEMS_VLLM_REF")
             EXTRA_ARGS+=(--flaggems-vllm-url "$FLAGGEMS_VLLM_URL")
+          fi
+
+          # Backends whose driver needs extra env at import time carry it in
+          # TEST_ENV; forward it as --pre-command so every round sources it.
+          if [ -n "$TEST_ENV" ]; then
+            EXTRA_ARGS+=(--pre-command "$TEST_ENV")
           fi
 
           python3 .github/actions/run-flaggems-test/assets/ci/generate_skip_list.py \
