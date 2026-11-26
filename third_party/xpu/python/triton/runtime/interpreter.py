@@ -228,7 +228,8 @@ def _get_np_dtype(tt_dtype):
 # Cross-checked against torch bit for bit, in both directions, over every 8-bit
 # pattern and ~11k values per format -- ties (e4m3fn 464.0 -> 448.0) and
 # subnormals included, out-of-range inputs excluded for the saturating rows.
-# See third_party/kernel_split/tests/core/test_interpreter_fp8.py.
+# The table below is the recorded result of that comparison, so a row that
+# disagrees with torch is a regression in this file, not a missing measurement.
 #
 # NOTE: fp8e4b15 is Triton-only and has no torch counterpart, so its row follows
 # the OCP e4m3 convention (all-ones = NaN) rather than a measurement.
@@ -394,8 +395,8 @@ def _convert_float(input, input_dtype, output_dtype, rounding_mode):
     be spelled out here. Going through the value (decode, then quantise and
     encode) rather than shifting mantissa fields is what makes rounding,
     subnormals, the carry out of a binade and saturation fall out for free --
-    the result is bit-identical to torch for every format pair covered by
-    third_party/kernel_split/tests/core/test_interpreter_fp8.py.
+    the result is bit-identical to torch for every format pair in
+    `_FLOAT_FORMATS` (see the measurement note above that table).
 
     \returns the raw bits of *output_dtype*, shaped like *input*; callers view
     them as the storage type.
