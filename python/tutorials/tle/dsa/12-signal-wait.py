@@ -1,7 +1,6 @@
 # Copyright 2026- Xcoresigma Technology Co., Ltd
 
 import torch
-import torch_npu
 import torch.distributed as dist
 import triton
 import triton.language as tl
