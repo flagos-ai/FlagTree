@@ -61,7 +61,7 @@ LogicalResult applyXSMTConversionStage(Operation *op, MLIRContext *ctx) {
 
   // XSMT + Proton ops that must be eliminated
   target.addIllegalOp<xsmt::PackOp, xsmt::UnpackOp, xsmt::RepackOp,
-                      xsmt::DescriptorLoadViewOp, xsmt::MMT4DOp,
+                      xsmt::DescriptorLoadViewOp, xsmt::MMT4DOp, xsmt::VMT4DOp,
                       xsmt::GetThreadOp, proton::RecordOp>();
 
   // All target dialects are legal
@@ -86,7 +86,7 @@ LogicalResult applyXSMTConversionStage(Operation *op, MLIRContext *ctx) {
 
   // Re-mark the specific ops as illegal (overrides the dialect-level legal)
   target.addIllegalOp<xsmt::PackOp, xsmt::UnpackOp, xsmt::RepackOp,
-                      xsmt::DescriptorLoadViewOp, xsmt::MMT4DOp,
+                      xsmt::DescriptorLoadViewOp, xsmt::MMT4DOp, xsmt::VMT4DOp,
                       xsmt::GetThreadOp, proton::RecordOp>();
 
   RewritePatternSet patterns(ctx);
