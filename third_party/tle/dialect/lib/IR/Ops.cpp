@@ -1290,6 +1290,9 @@ LogicalResult RemotePointersOp::verify() {
   if (getTransfer() && spaceAttr != "device")
     return emitOpError() << "transfer marker attribute requires device space";
 
+  if (getOrderAttr() && !isTransferMarker())
+    return emitOpError() << "order requires a remote transfer marker";
+
   if (spaceAttr == "chiplet") {
     if (!getShardId().getType().isInteger(32))
       return emitOpError() << "expects shard_id to be i32";

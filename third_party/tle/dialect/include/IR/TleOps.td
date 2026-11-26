@@ -506,7 +506,8 @@ def Tle_RemotePointersOp : Tle_Op<"remote_pointers", [
     Optional<TT_IntLike>:$offset,
     OptionalAttr<I32Attr>:$context_id,
     OptionalAttr<Tle_FlagCXCoopKindAttr>:$coop_kind,
-    UnitAttr:$transfer
+    UnitAttr:$transfer,
+    OptionalAttr<Tle_MemoryOrderAttr>:$order
   );
 
   let results = (outs Tle_LocalPointerResultType:$result);
@@ -538,6 +539,7 @@ class Tle_RemoteTransferOp<string mnemonic> : Tle_Op<mnemonic, [
     lowering to form byte offsets and the byte count passed to FlagCX. Nelems
     must be greater than zero. context_id must be an i32 attribute in
     [0, INT32_MAX] selecting a context when FlagCX uses the network path.
+    order selects the FlagCX memory order and defaults to relaxed.
   }];
 
   let arguments = (ins
@@ -551,7 +553,8 @@ class Tle_RemoteTransferOp<string mnemonic> : Tle_Op<mnemonic, [
     I32Attr:$context_id,
     I64Attr:$elem_bytes,
     Tle_FlagCXCoopKindAttr:$coop_kind,
-    DefaultValuedAttr<Tle_FlagCXTeamKindAttr, "::mlir::triton::tle::FlagCXTeamKind::WORLD">:$team_kind
+    DefaultValuedAttr<Tle_FlagCXTeamKindAttr, "::mlir::triton::tle::FlagCXTeamKind::WORLD">:$team_kind,
+    DefaultValuedAttr<Tle_MemoryOrderAttr, "::mlir::triton::tle::MemoryOrder::RELAXED">:$order
   );
 
   let hasVerifier = 1;

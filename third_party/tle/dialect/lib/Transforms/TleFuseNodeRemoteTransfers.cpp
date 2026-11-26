@@ -758,13 +758,13 @@ struct TritonTleFuseNodeRemoteTransfers
             loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
             marker.getShardId(), srcOffset, dstOffset, nelems,
             marker.getContextIdAttr(), builder.getI64IntegerAttr(elemBytes),
-            marker.getCoopKindAttr(), teamKind);
+            marker.getCoopKindAttr(), teamKind, marker.getOrderAttr());
       } else {
         builder.create<tle::RemoteGetOp>(
             loc, marker.getSrc(), marker.getSrc(), marker.getComm(),
             marker.getShardId(), srcOffset, dstOffset, nelems,
             marker.getContextIdAttr(), builder.getI64IntegerAttr(elemBytes),
-            marker.getCoopKindAttr(), teamKind);
+            marker.getCoopKindAttr(), teamKind, marker.getOrderAttr());
       }
 
       unsigned localArgNumber = localExpr.localArg.getArgNumber();

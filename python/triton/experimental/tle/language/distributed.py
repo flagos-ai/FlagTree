@@ -1157,7 +1157,7 @@ def _parse_barrier_enum_arg(arg) -> str:
     return str(arg).lower()
 
 
-def _normalize_barrier_order(order) -> attr.MemoryOrder:
+def _normalize_memory_order(order) -> attr.MemoryOrder:
     # Normalize MemoryOrder enum / raw string to the builder-side enum attr.
     order = tl._unwrap_if_constexpr(order)
     if isinstance(order, attr.MemoryOrder):
@@ -1167,8 +1167,8 @@ def _normalize_barrier_order(order) -> attr.MemoryOrder:
     return attr.MemoryOrder.from_str(str(order).lower())
 
 
-def _require_barrier_order(order) -> attr.MemoryOrder:
-    normalized = _normalize_barrier_order(order)
+def _require_memory_order(order) -> attr.MemoryOrder:
+    normalized = _normalize_memory_order(order)
     if normalized is None:
         raise ValueError(f"order must be 'relaxed', 'acquire', 'release', or 'acqrel', got {order!r}")
     return normalized
@@ -1206,7 +1206,7 @@ def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.F
             barrier_index=index or 0,
             space="chiplet",
             group_kind=_parse_barrier_enum_arg(group_kind),
-            order=_require_barrier_order(order),
+            order=_require_memory_order(order),
             barrier_kind=_parse_barrier_enum_arg(barrier_kind),
             context_id=tl._unwrap_if_constexpr(context_id),
             memory_scope=attr.SyncScope.from_str("system"),
@@ -1232,7 +1232,7 @@ def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.F
     else:
         group_kind = str(group_kind).lower()
 
-    order = _require_barrier_order(order)
+    order = _require_memory_order(order)
 
     barrier_kind = tl._unwrap_if_constexpr(barrier_kind)
     if isinstance(barrier_kind, BarrierKind):
@@ -1639,7 +1639,8 @@ def _normalize_transfer_context_id(context_id) -> int:
     return context_id
 
 
-def _create_transfer_remote_pointer(ctx, shard_id, scope, space, dtype, coopkind, context_id, _semantic) -> tl.tensor:
+def _create_transfer_remote_pointer(ctx, shard_id, scope, space, dtype, coopkind, context_id, order,
+                                    _semantic) -> tl.tensor:
     from triton.runtime import DistributedRtContext
     if dtype is None:
         raise TypeError(f'tle.remote(..., space="{space}") in transfer mode requires dtype')
@@ -1656,6 +1657,7 @@ def _create_transfer_remote_pointer(ctx, shard_id, scope, space, dtype, coopkind
     dtype = tl._unwrap_if_constexpr(dtype)
     _normalize_transfer_elem_bytes(dtype)
     context_id = _normalize_transfer_context_id(context_id)
+    order = _require_memory_order(order) if order is not None else None
     coop_kind = tl._unwrap_if_constexpr(coopkind)
     if coop_kind is None:
         coop_kind = GroupKind.BLOCK
@@ -1678,6 +1680,7 @@ def _create_transfer_remote_pointer(ctx, shard_id, scope, space, dtype, coopkind
         context_id,
         coop_kind,
         transfer=space == "device",
+        order=order,
     )
     return tl.tensor(remote_op.get_result(0), remote_ptr_dtype)
 
@@ -1693,6 +1696,7 @@ def remote(
     coopkind: GroupKind | str | None = None,
     context_id: int = 0,
     mode: str | None = None,
+    order: MemoryOrder | attr.MemoryOrder | str | None = None,
     _semantic: TLESemantic | None = None,
 ):
     """
@@ -1734,6 +1738,13 @@ def remote(
     path. `shard_id` is a world rank for node space and a node-local rank for
     device space. A compile-time mesh coordinate requires `scope=device_mesh`.
 
+    In transfer mode, `order` sets the FlagCX put/get memory order. It accepts
+    a compile-time `MemoryOrder` or a string (`"relaxed"`, `"acquire"`,
+    `"release"`, `"acq_rel"` or `"acqrel"`). The default is `"relaxed"`.
+    On the FlagCX peer-to-peer path, `"release"` and `"acq_rel"` fence before
+    a put, and `"acquire"` and `"acq_rel"` fence after a get. The network path
+    uses FlagCX's transport ordering.
+
     Use pointer arithmetic for offsets in transfer mode. For `space="device"`
     with the default mode, `offset` is the remote-memory element offset and may
     be a Python `int` or scalar integer `tl.tensor`.
@@ -1752,12 +1763,13 @@ def remote(
     shard_id = _unwrap_remote_shard_id(shard_id)
     scope = tl._unwrap_if_constexpr(scope)
     offset = tl._unwrap_if_constexpr(offset)
+    order = tl._unwrap_if_constexpr(order)
     if space == "node" or mode == "transfer":
         if offset is not None:
             raise TypeError(f'tle.remote(..., space="{space}") in transfer mode does not accept offset; '
                             'add element offsets to the returned pointer')
         remote_ptr = _create_transfer_remote_pointer(tensor, shard_id, scope, space, dtype, coopkind, context_id,
-                                                     _semantic)
+                                                     order, _semantic)
         if space == "device" and scope is not None:
             _apply_mesh_cluster_launch(scope, _semantic)
         return remote_ptr
@@ -1765,6 +1777,8 @@ def remote(
     unwrapped_context_id = tl._unwrap_if_constexpr(context_id)
     if not isinstance(unwrapped_context_id, int) or unwrapped_context_id != 0:
         transfer_only_args.append("context_id")
+    if order is not None:
+        transfer_only_args.append("order")
     if transfer_only_args:
         raise TypeError(f'{space} space does not accept transfer-only argument(s): '
                         f'{", ".join(transfer_only_args)}')

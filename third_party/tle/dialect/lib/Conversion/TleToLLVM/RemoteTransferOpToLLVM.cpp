@@ -76,7 +76,8 @@ static LogicalResult lowerRemoteTransfer(
     Value commHandle, Value peer, Value srcOffset, Value dstOffset,
     Value nelems, int32_t contextId, int64_t elemBytes,
     tle::FlagCXTeamKind teamKind, tle::FlagCXCoopKind coopKind,
-    RemoteTransferKind kind, std::optional<int64_t> constantNelems,
+    tle::MemoryOrder order, RemoteTransferKind kind,
+    std::optional<int64_t> constantNelems,
     ConversionPatternRewriter &rewriter) {
   ModuleOp module = op->getParentOfType<ModuleOp>();
   if (!module)
@@ -123,7 +124,7 @@ static LogicalResult lowerRemoteTransfer(
   Value contextIdValue = makeI32(contextId);
   Value coopKindValue = makeI32(static_cast<int32_t>(coopKind));
   Value scope = makeI32(static_cast<int32_t>(tle::SyncScope::SYSTEM));
-  Value order = makeI32(static_cast<int32_t>(tle::MemoryOrder::RELAXED));
+  Value orderValue = makeI32(static_cast<int32_t>(order));
 
   LLVM::LLVMFuncOp transfer = getOrInsertTransfer(module, ctx, kind);
   bool isPut = kind == RemoteTransferKind::Put;
@@ -133,7 +134,7 @@ static LogicalResult lowerRemoteTransfer(
                  isPut ? dstByteOffset : srcByteOffset, isPut ? srcMem : dstMem,
                  isPut ? srcByteOffset : dstByteOffset, byteCount,
                  teamKindValue, peer, contextIdValue, coopKindValue, scope,
-                 order});
+                 orderValue});
   return success();
 }
 
@@ -151,7 +152,8 @@ struct RemotePutOpConversion : public ConvertOpToLLVMPattern<tle::RemotePutOp> {
             adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
             static_cast<int32_t>(op.getContextIdAttr().getInt()),
             op.getElemBytesAttr().getInt(), op.getTeamKind(), op.getCoopKind(),
-            RemoteTransferKind::Put, getConstantInt(op.getNelems()), rewriter)))
+            op.getOrder(), RemoteTransferKind::Put,
+            getConstantInt(op.getNelems()), rewriter)))
       return failure();
     rewriter.eraseOp(op);
     return success();
@@ -172,7 +174,8 @@ struct RemoteGetOpConversion : public ConvertOpToLLVMPattern<tle::RemoteGetOp> {
             adaptor.getSrcOffset(), adaptor.getDstOffset(), adaptor.getNelems(),
             static_cast<int32_t>(op.getContextIdAttr().getInt()),
             op.getElemBytesAttr().getInt(), op.getTeamKind(), op.getCoopKind(),
-            RemoteTransferKind::Get, getConstantInt(op.getNelems()), rewriter)))
+            op.getOrder(), RemoteTransferKind::Get,
+            getConstantInt(op.getNelems()), rewriter)))
       return failure();
     rewriter.eraseOp(op);
     return success();

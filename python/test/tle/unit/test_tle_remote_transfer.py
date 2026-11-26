@@ -1,4 +1,5 @@
 import os
+import re
 
 import pytest
 import triton
@@ -13,11 +14,14 @@ from triton.runtime import DistributedRtContext
 
 @triton.jit
 def _transfer(buffer, peer, src_offset, dst_offset, valid_n, ctx: tl.constexpr, SPACE: tl.constexpr, MODE: tl.constexpr,
-              IS_PUT: tl.constexpr, CONTEXT_ID: tl.constexpr, BLOCK_SIZE: tl.constexpr, STRIDE: tl.constexpr = 1):
-    if CONTEXT_ID is None:
+              IS_PUT: tl.constexpr, CONTEXT_ID: tl.constexpr, BLOCK_SIZE: tl.constexpr, STRIDE: tl.constexpr = 1,
+              ORDER: tl.constexpr = None):
+    if CONTEXT_ID is not None:
+        remote = tle.remote(ctx, peer, None, SPACE, tl.float32, None, None, CONTEXT_ID, MODE, order=ORDER)
+    elif ORDER is None:
         remote = tle.remote(ctx, shard_id=peer, space=SPACE, dtype=tl.float32, mode=MODE)
     else:
-        remote = tle.remote(ctx, peer, None, SPACE, tl.float32, None, None, CONTEXT_ID, MODE)
+        remote = tle.remote(ctx, shard_id=peer, space=SPACE, dtype=tl.float32, mode=MODE, order=ORDER)
     offsets = tl.arange(0, BLOCK_SIZE)
     mask = offsets < valid_n
     copy_offsets = offsets * STRIDE
@@ -30,13 +34,14 @@ def _transfer(buffer, peer, src_offset, dst_offset, valid_n, ctx: tl.constexpr, 
 
 
 @triton.jit
-def _remote_access(buffer, ctx: tl.constexpr, SPACE: tl.constexpr, MODE: tl.constexpr, OFFSET: tl.constexpr):
-    remote = tle.remote(ctx, shard_id=1, space=SPACE, dtype=tl.float32, offset=OFFSET, mode=MODE)
+def _remote_access(buffer, ctx: tl.constexpr, SPACE: tl.constexpr, MODE: tl.constexpr, OFFSET: tl.constexpr,
+                   ORDER: tl.constexpr = None):
+    remote = tle.remote(ctx, shard_id=1, space=SPACE, dtype=tl.float32, offset=OFFSET, mode=MODE, order=ORDER)
     value = tl.load(remote)
     tl.store(buffer, value + 1)
 
 
-def _compile_ttgir(kernel, signature, **constants):
+def _compile(kernel, signature, *, emit_llir=False, **constants):
     target = GPUTarget("cuda", 90, 32)
     backend = make_backend(target)
     options = backend.parse_options({})
@@ -53,17 +58,30 @@ def _compile_ttgir(kernel, signature, **constants):
     metadata = {}
     module = backend.make_ttir(module, metadata, options, target.arch)
     module = backend.make_ttgir(module, metadata, options, target.arch)
-    return str(module), metadata
+    asm = {"ttgir": str(module)}
+    if emit_llir:
+        asm["llir"] = backend.make_llir(module, metadata, options, target.arch)
+    return asm, metadata
 
 
-@pytest.mark.parametrize("space,mode,context_id", [("device", "transfer", None), ("device", "transfer", 2),
-                                                   ("node", None, 3), ("node", "transfer", 1)])
+@pytest.mark.parametrize("space,mode,context_id,order,order_value", [
+    ("device", "transfer", None, None, 0),
+    ("device", "transfer", 2, tle.MemoryOrder.RELEASE, 2),
+    ("node", None, 3, "acquire", 1),
+    ("node", "transfer", 1, "acq_rel", 3),
+])
 @pytest.mark.parametrize("is_put", [True, False], ids=["put", "get"])
-def test_transfer_fusion(space, mode, context_id, is_put):
-    ttgir, metadata = _compile_ttgir(
-        _transfer, {"buffer": "*fp32", "peer": "i32", "src_offset": "i64", "dst_offset": "i64", "valid_n": "i32"},
-        SPACE=space, MODE=mode, IS_PUT=is_put, CONTEXT_ID=context_id, BLOCK_SIZE=16, STRIDE=1)
+def test_transfer_fusion(space, mode, context_id, order, order_value, is_put, monkeypatch):
+    from triton.backends.nvidia.distributed import flagcx_rt_conf
 
+    # Inspect the call before the FlagCX bitcode can be linked and inlined.
+    monkeypatch.setattr(flagcx_rt_conf, "is_available", False)
+    asm, metadata = _compile(
+        _transfer, {"buffer": "*fp32", "peer": "i32", "src_offset": "i64", "dst_offset": "i64", "valid_n": "i32"},
+        emit_llir=True, SPACE=space, MODE=mode, IS_PUT=is_put, CONTEXT_ID=context_id, BLOCK_SIZE=16, STRIDE=1,
+        ORDER=order)
+
+    ttgir = asm["ttgir"]
     direction = "put" if is_put else "get"
     assert f'"tle.remote_{direction}"' in ttgir
     if space == "device":
@@ -73,37 +91,41 @@ def test_transfer_fusion(space, mode, context_id, is_put):
     assert "tt.load" not in ttgir
     assert "tt.store" not in ttgir
     assert metadata["tle_node_buffer_bindings"] == ("s:0:8192" if is_put else "d:0:8192")
+    assert re.search(rf"\bcall void @flagcxDev{direction.title()}\([^\n]*, i32 {order_value}\)", asm["llir"])
 
 
 def test_default_device_mode_keeps_pointer_access():
-    ttgir, metadata = _compile_ttgir(_remote_access, {"buffer": "*fp32"}, SPACE="device", MODE=None, OFFSET=2)
+    asm, metadata = _compile(_remote_access, {"buffer": "*fp32"}, SPACE="device", MODE=None, OFFSET=2)
+    ttgir = asm["ttgir"]
     assert 'space = "device"' in ttgir
     assert "tt.load" in ttgir
     assert "tt.store" in ttgir
     assert not metadata.get("tle_node_buffer_bindings")
 
 
-@pytest.mark.parametrize("space,mode,offset,error", [
-    ("device", "pointer", None, "mode must be None or"),
-    ("cluster", "transfer", None, "cluster space does not support"),
-    ("device", "transfer", 0, "in transfer mode does not accept offset"),
+@pytest.mark.parametrize("space,mode,offset,order,error", [
+    ("device", "pointer", None, None, "mode must be None or"),
+    ("cluster", "transfer", None, None, "cluster space does not support"),
+    ("device", "transfer", 0, None, "in transfer mode does not accept offset"),
+    ("device", None, 2, "release", r"does not accept transfer-only argument\(s\): order"),
+    ("node", None, None, "invalid", "order must be"),
 ])
-def test_invalid_remote_mode_arguments(space, mode, offset, error):
+def test_invalid_remote_mode_arguments(space, mode, offset, order, error):
     with pytest.raises(CompilationError, match=error):
-        _compile_ttgir(_remote_access, {"buffer": "*fp32"}, SPACE=space, MODE=mode, OFFSET=offset)
+        _compile(_remote_access, {"buffer": "*fp32"}, SPACE=space, MODE=mode, OFFSET=offset, ORDER=order)
 
 
 def test_device_transfer_requires_a_paired_copy(capfd):
     with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_ttgir(_remote_access, {"buffer": "*fp32"}, SPACE="device", MODE="transfer", OFFSET=None)
+        _compile(_remote_access, {"buffer": "*fp32"}, SPACE="device", MODE="transfer", OFFSET=None)
     assert "could not fuse device remote pointer" in capfd.readouterr().err
 
 
 def test_device_transfer_rejects_strided_copy(capfd):
     with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        _compile_ttgir(_transfer,
-                       {"buffer": "*fp32", "peer": "i32", "src_offset": "i64", "dst_offset": "i64", "valid_n": "i32"},
-                       SPACE="device", MODE="transfer", IS_PUT=True, CONTEXT_ID=None, BLOCK_SIZE=16, STRIDE=2)
+        _compile(_transfer,
+                 {"buffer": "*fp32", "peer": "i32", "src_offset": "i64", "dst_offset": "i64", "valid_n": "i32"},
+                 SPACE="device", MODE="transfer", IS_PUT=True, CONTEXT_ID=None, BLOCK_SIZE=16, STRIDE=2)
     assert "must use a scalar offset plus a contiguous" in capfd.readouterr().err
 
 
@@ -123,15 +145,15 @@ def _run_two_gpu_test():
         buffer = torch.empty(48, dtype=torch.float32, device="cuda")
     ctx = tle.create_dist_tensor(buffer)
     try:
-        for is_put in (True, False):
+        for is_put, order in ((True, "release"), (False, "acquire")):
             payload = torch.arange(16, device="cuda", dtype=torch.float32)
             buffer.fill_(-1)
             buffer[:16] = payload + 100 * local_rank
             torch.cuda.synchronize()
             dist.barrier()
 
-            _transfer[(1, )](buffer, peer, src_offset, dst_offset, valid_n, ctx, "device", "transfer", is_put, None,
-                             block_size)
+            _transfer[(1, )](buffer, peer, src_offset, dst_offset, valid_n, ctx, SPACE="device", MODE="transfer",
+                             IS_PUT=is_put, CONTEXT_ID=None, BLOCK_SIZE=block_size, ORDER=order)
             torch.cuda.synchronize()
             dist.barrier()
 
