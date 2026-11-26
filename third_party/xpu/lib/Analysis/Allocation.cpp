@@ -482,6 +482,27 @@ private:
     resolveExplicitBufferLiveness(getValueLivenessRange);
     resolveAliasBufferLiveness(getValueLivenessRange);
     resolveScratchBufferLiveness(operationId);
+    extendEscapedBufferLiveness(operationId.size());
+  }
+
+  /// Keeps a buffer whose raw address escaped alive for the rest of the
+  /// function.  An op with `SharedAddressEscapeTrait`
+  /// (`jupiter.local_base_ptr`, behind `tle.gpu.local_ptr`) hands out the
+  /// buffer's address, and every access after it names that pointer instead of
+  /// the memdesc, so the value's liveness ends right there.  Measured without
+  /// this: a second `tle.gpu.alloc` got the same offset and the pointer read
+  /// back the second buffer's bytes.
+  void extendEscapedBufferLiveness(size_t functionEnd) {
+    for (auto [value, buffer] : allocation->valueBuffer) {
+      bool escapes = llvm::any_of(value.getUsers(), [](Operation *user) {
+        return user->hasTrait<OpTrait::SharedAddressEscapeTrait>();
+      });
+      if (!escapes)
+        continue;
+      auto range = bufferRange[buffer];
+      bufferRange[buffer] =
+          Interval<size_t>(range.start(), std::max(range.end(), functionEnd));
+    }
   }
 
   /// Computes the shared memory offsets for all related values.
