@@ -59,7 +59,7 @@ submodule_registrar = SubmoduleRegistrar(submodules=(
         "5842469a16b261e45a2c67fbfc308057622b03ee"
     },
     {
-        "name": "flir", "url": "https://github.com/flagos-ai/flir.git", "commit_id":
+        "name": "flir", "url": "https://github.com/macqueen09/flir.git", "commit_id":
         "ade0ea7d8322ffbd781b9d18ad5d2e00e645c45f"
     },
     {"name": "FlagPrism", "url": "https://github.com/flagos-ai/FlagPrism.git"},
