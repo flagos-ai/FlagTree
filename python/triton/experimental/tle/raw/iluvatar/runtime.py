@@ -43,7 +43,6 @@ import torch
 from triton._C.libtriton import llvm  # pyright: ignore[reportMissingImports]
 from triton._C.libtriton.iluvatar.llvm import parse_llvm_ir  # pyright: ignore[reportMissingImports]
 from triton.experimental.tle.raw.runtime import RawJITFunction
-from triton.experimental.tle.raw.source_store import register_source
 
 # TODO: Temporarily shell out to clang; replace with LLVM Python bindings later.
 _MIN_CLANG_MAJOR = 18
@@ -189,39 +188,31 @@ class CorexJITFunction(RawJITFunction):
         if self.library:
             raise RuntimeError(f"tle_raw library={self.library!r} is not supported on iluvatar; "
                                "only plain corex device sources are.")
+        file = Path(file).resolve()
         self.code: Final[str] = file.read_text()
-        # The frontend spelling may be name="cuda", but everything downstream
-        # (dsl_region, deferred source store, materialize dispatch) names the
-        # corex toolchain that actually compiles the source.
+        # The frontend spelling may be name="cuda", but everything downstream (dsl_region, materialize dispatch)
+        # names the corex toolchain that actually compiles the source.
         self.region_dialect: Final[str] = "corex"
         self.lowered_region_dialect: Final[str] = "llvm"
         self.arg_dialect: Final[str] = "llvm"
         self.source_file: Final[str] = str(file)
 
-    def register_pending_source(self, *, hint: str = "") -> str:
-        if not self.extern_func_name:
-            raise RuntimeError("deferred tle_raw corex source requires extern_func_name= "
-                               "(the device function symbol in the .cu file)")
-        return register_source(
-            region_dialect=self.region_dialect,
-            extern_func_name=self.extern_func_name,
-            source=self.code,
-            hint=hint,
-            extra={"source_file": self.source_file},
-        )
-
     def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",
                               extern_func_name: str = ""):
         return super().create_region_by_llvm(builder, llvm, handles, alias_indices, hint, extern_func_name)
 
-    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = ""):
+    def create_region_deferred(self, builder, handles, alias_indices, hint: str = "", arg_info_list=None):
+        if not self.extern_func_name:
+            raise RuntimeError(f"deferred tle_raw {self.region_dialect} requires extern_func_name=")
         return builder.create_tle_raw_region_deferred(
-            source_id,
             self.region_dialect,
             self.arg_dialect,
             handles,
             alias_indices,
-            hint,
+            hint=hint,
+            dsl_file_name=self.source_file,
+            extern_func_name=self.extern_func_name,
+            arg_info_list=arg_info_list,
         )
 
     def make_llvm(self, mlir_context) -> str:
@@ -280,21 +271,10 @@ class CorexCudaAliasJITFunction(CorexJITFunction):
 
 
 def compile_deferred_pending_source(entry: dict, *, context) -> str:
-    source_text = entry["source"]
-    source_file = entry.get("source_file", "<deferred corex source>")
-
-    class _CorexSourceFile:
-
-        def read_text(self):
-            return source_text
-
-        def __str__(self):
-            return source_file
-
     corex_fn = CorexJITFunction(
         fn=None,
-        file=_CorexSourceFile(),
-        extern_func_name=entry.get("extern_func_name"),
+        file=Path(entry["dsl_file_name"]),
+        extern_func_name=entry["extern_func_name"],
         deferred=True,
     )
     return corex_fn.make_llvm(context)

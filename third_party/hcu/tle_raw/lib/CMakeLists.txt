@@ -1,6 +1,6 @@
 add_triton_library(HCUTLERawTransforms
   MaterializeDeferredRaw.cpp
-  DeferredRawSourceRegistry.cpp
+  RawWrapperAdapter.cpp
 
   DEPENDS
   HCUTLERawTransformsIncGen
@@ -14,6 +14,8 @@ add_triton_library(HCUTLERawTransforms
   LINK_LIBS PUBLIC
   TleIR
   TritonIR
+  MLIRDataLayoutInterfaces
+  MLIRLLVMDialect
   TritonTLERawUtils
 )
 

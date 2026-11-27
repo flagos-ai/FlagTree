@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ctypes
 import functools
+import hashlib
 import os
 import re
 import shlex
@@ -43,7 +44,6 @@ from triton.experimental.tle.raw.kernel_hooks import (
     register_kernel_init_hook,
 )
 from triton.experimental.tle.raw.runtime import RawJITFunction
-from triton.experimental.tle.raw.source_store import register_source
 
 # TODO: Temporarily shell out to clang; replace with LLVM Python bindings later.
 _MIN_CLANG_MAJOR = 20
@@ -220,6 +220,7 @@ class CUDAJITFunction(RawJITFunction):
 
     def __init__(self, fn: Any, file: Path, *args, **kwargs) -> None:
         super().__init__(fn, **kwargs)
+        file = Path(file).resolve()
         self.code: Final[str] = file.read_text()
         self.region_dialect: Final[str] = "cuda"
         self.lowered_region_dialect: Final[str] = "llvm"
@@ -242,70 +243,87 @@ class CUDAJITFunction(RawJITFunction):
                 semantic.builder.get_string_attr(",".join(sorted(hook_names))),
             )
 
-    def register_pending_source(self, *, hint: str = "") -> str:
-        if not self.extern_func_name:
-            raise RuntimeError("deferred tle_raw CUDA source requires extern_func_name= "
-                               "(the device function symbol in the .cu file)")
-        return register_source(
-            region_dialect=self.region_dialect,
-            extern_func_name=self.extern_func_name,
-            source=self.code,
-            hint=hint,
-            extra={"source_file": self.source_file, "opt_level": self.opt_level},
-        )
-
     def create_region_by_llvm(self, builder, llvm: str, handles, alias_indices, hint: str = "",
                               extern_func_name: str = ""):
         return super().create_region_by_llvm(builder, llvm, handles, alias_indices, hint, extern_func_name)
 
-    def create_region_deferred(self, builder, source_id: str, handles, alias_indices, hint: str = ""):
+    def create_region_deferred(self, builder, handles, alias_indices, hint: str = "", arg_info_list=None):
+        if not self.extern_func_name:
+            raise RuntimeError(f"deferred tle_raw {self.region_dialect} requires extern_func_name=")
         return builder.create_tle_raw_region_deferred(
-            source_id,
             self.region_dialect,
             self.arg_dialect,
             handles,
             alias_indices,
-            hint,
+            hint=hint,
+            dsl_file_name=self.source_file,
+            extern_func_name=self.extern_func_name,
+            compile_options={"opt_level": self.opt_level},
+            arg_info_list=arg_info_list,
         )
 
     def make_llvm(self, mlir_context) -> str:
-        build = subprocess.run(
-            [
-                _resolve_clang(),
-                "-x",
-                "cuda",
-                "--cuda-device-only",
-                _get_cuda_gpu_arch(),
-                "-emit-llvm",
-                self.opt_level,
-                "-S",
-                "-",
-                "-o",
-                "-",
-                *_clang_flags(),
-            ],
-            input=self.code.encode(),
-            capture_output=True,
-        )
-        assert build.returncode == 0, (f"clang failed\nstderr:\n{build.stderr.decode()}")
-        llvm_context = llvm.context()
-        module = parse_llvm_ir(_sanitize_clang_ir(build.stdout.decode()), llvm_context, mlir_context)
-        return f"{module}"
+        source = self.code
+        name = self.extern_func_name
+        entry_reference = None
+        if name:
+            if not re.fullmatch(r"(?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*", name, re.ASCII):
+                raise ValueError(f"expected a qualified CUDA function name, got {name!r}")
+            entry_reference = "__tle_raw_remove_after_ir_parse__entry_" + hashlib.sha256(name.encode()).hexdigest()
+            source += (f'\nextern "C" {{ extern __attribute__((device, used)) '
+                       f'decltype(&{name}) const {entry_reference} = &{name}; }}\n')
+
+        ir = _compile_cuda_source(source, self.opt_level)
+
+        if entry_reference:
+            # LLVM identifiers can be quoted and contain hex-escaped bytes.
+            symbol = r'(?:"((?:[^"\\]|\\[0-9A-Fa-f]{2})*)"|([-A-Za-z$._0-9]+))'
+            match = re.search(rf'^@{entry_reference} = [^\n@]*\bconstant\b[^\n@]*@{symbol}', ir, re.MULTILINE)
+            if not match:
+                raise RuntimeError(f"could not resolve CUDA raw entry {name!r} from LLVM marker @{entry_reference}")
+            name = match[2]
+            if name is None:
+                raw = re.sub(rb"\\([0-9A-Fa-f]{2})", lambda m: bytes.fromhex(m[1].decode()), match[1].encode())
+                name = raw.decode()
+
+        module = parse_llvm_ir(_sanitize_clang_ir(ir), llvm.context(), mlir_context)
+        self.lowered_func_name = name
+        return str(module)
+
+
+def _compile_cuda_source(source_text: str, opt_level: str) -> str:
+    build = subprocess.run(
+        [
+            _resolve_clang(),
+            "-x",
+            "cuda",
+            "--cuda-device-only",
+            _get_cuda_gpu_arch(),
+            "-emit-llvm",
+            opt_level,
+            "-S",
+            "-",
+            "-o",
+            "-",
+            *_clang_flags(),
+        ],
+        input=source_text.encode(),
+        capture_output=True,
+    )
+    if build.returncode != 0:
+        raise RuntimeError(f"clang failed\nstderr:\n{build.stderr.decode()}")
+    return build.stdout.decode()
 
 
 def compile_deferred_pending_source(entry: dict, *, context) -> str:
-    source_text = entry["source"]
-
-    class _CudaSourceFile:
-
-        def read_text(self):
-            return source_text
-
-    cuda_fn = CUDAJITFunction(
-        fn=None,
-        file=_CudaSourceFile(),
-        extern_func_name=entry.get("extern_func_name"),
-        deferred=True,
-        opt_level=entry.get("opt_level"),
-    )
-    return cuda_fn.make_llvm(context)
+    path = Path(entry["dsl_file_name"])
+    try:
+        source_text = path.read_text()
+        required_wrappers = entry.get("required_wrappers")
+        if required_wrappers:
+            from .wrapper import generate_raw_wrappers
+            source_text += generate_raw_wrappers(entry["extern_func_name"], required_wrappers)
+        ir = _compile_cuda_source(source_text, entry["compile_options"]["opt_level"])
+        return str(parse_llvm_ir(_sanitize_clang_ir(ir), llvm.context(), context))
+    except Exception as exc:
+        raise RuntimeError(f"failed to compile CUDA source {path}: {exc}") from exc

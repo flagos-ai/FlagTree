@@ -1,10 +1,11 @@
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/PatternMatch.h"
-#include "nvidia/tle_raw/include/DeferredRawSourceRegistry.h"
+#include "mlir/IR/SymbolTable.h"
+#include "nvidia/tle_raw/include/CompiledRaw.h"
 #include "nvidia/tle_raw/include/Passes.h"
 #include "tle/dialect/include/IR/Dialect.h"
-
 #include "tle/utils/include/TleRawMaterialize.h"
+
+#include <memory>
 
 namespace tle = mlir::triton::tle;
 namespace nv_tle_raw = mlir::triton::nvidia::tle_raw;
@@ -21,50 +22,77 @@ public:
   using impl::NvidiaMaterializeDeferredRawBase<
       NvidiaMaterializeDeferredRawPass>::NvidiaMaterializeDeferredRawBase;
 
+  NvidiaMaterializeDeferredRawPass() = default;
+  explicit NvidiaMaterializeDeferredRawPass(
+      llvm::StringMap<nv_tle_raw::CompiledRaw> sources)
+      : sources(
+            std::make_shared<const llvm::StringMap<nv_tle_raw::CompiledRaw>>(
+                std::move(sources))) {}
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    auto &registry = nv_tle_raw::getDeferredRawSourceRegistry();
-    if (registry.empty())
-      return;
-
-    static constexpr llvm::StringLiteral kSourceIdAttr = "tle_raw.source_id";
-    WalkResult result = module.walk([&](tle::DSLRegionOp op) -> WalkResult {
-      auto sourceIdAttr = op->getAttrOfType<StringAttr>(kSourceIdAttr);
-      if (!sourceIdAttr)
-        return WalkResult::advance();
-
-      auto it = registry.find(sourceIdAttr.getValue());
-      if (it == registry.end()) {
-        op.emitError("missing pending raw source for id ")
-            << sourceIdAttr.getValue();
-        return WalkResult::interrupt();
-      }
-
-      const nv_tle_raw::DeferredRawSourceEntry &entry = it->second;
-      if (!entry.externFuncName) {
-        op.emitError("deferred raw source is missing extern_func_name");
-        return WalkResult::interrupt();
-      }
-      if (entry.llvmIr.empty()) {
-        op.emitError("deferred raw source is missing compiled LLVM IR");
-        return WalkResult::interrupt();
-      }
-
-      if (failed(tle::raw::materializeDeferredDSLRegion(
-              module, op, entry.llvmIr, *entry.externFuncName))) {
-        op.emitError("failed to materialize deferred raw source ")
-            << sourceIdAttr.getValue();
-        return WalkResult::interrupt();
-      }
-
-      op->removeAttr(kSourceIdAttr);
-      return WalkResult::advance();
+    llvm::StringMap<tle::DSLRegionOp> firstCallBySource;
+    module.walk([&](tle::DSLRegionOp op) {
+      auto id = op->getAttrOfType<StringAttr>("tle_raw.source_id");
+      if (id && op.getBody().empty())
+        firstCallBySource.try_emplace(id.getValue(), op);
     });
 
-    if (result.wasInterrupted())
-      signalPassFailure();
-    nv_tle_raw::clearDeferredRawSourceRegistry();
+    for (auto &[id, call] : firstCallBySource) {
+      auto entry = sources->find(id);
+      if (entry == sources->end()) {
+        call.emitOpError("missing compiled raw source ") << id;
+        return signalPassFailure();
+      }
+      auto parsed =
+          tle::raw::parseLLVMModule(module.getContext(), entry->second.llvmIr);
+      if (!parsed) {
+        call.emitOpError("cannot parse compiled raw source ") << id;
+        return signalPassFailure();
+      }
+
+      // Keep wrapper names and shared globals stable across call sites.
+      std::string prefix = "__tle_raw_fn_" + id.str() + "_";
+      auto name_mapping =
+          tle::raw::renameLLVMSymbols(*parsed, [&](Operation *op) {
+            auto name = SymbolTable::getSymbolName(op);
+            auto fn = dyn_cast<LLVM::LLVMFuncOp>(op);
+            if (!fn || fn.isExternal() ||
+                name.getValue().starts_with("__tle_raw_wrapper_"))
+              return name;
+            return StringAttr::get(module.getContext(),
+                                   prefix + name.getValue().str());
+          });
+      if (failed(name_mapping)) {
+        call.emitOpError("cannot rename symbols in raw source ") << id;
+        return signalPassFailure();
+      }
+
+      Location fallbackLoc = call.getLoc();
+      parsed->walk([fallbackLoc](Operation *op) {
+        if (isa<UnknownLoc>(op->getLoc()))
+          op->setLoc(fallbackLoc);
+        auto fn = dyn_cast<LLVM::LLVMFuncOp>(op);
+        if (!fn || fn.isExternal())
+          return;
+        fn.setLinkage(LLVM::Linkage::Internal);
+        fn.setVisibility_(LLVM::Visibility::Default);
+        SymbolTable::setSymbolVisibility(fn, SymbolTable::Visibility::Private);
+      });
+
+      if (failed(tle::raw::cloneLLVMSymbols(module, *parsed)))
+        return signalPassFailure();
+    }
   }
+
+private:
+  std::shared_ptr<const llvm::StringMap<nv_tle_raw::CompiledRaw>> sources =
+      std::make_shared<const llvm::StringMap<nv_tle_raw::CompiledRaw>>();
 };
+
+std::unique_ptr<Pass> createNvidiaMaterializeDeferredRaw(
+    llvm::StringMap<nv_tle_raw::CompiledRaw> sources) {
+  return std::make_unique<NvidiaMaterializeDeferredRawPass>(std::move(sources));
+}
 
 } // namespace mlir

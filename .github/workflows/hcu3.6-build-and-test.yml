@@ -94,6 +94,7 @@ jobs:
           python3 -m pytest -s third_party/hcu/python/test/unit
           python3 -m pytest -s python/test/tle/integration/test_tle_local_store.py
           python3 -m pytest -s python/test/tle/integration/test_tle_gemm.py
+          python3 -m pytest -s python/test/tle/integration/test_tle_raw_fragment.py
           python3 -m pytest -s python/test/tle/integration/test_tle_topk_smem_fallback.py
           python3 -m pytest -s python/test/tle/unit/test_tle_gpu_local_ptr.py
           python3 -m pytest -s python/test/tle/unit/test_tle_gpu_slot.py
@@ -110,7 +111,6 @@ jobs:
           python3 third_party/hcu/python/tutorials/tle/raw/hip/03-matrix-multiplication-smem.py
           python3 third_party/hcu/python/tutorials/tle/raw/hip/03-matrix-multiplication-smem-defered.py
           python3 third_party/hcu/python/tutorials/tle/raw/hip/05-sort.py
-          python3 third_party/hcu/python/tutorials/tle/raw/mlir/01-vector-add-defered.py
           python3 third_party/hcu/python/tutorials/tle/raw/mlir/01-vector-add.py
           python3 third_party/hcu/python/tutorials/tle/raw/mlir/02-fused-softmax.py
           python3 third_party/hcu/python/tutorials/tle/raw/mlir/03-matrix-multiplication-smem.py

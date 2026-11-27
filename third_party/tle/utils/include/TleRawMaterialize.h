@@ -26,8 +26,11 @@
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/MLIRContext.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include <optional>
 
@@ -40,6 +43,12 @@ OwningOpRef<ModuleOp> parseLLVMModule(MLIRContext *context,
 
 LLVM::LLVMFuncOp findExternalLLVMFunc(ModuleOp module,
                                       std::optional<llvm::StringRef> name);
+
+FailureOr<llvm::StringMap<Operation *>> renameLLVMSymbols(
+    ModuleOp module,
+    llvm::function_ref<StringAttr(Operation *)> targetNameGenerator);
+
+FailureOr<IRMapping> cloneLLVMSymbols(ModuleOp dstModule, ModuleOp srcModule);
 
 FailureOr<LLVM::LLVMFuncOp>
 cloneLLVMSymbolsAndLookupFunc(ModuleOp curModule, ModuleOp parsedModule,

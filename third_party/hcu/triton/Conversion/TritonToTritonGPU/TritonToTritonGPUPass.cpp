@@ -134,6 +134,17 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
 
     for (OpOperand &use : value.getUses()) {
       Operation *op = use.getOwner();
+      if (auto raw = dyn_cast<tle::DSLRegionOp>(op)) {
+        if (raw.getBody().empty()) {
+          for (auto [i, idx] : llvm::enumerate(raw.getOutputOperandIndices())) {
+            if (idx == use.getOperandNumber() &&
+                failed(updateTleEncoding({raw.getResult(i)}, info, func,
+                                         valueToEncoding, worklist)))
+              return failure();
+          }
+        }
+        continue;
+      }
       if (isa<scf::ForOp, scf::WhileOp>(op)) {
         int offset = 3 * isa<scf::ForOp>(op);
         int tiedIndex = static_cast<int>(use.getOperandNumber()) - offset;
@@ -191,7 +202,15 @@ static LogicalResult propagateTleEncodingHints(FuncOp func) {
 
     if (auto opResult = dyn_cast<OpResult>(value)) {
       Operation *definingOp = opResult.getOwner();
-      if (isa<scf::ForOp, scf::WhileOp, scf::IfOp>(definingOp)) {
+      if (auto raw = dyn_cast<tle::DSLRegionOp>(definingOp)) {
+        if (raw.getBody().empty()) {
+          unsigned idx =
+              raw.getOutputOperandIndices()[opResult.getResultNumber()];
+          if (failed(updateTleEncoding({raw.getOperand(idx)}, info, func,
+                                       valueToEncoding, worklist)))
+            return failure();
+        }
+      } else if (isa<scf::ForOp, scf::WhileOp, scf::IfOp>(definingOp)) {
         auto tiedArgs = getTiedArgs(definingOp, opResult.getResultNumber());
         if (failed(updateTleEncoding(tiedArgs, info, func, valueToEncoding,
                                      worklist)))
@@ -1061,17 +1080,22 @@ public:
   matchAndRewrite(tle::DSLRegionOp op, tle::DSLRegionOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto newOp = rewriter.cloneWithoutRegions<tle::DSLRegionOp>(op);
-    Region &body = op.getBody(), &newBody = newOp.getBody();
-    rewriter.inlineRegionBefore(body, newBody, newBody.end());
+    if (op.getBody().empty()) {
+      newOp->setOperands(adaptor.getOperands());
+      for (auto [i, idx] : llvm::enumerate(op.getOutputOperandIndices()))
+        newOp.getResult(i).setType(adaptor.getOperands()[idx].getType());
+    } else {
+      Region &body = op.getBody(), &newBody = newOp.getBody();
+      rewriter.inlineRegionBefore(body, newBody, newBody.end());
 
-    if (failed(rewriter.convertRegionTypes(&newBody, *getTypeConverter()))) {
-      return rewriter.notifyMatchFailure(op, "could not convert body types");
+      if (failed(rewriter.convertRegionTypes(&newBody, *getTypeConverter()))) {
+        return rewriter.notifyMatchFailure(op, "could not convert body types");
+      }
+      newOp->setOperands(adaptor.getOperands());
+      for (OpResult result : newOp->getResults()) {
+        result.setType(getTypeConverter()->convertType(result.getType()));
+      }
     }
-    newOp->setOperands(adaptor.getOperands());
-    for (OpResult result : newOp->getResults()) {
-      result.setType(getTypeConverter()->convertType(result.getType()));
-    }
-
     rewriter.replaceOp(op, newOp->getResults());
     return success();
   }

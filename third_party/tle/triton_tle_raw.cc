@@ -30,6 +30,10 @@
 #include "tle/utils/include/AnalyzeReturnType.h"
 #include "tle/utils/include/TleRawMaterialize.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/SHA256.h"
+#include "llvm/Support/raw_ostream.h"
+#include <map>
 #include <optional>
 #include <vector>
 
@@ -115,6 +119,24 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
       module.get(), getOptionalFuncName(funcName));
   assert(func && "No function found in LLVM IR text");
 
+  llvm::SHA256 hasher;
+  hasher.update(text);
+  hasher.update(regionDialect);
+  std::string module_id = llvm::toHex(hasher.final());
+
+  std::string fn_prefix = "__tle_raw_func_" + module_id + "_";
+  auto name_mapping =
+      tle::raw::renameLLVMSymbols(module.get(), [&](Operation *symbol) {
+        StringRef name = SymbolTable::getSymbolName(symbol).getValue();
+        if (auto function = dyn_cast<LLVM::LLVMFuncOp>(symbol)) {
+          if (!function.isExternal()) {
+            return StringAttr::get(module->getContext(), fn_prefix + name);
+          }
+        }
+        return StringAttr::get(module->getContext(), name);
+      });
+  assert(succeeded(name_mapping));
+
   OpBuilder &builder = self.getBuilder();
   Operation *curOp = builder.getInsertionBlock()->getParentOp();
   while (curOp && curOp->getParentOp() && !isa<ModuleOp>(curOp)) {
@@ -122,8 +144,17 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
   }
   ModuleOp curModule = cast<ModuleOp>(curOp);
 
+  // Use the raw.call site as a fallback for missing source locations throughout
+  // the imported module. Once a caller has a DISubprogram, LLVM may require a
+  // debug location on calls, including those inside imported helpers.
+  Location callLoc = self.getLastLoc();
+  module->walk([callLoc](Operation *op) {
+    if (isa<UnknownLoc>(op->getLoc()))
+      op->setLoc(callLoc);
+  });
+
   auto funcOpOrErr = tle::raw::cloneLLVMSymbolsAndLookupFunc(
-      curModule, module.get(), getOptionalFuncName(funcName));
+      curModule, module.get(), getOptionalFuncName(func.getSymName()));
   assert(succeeded(funcOpOrErr));
   LLVM::LLVMFuncOp funcOp = *funcOpOrErr;
 
@@ -145,34 +176,54 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
 }
 
 tle::DSLRegionOp createTLERawRegionDeferred(
-    TritonOpBuilder &self, std::string_view sourceId,
-    std::string_view regionDialect, std::string_view argDialect,
-    const std::vector<Value> &args,
+    TritonOpBuilder &self, std::string_view regionDialect,
+    std::string_view argDialect, const std::vector<Value> &args,
     const std::vector<int64_t> &aliasOperandIndices, std::string_view hint,
-    std::string_view dsl_file_name, std::string_view extern_func_name) {
+    std::string_view dsl_file_name, std::string_view extern_func_name,
+    std::optional<std::map<std::string, std::string>> compile_options,
+    std::optional<std::vector<std::string>> arg_info_list) {
+
   OpBuilder &builder = self.getBuilder();
   SmallVector<Type> outputTys =
       llvm::map_to_vector(aliasOperandIndices, [&](int64_t idx) -> Type {
         return args[idx].getType();
       });
   SmallVector<Value> operands(args.begin(), args.end());
+
   tle::DSLRegionOp dslRegionOp =
       createDSLRegionOp(self, outputTys, operands, regionDialect, argDialect,
                         aliasOperandIndices, hint);
-  setDeferredMetadataAttrs(dslRegionOp, builder, sourceId, dsl_file_name,
-                           extern_func_name);
 
-  OpBuilder::InsertionGuard guard(builder);
-  Region &body = dslRegionOp.getBody();
-  SmallVector<Type> operandTys = llvm::map_to_vector(
-      operands, [](Value value) -> Type { return value.getType(); });
-  Block *newBlock = builder.createBlock(
-      &body, {}, operandTys,
-      SmallVector<Location>(operandTys.size(), self.getLastLoc()));
-  builder.setInsertionPointToStart(newBlock);
-  SmallVector<Value> yields;
-  for (int64_t idx : aliasOperandIndices)
-    yields.push_back(newBlock->getArgument(idx));
-  builder.create<tle::YieldOp>(self.getLastLoc(), yields);
+  SmallVector<NamedAttribute> options;
+  if (compile_options.has_value()) {
+    for (const auto &[key, value] : *compile_options)
+      options.emplace_back(builder.getStringAttr(key),
+                           builder.getStringAttr(value));
+    dslRegionOp->setAttr("tle_raw.compile_options",
+                         builder.getDictionaryAttr(options));
+  }
+
+  auto source = builder.getArrayAttr({dslRegionOp.getRegionDialectAttr(),
+                                      builder.getStringAttr(dsl_file_name),
+                                      builder.getStringAttr(extern_func_name),
+                                      builder.getDictionaryAttr(options)});
+  std::string serialized;
+  llvm::raw_string_ostream stream(serialized);
+  source.print(stream);
+  llvm::SHA256 hasher;
+  hasher.update(serialized);
+  hasher.update(compile_options.has_value() ? "1" : "0");
+
+  setDeferredMetadataAttrs(dslRegionOp, builder, llvm::toHex(hasher.final()),
+                           dsl_file_name, extern_func_name);
+
+  if (arg_info_list.has_value()) {
+    SmallVector<StringRef> argInfos;
+    argInfos.reserve(arg_info_list.value().size());
+    for (const std::string &info : arg_info_list.value())
+      argInfos.push_back(info);
+    dslRegionOp->setAttr("tle_raw.arg_info_list",
+                         builder.getStrArrayAttr(argInfos));
+  }
   return dslRegionOp;
 }

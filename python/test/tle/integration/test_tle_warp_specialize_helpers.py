@@ -168,12 +168,15 @@ def test_raw_call_and_debug_barrier_in_outlined_helpers():
     _assert_barrier(ptx, "sync", 2, 64)
 
     llir = compiled.asm["llir"]
+    # Eager raw import can prefix the source symbol with a module hash.
+    raw_symbol = r"(?:__tle_raw_func_[0-9a-fA-F]+_)?tle_ws_raw_increment"
     raw_definition = re.search(
-        r"^define [^{\n]*@tle_ws_raw_increment\((?P<args>.*)\) [^{]*\{$",
+        rf"^define [^{{\n]*@{raw_symbol}\((?P<args>[^\n]*)\) [^{{\n]*\{{$",
         llir,
         re.MULTILINE,
     )
-    assert raw_definition
+
+    assert raw_definition, f"missing raw increment definition in LLVM IR:\n{llir}"
     assert "ptr addrspace(1)" in raw_definition.group("args")
     assert "," not in raw_definition.group("args")
-    assert "@tle_ws_raw_increment_ws" not in llir
+    assert not re.search(rf"@{raw_symbol}_ws\b", llir)

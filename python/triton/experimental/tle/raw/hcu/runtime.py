@@ -13,7 +13,6 @@ from triton._C.libtriton import hcu, llvm
 from triton._C.libtriton.tle.llvm import parse_llvm_ir
 from triton.backends.hcu.compiler import HIPBackend
 from triton.experimental.tle.raw.runtime import RawJITFunction
-from triton.experimental.tle.raw.source_store import register_source
 
 from triton.experimental.tle.raw.hcu.dushmem import (
     DUSHMEM_CUMODULE_INIT_HOOK,
@@ -259,13 +258,13 @@ def _resolve_llvm_tool(name: str) -> Path:
 
 def _extract_function_closure(
     llvm_ir: str,
-    symbol: str,
+    symbols: list[str],
 ) -> str:
     llvm_extract = _resolve_llvm_tool("llvm-extract")
 
     command = [
         str(llvm_extract),
-        f"--func={symbol}",
+        *(f"--func={symbol}" for symbol in symbols),
         "--recursive",
         "-S",
         "-",
@@ -282,7 +281,7 @@ def _extract_function_closure(
 
     if result.returncode != 0:
         raise RuntimeError("TLE-Raw HCU llvm-extract failed\n"
-                           f"symbol: {symbol}\n"
+                           f"symbol: {symbols}\n"
                            f"command: {shlex.join(command)}\n"
                            f"stderr:\n"
                            f"{result.stderr.decode(errors='replace')}")
@@ -292,14 +291,14 @@ def _extract_function_closure(
         errors="strict",
     )
 
-    if not re.search(
-            rf"^\s*define\b[^\n@]*"
-            rf"@{re.escape(symbol)}\s*\(",
-            extracted,
-            re.MULTILINE,
-    ):
-        raise RuntimeError("llvm-extract output does not contain "
-                           f"the requested function {symbol!r}")
+    for symbol in symbols:
+        if not re.search(
+                rf"^\s*define\b[^\n@]*"
+                rf"@{re.escape(symbol)}\s*\(",
+                extracted,
+                re.MULTILINE,
+        ):
+            raise RuntimeError(f"llvm-extract's output does not contain the requested function {symbol!r}")
 
     return extracted
 
@@ -316,12 +315,85 @@ def _clang_flags(library: str | None = None) -> list[str]:
     ]
 
 
+def _compile_hip_source(source_text: str, source_file: str, required_funcs: list[str], opt_level: str, library: str,
+                        mlir_context) -> tuple[str, list[str]]:
+    if not required_funcs:
+        raise RuntimeError("TLE-Raw HCU requires at least one entry function")
+
+    clang = HIPBackend.path_to_rocm_clang()
+    arch = _offload_arch()
+
+    command = [
+        str(clang),
+        "-x",
+        "hip",
+        "--offload-device-only",
+        f"--offload-arch={arch}",
+        opt_level,
+        "-emit-llvm",
+        "-S",
+        "-",
+        "-o",
+        "-",
+        *_clang_flags(library),
+    ]
+
+    result = subprocess.run(
+        command,
+        input=source_text.encode(),
+        capture_output=True,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError("TLE-Raw HCU source compilation failed\n"
+                           f"source: {source_file}\n"
+                           f"architecture: {arch}\n"
+                           f"command: {shlex.join(command)}\n"
+                           f"stderr:\n"
+                           f"{result.stderr.decode(errors='replace')}")
+
+    text = result.stdout.decode(errors="strict")
+    text, rewrites = _sanitize_clang_ir(text)
+
+    emitted_triple = _extract_target_triple(text)
+    expected_triple = str(hcu.TARGET_TRIPLE)
+
+    if (emitted_triple is not None and emitted_triple != expected_triple):
+        raise RuntimeError("HCU Clang emitted an incompatible LLVM target triple: "
+                           f"{emitted_triple!r}; expected {expected_triple!r}. "
+                           "Use the same DTK compiler family as compiler.py.")
+
+    symbols = [_find_lowered_function_symbol(text, name) for name in required_funcs]
+    text = _extract_function_closure(text, symbols)
+
+    # Keep dushmem calls/global declarations unresolved here. Only this
+    # raw function closure crosses the LLVM -> MLIR import boundary.
+    # The device library is linked by HIPBackend.make_hsaco(), never here.
+    text, final_rewrites = _sanitize_clang_ir(text)
+    rewrites.extend(final_rewrites)
+
+    llvm_context = llvm.context()
+    try:
+        mlir_module = parse_llvm_ir(text, llvm_context, mlir_context)
+    except Exception as exc:
+        applied = (", ".join(rewrites) if rewrites else "none")
+        raise RuntimeError("Failed to import HCU clang LLVM IR into "
+                           "MLIR LLVM dialect\n"
+                           f"source: {source_file}\n"
+                           f"rewrites: {applied}\n"
+                           f"LLVM IR:\n{text}") from exc
+
+    return str(mlir_module), symbols
+
+
 class HCUJITFunction(RawJITFunction):
-    """Compile CUDA/HIP-compatible device source into an eager raw region."""
+    """Compile CUDA/HIP-compatible device source for raw regions."""
 
     def __init__(self, fn: Any, file: Path, *args, **kwargs) -> None:
         super().__init__(fn, **kwargs)
 
+        file = Path(file).resolve()
         self.code: Final[str] = file.read_text()
         self.source_file: Final[str] = str(file)
 
@@ -340,85 +412,10 @@ class HCUJITFunction(RawJITFunction):
             ))
 
     def make_llvm(self, mlir_context) -> str:
-        clang = HIPBackend.path_to_rocm_clang()
-        arch = _offload_arch()
-
-        command = [
-            str(clang),
-            "-x",
-            "hip",
-            "--offload-device-only",
-            f"--offload-arch={arch}",
-            self.opt_level,
-            "-emit-llvm",
-            "-S",
-            "-",
-            "-o",
-            "-",
-            *_clang_flags(self.library),
-        ]
-
-        result = subprocess.run(
-            command,
-            input=self.code.encode(),
-            capture_output=True,
-            check=False,
-        )
-
-        if result.returncode != 0:
-            raise RuntimeError("TLE-Raw HCU source compilation failed\n"
-                               f"source: {self.source_file}\n"
-                               f"architecture: {arch}\n"
-                               f"command: {shlex.join(command)}\n"
-                               f"stderr:\n"
-                               f"{result.stderr.decode(errors='replace')}")
-
-        text = result.stdout.decode(errors="strict")
-        text, rewrites = _sanitize_clang_ir(text)
-
-        emitted_triple = _extract_target_triple(text)
-        expected_triple = str(hcu.TARGET_TRIPLE)
-
-        if (emitted_triple is not None and emitted_triple != expected_triple):
-            raise RuntimeError("HCU Clang emitted an incompatible LLVM target triple: "
-                               f"{emitted_triple!r}; expected {expected_triple!r}. "
-                               "Use the same DTK compiler family as compiler.py.")
-
-        lowered_func_name = (_find_lowered_function_symbol(
-            text,
-            self.extern_func_name,
-        ))
-
-        text = _extract_function_closure(
-            text,
-            lowered_func_name,
-        )
-
-        # Keep dushmem calls/global declarations unresolved here. Only this
-        # raw function closure crosses the LLVM -> MLIR import boundary.
-        # The device library is linked by HIPBackend.make_hsaco(), never here.
-        text, final_rewrites = _sanitize_clang_ir(text)
-        rewrites.extend(final_rewrites)
-
-        # findExternalLLVMFunc() in C++ must look up functions by their LLVM symbol,
-        # not by the source-level kernel function name.
-        self.extern_func_name = lowered_func_name
-
-        # Validate that FlagTree's embedded LLVM and MLIR LLVM importer can
-        # consume the textual IR. create_region_by_llvm() will import it again
-        # while constructing tle.dsl_region.
-        llvm_context = llvm.context()
-        try:
-            mlir_module = parse_llvm_ir(text, llvm_context, mlir_context)
-        except Exception as exc:
-            applied = (", ".join(rewrites) if rewrites else "none")
-            raise RuntimeError("Failed to import HCU clang LLVM IR into "
-                               "MLIR LLVM dialect\n"
-                               f"source: {self.source_file}\n"
-                               f"rewrites: {applied}\n"
-                               f"LLVM IR:\n{text}") from exc
-
-        return str(mlir_module)
+        llvm_ir, symbols = _compile_hip_source(self.code, self.source_file, [self.extern_func_name], self.opt_level,
+                                               self.library, mlir_context)
+        self.lowered_func_name = symbols[0]
+        return llvm_ir
 
     def mark_kernel_init_hook(self, semantic, generator) -> None:
         if self.library == "dushmem":
@@ -431,62 +428,36 @@ class HCUJITFunction(RawJITFunction):
                 semantic.builder.get_string_attr(",".join(sorted(hook_names))),
             )
 
-    def register_pending_source(self, *, hint: str = "") -> str:
+    def create_region_deferred(self, builder, handles, alias_indices, hint: str = "", arg_info_list=None):
         if not self.extern_func_name:
             raise RuntimeError("Deferred TLE-Raw HCU requires "
                                "extern_func_name= to identify the device "
                                "function in the HIP/CUDA source")
 
-        return register_source(
-            region_dialect=self.region_dialect,
-            extern_func_name=self.extern_func_name,
-            source=self.code,
-            hint=hint,
-            extra={
-                "source_file": self.source_file,
-                "opt_level": self.opt_level,
-                "library": self.library,
-            },
-        )
-
-    def create_region_deferred(
-        self,
-        builder,
-        source_id: str,
-        handles,
-        alias_indices,
-        hint: str = "",
-    ):
         return builder.create_tle_raw_region_deferred(
-            source_id,
             self.region_dialect,
             self.arg_dialect,
             handles,
             alias_indices,
-            hint,
+            hint=hint,
+            dsl_file_name=self.source_file,
+            extern_func_name=self.extern_func_name,
+            compile_options={"opt_level": self.opt_level, "library": self.library},
+            arg_info_list=arg_info_list,
         )
 
 
 def compile_deferred_pending_source(entry: dict, *, context) -> str:
-    source_text = entry["source"]
+    options = entry["compile_options"]
+    wrappers = entry["required_wrappers"]
+    source_file = entry["dsl_file_name"]
+    source_text = Path(source_file).read_text()
 
-    class _HCUSourceFile:
+    from .wrapper import generate_raw_wrappers
+    source_text += generate_raw_wrappers(entry["extern_func_name"], wrappers)
 
-        def read_text(self):
-            return source_text
-
-    hcu_fn = HCUJITFunction(
-        fn=None,
-        file=_HCUSourceFile(),
-        extern_func_name=entry.get("extern_func_name", ""),
-        deferred=True,
-        opt_level=entry.get("opt_level", "-O3"),
-        library=entry.get("library", ""),
-    )
-
-    llvm_ir = hcu_fn.make_llvm(context)
-    # The materializer must find the lowered (possibly C++-mangled) symbol.
-    entry["extern_func_name"] = hcu_fn.extern_func_name
+    llvm_ir, _ = _compile_hip_source(source_text, source_file, [wrapper["symbol"] for wrapper in wrappers],
+                                     options["opt_level"], options["library"], context)
     return llvm_ir
 
 
