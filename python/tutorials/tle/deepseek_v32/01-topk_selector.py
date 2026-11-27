@@ -22,10 +22,12 @@ Notes
 
 import argparse
 import hashlib
+from importlib.metadata import PackageNotFoundError, distribution
 import math
+from pathlib import Path
 import urllib.request
 from functools import lru_cache
-from typing import Optional
+from typing import List, Optional
 
 import torch
 import triton
@@ -55,6 +57,29 @@ TLE_SMEM_NUM_STAGES = 1
 TLE_SMEM_INPUT_SIZE = 4096
 TLE_SMEM_CLUSTER_SIZE = 8
 BLOCK_CLUSTER_MESH_8 = tle.device_mesh({"block_cluster": [("cluster_x", TLE_SMEM_CLUSTER_SIZE)]})
+
+
+def _nvidia_cuda_include_paths() -> List[str]:
+    package_headers = (
+        ("nvidia-cusparse-cu12", "nvidia/cusparse/include/cusparse.h"),
+        ("nvidia-cusparse-cu13", "nvidia/cu13/include/cusparse.h"),
+        ("nvidia-cusparse", "nvidia/cu13/include/cusparse.h"),
+        ("nvidia-cusolver-cu12", "nvidia/cusolver/include/cusolverDn.h"),
+        ("nvidia-cusolver-cu13", "nvidia/cu13/include/cusolverDn.h"),
+        ("nvidia-cusolver", "nvidia/cu13/include/cusolverDn.h"),
+    )
+    include_paths = []
+    for package, header in package_headers:
+        try:
+            header_path = Path(distribution(package).locate_file(header))
+        except PackageNotFoundError:
+            continue
+        if header_path.is_file():
+            include_path = str(header_path.parent)
+            if include_path not in include_paths:
+                include_paths.append(include_path)
+    return include_paths
+
 
 # %%
 # Key conversions
@@ -3589,6 +3614,7 @@ def _load_embedded_trtllm_indexer_topk(prefill_threads: int = 512):
             cuda_sources=[cuda_src],
             functions=None,
             extra_cuda_cflags=["-O3"],
+            extra_include_paths=_nvidia_cuda_include_paths(),
             with_cuda=True,
             verbose=False,
         )
@@ -3802,7 +3828,7 @@ def _load_embedded_flashinfer_topk():
                 "-U__CUDA_NO_HALF2_OPERATORS__",
             ],
             with_cuda=True,
-            extra_include_paths=[include_dir],
+            extra_include_paths=[include_dir, *_nvidia_cuda_include_paths()],
             verbose=False,
         )
     except Exception as ex:
@@ -3896,6 +3922,7 @@ def _load_embedded_sglang_topk():
             cuda_sources=[cuda_src],
             functions=None,
             extra_cuda_cflags=["-O3"],
+            extra_include_paths=_nvidia_cuda_include_paths(),
             with_cuda=True,
             verbose=False,
         )
