@@ -52,6 +52,17 @@ class FlagCXRegistrar:
         spec = PathFinder.find_spec("flagcx", sys.path)
         return Path(spec.origin).parent if spec is not None else None
 
+    def is_dev_mode(self):
+        ENVS = ("DIST_DEV", "DEV_MODE", "FLAGCX_DEV")
+        for env in ENVS:
+            env_value = os.environ.get(env, "0")
+            if env_value in ("1", "true", "True", "ON"):
+                printinfo("Running in Tle-Distributed development mode...")
+                return True
+        printinfo("\033[32mRunning in Tle-Distributed release mode, if\033[0m " \
+        "\033[32myou want to run in development mode, please set DIST_DEV=1\033[0m")
+        return False
+
     def _is_cache_available(self):
         ENVS = ("FLAGCX_CACHE", "DIST_CACHE")
 
@@ -163,9 +174,12 @@ class FlagCXRegistrar:
 
     def run(self):
         whl = self._get_flagcx_wheel_path()
+        is_dev_mode = self.is_dev_mode()
+        if is_dev_mode:
+            printinfo("Running in development mode...")
         if whl is not None:
             printinfo("FlagCX is already installed, skipping compilation...")
-        else:
+        elif is_dev_mode:
             self._compile_and_cache()
         self._copy_required_files()
 
