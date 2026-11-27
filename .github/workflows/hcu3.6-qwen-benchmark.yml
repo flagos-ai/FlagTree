@@ -119,3 +119,16 @@ jobs:
         run: |
           cd ~/flagrelease/qwen3.6
           bash ${BENCH_SCRIPT_DIR}/stop.sh
+
+      - name: Print vLLM log
+        if: always() && steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          log=~/flagrelease/qwen3.6/vllm.log
+          if [ -f "$log" ]; then
+            echo "===== vllm.log ====="
+            cat "$log"
+            echo "===== end of vllm.log ====="
+          else
+            echo "vllm.log not found at $log"
+          fi
