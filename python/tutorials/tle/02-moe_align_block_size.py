@@ -14,6 +14,7 @@ This tutorial benchmarks multiple MoE align implementations:
 import argparse
 import hashlib
 import importlib
+from importlib.metadata import PackageNotFoundError, distribution
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
@@ -140,6 +141,25 @@ def ceil_div(a: int, b: int) -> int:
 
 def round_up(x: int, y: int) -> int:
     return ((x + y - 1) // y) * y
+
+
+def _cusparse_include_paths() -> List[str]:
+    package_headers = (
+        ("nvidia-cusparse-cu12", "nvidia/cusparse/include/cusparse.h"),
+        ("nvidia-cusparse-cu13", "nvidia/cu13/include/cusparse.h"),
+        ("nvidia-cusparse", "nvidia/cu13/include/cusparse.h"),
+    )
+    include_paths = []
+    for package, header in package_headers:
+        try:
+            header_path = Path(distribution(package).locate_file(header))
+        except PackageNotFoundError:
+            continue
+        if header_path.is_file():
+            include_path = str(header_path.parent)
+            if include_path not in include_paths:
+                include_paths.append(include_path)
+    return include_paths
 
 
 @triton.jit(do_not_specialize=["numel"])
@@ -983,6 +1003,7 @@ inline uint32_t next_pow2(uint32_t x) noexcept {
             cuda_sources=[kernel_src],
             functions=None,
             extra_cuda_cflags=["-O3"],
+            extra_include_paths=_cusparse_include_paths(),
             with_cuda=True,
             verbose=False,
         )
@@ -1050,6 +1071,7 @@ def _load_embedded_yiakwy_cuda_moe_align() -> Optional[Callable]:
             cuda_sources=[kernel_src],
             functions=None,
             extra_cuda_cflags=["-O3"],
+            extra_include_paths=_cusparse_include_paths(),
             with_cuda=True,
             verbose=False,
         )
