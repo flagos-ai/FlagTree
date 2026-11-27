@@ -3555,8 +3555,7 @@ def run_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, sh
                     only_unit_test=False):
     bench = benchmark_sparse_mla_fwd.benchmarks
     selected = [
-        i for i, provider in enumerate(_BENCH_PROVIDERS)
-        if not only_unit_test or not provider.startswith("tilelang")
+        i for i, provider in enumerate(_BENCH_PROVIDERS) if not only_unit_test or not provider.startswith("tilelang")
     ]
     bench.line_vals = [_BENCH_PROVIDERS[i] for i in selected]
     bench.line_names = [_BENCH_NAMES[i] for i in selected]
