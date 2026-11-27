@@ -101,6 +101,7 @@ jobs:
         run: |
           set -x
           source ~/env.sh
+          export DIST_DEV=1
           ## flagtree tle distributed python unit test
           CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_distributed_d2d.sh
           CUDA_LAUNCH_BLOCKING=1 bash python/test/tle/unit/test_tle_get_local_pe.sh
