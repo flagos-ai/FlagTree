@@ -14,9 +14,12 @@ fi
 #export FLAGCX_SOCKET_IFNAME=eth0
 export FLAGCX_IB_HCA=mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_6,mlx5_7,mlx5_8,mlx5_9
 export FLAGCX_USE_HETERO_COMM=1
+export FLAGCX_PATH=/data/hsy/deps/FlagCX-src/build/mthreads/mp_31
+export LD_LIBRARY_PATH=$FLAGCX_PATH/lib:$LD_LIBRARY_PATH
 export FLAGCX_MEM_ENABLE=1
+# MUSA has no VMM flat-map; ASYMMETRIC windows use IPC and need P2P.
 export FLAGCX_VMM_ENABLE=0
-export FLAGCX_P2P_DISABLE=1
+export FLAGCX_P2P_DISABLE=0
 #export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 # Need to preload customized gloo library specified for FlagCX linkage
 #export LD_PRELOAD=/usr/local/lib/libgloo.so

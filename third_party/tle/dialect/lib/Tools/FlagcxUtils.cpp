@@ -63,15 +63,35 @@ static inline LLVM::LLVMFuncOp createFuncInstance(const char *funcName,
   return func;
 }
 
+// Triton tracks FlagCX buffers as global AS1. CUDA FlagCX bitcode matches AS1
+// directly; MUSA bitcode (mcc) exposes a generic/i8* (AS0) C ABI, so MUSA casts
+// AS1→AS0 at the call boundary only.
+constexpr unsigned kTritonFlagcxPtrAddrSpace = 1;
+#ifdef TRITON_MTHREADS_BACKEND
+constexpr unsigned kFlagcxAbiPtrAddrSpace = 0;
+#else
+constexpr unsigned kFlagcxAbiPtrAddrSpace = 1;
+#endif
+
+static inline LLVM::LLVMPointerType tritonFlagcxPtrTy(MLIRContext *ctx) {
+  return LLVM::LLVMPointerType::get(ctx, kTritonFlagcxPtrAddrSpace);
+}
+
+static inline LLVM::LLVMPointerType flagcxAbiPtrTy(MLIRContext *ctx) {
+  return LLVM::LLVMPointerType::get(ctx, kFlagcxAbiPtrAddrSpace);
+}
+
 // The frontend passes the FlagCX global memory/communication pointer as an
-// integer. Convert it back to an LLVM pointer in global address space (AS1)
-// before passing it to device/runtime functions.
+// integer. Convert it back to an LLVM pointer, then adapt to the FlagCX ABI.
 static inline Value getFlagcxMemOrCommPtr(mlir::Location loc,
                                           ConversionPatternRewriter &rewriter,
                                           Value memPtrInt) {
   auto ctx = rewriter.getContext();
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
-  return rewriter.create<LLVM::IntToPtrOp>(loc, ptrTy, memPtrInt);
+  Value ptr = rewriter.create<LLVM::IntToPtrOp>(loc, tritonFlagcxPtrTy(ctx),
+                                                memPtrInt);
+  if constexpr (kFlagcxAbiPtrAddrSpace != kTritonFlagcxPtrAddrSpace)
+    ptr = rewriter.create<LLVM::AddrSpaceCastOp>(loc, flagcxAbiPtrTy(ctx), ptr);
+  return ptr;
 }
 
 LLVM::CallOp getNumPesFunCall(mlir::Location loc,
@@ -81,7 +101,7 @@ LLVM::CallOp getNumPesFunCall(mlir::Location loc,
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
 
-  auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto PtrTy = flagcxAbiPtrTy(ctx);
   auto i32Ty = IntegerType::get(ctx, 32);
   auto func = createFuncInstance(
       runtimeNames.lookup("getNumPesFunction").data(), module, {PtrTy}, i32Ty);
@@ -99,7 +119,7 @@ LLVM::CallOp getWorldRankFuncCall(mlir::Location loc,
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
 
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto ptrTy = flagcxAbiPtrTy(ctx);
   auto i32Ty = IntegerType::get(ctx, 32);
   auto func =
       createFuncInstance(runtimeNames.lookup("getWorldRankFunction").data(),
@@ -119,7 +139,7 @@ LLVM::CallOp getUnifiedBarrierFuncCall(
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
 
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto ptrTy = flagcxAbiPtrTy(ctx);
   auto i32Ty = IntegerType::get(ctx, 32);
   auto voidTy = LLVM::LLVMVoidType::get(ctx);
   StringRef funcName;
@@ -158,7 +178,7 @@ LLVM::CallOp getLocalPeFuncCall(mlir::Location loc,
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
 
-  auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto PtrTy = flagcxAbiPtrTy(ctx);
   auto i32Ty = IntegerType::get(ctx, 32);
   auto func = createFuncInstance(
       runtimeNames.lookup("getLocalPeFunction").data(), module, {PtrTy}, i32Ty);
@@ -179,7 +199,7 @@ LLVM::CallOp getSignalFuncCall(mlir::Location loc,
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
 
-  auto ptrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto ptrTy = flagcxAbiPtrTy(ctx);
   auto i32Ty = IntegerType::get(ctx, 32);
   auto i64Ty = IntegerType::get(ctx, 64);
   auto voidTy = LLVM::LLVMVoidType::get(ctx);
@@ -229,7 +249,7 @@ LLVM::CallOp getDevNetWaitFuncCallByKind(
   ModuleOp module =
       rewriter.getInsertionPoint()->getParentOp()->getParentOfType<ModuleOp>();
 
-  auto PtrTy = LLVM::LLVMPointerType::get(ctx, 1);
+  auto PtrTy = flagcxAbiPtrTy(ctx);
   auto I32Ty = IntegerType::get(ctx, 32);
   auto I64Ty = IntegerType::get(ctx, 64);
   auto VoidTy = LLVM::LLVMVoidType::get(ctx);

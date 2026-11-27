@@ -40,6 +40,9 @@ void init_triton_musa_tle_ir(py::module m);
 void init_triton_musa_tle_frontend_passes_ttgpuir(py::module m);
 void init_triton_musa_tle_dialect_passes_ttgpuir(py::module m);
 void register_triton_musa_tle_dialects(mlir::DialectRegistry &registry);
+#ifdef FLAGCX_ENABLED
+void init_triton_mthreads_tle_flagcx(pybind11::module m);
+#endif
 #endif
 
 namespace {
@@ -357,6 +360,11 @@ void init_triton_mthreads(py::module &&m) {
   });
 #ifdef __TLE__
   init_triton_musa_tle_ir(m.def_submodule("ir"));
+#ifdef FLAGCX_ENABLED
+  // Expose FlagCX attr/utils under mthreads.tle so the shared language layer
+  // can fall back when the standalone tle plugin is not built for mthreads.
+  init_triton_mthreads_tle_flagcx(m.def_submodule("tle"));
+#endif
 #endif // __TLE__
 
   auto passes = m.def_submodule("passes");

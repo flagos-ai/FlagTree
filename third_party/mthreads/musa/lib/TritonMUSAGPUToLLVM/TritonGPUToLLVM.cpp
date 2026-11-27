@@ -10,6 +10,18 @@
 #include "Dialect/MUSATLE/IR/Dialect.h"
 #include "MUSATLE/Transforms/TransformAttrs.h"
 #include "TritonMUSACommon/TMEUtils.h"
+#ifdef FLAGCX_ENABLED
+#include "tle/dialect/include/Conversion/TleToLLVM/DistributedBarrierOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxBarrierOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxSignalOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetLocalRankOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/FlagCxOpToLLVM/GetWorldRankOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/GetDeviceIdToFlagCX.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/NodeTransferOpToLLVM.h"
+#include "tle/dialect/include/Conversion/TleToLLVM/SignalOpToLLVM.h"
+#include "tle/dialect/include/IR/Dialect.h"
+#endif
 #endif
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
@@ -146,6 +158,9 @@ public:
     addIllegalDialect<triton::musa::MUSADialect>();
 #ifdef __TLE__
     addIllegalDialect<triton::musa_tle::MUSATLEDialect>();
+#ifdef FLAGCX_ENABLED
+    addIllegalDialect<triton::tle::TleDialect>();
+#endif
 #endif
     addLegalOp<mlir::UnrealizedConversionCastOp>();
 
@@ -481,6 +496,28 @@ struct ConvertTritonMUSAGPUToLLVM
 #ifdef __TLE__
     mlir::triton::musa_tle::populateMUSATLEToLLVMPatterns(
         typeConverter, targetInfo, patterns, benefit);
+#ifdef FLAGCX_ENABLED
+    mlir::triton::tle::populateDistributedBarrierOpToLLVMPatterns(
+        typeConverter, patterns, benefit, &targetInfo);
+    mlir::triton::tle::populateFlagCxBarrierOpToLLVMPatterns(
+        typeConverter, patterns, benefit);
+    mlir::triton::tle::populateGetDeviceIdOpToFlagCxPatterns(
+        typeConverter, patterns, benefit);
+    mlir::triton::tle::populateGetLocalRankOpToLLVMPatterns(
+        typeConverter, patterns, benefit);
+    mlir::triton::tle::populateGetWorldRankOpToLLVMPatterns(
+        typeConverter, patterns, benefit);
+    mlir::triton::tle::populateGetNumPesOpToLLVMPatterns(
+        typeConverter, patterns, benefit);
+    mlir::triton::tle::populateSignalOpToLLVMPatterns(
+        typeConverter, patterns, benefit);
+    mlir::triton::tle::populateFlagCxSignalOpToLLVMPatterns(
+        typeConverter, patterns, benefit);
+    mlir::triton::tle::populateRemotePointersOpToLLVMPatterns(
+        typeConverter, targetInfo, patterns, benefit);
+    mlir::triton::tle::populateNodeTransferOpToLLVMPatterns(
+        typeConverter, patterns, benefit);
+#endif
 #endif
     mlir::triton::MUSA::populateConvertLayoutOpToLLVMPatterns(
         typeConverter, targetInfo, patterns, benefit);

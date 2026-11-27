@@ -1,0 +1,30 @@
+--- /dev/fd/63	2026-11-25 16:14:29.971729199 +0800
++++ b/flagcx/adaptor/include/musa_adaptor.h
+@@ -11,6 +11,11 @@
+   mcclComm_t base;
+ };
+ 
++struct flagcxInnerWindow {
++  mcclWindow_t base;
++  int winFlags;
++};
++
+ struct flagcxStream {
+   musaStream_t base;
+ };
+@@ -20,7 +25,7 @@
+ };
+ 
+ struct flagcxIpcMemHandle {
+-  char *base; // to be implemented
++  musaIpcMemHandle_t base;
+ };
+ 
+ #define DEVCHECK(func)                                                         \
+@@ -30,4 +35,4 @@
+       return flagcxUnhandledDeviceError;                                       \
+   }
+ 
+-#endif // USE_MUSA_ADAPTOR
+\ No newline at end of file
++#endif // USE_MUSA_ADAPTOR

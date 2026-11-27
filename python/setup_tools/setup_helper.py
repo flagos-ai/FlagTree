@@ -40,7 +40,7 @@ from .utils.tools import flagtree_configs as configs
 downloader = utils.tools.DownloadManager()
 configs = configs
 flagtree_backend = configs.flagtree_backend
-FLAGCX_SUPPORT_BACKENDS = {"nvidia", "iluvatar"}
+FLAGCX_SUPPORT_BACKENDS = {"nvidia", "iluvatar", "mthreads"}
 
 
 def get_console_colors() -> Tuple[str, str]:
@@ -242,7 +242,10 @@ def finalize_backend_build_tree(build_lib):
 
 
 def enable_flagtree_third_party(name):
-    return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
+    # FlagCX device-bitcode builds need the MUSA SDK on mthreads.
+    backend = flagtree_backend or "nvidia"
+    default = 'OFF' if name == "flagcx" and backend == "mthreads" else 'ON'
+    return os.environ.get(f"USE_{name.upper()}", default) == 'ON'
 
 
 def download_flagtree_third_party(name, condition, required=False, hook=None):

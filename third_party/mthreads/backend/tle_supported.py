@@ -13,6 +13,16 @@ TLE_SUPPORTED_PRIMITIVES = [
     "pipe.writer.commit",
     "pipe.writer.close",
 
+    ## TLE distributed (FlagCX)
+    "device_mesh",
+    "distributed_barrier",
+    "sharding",
+    "shard_id",
+    "n_pes",
+    "remote",
+    "signal",
+    "signal_wait",
+
     ## TLE-Struct GPU
     "gpu.buffered_tensor.subslice",
     "gpu.alloc",

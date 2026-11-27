@@ -41,6 +41,11 @@ third_party/iluvatar/backend/lib/libflagcx*
 third_party/iluvatar/tle/third_party
 third_party/iluvatar/logs/
 
+# Backends mthreads (FlagCX build products)
+third_party/mthreads/backend/flagcx*
+third_party/mthreads/backend/lib/libflagcx*
+third_party/mthreads/backend/lib/metadata.json
+
 # Backends copied from submodules
 python/triton/backends/*
 !python/triton/backends/__init__.py

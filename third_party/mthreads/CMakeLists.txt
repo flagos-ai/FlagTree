@@ -18,6 +18,17 @@ if(FLAGTREE_MTHREADS_TLE)
   add_subdirectory(
     ${CMAKE_SOURCE_DIR}/third_party/tle/dialect/lib/IR
     ${CMAKE_BINARY_DIR}/third_party/tle/dialect/lib/IR)
+  if(FLAGCX_ENABLED)
+    # Slim FlagCX/distributed lowering only. The full shared TleToLLVM pulls in
+    # NVIDIA TargetInfo / NVGPU tablegen that are incompatible with mthreads.
+    include_directories(${CMAKE_SOURCE_DIR}/third_party/tle/dialect/include)
+    include_directories(${CMAKE_BINARY_DIR}/third_party/tle/dialect/include)
+    include_directories(${CMAKE_SOURCE_DIR}/third_party/mthreads/proton/Dialect/include)
+    add_subdirectory(
+      ${CMAKE_SOURCE_DIR}/third_party/tle/dialect/lib/Tools
+      ${CMAKE_BINARY_DIR}/third_party/tle/dialect/lib/Tools)
+    add_subdirectory(tle/dialect/lib/Conversion/FlagCxToLLVM)
+  endif()
   add_subdirectory(tle)
 endif()
 add_subdirectory(include)
@@ -28,6 +39,10 @@ if(TRITON_BUILD_PYTHON_MODULE)
     set(_MTHREADS_TLE_PLUGIN_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/tle/dialect/triton_mthreads_tle.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/tle/frontend/triton_mthreads_frontend.cc)
+    if(FLAGCX_ENABLED)
+      list(APPEND _MTHREADS_TLE_PLUGIN_SOURCES
+           ${CMAKE_CURRENT_SOURCE_DIR}/tle/dialect/triton_mthreads_tle_flagcx.cc)
+    endif()
     set(_MTHREADS_TLE_PLUGIN_LIBS
         MUSATLEIR MUSATLETransforms MUSATLEFrontendTransforms TleIR)
     set(_MTHREADS_TLE_PLUGIN_DEPS
