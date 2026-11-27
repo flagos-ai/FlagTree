@@ -41,9 +41,20 @@ on:
         description: >-
           Comma-separated backends, or "all" for every supported backend.
           Supported: amd, enflame, hcu, iluvatar, metax, mthreads, nvidia,
-          ppu, sunrise, tileir, tsingmicro, xpu.
+          ppu, tsingmicro, xpu.
         required: true
-        default: 'amd,enflame,hcu,iluvatar,metax,mthreads,nvidia,ppu,sunrise,tileir,tsingmicro,xpu'
+        default: 'amd,enflame,hcu,iluvatar,metax,mthreads,nvidia,ppu,tsingmicro,xpu'
+      RUNNER_OVERRIDES:
+        description: >-
+          Pick which runner a backend is generated on, as
+          "<backend>=<runner-label>" pairs, comma-separated, e.g.
+          "hcu=hcu3.6-bw1100". Some backends have several runners differing
+          in hardware or python version; they still share one
+          skip_list/<backend>.yaml, so this selects the machine the detection
+          runs on, it does not produce a second list. Leave empty to use each
+          backend's default runner.
+        required: false
+        default: ''
       FLAGGEMS_REF:
         description: >-
           FlagGems tag/branch. With REPO_KIND=flaggems this is the library
@@ -132,6 +143,14 @@ on:
 #
 # PUBLISH_BASELINE is orthogonal to the three modes, but only has an effect in
 # modes 1 and 3: mode 2 runs no rounds, so there is no log directory to publish.
+#
+# RUNNER_OVERRIDES likewise only affects modes 1 and 3. A backend with several
+# runners (hcu3.6 and hcu3.6-bw1100 differ in hardware; ascend's runners differ
+# in hardware and python version) still produces one skip_list/<backend>.yaml,
+# shared by all of them: the override selects the machine the detection runs
+# on, it does not produce a per-runner list. The chosen runner is recorded as
+# the first line of the generated YAML, since nothing else says which variant
+# the list came from.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.run_id }}
@@ -154,11 +173,14 @@ jobs:
         shell: bash
         env:
           BACKENDS: ${{ inputs.BACKENDS }}
+          RUNNER_OVERRIDES: ${{ inputs.RUNNER_OVERRIDES }}
         run: |
           python3 - <<'PY'
           import json, os, sys
 
-          # runner      : self-hosted label
+          # runner      : self-hosted label. Backends with several runners
+          #               (hcu3.6 / hcu3.6-bw1100) list the default here;
+          #               RUNNER_OVERRIDES picks a different one.
           # gpu_env     : env var naming the visible devices, as used by the
           #               backend's gems-test workflow
           # build_cmd   : FlagTree build+install, copied from
@@ -274,35 +296,6 @@ jobs:
                   ),
                   "test_env": TSM_RUNTIME,
               },
-              "sunrise": {
-                  "runner": "sunrise3.6",
-                  "gpu_env": "CUDA_VISIBLE_DEVICES",
-                  # Note: no --no-build-isolation here, matching the build-and-test
-                  # workflow.
-                  "build_cmd": (
-                      "pip uninstall -y triton\n"
-                      "export TRITON_BUILD_WITH_CLANG_LLD=1\n"
-                      "export TRITON_OFFLINE_BUILD=1\n"
-                      "export TRITON_BUILD_PROTON=OFF\n"
-                      "export FLAGTREE_BACKEND=sunrise\n"
-                      "MAX_JOBS=32 python3 -m pip install . -v"
-                  ),
-              },
-              "tileir": {
-                  "runner": "tileir3.6",
-                  "gpu_env": "CUDA_VISIBLE_DEVICES",
-                  "build_cmd": (
-                      "source ~/env.sh\n"
-                      "export FLAGTREE_BACKEND=tileir\n"
-                      "export CMAKE_BUILD_PARALLEL_LEVEL=32\n"
-                      'export TRITON_PTXAS_PATH="$PWD/third_party/nvidia/backend/bin/ptxas"\n'
-                      'export TRITON_PTXAS_BLACKWELL_PATH="$PWD/third_party/nvidia/backend/bin/ptxas-blackwell"\n'
-                      f"{INSTALL}\n"
-                      "TILEIRAS_PATH=$(python3 -c 'from triton.backends.tileir.conf import TileIREnvConf; print(TileIREnvConf.get_tileiras_path())')\n"
-                      '"$TILEIRAS_PATH" --version | tee /tmp/flagtree_tileiras_version.txt\n'
-                      "grep -F 'V13.4.59' /tmp/flagtree_tileiras_version.txt"
-                  ),
-              },
           }
 
           raw = os.environ.get("BACKENDS", "").strip()
@@ -328,9 +321,50 @@ jobs:
                   f"Supported: {', '.join(supported)}"
               )
 
+          # RUNNER_OVERRIDES: "<backend>=<runner-label>,..." -- choose which of
+          # a backend's runners the detection runs on. The product is still a
+          # single skip_list/<backend>.yaml, so this selects the machine, it
+          # does not create a per-runner list.
+          overrides = {}
+          for item in os.environ.get("RUNNER_OVERRIDES", "").split(","):
+              item = item.strip()
+              if not item:
+                  continue
+              if "=" not in item:
+                  sys.exit(f"RUNNER_OVERRIDES entry '{item}' is not <backend>=<runner-label>")
+              name, _, label = item.partition("=")
+              name, label = name.strip().lower(), label.strip()
+              if not name or not label:
+                  sys.exit(f"RUNNER_OVERRIDES entry '{item}' has an empty backend or label")
+              if name not in BACKENDS:
+                  sys.exit(
+                      f"RUNNER_OVERRIDES names unknown backend '{name}'. "
+                      f"Supported: {', '.join(supported)}"
+                  )
+              # An override for a backend that was not selected would be
+              # silently ignored, and the mistake would only surface an hour
+              # later as a result from the wrong machine.
+              if name not in selected:
+                  sys.exit(
+                      f"RUNNER_OVERRIDES names '{name}', which is not in BACKENDS "
+                      f"({', '.join(selected)})"
+                  )
+              # Sending a backend's job to another backend's runner builds for
+              # the wrong device and fails long after the dispatch.
+              if not label.startswith(name):
+                  sys.exit(
+                      f"Runner label '{label}' does not start with backend name "
+                      f"'{name}'; refusing to run {name} on another backend's runner"
+                  )
+              overrides[name] = label
+
+          for name, label in overrides.items():
+              print(f"Runner override: {name} -> {label} "
+                    f"(default {BACKENDS[name]['runner']})")
+
           include = [
               {"backend": name,
-               "runner": BACKENDS[name]["runner"],
+               "runner": overrides.get(name, BACKENDS[name]["runner"]),
                "gpu_env": BACKENDS[name]["gpu_env"],
                "build_cmd": BACKENDS[name]["build_cmd"],
                # Runtime-only env for backends whose driver needs it at import
@@ -486,6 +520,26 @@ jobs:
             --window-threshold "$WINDOW_THRESHOLD" \
             --flaky-rounds "$FLAKY_ROUNDS" \
             --max-detection-rounds "$MAX_DETECTION_ROUNDS"
+
+      # Must run before the upload: in "commit a reviewed list" mode the
+      # artifact is committed verbatim, so provenance has to be inside it.
+      - name: Record runner in skip list
+        shell: bash
+        env:
+          BACKEND: ${{ matrix.backend }}
+          WORK_DIR: ${{ steps.env.outputs.work_dir }}
+          RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          set -euo pipefail
+          RESULT="$WORK_DIR/output/${BACKEND}.yaml"
+          [ -f "$RESULT" ] || { echo "::error::No skip list at $RESULT"; exit 1; }
+
+          # The backend name alone does not say which hardware or python
+          # variant produced the list, and that is exactly what is needed to
+          # judge whether another runner should get its own list later.
+          printf '# Generated on runner: %s\n' "$RUNNER_LABEL" | cat - "$RESULT" > "${RESULT}.tmp"
+          mv "${RESULT}.tmp" "$RESULT"
+          head -2 "$RESULT"
 
       # Deliberately not `!cancelled()`: a baseline is only meaningful when the
       # rounds converged, so this is skipped whenever generation failed.
