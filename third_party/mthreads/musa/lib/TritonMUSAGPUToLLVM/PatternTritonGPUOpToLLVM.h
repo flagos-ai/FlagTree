@@ -35,7 +35,8 @@ void populateFp4ToFpToLLVMPatterns(LLVMTypeConverter &typeConverter,
 void populateElementwiseOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     ModuleAxisInfoAnalysis &axisInfoAnalysis, int computeCapability,
-    bool enableFp8Burst2, const TargetInfo &targetInfo, PatternBenefit benefit);
+    bool enableFp8Burst2, bool enableVectorArithmetic,
+    const TargetInfo &targetInfo, PatternBenefit benefit);
 
 void populateLoadStoreOpToLLVMPatterns(LLVMTypeConverter &typeConverter,
                                        const TargetInfo &targetInfo,

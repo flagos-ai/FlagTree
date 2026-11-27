@@ -26,7 +26,8 @@ std::unique_ptr<OperationPass<ModuleOp>>
 createConvertTritonMUSAGPUToLLVMPass(int32_t computeCapability);
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertTritonMUSAGPUToLLVMPass(int32_t computeCapability,
-                                     bool enableFp8Burst2);
+                                     bool enableFp8Burst2,
+                                     bool enableVectorArithmetic = false);
 std::unique_ptr<OperationPass<ModuleOp>>
 createAllocateMUSASharedMemoryPass(int32_t computeCapability);
 
