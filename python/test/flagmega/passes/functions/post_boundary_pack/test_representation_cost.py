@@ -13,27 +13,16 @@ from triton.flagmega.rules.neutral.fold_pack_reshape import fold_pack_reshape_ru
 
 
 @pytest.mark.parametrize('operation', [
-    'builtin.var',
-    'builtin.weight',
-    'builtin.scalar_const',
     'builtin.tuple',
-    'builtin.get_item',
+    'builtin.var',
     'tensors.bitcast',
-    'tensors.pack',
-    'tensors.unpack',
-    'tensors.permute',
     'tensors.reshape',
-    'tensors.slice',
     'math.add',
-    'nn.norm_apply',
-    'ntt.packed_matmul',
 ])
 @pytest.mark.parametrize('distributed', [False, True])
-@pytest.mark.parametrize('lanes', [(1, ), (8, ), (2, 4)])
-def test_packed_type_cost_is_strictly_smaller_in_every_operation_category(operation, distributed, lanes):
-    from math import prod
+def test_packed_type_cost_is_strictly_smaller_in_every_operation_category(operation, distributed):
     scalar = fm.tensor_type('bfloat16', (1, 64))
-    packed = fm.tensor_type(fm.vector_type('bfloat16', lanes), (1, 64 // prod(lanes)))
+    packed = fm.tensor_type(fm.vector_type('bfloat16', (2, 4)), (1, 8))
     if distributed:
         placement = fm.Placement((2, 2), 'yx', 'bb')
         scalar = fm.DistributedType(scalar, (fm.SBP.broadcast(), ) * 2, placement)

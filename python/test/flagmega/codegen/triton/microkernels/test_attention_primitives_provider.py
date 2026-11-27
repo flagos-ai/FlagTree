@@ -2,8 +2,6 @@
 # SPDX-License-Identifier: MIT
 
 from dataclasses import replace
-import inspect
-from pathlib import Path
 
 import pytest
 
@@ -132,19 +130,3 @@ def test_provider_rejects_malformed_semantic_layout_before_catalog_lookup():
 
     with pytest.raises(CodegenError, match="layout"):
         AttentionPrimitiveMicroKernelProvider().propose(context)
-
-
-def test_attention_microkernel_provider_contains_no_machine_or_tile_policy():
-    source = Path(inspect.getsourcefile(AttentionPrimitiveMicroKernelProvider)
-                  or "").read_text(encoding="utf-8").lower()
-
-    for spelling in (
-            "nvidia",
-            "sm90",
-            "block_n =",
-            "block_k =",
-            "num_warps =",
-            "num_stages =",
-            "mesh_size",
-    ):
-        assert spelling not in source

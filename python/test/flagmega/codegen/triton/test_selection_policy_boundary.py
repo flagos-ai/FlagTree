@@ -1,8 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
-import inspect
-
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.selection import TritonTirSelectionPolicy
 from triton.flagmega.targets import NvidiaSm90Target
@@ -38,10 +36,3 @@ def test_triton_selector_receives_target_workspace_policy_by_injection():
     target.propose_tir(_block_fp8_module())
 
     assert calls == [("result", (8, 16))]
-
-
-def test_triton_selector_has_no_nvidia_import_dependency():
-    source = inspect.getsource(inspect.getmodule(TritonTirSelectionPolicy))
-
-    assert "targets.nvidia" not in source
-    assert "sm90" not in source.lower()

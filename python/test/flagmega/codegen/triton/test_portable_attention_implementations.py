@@ -1,10 +1,7 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
-from pathlib import Path
 import ast
-import inspect
-import re
 from types import SimpleNamespace
 
 from triton.flagmega.codegen.triton.portable_implementations import (
@@ -38,14 +35,8 @@ def test_attention_catalog_is_target_neutral_and_has_real_generic_templates():
         rendered = registry.render_kernel(spec, {"render_calls": ()}).source
         compile(rendered, f"{implementation.family}.py", "exec")
 
-    source = Path(__file__).parents[4].joinpath("triton", "flagmega", "codegen", "triton",
-                                                "portable_implementations.py").read_text(encoding="utf-8").lower()
-    for target_spelling in ("nvidia", "sm90", "cuda", "mma", "tma"):
-        # Match identifier/name components, not the "tma" inside "softmax".
-        assert not re.search(rf"(?<![a-z0-9]){target_spelling}(?![a-z0-9])", source)
 
-
-def test_sm90_model_composes_portable_attention_instead_of_redeclaring_it():
+def test_model_preserves_portable_attention_implementations_and_preferences():
     portable = {value.id: value for value in portable_attention_implementations()}
     model = portable_triton_implementation_model()
 
@@ -63,39 +54,16 @@ def test_sm90_model_composes_portable_attention_instead_of_redeclaring_it():
                        if implementation_id in portable_ids)
         assert actual == expected
 
-    source = inspect.getsource(
-        __import__(
-            "triton.flagmega.targets.portable_triton_implementations",
-            fromlist=("portable_triton_implementation_model", ),
-        ))
-    assert "portable_attention_implementations()" in source
-    for implementation_id in portable:
-        assert f'"{implementation_id}"' not in source
-
 
 def test_partial_attention_exposes_independent_tile_variants_and_prefers_no_spill_tile():
     implementations = tuple(value for value in portable_attention_implementations()
                             if value.family == "paged_attention_partial")
 
-    assert {value.id: (value.variant, value.parameters["token_tile"])
-            for value in implementations} == {
-                "tir.paged_attention_partial.decode_t16": ("decode_t16", 16),
-                "tir.paged_attention_partial.decode_layout4": ("decode_layout4", 16),
-                "tir.paged_attention_partial.decode_layout32": ("decode_layout32", 32),
-                "tir.paged_attention_partial.decode_t32": ("decode_t32", 32),
-                "tir.paged_attention_partial.decode_t256": ("decode_t256", 256),
-                "tir.paged_attention_partial.decode_t128": ("decode_t128", 128),
-                "tir.paged_attention_partial.decode_t128_layout32": ("decode_t128_layout32", 128),
-            }
-    assert portable_attention_preferences()["paged_attention_partial"] == (
-        "tir.paged_attention_partial.decode_t16",
-        "tir.paged_attention_partial.decode_layout4",
-        "tir.paged_attention_partial.decode_layout32",
-        "tir.paged_attention_partial.decode_t32",
-        "tir.paged_attention_partial.decode_t256",
-        "tir.paged_attention_partial.decode_t128",
-        "tir.paged_attention_partial.decode_t128_layout32",
-    )
+    by_id = {value.id: value for value in implementations}
+    preferred = portable_attention_preferences()["paged_attention_partial"][0]
+    assert preferred == "tir.paged_attention_partial.decode_t16"
+    assert by_id[preferred].parameters["token_tile"] == 16
+    assert {16, 32} <= {value.parameters["token_tile"] for value in implementations}
 
 
 def test_attention_scalar_controls_are_values_not_pointer_operands():

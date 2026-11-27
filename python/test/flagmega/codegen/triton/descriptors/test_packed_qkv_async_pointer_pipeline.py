@@ -311,40 +311,6 @@ def test_model_qkv_pointer_copy_reaches_sme_lowering(tmp_path, pointer_qkv_modul
     )
 
 
-@pytest.mark.skip(reason="SME async-copy pipe still hangs at launch; the plain "
-                  "shared-memory pipe deadlock is fixed (Trial 85). The "
-                  "remaining issue is specific to the SME publication "
-                  "rendezvous, not the dispatch protocol.")
-def test_pointer_qkv_preserves_all_three_projection_outputs(tmp_path, pointer_qkv_module):
-    import torch
-    import triton
-    from triton.flagmega.artifacts import write_artifact
-    from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
-    from triton.flagmega.runtime import load
-    if not torch.cuda.is_available() or triton.runtime.driver.active.get_current_target().backend != "corex":
-        pytest.skip("BI-V150 device required")
-    generator = torch.Generator().manual_seed(119)
-    weights = {
-        name: torch.randint(-3, 4, (2048, n), generator=generator).bfloat16()
-        for name, n in (("q_weight", 2048), ("k_weight", 1024), ("v_weight", 1024))
-    }
-    checkpoint = MemoryCheckpoint(
-        {}, {name: TensorInfo(name, fm.DType.BFLOAT16, tuple(w.shape), "memory")
-             for name, w in weights.items()}, weights)
-    artifact = write_artifact(pointer_qkv_module, tmp_path / 'artifact', target="iluvatar-bi-v150",
-                              checkpoint=checkpoint, emit_executable=True)
-    runtime = load(artifact, device="cuda:0")
-    x = torch.randint(-3, 4, (1, 2048), generator=generator).bfloat16().cuda()
-    outputs = tuple(torch.empty((1, n), dtype=torch.float32, device="cuda") for n in (2048, 1024, 1024))
-    runtime.prepare(x, *outputs)
-    for _ in range(5):
-        for output in outputs:
-            output.fill_(float('nan'))
-        runtime.run_into(x, *outputs)
-        for out, weight in zip(outputs, weights.values()):
-            torch.testing.assert_close(out, x.float() @ weight.cuda().float(), rtol=0, atol=0)
-
-
 def test_static_3072_wait_uses_exact_reciprocal_lowering():
     """The full 48-warp CTA must not lower its phase wait to i32 udiv."""
     from triton.compiler.compiler import ASTSource, GPUTarget

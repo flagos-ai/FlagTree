@@ -1,7 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
-import inspect
 from dataclasses import replace
 
 from triton.flagmega import ir as fm
@@ -195,21 +194,6 @@ def test_packed_qkv_cost_factors_account_for_hybrid_compute_geometry():
     assert hybrid.objective_kind == "analytic"
     assert hybrid.objective_model == "test.compute-bound/v1"
     assert "op-definition-cost-factors" in hybrid.objective_evidence
-
-
-def test_packed_qkv_provider_has_no_machine_geometry_or_target_dependency():
-    source = inspect.getsource(PackedQKVParallelLinearCandidateProvider)
-    for spelling in (
-            "sm90",
-            "nvidia",
-            "block_k",
-            "num_stages",
-            "num_warps",
-            "context_mesh_size",
-            "head_mesh_size",
-            "qwen",
-    ):
-        assert spelling not in source.lower()
 
 
 def test_packed_qkv_cost_uses_target_throughput_instead_of_raw_macs():

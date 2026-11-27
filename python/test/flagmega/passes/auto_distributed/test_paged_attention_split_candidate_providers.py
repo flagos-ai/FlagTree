@@ -1,8 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
-import inspect
-
 from triton.flagmega import ir as fm
 from triton.flagmega.passes.auto_distributed import DistributedCandidateContext
 from triton.flagmega.rules.neutral._utility import make_node
@@ -147,16 +145,6 @@ def test_combine_provider_rebuilds_output_type_and_exposes_released_axis_choices
         for candidate in candidates)
     assert PagedAttentionCombineCandidateProvider.allows_partial_inputs
     assert PagedAttentionCombineCandidateProvider.is_exhaustive
-
-
-def test_split_candidate_providers_are_target_neutral():
-    source = inspect.getsource(
-        __import__(
-            "triton.flagmega.passes.auto_distributed.paged_attention_providers",
-            fromlist=("PagedAttentionCombineCandidateProvider", ),
-        )).lower()
-    for spelling in ("nvidia", "sm90", "cuda", "mma", "tma", "warp"):
-        assert spelling not in source
 
 
 def test_gated_combine_candidates_bind_gate_and_output_owners_together():

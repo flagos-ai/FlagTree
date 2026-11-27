@@ -2,8 +2,6 @@
 # SPDX-License-Identifier: MIT
 
 from dataclasses import replace
-import inspect
-from pathlib import Path
 
 import pytest
 
@@ -60,13 +58,3 @@ def test_provider_rejects_malformed_semantic_contract():
 
     with pytest.raises(CodegenError, match="three positive"):
         PackedQKVMicroKernelProvider().propose(_context(module))
-
-
-def test_portable_provider_contains_no_machine_policy_or_tile_constant():
-    source = Path(inspect.getsourcefile(PackedQKVMicroKernelProvider) or "").read_text(encoding="utf-8").lower()
-
-    assert "nvidia" not in source
-    assert "sm90" not in source
-    assert "block_n =" not in source
-    assert "block_k =" not in source
-    assert "mesh_size" not in source

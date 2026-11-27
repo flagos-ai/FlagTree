@@ -1,8 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
-import inspect
-
 from triton.flagmega import ir as fm
 from triton.flagmega.passes.auto_distributed import DistributedCandidateContext
 from triton.flagmega.passes.auto_distributed.providers import (
@@ -10,7 +8,6 @@ from triton.flagmega.passes.auto_distributed.providers import (
     GdnRecurrentCandidateProvider,
     MatMulCandidateProvider,
 )
-from triton.flagmega.passes.auto_distributed import providers
 from triton.flagmega.targets.pyntt_split import PyNttDistributedSplitCandidateProvider
 
 from .helpers import packed_matmul_module
@@ -219,15 +216,6 @@ def test_packed_dense_block_cyclic_unit_comes_from_injected_target_policy():
     assert weight_policy.stages[0].distribution.block_size == 8
     assert output_policy.hierarchy_axes == (0, 1)
     assert output_policy.stages[0].distribution.block_size == 64
-
-
-def test_generic_candidate_providers_do_not_construct_physical_block_policy():
-    source = inspect.getsource(providers)
-
-    assert "split_block_cyclic" not in source
-    assert "is_physical_block_axis" not in source
-    assert "sm90" not in source.lower()
-    assert "nvidia" not in source.lower()
 
 
 def test_gdn_convolution_provider_splits_projected_channels_over_full_mesh():

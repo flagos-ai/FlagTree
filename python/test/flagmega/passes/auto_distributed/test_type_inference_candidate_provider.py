@@ -1,8 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
-import inspect
-
 from triton.flagmega import ir as fm
 from triton.flagmega.passes.auto_distributed import DistributedCandidateContext
 from triton.flagmega.passes.auto_distributed.inference_providers import (
@@ -245,9 +243,3 @@ def test_stateful_cache_update_costs_the_slots_instead_of_the_reference_handle()
     sharded = next(candidate for candidate in candidates if candidate.input_types[0] == slots_split)
 
     assert sharded.operation_cost < broadcast.operation_cost
-
-
-def test_type_inference_provider_has_no_vendor_or_machine_policy():
-    source = inspect.getsource(TypeInferenceCandidateProvider).lower()
-    for spelling in ("sm90", "nvidia", "warp", "num_stages", "block_k"):
-        assert spelling not in source

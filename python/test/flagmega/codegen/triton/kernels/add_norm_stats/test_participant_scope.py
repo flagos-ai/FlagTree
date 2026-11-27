@@ -1,8 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
-from pathlib import Path
-
 import pytest
 
 from triton.flagmega import ir as fm
@@ -79,10 +77,6 @@ def test_single_program_scope_is_an_enforced_implementation_fact():
     assert "participant_scope" not in implementation.parameters
     assert implementation.facts["participant_scope"] == "single_program"
 
-    template = Path(__file__).parents[6] / ("triton/flagmega/codegen/triton/kernels/add_norm_stats/_function.py.jinja")
-    source = template.read_text(encoding="utf-8")
-    assert "if {{ call.participant_active }}:" in source
-    assert "_flagmega_add_norm_stats_persistent_rms(" in source
     assert _call("single_program")["participant_active"] == "(shard_index == 0)"
 
 

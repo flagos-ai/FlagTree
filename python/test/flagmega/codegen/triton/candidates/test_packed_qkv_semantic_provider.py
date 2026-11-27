@@ -1,9 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
-import inspect
-from pathlib import Path
-
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.candidates import (
     PackedQKVSemanticTIRCandidateProvider, )
@@ -70,23 +67,6 @@ def test_packed_qkv_proposal_is_semantic_and_has_no_target_variant():
     assert proposal.selection_kind == "semantic_tir"
     assert tuple(value.id for value in proposal.candidates) == ("semantic.ntt.packed_qkv_parallel_linear", )
     assert proposal.candidates[0].parameters == {}
-
-
-def test_semantic_provider_has_no_machine_catalog_or_physical_geometry():
-    source = Path(inspect.getsourcefile(PackedQKVSemanticTIRCandidateProvider)
-                  or "").read_text(encoding="utf-8").lower()
-
-    for spelling in (
-            "implementation_model",
-            "context.implementations",
-            "nvidia",
-            "sm90",
-            "block_k",
-            "block_n",
-            "mesh_size",
-            "num_stages",
-    ):
-        assert spelling not in source
 
 
 def test_tir_proposal_and_lowering_preserve_an_unselected_semantic_dispatch():

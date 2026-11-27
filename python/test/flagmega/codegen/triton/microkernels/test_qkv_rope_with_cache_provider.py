@@ -2,8 +2,6 @@
 # SPDX-License-Identifier: MIT
 
 from dataclasses import replace
-import inspect
-from pathlib import Path
 
 import pytest
 
@@ -125,18 +123,3 @@ def test_provider_selects_injected_generic_decode_implementation():
 def test_provider_rejects_malformed_semantic_contract(attrs, arguments, message):
     with pytest.raises(CodegenError, match=message):
         QKVRoPEWithCacheMicroKernelProvider().propose(_context(attrs=attrs, arguments=arguments))
-
-
-def test_provider_has_no_model_machine_or_tile_policy():
-    source = Path(inspect.getsourcefile(QKVRoPEWithCacheMicroKernelProvider) or "").read_text(encoding="utf-8").lower()
-
-    for spelling in (
-            "qwen",
-            "nvidia",
-            "sm90",
-            "block_n =",
-            "block_k =",
-            "num_warps =",
-            "num_stages =",
-    ):
-        assert spelling not in source

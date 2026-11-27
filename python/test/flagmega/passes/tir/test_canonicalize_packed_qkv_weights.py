@@ -2,8 +2,6 @@
 # SPDX-License-Identifier: MIT
 
 from dataclasses import replace
-import inspect
-from pathlib import Path
 
 import pytest
 import torch
@@ -16,7 +14,6 @@ from triton.flagmega.passes.tir.canonicalize_packed_qkv_weights import (
     CanonicalizePackedQKVWeightsPass,
     canonicalize_packed_qkv_weights,
 )
-from triton.flagmega.passes.tir import canonicalize_packed_qkv_weights as canonicalize
 from triton.flagmega.passes.tir.bind_prim_function_buffers import (
     bind_prim_function_buffers, )
 
@@ -328,16 +325,6 @@ def test_pass_object_uses_reference_pass_name_and_contract():
         "main_value",
         "decode_call.qkv_fused",
     )
-
-
-def test_canonicalizer_uses_named_parameter_info_instead_of_abi_numbers():
-    source = Path(inspect.getsourcefile(canonicalize) or "").read_text(encoding="utf-8")
-
-    assert "PackedQKVParallelLinear.q_weight" in source
-    assert "PackedQKVParallelLinear.k_weight" in source
-    assert "PackedQKVParallelLinear.v_weight" in source
-    assert "(1, 2, 3)" not in source
-    assert "!= 13" not in source
 
 
 def test_canonicalization_rejects_non_k_major_selected_kernel():

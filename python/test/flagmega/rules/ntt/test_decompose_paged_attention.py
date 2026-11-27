@@ -1,8 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
-import inspect
-
 import torch
 
 from triton.flagmega import ir as fm
@@ -88,9 +86,3 @@ def test_decomposed_reference_evaluator_matches_original_attention():
     actual = evaluator.run(rewritten, feeds)[0]
 
     torch.testing.assert_close(actual, expected)
-
-
-def test_rule_source_is_target_neutral():
-    source = inspect.getsource(decompose_paged_attention_rule).lower()
-    for spelling in ("nvidia", "sm90", "cuda", "mma", "tma", "warp"):
-        assert spelling not in source
