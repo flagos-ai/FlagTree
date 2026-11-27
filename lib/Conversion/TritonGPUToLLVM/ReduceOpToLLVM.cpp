@@ -245,23 +245,55 @@ private:
             hasNamedOrWS = true;
         });
       }
-      if (func && !hasNamedOrWS && 1 + numSubgroups <= 16) {
-        auto srcLL = mlir::triton::gpu::toLinearLayout(op.getInputTypes()[0]);
+      if (func && !hasNamedOrWS && 1 + numSubgroups <= 16 &&
+          isa<RankedTensorType>(op.getResult()[0].getType())) {
+        auto srcTy = cast<RankedTensorType>(op.getInputTypes()[0]);
+        auto srcLL = mlir::triton::gpu::toLinearLayout(srcTy);
         auto kWarp = rewriter.getStringAttr("warp");
-        if (srcLL.hasInDim(kWarp)) {
+        // Subgroup barriers require every warp to be representative (no
+        // broadcast warp bits) and upper warp bits to index disjoint slices.
+        if (srcLL.hasInDim(kWarp) &&
+            srcLL.getFreeVariableMasks().lookup(kWarp) == 0) {
           const auto &warpBases = srcLL.getBases().lookup(kWarp);
+          unsigned rank = srcTy.getRank();
+          SmallVector<unsigned> subgroupMask(rank, 0);
+          SmallVector<unsigned> innerMask(rank, 0);
           bool disjoint = (warpBases.size() == llvm::Log2_32(numWarps));
           for (unsigned bit = 0; disjoint && bit < warpBases.size(); ++bit) {
             const auto &basis = warpBases[bit];
             if (bit < k) {
               if (basis[axis] == 0)
                 disjoint = false;
-              for (unsigned d = 0; d < basis.size(); ++d)
+              for (unsigned d = 0; d < rank; ++d)
                 if (d != axis && basis[d] != 0)
                   disjoint = false;
             } else {
               if (basis[axis] != 0)
                 disjoint = false;
+              bool hasNonAxis = false;
+              for (unsigned d = 0; d < rank; ++d) {
+                if (d != axis && basis[d] != 0) {
+                  hasNonAxis = true;
+                  subgroupMask[d] |= static_cast<unsigned>(basis[d]);
+                }
+              }
+              if (!hasNonAxis)
+                disjoint = false;
+            }
+          }
+          if (disjoint) {
+            for (const auto &entry : srcLL.getBases()) {
+              if (entry.first == kWarp)
+                continue;
+              for (const auto &basis : entry.second)
+                for (unsigned d = 0; d < rank; ++d)
+                  innerMask[d] |= static_cast<unsigned>(basis[d]);
+            }
+            for (unsigned d = 0; d < rank; ++d) {
+              if (d != axis && (subgroupMask[d] & innerMask[d]) != 0) {
+                disjoint = false;
+                break;
+              }
             }
           }
           if (disjoint) {

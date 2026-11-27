@@ -413,28 +413,56 @@ struct ConvertTritonGPUToLLVMPPU
         unsigned numWarps = triton::gpu::lookupNumWarps(red);
         if (numWarps <= 1 || !llvm::isPowerOf2_32(numWarps))
           return std::nullopt;
+        if (!isa<RankedTensorType>(red.getResult()[0].getType()))
+          return std::nullopt;
         unsigned axis = red.getAxis();
-        auto srcLL = mlir::triton::gpu::toLinearLayout(red.getInputTypes()[0]);
+        auto srcTy = cast<RankedTensorType>(red.getInputTypes()[0]);
+        auto srcLL = mlir::triton::gpu::toLinearLayout(srcTy);
         auto kWarp = StringAttr::get(context, "warp");
-        if (!srcLL.hasInDim(kWarp))
+        if (!srcLL.hasInDim(kWarp) ||
+            srcLL.getFreeVariableMasks().lookup(kWarp) != 0)
           return std::nullopt;
         const auto &warpBases = srcLL.getBases().lookup(kWarp);
         if (warpBases.size() != llvm::Log2_32(numWarps))
           return std::nullopt;
+        unsigned rank = srcTy.getRank();
         unsigned k = 0;
         while (k < warpBases.size()) {
           const auto &basis = warpBases[k];
           if (basis[axis] == 0)
             break;
-          for (unsigned d = 0; d < basis.size(); ++d)
+          for (unsigned d = 0; d < rank; ++d)
             if (d != axis && basis[d] != 0)
               return std::nullopt;
           ++k;
         }
         if (k == 0 || k >= warpBases.size())
           return std::nullopt;
+        SmallVector<unsigned> subgroupMask(rank, 0);
+        SmallVector<unsigned> innerMask(rank, 0);
         for (unsigned bit = k; bit < warpBases.size(); ++bit) {
-          if (warpBases[bit][axis] != 0)
+          const auto &basis = warpBases[bit];
+          if (basis[axis] != 0)
+            return std::nullopt;
+          bool hasNonAxis = false;
+          for (unsigned d = 0; d < rank; ++d) {
+            if (d != axis && basis[d] != 0) {
+              hasNonAxis = true;
+              subgroupMask[d] |= static_cast<unsigned>(basis[d]);
+            }
+          }
+          if (!hasNonAxis)
+            return std::nullopt;
+        }
+        for (const auto &entry : srcLL.getBases()) {
+          if (entry.first == kWarp)
+            continue;
+          for (const auto &basis : entry.second)
+            for (unsigned d = 0; d < rank; ++d)
+              innerMask[d] |= static_cast<unsigned>(basis[d]);
+        }
+        for (unsigned d = 0; d < rank; ++d) {
+          if (d != axis && (subgroupMask[d] & innerMask[d]) != 0)
             return std::nullopt;
         }
         unsigned sizeInterWarps = 1u << k;
@@ -488,6 +516,27 @@ struct ConvertTritonGPUToLLVMPPU
           auto sgPrev = getDisjointSubgroup(prevRed);
           auto sgNext = getDisjointSubgroup(nextRed);
           if (!sgPrev || !sgNext || *sgPrev != *sgNext)
+            return;
+          // Require identical scratch slice layout and uniform operand width so
+          // each subgroup reuses only its own bytes across consecutive reduces.
+          if (prevRed.getAxis() != nextRed.getAxis() ||
+              prevRed.getNumOperands() != nextRed.getNumOperands() ||
+              prevRed.getInputTypes()[0] != nextRed.getInputTypes()[0])
+            return;
+          unsigned baseBitWidth =
+              cast<RankedTensorType>(prevRed.getInputTypes()[0])
+                  .getElementType()
+                  .getIntOrFloatBitWidth();
+          auto hasUniformBitWidth = [&](triton::ReduceOp red) {
+            for (Type ty : red.getInputTypes()) {
+              Type elemTy = cast<RankedTensorType>(ty).getElementType();
+              if (!elemTy.isIntOrFloat() ||
+                  elemTy.getIntOrFloatBitWidth() != baseBitWidth)
+                return false;
+            }
+            return true;
+          };
+          if (!hasUniformBitWidth(prevRed) || !hasUniformBitWidth(nextRed))
             return;
           // Ensure no cross-subgroup SMEM write before prevRed relies on barOp,
           // and no SMEM buffer read before prevRed is overwritten after nextRed
