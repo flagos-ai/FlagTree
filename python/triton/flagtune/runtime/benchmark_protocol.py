@@ -116,7 +116,10 @@ _REPLAY_IMPLEMENTATIONS = {
     "triton.backends.metax.driver": "triton_metax_graph_replay_v1",
     "triton.backends.ppu.driver": "triton_ppu_graph_replay_v1",
     "triton.backends.mthreads.driver": "triton_musa_torchada_graph_replay_v3",
-    "triton.backends.hcu.driver": "triton_hcu_graph_replay_v1",
+    # Caller-stream replay has different selection/timing semantics from v2,
+    # which allocated a new side stream for every helper call. Namespace both
+    # persistent best-config and per-config benchmark caches through this key.
+    "triton.backends.hcu.driver": "triton_hcu_graph_calibrated_currentstream_adaptivewarmup_v5",
 }
 _OFFICIAL_TRITON_REPLAY_COUNT = 10
 
@@ -165,9 +168,9 @@ def resolve_benchmarker(
 
     ``measurement_ms`` is a total timing budget.  Replay implementations
     receive ``measurement_ms / n_retries`` as their per-graph ``rep`` value so
-    the existing graph helper can retain its internal algorithm while the
-    caller controls total timed work. All registered replay backends use
-    ``triton.testing.do_bench_cudagraph``. MUSA imports torchada on the first
+    the graph helpers can retain their internal algorithms while the caller
+    controls total timed work. HCU uses bounded caller-stream calibration.
+    MUSA imports torchada on the first
     benchmark call to alias CUDA-style PyTorch APIs; resolving the benchmarker
     does not require torchada. Capture size and warmup follow the shared helper.
     """
@@ -177,9 +180,10 @@ def resolve_benchmarker(
         implementation = _replay_implementation(active)
         if implementation is not None:
             is_musa = type(active).__module__ == "triton.backends.mthreads.driver"
+            is_hcu = type(active).__module__ == "triton.backends.hcu.driver"
             from triton.testing import do_bench_cudagraph
 
-            configurable_retries = _supports_configurable_retries(do_bench_cudagraph)
+            configurable_retries = is_hcu or _supports_configurable_retries(do_bench_cudagraph)
             effective_retries = (n_retries if configurable_retries else _OFFICIAL_TRITON_REPLAY_COUNT)
             if not configurable_retries and n_retries != effective_retries:
                 warnings.warn(
@@ -192,6 +196,17 @@ def resolve_benchmarker(
             per_replay_ms = float(measurement_ms) / effective_retries
 
             def replay_benchmark(kernel_call, quantiles):
+                if is_hcu:
+                    from triton.flagtune.runtime.graph_benchmark import do_bench_hcu_graph
+
+                    return do_bench_hcu_graph(
+                        kernel_call,
+                        rep=per_replay_ms,
+                        quantiles=quantiles,
+                        n_retries=n_retries,
+                        warmup_ms=warmup_ms,
+                        device_interface=active.get_device_interface(),
+                    )
                 if is_musa:
                     import triton
 
