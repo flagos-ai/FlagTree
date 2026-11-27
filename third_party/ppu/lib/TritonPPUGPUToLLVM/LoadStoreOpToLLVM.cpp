@@ -29,6 +29,7 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
 
+#include "TritonPPUGPUToLLVM/AIUUtility.h"
 #include "TritonPPUGPUToLLVM/TIXAsmFormat.h"
 
 #include "Dialect/TritonPPUGPU/IR/Dialect.h"
@@ -625,10 +626,116 @@ std::string getAIUElemTypeSuffix(int elementSizeInBytes) {
   }
 }
 
+// Loads one element of global memory, or zero where `pred` is false, as the
+// tt.load lowering reads a masked element. A null `pred` always loads.
+static Value emitMaskedGlobalLoad(Location loc, Value ptr, Value pred,
+                                  Type elemTy,
+                                  ConversionPatternRewriter &rewriter) {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  unsigned width = elemTy.getIntOrFloatBitWidth();
+  Type wordTy = IntegerType::get(rewriter.getContext(), width);
+  TIXBuilder tixBuilder;
+  // A predicated load leaves its register untouched where the predicate is
+  // false, so it is zeroed first; an unpredicated one always writes it.
+  auto *dstOpr = tixBuilder.newOperand(width == 32 ? "=r" : "=c",
+                                       /*init=*/pred != Value());
+  auto *addrOpr = tixBuilder.newAddrOperand(ptr, "l");
+  auto &ld = tixBuilder.create("ppu.ld")->global().b(width);
+  ld(dstOpr, addrOpr).maybePredicate(pred, "b");
+  Value loaded = tixBuilder.launch(rewriter, loc, wordTy);
+  return elemTy == wordTy ? loaded : Value(b.bitcast(loaded, elemTy));
+}
+
 struct AsyncAIUCopyGlobalToLocalOpConversion
     : public ConvertOpToLLVMPattern<
           triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp> {
-  using ConvertOpToLLVMPattern::ConvertOpToLLVMPattern;
+  AsyncAIUCopyGlobalToLocalOpConversion(LLVMTypeConverter &converter,
+                                        const ppu::TargetInfo &targetInfo,
+                                        PatternBenefit benefit)
+      : ConvertOpToLLVMPattern(converter, benefit), targetInfo(targetInfo) {}
+
+  // Branches in front of `op` on `threadCopy`, which holds for a tile of a
+  // layout the AIU descriptor cannot express. Such a tile is copied by the
+  // threads, as the tt.load the copy was promoted from reads it: in a loop,
+  // each thread loads its share of the elements from global memory, zero
+  // where a checked dimension is out of bounds, and stores each where the AIU
+  // copy puts it. Leaves the insertion point in the block any other tile
+  // takes, for the AIU copies, and returns the block both paths continue in,
+  // which starts with `op`.
+  Block *emitThreadCopy(triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp op,
+                        OpAdaptor adaptor, Value threadCopy, Type llvmElemTy,
+                        LLVM::SharedMemoryObject dstMemObj,
+                        ConversionPatternRewriter &rewriter) const {
+    Location loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    ttg::MemDescType memTy = op.getResult().getType();
+    ArrayRef<int64_t> tileShape = memTy.getShape();
+    assert(tileShape.size() == 2 && "the AIU copy reads a 2-D tile");
+    // order[0] names the dimension the tile is contiguous in, which the
+    // threads run through innermost, so they read adjacent addresses.
+    auto order =
+        cast<ttg::PPUAIUSharedEncodingAttr>(memTy.getEncoding()).getOrder();
+    unsigned innerDim = order[0];
+    unsigned outerDim = order[1];
+    int numElems = product(tileShape);
+    int numThreads =
+        ttg::lookupNumWarps(op) * ttg::TritonGPUDialect::getThreadsPerWarp(
+                                      op->getParentOfType<ModuleOp>());
+    Value threadId = getThreadId(rewriter, loc);
+
+    Block *prevBlock = op->getBlock();
+    Block *aiuBlock = rewriter.splitBlock(prevBlock, op->getIterator());
+    Block *nextBlock = rewriter.splitBlock(aiuBlock, op->getIterator());
+    Block *headerBlock = rewriter.createBlock(aiuBlock, {i32_ty}, {loc});
+    Block *bodyBlock = rewriter.createBlock(aiuBlock);
+    rewriter.setInsertionPointToEnd(prevBlock);
+    LLVM::CondBrOp::create(rewriter, loc, threadCopy, headerBlock,
+                           ValueRange{threadId}, aiuBlock, ValueRange{});
+
+    // The thread copies the elements numThreads apart, from its own id on.
+    Value elem = headerBlock->getArgument(0);
+    rewriter.setInsertionPointToEnd(headerBlock);
+    LLVM::CondBrOp::create(rewriter, loc, b.icmp_ult(elem, b.i32_val(numElems)),
+                           bodyBlock, nextBlock);
+
+    rewriter.setInsertionPointToEnd(bodyBlock);
+    Value innerLen = b.i32_val(tileShape[innerDim]);
+    Value index[2];
+    index[innerDim] = b.urem(elem, innerLen);
+    index[outerDim] = b.udiv(elem, innerLen);
+    Value offset = b.i64_val(0);
+    // Only the dimensions boundary_check names are predicated, as a plain load
+    // of the same block pointer is: leaving one out is the caller's promise
+    // that the tile is inside the tensor there. The AIU path zero fills every
+    // out-of-tensor row because the descriptor carries the extents; that is a
+    // property of the engine, not a bound this copy owes the caller, so the
+    // two paths agree on the checked bounds rather than byte for byte.
+    Value inBounds;
+    for (unsigned dim = 0; dim < 2; ++dim) {
+      Value pos = b.add(b.sext(i64_ty, adaptor.getCoord()[dim]),
+                        b.zext(i64_ty, index[dim]));
+      offset = b.add(offset, b.mul(pos, adaptor.getStrides()[dim]));
+      if (!llvm::is_contained(op.getBoundaryCheck(), dim))
+        continue;
+      Value inDim = b.and_(b.icmp_sge(pos, b.i64_val(0)),
+                           b.icmp_slt(pos, adaptor.getShape()[dim]));
+      inBounds = inBounds ? Value(b.and_(inBounds, inDim)) : inDim;
+    }
+    Value srcPtr =
+        b.gep(adaptor.getSrc().getType(), llvmElemTy, adaptor.getSrc(), offset);
+    Value val =
+        emitMaskedGlobalLoad(loc, srcPtr, inBounds, llvmElemTy, rewriter);
+    Value dstPtr = LLVM::PPU::getAIUSwizzledSharedPtr(
+        loc, memTy, llvmElemTy, dstMemObj, rewriter, index[innerDim],
+        index[outerDim]);
+    targetInfo.storeShared(rewriter, loc, dstPtr, val, b.true_val());
+    LLVM::BrOp::create(rewriter, loc,
+                       ValueRange{b.add(elem, b.i32_val(numThreads))},
+                       headerBlock);
+
+    rewriter.setInsertionPointToStart(aiuBlock);
+    return nextBlock;
+  }
 
   LogicalResult
   PPUAIUV1Conversion(triton::ppu_gpu::AsyncAIUCopyGlobalToLocalOp op,
@@ -689,6 +796,7 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     Value tensorShapeZ = op.getShape()[1];
     Value xCoord = op.getCoord()[0];
     Value zCoord = op.getCoord()[1];
+    unsigned rowDim = 0;
     if (order[rank - 1] != 0) {
       tileC = tileShape[tRank - 2];
       tileW = tileShape[tRank - 1];
@@ -696,7 +804,9 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
       tensorShapeZ = op.getShape()[0];
       xCoord = op.getCoord()[1];
       zCoord = op.getCoord()[0];
+      rowDim = 1;
     }
+    unsigned colDim = 1 - rowDim;
 
     Value yOffset = b.i32_val(0);
     Value cubeH = b.i32_val(1);
@@ -706,54 +816,176 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     unsigned channelElemsPerCTA = cubeCElems * warpCopyC;
     unsigned CopyElemsPerCTA = cubeElems * warpCopyC * warpCopyW;
 
-    unsigned numCopies = tileC / channelElemsPerCTA;
-    //@$0
-    std::string dtype = getAIUElemTypeSuffix(elementSizeInBytes);
-    std::string aiuInst =
-        "ppu.cp.async.aiu.bulk.tensor.shared.global.padz.swzl.zfill." +
-        std::to_string(rank) + "d" + dtype +
-        " [$0], [$1], {$2, $3, $4, $5, $6, $7}, {$8, $9, $10, $11};";
-    if (isNeedPred) {
-      aiuInst =
-          "@$0 ppu.cp.async.aiu.bulk.tensor.shared.global.padz.swzl.zfill." +
-          std::to_string(rank) + "d" + dtype +
-          " [$1], [$2], {$3, $4, $5, $6, $7, $8}, {$9, $10, $11, $12};";
+    // Rows that are not the row length apart (see AIUUtility.h) are read as
+    // the 2d tensor [rows, rowStride] when no column past the row length is
+    // zero filled, and as the 3d tensor [rows, rowStride / rowLength,
+    // rowLength] with the cube's rows on y otherwise. The y offset and row
+    // count of the 3d form are bounded by kAIUMaxDim and cannot span a large
+    // tensor, so its base pointer moves to the warp's first row if that is not
+    // negative. Only a negative row offset stays in the descriptor, and a cube
+    // past the last row gets y offset 1 into a 1-row tensor; the AIU zero
+    // fills both.
+    Value rowStride = adaptor.getStrides()[rowDim];
+    LLVM::PPU::AIURowLayout rowLayout =
+        LLVM::PPU::getAIURowLayout(op.getStrides(), op.getShape(), rowDim);
+    bool zeroFillColumns = llvm::is_contained(op.getBoundaryCheck(), colDim);
+    bool emit2d =
+        rowLayout != LLVM::PPU::AIURowLayout::Strided || !zeroFillColumns;
+    bool emit3d =
+        rowLayout != LLVM::PPU::AIURowLayout::Dense && zeroFillColumns;
+    Value tensorShapeZ2d = tensorShapeZ;
+    if (rowLayout != LLVM::PPU::AIURowLayout::Dense)
+      tensorShapeZ2d = b.trunc(i32_ty, rowStride);
+    Value tileBegin = b.sext(i64_ty, zCoord);
+    Value tileEnd = b.add(tileBegin, b.i64_val(tileC));
+    // A run-time layout the descriptor cannot express is copied by the
+    // threads instead (emitThreadCopy); the compile-time gate keeps a plain
+    // load for such a constant stride (isAIUStrideExpressible).
+    Value threadCopy;
+    if (rowLayout == LLVM::PPU::AIURowLayout::Runtime) {
+      // Rows closer together than the row length overlap. The 2d copy takes
+      // the stride as the row length, so a tile column past the stride would
+      // read zeros instead of the next row.
+      threadCopy = b.and_(b.icmp_slt(rowStride, adaptor.getShape()[colDim]),
+                          b.icmp_sgt(tileEnd, rowStride));
     }
+    Value src3d, tensorShapeY3d, tensorShapeX3d, tensorShapeZ3d, yOffset3d;
+    Value use3d;
+    if (emit3d) {
+      Value rowOffset = b.add(xCoord, b.mul(warpIdxM, b.i32_val(cubeWElems)));
+      Value rowBase = b.smax(rowOffset, b.i32_val(0));
+      Value rowsLeft =
+          b.sub(adaptor.getShape()[rowDim], b.sext(i64_ty, rowBase));
+      tensorShapeY3d =
+          b.trunc(i32_ty, b.smin(b.smax(rowsLeft, b.i64_val(1)),
+                                 b.i64_val(LLVM::PPU::kAIUMaxDim)));
+      yOffset3d = b.select(b.icmp_slt(rowsLeft, b.i64_val(1)), b.i32_val(1),
+                           b.smax(b.smin(rowOffset, b.i32_val(0)),
+                                  b.i32_val(-LLVM::PPU::kAIUMaxDim)));
+      Value rowBaseElems = b.mul(b.sext(i64_ty, rowBase), rowStride);
+      src3d = b.gep(adaptor.getSrc().getType(), llvmElemTy, adaptor.getSrc(),
+                    rowBaseElems);
+      if (rowLayout == LLVM::PPU::AIURowLayout::Strided) {
+        int64_t stride = *LLVM::PPU::getAIUConstantInt(op.getStrides()[rowDim]);
+        int64_t length = *LLVM::PPU::getAIUConstantInt(op.getShape()[colDim]);
+        tensorShapeX3d = b.i32_val(stride / length);
+        tensorShapeZ3d = b.i32_val(length);
+      } else {
+        // Decided at run time. A stride that is not a multiple of the row
+        // length has no exact form: the 2d copy reads such rows correctly but
+        // does not zero fill the columns between the row length and the
+        // stride. Both operands of the 32-bit division are at most 2^30 when
+        // it is used.
+        Value rowLength = adaptor.getShape()[colDim];
+        Value maxDim = b.i64_val(LLVM::PPU::kAIUMaxDim);
+        Value fits =
+            b.and_(b.and_(b.icmp_sgt(rowLength, b.i64_val(0)),
+                          b.icmp_sle(rowLength, maxDim)),
+                   b.and_(b.icmp_sgt(rowStride, b.i64_val(0)),
+                          b.icmp_sle(rowStride, b.mul(rowLength, maxDim))));
+        // Clamp after the truncation: a row length whose low 32 bits are
+        // zero would otherwise make the division below a division by zero,
+        // which `use3d` predicates the copy off for but does not remove.
+        Value length32 = b.umax(b.trunc(i32_ty, rowLength), b.i32_val(1));
+        Value stride32 = b.trunc(i32_ty, rowStride);
+        use3d = b.and_(b.and_(fits, b.icmp_ne(rowStride, rowLength)),
+                       b.icmp_eq(b.urem(stride32, length32), b.i32_val(0)));
+        tensorShapeX3d = b.udiv(stride32, length32);
+        tensorShapeZ3d = length32;
+        // Without an exact form, the tile's columns between the row length
+        // and the stride would read memory instead of zeros.
+        Value noExactForm = b.and_(b.and_(b.xor_(use3d, b.true_val()),
+                                          b.icmp_ne(rowStride, rowLength)),
+                                   b.and_(b.icmp_slt(tileBegin, rowStride),
+                                          b.icmp_sgt(tileEnd, rowLength)));
+        threadCopy = b.or_(threadCopy, noExactForm);
+      }
+    }
+    // The threads copy a tile out of the descriptor's reach, and the AIU copies
+    // below are issued for any other tile.
+    Block *afterCopy = nullptr;
+    if (rowLayout == LLVM::PPU::AIURowLayout::Runtime) {
+      // The 2d form holds the stride as its row length, which is bounded by
+      // kAIUMaxDim like the fields of the 3d form. A larger run-time stride is
+      // out of its reach unless the 3d form is taken, which holds the stride
+      // as a multiple of the row length, or the rows are dense, whose row
+      // length the 2d form holds either way.
+      Value rowLength = adaptor.getShape()[colDim];
+      Value tooLong =
+          b.and_(b.icmp_ne(rowStride, rowLength),
+                 b.icmp_sgt(rowStride, b.i64_val(LLVM::PPU::kAIUMaxDim)));
+      if (use3d)
+        tooLong = b.and_(tooLong, b.xor_(use3d, b.true_val()));
+      threadCopy = b.or_(threadCopy, tooLong);
+      afterCopy = emitThreadCopy(op, adaptor, threadCopy, llvmElemTy, dstMemObj,
+                                 rewriter);
+    }
+
+    unsigned numCopies = tileC / channelElemsPerCTA;
+    std::string dtype = getAIUElemTypeSuffix(elementSizeInBytes);
+    // Operands are {Y, X, Z, y, x, z} of the source tensor and {h, w, z, n} of
+    // the cube; a null `copyPred` issues the copy in every warp.
+    auto emitCopy = [&](StringRef form, Value copyPred, Value src,
+                        ArrayRef<Value> tensor, ArrayRef<Value> cube,
+                        Value shMemPtr) {
+      std::string aiuInst =
+          "ppu.cp.async.aiu.bulk.tensor.shared.global.padz.swzl.zfill." +
+          form.str() + dtype;
+      ::mlir::triton::ppu::TIXBuilder tixBuilderAIU;
+      SmallVector<TIXBuilder::Operand *> operands;
+      if (copyPred) {
+        aiuInst = "@$0 " + aiuInst +
+                  " [$1], [$2], {$3, $4, $5, $6, $7, $8}, {$9, $10, $11, $12};";
+        operands.push_back(tixBuilderAIU.newOperand(copyPred, "b"));
+      } else {
+        aiuInst += " [$0], [$1], {$2, $3, $4, $5, $6, $7}, {$8, $9, $10, $11};";
+      }
+      operands.push_back(tixBuilderAIU.newOperand(shMemPtr, "r"));
+      operands.push_back(tixBuilderAIU.newOperand(src, "l"));
+      for (Value v : llvm::concat<const Value>(tensor, cube))
+        operands.push_back(tixBuilderAIU.newOperand(v, "r"));
+
+      auto &aiu = *tixBuilderAIU.create<>(aiuInst);
+      aiu(operands, /*onlyAttachMLIRArgs=*/true);
+      tixBuilderAIU.launch(rewriter, loc, voidTy);
+    };
     for (int copyIdx = 0; copyIdx < numCopies; copyIdx++) {
       Value xOffset = b.add(xCoord, b.mul(warpIdxM, b.i32_val(cubeWElems)));
       Value copyZOff = b.mul(b.i32_val(copyIdx), b.i32_val(channelElemsPerCTA));
       Value warpZOff = b.mul(warpIdxN, b.i32_val(cubeCElems));
       Value zOffset = b.add(zCoord, b.add(copyZOff, warpZOff));
 
-      ::mlir::triton::ppu::TIXBuilder tixBuilderAIU;
       Type elemPtrTy = ptr_ty(rewriter.getContext(), 3);
-      Value copyIdxVal = b.add(warpID, b.i32_val(copyIdx));
       Value shMemOffsetCopies = b.i32_val(CopyElemsPerCTA * copyIdx);
       Value shMemOffsetWarps = b.mul(warpID, b.i32_val(cubeElems));
       Value shMemOffset = b.add(shMemOffsetCopies, shMemOffsetWarps);
       Value shMemPtr =
           b.gep(elemPtrTy, llvmElemTy, dstMemObj.getBase(), shMemOffset);
-      SmallVector<TIXBuilder::Operand *> operands;
-      if (isNeedPred) {
-        operands.push_back(tixBuilderAIU.newOperand(pred, "b"));
+      // With both forms, a run-time stride picks one of them.
+      Value pred2d = isNeedPred ? pred : Value();
+      Value pred3d = pred2d;
+      if (emit2d && emit3d) {
+        pred2d = b.xor_(use3d, b.true_val());
+        pred3d = use3d;
+        if (isNeedPred) {
+          pred2d = b.and_(pred, pred2d);
+          pred3d = b.and_(pred, pred3d);
+        }
       }
-      operands.push_back(tixBuilderAIU.newOperand(shMemPtr, "r"));
-      operands.push_back(tixBuilderAIU.newOperand(adaptor.getSrc(), "l"));
-
-      operands.push_back(tixBuilderAIU.newOperand(tensorShapeY, "r"));
-      operands.push_back(tixBuilderAIU.newOperand(tensorShapeX, "r"));
-      operands.push_back(tixBuilderAIU.newOperand(tensorShapeZ, "r"));
-      operands.push_back(tixBuilderAIU.newOperand(yOffset, "r"));
-      operands.push_back(tixBuilderAIU.newOperand(xOffset, "r"));
-      operands.push_back(tixBuilderAIU.newOperand(zOffset, "r"));
-      operands.push_back(tixBuilderAIU.newOperand(cubeH, "r"));
-      operands.push_back(tixBuilderAIU.newOperand(cubeW, "r"));
-      operands.push_back(tixBuilderAIU.newOperand(cubeZ, "r"));
-      operands.push_back(tixBuilderAIU.newOperand(cubeN, "r"));
-
-      auto &aiu = *tixBuilderAIU.create<>(aiuInst);
-      aiu(operands, /*onlyAttachMLIRArgs=*/true);
-      tixBuilderAIU.launch(rewriter, loc, voidTy);
+      if (emit2d)
+        emitCopy("2d", pred2d, adaptor.getSrc(),
+                 {tensorShapeY, tensorShapeX, tensorShapeZ2d, yOffset, xOffset,
+                  zOffset},
+                 {cubeH, cubeW, cubeZ, cubeN}, shMemPtr);
+      if (emit3d)
+        emitCopy("3d", pred3d, src3d,
+                 {tensorShapeY3d, tensorShapeX3d, tensorShapeZ3d, yOffset3d,
+                  b.i32_val(0), zOffset},
+                 {cubeW, b.i32_val(1), cubeZ, cubeN}, shMemPtr);
+    }
+    if (afterCopy) {
+      LLVM::BrOp::create(rewriter, loc, afterCopy);
+      rewriter.setInsertionPointToStart(afterCopy);
     }
 
     // Drop the result token.
@@ -825,6 +1057,7 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     Value coordW = op.getCoord()[0];
     Value coordC = op.getCoord()[1];
     Value startN = b.i32_val(0);
+    unsigned rowDim = 0;
     if (order[rank - 1] != 0) {
       tileC = tileShape[tRank - 2];
       tileW = tileShape[tRank - 1];
@@ -832,7 +1065,18 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
       dimC = op.getShape()[0];
       coordW = op.getCoord()[1];
       coordC = op.getCoord()[0];
+      rowDim = 1;
     }
+    // The PPU0015 descriptor takes the row stride directly, so neither the
+    // 2d/3d choice the PPU0010 lowering makes nor the thread copy that covers
+    // what those forms cannot express applies here. The compile-time gate still
+    // demotes a constant stride those forms reject, so only a run-time stride
+    // reaches this path; the layouts PPU0010 calls inexpressible (overlapping
+    // rows, a stride past the field limit) have not been run on PPU0015.
+    Value rowStride = dimC;
+    if (LLVM::PPU::getAIURowLayout(op.getStrides(), op.getShape(), rowDim) !=
+        LLVM::PPU::AIURowLayout::Dense)
+      rowStride = adaptor.getStrides()[rowDim];
 
     Value cubeW = b.i32_val(cubeWElems);
     Value cubeC = b.i32_val(cubeCElems);
@@ -875,7 +1119,7 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
       Value pred = b.and_(predC, predW);
 
       Value tensorStrideW =
-          b.mul(b.trunc(i32Ty, dimC), b.i32_val(elementSizeInBytes));
+          b.mul(b.trunc(i32Ty, rowStride), b.i32_val(elementSizeInBytes));
       Value tensorStrideN = b.mul(b.trunc(i32Ty, dimW), tensorStrideW);
 #if 1
       Value startW = b.add(coordW, b.mul(warpIdxM, b.i32_val(cubeWElems)));
@@ -950,6 +1194,9 @@ struct AsyncAIUCopyGlobalToLocalOpConversion
     }
     return failure();
   }
+
+private:
+  const ppu::TargetInfo &targetInfo;
 };
 
 void createBarrier(ConversionPatternRewriter &rewriter, Location loc,
@@ -1737,7 +1984,8 @@ void mlir::triton::ppu::populateLoadStoreOpToLLVMPatterns(
                                       axisInfoAnalysis, benefit);
   patterns.add<LoadOpConversion, StoreOpConversion>(
       typeConverter, targetInfo, computeCapability, axisInfoAnalysis, benefit);
-  patterns.add<AsyncAIUCopyGlobalToLocalOpConversion>(typeConverter, benefit);
+  patterns.add<AsyncAIUCopyGlobalToLocalOpConversion>(typeConverter, targetInfo,
+                                                      benefit);
   patterns.add<AsyncCommitGroupOpConversion, AsyncWaitOpConversion>(
       typeConverter, benefit);
 }

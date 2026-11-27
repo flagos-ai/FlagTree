@@ -46,6 +46,8 @@ createConvertTritonGPUToLLVMPPUPass(int32_t computeCapability);
 std::unique_ptr<OperationPass<ModuleOp>>
 createAllocateSharedMemoryPPUPass(int32_t computeCapability);
 std::unique_ptr<OperationPass<ModuleOp>> createConvertLibdeviceFuncToPPUPass();
+std::unique_ptr<OperationPass<ModuleOp>>
+createConvertWarpSpecializeToLLVMPPUPass(int32_t computeCapability);
 
 #define GEN_PASS_REGISTRATION
 #include "ppu/include/TritonPPUGPUToLLVM/Passes.h.inc"

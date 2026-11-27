@@ -1130,12 +1130,17 @@ def TT_AIULoadOp : TT_Op<"aiu_load", [
     let summary = "AIU Load";
     let description = [{
       This operation will be lowered to PPU AIU load operation on targets supporting it.
+      With a scalar base pointer, `indices`, `shape` and `strides` describe the
+      tile like the operands of `tt.make_tensor_ptr`. `boundaryCheck` lists the
+      dimensions that are zero filled out of bounds, as for `tt.load`.
     }];
     let arguments = (
       ins
       AnyTypeOf<[TT_PtrLike, TT_TensorPtr]>:$src_ptr,
       Variadic<I32>:$indices,
       Variadic<I64>:$shape,
+      Variadic<I64>:$strides,
+      DenseI32ArrayAttr:$boundaryCheck,
       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{1, 0}">:$order,
       DefaultValuedAttr<TT_CacheModifierAttr, "::mlir::triton::CacheModifier::NONE">:$cache,
       DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict
@@ -1143,14 +1148,14 @@ def TT_AIULoadOp : TT_Op<"aiu_load", [
 
     let builders = [
       // A tensor pointer with boundary check and padding
-      OpBuilder<(ins "Type":$type, "Value":$src_ptr, "triton::CacheModifier":$cache,
-                 "triton::EvictionPolicy":$evict)>,
+      OpBuilder<(ins "Type":$type, "Value":$src_ptr, "ArrayRef<int32_t>":$boundaryCheck,
+                 "triton::CacheModifier":$cache, "triton::EvictionPolicy":$evict)>,
     ];
 
     let results = (outs TT_Tensor:$result);
 
     let assemblyFormat = [{
-      $src_ptr `[` $indices `]` `[` $shape `]` `[` $order `]`
+      $src_ptr `[` $indices `]` `[` $shape `]` `[` $strides `]` `[` $order `]`
       oilist(
         `cacheModifier` `=` $cache |
         `evictionPolicy` `=` $evict

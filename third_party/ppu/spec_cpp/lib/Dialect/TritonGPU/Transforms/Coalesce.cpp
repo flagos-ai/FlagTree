@@ -127,7 +127,8 @@ struct CoalescePass : public impl::TritonGPUCoalesceBase<CoalescePass> {
 
       auto newOp = builder.create<triton::AIULoadOp>(
           aiuLoad->getLoc(), newTensorTy, aiuLoad.getSrcPtr(),
-          aiuLoad.getIndices(), aiuLoad.getShape(), order, aiuLoad.getCache(),
+          aiuLoad.getIndices(), aiuLoad.getShape(), aiuLoad.getStrides(),
+          aiuLoad.getBoundaryCheck(), order, aiuLoad.getCache(),
           aiuLoad.getEvict());
 
       auto newResult = builder.create<triton::gpu::ConvertLayoutOp>(

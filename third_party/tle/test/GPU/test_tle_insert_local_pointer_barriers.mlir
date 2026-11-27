@@ -49,7 +49,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
       tt.store %ptr1, %ones : tensor<32x!tt.ptr<i32, 3>, #blocked>
     } else {
       // CHECK: } else {
-      // CHECK-NEXT: gpu.barrier
+      // CHECK-NEXT: gpu.barrier {tle.shared_only}
       // CHECK-NEXT: %[[LOAD:.*]] = tt.load %{{.*}} : tensor<32x!tt.ptr<i32, 3>, #blocked>
       %load = tt.load %ptr0 : tensor<32x!tt.ptr<i32, 3>, #blocked>
       tt.store %ptr1, %load : tensor<32x!tt.ptr<i32, 3>, #blocked>
@@ -75,7 +75,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
     %ptr = "tle.local_pointers"(%smem, %c0) {tle.barrier_group = 5 : i64} : (!ttg.memdesc<1xi32, #shared, #smem, mutable>, i32) -> !tt.ptr<i32, 3>
     %ptrs = tt.splat %ptr : !tt.ptr<i32, 3> -> tensor<32x!tt.ptr<i32, 3>, #blocked>
     // CHECK: tt.store %{{.*}}, %{{.*}}, %{{.*}} : tensor<32x!tt.ptr<i32, 3>, #blocked>
-    // CHECK-NEXT: gpu.barrier
+    // CHECK-NEXT: gpu.barrier {tle.shared_only}
     // CHECK-NEXT: %[[L:.*]] = tt.load %{{.*}} : !tt.ptr<i32, 3>
     tt.store %ptrs, %vals, %mask : tensor<32x!tt.ptr<i32, 3>, #blocked>
     %l = tt.load %ptr : !tt.ptr<i32, 3>
@@ -100,7 +100,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
     %ptr = "tle.local_pointers"(%smem, %c0) {tle.barrier_group = 6 : i64} : (!ttg.memdesc<4xi32, #shared, #smem, mutable>, i32) -> !tt.ptr<i32, 3>
     %ptr_next = tt.addptr %ptr, %c1 : !tt.ptr<i32, 3>, i32
     // CHECK: tt.store %{{.*}}, %{{.*}} : !tt.ptr<i32, 3>
-    // CHECK-NEXT: gpu.barrier
+    // CHECK-NEXT: gpu.barrier {tle.shared_only}
     // CHECK-NEXT: %[[L:.*]] = tt.load %{{.*}} : !tt.ptr<i32, 3>
     tt.store %ptr_next, %c7 : !tt.ptr<i32, 3>
     %l = tt.load %ptr : !tt.ptr<i32, 3>
@@ -128,7 +128,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
     tt.store %ptr1, %c1 : !tt.ptr<i32, 3>
     // CHECK: tt.store %{{.*}}, %{{.*}} : !tt.ptr<i32, 3>
     // CHECK: tt.store %{{.*}}, %{{.*}} : !tt.ptr<i32, 3>
-    // CHECK-NEXT: gpu.barrier
+    // CHECK-NEXT: gpu.barrier {tle.shared_only}
     // CHECK-NEXT: %[[L0:.*]] = tt.load %{{.*}} : !tt.ptr<i32, 3>
     // CHECK-NEXT: %[[L1:.*]] = tt.load %{{.*}} : !tt.ptr<i32, 3>
     // CHECK-NOT: gpu.barrier
@@ -158,7 +158,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
     // CHECK: scf.if %{{.*}} {
     // CHECK: tt.store %{{.*}}, %{{.*}} : !tt.ptr<i32, 3>
     // CHECK: }
-    // CHECK-NEXT: gpu.barrier
+    // CHECK-NEXT: gpu.barrier {tle.shared_only}
     // CHECK-NEXT: %[[L:.*]] = tt.load %{{.*}} : !tt.ptr<i32, 3>
     %l = tt.load %ptr : !tt.ptr<i32, 3>
     %sum = arith.addi %l, %v0 : i32
@@ -196,7 +196,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 1 : i32, ttg.targ
     // CHECK: scf.if %{{.*}} {
     // CHECK: tt.store %{{.*}}, %{{.*}} : tensor<32x!tt.ptr<i32, 3>, #blocked>
     // CHECK: }
-    // CHECK-NEXT: gpu.barrier
+    // CHECK-NEXT: gpu.barrier {tle.shared_only}
     // CHECK-NEXT: %[[LOAD:.*]] = tt.load %{{.*}} : tensor<32x!tt.ptr<i32, 3>, #blocked>
     %load = tt.load %ptr : tensor<32x!tt.ptr<i32, 3>, #blocked>
     tt.store %ptr, %load : tensor<32x!tt.ptr<i32, 3>, #blocked>

@@ -405,6 +405,7 @@ def TritonGPURemoveLayoutConversions : Pass<"tritongpu-remove-layout-conversions
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect"];
+
 #ifdef __FLAGTREE_RLC_ENHANCE__
   let options = [
     Option<"enableRlcEnhance", "enable-rlc-enhance",
@@ -463,6 +464,15 @@ def TritonGPUReorderInstructions: Pass<"tritongpu-reorder-instructions", "mlir::
 
   let dependentDialects = ["mlir::triton::gpu::TritonGPUDialect",
                            "mlir::triton::TritonDialect"];
+
+#ifdef __FLAGTREE_KEEP_SMEM_READ_ORDER__
+  let options = [
+    Option<"keepSmemReadOrder", "keep-smem-read-order",
+           "bool", /*default*/"false",
+           "Keep a load of mutable shared memory before a write between it and "
+           "its use (FLAGTREE_KEEP_SMEM_READ_ORDER)">
+  ];
+#endif // __FLAGTREE_KEEP_SMEM_READ_ORDER__
 }
 
 def TritonGPUReduceDataDuplication: Pass<"tritongpu-reduce-data-duplication", "mlir::ModuleOp"> {

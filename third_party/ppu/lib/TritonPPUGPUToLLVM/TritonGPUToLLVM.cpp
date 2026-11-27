@@ -58,6 +58,7 @@
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 #include "Allocation.h"
 #include "PatternTritonGPUOpToLLVM.h"
@@ -98,10 +99,25 @@ public:
     addIllegalDialect<triton::gpu::TritonGPUDialect>();
     addIllegalDialect<triton::ppu_gpu::TritonPPUGPUDialect>();
     addIllegalDialect<mlir::gpu::GPUDialect>();
+    // PPU has no mbarrier: BarrierOpToLLVM reports these with the reason.
+    addIllegalOp<
+        triton::nvidia_gpu::InitBarrierOp, triton::nvidia_gpu::InvalBarrierOp,
+        triton::nvidia_gpu::BarrierExpectOp, triton::nvidia_gpu::WaitBarrierOp,
+        triton::nvidia_gpu::ArriveBarrierOp,
+        triton::nvidia_gpu::AsyncCopyMbarrierArriveOp>();
 #ifdef __TLE__
     addIllegalDialect<tle::TleDialect>();
+    // TLE named barriers are expressed with TritonNvidiaGPU ops.
+    addIllegalOp<triton::nvidia_gpu::NamedBarrierArriveOp,
+                 triton::nvidia_gpu::NamedBarrierWaitOp>();
 #endif
     addLegalOp<mlir::UnrealizedConversionCastOp>();
+
+    // Warp specialization is lowered later.
+    addLegalOp<triton::gpu::WarpSpecializeOp>();
+    addLegalOp<triton::gpu::WarpYieldOp>();
+    addLegalOp<triton::gpu::WarpSpecializePartitionsOp>();
+    addLegalOp<triton::gpu::WarpReturnOp>();
   }
 };
 
@@ -345,6 +361,8 @@ struct ConvertTritonGPUToLLVMPPU
                                                      targetInfo, benefit);
     mlir::triton::ppu::populateSPMDOpToLLVMPattern(typeConverter, patterns,
                                                    benefit);
+    mlir::triton::ppu::populateBarrierOpToLLVMPatterns(typeConverter, patterns,
+                                                       benefit);
     mlir::triton::populateSPMDOpToLLVMPattern(typeConverter, patterns,
                                               targetInfo, benefit);
     // TODO(thomas): this should probably be done in a separate step to not

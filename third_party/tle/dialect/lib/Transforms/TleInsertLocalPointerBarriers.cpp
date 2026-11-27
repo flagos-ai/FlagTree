@@ -32,6 +32,7 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/OpInterfaces.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
@@ -215,6 +216,15 @@ static bool isCudaTargetAtLeast(ModuleOp module, int minCapability) {
   return capability >= minCapability;
 }
 
+// The barriers this pass emits order the shared memory of tle.gpu.local_ptr,
+// never global memory. The marker lets a backend lower them to a
+// shared-memory-only barrier (PPU: BarrierOpToLLVM.cpp); the op is a plain
+// gpu.barrier everywhere else.
+static void createSharedOnlyBarrier(OpBuilder &builder, Location loc) {
+  auto barrier = builder.create<mlir::gpu::BarrierOp>(loc);
+  barrier->setAttr(kTleSharedOnlyBarrierAttr, builder.getUnitAttr());
+}
+
 class InsertLocalPointerBarriersPass
     : public impl::TritonTleInsertLocalPointerBarriersBase<
           InsertLocalPointerBarriersPass> {
@@ -306,7 +316,7 @@ class InsertLocalPointerBarriersPass
         if (!handledByIfSpecialization &&
             opHasLoadNeedingBarrier(op, dirtyGroups)) {
           OpBuilder builder(&op);
-          builder.create<mlir::gpu::BarrierOp>(op.getLoc());
+          createSharedOnlyBarrier(builder, op.getLoc());
           dirtyGroups.clear();
         }
       }
@@ -322,7 +332,7 @@ class InsertLocalPointerBarriersPass
             isFullViewLoadUsedOnlyByDotOperands(load))
           continue;
         OpBuilder builder(load);
-        builder.create<mlir::gpu::BarrierOp>(load.getLoc());
+        createSharedOnlyBarrier(builder, load.getLoc());
         // A CTA barrier synchronizes all shared-memory groups, not only the
         // group used by this load. Clearing all dirty groups avoids emitting
         // redundant back-to-back barriers for consecutive loads from different
@@ -358,7 +368,7 @@ class InsertLocalPointerBarriersPass
         continue;
 
       OpBuilder builder(&entry, entry.begin());
-      builder.create<mlir::gpu::BarrierOp>(ifOp.getLoc());
+      createSharedOnlyBarrier(builder, ifOp.getLoc());
     }
     return true;
   }

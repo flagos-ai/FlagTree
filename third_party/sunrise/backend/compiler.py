@@ -209,6 +209,15 @@ class SunriseBackend(BaseBackend):
 
     @staticmethod
     def make_ttgir(mod, metadata, opt):
+        # flagtree keep smem read order: imported here, the tle package needs triton.language, which
+        # is not yet loaded when the backends are discovered. Without the TLE knobs the original
+        # passes run.
+        try:
+            from triton.experimental.tle.compiler_knobs import compilation as tle_knobs
+            keep_smem_read_order = tle_knobs.keep_smem_read_order
+        except ImportError:
+            keep_smem_read_order = False
+
         num_stages = opt.num_stages if opt.num_stages <= 3 else 3
         # TTIR -> TTGIR
         pm = ir.pass_manager(mod.context)
@@ -237,7 +246,11 @@ class SunriseBackend(BaseBackend):
         tle.passes.add_early_assign_memory_space(pm)
         tle.passes.add_select_encodings(pm)
         tle.passes.add_insert_local_pointer_barriers(pm)
-        tle.passes.add_optimize_local_pointer_loads(pm)
+        # flagtree keep smem read order
+        if keep_smem_read_order:
+            tle.passes.add_optimize_local_pointer_loads(pm, keep_smem_read_order)
+        else:
+            tle.passes.add_optimize_local_pointer_loads(pm)
         tle.passes.add_optimize_local_pointer_stores(pm)
         # flagtree tle: promote transient local_store staging to pipelineable
         # local_alloc (target-independent perf optimization).
@@ -284,7 +297,12 @@ class SunriseBackend(BaseBackend):
                 passes.ttir.add_loop_aware_cse(pm)
                 sunrise.passes.ttgpuir.add_prefetch(pm, 256)  # 256bit = Kdim_16_elem * fp16_2byte * 8bit
         passes.ttgpuir.add_reduce_data_duplication(pm)
-        passes.ttgpuir.add_reorder_instructions(pm)
+        # flagtree keep smem read order: the option has its own binding, which exists only in a build that
+        # defines __FLAGTREE_KEEP_SMEM_READ_ORDER__; any other build runs the original pass
+        if keep_smem_read_order and hasattr(passes.ttgpuir, "add_reorder_instructions_keep_smem_read_order"):
+            passes.ttgpuir.add_reorder_instructions_keep_smem_read_order(pm)
+        else:
+            passes.ttgpuir.add_reorder_instructions(pm)
         # flagtree tle: downgrade async copies that cannot be lowered (e.g. width
         # constraints) back to plain load+local_store, before async-load lowering.
         tle.passes.add_downgrade_invalid_async_copy(pm)

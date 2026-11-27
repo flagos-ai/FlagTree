@@ -246,6 +246,15 @@ class MACABackend(BaseBackend):
 
     @staticmethod
     def make_ttgir(mod, metadata, opt, capability):
+        # flagtree keep smem read order: imported here, the tle package needs triton.language, which
+        # is not yet loaded when the backends are discovered. Without the TLE knobs the original
+        # pass runs.
+        try:
+            from triton.experimental.tle.compiler_knobs import compilation as tle_knobs
+            keep_smem_read_order = tle_knobs.keep_smem_read_order
+        except ImportError:
+            keep_smem_read_order = False
+
         assert opt.pipeline_load_num >= -1, "invalid pipeline_load_num value!"
         scenarios = parse_option(opt.scenario)
         disable_prefetch = "unprefetch" in scenarios
@@ -315,7 +324,12 @@ class MACABackend(BaseBackend):
         passes.ttgpuir.add_remove_layout_conversions(pm)
         metax.passes.ttgpuir.add_tritonmetaxgpu_optimize_smem_usage(pm, reduce_smem_usage)
         passes.ttgpuir.add_reduce_data_duplication(pm)
-        passes.ttgpuir.add_reorder_instructions(pm)
+        # flagtree keep smem read order: the option has its own binding, which exists only in a build that
+        # defines __FLAGTREE_KEEP_SMEM_READ_ORDER__; any other build runs the original pass
+        if keep_smem_read_order and hasattr(passes.ttgpuir, "add_reorder_instructions_keep_smem_read_order"):
+            passes.ttgpuir.add_reorder_instructions_keep_smem_read_order(pm)
+        else:
+            passes.ttgpuir.add_reorder_instructions(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
         passes.common.add_canonicalizer(pm)
