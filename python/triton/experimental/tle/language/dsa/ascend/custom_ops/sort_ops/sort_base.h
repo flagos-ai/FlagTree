@@ -737,6 +737,19 @@ sort_base_impl(memref_t<__ubuf__ float, 1> *src,
                                           {copy_size},
                                           {1}};
     copy_ubuf_to_ubuf_1d_core(&src_slice, &dst_slice);
+
+    // prepare_src_value flips the value bit pattern (+ 2^31) so the
+    // descending-only sort instruction can produce ascending order. Flip the
+    // packed value slots back; index slots are not flipped.
+    memref_t<__ubuf__ int32_t, 1> dst_slice_s32;
+    view_as<float, int32_t, 1>(&dst_slice, &dst_slice_s32);
+    auto *dst_bits = dst_slice_s32.aligned + dst_slice_s32.offset;
+    INTRINSIC(pipe_barrier, PIPE_ALL);
+    for (int64_t i = 0; i < topk; ++i) {
+      const int64_t slot = i * num_per_proposal;
+      dst_bits[slot] = static_cast<int32_t>(static_cast<uint32_t>(dst_bits[slot]) ^ 0x80000000u);
+    }
+    INTRINSIC(pipe_barrier, PIPE_ALL);
   } else {
     // descending: no src_inverse needed, block_sort reads src directly
     prepare_src_value(src, src, real_num, sort_num, descending);
