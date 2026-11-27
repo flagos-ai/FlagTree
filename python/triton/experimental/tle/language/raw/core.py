@@ -79,7 +79,7 @@ def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic: TLESeman
         mark_kernel_init_hook(_semantic, _generator)
     hint = _normalize_hint(hint)
     tile_builder = None
-    if smem and FLAGTREE_BACKEND == "hcu" and gpu_semantic.COMMON_IR_ENABLED:
+    if smem and FLAGTREE_BACKEND in ("hcu", "iluvatar") and gpu_semantic.COMMON_IR_ENABLED:
         tile_builder = _semantic.builder
     values = [_semantic.to_tensor(arg) if isinstance(arg, tl_constexpr) else arg for arg in args]
     # Raw calls hand native memref descriptors to the LLVM function, so a
