@@ -415,6 +415,25 @@ struct LoadStoreConversionBase {
     createMfenceOp(rewriter, loc, 1);
   }
 
+  // The scalar atomic simulator can retain an arbitrary i1 predicate after
+  // Mask's vector-mask-to-length optimization. Guard only the transfer; keep
+  // its synchronous or separately scheduled async completion fence common.
+  template <typename EmitTransfer>
+  void emitPredicatedScalarTransfer(ConversionPatternRewriter &rewriter,
+                                    Location loc, Value predicate,
+                                    EmitTransfer emitTransfer) const {
+    Block *currentBlock = rewriter.getInsertionBlock();
+    Block *afterBlock =
+        rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
+    Block *transferBlock = rewriter.createBlock(afterBlock);
+    rewriter.setInsertionPointToEnd(currentBlock);
+    rewriter.create<LLVM::CondBrOp>(loc, predicate, transferBlock, afterBlock);
+    rewriter.setInsertionPointToStart(transferBlock);
+    emitTransfer();
+    rewriter.create<LLVM::BrOp>(loc, afterBlock);
+    rewriter.setInsertionPointToStart(afterBlock);
+  }
+
   void createMfenceGMOp(ConversionPatternRewriter &rewriter,
                         mlir::Location &loc) const {
     createMfenceOp(rewriter, loc, 4);
@@ -2495,6 +2514,30 @@ struct XPUGM2LMOpConversion
     Value elemBytes = i32_val(elemNbits / 8u);
     Value offsetBytes = i32_val(0);
 
+    // A scalar atomic-simulator mask may remain i1 instead of a length.
+    // A false load has no `other`; leave its allocated LM slot alone. The
+    // result remains the existing LM pointer, defined before the branch.
+    if (targetInfo.getXPUArch() == static_cast<int>(XPUArch::XPU3) &&
+        op.getAtomicSim() && !op.getOther() && elemTy.isInteger(32) &&
+        numElems == 1 && llGMPtrs.size() == 1 && llLMPtrs.size() == 1 && len &&
+        getElementTypeOrSelf(len.getType()).isInteger(1)) {
+      auto predicates = unpackLLElements(loc, llLen, rewriter);
+      if (predicates.size() == 1 && predicates.front().getType().isInteger(1)) {
+        Value srcPtr = bitcast(llGMPtrs.front(), ptr_ty(ctx, 1));
+        Value dstPtr = bitcast(llLMPtrs.front(), ptr_ty(ctx, 0));
+        emitPredicatedScalarTransfer(rewriter, loc, predicates.front(), [&]() {
+          createGM2LMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                        elemBytes);
+        });
+        // Async scheduling already placed a fence before the LM consumer.
+        // Preserve it in the common path instead of adding a new local wait.
+        if (!async)
+          createMfenceLMOp(rewriter, loc);
+        rewriter.replaceOp(op, {resultStruct});
+        return success();
+      }
+    }
+
     bool mask = false;
     unsigned lenElemBit = 32;
     llvm::SmallVector<Value> llLens;
@@ -2833,6 +2876,28 @@ struct XPULM2GMOpConversion
 
     Value base = llPtrs[0];
     Value offsetBytes = i32_val(0);
+
+    // Match the same scalar i1 predicate used by the simulated masked load.
+    // The transfer is conditional; its local completion wait remains common.
+    if (targetInfo.getXPUArch() == static_cast<int>(XPUArch::XPU3) &&
+        op.getAtomicSim() && !async && elemTy.isInteger(32) && numElems == 1 &&
+        llPtrs.size() == 1 && len &&
+        getElementTypeOrSelf(len.getType()).isInteger(1)) {
+      auto predicates = unpackLLElements(loc, llLen, rewriter);
+      auto lmPtrs = unpackLLElements(loc, llBufPtr, rewriter);
+      if (predicates.size() == 1 && predicates.front().getType().isInteger(1) &&
+          lmPtrs.size() == 1) {
+        Value srcPtr = bitcast(lmPtrs.front(), ptr_ty(ctx, 0));
+        Value dstPtr = bitcast(llPtrs.front(), ptr_ty(ctx, 1));
+        emitPredicatedScalarTransfer(rewriter, loc, predicates.front(), [&]() {
+          createLM2GMOp(rewriter, ctx, loc, srcPtr, dstPtr, offsetBytes,
+                        elemBytes);
+        });
+        createMfenceLMOp(rewriter, loc);
+        rewriter.eraseOp(op);
+        return success();
+      }
+    }
 
     llvm::SmallVector<Value> llLens;
     bool mask = false;
