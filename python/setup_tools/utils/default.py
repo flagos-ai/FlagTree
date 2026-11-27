@@ -175,8 +175,6 @@ class FlagCXRegistrar:
     def run(self):
         whl = self._get_flagcx_wheel_path()
         is_dev_mode = self.is_dev_mode()
-        if is_dev_mode:
-            printinfo("Running in development mode...")
         if whl is not None:
             printinfo("FlagCX is already installed, skipping compilation...")
         elif is_dev_mode:
