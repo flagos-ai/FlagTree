@@ -19,6 +19,7 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Pass/Pass.h"
 #ifdef __TLE__
+#include "tle/dialect/include/Conversion/TleToLLVM/DSLRegionOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExclusiveCumsumOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/ExtractOpToLLVM.h"
 #include "tle/dialect/include/Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
@@ -210,6 +211,9 @@ struct ConvertTritonHCUGPUToLLVM
     {
       TleLLVMConversionTarget tleTarget(*context, typeConverter);
       RewritePatternSet tlePatterns(context);
+      mlir::triton::tle::populateDSLRegionOpToLLVMPatterns(
+          typeConverter, tlePatterns,
+          patternBenefitPrioritizeOverLLVMConversions);
       mlir::triton::tle::populateExtractTileOpToLLVMPatterns(
           typeConverter, tlePatterns, targetInfo,
           patternBenefitPrioritizeOverLLVMConversions);

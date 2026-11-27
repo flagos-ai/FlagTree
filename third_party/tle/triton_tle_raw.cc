@@ -119,6 +119,24 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
       module.get(), getOptionalFuncName(funcName));
   assert(func && "No function found in LLVM IR text");
 
+  llvm::SHA256 hasher;
+  hasher.update(text);
+  hasher.update(regionDialect);
+  std::string module_id = llvm::toHex(hasher.final());
+
+  std::string fn_prefix = "__tle_raw_func_" + module_id + "_";
+  auto name_mapping =
+      tle::raw::renameLLVMSymbols(module.get(), [&](Operation *symbol) {
+        StringRef name = SymbolTable::getSymbolName(symbol).getValue();
+        if (auto function = dyn_cast<LLVM::LLVMFuncOp>(symbol)) {
+          if (!function.isExternal()) {
+            return StringAttr::get(module->getContext(), fn_prefix + name);
+          }
+        }
+        return StringAttr::get(module->getContext(), name);
+      });
+  assert(succeeded(name_mapping));
+
   OpBuilder &builder = self.getBuilder();
   Operation *curOp = builder.getInsertionBlock()->getParentOp();
   while (curOp && curOp->getParentOp() && !isa<ModuleOp>(curOp)) {
@@ -126,8 +144,17 @@ createTLERawRegionByLLVMFunc(TritonOpBuilder &self, std::string_view text,
   }
   ModuleOp curModule = cast<ModuleOp>(curOp);
 
+  // Use the raw.call site as a fallback for missing source locations throughout
+  // the imported module. Once a caller has a DISubprogram, LLVM may require a
+  // debug location on calls, including those inside imported helpers.
+  Location callLoc = self.getLastLoc();
+  module->walk([callLoc](Operation *op) {
+    if (isa<UnknownLoc>(op->getLoc()))
+      op->setLoc(callLoc);
+  });
+
   auto funcOpOrErr = tle::raw::cloneLLVMSymbolsAndLookupFunc(
-      curModule, module.get(), getOptionalFuncName(funcName));
+      curModule, module.get(), getOptionalFuncName(func.getSymName()));
   assert(succeeded(funcOpOrErr));
   LLVM::LLVMFuncOp funcOp = *funcOpOrErr;
 

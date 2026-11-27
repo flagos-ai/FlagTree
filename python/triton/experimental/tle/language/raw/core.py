@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 def _tle_raw_call_eager_mode(func, args, output_indices, hint, smem, _semantic, _generator):
     context = _semantic.builder.get_context()
     llvm = func.make_llvm(context)
-    extern_func_name = getattr(func, "extern_func_name", None) or ""
+    extern_func_name = getattr(func, "lowered_func_name", None) or getattr(func, "extern_func_name", None) or ""
     handles = [(_semantic.to_tensor(arg) if isinstance(arg, tl_constexpr) else arg).handle for arg in args]
     alias_indices = output_indices
     if alias_indices is None:

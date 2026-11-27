@@ -57,17 +57,22 @@
 #include "triton/Tools/LinearLayout.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVectorExtras.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <map>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace py = pybind11;
 using namespace mlir;
@@ -1361,69 +1366,158 @@ void init_tle_raw_ir(py::module &&m) {
 }
 
 void init_tle_raw_passes(py::module &&m) {
-  m.def(
-      "collect_pending_sources",
-      [](mlir::ModuleOp &module) {
-        py::dict sources;
-        module.walk([&](mlir::triton::tle::DSLRegionOp op) {
-          if (!op.getBody().empty())
-            return;
-          auto sourceAttr = op->getAttr("tle_raw.source_id");
-          if (!sourceAttr)
-            return;
-          auto sourceId = mlir::dyn_cast<mlir::StringAttr>(sourceAttr);
-          if (!sourceId)
-            throw py::type_error("tle_raw.source_id must be a string");
-          py::str key(sourceId.getValue().str());
-          py::dict sourceInfo;
+  m.def("collect_pending_sources", [](mlir::ModuleOp &module) {
+    py::dict sources;
+    module.walk([&](mlir::triton::tle::DSLRegionOp op) {
+      if (!op.getBody().empty())
+        return;
+      auto sourceAttr = op->getAttr("tle_raw.source_id");
+      if (!sourceAttr)
+        return;
+      auto sourceId = mlir::dyn_cast<mlir::StringAttr>(sourceAttr);
+      if (!sourceId)
+        throw py::type_error("tle_raw.source_id must be a string");
+      py::str key(sourceId.getValue().str());
+      py::dict sourceInfo;
 
-          // Preserve attribute presence; the collector does not supply
-          // defaults.
-          for (llvm::StringRef name :
-               {"region_dialect", "tle_raw.dsl_file_name",
-                "tle_raw.extern_func_name"}) {
-            auto attr = op->getAttr(name);
-            if (!attr)
-              continue;
-            auto value = mlir::dyn_cast<mlir::StringAttr>(attr);
-            if (!value)
-              throw py::type_error("raw source " + sourceId.getValue().str() +
-                                   ": " + name.str() + " must be a string");
-            name.consume_front("tle_raw.");
-            sourceInfo[py::str(name.str())] = value.getValue().str();
-          }
-          if (auto attr = op->getAttr("tle_raw.compile_options")) {
-            auto options = mlir::dyn_cast<mlir::DictionaryAttr>(attr);
-            if (!options)
-              throw py::type_error(
-                  "raw source " + sourceId.getValue().str() +
-                  ": tle_raw.compile_options must be a dictionary");
-            py::dict values;
-            for (auto option : options) {
-              auto value = mlir::dyn_cast<mlir::StringAttr>(option.getValue());
-              if (!value)
-                throw py::type_error("raw source " + sourceId.getValue().str() +
-                                     ": tle_raw.compile_options." +
-                                     option.getName().str() +
-                                     " must be a string");
-              values[py::str(option.getName().str())] = value.getValue().str();
-            }
-            sourceInfo["compile_options"] = values;
-          }
+      // Preserve attribute presence; the collector does not supply
+      // defaults.
+      for (llvm::StringRef name : {"region_dialect", "tle_raw.dsl_file_name",
+                                   "tle_raw.extern_func_name"}) {
+        auto attr = op->getAttr(name);
+        if (!attr)
+          continue;
+        auto value = mlir::dyn_cast<mlir::StringAttr>(attr);
+        if (!value)
+          throw py::type_error("raw source " + sourceId.getValue().str() +
+                               ": " + name.str() + " must be a string");
+        name.consume_front("tle_raw.");
+        sourceInfo[py::str(name.str())] = value.getValue().str();
+      }
+      if (auto attr = op->getAttr("tle_raw.compile_options")) {
+        auto options = mlir::dyn_cast<mlir::DictionaryAttr>(attr);
+        if (!options)
+          throw py::type_error(
+              "raw source " + sourceId.getValue().str() +
+              ": tle_raw.compile_options must be a dictionary");
+        py::dict values;
+        for (auto option : options) {
+          auto value = mlir::dyn_cast<mlir::StringAttr>(option.getValue());
+          if (!value)
+            throw py::type_error("raw source " + sourceId.getValue().str() +
+                                 ": tle_raw.compile_options." +
+                                 option.getName().str() + " must be a string");
+          values[py::str(option.getName().str())] = value.getValue().str();
+        }
+        sourceInfo["compile_options"] = values;
+      }
 
-          if (sources.contains(key)) {
-            py::dict existing = sources[key].cast<py::dict>();
-            if (!existing.equal(sourceInfo))
-              throw std::runtime_error(
-                  "raw source " + sourceId.getValue().str() +
-                  " has inconsistent compilation attributes");
-          } else {
-            sources[key] = sourceInfo;
+      if (sources.contains(key)) {
+        py::dict existing = sources[key].cast<py::dict>();
+        if (!existing.equal(sourceInfo))
+          throw std::runtime_error("raw source " + sourceId.getValue().str() +
+                                   " has inconsistent compilation attributes");
+      } else {
+        sources[key] = sourceInfo;
+      }
+    });
+    return sources;
+  });
+
+  m.def("register_raw_wrappers", [](mlir::ModuleOp &module,
+                                    const std::vector<std::string>
+                                        &regionDialects) {
+    using namespace mlir;
+    py::object dumps = py::module_::import("json").attr("dumps");
+
+    py::list wrappers;
+    std::unordered_set<std::string> registeredSymbols;
+    module.walk([&](triton::tle::DSLRegionOp op) {
+      if (!op.getBody().empty())
+        return;
+      auto source = op->getAttrOfType<StringAttr>("tle_raw.source_id");
+      auto infos = op->getAttrOfType<ArrayAttr>("tle_raw.arg_info_list");
+      if (!source || !infos ||
+          !llvm::is_contained(regionDialects, op.getRegionDialect().str())) {
+        return;
+      }
+
+      py::list outputMarks;
+      for (unsigned i = 0; i < op.getNumOperands(); ++i)
+        outputMarks.append(llvm::is_contained(op.getOutputOperandIndices(), i));
+
+      py::list arguments;
+      for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
+        py::dict argument;
+        StringRef kind = cast<StringAttr>(infos[i]).getValue();
+        argument["kind"] = kind.str();
+
+        if (kind == "tensor_fragment") {
+          auto type = dyn_cast<RankedTensorType>(operand.getType());
+          if (!type || !type.getEncoding())
+            throw std::runtime_error(
+                "fragment arguments require distributed tensor layouts");
+          std::string element;
+          llvm::raw_string_ostream os(element);
+          type.getElementType().print(os);
+          argument["element_type"] = element;
+          argument["count"] = triton::gpu::getTotalElemsPerThread(type);
+        } else if (auto type = dyn_cast<RankedTensorType>(operand.getType())) {
+          if (kind != "tensor")
+            throw std::runtime_error(
+                "non-fragment ranked tensors require tensor kind");
+          std::string element;
+          llvm::raw_string_ostream elementStream(element);
+          type.getElementType().print(elementStream);
+          argument["rank"] = type.getRank();
+          argument["element_type"] = element;
+        } else if (auto type =
+                       dyn_cast<triton::gpu::MemDescType>(operand.getType())) {
+          std::string element;
+          llvm::raw_string_ostream elementStream(element);
+          type.getElementType().print(elementStream);
+          std::string memorySpace;
+          llvm::raw_string_ostream memorySpaceStream(memorySpace);
+          type.getMemorySpace().print(memorySpaceStream);
+          argument["rank"] = type.getRank();
+          argument["element_type"] = element;
+          argument["memory_space"] = memorySpace;
+        } else {
+          std::string valueType;
+          llvm::raw_string_ostream os(valueType);
+          Type vtype = operand.getType();
+          vtype.print(os);
+          argument["value_type"] = valueType;
+          if (auto pointerType = dyn_cast<triton::PointerType>(vtype)) {
+            argument["address_space"] = pointerType.getAddressSpace();
           }
-        });
-        return sources;
-      },
-      py::arg("module"));
+        }
+        arguments.append(argument);
+      }
+
+      auto dumped =
+          dumps(py::make_tuple(source.getValue().str(), arguments, outputMarks),
+                py::arg("sort_keys") = true,
+                py::arg("separators") = py::make_tuple(",", ":"));
+      llvm::SHA256 hasher;
+      hasher.update(dumped.cast<std::string>());
+      auto digest = hasher.final();
+      std::string hash = llvm::toHex(digest);
+
+      std::string symbol = "__tle_raw_wrapper_" + hash;
+      if (registeredSymbols.insert(symbol).second) {
+        py::dict wrapper;
+        wrapper["source_id"] = source.getValue().str();
+        wrapper["symbol"] = symbol;
+        wrapper["arguments"] = arguments;
+        wrapper["output_marks"] = outputMarks;
+        wrappers.append(wrapper);
+      }
+      op->setAttr("tle_raw.wrapper_symbol",
+                  FlatSymbolRefAttr::get(module.getContext(), symbol));
+    });
+    return wrappers;
+  });
 
   ADD_PASS_WRAPPER_0("add_tle_convert_arg_to_memdesc",
                      mlir::triton::tle::createTleConvertArgToMemDesc);
@@ -1434,23 +1528,41 @@ void init_tle_raw_passes(py::module &&m) {
 }
 
 void init_llvm(py::module &&m) {
-  m.def("parse_llvm_ir",
-        [](std::string_view text, llvm::LLVMContext &llvmContext,
-           mlir::MLIRContext &mlirContext) -> mlir::ModuleOp {
-          std::unique_ptr<llvm::MemoryBuffer> buffer =
-              llvm::MemoryBuffer::getMemBuffer(text);
-          llvm::SMDiagnostic error;
-          std::unique_ptr<llvm::Module> llvmModule =
-              llvm::parseIR(buffer->getMemBufferRef(), error, llvmContext);
-          if (!llvmModule) {
-            llvm::report_fatal_error(
-                "failed to parse IR: " + error.getMessage() +
-                "lineno: " + std::to_string(error.getLineNo()));
+  m.def(
+      "parse_llvm_ir",
+      [](std::string_view text, llvm::LLVMContext &llvmContext,
+         mlir::MLIRContext &mlirContext) -> mlir::ModuleOp {
+        std::unique_ptr<llvm::MemoryBuffer> buffer =
+            llvm::MemoryBuffer::getMemBuffer(text);
+        llvm::SMDiagnostic error;
+        std::unique_ptr<llvm::Module> llvmModule =
+            llvm::parseIR(buffer->getMemBufferRef(), error, llvmContext);
+        if (!llvmModule) {
+          llvm::report_fatal_error(
+              "failed to parse IR: " + error.getMessage() +
+              "lineno: " + std::to_string(error.getLineNo()));
+        }
+        llvm::SmallVector<llvm::GlobalVariable *> temporary_globals;
+        for (auto &global : llvmModule->globals())
+          if (global.getName().starts_with("__tle_raw_remove_after_ir_parse__"))
+            temporary_globals.push_back(&global);
+        if (!temporary_globals.empty()) {
+          llvm::removeFromUsedLists(*llvmModule, [&](llvm::Constant *entry) {
+            return llvm::is_contained(temporary_globals,
+                                      entry->stripPointerCasts());
+          });
+          for (auto *temporary_global : temporary_globals) {
+            temporary_global->removeDeadConstantUsers();
+            if (!temporary_global->use_empty())
+              throw std::runtime_error("raw temporary global still in use: " +
+                                       temporary_global->getName().str());
+            temporary_global->eraseFromParent();
           }
-          return mlir::translateLLVMIRToModule(std::move(llvmModule),
-                                               &mlirContext)
-              ->clone();
-        });
+        }
+        return mlir::translateLLVMIRToModule(std::move(llvmModule),
+                                             &mlirContext)
+            ->clone();
+      });
 }
 
 void init_triton_tle_dsa(py::module m);

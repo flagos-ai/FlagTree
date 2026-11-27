@@ -26,7 +26,6 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/SymbolTable.h"
-#include "nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.h"
 #include "tle/dialect/include/IR/Dialect.h"
 #include "triton/Conversion/TritonGPUToLLVM/TypeConverter.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
@@ -45,9 +44,9 @@ struct DSLRegionOpConversion : public ConvertOpToLLVMPattern<tle::DSLRegionOp> {
   matchAndRewrite(tle::DSLRegionOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override;
 
-  LogicalResult lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
-                             FlatSymbolRefAttr symbol,
-                             ConversionPatternRewriter &rewriter) const;
+  LogicalResult lowerWrapperCall(tle::DSLRegionOp op, OpAdaptor adaptor,
+                                 FlatSymbolRefAttr symbol,
+                                 ConversionPatternRewriter &rewriter) const;
 };
 
 struct YieldOpConversion : public ConvertOpToLLVMPattern<tle::YieldOp> {
@@ -68,7 +67,7 @@ LogicalResult DSLRegionOpConversion::matchAndRewrite(
     ConversionPatternRewriter &rewriter) const {
   if (auto symbol =
           op->getAttrOfType<FlatSymbolRefAttr>("tle_raw.wrapper_symbol"))
-    return lowerWrapper(op, adaptor, symbol, rewriter);
+    return lowerWrapperCall(op, adaptor, symbol, rewriter);
 
   auto newOp = rewriter.cloneWithoutRegions<tle::DSLRegionOp>(op);
   Region &body = op.getBody();
@@ -109,6 +108,8 @@ static Value convertWrapperValue(Location loc, Value value, Type target,
   Type source = value.getType();
   if (source == target)
     return value;
+  if (isa<LLVM::LLVMPointerType>(source) && isa<LLVM::LLVMPointerType>(target))
+    return rewriter.create<LLVM::AddrSpaceCastOp>(loc, target, value);
   if (source.isInteger(1) && target.isInteger(8))
     return rewriter.create<LLVM::ZExtOp>(loc, target, value);
   // The caller's contract guarantees that returned bool bytes are 0 or 1.
@@ -117,14 +118,9 @@ static Value convertWrapperValue(Location loc, Value value, Type target,
   return rewriter.create<LLVM::BitcastOp>(loc, target, value);
 }
 
-LogicalResult
-DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
-                                    FlatSymbolRefAttr symbol,
-                                    ConversionPatternRewriter &rewriter) const {
-  auto callee =
-      SymbolTable::lookupNearestSymbolFrom<LLVM::LLVMFuncOp>(op, symbol);
-  if (!callee)
-    return op.emitOpError("cannot find LLVM raw wrapper ") << symbol;
+static FailureOr<SmallVector<int>>
+checkWrapperCall(tle::DSLRegionOp op, LLVM::LLVMFuncOp callee,
+                 const LLVMTypeConverter *converter) {
   if (!op.getBody().empty())
     return op.emitOpError("raw wrapper requires an empty region");
   auto infos = op->getAttrOfType<ArrayAttr>("tle_raw.arg_info_list");
@@ -137,17 +133,15 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
   // Validate the entire signature before emitting any conversions. Return
   // fields follow operand order, independently of output_operand_indices.
   SmallVector<Type> inputTypes, returnTypes;
-  SmallVector<unsigned> counts(op.getNumOperands(), 0);
-  SmallVector<StringRef> kinds;
+  // A negative count marks a non-fragment operand.
+  SmallVector<int> fragmentCounts(op.getNumOperands(), -1);
   auto outputIndices = op.getOutputOperandIndices();
-  auto *converter = getTypeConverter();
   for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
     auto info = dyn_cast<StringAttr>(infos[i]);
     if (!info)
       return op.emitOpError("raw wrapper argument kind must be a string at ")
              << i;
     StringRef kind = info.getValue();
-    kinds.push_back(kind);
     if (kind == "tensor_fragment") {
       auto tensor = dyn_cast<RankedTensorType>(operand.getType());
       if (!tensor || !tensor.getEncoding())
@@ -159,10 +153,11 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
         return op.emitOpError(
                    "unsupported raw wrapper element type at operand ")
                << i;
-      counts[i] = triton::gpu::getTotalElemsPerThread(tensor);
-      inputTypes.append(counts[i], wire);
+      unsigned count = triton::gpu::getTotalElemsPerThread(tensor);
+      fragmentCounts[i] = count;
+      inputTypes.append(count, wire);
       if (llvm::is_contained(outputIndices, i))
-        returnTypes.append(counts[i], wire);
+        returnTypes.append(count, wire);
     } else if (auto memdesc =
                    dyn_cast<triton::gpu::MemDescType>(operand.getType())) {
       if (!isa_and_nonnull<triton::gpu::SharedMemorySpaceAttr>(
@@ -172,7 +167,8 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
                << i;
       Type pointer = LLVM::LLVMPointerType::get(op.getContext(), 3);
       inputTypes.append(2, pointer);
-      inputTypes.append(1 + 2 * memdesc.getRank(), rewriter.getI64Type());
+      inputTypes.append(1 + 2 * memdesc.getRank(),
+                        IntegerType::get(op.getContext(), 64));
     } else {
       Type wire = getWrapperABIType(operand.getType(), converter);
       if (!wire)
@@ -181,11 +177,18 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
       inputTypes.push_back(wire);
     }
   }
+
+  // HIP wrappers can expose a generic pointer for a concrete address space.
+  auto satisfiesExpectation = [](Type actual, Type expected) {
+    auto pointer = dyn_cast<LLVM::LLVMPointerType>(actual);
+    return actual == expected || (pointer && pointer.getAddressSpace() == 0 &&
+                                  isa<LLVM::LLVMPointerType>(expected));
+  };
   if (functionType.getNumParams() != inputTypes.size())
     return op.emitOpError("raw wrapper parameter count mismatch: expected ")
            << inputTypes.size() << ", got " << functionType.getNumParams();
   for (auto [i, expected] : llvm::enumerate(inputTypes)) {
-    if (functionType.getParamType(i) != expected)
+    if (!satisfiesExpectation(functionType.getParamType(i), expected))
       return op.emitOpError(
                  "raw wrapper parameter type mismatch at expanded parameter ")
              << i << ": expected " << expected << ", got "
@@ -204,34 +207,55 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
                  "raw wrapper return struct field count mismatch: expected ")
              << returnTypes.size();
     for (auto [i, expected] : llvm::enumerate(returnTypes)) {
-      if (structure.getBody()[i] != expected)
+      if (!satisfiesExpectation(structure.getBody()[i], expected))
         return op.emitOpError("raw wrapper return type mismatch at field ")
                << i << ": expected " << expected << ", got "
                << structure.getBody()[i];
     }
   }
+  return fragmentCounts;
+}
 
+LogicalResult DSLRegionOpConversion::lowerWrapperCall(
+    tle::DSLRegionOp op, OpAdaptor adaptor, FlatSymbolRefAttr symbol,
+    ConversionPatternRewriter &rewriter) const {
+  auto callee =
+      SymbolTable::lookupNearestSymbolFrom<LLVM::LLVMFuncOp>(op, symbol);
+  if (!callee)
+    return op.emitOpError("cannot find LLVM raw wrapper ") << symbol;
+  auto *converter = getTypeConverter();
+  auto fragmentCounts = checkWrapperCall(op, callee, converter);
+  if (failed(fragmentCounts))
+    return failure();
+  auto functionType = callee.getFunctionType();
+  auto outputIndices = op.getOutputOperandIndices();
   Location loc = op.getLoc();
+
   SmallVector<Value> arguments;
   for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
     Value converted = adaptor.getOperands()[i];
-    if (kinds[i] == "tensor_fragment") {
+    if (int count = (*fragmentCounts)[i]; count >= 0) {
       auto elements = unpackLLElements(loc, converted, rewriter);
-      if (elements.size() != counts[i])
+      if (elements.size() != static_cast<size_t>(count))
         return op.emitOpError(
                    "raw wrapper fragment register count mismatch at operand ")
                << i;
       for (Value element : elements) {
-        Type wire = inputTypes[arguments.size()];
+        Type wire = functionType.getParamType(arguments.size());
         arguments.push_back(convertWrapperValue(loc, element, wire, rewriter));
       }
     } else if (auto memdesc =
                    dyn_cast<triton::gpu::MemDescType>(operand.getType())) {
-      Type pointer = inputTypes[arguments.size()];
-      arguments.push_back(
-          rewriter.create<tle::ExtractAllocatedPtrOp>(loc, pointer, operand));
-      arguments.push_back(
-          rewriter.create<tle::ExtractAlignedPtrOp>(loc, pointer, operand));
+      Type pointer = LLVM::LLVMPointerType::get(op.getContext(), 3);
+      auto allocated =
+          rewriter.create<tle::ExtractAllocatedPtrOp>(loc, pointer, operand);
+      arguments.push_back(convertWrapperValue(
+          loc, allocated, functionType.getParamType(arguments.size()),
+          rewriter));
+      auto aligned =
+          rewriter.create<tle::ExtractAlignedPtrOp>(loc, pointer, operand);
+      arguments.push_back(convertWrapperValue(
+          loc, aligned, functionType.getParamType(arguments.size()), rewriter));
       arguments.push_back(rewriter.create<tle::ExtractOffsetOp>(loc, operand));
       auto sizes =
           rewriter.create<tle::ExtractSizesOp>(loc, memdesc.getRank(), operand);
@@ -240,10 +264,11 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
       llvm::append_range(arguments, sizes.getResults());
       llvm::append_range(arguments, strides.getResults());
     } else {
-      Type wire = inputTypes[arguments.size()];
+      Type wire = functionType.getParamType(arguments.size());
       arguments.push_back(convertWrapperValue(loc, converted, wire, rewriter));
     }
   }
+
   auto call = rewriter.create<LLVM::CallOp>(loc, callee, arguments);
   call.setAlwaysInline(true);
   call.setCConv(callee.getCConv());
@@ -255,12 +280,13 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
   SmallVector<Value> updated(adaptor.getOperands());
   unsigned field = 0;
   for (auto [i, operand] : llvm::enumerate(op.getOperands())) {
-    if (kinds[i] != "tensor_fragment" || !llvm::is_contained(outputIndices, i))
+    int count = (*fragmentCounts)[i];
+    if (count < 0 || !llvm::is_contained(outputIndices, i))
       continue;
     auto tensor = cast<RankedTensorType>(operand.getType());
     Type elementType = converter->convertType(tensor.getElementType());
     SmallVector<Value> elements;
-    for (unsigned j = 0; j < counts[i]; ++j) {
+    for (int j = 0; j < count; ++j) {
       Value value = rewriter.create<LLVM::ExtractValueOp>(
           loc, call.getResult(),
           ArrayRef<int64_t>{static_cast<int64_t>(field++)});
@@ -270,7 +296,7 @@ DSLRegionOpConversion::lowerWrapper(tle::DSLRegionOp op, OpAdaptor adaptor,
     updated[i] = packLLElements(loc, converter, elements, rewriter, tensor);
   }
   SmallVector<Value> results;
-  for (int32_t idx : op.getOutputOperandIndices())
+  for (int32_t idx : outputIndices)
     results.push_back(updated[idx]);
   rewriter.replaceOp(op, results);
   return success();

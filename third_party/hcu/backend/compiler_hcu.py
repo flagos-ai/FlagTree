@@ -569,6 +569,11 @@ class HIPBackend(BaseBackend):
         passes.convert.add_index_to_llvmir(pm)
 
         hcu.passes.ttgpuir.add_allocate_shared_memory(pm)
+
+        pm.run(mod, 'make_llir.before_tle_passes')
+        pm = ir.pass_manager(mod.context)
+        pm.enable_debug()
+
         from .deferred_raw import deferred_raw_materialize
         deferred_raw_materialize(pm, mod)
         # Before inline: remember tle.raw so make_amdgcn can opt into dcc.

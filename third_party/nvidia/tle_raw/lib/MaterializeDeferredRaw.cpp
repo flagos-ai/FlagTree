@@ -1,10 +1,8 @@
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
 #include "nvidia/tle_raw/include/CompiledRaw.h"
 #include "nvidia/tle_raw/include/Passes.h"
 #include "tle/dialect/include/IR/Dialect.h"
-
 #include "tle/utils/include/TleRawMaterialize.h"
 
 #include <memory>
@@ -33,79 +31,58 @@ public:
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    const auto &compiled = *sources;
-
-    static constexpr llvm::StringLiteral kSourceIdAttr = "tle_raw.source_id";
-    WalkResult result = module.walk([&](tle::DSLRegionOp op) -> WalkResult {
-      auto sourceIdAttr = op->getAttrOfType<StringAttr>(kSourceIdAttr);
-      if (!sourceIdAttr || !op.getBody().empty())
-        return WalkResult::advance();
-
-      auto it = compiled.find(sourceIdAttr.getValue());
-      if (it == compiled.end()) {
-        op.emitError("missing pending raw source for id ")
-            << sourceIdAttr.getValue();
-        return WalkResult::interrupt();
-      }
-
-      const nv_tle_raw::CompiledRaw &entry = it->second;
-      if (entry.externFuncName.empty()) {
-        op.emitError("deferred raw source is missing extern_func_name");
-        return WalkResult::interrupt();
-      }
-      if (entry.llvmIr.empty()) {
-        op.emitError("deferred raw source is missing compiled LLVM IR");
-        return WalkResult::interrupt();
-      }
-
-      // process deferred CUDA dsl_region.
-      auto symbol =
-          op->getAttrOfType<FlatSymbolRefAttr>("tle_raw.wrapper_symbol");
-      if (entry.regionDialect == "cuda" && symbol) {
-        auto parsed =
-            tle::raw::parseLLVMModule(module.getContext(), entry.llvmIr);
-        if (!parsed)
-          return WalkResult::interrupt();
-
-        // Clang IR without -g has unknown locations. Imported wrappers can
-        // retain helper calls; give those calls a location before DIScope adds
-        // subprograms, otherwise LLVM rejects inlinable calls without !dbg.
-        parsed->walk([&](Operation *imported) {
-          if (isa<UnknownLoc>(imported->getLoc()))
-            imported->setLoc(op.getLoc());
-        });
-
-        // These definitions belong to this kernel compilation, not to an
-        // exported device library. Let symbol DCE remove originals made dead
-        // by wrapper inlining (notably CUDA half/bfloat byval entry points,
-        // which NVPTX cannot lower with Triton's short-pointer mode).
-        for (auto function : parsed->getOps<LLVM::LLVMFuncOp>()) {
-          if (!function.isExternal()) {
-            function.setLinkage(LLVM::Linkage::Internal);
-            SymbolTable::setSymbolVisibility(function,
-                                             SymbolTable::Visibility::Private);
-          }
-        }
-
-        auto callee = tle::raw::cloneLLVMSymbolsAndLookupFunc(
-            module, *parsed, symbol.getValue());
-        if (failed(callee)) {
-          op.emitError("cannot find raw wrapper ") << symbol;
-          return WalkResult::interrupt();
-        }
-
-        op->setAttr(
-            "tle_raw.wrapper_symbol",
-            FlatSymbolRefAttr::get(module.getContext(), callee->getSymName()));
-        op->removeAttr(kSourceIdAttr);
-        return WalkResult::advance();
-      }
-
-      return WalkResult::interrupt();
+    llvm::StringMap<tle::DSLRegionOp> firstCallBySource;
+    module.walk([&](tle::DSLRegionOp op) {
+      auto id = op->getAttrOfType<StringAttr>("tle_raw.source_id");
+      if (id && op.getBody().empty())
+        firstCallBySource.try_emplace(id.getValue(), op);
     });
 
-    if (result.wasInterrupted())
-      signalPassFailure();
+    for (auto &[id, call] : firstCallBySource) {
+      auto entry = sources->find(id);
+      if (entry == sources->end()) {
+        call.emitOpError("missing compiled raw source ") << id;
+        return signalPassFailure();
+      }
+      auto parsed =
+          tle::raw::parseLLVMModule(module.getContext(), entry->second.llvmIr);
+      if (!parsed) {
+        call.emitOpError("cannot parse compiled raw source ") << id;
+        return signalPassFailure();
+      }
+
+      // Keep wrapper names and shared globals stable across call sites.
+      std::string prefix = "__tle_raw_fn_" + id.str() + "_";
+      auto name_mapping =
+          tle::raw::renameLLVMSymbols(*parsed, [&](Operation *op) {
+            auto name = SymbolTable::getSymbolName(op);
+            auto fn = dyn_cast<LLVM::LLVMFuncOp>(op);
+            if (!fn || fn.isExternal() ||
+                name.getValue().starts_with("__tle_raw_wrapper_"))
+              return name;
+            return StringAttr::get(module.getContext(),
+                                   prefix + name.getValue().str());
+          });
+      if (failed(name_mapping)) {
+        call.emitOpError("cannot rename symbols in raw source ") << id;
+        return signalPassFailure();
+      }
+
+      Location fallbackLoc = call.getLoc();
+      parsed->walk([fallbackLoc](Operation *op) {
+        if (isa<UnknownLoc>(op->getLoc()))
+          op->setLoc(fallbackLoc);
+        auto fn = dyn_cast<LLVM::LLVMFuncOp>(op);
+        if (!fn || fn.isExternal())
+          return;
+        fn.setLinkage(LLVM::Linkage::Internal);
+        fn.setVisibility_(LLVM::Visibility::Default);
+        SymbolTable::setSymbolVisibility(fn, SymbolTable::Visibility::Private);
+      });
+
+      if (failed(tle::raw::cloneLLVMSymbols(module, *parsed)))
+        return signalPassFailure();
+    }
   }
 
 private:

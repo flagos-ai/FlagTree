@@ -30,6 +30,7 @@ def _abi_(type_name):
 
 
 def generate_raw_wrappers(function_name, wrappers):
+    function_name = function_name.removeprefix("::")
     if not re.fullmatch(r"(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*", function_name):
         raise ValueError("raw wrappers require a C++ function name, not a mangled symbol")
     parts = ["\n#include <stdint.h>\n#include <tuple>\n#include <type_traits>\n"]
@@ -44,7 +45,7 @@ def generate_raw_wrappers(function_name, wrappers):
             "template<class R, class... A> struct signature<R(*)(A...)> {",
             "  using arguments = std::tuple<A...>; using result = R; };",
             "template<class R, class... A> struct signature<R(*)(A...) noexcept>", "  : signature<R(*)(A...)> {};",
-            f"using fn = signature<decltype(&{function_name})>;",
+            f"using fn = signature<decltype(&::{function_name})>;",
             "template<int I> using arg = typename std::tuple_element<I, typename fn::arguments>::type;",
             "template<class To, class From>", "__device__ __forceinline__ To bit_cast(From value) {",
             '  static_assert(sizeof(To) == sizeof(From), "raw wrapper bit widths must match");',
@@ -91,7 +92,7 @@ def generate_raw_wrappers(function_name, wrappers):
                         returned.append(value)
                 native_index += 2
 
-            elif "rank" in argument:
+            elif kind in ("tensor", "buffered_tensor"):
                 # Forward allocated/aligned pointers, offset, sizes and strides
                 # with the native signature types, including address spaces.
                 for j in range(3 + 2 * argument["rank"]):
@@ -127,7 +128,7 @@ def generate_raw_wrappers(function_name, wrappers):
         parts.extend(setup)
         # Force the original device function into this wrapper while Clang sees
         # the literal fragment lengths, rather than deferring this to Triton.
-        parts.append(f"  [[clang::always_inline]] {function_name}({', '.join(call_args)});")
+        parts.append(f"  [[clang::always_inline]] ::{function_name}({', '.join(call_args)});")
         if fields:
             parts.append(f"  return {{{', '.join(returned)}}};")
         parts.append("}\n")

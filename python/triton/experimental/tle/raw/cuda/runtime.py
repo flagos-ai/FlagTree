@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ctypes
 import functools
+import hashlib
 import os
 import re
 import shlex
@@ -262,10 +263,35 @@ class CUDAJITFunction(RawJITFunction):
         )
 
     def make_llvm(self, mlir_context) -> str:
-        return _compile_cuda_source(self.code, self.opt_level, mlir_context)
+        source = self.code
+        name = self.extern_func_name
+        entry_reference = None
+        if name:
+            if not re.fullmatch(r"(?:::)?[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*", name, re.ASCII):
+                raise ValueError(f"expected a qualified CUDA function name, got {name!r}")
+            entry_reference = "__tle_raw_remove_after_ir_parse__entry_" + hashlib.sha256(name.encode()).hexdigest()
+            source += (f'\nextern "C" {{ extern __attribute__((device, used)) '
+                       f'decltype(&{name}) const {entry_reference} = &{name}; }}\n')
+
+        ir = _compile_cuda_source(source, self.opt_level)
+
+        if entry_reference:
+            # LLVM identifiers can be quoted and contain hex-escaped bytes.
+            symbol = r'(?:"((?:[^"\\]|\\[0-9A-Fa-f]{2})*)"|([-A-Za-z$._0-9]+))'
+            match = re.search(rf'^@{entry_reference} = [^\n@]*\bconstant\b[^\n@]*@{symbol}', ir, re.MULTILINE)
+            if not match:
+                raise RuntimeError(f"could not resolve CUDA raw entry {name!r} from LLVM marker @{entry_reference}")
+            name = match[2]
+            if name is None:
+                raw = re.sub(rb"\\([0-9A-Fa-f]{2})", lambda m: bytes.fromhex(m[1].decode()), match[1].encode())
+                name = raw.decode()
+
+        module = parse_llvm_ir(_sanitize_clang_ir(ir), llvm.context(), mlir_context)
+        self.lowered_func_name = name
+        return str(module)
 
 
-def _compile_cuda_source(source_text: str, opt_level: str, mlir_context) -> str:
+def _compile_cuda_source(source_text: str, opt_level: str) -> str:
     build = subprocess.run(
         [
             _resolve_clang(),
@@ -286,9 +312,7 @@ def _compile_cuda_source(source_text: str, opt_level: str, mlir_context) -> str:
     )
     if build.returncode != 0:
         raise RuntimeError(f"clang failed\nstderr:\n{build.stderr.decode()}")
-    llvm_context = llvm.context()
-    module = parse_llvm_ir(_sanitize_clang_ir(build.stdout.decode()), llvm_context, mlir_context)
-    return f"{module}"
+    return build.stdout.decode()
 
 
 def compile_deferred_pending_source(entry: dict, *, context) -> str:
@@ -299,6 +323,7 @@ def compile_deferred_pending_source(entry: dict, *, context) -> str:
         if required_wrappers:
             from .wrapper import generate_raw_wrappers
             source_text += generate_raw_wrappers(entry["extern_func_name"], required_wrappers)
-        return _compile_cuda_source(source_text, entry["compile_options"]["opt_level"], context)
+        ir = _compile_cuda_source(source_text, entry["compile_options"]["opt_level"])
+        return str(parse_llvm_ir(_sanitize_clang_ir(ir), llvm.context(), context))
     except Exception as exc:
         raise RuntimeError(f"failed to compile CUDA source {path}: {exc}") from exc

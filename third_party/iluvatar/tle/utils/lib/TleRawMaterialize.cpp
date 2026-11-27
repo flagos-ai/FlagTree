@@ -2,9 +2,11 @@
 #include "Protocol.h"
 #include "ir.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVectorExtras.h"
+#include "llvm/ADT/StringSet.h"
 
 using namespace mlir;
 
@@ -50,26 +52,112 @@ LLVM::LLVMFuncOp findExternalLLVMFunc(ModuleOp module,
   return func;
 }
 
+FailureOr<llvm::StringMap<Operation *>> renameLLVMSymbols(
+    ModuleOp module,
+    llvm::function_ref<StringAttr(Operation *)> targetNameGenerator) {
+
+  llvm::StringMap<Operation *> originals;
+  llvm::StringSet<> occupied, finalNames;
+  SmallVector<std::pair<Operation *, StringAttr>> changes;
+
+  for (Operation &op : module.getBody()->getOperations()) {
+    auto name = op.getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName());
+    if (name)
+      occupied.insert(name.getValue());
+    if (!isa<LLVM::LLVMFuncOp, LLVM::GlobalOp>(op))
+      continue;
+
+    auto finalName = targetNameGenerator(&op);
+    if (!finalName || finalName.getValue().empty() ||
+        !finalNames.insert(finalName.getValue()).second) {
+      return failure();
+    }
+    if (Operation *other = module.lookupSymbol(finalName.getValue())) {
+      if (!isa<LLVM::LLVMFuncOp, LLVM::GlobalOp>(other)) {
+        return failure();
+      }
+    }
+    occupied.insert(finalName);
+    originals[name.getValue()] = &op;
+    if (name != finalName)
+      changes.emplace_back(&op, finalName);
+  }
+
+  unsigned temporaryIndex = 0;
+  for (auto [op, finalName] : changes) {
+    std::string temporary;
+    do {
+      temporary = "__tle_raw_rename_tmp_" + std::to_string(temporaryIndex++);
+    } while (!occupied.insert(temporary).second);
+    auto temporaryName = StringAttr::get(module.getContext(), temporary);
+    if (failed(SymbolTable::replaceAllSymbolUses(op, temporaryName, module))) {
+      op->emitError("cannot update raw symbol references");
+      return failure();
+    }
+    SymbolTable::setSymbolName(op, temporaryName);
+  }
+
+  for (auto [op, finalName] : changes) {
+    if (failed(SymbolTable::replaceAllSymbolUses(op, finalName, module))) {
+      op->emitError("cannot update raw symbol references");
+      return failure();
+    }
+    SymbolTable::setSymbolName(op, finalName);
+  }
+  return originals;
+}
+
+FailureOr<IRMapping> cloneLLVMSymbols(ModuleOp dstModule, ModuleOp srcModule) {
+  // Check existing users' type and address space before changing the module.
+  for (auto global : srcModule.getOps<LLVM::GlobalOp>()) {
+    auto target = dstModule.lookupSymbol<LLVM::GlobalOp>(global.getSymName());
+    if (target && (target.getGlobalType() != global.getGlobalType() ||
+                   target.getAddrSpace() != global.getAddrSpace()))
+      return global.emitOpError(
+                 "incompatible type or address space for global @")
+             << global.getSymName();
+  }
+  OpBuilder builder(dstModule.getContext());
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(dstModule.getBody());
+  IRMapping mapper;
+  for (auto func : srcModule.getOps<LLVM::LLVMFuncOp>()) {
+    if (auto target =
+            dstModule.lookupSymbol<LLVM::LLVMFuncOp>(func.getSymName()))
+      mapper.map(func.getOperation(), target.getOperation());
+    else
+      builder.clone(*func, mapper);
+  }
+  for (auto global : srcModule.getOps<LLVM::GlobalOp>()) {
+    auto target = dstModule.lookupSymbol<LLVM::GlobalOp>(global.getSymName());
+    if (!target) {
+      builder.clone(*global, mapper);
+      continue;
+    }
+    mapper.map(global.getOperation(), target.getOperation());
+    auto hasInitializer = [](LLVM::GlobalOp op) {
+      return op.getValueOrNull() || !op.getInitializerRegion().empty();
+    };
+    if (!hasInitializer(target) && hasInitializer(global)) {
+      // Earlier imports may still hold the declaration's Operation *.
+      target->setAttrs(global->getAttrDictionary());
+      target->setLoc(global.getLoc());
+      Region &initializer = global.getInitializerRegion();
+      if (!initializer.empty())
+        initializer.cloneInto(&target.getInitializerRegion(), mapper);
+    }
+  }
+  return mapper;
+}
+
 FailureOr<LLVM::LLVMFuncOp>
 cloneLLVMSymbolsAndLookupFunc(ModuleOp curModule, ModuleOp parsedModule,
                               std::optional<llvm::StringRef> funcName) {
   LLVM::LLVMFuncOp parsedFunc = findExternalLLVMFunc(parsedModule, funcName);
   if (!parsedFunc)
     return failure();
-
-  OpBuilder builder(curModule.getContext());
-  OpBuilder::InsertionGuard guard(builder);
-  builder.setInsertionPointToStart(curModule.getBody());
-  IRMapping mapper;
-  for (auto func : parsedModule.getOps<LLVM::LLVMFuncOp>()) {
-    if (!curModule.lookupSymbol<LLVM::LLVMFuncOp>(func.getSymName()))
-      builder.clone(*func, mapper);
-  }
-  for (auto global : parsedModule.getOps<LLVM::GlobalOp>()) {
-    if (!curModule.lookupSymbol<LLVM::GlobalOp>(global.getSymName()))
-      builder.clone(*global, mapper);
-  }
-
+  if (failed(cloneLLVMSymbols(curModule, parsedModule)))
+    return failure();
   LLVM::LLVMFuncOp funcOp =
       curModule.lookupSymbol<LLVM::LLVMFuncOp>(parsedFunc.getSymName());
   if (!funcOp)

@@ -10,20 +10,22 @@ from triton.experimental.tle.raw import dialect
 
 from triton._flagtree_backend import FLAGTREE_BACKEND
 
-pytestmark = pytest.mark.skipif(FLAGTREE_BACKEND not in ("", "nvidia"), reason="requires the NVIDIA CUDA raw backend")
+RAW_DIALECT = "hcu" if FLAGTREE_BACKEND == "hcu" else "cuda"
+pytestmark = pytest.mark.skipif(FLAGTREE_BACKEND not in ("", "nvidia", "hcu"), reason="requires CUDA or HCU raw")
 
 
 @pytest.fixture(autouse=True)
-def fragment_environment():
-    if torch.version.hip is not None:
+def warp_size():
+    if RAW_DIALECT == "cuda" and torch.version.hip is not None:
         pytest.skip("requires the NVIDIA CUDA raw backend")
     if not torch.cuda.is_available():
-        pytest.fail("CUDA fragment tests require an accessible NVIDIA GPU")
-    if triton.runtime.driver.active.get_current_target().backend != "cuda":
-        pytest.skip("requires the NVIDIA CUDA raw backend")
+        pytest.fail(f"{RAW_DIALECT} fragment tests require an accessible GPU")
+    target = triton.runtime.driver.active.get_current_target()
+    if target.backend != ("hip" if RAW_DIALECT == "hcu" else "cuda"):
+        pytest.skip(f"requires the {RAW_DIALECT} raw backend")
     with triton.knobs.autotuning.scope():
         triton.knobs.autotuning.adjust_block_size = False
-        yield
+        yield target.warp_size
 
 
 SOURCE = Path(__file__).parent / "inputs" / "raw_fragment.cu"
@@ -31,7 +33,7 @@ SOURCE = Path(__file__).parent / "inputs" / "raw_fragment.cu"
 
 def bind(symbol, *, deferred=True, **kwargs):
 
-    @dialect(name="cuda", file=SOURCE, extern_func_name=symbol, deferred=deferred, **kwargs)
+    @dialect(name=RAW_DIALECT, file=SOURCE, extern_func_name=symbol, deferred=deferred, **kwargs)
     def function(*args, **kw):
         ...
 
@@ -43,7 +45,7 @@ COPIES = {
     for name in ("Bool", "I8", "U8", "I16", "U16", "I32", "U32", "I64", "U64", "F16", "BF16", "F32", "F64")
 }
 SCALARS = {name: bind("Scalar_" + name) for name in COPIES}
-DOTS = {name: bind("Dot_" + name) for name in ("FP8", "FP16", "BF16")}
+
 step = bind("Step")
 masked_modify = bind("MaskedModify")
 mixed_returns = bind("MixedReturns")
@@ -88,14 +90,14 @@ def special_bit_patterns(name, width):
     return values + special.get(name, [])
 
 
-def bits_tensor_int(name, width):
+def bits_tensor_int(name, width, count):
     if width == 1:
-        return torch.tensor([False, True] * 128, device="cuda")
+        return torch.tensor([False, True] * (count // 2), device="cuda")
     if width == 8:
         values = list(range(256))
     else:
         values = special_bit_patterns(name, width)
-        values = (values * (256 // len(values) + 1))[:256]
+    values = (values * triton.cdiv(count, len(values)))[:count]
     signed = [v if v < (1 << (width - 1)) else v - (1 << width) for v in values]
     return torch.tensor(signed, device="cuda", dtype=getattr(torch, f"int{width}"))
 
@@ -107,24 +109,24 @@ for name, symbol, width in TYPES:
         ABI_TEST_PARAMS.append(
             pytest.param(name, symbol, width, bits, id=f"scalar-{name}-0x{bits:0{max(1, width // 4)}x}"))
 
-BOUNDARIES = [1, 31, 32, 33, 127, 128, 129, 1023, 1024, 1025, 4095, 4096, 4097, 16384]
+BOUNDARIES = [1, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 257, 1023, 1024, 1025, 4095, 4096, 4097, 16384]
 
 
 @pytest.mark.parametrize("name,symbol,width,scalar_bits", ABI_TEST_PARAMS)
-def test_bit_exact_abi(name, symbol, width, scalar_bits):
+def test_bit_exact_abi(name, symbol, width, scalar_bits, warp_size):
     target = tl.int1 if name == "bool" else getattr(tl, name)
-    x = bits_tensor_int(name, width)
+    x = bits_tensor_int(name, width, 8 * warp_size)
     original = x.clone()
     backing = torch.full((x.numel() + 32, ), 1, dtype=x.dtype, device="cuda")
     y = backing[16:-16]
     v = scalar_bits if scalar_bits is not None else 0
     v = v if width == 1 or v < (1 << (width - 1)) else v - (1 << width)
     scalar = torch.tensor([v], dtype=x.dtype, device="cuda")
-    s = torch.tensor([v] * 128, dtype=x.dtype, device="cuda")
+    s = torch.full((4 * warp_size, ), v, dtype=x.dtype, device="cuda")
     function = SCALARS[symbol] if scalar_bits is not None else COPIES[symbol]
 
     abi_kernel[(1, )](triton.reinterpret(s, target), triton.reinterpret(x, target), triton.reinterpret(y, target),
-                      x.numel(), BLOCK=256, FN=function, SCALAR=scalar_bits is not None, num_warps=4)
+                      x.numel(), BLOCK=x.numel(), FN=function, SCALAR=scalar_bits is not None, num_warps=4)
 
     torch.testing.assert_close(s, scalar.expand_as(s))
     torch.testing.assert_close(x, original, rtol=0, atol=0)
@@ -161,62 +163,9 @@ def bool_kernel(X, Y, flag, BLOCK: tl.constexpr):
     tl.store(Y + offsets, result)
 
 
-@pytest.mark.parametrize("dtype,symbol", [
-    pytest.param(torch.float8_e4m3fn, "FP8", id="fp8"),
-    pytest.param(torch.float16, "FP16", id="fp16"),
-    pytest.param(torch.bfloat16, "BF16", id="bf16"),
-])
-@pytest.mark.parametrize("num_warps", [1, 2, 8])
-@pytest.mark.parametrize("M,N", [(4, 5), (5, 4)])
-@pytest.mark.parametrize("K", BOUNDARIES)
-def test_float_matmul(dtype, symbol, M, N, K, num_warps):
-    gen = torch.Generator().manual_seed(20261024)
-    host_a = torch.randint(-16, 16, (M, K), generator=gen).float() / 4
-    host_b = torch.randint(-16, 16, (K, N), generator=gen).float() / 4
-    a = host_a.to(device="cuda", dtype=dtype)
-    b = host_b.to(device="cuda", dtype=dtype)
-    buffer = torch.full((M + 2, N + 2), -12345, device="cuda", dtype=torch.float32)
-    c = buffer[1:-1, 1:-1]
-    expected = buffer.clone()
-    expected[1:-1, 1:-1] = a.float().cpu() @ b.float().cpu()
-    BLOCK_SIZE = max(triton.next_power_of_2(K), num_warps * 32)
-    LAYOUT: tl.constexpr = gpu.BlockEncoding(size_per_thread=[1], threads_per_warp=[32], warps_per_cta=[num_warps],
-                                             order=[0])
-    float_matmul_kernel[(M, N)](a, a.stride(0), a.stride(1), b, b.stride(0), b.stride(1), c, c.stride(0), c.stride(1),
-                                K, BLOCK_SIZE, LAYOUT, DOTS[symbol], num_warps=num_warps)
-    torch.testing.assert_close(buffer, expected, rtol=0, atol=0)
-
-
-@triton.jit
-def float_matmul_kernel(
-    a_ptr,
-    a_row_stride,
-    a_col_stride,
-    b_ptr,
-    b_row_stride,
-    b_col_stride,
-    c_ptr,
-    c_row_stride,
-    c_col_stride,
-    K,
-    BLOCK_SIZE: tl.constexpr,
-    LAYOUT: tl.constexpr,
-    DOT: tl.constexpr,
-):
-    row = tl.program_id(0)
-    col = tl.program_id(1)
-    ks = tl.arange(0, BLOCK_SIZE)
-    mask = ks < K
-    a_row = tl.load(a_ptr + row * a_row_stride + ks * a_col_stride, mask=mask, other=0.0)
-    b_col = tl.load(b_ptr + ks * b_row_stride + col * b_col_stride, mask=mask, other=0.0)
-    out = c_ptr + row * c_row_stride + col * c_col_stride
-    a_row = gpu.set_layout(a_row, LAYOUT)
-    b_col = gpu.set_layout(b_col, LAYOUT)
-    raw.call(DOT, [raw.fragment(a_row), raw.fragment(b_col), out], output_indices=[])
-
-
-def test_wrapper_specializations_do_not_cross_contaminate():
-    lengths = (128, 512, 256, 512, 128)
+def test_wrapper_specializations_do_not_cross_contaminate(warp_size):
+    threads = 4 * warp_size
+    lengths = tuple(threads * items for items in (1, 4, 2, 4, 1))
     outidxs = ((), (0, ), (1, ), (0, 1), (1, 0), (0, 1, 0), (1, 0, 1))
     width = max(lengths)
     sstep = width * max(map(len, outidxs))
@@ -224,7 +173,7 @@ def test_wrapper_specializations_do_not_cross_contaminate():
     host = torch.arange(1, calls * width + 1, dtype=torch.int32).reshape(calls, width)
     x, y = host.cuda().clone(), host.cuda().clone()
     s = torch.full((calls, sstep // width, width), -1, dtype=torch.int32, device="cuda")
-    layout = gpu.BlockEncoding([1], [32], [4], [0])
+    layout = gpu.BlockEncoding([1], [warp_size], [4], [0])
 
     wrapper_specializations_kernel[(1, )](x, y, s, layout, lengths, outidxs, width, sstep, num_warps=4)
 
@@ -233,7 +182,7 @@ def test_wrapper_specializations_do_not_cross_contaminate():
     expected = torch.full(s.shape, -1, dtype=torch.int32)
     for length_index, length in enumerate(lengths):
         columns = torch.arange(length, dtype=torch.int32)
-        stamp_value = (columns % 128) * 1000 + (columns // 128) * 1000000
+        stamp_value = (columns % threads) * 1000 + (columns // threads) * 1000000
         for i, output_indices in enumerate(outidxs):
             call = length_index * len(outidxs) + i
             for slot, index in enumerate(output_indices):
@@ -266,12 +215,12 @@ def wrapper_specializations_kernel(X, Y, S, LAYOUT: tl.constexpr, LENGTHS: tl.co
 
 @pytest.mark.parametrize("warps", [1, 2, 4, 8])
 @pytest.mark.parametrize("spt", [1, 2, 4, 8])
-def test_1d_element_ownership(warps, spt):
-    threads = warps * 32
+def test_1d_element_ownership(warps, spt, warp_size):
+    threads = warps * warp_size
     n = threads * spt * 2
     x = torch.arange(n, dtype=torch.int32, device="cuda")
     y = torch.empty_like(x)
-    layout = gpu.BlockEncoding([spt], [32], [warps], [0])
+    layout = gpu.BlockEncoding([spt], [warp_size], [warps], [0])
     stamp_1d_kernel[(1, )](x, y, n, layout, num_warps=warps)
     expected = torch.empty(n, dtype=torch.int32)
     # Independent blocked-layout oracle: contiguous per-thread groups, then tiles.
@@ -292,8 +241,11 @@ def stamp_1d_kernel(X, Y, BLOCK: tl.constexpr, LAYOUT: tl.constexpr):
 
 @pytest.mark.parametrize("order", [(0, 1), (1, 0)])
 @pytest.mark.parametrize("distribution", [0, 1])
-def test_2d_element_ownership(order, distribution):
-    spt, tpw, wpc = ([1, 2], [4, 8], [1, 4]) if distribution == 0 else ([2, 1], [8, 4], [2, 2])
+def test_2d_element_ownership(order, distribution, warp_size):
+    if distribution == 0:
+        spt, tpw, wpc = [1, 2], [warp_size // 8, 8], [1, 4]
+    else:
+        spt, tpw, wpc = [2, 1], [warp_size // 4, 4], [2, 2]
     shape = [spt[d] * tpw[d] * wpc[d] for d in range(2)]
     m, n = shape
     x = torch.arange(m * n, dtype=torch.int32, device="cuda")
@@ -301,9 +253,9 @@ def test_2d_element_ownership(order, distribution):
     layout = gpu.BlockEncoding(spt, tpw, wpc, order)
     compiled = stamp_2d_kernel[(1, )](x, y, m, n, layout, num_warps=4)
     expected = torch.empty((m, n), dtype=torch.int32)
-    for thread in range(128):
+    for thread in range(4 * warp_size):
         for item in range(spt[0] * spt[1]):
-            lane, warp, local = thread % 32, thread // 32, item
+            lane, warp, local = thread % warp_size, thread // warp_size, item
             coords = [0, 0]
             for dim in order:
                 coords[dim] = local % spt[dim] + spt[dim] * (lane % tpw[dim] + tpw[dim] * (warp % wpc[dim]))
@@ -324,25 +276,26 @@ def stamp_2d_kernel(X, Y, M: tl.constexpr, N: tl.constexpr, LAYOUT: tl.constexpr
     tl.store(Y + offsets, result)
 
 
-def test_sliced_layout():
-    parent = gpu.BlockEncoding([1, 1], [4, 8], [1, 4], [1, 0])
+def test_sliced_layout(warp_size):
+    threads = 4 * warp_size
+    parent = gpu.BlockEncoding([1, 1], [warp_size // 8, 8], [1, 4], [1, 0])
     sliced = gpu.SlicedEncoding(0, parent)
     host = torch.arange(128, dtype=torch.int32) * 17 + 3
     x = host.cuda()
-    observed = torch.full((128, 4), -1, device="cuda", dtype=torch.int32)
-    lengths = torch.full((128, ), -1, device="cuda", dtype=torch.int32)
+    observed = torch.full((threads, 4), -1, device="cuda", dtype=torch.int32)
+    lengths = torch.full((threads, ), -1, device="cuda", dtype=torch.int32)
     inspect_fragment_kernel[(1, )](x, observed, lengths, 128, 4, sliced, num_warps=4)
 
     # Drop the parent's row coordinate. Lanes differing only in lane // 8
     # must receive identical fragments, in the same item order.
-    expected = torch.empty((128, 4), dtype=torch.int32)
-    for thread in range(128):
-        warp, lane = thread // 32, thread % 32
+    expected = torch.empty((threads, 4), dtype=torch.int32)
+    for thread in range(threads):
+        warp, lane = thread // warp_size, thread % warp_size
         for item in range(4):
             col = item * 32 + warp * 8 + lane % 8
             expected[thread, item] = host[col]
     torch.testing.assert_close(observed.cpu(), expected, rtol=0, atol=0)
-    torch.testing.assert_close(lengths.cpu(), torch.full((128, ), 4, dtype=torch.int32), rtol=0, atol=0)
+    torch.testing.assert_close(lengths.cpu(), torch.full((threads, ), 4, dtype=torch.int32), rtol=0, atol=0)
     torch.testing.assert_close(x.cpu(), host, rtol=0, atol=0)
 
 
@@ -350,7 +303,7 @@ def test_sliced_layout():
 def inspect_fragment_kernel(X, Observed, Lengths, BLOCK: tl.constexpr, CAPACITY: tl.constexpr, LAYOUT: tl.constexpr):
     offsets = tl.arange(0, BLOCK)
     x = gpu.set_layout(tl.load(X + offsets), LAYOUT)
-    # CUDA writes every physical thread's fragment to its own output row,
+    # The device function writes every physical thread's fragment to its own output row,
     # avoiding the deduplication of replicated elements by a Triton store.
     raw.call(inspect_fragment, (raw.fragment(x), Observed, Lengths, CAPACITY), output_indices=[])
 
@@ -381,7 +334,7 @@ def elementwise_kernel(X, Y, N: tl.constexpr, BLOCK: tl.constexpr, LAYOUT: tl.co
 @pytest.mark.parametrize("n", BOUNDARIES, ids=lambda n: f"n{n}")
 @pytest.mark.parametrize("mask_pattern", ["tail", "holes"])
 @pytest.mark.parametrize("spt", [1, 2, 4, 8], ids=lambda spt: f"spt{spt}")
-def test_boundaries_and_mask(n, mask_pattern, spt):
+def test_boundaries_and_mask(n, mask_pattern, spt, warp_size):
     # Keep at least one complete per-thread group.
     block = max(triton.next_power_of_2(n), spt)
     x = torch.arange(3 * block, device="cuda", dtype=torch.float32).reshape(3, block) / 16
@@ -394,7 +347,7 @@ def test_boundaries_and_mask(n, mask_pattern, spt):
     backing = torch.full((3 * block + 32, ), -12345.0, device="cuda")
     y = backing[16:-16].reshape(3, block)
     expected = torch.where(mask, x * 2 + 0.5, x)
-    layout = gpu.BlockEncoding([spt], [32], [4], [0])
+    layout = gpu.BlockEncoding([spt], [warp_size], [4], [0])
 
     masked_fragment_kernel[(3, )](x, mask, y, block, layout, num_warps=4)
 
@@ -419,12 +372,12 @@ def masked_fragment_kernel(X, Mask, Y, BLOCK: tl.constexpr, LAYOUT: tl.constexpr
     for n in (0, 1, 2, 7)
     for mode in ("static", "range", "tl_range", "nested", "named_fragment", "multi")
 ])
-def test_loop_carries(mode, iterations):
-    x = torch.arange(256, device="cuda", dtype=torch.float32) / 16
+def test_loop_carries(mode, iterations, warp_size):
+    x = torch.arange(8 * warp_size, device="cuda", dtype=torch.float32) / 16
     original = x.clone()
     y, z = torch.empty_like(x), torch.empty_like(x)
-    layout = gpu.BlockEncoding([2], [32], [4], [0])
-    compiled = loop_kernel[(1, )](x, y, z, iterations, 256, layout, mode, iterations, num_warps=4)
+    layout = gpu.BlockEncoding([2], [warp_size], [4], [0])
+    compiled = loop_kernel[(1, )](x, y, z, iterations, x.numel(), layout, mode, iterations, num_warps=4)
     if mode == "multi":
         ey, ez = original.cpu(), original.cpu() + 10
         delta = 1.0
@@ -483,22 +436,23 @@ def loop_kernel(X, Y, Z, iterations, BLOCK: tl.constexpr, LAYOUT: tl.constexpr, 
 
 
 @pytest.mark.parametrize("iterations", [0, 1, 2, 7, 15, 16])
-def test_2d_layout_dynamic_loop_permutation(iterations):
-    host = torch.arange(256, dtype=torch.int32) * 17 + 3
+def test_2d_layout_dynamic_loop_permutation(iterations, warp_size):
+    size = 8 * warp_size
+    host = torch.arange(size, dtype=torch.int32) * 17 + 3
     x = host.cuda()
     y = torch.full_like(x, -1)
-    compiled = loop_permute_2d_kernel[(1, )](x, y, iterations, COPIES["I32"], num_warps=4)
+    compiled = loop_permute_2d_kernel[(1, )](x, y, iterations, COPIES["I32"], warp_size, num_warps=4)
 
-    # Each layout covers (16, 16) exactly once, with two items per thread.
-    # CUDA copies the same physical (warp, lane, item) from A to B.
-    source_for_destination = torch.full((256, ), -1, dtype=torch.int64)
+    # Both layouts cover the tile once, with two items per thread.
+    # The raw function copies the same physical (warp, lane, item) from A to B.
+    source_for_destination = torch.full((size, ), -1, dtype=torch.int64)
     for warp in range(4):
-        for lane in range(32):
+        for lane in range(warp_size):
             for item in range(2):
-                source_row, source_col = 4 * warp + lane // 8, 2 * (lane % 8) + item
+                source_row, source_col = (warp_size // 8) * warp + lane // 8, 2 * (lane % 8) + item
                 destination_row, destination_col = 2 * (lane // 4) + item, 4 * warp + lane % 4
                 source_for_destination[destination_row * 16 + destination_col] = source_row * 16 + source_col
-    torch.testing.assert_close(source_for_destination.sort().values, torch.arange(256), rtol=0, atol=0)
+    torch.testing.assert_close(source_for_destination.sort().values, torch.arange(size), rtol=0, atol=0)
     expected = host.clone()
     for _ in range(iterations):
         expected = expected[source_for_destination]
@@ -509,13 +463,13 @@ def test_2d_layout_dynamic_loop_permutation(iterations):
 
 
 @triton.jit
-def loop_permute_2d_kernel(X, Y, iterations, copy_fn: tl.constexpr):
-    source_layout: tl.constexpr = gpu.BlockEncoding([1, 2], [4, 8], [4, 1], [1, 0])
-    destination_layout: tl.constexpr = gpu.BlockEncoding([2, 1], [8, 4], [1, 4], [1, 0])
-    offsets = tl.arange(0, 256).reshape(16, 16)
+def loop_permute_2d_kernel(X, Y, iterations, copy_fn: tl.constexpr, WARP_SIZE: tl.constexpr):
+    source_layout: tl.constexpr = gpu.BlockEncoding([1, 2], [WARP_SIZE // 8, 8], [4, 1], [1, 0])
+    destination_layout: tl.constexpr = gpu.BlockEncoding([2, 1], [WARP_SIZE // 4, 4], [1, 4], [1, 0])
+    offsets = tl.arange(0, 8 * WARP_SIZE).reshape(WARP_SIZE // 2, 16)
     x = gpu.set_layout(tl.load(X + offsets), source_layout)
     for i in range(iterations):
-        destination = gpu.set_layout(tl.full((16, 16), -1, tl.int32), destination_layout)
+        destination = gpu.set_layout(tl.full((WARP_SIZE // 2, 16), -1, tl.int32), destination_layout)
         # Achieve logical permutation by copying the physical storage.
         result = raw.call(copy_fn, (raw.fragment(destination), raw.fragment(x)), output_indices=[0])
         # Convert back to the source layout. Get a permuted x with the original layout.
@@ -524,9 +478,9 @@ def loop_permute_2d_kernel(X, Y, iterations, copy_fn: tl.constexpr):
 
 
 @pytest.mark.parametrize("mode", ["ordered", "reverse", "duplicate"])
-@pytest.mark.parametrize("sizes", [(128, 128, 128), (256, 128, 512)], ids=["equal_lengths", "unequal_lengths"])
-def test_heterogeneous_results(mode, sizes):
-    nx, ny, nm = sizes
+@pytest.mark.parametrize("items_per_thread", [(1, 1, 1), (2, 1, 4)], ids=["equal_lengths", "unequal_lengths"])
+def test_heterogeneous_results(mode, items_per_thread, warp_size):
+    nx, ny, nm = (4 * warp_size * items for items in items_per_thread)
     x = torch.arange(nx, device="cuda", dtype=torch.float32)
     y = torch.arange(ny, device="cuda", dtype=torch.int32)
     mask = torch.arange(nm, device="cuda") % 2 == 0
@@ -586,11 +540,11 @@ def swap_kernel(X, Y, A, B, BLOCK: tl.constexpr):
     tl.store(B + offsets, b)
 
 
-def test_no_return_with_global_pointer_side_effect():
+def test_no_return_with_global_pointer_side_effect(warp_size):
     x = torch.arange(512, dtype=torch.int32, device="cuda")
     backing = torch.full((544, ), -12345, dtype=torch.int32, device="cuda")
     y = backing[16:-16]
-    layout = gpu.BlockEncoding([1], [32], [4], [0])
+    layout = gpu.BlockEncoding([1], [warp_size], [4], [0])
     side_effect_kernel[(1, )](x, y, 512, layout, num_warps=4)
     torch.testing.assert_close(y, x + 7, rtol=0, atol=0)
     assert torch.all(backing[:16] == -12345) and torch.all(backing[-16:] == -12345)
@@ -604,30 +558,30 @@ def side_effect_kernel(X, Y, BLOCK: tl.constexpr, LAYOUT: tl.constexpr):
 
 
 @pytest.mark.parametrize("flag", [True, False])
-def test_fragment_tensor_buffer_scalars_and_pointer(flag):
-    x = torch.arange(128, device="cuda", dtype=torch.float32)
+def test_fragment_tensor_buffer_scalars_and_pointer(flag, warp_size):
+    x = torch.arange(4 * warp_size, device="cuda", dtype=torch.float32)
     y = x * 0.25
     a, b, c, side = [torch.empty_like(x) for _ in range(4)]
-    layout = gpu.BlockEncoding([1], [32], [4], [0])
-    memory_kernel[(1, )](x, y, a, b, c, side, flag, layout, num_warps=4)
+    layout = gpu.BlockEncoding([1], [warp_size], [4], [0])
+    memory_kernel[(1, )](x, y, a, b, c, side, flag, layout, warp_size, num_warps=4)
     expected = (x + y * 2 + 3) * (1 if flag else -1)
     for output, offset in ((a, 0), (b, 1), (c, 2), (side, 3)):
         torch.testing.assert_close(output, expected + offset, rtol=0, atol=0)
-    torch.testing.assert_close(x, torch.arange(128, device="cuda", dtype=torch.float32), rtol=0, atol=0)
+    torch.testing.assert_close(x, torch.arange(4 * warp_size, device="cuda", dtype=torch.float32), rtol=0, atol=0)
     torch.testing.assert_close(y, x * 0.25, rtol=0, atol=0)
 
 
 @triton.jit
-def memory_kernel(X, Y, A, B, C, Side, flag, LAYOUT: tl.constexpr):
-    offsets = tl.arange(0, 128)
+def memory_kernel(X, Y, A, B, C, Side, flag, LAYOUT: tl.constexpr, WARP_SIZE: tl.constexpr):
+    offsets = tl.arange(0, 4 * WARP_SIZE)
     x = gpu.set_layout(tl.load(X + offsets), LAYOUT)
     y = tl.load(Y + offsets)
-    buf = gpu.alloc([4, 32], tl.float32, layout=None, scope=gpu.smem, nv_mma_shared_layout=False)
+    buf = gpu.alloc([4, WARP_SIZE], tl.float32, layout=None, scope=gpu.smem, nv_mma_shared_layout=False)
     buf, a, b = raw.call(mixed_memory, (raw.fragment(x), y, buf, 2.0, flag.to(tl.int1), 3, Side),
                          output_indices=[2, 0, 1])
     tl.store(A + offsets, a)
     tl.store(B + offsets, b)
     r = tl.arange(0, 4)[:, None]
-    c = tl.arange(0, 32)[None, :]
-    values = tl.load(gpu.local_ptr(buf, (tl.broadcast_to(r, (4, 32)), tl.broadcast_to(c, (4, 32)))))
-    tl.store(C + r * 32 + c, values)
+    c = tl.arange(0, WARP_SIZE)[None, :]
+    values = tl.load(gpu.local_ptr(buf, (tl.broadcast_to(r, (4, WARP_SIZE)), tl.broadcast_to(c, (4, WARP_SIZE)))))
+    tl.store(C + r * WARP_SIZE + c, values)

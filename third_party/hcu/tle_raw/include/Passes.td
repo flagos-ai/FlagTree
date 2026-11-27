@@ -5,10 +5,10 @@ include "mlir/Pass/PassBase.td"
 
 def HCUMaterializeDeferredRaw
     : Pass<"hcu-tle-materialize-deferred-raw", "mlir::ModuleOp"> {
-  let summary = "Materialize deferred TLE raw DSL regions from pending HCU sources";
+  let summary = "Materialize deferred TLE raw calls from compiled HIP sources";
   let description = [{
-    Fills the bodies of ``tle.dsl_region`` ops that carry a ``tle_raw.source_id``
-    attribute by looking up registered pending HCU sources at compile time.
+    Imports each compiled HIP source once and binds deferred raw calls to
+    the corresponding wrapper or wrapper adapter.
   }];
   let dependentDialects = ["mlir::triton::tle::TleDialect"];
 }

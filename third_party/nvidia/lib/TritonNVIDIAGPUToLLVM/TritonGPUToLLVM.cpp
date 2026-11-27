@@ -98,23 +98,11 @@ public:
 #ifdef __TLE__
 class TleLLVMConversionTarget : public ConversionTarget {
 public:
-  explicit TleLLVMConversionTarget(MLIRContext &ctx,
-                                   LLVMTypeConverter &typeConverter)
-      : ConversionTarget(ctx) {
+  explicit TleLLVMConversionTarget(MLIRContext &ctx) : ConversionTarget(ctx) {
     addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect, math::MathDialect,
                     NVVM::NVVMDialect, mlir::gpu::GPUDialect>();
     addIllegalDialect<tle::TleDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
-    addDynamicallyLegalOp<tle::DSLRegionOp, tle::YieldOp>(
-        [&](Operation *op) -> bool {
-          if (op->hasAttr("tle_raw.wrapper_symbol"))
-            return false;
-          bool hasLegalRegions = true;
-          for (auto &region : op->getRegions()) {
-            hasLegalRegions = hasLegalRegions && typeConverter.isLegal(&region);
-          }
-          return hasLegalRegions && typeConverter.isLegal(op);
-        });
     addLegalOp<tle::LocalPointersOp, tle::RemotePointersOp, tle::NodePutOp,
                tle::NodeGetOp>();
     // Allow non-TLE ops to remain during this partial conversion.
@@ -171,7 +159,7 @@ struct ConvertTritonGPUToLLVM
     int benefit = patternBenefitPrioritizeOverLLVMConversions;
 #ifdef __TLE__
     {
-      TleLLVMConversionTarget target(*context, typeConverter);
+      TleLLVMConversionTarget target(*context);
       RewritePatternSet patterns(context);
       mlir::triton::tle::populateDSLRegionOpToLLVMPatterns(typeConverter,
                                                            patterns, benefit);

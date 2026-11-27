@@ -11,15 +11,17 @@ def _compile_pending_raw_sources(mod: Any, pending: dict[str, dict[str, Any]]) -
     tle.load_dialects(mod.context)
     from triton.experimental.tle.raw.hcu.runtime import compile_deferred_pending_source
 
+    wrappers = {}
+    for metadata in tle.raw_passes.register_raw_wrappers(mod, ["hcu", "hip"]):
+        wrappers.setdefault(metadata["source_id"], []).append(metadata)
+
     compiled = {}
     for source_id, entry in pending.items():
         region_dialect = entry.get("region_dialect")
         if region_dialect not in ("hcu", "hip"):
             raise RuntimeError(f"deferred raw source {source_id}: unsupported region_dialect={region_dialect!r}")
         try:
-            # The compiler replaces the source-level name with its lowered LLVM
-            # symbol. Keep that update local to this compilation.
-            payload = dict(entry)
+            payload = dict(entry, required_wrappers=wrappers.get(source_id, []))
             llvm_ir = compile_deferred_pending_source(payload, context=mod.context)
             compiled[source_id] = {
                 "region_dialect": payload["region_dialect"],
