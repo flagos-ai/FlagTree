@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "synthetic": true,
+  "title": "Graph operator time, longest first",
+  "kind": "bar",
+  "metric": "Total operator device time",
+  "unit": "us",
+  "cohort": "SYNTHETIC: matched workload/device/statistic illustration",
+  "provenance": [],
+  "x_axis": "revision",
+  "uncertainty_method": "Synthetic uncertainty interval",
+  "rows": [
+    {
+      "label": "gate/up",
+      "value": 20,
+      "status": "qualified"
+    },
+    {
+      "label": "attention",
+      "value": 35,
+      "status": "qualified"
+    },
+    {
+      "label": "unattributed",
+      "value": null,
+      "reason": "no per-operator capture"
+    }
+  ],
+  "sort_by": "value_desc",
+  "chart_role": "graph_operator_latency",
+  "aggregation": "Sum of recorded operator durations over the full model invocation; overlaps are not model elapsed time."
+}

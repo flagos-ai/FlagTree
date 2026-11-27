@@ -1,0 +1,251 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1312" viewBox="0 0 1500 1312" role="img">
+<title>Kernel pipeline comparison — FlagMega swimlane template</title>
+<desc>FlagMega kernel swimlane. Color denotes stage; stroke/pattern denotes evidence. Blank time is unclassified.</desc>
+<metadata>{&quot;panels&quot;: [{&quot;invocation&quot;: &quot;synthetic-baseline&quot;, &quot;label&quot;: &quot;Baseline — illustrative producer starvation&quot;, &quot;scope&quot;: &quot;One CTA; two consumer WGs and one producer role&quot;, &quot;timebase&quot;: {&quot;alignment&quot;: &quot;synthetic&quot;, &quot;resolution_ns&quot;: 32, &quot;source&quot;: &quot;illustrative relative ns&quot;}}, {&quot;invocation&quot;: &quot;synthetic-candidate&quot;, &quot;label&quot;: &quot;Candidate — illustrative earlier producer progress&quot;, &quot;scope&quot;: &quot;Same illustrative CTA and role topology&quot;, &quot;timebase&quot;: {&quot;alignment&quot;: &quot;synthetic&quot;, &quot;resolution_ns&quot;: 32, &quot;source&quot;: &quot;illustrative relative ns&quot;}}], &quot;schema_version&quot;: 1, &quot;synthetic&quot;: true, &quot;window_ns&quot;: [0, 32000]}</metadata>
+<defs>
+<marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6" fill="none" stroke="#475569"/></marker>
+<pattern id="sampled-pattern" width="6" height="6" patternUnits="userSpaceOnUse"><path d="M0,6 L6,0" stroke="#334155" stroke-opacity=".4"/></pattern>
+<pattern id="unknown-pattern" width="8" height="8" patternUnits="userSpaceOnUse"><path d="M0,0 L8,8 M0,8 L8,0" stroke="#64748b" stroke-opacity=".4"/></pattern>
+</defs>
+<style>
+text { font-family: Arial, "DejaVu Sans", sans-serif; fill: #1f2937; }
+.title { font-size: 20px; font-weight: 700; } .panel-title { font-size: 17px; font-weight: 700; }
+.small, .lane { font-size: 12px; } .lane { font-weight: 700; }
+.scope, .tick, .phase, .bar-label { font-size: 10px; } .scope, .tick { fill: #64748b; }
+.notice, .bubble { font-size: 12px; fill: #9a3412; } .group-title { font-size: 11px; font-weight: 700; fill: #475569; }
+.bubble-number { font-size: 9px; fill: #9a3412; }
+.grid { stroke: #e5e7eb; stroke-width: 1; } .lane-line { stroke: #d1d5db; stroke-width: 1; }
+.event { stroke-width: 1; } .observed_activity { fill-opacity: .9; }
+.inflight_envelope { fill-opacity: .08; stroke: #475569; stroke-dasharray: 5 3; }
+.sampled { fill-opacity: .45; stroke: #475569; }
+.inferred { fill-opacity: .35; stroke: #64748b; stroke-dasharray: 2 3; }
+.unknown { fill-opacity: .15; stroke: #64748b; stroke-dasharray: 2 2; }
+.dependency { fill: none; stroke: #475569; stroke-width: 1; stroke-dasharray: 3 3; }
+</style>
+<rect width="100%" height="100%" fill="#fff"/>
+<text x="20" y="30" class="title">Kernel pipeline comparison — FlagMega swimlane template</text>
+<text x="20" y="59" class="small">Light theme, shared relative scale, explicit dependencies and evidence classes</text>
+<text x="20" y="80" class="notice">SYNTHETIC EXAMPLE — illustrative timings; hardware activity is not measured.</text>
+<text x="20" y="101" class="small">Panels compare separate invocations on the same relative scale; concurrency is interpreted within a panel.</text>
+<rect x="20.0" y="107" width="18" height="12" fill="#f0e442" rx="2"></rect>
+<text x="45.0" y="118" class="small">index</text>
+<rect x="385.0" y="107" width="18" height="12" fill="#56b4e9" rx="2"></rect>
+<text x="410.0" y="118" class="small">transfer</text>
+<rect x="750.0" y="107" width="18" height="12" fill="#0072b2" rx="2"></rect>
+<text x="775.0" y="118" class="small">tensor</text>
+<rect x="1115.0" y="107" width="18" height="12" fill="#e69f00" rx="2"></rect>
+<text x="1140.0" y="118" class="small">simt</text>
+<rect x="20.0" y="130" width="18" height="12" fill="#d55e00" rx="2"></rect>
+<text x="45.0" y="141" class="small">wait</text>
+<rect x="385.0" y="130" width="18" height="12" fill="#cc79a7" rx="2"></rect>
+<text x="410.0" y="141" class="small">sync</text>
+<rect x="750.0" y="130" width="18" height="12" fill="#009e73" rx="2"></rect>
+<text x="775.0" y="141" class="small">store</text>
+<rect x="1115.0" y="130" width="18" height="12" fill="#9ca3af" rx="2"></rect>
+<text x="1140.0" y="141" class="small">unknown</text>
+<rect x="20.0" y="156" width="20" height="14" fill="#56b4e9" class="event observed_activity"></rect>
+<text x="47.0" y="168" class="small">observed_activity</text>
+<rect x="506.6666666666667" y="156" width="20" height="14" fill="#56b4e9" class="event inflight_envelope"></rect>
+<text x="533.6666666666667" y="168" class="small">inflight_envelope</text>
+<rect x="993.3333333333334" y="156" width="20" height="14" fill="#56b4e9" class="event sampled"></rect>
+<rect x="993.3333333333334" y="156" width="20" height="14" fill="url(#sampled-pattern)"></rect>
+<text x="1020.3333333333334" y="168" class="small">sampled</text>
+<rect x="20.0" y="179" width="20" height="14" fill="#56b4e9" class="event inferred"></rect>
+<text x="47.0" y="191" class="small">inferred</text>
+<rect x="506.6666666666667" y="179" width="20" height="14" fill="#56b4e9" class="event unknown"></rect>
+<rect x="506.6666666666667" y="179" width="20" height="14" fill="url(#unknown-pattern)"></rect>
+<text x="533.6666666666667" y="191" class="small">unknown</text>
+<text x="20" y="218" class="small">Blank time is unclassified. Thin vertical marks are points. Stacked bars show overlapping intervals, not extra warps.</text>
+<text x="20" y="260" class="panel-title">Baseline — illustrative producer starvation</text>
+<text x="20" y="280" class="small">synthetic-baseline · One CTA; two consumer WGs and one producer role</text>
+<text x="20" y="297" class="small">Clock: illustrative relative ns; resolution: 32 ns; alignment: synthetic</text>
+<text x="20" y="314" class="notice">All timings are invented for the template. Producer copy envelopes do not establish TMA busy time.</text>
+<text x="20" y="352" class="group-title">WG PIPELINE</text>
+<text x="20" y="511" class="group-title">HARDWARE MODULES</text>
+<rect x="260.000" y="342" width="378.125" height="315" fill="#64748b" opacity=".045"></rect>
+<text x="264.0" y="356" class="phase">fill</text>
+<rect x="638.125" y="342" width="718.438" height="315" fill="#64748b" opacity=".045"></rect>
+<text x="642.125" y="356" class="phase">steady state</text>
+<rect x="1356.562" y="342" width="113.438" height="315" fill="#64748b" opacity=".045"></rect>
+<text x="1360.5625" y="356" class="phase">drain</text>
+<line x1="260.0" x2="260.0" y1="364" y2="657" class="grid"></line>
+<text x="260.0" y="671" class="tick" text-anchor="middle">0</text>
+<line x1="449.0625" x2="449.0625" y1="364" y2="657" class="grid"></line>
+<text x="449.0625" y="671" class="tick" text-anchor="middle">5</text>
+<line x1="638.125" x2="638.125" y1="364" y2="657" class="grid"></line>
+<text x="638.125" y="671" class="tick" text-anchor="middle">10</text>
+<line x1="827.1875" x2="827.1875" y1="364" y2="657" class="grid"></line>
+<text x="827.1875" y="671" class="tick" text-anchor="middle">15</text>
+<line x1="1016.25" x2="1016.25" y1="364" y2="657" class="grid"></line>
+<text x="1016.25" y="671" class="tick" text-anchor="middle">20</text>
+<line x1="1205.3125" x2="1205.3125" y1="364" y2="657" class="grid"></line>
+<text x="1205.3125" y="671" class="tick" text-anchor="middle">25</text>
+<line x1="1394.375" x2="1394.375" y1="364" y2="657" class="grid"></line>
+<text x="1394.375" y="671" class="tick" text-anchor="middle">30</text>
+<text x="1470" y="689" class="small" text-anchor="end">relative time (μs)</text>
+<text x="20" y="377" class="lane">WG0 / Consumer 0</text>
+<text x="20" y="392" class="scope"><title>WG0 / Consumer 0: Physical warps 4–7; illustrative</title>Physical warps 4–7; illustrative</text>
+<line x1="260" x2="1470" y1="380" y2="380" class="lane-line"></line>
+<rect class="event inferred" data-id="wait-k0" data-evidence="inferred" data-start-ns="1000" data-end-ns="10000" data-lane="wg0" data-invocation="synthetic-baseline" x="297.812" y="364" width="340.312" height="16" rx="2" fill="#d55e00"><title>{&quot;buffer&quot;: &quot;K[0], epoch 0&quot;, &quot;end_ns&quot;: 10000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;wait-k0&quot;, &quot;kind&quot;: &quot;wait&quot;, &quot;label&quot;: &quot;wait K0 ready&quot;, &quot;start_ns&quot;: 1000, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="301.8125" y="376" class="bar-label" fill="#1f2937">p0 wait K0 ready</text>
+<rect class="event inferred" data-id="qk0" data-evidence="inferred" data-start-ns="10000" data-end-ns="13000" data-lane="wg0" data-invocation="synthetic-baseline" x="638.125" y="364" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 13000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;qk0&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;QK&quot;, &quot;start_ns&quot;: 10000, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="642.125" y="376" class="bar-label" fill="#1f2937">p0 QK</text>
+<rect class="event inferred" data-id="softmax0" data-evidence="inferred" data-start-ns="13000" data-end-ns="15000" data-lane="wg0" data-invocation="synthetic-baseline" x="751.562" y="364" width="75.625" height="16" rx="2" fill="#e69f00"><title>{&quot;end_ns&quot;: 15000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;softmax0&quot;, &quot;kind&quot;: &quot;simt&quot;, &quot;label&quot;: &quot;softmax&quot;, &quot;start_ns&quot;: 13000, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="755.5625" y="376" class="bar-label" fill="#1f2937">p0 softmax</text>
+<rect class="event inferred" data-id="pv0" data-evidence="inferred" data-start-ns="15000" data-end-ns="18000" data-lane="wg0" data-invocation="synthetic-baseline" x="827.188" y="364" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 18000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;pv0&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;PV&quot;, &quot;start_ns&quot;: 15000, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="831.1875" y="376" class="bar-label" fill="#1f2937">p0 PV</text>
+<rect class="event inferred" data-id="wait-k1" data-evidence="inferred" data-start-ns="18000" data-end-ns="21000" data-lane="wg0" data-invocation="synthetic-baseline" x="940.625" y="364" width="113.438" height="16" rx="2" fill="#d55e00"><title>{&quot;end_ns&quot;: 21000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;wait-k1&quot;, &quot;kind&quot;: &quot;wait&quot;, &quot;label&quot;: &quot;wait K1 ready&quot;, &quot;start_ns&quot;: 18000, &quot;tile&quot;: &quot;p1&quot;}</title></rect>
+<text x="944.625" y="376" class="bar-label" fill="#1f2937">p1 wait K1 ready</text>
+<rect class="event inferred" data-id="qk1" data-evidence="inferred" data-start-ns="21000" data-end-ns="24000" data-lane="wg0" data-invocation="synthetic-baseline" x="1054.062" y="364" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 24000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;qk1&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;QK&quot;, &quot;start_ns&quot;: 21000, &quot;tile&quot;: &quot;p1&quot;}</title></rect>
+<text x="1058.0625" y="376" class="bar-label" fill="#1f2937">p1 QK</text>
+<rect class="event inferred" data-id="softmax1" data-evidence="inferred" data-start-ns="24000" data-end-ns="26000" data-lane="wg0" data-invocation="synthetic-baseline" x="1167.500" y="364" width="75.625" height="16" rx="2" fill="#e69f00"><title>{&quot;end_ns&quot;: 26000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;softmax1&quot;, &quot;kind&quot;: &quot;simt&quot;, &quot;label&quot;: &quot;softmax&quot;, &quot;start_ns&quot;: 24000, &quot;tile&quot;: &quot;p1&quot;}</title></rect>
+<text x="1171.5" y="376" class="bar-label" fill="#1f2937">p1 softmax</text>
+<rect class="event inferred" data-id="pv1" data-evidence="inferred" data-start-ns="26000" data-end-ns="29000" data-lane="wg0" data-invocation="synthetic-baseline" x="1243.125" y="364" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 29000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;pv1&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;PV&quot;, &quot;start_ns&quot;: 26000, &quot;tile&quot;: &quot;p1&quot;}</title></rect>
+<text x="1247.125" y="376" class="bar-label" fill="#1f2937">p1 PV</text>
+<text x="20" y="415" class="lane">WG1 / Consumer 1</text>
+<text x="20" y="430" class="scope"><title>WG1 / Consumer 1: Physical warps 8–11; illustrative</title>Physical warps 8–11; illustrative</text>
+<line x1="260" x2="1470" y1="418" y2="418" class="lane-line"></line>
+<rect class="event inferred" data-id="peer-wait" data-evidence="inferred" data-start-ns="1000" data-end-ns="10200" data-lane="wg1" data-invocation="synthetic-baseline" x="297.812" y="402" width="347.875" height="16" rx="2" fill="#d55e00"><title>{&quot;end_ns&quot;: 10200, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;peer-wait&quot;, &quot;kind&quot;: &quot;wait&quot;, &quot;label&quot;: &quot;wait K0 ready&quot;, &quot;start_ns&quot;: 1000, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="301.8125" y="414" class="bar-label" fill="#1f2937">p0 wait K0 ready</text>
+<rect class="event inferred" data-id="peer-qk" data-evidence="inferred" data-start-ns="10200" data-end-ns="13200" data-lane="wg1" data-invocation="synthetic-baseline" x="645.688" y="402" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 13200, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;peer-qk&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;QK&quot;, &quot;start_ns&quot;: 10200, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="649.6875" y="414" class="bar-label" fill="#1f2937">p0 QK</text>
+<rect class="event inferred" data-id="peer-softmax" data-evidence="inferred" data-start-ns="13200" data-end-ns="15200" data-lane="wg1" data-invocation="synthetic-baseline" x="759.125" y="402" width="75.625" height="16" rx="2" fill="#e69f00"><title>{&quot;end_ns&quot;: 15200, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;peer-softmax&quot;, &quot;kind&quot;: &quot;simt&quot;, &quot;label&quot;: &quot;softmax&quot;, &quot;start_ns&quot;: 13200, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="763.125" y="414" class="bar-label" fill="#1f2937">p0 softmax</text>
+<rect class="event inferred" data-id="peer-pv" data-evidence="inferred" data-start-ns="15200" data-end-ns="18200" data-lane="wg1" data-invocation="synthetic-baseline" x="834.750" y="402" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 18200, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;peer-pv&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;PV&quot;, &quot;start_ns&quot;: 15200, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="838.75" y="414" class="bar-label" fill="#1f2937">p0 PV</text>
+<text x="20" y="453" class="lane">Producer</text>
+<text x="20" y="468" class="scope"><title>Producer: Physical warps 0–3; illustrative</title>Physical warps 0–3; illustrative</text>
+<line x1="260" x2="1470" y1="456" y2="456" class="lane-line"></line>
+<rect class="event inferred" data-id="index0" data-evidence="inferred" data-start-ns="0" data-end-ns="3000" data-lane="producer" data-invocation="synthetic-baseline" x="260.000" y="440" width="113.438" height="16" rx="2" fill="#f0e442"><title>{&quot;end_ns&quot;: 3000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;index0&quot;, &quot;kind&quot;: &quot;index&quot;, &quot;label&quot;: &quot;index / offset&quot;, &quot;start_ns&quot;: 0, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="264.0" y="452" class="bar-label" fill="#1f2937">p0 index / offset</text>
+<rect class="event inferred" data-id="issue0" data-evidence="inferred" data-start-ns="3000" data-end-ns="3300" data-lane="producer" data-invocation="synthetic-baseline" x="373.438" y="440" width="11.344" height="16" rx="2" fill="#56b4e9"><title>{&quot;correlation_id&quot;: &quot;K0&quot;, &quot;end_ns&quot;: 3300, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;issue0&quot;, &quot;kind&quot;: &quot;transfer&quot;, &quot;label&quot;: &quot;TMA issue&quot;, &quot;start_ns&quot;: 3000, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<rect class="event inflight_envelope" data-id="flight0" data-evidence="inflight_envelope" data-start-ns="3000" data-end-ns="10000" data-lane="producer" data-invocation="synthetic-baseline" x="373.438" y="464" width="264.688" height="16" rx="2" fill="#56b4e9"><title>{&quot;correlation_id&quot;: &quot;K0&quot;, &quot;end_ns&quot;: 10000, &quot;evidence&quot;: &quot;inflight_envelope&quot;, &quot;id&quot;: &quot;flight0&quot;, &quot;kind&quot;: &quot;transfer&quot;, &quot;label&quot;: &quot;K0 in-flight envelope&quot;, &quot;start_ns&quot;: 3000, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="377.4375" y="476" class="bar-label" fill="#1f2937">p0 K0 in-flight envelope</text>
+<line class="event inferred" data-id="ready0" data-evidence="inferred" data-start-ns="10000" data-end-ns="10000" data-lane="producer" data-invocation="synthetic-baseline" x1="638.125" x2="638.125" y1="438" y2="458" stroke="#cc79a7"><title>{&quot;correlation_id&quot;: &quot;K0&quot;, &quot;end_ns&quot;: 10000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;ready0&quot;, &quot;kind&quot;: &quot;sync&quot;, &quot;label&quot;: &quot;K0 completion observed&quot;, &quot;start_ns&quot;: 10000}</title></line>
+<rect class="event inferred" data-id="index1" data-evidence="inferred" data-start-ns="11000" data-end-ns="14000" data-lane="producer" data-invocation="synthetic-baseline" x="675.938" y="440" width="113.438" height="16" rx="2" fill="#f0e442"><title>{&quot;end_ns&quot;: 14000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;index1&quot;, &quot;kind&quot;: &quot;index&quot;, &quot;label&quot;: &quot;index / offset&quot;, &quot;start_ns&quot;: 11000, &quot;tile&quot;: &quot;p1&quot;}</title></rect>
+<text x="679.9375" y="452" class="bar-label" fill="#1f2937">p1 index / offset</text>
+<rect class="event inflight_envelope" data-id="flight1" data-evidence="inflight_envelope" data-start-ns="14000" data-end-ns="21000" data-lane="producer" data-invocation="synthetic-baseline" x="789.375" y="440" width="264.688" height="16" rx="2" fill="#56b4e9"><title>{&quot;correlation_id&quot;: &quot;K1&quot;, &quot;end_ns&quot;: 21000, &quot;evidence&quot;: &quot;inflight_envelope&quot;, &quot;id&quot;: &quot;flight1&quot;, &quot;kind&quot;: &quot;transfer&quot;, &quot;label&quot;: &quot;K1 in-flight envelope&quot;, &quot;start_ns&quot;: 14000, &quot;tile&quot;: &quot;p1&quot;}</title></rect>
+<text x="793.375" y="452" class="bar-label" fill="#1f2937">p1 K1 in-flight envelope</text>
+<line class="event inferred" data-id="ready1" data-evidence="inferred" data-start-ns="21000" data-end-ns="21000" data-lane="producer" data-invocation="synthetic-baseline" x1="1054.0625" x2="1054.0625" y1="438" y2="458" stroke="#cc79a7"><title>{&quot;correlation_id&quot;: &quot;K1&quot;, &quot;end_ns&quot;: 21000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;ready1&quot;, &quot;kind&quot;: &quot;sync&quot;, &quot;label&quot;: &quot;K1 completion observed&quot;, &quot;start_ns&quot;: 21000}</title></line>
+<text x="20" y="536" class="lane">CUDA Core / SIMT</text>
+<text x="20" y="551" class="scope"><title>CUDA Core / SIMT: SM 0; modeled activity</title>SM 0; modeled activity</text>
+<line x1="260" x2="1470" y1="539" y2="539" class="lane-line"></line>
+<rect class="event inferred" data-id="hw-index" data-evidence="inferred" data-start-ns="0" data-end-ns="3000" data-lane="cuda" data-invocation="synthetic-baseline" x="260.000" y="523" width="113.438" height="16" rx="2" fill="#f0e442"><title>{&quot;end_ns&quot;: 3000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;hw-index&quot;, &quot;kind&quot;: &quot;index&quot;, &quot;label&quot;: &quot;producer indexing&quot;, &quot;start_ns&quot;: 0}</title></rect>
+<text x="264.0" y="535" class="bar-label" fill="#1f2937">producer indexing</text>
+<rect class="event inferred" data-id="hw-softmax" data-evidence="inferred" data-start-ns="13000" data-end-ns="15000" data-lane="cuda" data-invocation="synthetic-baseline" x="751.562" y="523" width="75.625" height="16" rx="2" fill="#e69f00"><title>{&quot;end_ns&quot;: 15000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;hw-softmax&quot;, &quot;kind&quot;: &quot;simt&quot;, &quot;label&quot;: &quot;softmax&quot;, &quot;start_ns&quot;: 13000}</title></rect>
+<text x="755.5625" y="535" class="bar-label" fill="#1f2937">softmax</text>
+<text x="20" y="574" class="lane">Tensor Core</text>
+<text x="20" y="589" class="scope"><title>Tensor Core: SM 0; modeled concurrent work</title>SM 0; modeled concurrent work</text>
+<line x1="260" x2="1470" y1="577" y2="577" class="lane-line"></line>
+<rect class="event inferred" data-id="hw-qk0" data-evidence="inferred" data-start-ns="10000" data-end-ns="13000" data-lane="tensor" data-invocation="synthetic-baseline" x="638.125" y="561" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 13000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;hw-qk0&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;WG0 QK&quot;, &quot;start_ns&quot;: 10000}</title></rect>
+<text x="642.125" y="573" class="bar-label" fill="#1f2937">WG0 QK</text>
+<rect class="event inferred" data-id="hw-qk1" data-evidence="inferred" data-start-ns="10200" data-end-ns="13200" data-lane="tensor" data-invocation="synthetic-baseline" x="645.688" y="585" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 13200, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;hw-qk1&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;WG1 QK&quot;, &quot;start_ns&quot;: 10200}</title></rect>
+<text x="649.6875" y="597" class="bar-label" fill="#1f2937">WG1 QK</text>
+<rect class="event inferred" data-id="hw-pv" data-evidence="inferred" data-start-ns="15000" data-end-ns="18000" data-lane="tensor" data-invocation="synthetic-baseline" x="827.188" y="561" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 18000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;hw-pv&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;PV&quot;, &quot;start_ns&quot;: 15000}</title></rect>
+<text x="831.1875" y="573" class="bar-label" fill="#1f2937">PV</text>
+<text x="20" y="632" class="lane">TMA activity</text>
+<text x="20" y="647" class="scope"><title>TMA activity: SM 0; busy intervals unavailable</title>SM 0; busy intervals unavailable</text>
+<line x1="260" x2="1470" y1="635" y2="635" class="lane-line"></line>
+<text x="266" y="631" class="scope">unavailable</text>
+<path d="M 638.125 448.000 L 638.125 372.000" class="dependency" marker-end="url(#arrow)"><title>{&quot;from&quot;: &quot;ready0&quot;, &quot;to&quot;: &quot;wait-k0&quot;, &quot;label&quot;: &quot;K0 readiness&quot;}</title></path>
+<path d="M 1054.062 448.000 L 1054.062 372.000" class="dependency" marker-end="url(#arrow)"><title>{&quot;from&quot;: &quot;ready1&quot;, &quot;to&quot;: &quot;wait-k1&quot;, &quot;label&quot;: &quot;K1 readiness&quot;}</title></path>
+<circle cx="638.125" cy="365.0" r="8" fill="#fff" stroke="#d55e00"></circle>
+<text x="638.125" y="368.0" class="bubble-number" text-anchor="middle">1</text>
+<text x="20" y="705" class="bubble">B1 · WG0 / Consumer 0 · 1–10 μs · 9 μs · starvation · critical path: yes</text>
+<text x="32" y="722" class="small">Consumer waits for K0; follow the producer issue and completion observations. Evidence: Synthetic dependency example; real diagnosis requires matching counters/instructions.</text>
+<circle cx="1054.0625" cy="365.0" r="8" fill="#fff" stroke="#d55e00"></circle>
+<text x="1054.0625" y="368.0" class="bubble-number" text-anchor="middle">2</text>
+<text x="20" y="744" class="bubble">B2 · WG0 / Consumer 0 · 18–21 μs · 3 μs · starvation · critical path: unknown</text>
+<text x="32" y="761" class="small">K1 becomes ready after the consumer requests it; whole-kernel criticality is unresolved. Evidence: Synthetic example of an explicitly unknown critical-path result.</text>
+<line x1="20" x2="1470" y1="783" y2="783" class="lane-line"></line>
+<text x="20" y="808" class="panel-title">Candidate — illustrative earlier producer progress</text>
+<text x="20" y="828" class="small">synthetic-candidate · Same illustrative CTA and role topology</text>
+<text x="20" y="845" class="small">Clock: illustrative relative ns; resolution: 32 ns; alignment: synthetic</text>
+<text x="20" y="862" class="notice">A shorter illustrated wait is a hypothesis, not a measured speedup or root-cause proof.</text>
+<text x="20" y="900" class="group-title">WG PIPELINE</text>
+<text x="20" y="1059" class="group-title">HARDWARE MODULES</text>
+<rect x="260.000" y="890" width="226.875" height="315" fill="#64748b" opacity=".045"></rect>
+<text x="264.0" y="904" class="phase">fill</text>
+<rect x="486.875" y="890" width="605.000" height="315" fill="#64748b" opacity=".045"></rect>
+<text x="490.875" y="904" class="phase">steady state</text>
+<rect x="1091.875" y="890" width="113.438" height="315" fill="#64748b" opacity=".045"></rect>
+<text x="1095.875" y="904" class="phase">drain</text>
+<line x1="260.0" x2="260.0" y1="912" y2="1205" class="grid"></line>
+<text x="260.0" y="1219" class="tick" text-anchor="middle">0</text>
+<line x1="449.0625" x2="449.0625" y1="912" y2="1205" class="grid"></line>
+<text x="449.0625" y="1219" class="tick" text-anchor="middle">5</text>
+<line x1="638.125" x2="638.125" y1="912" y2="1205" class="grid"></line>
+<text x="638.125" y="1219" class="tick" text-anchor="middle">10</text>
+<line x1="827.1875" x2="827.1875" y1="912" y2="1205" class="grid"></line>
+<text x="827.1875" y="1219" class="tick" text-anchor="middle">15</text>
+<line x1="1016.25" x2="1016.25" y1="912" y2="1205" class="grid"></line>
+<text x="1016.25" y="1219" class="tick" text-anchor="middle">20</text>
+<line x1="1205.3125" x2="1205.3125" y1="912" y2="1205" class="grid"></line>
+<text x="1205.3125" y="1219" class="tick" text-anchor="middle">25</text>
+<line x1="1394.375" x2="1394.375" y1="912" y2="1205" class="grid"></line>
+<text x="1394.375" y="1219" class="tick" text-anchor="middle">30</text>
+<text x="1470" y="1237" class="small" text-anchor="end">relative time (μs)</text>
+<text x="20" y="925" class="lane">WG0 / Consumer 0</text>
+<text x="20" y="940" class="scope"><title>WG0 / Consumer 0: Physical warps 4–7; illustrative</title>Physical warps 4–7; illustrative</text>
+<line x1="260" x2="1470" y1="928" y2="928" class="lane-line"></line>
+<rect class="event inferred" data-id="wait-k0" data-evidence="inferred" data-start-ns="1000" data-end-ns="6000" data-lane="wg0" data-invocation="synthetic-candidate" x="297.812" y="912" width="189.062" height="16" rx="2" fill="#d55e00"><title>{&quot;end_ns&quot;: 6000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;wait-k0&quot;, &quot;kind&quot;: &quot;wait&quot;, &quot;label&quot;: &quot;wait K0 ready&quot;, &quot;start_ns&quot;: 1000, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="301.8125" y="924" class="bar-label" fill="#1f2937">p0 wait K0 ready</text>
+<rect class="event inferred" data-id="qk0" data-evidence="inferred" data-start-ns="6000" data-end-ns="9000" data-lane="wg0" data-invocation="synthetic-candidate" x="486.875" y="912" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 9000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;qk0&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;QK&quot;, &quot;start_ns&quot;: 6000, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="490.875" y="924" class="bar-label" fill="#1f2937">p0 QK</text>
+<rect class="event inferred" data-id="softmax0" data-evidence="inferred" data-start-ns="9000" data-end-ns="11000" data-lane="wg0" data-invocation="synthetic-candidate" x="600.312" y="912" width="75.625" height="16" rx="2" fill="#e69f00"><title>{&quot;end_ns&quot;: 11000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;softmax0&quot;, &quot;kind&quot;: &quot;simt&quot;, &quot;label&quot;: &quot;softmax&quot;, &quot;start_ns&quot;: 9000, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="604.3125" y="924" class="bar-label" fill="#1f2937">p0 softmax</text>
+<rect class="event inferred" data-id="pv0" data-evidence="inferred" data-start-ns="11000" data-end-ns="14000" data-lane="wg0" data-invocation="synthetic-candidate" x="675.938" y="912" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 14000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;pv0&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;PV&quot;, &quot;start_ns&quot;: 11000, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="679.9375" y="924" class="bar-label" fill="#1f2937">p0 PV</text>
+<rect class="event inferred" data-id="qk1" data-evidence="inferred" data-start-ns="14000" data-end-ns="17000" data-lane="wg0" data-invocation="synthetic-candidate" x="789.375" y="912" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 17000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;qk1&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;QK&quot;, &quot;start_ns&quot;: 14000, &quot;tile&quot;: &quot;p1&quot;}</title></rect>
+<text x="793.375" y="924" class="bar-label" fill="#1f2937">p1 QK</text>
+<rect class="event inferred" data-id="softmax1" data-evidence="inferred" data-start-ns="17000" data-end-ns="19000" data-lane="wg0" data-invocation="synthetic-candidate" x="902.812" y="912" width="75.625" height="16" rx="2" fill="#e69f00"><title>{&quot;end_ns&quot;: 19000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;softmax1&quot;, &quot;kind&quot;: &quot;simt&quot;, &quot;label&quot;: &quot;softmax&quot;, &quot;start_ns&quot;: 17000, &quot;tile&quot;: &quot;p1&quot;}</title></rect>
+<text x="906.8125" y="924" class="bar-label" fill="#1f2937">p1 softmax</text>
+<rect class="event inferred" data-id="pv1" data-evidence="inferred" data-start-ns="19000" data-end-ns="22000" data-lane="wg0" data-invocation="synthetic-candidate" x="978.438" y="912" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 22000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;pv1&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;PV&quot;, &quot;start_ns&quot;: 19000, &quot;tile&quot;: &quot;p1&quot;}</title></rect>
+<text x="982.4375" y="924" class="bar-label" fill="#1f2937">p1 PV</text>
+<text x="20" y="963" class="lane">WG1 / Consumer 1</text>
+<text x="20" y="978" class="scope"><title>WG1 / Consumer 1: Physical warps 8–11; illustrative</title>Physical warps 8–11; illustrative</text>
+<line x1="260" x2="1470" y1="966" y2="966" class="lane-line"></line>
+<rect class="event inferred" data-id="peer-wait" data-evidence="inferred" data-start-ns="1000" data-end-ns="6200" data-lane="wg1" data-invocation="synthetic-candidate" x="297.812" y="950" width="196.625" height="16" rx="2" fill="#d55e00"><title>{&quot;end_ns&quot;: 6200, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;peer-wait&quot;, &quot;kind&quot;: &quot;wait&quot;, &quot;label&quot;: &quot;wait K0 ready&quot;, &quot;start_ns&quot;: 1000, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="301.8125" y="962" class="bar-label" fill="#1f2937">p0 wait K0 ready</text>
+<rect class="event inferred" data-id="peer-qk" data-evidence="inferred" data-start-ns="6200" data-end-ns="9200" data-lane="wg1" data-invocation="synthetic-candidate" x="494.438" y="950" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 9200, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;peer-qk&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;QK&quot;, &quot;start_ns&quot;: 6200, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="498.4375" y="962" class="bar-label" fill="#1f2937">p0 QK</text>
+<rect class="event inferred" data-id="peer-softmax" data-evidence="inferred" data-start-ns="9200" data-end-ns="11200" data-lane="wg1" data-invocation="synthetic-candidate" x="607.875" y="950" width="75.625" height="16" rx="2" fill="#e69f00"><title>{&quot;end_ns&quot;: 11200, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;peer-softmax&quot;, &quot;kind&quot;: &quot;simt&quot;, &quot;label&quot;: &quot;softmax&quot;, &quot;start_ns&quot;: 9200, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="611.875" y="962" class="bar-label" fill="#1f2937">p0 softmax</text>
+<rect class="event inferred" data-id="peer-pv" data-evidence="inferred" data-start-ns="11200" data-end-ns="14200" data-lane="wg1" data-invocation="synthetic-candidate" x="683.500" y="950" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 14200, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;peer-pv&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;PV&quot;, &quot;start_ns&quot;: 11200, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="687.5" y="962" class="bar-label" fill="#1f2937">p0 PV</text>
+<text x="20" y="1001" class="lane">Producer</text>
+<text x="20" y="1016" class="scope"><title>Producer: Physical warps 0–3; illustrative</title>Physical warps 0–3; illustrative</text>
+<line x1="260" x2="1470" y1="1004" y2="1004" class="lane-line"></line>
+<rect class="event inferred" data-id="index0" data-evidence="inferred" data-start-ns="0" data-end-ns="1000" data-lane="producer" data-invocation="synthetic-candidate" x="260.000" y="988" width="37.812" height="16" rx="2" fill="#f0e442"><title>{&quot;end_ns&quot;: 1000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;index0&quot;, &quot;kind&quot;: &quot;index&quot;, &quot;label&quot;: &quot;index / offset&quot;, &quot;start_ns&quot;: 0, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<rect class="event inflight_envelope" data-id="flight0" data-evidence="inflight_envelope" data-start-ns="1000" data-end-ns="6000" data-lane="producer" data-invocation="synthetic-candidate" x="297.812" y="988" width="189.062" height="16" rx="2" fill="#56b4e9"><title>{&quot;end_ns&quot;: 6000, &quot;evidence&quot;: &quot;inflight_envelope&quot;, &quot;id&quot;: &quot;flight0&quot;, &quot;kind&quot;: &quot;transfer&quot;, &quot;label&quot;: &quot;K0 in-flight envelope&quot;, &quot;start_ns&quot;: 1000, &quot;tile&quot;: &quot;p0&quot;}</title></rect>
+<text x="301.8125" y="1000" class="bar-label" fill="#1f2937">p0 K0 in-flight envelope</text>
+<rect class="event inferred" data-id="index1" data-evidence="inferred" data-start-ns="2000" data-end-ns="3000" data-lane="producer" data-invocation="synthetic-candidate" x="335.625" y="1012" width="37.812" height="16" rx="2" fill="#f0e442"><title>{&quot;end_ns&quot;: 3000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;index1&quot;, &quot;kind&quot;: &quot;index&quot;, &quot;label&quot;: &quot;index / offset&quot;, &quot;start_ns&quot;: 2000, &quot;tile&quot;: &quot;p1&quot;}</title></rect>
+<rect class="event inflight_envelope" data-id="flight1" data-evidence="inflight_envelope" data-start-ns="3000" data-end-ns="8000" data-lane="producer" data-invocation="synthetic-candidate" x="373.438" y="1012" width="189.062" height="16" rx="2" fill="#56b4e9"><title>{&quot;end_ns&quot;: 8000, &quot;evidence&quot;: &quot;inflight_envelope&quot;, &quot;id&quot;: &quot;flight1&quot;, &quot;kind&quot;: &quot;transfer&quot;, &quot;label&quot;: &quot;K1 in-flight envelope&quot;, &quot;start_ns&quot;: 3000, &quot;tile&quot;: &quot;p1&quot;}</title></rect>
+<text x="377.4375" y="1024" class="bar-label" fill="#1f2937">p1 K1 in-flight envelope</text>
+<line class="event inferred" data-id="ready0" data-evidence="inferred" data-start-ns="6000" data-end-ns="6000" data-lane="producer" data-invocation="synthetic-candidate" x1="486.875" x2="486.875" y1="986" y2="1006" stroke="#cc79a7"><title>{&quot;end_ns&quot;: 6000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;ready0&quot;, &quot;kind&quot;: &quot;sync&quot;, &quot;label&quot;: &quot;K0 completion observed&quot;, &quot;start_ns&quot;: 6000}</title></line>
+<text x="20" y="1084" class="lane">CUDA Core / SIMT</text>
+<text x="20" y="1099" class="scope"><title>CUDA Core / SIMT: SM 0; modeled activity</title>SM 0; modeled activity</text>
+<line x1="260" x2="1470" y1="1087" y2="1087" class="lane-line"></line>
+<rect class="event inferred" data-id="hw-index" data-evidence="inferred" data-start-ns="0" data-end-ns="1000" data-lane="cuda" data-invocation="synthetic-candidate" x="260.000" y="1071" width="37.812" height="16" rx="2" fill="#f0e442"><title>{&quot;end_ns&quot;: 1000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;hw-index&quot;, &quot;kind&quot;: &quot;index&quot;, &quot;label&quot;: &quot;producer indexing&quot;, &quot;start_ns&quot;: 0}</title></rect>
+<rect class="event inferred" data-id="hw-softmax" data-evidence="inferred" data-start-ns="9000" data-end-ns="11000" data-lane="cuda" data-invocation="synthetic-candidate" x="600.312" y="1071" width="75.625" height="16" rx="2" fill="#e69f00"><title>{&quot;end_ns&quot;: 11000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;hw-softmax&quot;, &quot;kind&quot;: &quot;simt&quot;, &quot;label&quot;: &quot;softmax&quot;, &quot;start_ns&quot;: 9000}</title></rect>
+<text x="604.3125" y="1083" class="bar-label" fill="#1f2937">softmax</text>
+<text x="20" y="1122" class="lane">Tensor Core</text>
+<text x="20" y="1137" class="scope"><title>Tensor Core: SM 0; modeled concurrent work</title>SM 0; modeled concurrent work</text>
+<line x1="260" x2="1470" y1="1125" y2="1125" class="lane-line"></line>
+<rect class="event inferred" data-id="hw-qk0" data-evidence="inferred" data-start-ns="6000" data-end-ns="9000" data-lane="tensor" data-invocation="synthetic-candidate" x="486.875" y="1109" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 9000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;hw-qk0&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;WG0 QK&quot;, &quot;start_ns&quot;: 6000}</title></rect>
+<text x="490.875" y="1121" class="bar-label" fill="#1f2937">WG0 QK</text>
+<rect class="event inferred" data-id="hw-qk1" data-evidence="inferred" data-start-ns="6200" data-end-ns="9200" data-lane="tensor" data-invocation="synthetic-candidate" x="494.438" y="1133" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 9200, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;hw-qk1&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;WG1 QK&quot;, &quot;start_ns&quot;: 6200}</title></rect>
+<text x="498.4375" y="1145" class="bar-label" fill="#1f2937">WG1 QK</text>
+<rect class="event inferred" data-id="hw-pv" data-evidence="inferred" data-start-ns="11000" data-end-ns="14000" data-lane="tensor" data-invocation="synthetic-candidate" x="675.938" y="1109" width="113.438" height="16" rx="2" fill="#0072b2"><title>{&quot;end_ns&quot;: 14000, &quot;evidence&quot;: &quot;inferred&quot;, &quot;id&quot;: &quot;hw-pv&quot;, &quot;kind&quot;: &quot;tensor&quot;, &quot;label&quot;: &quot;PV&quot;, &quot;start_ns&quot;: 11000}</title></rect>
+<text x="679.9375" y="1121" class="bar-label" fill="#1f2937">PV</text>
+<text x="20" y="1180" class="lane">TMA activity</text>
+<text x="20" y="1195" class="scope"><title>TMA activity: SM 0; busy intervals unavailable</title>SM 0; busy intervals unavailable</text>
+<line x1="260" x2="1470" y1="1183" y2="1183" class="lane-line"></line>
+<text x="266" y="1179" class="scope">unavailable</text>
+<path d="M 486.875 996.000 L 486.875 920.000" class="dependency" marker-end="url(#arrow)"><title>{&quot;from&quot;: &quot;ready0&quot;, &quot;to&quot;: &quot;wait-k0&quot;, &quot;label&quot;: &quot;K0 readiness&quot;}</title></path>
+<circle cx="486.875" cy="913.0" r="8" fill="#fff" stroke="#d55e00"></circle>
+<text x="486.875" y="916.0" class="bubble-number" text-anchor="middle">1</text>
+<text x="20" y="1253" class="bubble">B1 · WG0 / Consumer 0 · 1–6 μs · 5 μs · starvation · critical path: yes</text>
+<text x="32" y="1270" class="small">Producer makes K0 ready earlier; compare with the baseline on the same relative scale. Evidence: Synthetic prediction; validate with uninstrumented timing and actual WG/module captures.</text>
+<line x1="20" x2="1470" y1="1292" y2="1292" class="lane-line"></line>
+</svg>

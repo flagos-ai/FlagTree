@@ -18,3 +18,6 @@ with GPU support for the target to execute an artifact.
 
 See the [tutorial index](../../tutorials/flagmega/README.md) for installation
 commands and model examples.
+
+The [FlagMega developer skill](../../../skills/flagmega-developer/SKILL.md)
+covers profiling, optimization, and validation workflows.

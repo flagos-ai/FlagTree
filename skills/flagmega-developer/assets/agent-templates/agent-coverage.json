@@ -1,0 +1,154 @@
+{
+  "schema": "flagmega.agent-coverage/v1",
+  "run_id": "<run>",
+  "milestone_id": "<mNNN>",
+  "revision_id": "<rNNN>",
+  "baseline_id": "<baseline>",
+  "phase": "planning",
+  "input_identities": {},
+  "required_agents_by_phase": {
+    "plan": [],
+    "tracking": []
+  },
+  "domains": {
+    "Graph": {
+      "check_groups": [
+        "G1-G7",
+        "V1-V8",
+        "D1-D8"
+      ],
+      "expert": "graph expert",
+      "optimizer": "graph optimizer",
+      "profiler": "graph profiler",
+      "reviewer": "reviewer",
+      "disposition": "unassessed",
+      "evidence": []
+    },
+    "Kernel": {
+      "check_groups": [
+        "K1-K10"
+      ],
+      "expert": "kernel expert",
+      "optimizer": "kernel optimizer",
+      "profiler": "kernel profiler",
+      "reviewer": "reviewer",
+      "disposition": "unassessed",
+      "evidence": []
+    }
+  },
+  "agents": {
+    "orchestrator": {
+      "dispatch": "orchestrator",
+      "required": null,
+      "scope": "<assess affected scope>",
+      "not_applicable_reason": null,
+      "agent_id": null,
+      "assignments": [],
+      "plan_signoffs": [],
+      "tracking_signoffs": [],
+      "status": "unassessed",
+      "next_action": "assign scope and applicable phase requirements"
+    },
+    "graph expert": {
+      "dispatch": "graph_expert",
+      "required": null,
+      "scope": "<assess affected scope>",
+      "not_applicable_reason": null,
+      "agent_id": null,
+      "assignments": [],
+      "plan_signoffs": [],
+      "tracking_signoffs": [],
+      "status": "unassessed",
+      "next_action": "assign scope and applicable phase requirements"
+    },
+    "graph optimizer": {
+      "dispatch": "graph_optimizer",
+      "required": null,
+      "scope": "<assess affected scope>",
+      "not_applicable_reason": null,
+      "agent_id": null,
+      "assignments": [],
+      "plan_signoffs": [],
+      "tracking_signoffs": [],
+      "status": "unassessed",
+      "next_action": "assign scope and applicable phase requirements"
+    },
+    "kernel expert": {
+      "dispatch": "kernel_expert",
+      "required": null,
+      "scope": "<assess affected scope>",
+      "not_applicable_reason": null,
+      "agent_id": null,
+      "assignments": [],
+      "plan_signoffs": [],
+      "tracking_signoffs": [],
+      "status": "unassessed",
+      "next_action": "assign scope and applicable phase requirements"
+    },
+    "kernel optimizer": {
+      "dispatch": "kernel_optimizer",
+      "required": null,
+      "scope": "<assess affected scope>",
+      "not_applicable_reason": null,
+      "agent_id": null,
+      "assignments": [],
+      "plan_signoffs": [],
+      "tracking_signoffs": [],
+      "status": "unassessed",
+      "next_action": "assign scope and applicable phase requirements"
+    },
+    "graph profiler": {
+      "dispatch": "graph_profiler",
+      "required": null,
+      "scope": "<assess affected scope>",
+      "not_applicable_reason": null,
+      "agent_id": null,
+      "assignments": [],
+      "plan_signoffs": [],
+      "tracking_signoffs": [],
+      "status": "unassessed",
+      "next_action": "assign scope and applicable phase requirements"
+    },
+    "kernel profiler": {
+      "dispatch": "kernel_profiler",
+      "required": null,
+      "scope": "<assess affected scope>",
+      "not_applicable_reason": null,
+      "agent_id": null,
+      "assignments": [],
+      "plan_signoffs": [],
+      "tracking_signoffs": [],
+      "status": "unassessed",
+      "next_action": "assign scope and applicable phase requirements"
+    },
+    "reviewer": {
+      "dispatch": "reviewer",
+      "required": null,
+      "scope": "<assess affected scope>",
+      "not_applicable_reason": null,
+      "agent_id": null,
+      "assignments": [],
+      "plan_signoffs": [],
+      "tracking_signoffs": [],
+      "status": "unassessed",
+      "next_action": "assign scope and applicable phase requirements"
+    }
+  },
+  "milestone_gate": {
+    "primary_metric": null,
+    "direction": null,
+    "baseline_receipt": null,
+    "gain_rule": null,
+    "uncertainty_rule": null,
+    "scenario_policy": null,
+    "measurement_ids": [],
+    "review_receipt": null,
+    "required_signatures_complete": false,
+    "clear_measured_gain": false,
+    "all_acceptance_complete": false,
+    "status": "open",
+    "achieved_revision": null
+  },
+  "delegation_limitations": [],
+  "open_gates": []
+}
