@@ -50,7 +50,11 @@ def test_mp31_and_main_fp8_options_share_one_intrinsic():
                      options={"mp31_vector_arithmetic": True, "fp8_downcast_burst4": True})
     llir = k.asm["llir"]
     assert "call <4 x i8> @llvm.musa.f2e4m3.rn.bst4" in llir
-    assert llir.count("declare <4 x i8> @llvm.musa.f2e4m3.rn.bst4(") == 1
+    # LLVM may print declaration metadata (e.g. !dbg) before the return type.
+    intrinsic = r"@llvm\.musa\.f2e4m3\.rn\.bst4"
+    declarations = re.findall(rf"^declare\b[^\n]*{intrinsic}\([^\n]*", llir, re.MULTILINE)
+    assert len(declarations) == 1, declarations
+    assert re.search(rf"<4 x i8> {intrinsic}\(<4 x float>\)", declarations[0]), declarations[0]
     assert k.asm["mubin"]
 
 
