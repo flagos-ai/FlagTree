@@ -133,10 +133,16 @@ class FlagCXRegistrar:
     def _get_required_src_files_paths(self):
         whl_path = self._get_flagcx_wheel_path()
         if whl_path is None:
-            return {
-                "wrapper": Path(self.flagcx_src_dir) / "plugin" / "interservice" / "flagcx_wrapper.py", "include":
-                Path(self.flagcx_src_dir) / "flagcx" / "include"
-            }
+            source = Path(self.flagcx_src_dir)
+            api = source / "src" / "flagcx" / "api.py"
+            legacy_wrapper = source / "plugin" / "interservice" / "flagcx_wrapper.py"
+            if api.is_file():
+                wrapper = api
+            elif legacy_wrapper.is_file():
+                wrapper = legacy_wrapper
+            else:
+                raise FileNotFoundError(f"FlagCX Python wrapper not found at {api} or {legacy_wrapper}")
+            return {"wrapper": wrapper, "include": source / "flagcx" / "include"}
         include = whl_path / "include"
         if not include.is_dir():
             include = whl_path / "lib" / "include"
@@ -181,6 +187,11 @@ def handle_flagcx(*args, **kwargs):
         printinfo("FlagCX is not available, skipping compilation...")
     try:
         registrar.run()
-    except Exception as e:
-        printinfo(f"Error compiling FlagCX: {e}")
-        printinfo("IF you are using AMD backend, please set the FLAGTREE_BACKEND=amd")
+    except Exception as error:
+        print(
+            f"[TLE-DIST-WARNING] Failed to prepare FlagCX ({error}). "
+            "Missing FlagCX runtime files can leave flagcx_rt_conf.is_available=False "
+            "and disable TLE distributed features.",
+            file=sys.stderr,
+            flush=True,
+        )
