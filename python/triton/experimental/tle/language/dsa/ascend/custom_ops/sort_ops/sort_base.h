@@ -747,7 +747,8 @@ sort_base_impl(memref_t<__ubuf__ float, 1> *src,
     INTRINSIC(pipe_barrier, PIPE_ALL);
     for (int64_t i = 0; i < topk; ++i) {
       const int64_t slot = i * num_per_proposal;
-      dst_bits[slot] = static_cast<int32_t>(static_cast<uint32_t>(dst_bits[slot]) ^ 0x80000000u);
+      dst_bits[slot] = static_cast<int32_t>(
+          static_cast<uint32_t>(dst_bits[slot]) ^ 0x80000000u);
     }
     INTRINSIC(pipe_barrier, PIPE_ALL);
   } else {

@@ -424,8 +424,6 @@ __aiv__ __attribute__((always_inline)) void sort_s4096_k1_128_k2048_impl(
     memref_t<__ubuf__ float, 1> *src, memref_t<__ubuf__ float, 1> *tmp_buf,
     bool descending, int64_t topk, int64_t index_offset,
     memref_t<__ubuf__ float, 1> *dst_proposals) {
-  (void)descending;
-
   int64_t real_num = src->sizes[0];
   int64_t sort_num = SEG_LEN;
   if (topk > 2048) {
@@ -456,7 +454,11 @@ __aiv__ __attribute__((always_inline)) void sort_s4096_k1_128_k2048_impl(
       tmp_i32.aligned, tmp_i32.allocated, proposals_b_offset, {SEG_LEN}, {1}};
 
   prepare_index_layered(&src_index, real_num, sort_num, index_offset);
-  prepare_desc_value_layered(src, real_num, sort_num);
+  if (descending) {
+    prepare_desc_value_layered(src, real_num, sort_num);
+  } else {
+    prepare_asc_value_inplace(src, real_num, sort_num);
+  }
 
   TLE_PIPE_BARRIER_V();
   block_sort_layered(src, &src_index, &proposals_a, sort_num);
@@ -468,6 +470,9 @@ __aiv__ __attribute__((always_inline)) void sort_s4096_k1_128_k2048_impl(
   if (topk <= 32) {
     merge_128x32_top32_layered(&proposals_a, &proposals_b, final_out,
                                dst_proposals, topk);
+    if (!descending) {
+      unflip_ascending_proposals(dst_proposals, topk);
+    }
     return;
   }
 
@@ -477,6 +482,9 @@ __aiv__ __attribute__((always_inline)) void sort_s4096_k1_128_k2048_impl(
   if (topk <= 128) {
     merge_32x128_top128_layered(&proposals_b, &proposals_a, final_out,
                                 dst_proposals, topk);
+    if (!descending) {
+      unflip_ascending_proposals(dst_proposals, topk);
+    }
     return;
   }
 
@@ -492,6 +500,9 @@ __aiv__ __attribute__((always_inline)) void sort_s4096_k1_128_k2048_impl(
     merge_stage4_layered(&proposals_a, &proposals_b, 512, 2);
     final_merge_runs_topk_layered(proposals_b.aligned + proposals_b.offset,
                                   2048, 2, final_out, dst_proposals, topk);
+  }
+  if (!descending) {
+    unflip_ascending_proposals(dst_proposals, topk);
   }
 }
 

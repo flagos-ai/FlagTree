@@ -491,11 +491,16 @@ def test_sort_1d_pack():
     _run_sort_case(2048, 2048, 0, SORT_IMPL_BASE, "BASE K=N")
     _run_sort_case(4096, 129, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 K=129")
     _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512")
+    _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 ascending", descending=False)
     _run_sort_case(4096, 512, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 K=512")
     _run_sort_case(4096, 1, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 K=1")
+    _run_sort_case(4096, 32, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending K=32", descending=False)
     _run_sort_case(4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 early-stop")
     _run_sort_case(4096, 128, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 early-stop K=128")
+    _run_sort_case(4096, 128, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending K=128", descending=False)
+    _run_sort_case(4096, 512, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending K=512", descending=False)
     _run_sort_case(4096, 2048, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 fixed-tree")
+    _run_sort_case(4096, 2048, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending K=2048", descending=False)
 
 
 # ══════════════════════════════════════════════════════════════════════════
