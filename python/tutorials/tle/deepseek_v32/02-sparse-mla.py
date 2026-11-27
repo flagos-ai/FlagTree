@@ -3551,7 +3551,13 @@ def benchmark_sparse_mla_decode(
 
 
 def run_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, show_plots=False, tilelang_block_I=64,
-                    tilelang_num_stages=2, tilelang_threads=256, input_mode="flashmla", seed=BENCH_DEFAULT_SEED):
+                    tilelang_num_stages=2, tilelang_threads=256, input_mode="flashmla", seed=BENCH_DEFAULT_SEED,
+                    only_unit_test=False):
+    bench = benchmark_sparse_mla_fwd.benchmarks
+    selected = [i for i, provider in enumerate(_BENCH_PROVIDERS) if not only_unit_test or provider != "tilelang"]
+    bench.line_vals = [_BENCH_PROVIDERS[i] for i in selected]
+    bench.line_names = [_BENCH_NAMES[i] for i in selected]
+    bench.styles = [_BENCH_STYLES[i] for i in selected]
     benchmark_sparse_mla_fwd.run(
         print_data=True,
         show_plots=show_plots,
@@ -3566,7 +3572,14 @@ def run_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, sh
 
 
 def run_decode_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, show_plots=False,
-                           tilelang_block_I=64, tilelang_num_stages=2, tilelang_threads=256):
+                           tilelang_block_I=64, tilelang_num_stages=2, tilelang_threads=256, only_unit_test=False):
+    bench = benchmark_sparse_mla_decode.benchmarks
+    selected = [
+        i for i, provider in enumerate(_DECODE_BENCH_PROVIDERS) if not only_unit_test or provider != "tilelang"
+    ]
+    bench.line_vals = [_DECODE_BENCH_PROVIDERS[i] for i in selected]
+    bench.line_names = [_DECODE_BENCH_NAMES[i] for i in selected]
+    bench.styles = [_DECODE_BENCH_STYLES[i] for i in selected]
     benchmark_sparse_mla_decode.run(
         print_data=True,
         show_plots=show_plots,
@@ -3958,6 +3971,7 @@ def bench_sparse_mla_fwd(
     tilelang_threads=256,
     input_mode="flashmla",
     seed=BENCH_DEFAULT_SEED,
+    only_unit_test=False,
 ):
     is_causal = input_mode == "causal"
     sm_scale = 0.5 if input_mode == "flashmla" else None
@@ -4032,7 +4046,7 @@ def bench_sparse_mla_fwd(
         print(f"TLE FlashMLA-prefill bench failed due to compile/runtime error: {exc}", flush=True)
         raise
 
-    if _HAVE_TILELANG:
+    if _HAVE_TILELANG and not only_unit_test:
         resolved_block_i = _resolve_tilelang_block_i(topk, tilelang_block_I)
         if resolved_block_i != tilelang_block_I:
             print(f"TileLang block_I auto-adjusted from {tilelang_block_I} to {resolved_block_i} "
@@ -4060,7 +4074,7 @@ def bench_sparse_mla_fwd(
         except Exception as exc:  # pragma: no cover - depends on tilelang/runtime constraints
             print(f"TileLang bench failed due to compile/runtime error: {exc}", flush=True)
             raise
-    else:
+    elif not _HAVE_TILELANG:
         print("TileLang is not installed, skip TileLang bench.")
 
     if _HAVE_TILELANG:
@@ -4217,6 +4231,7 @@ def bench_sparse_mla_decode(
     tilelang_num_stages=2,
     tilelang_threads=256,
     block_size=64,
+    only_unit_test=False,
 ):
     inputs = _build_flashmla_sparse_decode_inputs(
         B=B,
@@ -4300,7 +4315,7 @@ def bench_sparse_mla_decode(
         print(f"TLE pipe-pipelined decode bench failed due to compile/runtime error: {exc}", flush=True)
         raise
 
-    if _HAVE_TILELANG:
+    if _HAVE_TILELANG and not only_unit_test:
         resolved_block_i = _resolve_tilelang_block_i(topk, tilelang_block_I)
 
         def run_tilelang():
@@ -4376,7 +4391,7 @@ def bench_sparse_mla_decode(
         except Exception as exc:  # pragma: no cover - depends on tilelang/runtime constraints
             print(f"Seesaw TileLang decode bench failed due to compile/runtime error: {exc}", flush=True)
             raise
-    else:
+    elif not _HAVE_TILELANG:
         print("TileLang is not installed, skip TileLang decode bench.")
 
     if _HAVE_FLASHMLA:
@@ -4544,6 +4559,7 @@ def _parse_args():
     parser.add_argument("--rep", type=int, default=BENCH_DEFAULT_REP_MS,
                         help="Benchmark measurement budget in milliseconds.")
     parser.add_argument("--show-plots", action="store_true")
+    parser.add_argument("--only_unit_test", action="store_true", help="skip the baseline TileLang provider")
     parser.add_argument("--bench-input-mode", choices=["flashmla", "causal"], default="flashmla")
     parser.add_argument("--seed", type=int, default=BENCH_DEFAULT_SEED, help="Seed for benchmark input generation.")
     parser.add_argument("--skip-output-check", action="store_true")
@@ -4578,7 +4594,7 @@ if __name__ == "__main__":
             check_tle=not args.skip_tle_check,
             check_tle_pipe=not args.skip_tle_pipe_check,
             check_tle_flashmla_prefill=not args.skip_tle_flashmla_prefill_check,
-            check_tilelang=args.check_tilelang,
+            check_tilelang=args.check_tilelang and not args.only_unit_test,
             check_tilelang_pipelined=args.check_tilelang_pipelined,
             check_tilelang_seesaw=args.check_tilelang_seesaw,
             check_flashmla=args.check_flashmla,
@@ -4599,7 +4615,7 @@ if __name__ == "__main__":
             dtype=dtype,
             check_tle=not args.skip_tle_check,
             check_tle_pipe=not args.skip_tle_pipe_check,
-            check_tilelang=args.check_tilelang,
+            check_tilelang=args.check_tilelang and not args.only_unit_test,
             check_tilelang_pipelined=args.check_tilelang_pipelined,
             check_tilelang_seesaw=args.check_tilelang_seesaw,
             check_flashmla=args.check_flashmla,
@@ -4626,6 +4642,7 @@ if __name__ == "__main__":
             tilelang_threads=args.tilelang_threads,
             input_mode=args.bench_input_mode,
             seed=args.seed,
+            only_unit_test=args.only_unit_test,
         )
     elif args.mode == "bench-decode-single":
         bench_sparse_mla_decode(
@@ -4645,6 +4662,7 @@ if __name__ == "__main__":
             tilelang_num_stages=args.tilelang_num_stages,
             tilelang_threads=args.tilelang_threads,
             block_size=args.decode_block_size,
+            only_unit_test=args.only_unit_test,
         )
     elif args.mode == "bench-decode":
         run_decode_bench_table(
@@ -4654,6 +4672,7 @@ if __name__ == "__main__":
             tilelang_block_I=args.tilelang_block_I,
             tilelang_num_stages=args.tilelang_num_stages,
             tilelang_threads=args.tilelang_threads,
+            only_unit_test=args.only_unit_test,
         )
     else:
         run_bench_table(
@@ -4665,4 +4684,5 @@ if __name__ == "__main__":
             tilelang_threads=args.tilelang_threads,
             input_mode=args.bench_input_mode,
             seed=args.seed,
+            only_unit_test=args.only_unit_test,
         )
