@@ -52,7 +52,7 @@ def compile_musa(fn, signature, constexprs=None, attrs=None, options=None):
     return triton.compile(src, **compile_kwargs)
 
 
-def compile_to_ttir(fn, signature, constexprs=None):
+def compile_to_ttir(fn, signature, constexprs=None, *, lower_common_ir=False):
     target, backend = mthreads_backend()
 
     context = ir.context()
@@ -68,4 +68,9 @@ def compile_to_ttir(fn, signature, constexprs=None):
         constexprs=constexprs or {},
         attrs=tme_descriptor_attrs(signature),
     )
-    return src.make_ir(target, options, codegen_fns, module_map, context).str_nodebug()
+    mod = src.make_ir(target, options, codegen_fns, module_map, context)
+    if lower_common_ir:
+        pm = ir.pass_manager(context)
+        libtriton.tle.passes.commonir.add_to_ttgir(pm, False)
+        pm.run(mod, "test_common_ir_to_ttgir")
+    return mod.str_nodebug()

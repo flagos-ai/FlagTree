@@ -513,8 +513,10 @@ def alloc(
     storage = scope
     if tle_semantic.COMMON_IR_ENABLED:
         if storage is not tle.smem:
+            if storage is tle.tmem and mthreads_common.enabled():
+                raise ValueError("mthreads TLE alloc does not support tmem storage")
             raise ValueError("GPU CommonIR currently supports only shared-memory buffers")
-        if alias is not None:
+        if alias is not None and not hasattr(_semantic.builder, "create_tile_buffer_from_memdesc"):
             raise ValueError("GPU CommonIR alloc does not yet support alias buffers")
     mthreads_auto_sqmma_shared_layout = (mthreads_common.enabled() and storage == tle.smem
                                          and mthreads_wgmma.use_auto_shared_layout(layout, nv_mma_shared_layout))
@@ -625,8 +627,8 @@ def alloc(
             # Use provided layout
             layout_handle = layout.to_ir(_semantic.builder)
 
-        if tle_semantic.COMMON_IR_ENABLED:
-            return tle_semantic.alloc(
+        if tle_semantic.COMMON_IR_ENABLED and alias is None:
+            buffer = tle_semantic.alloc(
                 unwrapped_shape,
                 dtype,
                 storage,
@@ -635,11 +637,19 @@ def alloc(
                 init_value,
                 _semantic,
             )
+            if mthreads_auto_sqmma_shared_layout:
+                buffer.handle.set_attr("musa_tle.auto_shared_layout", _semantic.builder.get_unit_attr())
+            if init_value is not None and mthreads_common.enabled():
+                buffer.handle.set_attr("musa_tle.initialized_alloc", _semantic.builder.get_unit_attr())
+            return buffer
 
         if storage == tle.smem:
             if alias is not None:
                 alias_ty = _semantic.builder.get_memdesc_type(storage_shape, elem_type, layout_handle, "smem")
-                tensor_handle = _semantic.builder.create_memdesc_alias(alias_ty, alias.handle, alias_offset_bytes)
+                # Under CommonIR the source buffer handle is a tile.buf, but
+                # tle.memdesc_alias consumes a MemDesc: unwrap it first.
+                alias_handle = tle_semantic.get_memdesc(alias, _semantic)
+                tensor_handle = _semantic.builder.create_memdesc_alias(alias_ty, alias_handle, alias_offset_bytes)
             else:
                 if init_value is None:
                     tensor_handle = _semantic.builder.create_local_alloc(storage_shape, elem_type, layout_handle)
@@ -684,7 +694,7 @@ def alloc(
             raise ValueError(f"Storage type {storage} not yet supported")
 
         if use_mthreads_buffer:
-            return mthreads_buffer.create_buffered_tensor(
+            buffer = mthreads_buffer.create_buffered_tensor(
                 tensor_handle,
                 dtype,
                 unwrapped_shape,
@@ -692,7 +702,15 @@ def alloc(
                 layout,
                 _semantic,
             )
-        return tle.buffered_tensor(tensor_handle, dtype, storage_shape, storage, layout, _semantic)
+        else:
+            buffer = tle.buffered_tensor(tensor_handle, dtype, storage_shape, storage, layout, _semantic)
+        if tle_semantic.COMMON_IR_ENABLED:
+            # An alias is still created as a raw MemDesc alias (the tile dialect has no
+            # byte-offset buffer alias op); bridge it to a tile buffer so it round-trips
+            # through the shared CommonIRToTTGIR pass like any other CommonIR allocation.
+            buffer.handle = _semantic.builder.create_tile_buffer_from_memdesc(buffer.type.to_ir(_semantic.builder),
+                                                                              buffer.handle)
+        return buffer
 
     except Exception as e:
         raise RuntimeError(f"Memory allocation failed: {str(e)}") from e
@@ -1601,8 +1619,6 @@ def copy(
     if tle_semantic.COMMON_IR_ENABLED:
         if is_async:
             raise ValueError("GPU CommonIR copy does not support explicit async transport")
-        if eviction_policy:
-            raise ValueError("GPU CommonIR copy does not support eviction policies")
         if other is not None:
             raise ValueError("GPU CommonIR copy does not yet support other")
         if mask is not None:
@@ -1614,6 +1630,12 @@ def copy(
             if descriptor is None or direction != CopyDirection.GM_TO_LOCAL:
                 raise ValueError("TMA copy barrier is only supported for global-to-shared TMA copy")
             barrier_slot = _tma_completion_barrier_slot(barrier, _semantic)
+        if mthreads_enabled:
+            if descriptor is None:
+                mthreads_copy.validate_normal_copy(src, dst, shape, direction)
+            else:
+                buffer = dst if src is descriptor else src
+                offsets = mthreads_copy.validate_descriptor_copy(descriptor, buffer, shape, offsets)
         if descriptor is not None:
             if offsets is None:
                 raise ValueError("TMA copy requires offsets")
@@ -1624,8 +1646,12 @@ def copy(
                     raise ValueError(f"Offsets must be tuple or list, but got {type(offsets)}")
             if len(offsets) != len(descriptor.shape):
                 raise ValueError("Offsets and descriptor shape must have the same rank")
-        elif tl._unwrap_if_constexpr(offsets) is not None:
-            raise ValueError("GPU CommonIR normal copy does not support offsets; offset the global pointers instead")
+        else:
+            if eviction_policy:
+                raise ValueError("GPU CommonIR copy does not support eviction policies")
+            if tl._unwrap_if_constexpr(offsets) is not None:
+                raise ValueError(
+                    "GPU CommonIR normal copy does not support offsets; offset the global pointers instead")
         return tle_semantic.copy(
             src,
             dst,
@@ -1634,6 +1660,8 @@ def copy(
             direction,
             _semantic,
             completion_barrier=barrier_slot,
+            eviction_policy=eviction_policy,
+            cache_policy=cache_policy,
         )
     if is_normcopy:
         if barrier is not None:
@@ -1653,6 +1681,29 @@ def copy(
                                      _semantic=_semantic)
     else:
         return tmacopy(src, dst, direction, shape, offsets, barrier, _semantic)
+
+
+@tl.builtin
+def to_tensor(
+    memref: tle.buffered_tensor,
+    writable: bool = True,
+    target_shape=None,
+    _semantic=None,
+) -> tl.tensor:
+    if not isinstance(memref, tle.buffered_tensor):
+        raise ValueError(f"memref must be tle.gpu.buffered_tensor, got {type(memref).__name__}")
+
+    target_shape = tl._unwrap_if_constexpr(target_shape)
+    shape = list(memref.shape if target_shape is None else target_shape)
+    writable = tl._unwrap_if_constexpr(writable)
+    return tle_semantic.to_tensor(memref, bool(writable), tl.block_type(memref.dtype, shape), _semantic)
+
+
+@tl.builtin
+def store_tensor(tensor_value: tl.tensor, dst: tle.buffered_tensor, _semantic=None) -> None:
+    if not isinstance(dst, tle.buffered_tensor):
+        raise ValueError(f"dst must be tle.gpu.buffered_tensor, got {type(dst).__name__}")
+    tle_semantic.store_tensor(tensor_value, dst, _semantic)
 
 
 @tl.builtin

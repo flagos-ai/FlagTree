@@ -3,6 +3,7 @@
 
 #shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
 #smem = #ttg.shared_memory
+#shared2d = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [1, 0]}>
 
 module {
   // CHECK-LABEL: tt.func private @read
@@ -31,6 +32,24 @@ module {
       %tensor = tile.to_tensor %arg : <[16], f32, shared> -> tensor<16xf32>
       ttg.warp_return
     } : (!tile.buf<[16], f32, shared>) -> ()
+    tt.return
+  }
+
+  // CHECK-LABEL: tt.func private @consume_slot
+  // CHECK-SAME: %{{[^:]+}}: !ttg.memdesc<16xf32, #shared, #smem, mutable>
+  tt.func private @consume_slot(%slot: !tile.buf<[16], f32, shared>) attributes {noinline = true} {
+    tt.return
+  }
+
+  // CHECK-LABEL: tt.func public @call_with_slot
+  // CHECK: %[[SLOT:[^ ]+]] = ttg.memdesc_index
+  // CHECK: tt.call @consume_slot(%[[SLOT]]) : (!ttg.memdesc<16xf32, #shared, #smem, mutable>) -> ()
+  tt.func public @call_with_slot() {
+    %buf = tile.alloc {space = 7 : i64, tle.gpu_layout = #shared2d} : <[2, 16], f32, shared>
+    %c0 = arith.constant 0 : index
+    %slot = tile.subview %buf[%c0, %c0] [[16]] [[1]] {tle.gpu_layout = #shared}
+      : <[2, 16], f32, shared> -> <[16], f32, shared>
+    tt.call @consume_slot(%slot) : (!tile.buf<[16], f32, shared>) -> ()
     tt.return
   }
 }

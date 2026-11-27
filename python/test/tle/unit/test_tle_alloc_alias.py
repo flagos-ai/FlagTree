@@ -50,6 +50,18 @@ class TestAllocAlias:
             self.memdesc_alias_args = (result_ty, src, offset_bytes)
             return "alias_handle"
 
+        def tile_get_string_attr(self, name):
+            return f"tile_attr_{name}"
+
+        def tile_get_buffer_type(self, shape, element_ty, memory_space):
+            return ("tile_buf", tuple(shape), element_ty, memory_space)
+
+        def create_tile_get_memdesc(self, result_ty, src):
+            return src
+
+        def create_tile_buffer_from_memdesc(self, result_ty, src):
+            return src
+
         def mark_musa_tle_auto_shared_layout(self, handle):
             if handle != "alloc_handle":
                 raise ValueError("auto shared layout marker requires a local allocation")
@@ -78,8 +90,10 @@ class TestAllocAlias:
         )
 
     @pytest.mark.skip_if_tle_unsupported("gpu.alloc")
-    def test_alloc_alias_creates_typed_memdesc_alias_view(self):
+    def test_alloc_alias_creates_typed_memdesc_alias_view(self, monkeypatch):
         """alloc(alias=...) returns a typed view without creating a new allocation."""
+        from triton.experimental.tle.language.gpu import core
+        monkeypatch.setattr(core.tle_semantic, "COMMON_IR_ENABLED", True)
         buffer, semantic = self._make_buffer([4, 16, 32])
         alias = tle.gpu.alloc(
             (2, 16, 16),
@@ -107,6 +121,7 @@ class TestAllocAlias:
         from triton.experimental.tle.language.gpu import core as gpu_core
 
         monkeypatch.setattr(gpu_core.mthreads_common, "enabled", lambda: True)
+        monkeypatch.setattr(gpu_core.tle_semantic, "COMMON_IR_ENABLED", True)
         buffer, semantic = self._make_buffer([4, 16, 32])
 
         alias = tle.gpu.alloc(

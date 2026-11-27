@@ -1,5 +1,10 @@
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
+# [MetaX CommonIR] Build the auxiliary AMD codegen without __TLE__.
+if(FLAGTREE_BACKEND STREQUAL "metax")
+  remove_definitions(-D__TLE__)
+  list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
+endif()
 add_subdirectory(include)
 add_subdirectory(lib)
 if(TRITON_BUILD_PYTHON_MODULE)

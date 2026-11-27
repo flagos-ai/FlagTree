@@ -1852,6 +1852,16 @@ PLUGIN_EXPORT void init_triton_ir(py::module &&m) {
       .def("create_gather",
            [](TritonOpBuilder &self, Value src, Value indices, int axis)
                -> Value { return self.create<GatherOp>(src, indices, axis); })
+      .def("get_memdesc_type",
+           [](TritonOpBuilder &self, const std::vector<int64_t> &shape,
+              Type elementType, Attribute encoding, const std::string &storage,
+              const std::vector<int64_t> &allocShape) -> Type {
+             if (storage != "smem")
+               throw py::value_error("MetaX TLE buffers require shared memory");
+             auto space = ttg::SharedMemorySpaceAttr::get(self.getContext());
+             return ttg::MemDescType::get(shape, elementType, encoding, space,
+                                          /*mutableMemory=*/true, allocShape);
+           })
       // Force GPU barrier
       .def("create_barrier",
            [](TritonOpBuilder &self) { self.create<mlir::gpu::BarrierOp>(); })

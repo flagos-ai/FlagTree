@@ -1,6 +1,49 @@
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}")
 
+# Slim path: compile only triton_tle_commonir.cc and link flir CommonIRIR.
+# Skip the full TLE dialect stack, which mthreads already adds under the same
+# binary directories. CommonIR defaults to ON, so an unset FLAGTREE_COMMON_IR
+# must take this path. Key off FLAGTREE_COMMON_IR_ENABLED, not a non-empty
+# environment variable; only an explicit 0/OFF opts out.
+if((("$ENV{FLAGTREE_BACKEND}" STREQUAL "metax") OR ("$ENV{FLAGTREE_BACKEND}" STREQUAL "mthreads")) AND FLAGTREE_COMMON_IR_ENABLED AND TRITON_BUILD_PYTHON_MODULE)
+  message(STATUS "[tle] ${FLAGTREE_BACKEND} CommonIR: building CommonIR-only tle binding")
+  set(_slim_common_ir_libs "")
+  if(TARGET CommonIRIR)
+    list(APPEND _slim_common_ir_libs CommonIRIR)
+  endif()
+  # Build the shared CommonIRToTTGIR pass with Arith, CommonIRIR, TritonIR, and TritonGPUIR.
+  include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+  include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
+  if(TARGET CommonIRIR)
+    add_subdirectory(include/CommonIRToTTGIR)
+    add_subdirectory(lib/CommonIRToTTGIR)
+  endif()
+  if(TARGET TleCommonIRToTTGIR)
+    list(APPEND _slim_common_ir_libs TleCommonIRToTTGIR)
+  endif()
+  add_triton_plugin(TritonTLE
+    ${CMAKE_CURRENT_SOURCE_DIR}/triton_tle_commonir.cc
+    LINK_LIBS TritonIR ${_slim_common_ir_libs})
+  target_link_libraries(TritonTLE PRIVATE Python3::Module pybind11::headers)
+  if(TARGET CommonIRTableGen)
+    add_dependencies(TritonTLE CommonIRTableGen CommonIRAttrDefsIncGen CommonIRTypesIncGen)
+  endif()
+  if(TARGET TleCommonIRToTTGIRPassIncGen)
+    add_dependencies(TritonTLE TleCommonIRToTTGIRPassIncGen)
+  endif()
+  # CLI tools still reference these three legacy TLE libraries through TRITON_LIBS.
+  # Provide empty stubs for linking because the CLI tools are built without __TLE__.
+  set(_tle_stub "${CMAKE_CURRENT_BINARY_DIR}/tle_stub.cpp")
+  file(WRITE "${_tle_stub}" "")
+  foreach(_stub TritonTLEAnalysis TleToLLVM TritonTLETransforms)
+    if(NOT TARGET ${_stub})
+      add_library(${_stub} STATIC "${_tle_stub}")
+    endif()
+  endforeach()
+  return()
+endif()
+
 
 # flagtree tle
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/dialect/include)
@@ -48,6 +91,11 @@ if(TRITON_BUILD_PYTHON_MODULE)
     endif()
   endif()
 
+  if(FLAGTREE_COMMON_IR_ENABLED AND TARGET CommonIRIR)
+    add_subdirectory(include/CommonIRToTTGIR)
+    add_subdirectory(lib/CommonIRToTTGIR)
+  endif()
+
   add_triton_plugin(TritonTLE
     ${CMAKE_CURRENT_SOURCE_DIR}/triton_tle.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/triton_tle_raw.cc
@@ -60,6 +108,9 @@ if(TRITON_BUILD_PYTHON_MODULE)
     )
 
   target_link_libraries(TritonTLE PRIVATE Python3::Module pybind11::headers MLIRTargetLLVMIRImport)
+  if(FLAGTREE_COMMON_IR_ENABLED AND TARGET TleCommonIRToTTGIR)
+    target_link_libraries(TritonTLE PRIVATE TleCommonIRToTTGIR)
+  endif()
   add_dependencies(TritonTLE
     TleTableGen
     TritonTLETransformsIncGen

@@ -1,8 +1,10 @@
 import inspect
 
+import pytest
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
+from triton._common_ir import ENABLED as COMMON_IR_ENABLED
 
 from test_tle_utils import compile_to_ttir
 
@@ -76,7 +78,9 @@ def test_tle_copy_mthreads_bindings_are_backend_local():
     assert hasattr(builder, "create_local_pointers")
     assert hasattr(builder, "create_tma_copy")
     assert hasattr(libtriton, "mthreads")
-    assert not hasattr(libtriton, "tle")
+    if hasattr(libtriton, "tle"):
+        assert hasattr(libtriton.tle.passes.commonir, "add_to_ttgir")
+        assert not hasattr(libtriton.tle, "ir")
     assert hasattr(
         libtriton.mthreads.passes.ttgpuir,
         "add_tle_optimize_local_pointer_async_stores",
@@ -124,22 +128,38 @@ def test_tle_gpu_memory_space_sets_shared_memory_string_attr():
     assert 'tt.memory_space = "shared_memory"' in ttir
 
 
+@triton.jit(noinline=True)
+def _consume_alloc(buf, out):
+    tl.store(out, 0.0)
+
+
+@triton.jit
+def _alloc_kernel(out):
+    buf = tle.gpu.alloc((16, ), dtype=tl.float32, nv_mma_shared_layout=False)
+    _consume_alloc(buf, out)
+
+
+@pytest.mark.skipif(COMMON_IR_ENABLED, reason="checks native frontend IR")
 def test_tle_gpu_alloc_emits_local_alloc_in_ttir():
-
-    @triton.jit(noinline=True)
-    def consume_alloc(buf, out):
-        tl.store(out, 0.0)
-
-    @triton.jit
-    def kernel(out):
-        buf = tle.gpu.alloc((16, ), dtype=tl.float32, nv_mma_shared_layout=False)
-        consume_alloc(buf, out)
-
-    ttir = compile_to_ttir(kernel, {"out": "*fp32"})
+    ttir = compile_to_ttir(_alloc_kernel, {"out": "*fp32"})
 
     assert "ttg.local_alloc" in ttir, ttir
     assert "!ttg.memdesc<16xf32" in ttir, ttir
     assert "#smem" in ttir, ttir
+
+
+@pytest.mark.skipif(not COMMON_IR_ENABLED, reason="requires CommonIR")
+def test_tle_gpu_alloc_lowers_common_ir_buffer():
+    signature = {"out": "*fp32"}
+    ttir = compile_to_ttir(_alloc_kernel, signature)
+    assert "tile.alloc" in ttir, ttir
+    assert "!tile.buf<[16], f32, shared>" in ttir, ttir
+
+    lowered = compile_to_ttir(_alloc_kernel, signature, lower_common_ir=True)
+    assert "ttg.local_alloc" in lowered, lowered
+    assert "!ttg.memdesc<16xf32" in lowered, lowered
+    assert "#smem" in lowered, lowered
+    assert "tile.alloc" not in lowered, lowered
 
 
 def test_tle_load_forwards_tl_load_options():

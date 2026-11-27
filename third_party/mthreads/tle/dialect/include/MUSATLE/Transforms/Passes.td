@@ -49,8 +49,7 @@ def TritonMUSAGPUTLEOptimizeLocalPointerStores
 
 def TritonMUSAGPUTLEOptimizeLocalPointerAsyncStores
     : Pass<"tritonmusa-tle-optimize-local-pointer-async-stores", "mlir::ModuleOp"> {
-  let summary =
-      "Rewrite gmem load plus musa_tle.local_pointers subview store into async_copy";
+  let summary = "Rewrite eligible TLE global-to-shared copies into async_copy";
 
   let description = [{
     Match conservative staging patterns of the form:
@@ -60,6 +59,7 @@ def TritonMUSAGPUTLEOptimizeLocalPointerAsyncStores
 
     where `%local_ptr_subview` is produced by `musa_tle.local_pointers` and
     denotes a static full view or static subview of a backing shared memdesc.
+    Also match marked CommonIR local stores from a single-use adjacent load.
     Rewrite the pair into `ttg.async_copy_global_to_local` plus commit/wait.
   }];
 

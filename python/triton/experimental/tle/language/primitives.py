@@ -18,6 +18,13 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+from triton._common_ir import AVAILABLE as COMMON_IR_AVAILABLE
+from triton._flagtree_backend import FLAGTREE_BACKEND
+
+# Keep the compatibility exports for opt-in NVIDIA CommonIR builds.
+_EXPORT_BUFFER_ACCESS_ALIASES = FLAGTREE_BACKEND not in ('amd', 'enflame') and (FLAGTREE_BACKEND not in ('', 'nvidia')
+                                                                                or COMMON_IR_AVAILABLE)
+
 TLE_PRIMITIVES = frozenset({
     ## TLE-Raw
     "raw.call",
@@ -127,5 +134,8 @@ TLE_PRIMITIVES = frozenset({
     "make_partition_view",
     "make_view",
 })
+
+if _EXPORT_BUFFER_ACCESS_ALIASES:
+    TLE_PRIMITIVES |= {"gpu.to_tensor", "gpu.store_tensor"}
 
 __all__ = ["TLE_PRIMITIVES"]

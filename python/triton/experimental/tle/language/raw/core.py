@@ -26,6 +26,7 @@ import triton.language as tl
 from triton._flagtree_backend import FLAGTREE_BACKEND
 from triton.language.core import builtin, constexpr as tl_constexpr, tensor
 from triton.experimental.tle.language.gpu import buffered_tensor
+from triton.experimental.tle.language.gpu import semantic as gpu_semantic
 
 if TYPE_CHECKING:
     from .. import TLESemantic
@@ -37,22 +38,26 @@ def _resolve_alias_indices(func, llvm, handles, output_indices, extern_func_name
     return output_indices
 
 
-def _wrap_results(args, alias_indices, dsl_region_op, *, smem: bool):
+def _wrap_results(args, alias_indices, dsl_region_op, *, smem: bool, tile_builder):
     aliased_args = [args[idx] for idx in alias_indices]
     results = dsl_region_op.get_results()
     if len(results) == 0:
         return None
     if smem:
-        buffer_tensors = [
-            buffered_tensor(
+        buffer_tensors = []
+        for result, aliased in zip(results, aliased_args):
+            if tile_builder is not None:
+                result = tile_builder.create_tile_buffer_from_memdesc(aliased.type.to_ir(tile_builder), result)
+            buffer = buffered_tensor(
                 result,
                 aliased.dtype,
                 aliased.shape,
                 aliased.type.storage,
                 aliased.type.layout,
                 aliased.type.semantic,
-            ) for result, aliased in zip(results, aliased_args)
-        ]
+                alloc_shape=aliased.type.alloc_shape if tile_builder is not None else None,
+            )
+            buffer_tensors.append(buffer)
         if len(buffer_tensors) == 1:
             return buffer_tensors[0]
         return tl.tuple(buffer_tensors)
@@ -73,7 +78,16 @@ def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic: TLESeman
     if mark_kernel_init_hook is not None:
         mark_kernel_init_hook(_semantic, _generator)
     hint = _normalize_hint(hint)
-    handles = [(_semantic.to_tensor(arg) if isinstance(arg, tl_constexpr) else arg).handle for arg in args]
+    tile_builder = None
+    if smem and FLAGTREE_BACKEND in ("hcu", "iluvatar") and gpu_semantic.COMMON_IR_ENABLED:
+        tile_builder = _semantic.builder
+    values = [_semantic.to_tensor(arg) if isinstance(arg, tl_constexpr) else arg for arg in args]
+    # Raw calls hand native memref descriptors to the LLVM function, so a
+    # CommonIR tile buffer must be bridged back to a memdesc first.
+    handles = [
+        gpu_semantic.get_memdesc(value, _semantic)
+        if tile_builder is not None and isinstance(value, buffered_tensor) else value.handle for value in values
+    ]
     if getattr(func, "deferred", False):
         if output_indices is None:
             raise RuntimeError("deferred tle_raw.call requires explicit output_indices=")
@@ -87,7 +101,7 @@ def _tle_raw_call(func, args, *, output_indices, hint, smem, _semantic: TLESeman
         alias_indices = _resolve_alias_indices(func, llvm, handles, output_indices, extern_func_name, _semantic)
         dsl_region_op = func.create_region_by_llvm(_semantic.builder, llvm, handles, alias_indices, hint,
                                                    extern_func_name)
-    return _wrap_results(args, alias_indices, dsl_region_op, smem=smem)
+    return _wrap_results(args, alias_indices, dsl_region_op, smem=smem, tile_builder=tile_builder)
 
 
 @builtin

@@ -178,10 +178,13 @@ struct StaticSubviewMatch {
 };
 
 struct AsyncStoreCandidate {
-  tt::StoreOp store;
+  Operation *store;
   tt::LoadOp load;
   StaticSubviewMatch match;
   Value originalStoreValue;
+  // The value whose readers prove the staging buffer is read back into a dot:
+  // the local_pointers result for the legacy path, the memdesc for CommonIR.
+  Value storeTarget;
 };
 
 static std::optional<StaticSubviewMatch>
@@ -285,7 +288,52 @@ matchAsyncStoreCandidate(tt::StoreOp store, bool &invalidExplicitEncoding) {
   if (loadTy.getElementType() != match->valueType.getElementType())
     return std::nullopt;
 
-  return AsyncStoreCandidate{store, load, std::move(*match), store.getValue()};
+  return AsyncStoreCandidate{store.getOperation(), load, std::move(*match),
+                             store.getValue(), store.getPtr()};
+}
+
+static tt::LoadOp getCopyLoad(ttg::LocalStoreOp store) {
+  // Layout conversions can separate the load and store. Require an adjacent
+  // single-use chain so that converting the copy cannot reorder memory.
+  Value value = store.getSrc();
+  Operation *consumer = store;
+  while (auto cvt = value.getDefiningOp<ttg::ConvertLayoutOp>()) {
+    if (!cvt->hasOneUse() || cvt->getNextNode() != consumer)
+      return {};
+    consumer = cvt;
+    value = cvt.getSrc();
+  }
+  auto load = value.getDefiningOp<tt::LoadOp>();
+  if (!load || !load->hasOneUse() || load->getNextNode() != consumer ||
+      load.getIsVolatile() || load.getMask() || load.getOther())
+    return {};
+  if (!isa<RankedTensorType>(load.getType()))
+    return {};
+  if (!isGlobalPointerTensor(load.getPtr()))
+    return {};
+  return load;
+}
+
+static std::optional<AsyncStoreCandidate>
+matchCommonIRAsyncStore(ttg::LocalStoreOp store) {
+  auto load = getCopyLoad(store);
+  if (!load)
+    return std::nullopt;
+
+  auto loadTy = cast<RankedTensorType>(load.getType());
+  auto memDescTy = dyn_cast<ttg::MemDescType>(store.getDst().getType());
+  if (!memDescTy)
+    return std::nullopt;
+  if (loadTy.getShape() != memDescTy.getShape())
+    return std::nullopt;
+  if (loadTy.getElementType() != memDescTy.getElementType())
+    return std::nullopt;
+
+  SmallVector<int32_t> offsets(memDescTy.getRank(), 0);
+  return AsyncStoreCandidate{
+      store.getOperation(), load,
+      StaticSubviewMatch{store.getDst(), std::move(offsets), loadTy},
+      store.getSrc(), store.getDst()};
 }
 
 static bool reachesDot(Value value) {
@@ -488,6 +536,16 @@ static bool readsBackIntoDot(Value storePtr) {
           return true;
         continue;
       }
+      if (auto reader = dyn_cast<ttg::LocalLoadOp>(user)) {
+        if (reachesDot(reader.getResult()))
+          return true;
+        continue;
+      }
+      if (auto lp = dyn_cast<LocalPointersOp>(user)) {
+        if (seen.insert(lp.getResult()).second)
+          worklist.push_back(lp.getResult());
+        continue;
+      }
       if (auto cvt = dyn_cast<ttg::ConvertLayoutOp>(user))
         if (seen.insert(cvt.getResult()).second)
           worklist.push_back(cvt.getResult());
@@ -529,8 +587,7 @@ static bool shouldDeferToPipeliner(AsyncStoreCandidate &candidate,
       !planSmeCopy(candidate, candidate.match.baseMemDesc, useSme))
     return false;
 
-  tt::StoreOp store = candidate.store;
-  return readsBackIntoDot(store.getPtr());
+  return readsBackIntoDot(candidate.storeTarget);
 }
 
 static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group,
@@ -541,10 +598,10 @@ static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group,
   SmallVector<Value> tokens;
   tokens.reserve(group.size());
   for (AsyncStoreCandidate *candidate : group) {
-    tt::StoreOp store = candidate->store;
+    Operation *store = candidate->store;
     OpBuilder builder(store);
     Value dst =
-        createSubviewForStore(builder, store.getLoc(), candidate->match);
+        createSubviewForStore(builder, store->getLoc(), candidate->match);
 
     std::optional<SmeCopyPlan> sme = planSmeCopy(*candidate, dst, useSme);
 
@@ -558,16 +615,16 @@ static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group,
           ttg::ConvertLayoutOp::create(builder, ptr.getLoc(), smePtrTy, ptr);
       Value stride = sme->rowStride;
       if (stride.getType().isInteger(64))
-        stride = arith::TruncIOp::create(builder, store.getLoc(),
+        stride = arith::TruncIOp::create(builder, store->getLoc(),
                                          builder.getI32Type(), stride);
       asyncCopy = ttg::AsyncCopyGlobalToLocalOp::create(
-          builder, store.getLoc(), smePtr, dst, candidate->load.getMask(),
+          builder, store->getLoc(), smePtr, dst, candidate->load.getMask(),
           candidate->load.getOther(), stride, candidate->load.getCache(),
           candidate->load.getEvict(), candidate->load.getIsVolatile(),
           /*contiguity=*/1);
     } else {
       asyncCopy = ttg::AsyncCopyGlobalToLocalOp::create(
-          builder, store.getLoc(), candidate->load.getPtr(), dst,
+          builder, store->getLoc(), candidate->load.getPtr(), dst,
           candidate->load.getMask(), candidate->load.getOther(),
           candidate->load.getCache(), candidate->load.getEvict(),
           candidate->load.getIsVolatile());
@@ -576,15 +633,15 @@ static void rewriteAsyncStoreGroup(ArrayRef<AsyncStoreCandidate *> group,
     tokens.push_back(asyncCopy.getToken());
   }
 
-  tt::StoreOp lastStore = group.back()->store;
+  Operation *lastStore = group.back()->store;
   OpBuilder builder(lastStore);
   builder.setInsertionPointAfter(lastStore);
-  auto commit = ttg::AsyncCommitGroupOp::create(builder, lastStore.getLoc(),
+  auto commit = ttg::AsyncCommitGroupOp::create(builder, lastStore->getLoc(),
                                                 ValueRange(tokens));
-  ttg::AsyncWaitOp::create(builder, lastStore.getLoc(), commit.getResult(), 0);
+  ttg::AsyncWaitOp::create(builder, lastStore->getLoc(), commit.getResult(), 0);
 
   for (AsyncStoreCandidate *candidate : group)
-    candidate->store.erase();
+    candidate->store->erase();
   for (AsyncStoreCandidate *candidate : group)
     eraseDeadStoreValueWrappers(candidate->originalStoreValue, candidate->load);
 }
@@ -616,6 +673,15 @@ struct OptimizeLocalPointerAsyncStoresPass
       return;
     }
 
+    // CommonIR lowers tle.copy into ttg.local_store; match those as well so
+    // the copy is still rewritten into async_copy and picked up by SME marking.
+    module.walk([&](ttg::LocalStoreOp store) {
+      orderedStores.push_back(store.getOperation());
+      auto candidate = matchCommonIRAsyncStore(store);
+      if (candidate && !shouldDeferToPipeliner(*candidate, numStages, useSme))
+        candidates.try_emplace(store.getOperation(), std::move(*candidate));
+    });
+
     llvm::DenseSet<Operation *> processed;
     for (Operation *storeOp : orderedStores) {
       auto it = candidates.find(storeOp);
@@ -644,7 +710,7 @@ struct OptimizeLocalPointerAsyncStoresPass
       }
 
       for (AsyncStoreCandidate *candidate : group)
-        processed.insert(candidate->store.getOperation());
+        processed.insert(candidate->store);
       rewriteAsyncStoreGroup(group, useSme);
     }
   }

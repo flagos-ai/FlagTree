@@ -7,4 +7,6 @@ TLE_SUPPORTED_PRIMITIVES = [
     "gpu.alloc",
     "gpu.copy",
     "gpu.local_ptr",
+    "gpu.to_tensor",
+    "gpu.store_tensor",
 ]

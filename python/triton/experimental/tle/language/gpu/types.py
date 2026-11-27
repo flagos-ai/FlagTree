@@ -672,6 +672,15 @@ class buffered_tensor(tl.base_value):
         if stage_ty != tl.int32:
             raise ValueError(f"buffered_tensor.slot stage must be int32, got {stage_ty}")
 
+        from . import semantic as tle_semantic
+        if tle_semantic.COMMON_IR_ENABLED:
+            from .mthreads import common as mthreads_common
+            constant_stage = tl._unwrap_if_constexpr(stage)
+            if mthreads_common.enabled() and isinstance(constant_stage,
+                                                        int) and not 0 <= constant_stage < self.shape[0]:
+                raise ValueError(
+                    f"mthreads TLE memdesc index {constant_stage} out of bounds for leading dimension {self.shape[0]}")
+
         # A slot is an ordinary carrier view. Logical extents are seeded on
         # local_alloc and propagated through memdesc_index in TTIR.
         slot_shape = list(self.shape[1:])
@@ -688,7 +697,6 @@ class buffered_tensor(tl.base_value):
         offsets = [stage_tensor]
         for _ in range(len(self.shape) - 1):
             offsets.append(_semantic.to_tensor(0))
-        from . import semantic as tle_semantic
         slot_handle = tle_semantic.subview(
             self,
             offsets,

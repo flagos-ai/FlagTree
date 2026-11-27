@@ -239,13 +239,13 @@ getAsyncCopyContiguity(tt::LoadOp load,
 }
 
 static bool
-canUseAsyncCopyForStore(tt::LoadOp load, const StaticSubviewMatch &match,
+canUseAsyncCopyForStore(tt::LoadOp load, Value dst,
                         tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
   if (!tt::canBeConvertedToAsyncLoad(load, axisInfoAnalysis))
     return false;
 
   auto loadTy = dyn_cast<RankedTensorType>(load.getType());
-  auto memDescTy = dyn_cast<ttg::MemDescType>(match.baseMemDesc.getType());
+  auto memDescTy = dyn_cast<ttg::MemDescType>(dst.getType());
   if (!loadTy || !memDescTy)
     return false;
 
@@ -255,6 +255,50 @@ canUseAsyncCopyForStore(tt::LoadOp load, const StaticSubviewMatch &match,
     return false;
 
   return tt::getCopyVecBytes(loadTy, sharedEncoding) >= 4;
+}
+
+static void replaceWithAsyncCopy(Operation *store, Value storedValue,
+                                 tt::LoadOp load, Value dst,
+                                 tt::ModuleAxisInfoAnalysis &axisInfoAnalysis) {
+  OpBuilder builder(store);
+  auto asyncCopy = ttg::AsyncCopyGlobalToLocalOp::create(
+      builder, store->getLoc(), load.getPtr(), dst, load.getMask(),
+      load.getOther(), load.getCache(), load.getEvict(), load.getIsVolatile(),
+      getAsyncCopyContiguity(load, axisInfoAnalysis));
+  asyncCopy->setAttr(triton::musa_tle::kMUSATLELocalPointerAsyncStoreAttr,
+                     builder.getUnitAttr());
+  auto commit = ttg::AsyncCommitGroupOp::create(builder, store->getLoc(),
+                                                asyncCopy.getToken());
+  ttg::AsyncWaitOp::create(builder, store->getLoc(), commit.getResult(), 0);
+
+  store->erase();
+  for (Value current = storedValue; current != load.getResult();) {
+    auto cvt = current.getDefiningOp<ttg::ConvertLayoutOp>();
+    if (!cvt || !cvt->use_empty())
+      break;
+    current = cvt.getSrc();
+    cvt.erase();
+  }
+  if (load->use_empty())
+    load.erase();
+}
+
+static tt::LoadOp getCopyLoad(ttg::LocalStoreOp store) {
+  // Layout conversions can separate the load and store. Require an adjacent
+  // single-use chain so that converting the copy cannot reorder memory.
+  Value value = store.getSrc();
+  Operation *consumer = store;
+  while (auto cvt = value.getDefiningOp<ttg::ConvertLayoutOp>()) {
+    if (!cvt->hasOneUse() || cvt->getNextNode() != consumer)
+      return {};
+    consumer = cvt;
+    value = cvt.getSrc();
+  }
+  auto load = value.getDefiningOp<tt::LoadOp>();
+  if (!load || !load->hasOneUse() || load->getNextNode() != consumer ||
+      load.getIsVolatile() || !isGlobalPointerTensor(load.getPtr()))
+    return {};
+  return load;
 }
 
 class OptimizeLocalPointerAsyncStoresPass
@@ -289,32 +333,32 @@ class OptimizeLocalPointerAsyncStoresPass
       if (cast<RankedTensorType>(load.getType()).getElementType() !=
           match->valueType.getElementType())
         continue;
-      if (!canUseAsyncCopyForStore(load, *match, axisInfoAnalysis))
+      if (!canUseAsyncCopyForStore(load, match->baseMemDesc, axisInfoAnalysis))
         continue;
 
       OpBuilder builder(store);
       Value dst = createSubviewForStore(builder, store.getLoc(), *match);
-      auto asyncCopy = ttg::AsyncCopyGlobalToLocalOp::create(
-          builder, store.getLoc(), load.getPtr(), dst, load.getMask(),
-          load.getOther(), load.getCache(), load.getEvict(),
-          load.getIsVolatile(), getAsyncCopyContiguity(load, axisInfoAnalysis));
-      asyncCopy->setAttr(triton::musa_tle::kMUSATLELocalPointerAsyncStoreAttr,
-                         builder.getUnitAttr());
-      auto commit = ttg::AsyncCommitGroupOp::create(builder, store.getLoc(),
-                                                    asyncCopy.getToken());
-      ttg::AsyncWaitOp::create(builder, store.getLoc(), commit.getResult(), 0);
+      replaceWithAsyncCopy(store, store.getValue(), load, dst,
+                           axisInfoAnalysis);
+    }
 
-      Value originalStoreValue = store.getValue();
-      store.erase();
-      for (Value current = originalStoreValue; current != load.getResult();) {
-        Operation *def = current.getDefiningOp();
-        auto cvt = dyn_cast_or_null<ttg::ConvertLayoutOp>(def);
-        if (!cvt || !cvt->use_empty())
-          break;
-        current = cvt.getSrc();
-        cvt.erase();
-      }
-      load.erase();
+    SmallVector<ttg::LocalStoreOp> commonIRStores;
+    module.walk([&](ttg::LocalStoreOp store) {
+      if (store->removeAttr("musa_tle.commonir_copy"))
+        commonIRStores.push_back(store);
+    });
+    for (ttg::LocalStoreOp store : commonIRStores) {
+      auto load = getCopyLoad(store);
+      if (!load ||
+          !canUseAsyncCopyForStore(load, store.getDst(), axisInfoAnalysis))
+        continue;
+      auto valueTy = cast<RankedTensorType>(load.getType());
+      auto dstTy = cast<ttg::MemDescType>(store.getDst().getType());
+      if (valueTy.getShape() != dstTy.getShape() ||
+          valueTy.getElementType() != dstTy.getElementType())
+        continue;
+      replaceWithAsyncCopy(store, store.getSrc(), load, store.getDst(),
+                           axisInfoAnalysis);
     }
   }
 };

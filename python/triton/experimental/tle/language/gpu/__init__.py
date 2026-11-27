@@ -19,6 +19,8 @@
 # SOFTWARE.
 
 # flagtree tle
+from ..primitives import _EXPORT_BUFFER_ACCESS_ALIASES
+
 from . import mthreads
 from .core import (
     range,
@@ -86,3 +88,8 @@ __all__ = [
     "smem",
     "tmem",
 ]
+
+if _EXPORT_BUFFER_ACCESS_ALIASES:
+    from .core import store_tensor, to_tensor
+
+    __all__ += ["to_tensor", "store_tensor"]

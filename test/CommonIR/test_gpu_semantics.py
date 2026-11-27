@@ -14,8 +14,8 @@ def _roundtrip(src, dst, BLOCK: tl.constexpr):
     idx = tl.arange(0, BLOCK)
     buf = tle.gpu.alloc([BLOCK], tl.float32, scope=tle.gpu.smem, nv_mma_shared_layout=False)
     tle.gpu.copy(src + idx, buf, [BLOCK])
-    value = buf.load(writable=False)
-    buf.store(value + 1)
+    value = tle.gpu.to_tensor(buf, writable=False)
+    tle.gpu.store_tensor(value + 1, buf)
     tle.gpu.copy(buf, dst + idx, [BLOCK])
 
 
@@ -40,11 +40,11 @@ def _invalid(src, CASE: tl.constexpr):
     elif CASE == 2:
         tle.gpu.copy(src + idx, buf, [16], offsets=[1])
     elif CASE == 3:
-        buf.load(target_shape=[8])
+        tle.gpu.to_tensor(buf, target_shape=[8])
     elif CASE == 4:
-        buf.store(tl.full([8], 0, tl.float32))
+        tle.gpu.store_tensor(tl.full([8], 0, tl.float32), buf)
     elif CASE == 5:
-        buf.store(tl.full([16], 0, tl.int32))
+        tle.gpu.store_tensor(tl.full([16], 0, tl.int32), buf)
     elif CASE == 6:
         tle.gpu.copy((src + idx).to(tl.pointer_type(tl.int32)), buf, [16])
     elif CASE == 7:
@@ -58,9 +58,9 @@ def _invalid(src, CASE: tl.constexpr):
     (0, "shape and pointer tensor shape"),
     (1, "shape and pointer tensor shape"),
     (2, "normal copy does not support offsets"),
-    (3, "buffered_tensor.load requires the full buffer shape"),
-    (4, "buffered_tensor.store requires the full buffer shape and element type"),
-    (5, "buffered_tensor.store requires the full buffer shape and element type"),
+    (3, "to_tensor requires the full buffer shape"),
+    (4, "store_tensor requires the full buffer shape and element type"),
+    (5, "store_tensor requires the full buffer shape and element type"),
     (6, "copy requires pointers with the buffer element type"),
     (7, "currently supports only shared-memory buffers"),
     (8, "barrier is only supported for global-to-shared TMA copy"),

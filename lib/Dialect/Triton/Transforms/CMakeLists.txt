@@ -3,7 +3,8 @@ mlir_tablegen(TritonCombine.inc -gen-rewriters)
 add_public_tablegen_target(TritonCombineIncGen)
 
 set(TritonTransformsTleSources)
-if(FLAGTREE_TLE)
+# MetaX CommonIR uses the slim frontend and does not generate TleTableGen.
+if(FLAGTREE_TLE AND NOT (FLAGTREE_BACKEND STREQUAL "metax" AND FLAGTREE_COMMON_IR_ENABLED))
   list(APPEND TritonTransformsTleSources
     ${CMAKE_SOURCE_DIR}/third_party/tle/dialect/lib/Transforms/ReorderLoopLoads.cpp
   )

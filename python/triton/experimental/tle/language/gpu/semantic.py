@@ -166,7 +166,8 @@ def alloc(shape, dtype, storage, layout, layout_handle, init_value, _semantic):
     return result
 
 
-def copy(src, dst, shape, offsets, direction, _semantic, completion_barrier=None):
+def copy(src, dst, shape, offsets, direction, _semantic, completion_barrier=None, eviction_policy="",
+         cache_policy=None):
     descriptor = src if isinstance(src,
                                    tl.tensor_descriptor) else dst if isinstance(dst, tl.tensor_descriptor) else None
 
@@ -187,11 +188,15 @@ def copy(src, dst, shape, offsets, direction, _semantic, completion_barrier=None
         memdesc = get_memdesc(buffer, _semantic)
         src_handle = src.handle if src is descriptor else memdesc
         dst_handle = dst.handle if dst is descriptor else memdesc
+        eviction = _semantic._str_to_eviction_policy(eviction_policy) if eviction_policy else None
+        copy_kwargs = {} if eviction is None else {"eviction_policy": eviction}
+        if cache_policy is not None:
+            copy_kwargs["cachePolicy"] = cache_policy
         if completion_barrier is None:
-            _semantic.builder.create_tma_copy(src_handle, dst_handle, indices)
+            _semantic.builder.create_tma_copy(src_handle, dst_handle, indices, **copy_kwargs)
         else:
             _semantic.builder.create_tma_copy(src_handle, dst_handle, indices, completion_barrier.handle,
-                                              completion_barrier.expect_bytes)
+                                              completion_barrier.expect_bytes, **copy_kwargs)
         return
 
     if descriptor is not None:
@@ -253,7 +258,7 @@ def subview(src, offsets, shape, strides, layout, _semantic, alloc_shape=None):
 def to_tensor(buffer, writable, result_type, _semantic):
     if COMMON_IR_ENABLED:
         if tuple(result_type.shape) != tuple(buffer.type.shape):
-            raise ValueError("GPU CommonIR buffered_tensor.load requires the full buffer shape")
+            raise ValueError("GPU CommonIR to_tensor requires the full buffer shape")
         result = _semantic.builder.create_tile_to_tensor(buffer.handle, writable)
         return tl.tensor(result, result_type)
     from .core import local_ptr
@@ -264,7 +269,7 @@ def to_tensor(buffer, writable, result_type, _semantic):
 def store_tensor(value, dst, _semantic):
     if COMMON_IR_ENABLED:
         if tuple(value.shape) != tuple(dst.type.shape) or value.dtype != dst.dtype:
-            raise ValueError("GPU CommonIR buffered_tensor.store requires the full buffer shape and element type")
+            raise ValueError("GPU CommonIR store_tensor requires the full buffer shape and element type")
         _semantic.builder.create_tile_store_tensor(value.handle, dst.handle)
         return
     from .core import local_ptr
