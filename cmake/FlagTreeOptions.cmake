@@ -208,40 +208,6 @@ endmacro()
 macro(flagtree_include_directories root_include_dir)
   set(FLAGTREE_BACKEND_DIR ${PROJECT_SOURCE_DIR}/third_party/${FLAGTREE_BACKEND})
 
-  # PyTorch CUDA wheels install cuSPARSE headers under Python's site-packages
-  # instead of the CUDA toolkit include directory. Make the header available to
-  # the default NVIDIA backend when the corresponding wheel is installed.
-  if(NOT FLAGTREE_BACKEND)
-    find_package(Python3 QUIET COMPONENTS Interpreter)
-    if(Python3_Interpreter_FOUND)
-      foreach(_flagtree_cusparse_variant IN ITEMS cu12 cu13)
-        if(_flagtree_cusparse_variant STREQUAL "cu13")
-          set(_flagtree_cusparse_header
-            "nvidia/cu13/include/cusparse.h")
-        else()
-          set(_flagtree_cusparse_header
-            "nvidia/cusparse/include/cusparse.h")
-        endif()
-        set(_flagtree_cusparse_package
-          "nvidia-cusparse-${_flagtree_cusparse_variant}")
-        execute_process(
-          COMMAND "${Python3_EXECUTABLE}" "-c"
-            "from importlib.metadata import distribution; p = distribution('${_flagtree_cusparse_package}').locate_file('${_flagtree_cusparse_header}'); print(p.parent if p.is_file() else '')"
-          RESULT_VARIABLE _flagtree_cusparse_result
-          OUTPUT_VARIABLE _flagtree_cusparse_include_dir
-          ERROR_QUIET
-          OUTPUT_STRIP_TRAILING_WHITESPACE)
-        if(_flagtree_cusparse_result EQUAL 0 AND
-           _flagtree_cusparse_include_dir)
-          include_directories(SYSTEM "${_flagtree_cusparse_include_dir}")
-          message(STATUS
-            "Using ${_flagtree_cusparse_package} headers from "
-            "${_flagtree_cusparse_include_dir}")
-        endif()
-      endforeach()
-    endif()
-  endif()
-
   # flagtree spec include dir
   set(BACKEND_SPEC_INCLUDE_DIR ${FLAGTREE_BACKEND_DIR}/spec_cpp/include)
   if(FLAGTREE_BACKEND AND EXISTS ${BACKEND_SPEC_INCLUDE_DIR})
