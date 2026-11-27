@@ -81,16 +81,45 @@ Tx81MemAddrRange compute_wdma_dst_addr_range(const void *dst, int *src_shape,
                                              int *dst_stride, int rank,
                                              uint32_t elem_bytes, uint32_t fmt);
 
+// Compute the memory access address envelope [min_addr, max_addr) for
+// __GatherScatter.  The envelope is inclusive on the low side and exclusive
+// on the high side, i.e. every byte touched by the operation lies in
+// [min_addr, max_addr).
+Tx81MemAddrRange compute_gatherscatter_src_addr_range(
+    const void *src, uint32_t bytes, uint32_t strideN, uint32_t strideH,
+    uint32_t strideW, uint32_t iterN, uint32_t iterH, uint32_t iterW);
+
+Tx81MemAddrRange compute_gatherscatter_dst_addr_range(
+    const void *dst, uint32_t bytes, uint32_t strideN, uint32_t strideH,
+    uint32_t strideW, uint32_t iterN, uint32_t iterH, uint32_t iterW);
+
+// Valid SPM address envelope for __GatherScatter OOB checking.
+#define TX81_GS_SPM_ADDR_MIN 0U
+#define TX81_GS_SPM_ADDR_MAX (3U * 1024U * 1024U - 64U * 1024U)
+
+uint32_t get_dma_oob_log_count(void);
 uint32_t get_dma_oob_count(void);
+uint32_t get_dma_bad_crc_count(void);
 uint32_t get_dma_bad_magic_count(void);
+
+void reset_dma_oob_log_count(void);
 void reset_dma_oob_count(void);
+void reset_dma_bad_crc_count(void);
 void reset_dma_bad_magic_count(void);
 
 bool get_dma_check_abort(void);
 
 // Global counters — incremented by rdma.c/wdma.c on OOB detection
+extern uint32_t max_dma_oob_count;
+extern uint32_t dma_oob_log_count;
 extern uint32_t dma_oob_count;
+extern uint32_t dma_bad_crc_count;
 extern uint32_t dma_bad_magic_count;
+
+#define DMA_LOG_COND(cnt, code)                                                \
+  if (cnt <= max_dma_oob_count - 1) {                                          \
+    code;                                                                      \
+  }
 
 // Use in simulation mode, return the spm address mapping
 int8_t *get_spm_memory_mapping(uint64_t offset);

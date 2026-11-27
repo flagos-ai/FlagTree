@@ -52,6 +52,7 @@
 #include "triton-shared/AnalysisStructured/PtrAnalysis.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/TritonToPtr.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
+#include "triton-shared/Utils/MemorySpaceUtils.h"
 #include "triton-shared/Utils/Utils.h"
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
@@ -65,41 +66,33 @@
 
 using namespace mlir;
 
-static ptr::MemorySpaceAttrInterface
-getGenericMemorySpace(MLIRContext *context) {
-  return ptr::GenericSpaceAttr::get(context);
-}
-
-static ptr::MemorySpaceAttrInterface getByteMemorySpace(MLIRContext *context) {
-  return ptr::GenericSpaceAttr::get(context);
-}
-
-static ptr::MemorySpaceAttrInterface getMemorySpaceForTritonPtr(Type type) {
+static Attribute getMemorySpaceForTritonPtr(Type type) {
   if (auto shaped = dyn_cast<ShapedType>(type))
     type = shaped.getElementType();
   if (auto ptrType = dyn_cast<triton::PointerType>(type)) {
-    Type pointeeType = ptrType.getPointeeType();
-    if (auto intType = dyn_cast<IntegerType>(pointeeType)) {
-      if (intType.getWidth() == 1)
-        return getByteMemorySpace(type.getContext());
-    }
-    return getGenericMemorySpace(type.getContext());
+    // Phase 1: byte pointers and generic pointers share the same default space.
+    return mlir::triton::getDefaultBridgeMemorySpace(type.getContext());
   }
   if (auto memrefType = dyn_cast<BaseMemRefType>(type)) {
-    if (auto memorySpace = dyn_cast_if_present<ptr::MemorySpaceAttrInterface>(
-            memrefType.getMemorySpace()))
-      return memorySpace;
-    return getGenericMemorySpace(type.getContext());
+    if (auto space = memrefType.getMemorySpace())
+      return space;
+    return mlir::triton::getDefaultBridgeMemorySpace(type.getContext());
   }
-  return getGenericMemorySpace(type.getContext());
+  return mlir::triton::getDefaultBridgeMemorySpace(type.getContext());
 }
 
 static ptr::PtrType getPtrTypeForTritonPtr(Type type) {
-  return ptr::PtrType::get(type.getContext(), getMemorySpaceForTritonPtr(type));
+  auto space = getMemorySpaceForTritonPtr(type);
+  auto spaceIface = dyn_cast<ptr::MemorySpaceAttrInterface>(space);
+  assert(spaceIface && "memory space must implement MemorySpaceAttrInterface");
+  return ptr::PtrType::get(type.getContext(), spaceIface);
 }
 
 static ptr::PtrType getGenericPtrType(MLIRContext *context) {
-  return ptr::PtrType::get(context, getGenericMemorySpace(context));
+  auto space = mlir::triton::getDefaultBridgeMemorySpace(context);
+  auto spaceIface = dyn_cast<ptr::MemorySpaceAttrInterface>(space);
+  assert(spaceIface && "memory space must implement MemorySpaceAttrInterface");
+  return ptr::PtrType::get(context, spaceIface);
 }
 
 namespace {

@@ -206,11 +206,20 @@ LogicalResult SquadDotOp::verify() {
   auto instrShape = mmaEnc.getInstrShape();
   if (instrShape.size() != 3)
     return emitError("SQMMA result encoding must carry a 3D instrShape");
+#ifdef __TLE__
+  // C keeps its producer's register encoding across operand dtypes. Its K
+  // metadata does not select this instruction; getK() is checked against the
+  // current operand types and hardware traits below, with or without a marker.
+  if (getM() != static_cast<int32_t>(instrShape[0]) ||
+      getN() != static_cast<int32_t>(instrShape[1]))
+    return emitError("SQMMA m/n attrs must match the accumulator instrShape");
+#else
   if (getM() != static_cast<int32_t>(instrShape[0]) ||
       getN() != static_cast<int32_t>(instrShape[1]) ||
       getK() != static_cast<int32_t>(instrShape[2]))
     return emitError(
         "SQMMA m/n/k attrs must match the #ttg.musa_sqmma instrShape");
+#endif // __TLE__
   if (retTy.getEncoding() != retEnc)
     return emitError(
         "SQMMA result shape and accumulator must use the same encoding");
@@ -233,9 +242,9 @@ LogicalResult SquadDotOp::verify() {
       sqArch ? triton::musa::getMusaSqmmaArchTraits(*sqArch) : nullptr;
   if (!sqTraits)
     return emitError("SQMMA encoding uses an unsupported MUSA SQMMA version");
-  if (!triton::musa::isSupportedSqmma(getEltTypeA(), getEltTypeB(),
-                                      getEltTypeC(), getM(), getN(), getK(),
-                                      *sqTraits))
+  if (!triton::musa::isSupportedSqmmaWithK128Compatibility(
+          getEltTypeA(), getEltTypeB(), getEltTypeC(), getM(), getN(), getK(),
+          *sqTraits))
     return emitError(
         "SQMMA encoding carries an unsupported PH1 shape/type combination");
   Dialect &dialect = aEncoding.getDialect();
@@ -356,10 +365,12 @@ LogicalResult SquadDotWaitOp::canonicalize(SquadDotWaitOp op,
   if (liveResultIdxs.size() == op.getNumResults())
     return failure();
 
-  if (liveInputs.empty()) {
-    rewriter.eraseOp(op);
-    return success();
-  }
+  // A SQMMA wait is a global completion boundary, even when none of its SSA
+  // passthrough results are used.  Rewriting it to an operand-free wait would
+  // violate the verifier, while erasing it could let outstanding SQMMA escape
+  // the source synchronization point.  Leave the original operation intact.
+  if (liveInputs.empty())
+    return failure();
 
   rewriter.setInsertionPoint(op);
   auto newWait = SquadDotWaitOp::create(rewriter, op.getLoc(), liveInputs);
@@ -484,15 +495,6 @@ LogicalResult BarRecordOp::verify() {
   return success();
 }
 
-LogicalResult InitArrivalOp::verify() {
-  if (failed(verifyAsyncBarrierId(getOperation(), getBarId(), "barId")))
-    return failure();
-  if (failed(verifyNonNegativeI32Constant(getOperation(), getArriveCount(),
-                                          "arriveCount")))
-    return failure();
-  return verifyNonNegativeI32Constant(getOperation(), getPhaseId(), "phaseId");
-}
-
 #ifdef __TLE__
 static LogicalResult verifyTMEIssueThread(Operation *op) {
   Attribute attr = op->getAttr(triton::musa::kTMEIssueThreadAttr);
@@ -505,6 +507,22 @@ static LogicalResult verifyTMEIssueThread(Operation *op) {
   return success();
 }
 #endif // __TLE__
+
+LogicalResult InitArrivalOp::verify() {
+  if (failed(verifyAsyncBarrierId(getOperation(), getBarId(), "barId")))
+    return failure();
+  if (failed(verifyNonNegativeI32Constant(getOperation(), getArriveCount(),
+                                          "arriveCount")))
+    return failure();
+  if (failed(verifyNonNegativeI32Constant(getOperation(), getPhaseId(),
+                                          "phaseId")))
+    return failure();
+#ifdef __TLE__
+  return verifyTMEIssueThread(getOperation());
+#else
+  return success();
+#endif // __TLE__
+}
 
 LogicalResult BarrierAddTransOp::verify() {
   if (failed(verifyAsyncBarrierId(getOperation(), getBarId(), "barId")))

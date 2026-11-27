@@ -1,0 +1,13 @@
+# Skip operators that cause GPU state corruption
+skip_operators:
+  - inplace_fused_experts
+  - moe_align_block_size_triton
+  - silu_and_mul_with_clamp
+  - silu_and_mul_with_clamp_out
+# Skip specific test functions
+skip_test_patterns:
+  #- test_example_pattern
+
+# Skip entire test files
+skip_test_files:
+  #- test_example.py

@@ -22,6 +22,8 @@ import os
 import shutil
 from pathlib import Path
 
+_LLVM_PACKAGE = "llvm-ff67ef55-triton-v3.6.x"
+
 
 def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
     is_sunrise = "sunrise" == flagtree_backend
@@ -31,17 +33,17 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
         sunrise_cp_bc_files(path)
 
     cache.store(
-        file="sunrise_llvm22_dev_release",
+        file=f"sunrise_{_LLVM_PACKAGE}",
         condition=is_sunrise,
-        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/llvm-71bd243f-triton-v3.6.x.tar.gz",
+        url=f"https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/{_LLVM_PACKAGE}.tar.gz",
         pre_hook=lambda: check_env("LLVM_SYSPATH"),
         post_hook=configure_llvm,
     )
     cache.store(
         file="sunriseTritonPlugin.so",
         condition=is_sunrise and not os.environ.get("FLAGTREE_PLUGIN"),
-        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin_v0.6.0.4.tar.gz",
-        md5_digest="4c77b8c0",
+        url="https://baai-cp-web.ks3-cn-beijing.ksyuncs.com/trans/sunriseTritonPlugin_v0.7.0.1.tar.gz",
+        md5_digest="f5fd6472",
     )
 
 

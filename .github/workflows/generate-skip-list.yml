@@ -1,0 +1,822 @@
+# Copyright 2025-     FlagOS Contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+name: Generate-Skip-List
+
+# Generates FlagGems CI skip lists on the self-hosted runners.
+#
+# This is an *additional* entry point: generate_skip_list.py can still be run
+# by hand on a runner exactly as before, and this workflow only passes ordinary
+# CLI flags to it. The single workflow-specific value is --work-dir, pinned so
+# the artifact path is known ahead of time.
+#
+# Division of labour:
+#   workflow          -> clones and installs FlagTree
+#   generate_skip_list.py -> clones FlagGems (--flaggems-ref), runs the rounds
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      BACKENDS:
+        description: >-
+          Comma-separated backends, or "all" for every supported backend.
+          Supported: amd, enflame, hcu, iluvatar, metax, mthreads, nvidia,
+          ppu, sunrise, tileir, tsingmicro, xpu.
+        required: true
+        default: 'amd,enflame,hcu,iluvatar,metax,mthreads,nvidia,ppu,sunrise,tileir,tsingmicro,xpu'
+      FLAGGEMS_REF:
+        description: >-
+          FlagGems tag/branch. With REPO_KIND=flaggems this is the library
+          under test; with flaggems-vllm it is the flag_gems dependency that
+          flaggems_vllm imports.
+        required: true
+        default: 'v5.5.0.dev1'
+      FLAGGEMS_URL:
+        description: 'FlagGems git URL'
+        required: false
+        default: 'https://github.com/flagos-ai/FlagGems.git'
+      REPO_KIND:
+        description: 'Operator library kind: flaggems or flaggems-vllm (case-insensitive)'
+        required: false
+        default: 'flaggems'
+      FLAGGEMS_VLLM_REF:
+        description: >-
+          FlagGems-vllm tag/branch to test. Required when REPO_KIND is
+          flaggems-vllm; ignored otherwise.
+        required: false
+        default: ''
+      FLAGGEMS_VLLM_URL:
+        description: 'FlagGems-vllm git URL'
+        required: false
+        default: 'https://github.com/flagos-ai/FlagGems-vllm.git'
+      FLAGTREE_REF:
+        description: 'FlagTree branch/tag to check out and install'
+        required: false
+        default: 'main'
+      WINDOW_SIZE:
+        description: 'W: look-ahead window for cascade detection'
+        required: false
+        default: '10'
+      WINDOW_THRESHOLD:
+        description: 'T: fail rate in the window that marks a cascade source'
+        required: false
+        default: '0.8'
+      FLAKY_ROUNDS:
+        description: 'Consecutive clean rounds required to finish Phase 2'
+        required: false
+        default: '20'
+      MAX_DETECTION_ROUNDS:
+        description: 'Total round budget shared by Phase 1 and Phase 2'
+        required: false
+        default: '60'
+      SOURCE_RUN_ID:
+        description: >-
+          Reuse the artifacts of a previous run instead of regenerating. Set
+          this together with OPEN_PR to commit a list you already reviewed,
+          skipping the hour-long generation.
+        required: false
+        default: ''
+      OPEN_PR:
+        description: >-
+          Open a PR with the skip lists. Leave off to only upload them as
+          artifacts and review the result first.
+        type: boolean
+        required: false
+        default: false
+      PUBLISH_BASELINE:
+        description: >-
+          Also publish the final round as the FlagGems baseline on the runner,
+          replacing ~/flaggems_ci/Baseline/best_<library>_<tag>. Only applies to
+          backends whose generation succeeded, and is ignored when SOURCE_RUN_ID
+          is set (no rounds are run in that mode).
+        type: boolean
+        required: false
+        default: false
+
+# Three ways to use this workflow:
+#
+#   1. Generate + review      SOURCE_RUN_ID=''     OPEN_PR=false
+#        Runs every round, uploads artifacts, opens nothing. Inspect the
+#        artifact, then use mode 2 to commit exactly what you reviewed.
+#
+#   2. Commit a reviewed list SOURCE_RUN_ID=<id>   OPEN_PR=true
+#        Skips generation entirely: downloads that run's artifacts and opens
+#        the PR. Takes seconds, and the committed content is byte-identical to
+#        what was reviewed.
+#
+#   3. Generate + commit      SOURCE_RUN_ID=''     OPEN_PR=true
+#        Generates and opens the PR in one go.
+#
+# Generation is skipped whenever SOURCE_RUN_ID is set, so a typo'd run id
+# fails fast at the download step instead of silently re-running for an hour.
+#
+# PUBLISH_BASELINE is orthogonal to the three modes, but only has an effect in
+# modes 1 and 3: mode 2 runs no rounds, so there is no log directory to publish.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Parse BACKENDS into a matrix. The backend map below is the single place
+  # to edit when a backend is added: runner label, GPU env var, and the
+  # build recipe, which differs substantially per backend.
+  # ---------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'flagos-ai/flagtree' }}
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - name: Build matrix
+        id: build
+        shell: bash
+        env:
+          BACKENDS: ${{ inputs.BACKENDS }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+
+          # runner      : self-hosted label
+          # gpu_env     : env var naming the visible devices, as used by the
+          #               backend's gems-test workflow
+          # build_cmd   : FlagTree build+install, copied from
+          #               .github/workflows/<backend>3.6-build-and-test.yml
+          INSTALL = "MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v"
+
+          # tsingmicro's triton driver reads these at import time, so the same
+          # env must be present on every test round, not only during the build.
+          # Shared between build_cmd and test_env to avoid drift.
+          TSM_RUNTIME = (
+              "export TX8_DEPS_ROOT=~/.flagtree/tsingmicro/tx8_deps\n"
+              "export LLVM_SYSPATH=~/.flagtree/tsingmicro/tsingmicro-llvm22\n"
+              "export LLVM_BINARY_DIR=${LLVM_SYSPATH}/bin\n"
+              "export PYTHONPATH=${LLVM_SYSPATH}/python_packages/mlir_core:$PYTHONPATH\n"
+              "export LD_LIBRARY_PATH=$TX8_DEPS_ROOT/lib:$LD_LIBRARY_PATH\n"
+              "export PATH=${LLVM_BINARY_DIR}:${PATH}"
+          )
+
+          # iluvatar needs its corex libs (and a libgomp preload on aarch64)
+          # present when the backend loads during tests. Copied verbatim from
+          # iluvatar3.6-gems-test.yml's flaggems-pre-command.
+          ILUVATAR_RUNTIME = (
+              "export LD_LIBRARY_PATH=/usr/local/corex-4.5.0/lib64/:${LD_LIBRARY_PATH}\n"
+              'if [[ "$(uname -m)" == "aarch64" ]]; then\n'
+              "  libgomp_path=$(find /usr/lib /usr/lib64 /lib /lib64 -type f "
+              "-name 'libgomp.so*' 2>/dev/null | head -n 1)\n"
+              '  if [[ -n "$libgomp_path" ]]; then\n'
+              '    export LD_PRELOAD="$libgomp_path${LD_PRELOAD:+:$LD_PRELOAD}"\n'
+              "  fi\n"
+              "fi"
+          )
+
+          # build_cmd: run once in the build step.
+          # test_env (optional): runtime-only env sourced before every test
+          #   round via --pre-command, mirroring the gems-test template's
+          #   flaggems-pre-command. Omit it when the build leaves nothing the
+          #   runtime needs (the common case: ppu, mthreads, xpu, ...).
+          BACKENDS = {
+              "xpu": {
+                  "runner": "xpu3.6",
+                  "gpu_env": "CUDA_VISIBLE_DEVICES",
+                  "build_cmd": f"export FLAGTREE_BACKEND=xpu\n{INSTALL}",
+              },
+              "amd": {
+                  "runner": "amd3.6",
+                  "gpu_env": "HIP_VISIBLE_DEVICES",
+                  "build_cmd": f"source ~/env-3.6.sh\nexport FLAGTREE_BACKEND=amd\n{INSTALL}",
+              },
+              "nvidia": {
+                  "runner": "nvidia3.6",
+                  "gpu_env": "CUDA_VISIBLE_DEVICES",
+                  # nvidia is the default backend: no FLAGTREE_BACKEND needed.
+                  "build_cmd": f"source ~/env-3.6.sh\n{INSTALL}",
+              },
+              "mthreads": {
+                  "runner": "mthreads3.6",
+                  "gpu_env": "MUSA_VISIBLE_DEVICES",
+                  "build_cmd": f"export FLAGTREE_BACKEND=mthreads\n{INSTALL}",
+              },
+              "metax": {
+                  "runner": "metax3.6",
+                  "gpu_env": "MACA_VISIBLE_DEVICES",
+                  "build_cmd": f"export FLAGTREE_BACKEND=metax\n{INSTALL}",
+              },
+              "ppu": {
+                  "runner": "ppu3.6",
+                  "gpu_env": "CUDA_VISIBLE_DEVICES",
+                  "build_cmd": f"export FLAGTREE_BACKEND=ppu\n{INSTALL}",
+              },
+              "iluvatar": {
+                  "runner": "iluvatar3.6",
+                  "gpu_env": "CUDA_VISIBLE_DEVICES",
+                  "build_cmd": (
+                      "export FLAGTREE_BACKEND=iluvatar\n"
+                      "export TRITON_OFFLINE_BUILD=1\n"
+                      "export TRITON_BUILD_PROTON=OFF\n"
+                      "export USE_FLAGCX=ON\n"
+                      "export FLAGCX_RECOMPILE=ON\n"
+                      "export FLAGCX_CACHE=clean\n"
+                      'export FLAGCX_ILUVATAR_CLANG="${FLAGCX_ILUVATAR_CLANG:-$(command -v clang)}"\n'
+                      'export FLAGCX_ILUVATAR_SDK="${FLAGCX_ILUVATAR_SDK:-$(dirname "$(dirname "$(realpath "$FLAGCX_ILUVATAR_CLANG")")")}"\n'
+                      f"{INSTALL}"
+                  ),
+                  # Runtime only: both iluvatar3.6-build-and-test.yml and
+                  # iluvatar3.6-gems-test.yml set corex/libgomp in their test
+                  # steps, never in the build. Keep it out of build_cmd.
+                  "test_env": ILUVATAR_RUNTIME,
+              },
+              "hcu": {
+                  "runner": "hcu3.6",
+                  "gpu_env": "HIP_VISIBLE_DEVICES",
+                  "build_cmd": f"export FLAGTREE_BACKEND=hcu\n{INSTALL}",
+              },
+              "enflame": {
+                  "runner": "enflame3.6-gcu300",
+                  "gpu_env": "TOPS_VISIBLE_DEVICES",
+                  "build_cmd": (
+                      "python3 -m pip uninstall -y triton --break-system-packages\n"
+                      "python3 -m pip uninstall -y triton_gcu --break-system-packages\n"
+                      "export FLAGTREE_BACKEND=enflame\n"
+                      "MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v "
+                      "--break-system-packages"
+                  ),
+              },
+              "tsingmicro": {
+                  "runner": "tsingmicro3.6",
+                  "gpu_env": "TXDA_VISIBLE_DEVICES",
+                  "build_cmd": (
+                      "export FLAGTREE_BACKEND=tsingmicro\n"
+                      'export TRITON_APPEND_CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release"\n'
+                      f"{TSM_RUNTIME}\n"
+                      "python3 -m pip install . --no-build-isolation -v"
+                  ),
+                  "test_env": TSM_RUNTIME,
+              },
+              "sunrise": {
+                  "runner": "sunrise3.6",
+                  "gpu_env": "CUDA_VISIBLE_DEVICES",
+                  # Note: no --no-build-isolation here, matching the build-and-test
+                  # workflow.
+                  "build_cmd": (
+                      "pip uninstall -y triton\n"
+                      "export TRITON_BUILD_WITH_CLANG_LLD=1\n"
+                      "export TRITON_OFFLINE_BUILD=1\n"
+                      "export TRITON_BUILD_PROTON=OFF\n"
+                      "export FLAGTREE_BACKEND=sunrise\n"
+                      "MAX_JOBS=32 python3 -m pip install . -v"
+                  ),
+              },
+              "tileir": {
+                  "runner": "tileir3.6",
+                  "gpu_env": "CUDA_VISIBLE_DEVICES",
+                  "build_cmd": (
+                      "source ~/env.sh\n"
+                      "export FLAGTREE_BACKEND=tileir\n"
+                      "export CMAKE_BUILD_PARALLEL_LEVEL=32\n"
+                      'export TRITON_PTXAS_PATH="$PWD/third_party/nvidia/backend/bin/ptxas"\n'
+                      'export TRITON_PTXAS_BLACKWELL_PATH="$PWD/third_party/nvidia/backend/bin/ptxas-blackwell"\n'
+                      f"{INSTALL}\n"
+                      "TILEIRAS_PATH=$(python3 -c 'from triton.backends.tileir.conf import TileIREnvConf; print(TileIREnvConf.get_tileiras_path())')\n"
+                      '"$TILEIRAS_PATH" --version | tee /tmp/flagtree_tileiras_version.txt\n'
+                      "grep -F 'V13.4.59' /tmp/flagtree_tileiras_version.txt"
+                  ),
+              },
+          }
+
+          raw = os.environ.get("BACKENDS", "").strip()
+          if not raw:
+              sys.exit("BACKENDS is empty")
+
+          supported = sorted(BACKENDS)
+          if raw.lower() == "all":
+              selected = supported
+          else:
+              # Split, trim, lowercase, dedupe while keeping the given order.
+              seen, selected = set(), []
+              for name in raw.split(","):
+                  name = name.strip().lower()
+                  if name and name not in seen:
+                      seen.add(name)
+                      selected.append(name)
+
+          unknown = [n for n in selected if n not in BACKENDS]
+          if unknown:
+              sys.exit(
+                  f"Unknown backend(s): {', '.join(unknown)}. "
+                  f"Supported: {', '.join(supported)}"
+              )
+
+          include = [
+              {"backend": name,
+               "runner": BACKENDS[name]["runner"],
+               "gpu_env": BACKENDS[name]["gpu_env"],
+               "build_cmd": BACKENDS[name]["build_cmd"],
+               # Runtime-only env for backends whose driver needs it at import
+               # time; empty string for the common case.
+               "test_env": BACKENDS[name].get("test_env", "")}
+              for name in selected
+          ]
+          matrix = json.dumps({"include": include})
+          print(f"Matrix: {matrix}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"matrix={matrix}\n")
+          PY
+
+  # ---------------------------------------------------------------------
+  # One job per selected backend, on that backend's own runner.
+  # fail-fast is off: one backend failing must not cancel the others.
+  # ---------------------------------------------------------------------
+  generate:
+    # Without an explicit name GitHub renders every matrix value into the job
+    # title -- "generate (xpu, xpu3.6, CUDA_VISIBLE_DEVICES, export FLAGTREE_
+    # BACKEND=xpu MAX_JOBS=32 ...)", which is unreadable in the sidebar.
+    # Naming it keeps the backend visible and the title short.
+    name: generate (${{ matrix.backend }})
+    needs: prepare
+    # Skipped when SOURCE_RUN_ID is given: that mode reuses an earlier run's
+    # artifacts, so spending an hour regenerating would defeat the purpose.
+    if: ${{ github.repository == 'flagos-ai/flagtree' && inputs.SOURCE_RUN_ID == '' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Setup environment
+        id: env
+        shell: bash
+        env:
+          GPU_ENV_VAR: ${{ matrix.gpu_env }}
+          INPUT_REPO_KIND: ${{ inputs.REPO_KIND }}
+          INPUT_FLAGGEMS_REF: ${{ inputs.FLAGGEMS_REF }}
+          INPUT_VLLM_REF: ${{ inputs.FLAGGEMS_VLLM_REF }}
+          RUNNER_LABEL: ${{ matrix.runner }}
+        run: |
+          source ~/env.sh
+          env | grep -E '^(http_proxy|https_proxy|all_proxy|no_proxy)=' >> $GITHUB_ENV || true
+
+          # Device list for --gpus, e.g. "0" or "0,1,2,3".
+          GPU_DEVICES="${!GPU_ENV_VAR:-0}"
+          echo "gpus=$GPU_DEVICES" >> $GITHUB_OUTPUT
+
+          # Repo-kind in the canonical lowercase form the script uses, so the
+          # work-dir name matches what a hand-run would produce. Read from the
+          # environment rather than interpolating the input into the script.
+          REPO_KIND=$(printf '%s' "$INPUT_REPO_KIND" | tr '[:upper:]' '[:lower:]')
+          echo "repo_kind=$REPO_KIND" >> $GITHUB_OUTPUT
+
+          # A fixed path (rather than the script's timestamped default) so the
+          # artifact location is predictable across runs.
+          WORK_DIR="$HOME/flaggems_ci/skip_list/${REPO_KIND}_skip_list"
+          echo "work_dir=$WORK_DIR" >> $GITHUB_OUTPUT
+
+          # Baseline paths, used only when PUBLISH_BASELINE is set. Names match
+          # template-gems-baseline.yml so gems-test finds them unchanged: the
+          # vllm library carries a marker in every directory, and the archive is
+          # keyed by runner because two runners can share a host.
+          CI_DIR="$HOME/flaggems_ci"
+          case "$REPO_KIND" in
+            flaggems-vllm)
+              echo "best_dir=${CI_DIR}/Baseline/best_FlagGemsVllm_${INPUT_VLLM_REF}" >> $GITHUB_OUTPUT
+              echo "best_archive_dir=${CI_DIR}/Baseline/best_archive_vllm_${RUNNER_LABEL}" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "best_dir=${CI_DIR}/Baseline/best_FlagGems_${INPUT_FLAGGEMS_REF}" >> $GITHUB_OUTPUT
+              echo "best_archive_dir=${CI_DIR}/Baseline/best_archive_${RUNNER_LABEL}" >> $GITHUB_OUTPUT
+              ;;
+          esac
+          echo "date=$(date +'%Y%m%d_%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Smart Checkout
+        uses: flagos-ai/FlagTree/.github/actions/smart-checkout@main
+        with:
+          checkout_version: 'v6'
+
+      - name: Check out requested FlagTree ref
+        shell: bash
+        env:
+          REF: ${{ inputs.FLAGTREE_REF }}
+        run: |
+          set -x
+          # Works for both branches and tags: a shallow fetch of a tag lands in
+          # FETCH_HEAD, which is always checkable out.
+          git fetch --depth 1 origin "$REF"
+          git checkout FETCH_HEAD
+
+      - name: Build and install FlagTree
+        shell: bash
+        run: ${{ matrix.build_cmd }}
+
+      - name: Generate skip list
+        shell: bash
+        env:
+          BACKEND: ${{ matrix.backend }}
+          REPO_KIND: ${{ steps.env.outputs.repo_kind }}
+          WORK_DIR: ${{ steps.env.outputs.work_dir }}
+          GPUS: ${{ steps.env.outputs.gpus }}
+          # Runtime-only env (empty for most backends). Sourced before every
+          # test round; tsingmicro/iluvatar drivers read it at import time.
+          TEST_ENV: ${{ matrix.test_env }}
+          FLAGGEMS_REF: ${{ inputs.FLAGGEMS_REF }}
+          FLAGGEMS_URL: ${{ inputs.FLAGGEMS_URL }}
+          FLAGGEMS_VLLM_REF: ${{ inputs.FLAGGEMS_VLLM_REF }}
+          FLAGGEMS_VLLM_URL: ${{ inputs.FLAGGEMS_VLLM_URL }}
+          WINDOW_SIZE: ${{ inputs.WINDOW_SIZE }}
+          WINDOW_THRESHOLD: ${{ inputs.WINDOW_THRESHOLD }}
+          FLAKY_ROUNDS: ${{ inputs.FLAKY_ROUNDS }}
+          MAX_DETECTION_ROUNDS: ${{ inputs.MAX_DETECTION_ROUNDS }}
+        run: |
+          set -x
+          # Start clean: an earlier run's state.json would otherwise be picked up
+          # and the rounds continued instead of regenerated.
+          if [ -e "$WORK_DIR" ]; then
+            echo "Removing existing work dir: $WORK_DIR"
+            rm -rf "$WORK_DIR"
+          fi
+
+          EXTRA_ARGS=()
+          if [ "$REPO_KIND" = "flaggems-vllm" ]; then
+            if [ -z "$FLAGGEMS_VLLM_REF" ]; then
+              echo "::error::REPO_KIND is flaggems-vllm but FLAGGEMS_VLLM_REF is empty."
+              exit 1
+            fi
+            EXTRA_ARGS+=(--flaggems-vllm-ref "$FLAGGEMS_VLLM_REF")
+            EXTRA_ARGS+=(--flaggems-vllm-url "$FLAGGEMS_VLLM_URL")
+          fi
+
+          # Backends whose driver needs extra env at import time carry it in
+          # TEST_ENV; forward it as --pre-command so every round sources it.
+          if [ -n "$TEST_ENV" ]; then
+            EXTRA_ARGS+=(--pre-command "$TEST_ENV")
+          fi
+
+          python3 .github/actions/run-flaggems-test/assets/ci/generate_skip_list.py \
+            --backend "$BACKEND" \
+            --repo-kind "$REPO_KIND" \
+            --flaggems-ref "$FLAGGEMS_REF" \
+            --flaggems-url "$FLAGGEMS_URL" \
+            "${EXTRA_ARGS[@]}" \
+            --work-dir "$WORK_DIR" \
+            --gpus "$GPUS" \
+            --first-parameter-only \
+            --window-size "$WINDOW_SIZE" \
+            --window-threshold "$WINDOW_THRESHOLD" \
+            --flaky-rounds "$FLAKY_ROUNDS" \
+            --max-detection-rounds "$MAX_DETECTION_ROUNDS"
+
+      # Deliberately not `!cancelled()`: a baseline is only meaningful when the
+      # rounds converged, so this is skipped whenever generation failed.
+      - name: Publish baseline
+        if: ${{ success() && inputs.PUBLISH_BASELINE }}
+        shell: bash
+        env:
+          BACKEND: ${{ matrix.backend }}
+          WORK_DIR: ${{ steps.env.outputs.work_dir }}
+          BEST_DIR: ${{ steps.env.outputs.best_dir }}
+          BEST_ARCHIVE_DIR: ${{ steps.env.outputs.best_archive_dir }}
+          DATE: ${{ steps.env.outputs.date }}
+          COMMIT_ID: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # The last round the detection ran is the one that matches the skip
+          # list it produced, so that is what becomes the baseline. Rounds are
+          # numbered globally across both phases, so the highest number wins;
+          # sort -V keeps round_9 before round_10.
+          LAST_ROUND=$(find "$WORK_DIR/output" -maxdepth 2 -type d -name 'round_*' \
+                       | sort -V | tail -1)
+          if [ -z "$LAST_ROUND" ]; then
+            echo "::error::No round directory under $WORK_DIR/output; nothing to publish."
+            exit 1
+          fi
+
+          # Same guard as template-gems-baseline.yml: a round without a usable
+          # summary.json cannot serve as a baseline.
+          if [ ! -s "$LAST_ROUND/summary.json" ]; then
+            echo "::error::$LAST_ROUND/summary.json is missing or empty; refusing to publish a baseline."
+            exit 1
+          fi
+          echo "Publishing $LAST_ROUND as the baseline for ${BACKEND}."
+
+          # Archive the previous baseline rather than deleting it, so a bad
+          # update can be rolled back.
+          if [ -d "$BEST_DIR" ]; then
+            ARCHIVE_DIR="${BEST_ARCHIVE_DIR}/${DATE}"
+            echo "Archiving existing baseline to $ARCHIVE_DIR"
+            mkdir -p "$ARCHIVE_DIR"
+            mv "$BEST_DIR" "$ARCHIVE_DIR"
+          fi
+
+          mkdir -p "$BEST_DIR"
+          cp -raf "$LAST_ROUND"/* "$BEST_DIR/"
+          echo "$DATE : $COMMIT_ID" > "$BEST_DIR/commit_id.txt"
+
+          {
+            echo "### Baseline published for \`${BACKEND}\`"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Source round | \`$LAST_ROUND\` |"
+            echo "| Baseline | \`$BEST_DIR\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload skip list
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: skip-list-${{ matrix.backend }}
+          path: |
+            ${{ steps.env.outputs.work_dir }}/output/${{ matrix.backend }}.yaml
+            ${{ steps.env.outputs.work_dir }}/output/state.json
+            ${{ steps.env.outputs.work_dir }}/output/test_output.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Show result
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          BACKEND: ${{ matrix.backend }}
+          WORK_DIR: ${{ steps.env.outputs.work_dir }}
+        run: |
+          RESULT="$WORK_DIR/output/${BACKEND}.yaml"
+          if [ -f "$RESULT" ]; then
+            echo "=== $RESULT ==="
+            cat "$RESULT"
+            {
+              echo "### \`${BACKEND}\` skip list"
+              echo '```yaml'
+              cat "$RESULT"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No skip list produced at $RESULT" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ---------------------------------------------------------------------
+  # Collect every backend's result and open a single PR. Runs even when some
+  # backends failed (fail-fast is off), so a partial success is still useful.
+  # ---------------------------------------------------------------------
+  open-pr:
+    needs: [prepare, generate]
+    # `always()` is required, not cosmetic: in "commit a reviewed list" mode
+    # `generate` is skipped by its own condition, and a skipped dependency would
+    # otherwise skip this job too.
+    # OPEN_PR is off by default, so this only runs when explicitly requested.
+    if: ${{ always() && !cancelled() && github.repository == 'flagos-ai/flagtree' && inputs.OPEN_PR }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      # Needed to download artifacts produced by an earlier run
+      # (SOURCE_RUN_ID). Unspecified permissions default to none.
+      actions: read
+      # NOTE: the skip lists live under .github/workflows/, which GitHub treats
+      # as workflow files. Pushing them REQUIRES a token with the `workflow`
+      # scope -- and GITHUB_TOKEN can never have it (`workflows` is not even a
+      # valid key here, and no other scope grants it). BOT_PAT_TOKEN must be
+      # configured with that scope; without it the push is rejected with
+      # "refusing to allow a GitHub App to create or update workflow ...".
+      # The step below fails early rather than letting that surface as a
+      # confusing push error.
+    steps:
+      # Checkout must come before the download: actions/checkout runs
+      # `git clean -ffdx`, which deletes untracked files in the workspace.
+      # Downloading first and checking out afterwards silently wipes the
+      # artifacts, leaving every downstream step with an empty result.
+      # Checkout with the PAT, not via smart-checkout: actions/checkout persists
+      # the token it was given and every later git push reuses it. Left at the
+      # default GITHUB_TOKEN, the push authenticates as the GitHub App, which
+      # can never write under .github/workflows/. Same approach as
+      # code-format-check.yml.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.BOT_PAT_TOKEN || github.token }}
+
+      - name: Download all skip list artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/download-artifact@v7
+        with:
+          pattern: skip-list-*
+          # Outside the workspace, so no later git operation can remove it.
+          path: ${{ runner.temp }}/skip-list-artifacts
+          # Empty input falls back to this run's own artifacts. A non-empty
+          # value pulls the reviewed artifacts from that earlier run instead,
+          # so the committed content is exactly what was inspected.
+          run-id: ${{ inputs.SOURCE_RUN_ID || github.run_id }}
+          github-token: ${{ secrets.BOT_PAT_TOKEN || github.token }}
+
+      - name: Check whether anything was produced
+        id: check
+        shell: bash
+        env:
+          ARTIFACTS_DIR: ${{ runner.temp }}/skip-list-artifacts
+        run: |
+          set -euo pipefail
+          if [ -z "$(ls -A "$ARTIFACTS_DIR" 2>/dev/null)" ]; then
+            echo "::error::No skip list artifacts found in run '${{ inputs.SOURCE_RUN_ID || github.run_id }}'. Check that the source run completed its generate jobs and that its artifacts have not expired."
+            exit 1
+          fi
+          YAMLS=$(find "$ARTIFACTS_DIR" -name '*.yaml')
+          if [ -z "$YAMLS" ]; then
+            echo "::error::Artifacts were downloaded but contain no .yaml files."
+            exit 1
+          fi
+          echo "$YAMLS" | sed 's/^/  /'
+          echo "found=true" >> $GITHUB_OUTPUT
+
+      - name: Stage skip lists
+        id: stage
+        if: steps.check.outputs.found == 'true'
+        shell: bash
+        env:
+          REPO_KIND: ${{ inputs.REPO_KIND }}
+          FLAGGEMS_REF: ${{ inputs.FLAGGEMS_REF }}
+          ARTIFACTS_DIR: ${{ runner.temp }}/skip-list-artifacts
+        run: |
+          set -euo pipefail
+
+          # Skip lists live beside the gems assets for the tag under test:
+          #   gems/<tag>/skip_list/<backend>.yaml
+          #   gems-vllm/<tag>/skip_list/<backend>.yaml
+          KIND=$(printf '%s' "$REPO_KIND" | tr '[:upper:]' '[:lower:]')
+          case "$KIND" in
+            flaggems)      KIND_DIR=gems ;;
+            flaggems-vllm) KIND_DIR=gems-vllm ;;
+            *) echo "::error::Unknown repo-kind '$REPO_KIND'"; exit 1 ;;
+          esac
+          DEST_DIR=".github/workflows/${KIND_DIR}/${FLAGGEMS_REF}/skip_list"
+
+          # Create the directory for a new tag rather than failing: a tag under
+          # test usually has no skip list yet. The template is deliberately
+          # empty (every entry commented out) so nothing is inherited from
+          # another tag's backend quirks -- the generated files are the only
+          # content that matters here.
+          if [ ! -d "$DEST_DIR" ]; then
+            echo "Creating skip list directory for a new tag: $DEST_DIR"
+            mkdir -p "$DEST_DIR"
+            cat > "$DEST_DIR/default.yaml" <<'YAML'
+          # Skip operators that cause GPU state corruption
+          skip_operators:
+            #- scaled_dot_product_attention
+
+          # Skip specific test functions
+          skip_test_patterns:
+            #- test_scaled_dot_product_attention_legacy_backward
+
+          # Skip entire test files
+          skip_test_files:
+            #- test_scaled_dot_product_attention.py
+          YAML
+          fi
+
+          CHANGED=()
+          for f in $(find "$ARTIFACTS_DIR" -name '*.yaml'); do
+            backend=$(basename "$f" .yaml)
+            dest="$DEST_DIR/${backend}.yaml"
+            if [ -e "$dest" ]; then action=Updated; else action=Added; fi
+            cp "$f" "$dest"
+            # Stage before comparing. `git diff` only inspects tracked files, so
+            # the very first skip list for a backend -- the case that matters
+            # most -- used to look "Unchanged" and was silently never committed.
+            git add "$dest"
+            if git diff --cached --quiet -- "$dest"; then
+              echo "Unchanged $dest"
+            else
+              CHANGED+=("$backend")
+              echo "$action $dest"
+            fi
+          done
+
+          if [ ${#CHANGED[@]} -eq 0 ]; then
+            echo "Every generated skip list matches what is already committed."
+            echo "changed=false" >> $GITHUB_OUTPUT
+
+            # Make this visible on the run page. Without it, "job went green but
+            # no PR appeared" looks identical to a failure, which is exactly how
+            # a real bug once went unnoticed.
+            UNCHANGED=$(cd "$ARTIFACTS_DIR" && find . -name '*.yaml' -exec basename {} .yaml \; | sort | tr '\n' ' ')
+            {
+              echo "### No PR opened: nothing to commit"
+              echo
+              echo "Generated skip lists are identical to what is already committed"
+              echo "in \`.github/workflows/${KIND_DIR}/${FLAGGEMS_REF}/skip_list/\`:"
+              echo
+              echo "\`${UNCHANGED% }\`"
+              echo
+              echo "This is a normal outcome — the skip list had already converged."
+              echo "A PR is only opened when a backend's content actually changes."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'changed=true\n' >> $GITHUB_OUTPUT
+            printf 'backends=%s\n' "$(IFS=,; echo "${CHANGED[*]}")" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create branch and commit
+        id: commit
+        if: steps.check.outputs.found == 'true' && steps.stage.outputs.changed == 'true'
+        shell: bash
+        env:
+          BACKENDS: ${{ steps.stage.outputs.backends }}
+          REPO_KIND: ${{ inputs.REPO_KIND }}
+          FLAGGEMS_REF: ${{ inputs.FLAGGEMS_REF }}
+          GH_TOKEN: ${{ secrets.BOT_PAT_TOKEN || github.token }}
+          HAS_PAT: ${{ secrets.BOT_PAT_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+
+          # Fail here rather than at `git push`, where GitHub reports it as a
+          # generic "refusing to allow a GitHub App to create or update
+          # workflow" rejection with no hint about what to do.
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::error::BOT_PAT_TOKEN secret is not set. The skip lists live under .github/workflows/, which GitHub treats as workflow files, so pushing them needs a token with the 'workflow' scope. GITHUB_TOKEN can never have that scope; add a personal access token with 'repo' and 'workflow' scopes as the BOT_PAT_TOKEN secret."
+            exit 1
+          fi
+
+          BRANCH="ci/generate-skip-list-${GITHUB_RUN_ID}"
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+
+          git config user.name "flagtree-bot"
+          git config user.email "flagtree_ai@163.com"
+          git checkout -b "$BRANCH"
+
+          KIND=$(printf '%s' "$REPO_KIND" | tr '[:upper:]' '[:lower:]')
+          case "$KIND" in
+            flaggems)      KIND_DIR=gems;      LIB_NAME=FlagGems ;;
+            flaggems-vllm) KIND_DIR=gems-vllm; LIB_NAME=FlagGems-vllm ;;
+          esac
+          git add ".github/workflows/${KIND_DIR}/${FLAGGEMS_REF}/skip_list/"
+
+          # Single-line commit subject: tag first for scanning, backends in
+          # brackets because a comma list gets long as more are added.
+          git commit \
+            -m "[CI] Update ${LIB_NAME} ${FLAGGEMS_REF} skip list (${BACKENDS})"
+
+          # Authenticated by the PAT that the Checkout step persisted. Adding
+          # another Authorization header here makes git send two, which GitHub
+          # rejects with "Duplicate header" / HTTP 400.
+          git push origin "$BRANCH"
+
+      - name: Open pull request
+        if: steps.commit.outputs.branch != ''
+        shell: bash
+        env:
+          BRANCH: ${{ steps.commit.outputs.branch }}
+          BACKENDS: ${{ steps.stage.outputs.backends }}
+          REPO_KIND: ${{ inputs.REPO_KIND }}
+          FLAGGEMS_REF: ${{ inputs.FLAGGEMS_REF }}
+          FLAGGEMS_URL: ${{ inputs.FLAGGEMS_URL }}
+          FLAGTREE_REF: ${{ inputs.FLAGTREE_REF }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ${{ secrets.BOT_PAT_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+
+          KIND=$(printf '%s' "$REPO_KIND" | tr '[:upper:]' '[:lower:]')
+          case "$KIND" in
+            flaggems)      KIND_DIR=gems;      LIB_NAME=FlagGems ;;
+            flaggems-vllm) KIND_DIR=gems-vllm; LIB_NAME=FlagGems-vllm ;;
+          esac
+
+          {
+            echo "Automatically generated by [\`generate-skip-list.yml\`]($RUN_URL)."
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Operator library | \`$LIB_NAME\` (\`$FLAGGEMS_URL\`) |"
+            echo "| Tag under test | \`$FLAGGEMS_REF\` |"
+            echo "| FlagTree ref | \`$FLAGTREE_REF\` |"
+            echo "| Backends regenerated | \`$BACKENDS\` |"
+            echo
+            echo "Updated files are under \`.github/workflows/${KIND_DIR}/${FLAGGEMS_REF}/skip_list/\`."
+          } > /tmp/pr-body.md
+
+          gh pr create \
+            --base "${{ github.ref_name }}" \
+            --head "$BRANCH" \
+            --title "[CI] Update ${LIB_NAME} ${FLAGGEMS_REF} skip list (${BACKENDS})" \
+            --body-file /tmp/pr-body.md

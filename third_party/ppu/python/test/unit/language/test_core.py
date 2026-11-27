@@ -125,8 +125,13 @@ def check_type_supported(dtype, device):
         cc = torch.cuda.get_device_capability()
         if cc[0] < 8 and (dtype is tl.bfloat16 or dtype == "bfloat16" or dtype is torch.bfloat16):
             pytest.skip("bfloat16 is only supported on NVGPU with cc >= 80")
-        if cc[0] < 9 and dtype in {tl.float8e4nv, "float8e4nv", "float8_e4m3fn"}:
-            pytest.skip("float8e4nv is only supported on NVGPU with cc >= 90")
+        if is_cuda():
+            if cc[0] < 9 and dtype in {tl.float8e4nv, "float8e4nv", "float8_e4m3fn"}:
+                pytest.skip("float8e4nv is only supported on NVGPU with cc >= 90")
+        elif is_ppu():
+            # fp8e4nv is declared from cap80 (software cast, FP16-promoted dot)
+            if cc < (8, 0) and dtype in {tl.float8e4nv, "float8e4nv", "float8_e4m3fn"}:
+                pytest.skip("float8e4nv is only supported on PPU with cc >= 80")
     if is_interpreter():
         if dtype in [tl.bfloat16, "bfloat16", torch.bfloat16]:
             pytest.skip("bfloat16 is not supported in the interpreter")
@@ -1042,12 +1047,19 @@ def test_abs(dtype_x, device):
 def test_abs_fp8(in_dtype, device):
     if is_hip():
         pytest.skip('test_abs_fp8 not supported on HIP.')
-    elif is_cuda() or is_ppu():
+    elif is_cuda():
         cc = torch.cuda.get_device_capability()
         if in_dtype == tl.float8e4b15 and cc >= (9, 0):
             pytest.skip("float8e4b15 not supported on CUDA >= 9.0")
         if in_dtype == tl.float8e4nv and cc < (8, 9):
             pytest.skip("float8e4nv not supported on CUDA < 8.9")
+    elif is_ppu():
+        cc = torch.cuda.get_device_capability()
+        if in_dtype == tl.float8e4b15 and cc >= (9, 0):
+            pytest.skip("float8e4b15 not supported on PPU >= 9.0")
+        # fp8e4nv is declared from cap80 (software cast)
+        if in_dtype == tl.float8e4nv and cc < (8, 0):
+            pytest.skip("float8e4nv not supported on PPU < 8.0")
 
     @triton.jit
     def abs_kernel(X, Z, SIZE: tl.constexpr):
@@ -3255,8 +3267,13 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
                 if out_dtype == 'float16':
                     # TODO: support out_dtype=float16 for tl.dot on V100
                     pytest.skip("Only test out_dtype=float16 on devices with sm >=80")
-            if capability[0] < 9 and in_dtype == 'float8e4nv':
-                pytest.skip("float8e4nv not supported on sm <= 80")
+            if is_cuda():
+                if capability[0] < 9 and in_dtype == 'float8e4nv':
+                    pytest.skip("float8e4nv not supported on sm <= 80")
+            elif is_ppu():
+                # fp8e4nv dot is declared from cap80 (NON_NATIVE FP16-promotion path)
+                if capability < (8, 0) and in_dtype == 'float8e4nv':
+                    pytest.skip("float8e4nv not supported on PPU < 8.0")
             if in_dtype == 'float64' and input_precision != 'ieee':
                 pytest.skip("Only IEEE precision is supported for float64 dot")
 
@@ -3410,7 +3427,11 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
             w = to_numpy(convert_fp8_to_fp32(w, device, in_dtype))
         z_ref = np.matmul(z_ref, w)
     # compare
-    if in_dtype == 'float32':
+    if in_dtype == 'int8':
+        # int8 x int8 -> int32 runs on the native s8 MMA path and must be
+        # bit-exact; the f32 reference is exact at these sizes (|acc| < 2^24)
+        np.testing.assert_array_equal(z_ref, to_numpy(z_tri))
+    elif in_dtype == 'float32':
         # XXX: Somehow there's a larger difference when we use float32
         np.testing.assert_allclose(z_ref, to_numpy(z_tri), rtol=0.01, atol=1e-3)
     elif out_dtype == tl.float16 or in_dtype == 'bfloat16':
@@ -3418,6 +3439,13 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
     else:
         # added atol, to loose precision for float16xfloat16->float32 case
         np.testing.assert_allclose(z_ref, to_numpy(z_tri), rtol=0.01, atol=1e-3)
+
+    if is_ppu() and in_dtype == 'int8':
+        # native-path acceptance: the s8 matrix instruction is emitted and the
+        # operands are not silently promoted to f16
+        llir = pgm.asm['llir']
+        assert re.search(r'mma\.sync\.[\w.]*\.s8\.s8', llir), 'expected native s8 MMA instruction'
+        assert not re.search(r'mma\.sync\.[\w.]*\.f16\.f16', llir), 'int8 dot must not promote to f16'
 
     if not (is_cuda() or is_hip_cdna()):
         return
@@ -3509,11 +3537,16 @@ def test_dot(M, N, K, num_warps, col_a, col_b, epilogue, input_precision, in_dty
                           for kpack in ([1, 2] if (is_hip() and not is_hip_cdna4()) else [1])])
 def test_scaled_dot(M, N, K, col_a, col_b, rhs_scale, mxfp_type, normal_type, num_warps, mma, kpack, device):
     is_SM120 = False
-    if is_cuda() or is_ppu():
+    if is_cuda():
         cc = torch.cuda.get_device_capability()
         if cc < (8, 9):
             pytest.skip("float8e4nv not supported on CUDA < 8.9")
         is_SM120 = cc >= (12, 0)
+    elif is_ppu():
+        cc = torch.cuda.get_device_capability()
+        # dot_scaled decomposes to a promoted dot from cap80 (NON_NATIVE, warns)
+        if cc < (8, 0):
+            pytest.skip("float8e4nv not supported on PPU < 8.0")
     if is_hip():
         if not (is_hip_cdna() or is_hip_gfx11() or is_hip_gfx12()):
             pytest.skip("scaled_dot only implemented for HIP CDNA, gfx11, gfx12")
@@ -3904,10 +3937,43 @@ def test_dot3d(B, num_warps, M, N, K, BLOCK_M, BLOCK_N, in_dtype_str, out_dtype_
     )
 
     if in_dtype_str == 'int8':
+        # int8 x int8 -> int32 must be bit-exact; the f32 reference is exact
+        # at these sizes (|acc| < 2^24)
         out_ref = np.matmul(x.astype(np.float32), y.astype(np.float32)).astype(np.int32)
+        np.testing.assert_array_equal(out_ref, to_numpy(out_tri))
     else:
         out_ref = np.matmul(x, y)
-    np.testing.assert_allclose(out_ref, to_numpy(out_tri), rtol=0.01, atol=1e-2)
+        np.testing.assert_allclose(out_ref, to_numpy(out_tri), rtol=0.01, atol=1e-2)
+
+
+@pytest.mark.interpreter
+def test_dot_int8_explicit_acc(device):
+    # int8 x int8 dot returns int32 regardless of out_dtype, so an explicit
+    # accumulator is int32 as well: tl.dot(a_i8, b_i8, acc=acc_i32)
+    M = N = K = 64
+
+    @triton.jit
+    def kernel(a_ptr, b_ptr, init_ptr, c_ptr, BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr):
+        offs_m = tl.arange(0, BM)
+        offs_n = tl.arange(0, BN)
+        offs_k = tl.arange(0, BK)
+        a = tl.load(a_ptr + offs_m[:, None] * BK + offs_k[None, :])
+        b = tl.load(b_ptr + offs_k[:, None] * BN + offs_n[None, :])
+        acc = tl.load(init_ptr + offs_m[:, None] * BN + offs_n[None, :])
+        c = tl.dot(a, b, acc=acc)
+        tl.store(c_ptr + offs_m[:, None] * BN + offs_n[None, :], c)
+
+    rs = RandomState(23)
+    a = numpy_random((M, K), dtype_str='int8', rs=rs)
+    b = numpy_random((K, N), dtype_str='int8', rs=rs)
+    # keep |init + a@b| < INT32_MAX: the s8 MMA accumulates satfinite, so an
+    # overflowing reference would diverge (hardware clamps, numpy wraps)
+    init = (numpy_random((M, N), dtype_str='int32', rs=rs) % (1 << 20)).astype(np.int32)
+    a_tri, b_tri = to_triton(a, device=device), to_triton(b, device=device)
+    init_tri, c_tri = to_triton(init, device=device), to_triton(np.zeros((M, N), dtype=np.int32), device=device)
+    kernel[(1, )](a_tri, b_tri, init_tri, c_tri, BM=M, BN=N, BK=K)
+    ref = a.astype(np.int64) @ b.astype(np.int64) + init.astype(np.int64)
+    np.testing.assert_array_equal(to_numpy(c_tri).astype(np.int64), ref)
 
 
 @pytest.mark.parametrize('in_dtype', ['float32'])

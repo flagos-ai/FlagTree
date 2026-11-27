@@ -433,11 +433,124 @@ struct XPUInterleaveOpConversion
   }
 };
 
+// TLE path lowers the upstream triton::MakeRangeOp directly to LLVM (mirroring
+// XPUTLETritonLoadOpConversion for triton::LoadOp): in the TLE pipeline
+// tt.make_range survives to this stage (the normcopy path rewrites it to
+// xpu::MakeRangeOp earlier), so this pattern only fires for TLE kernels and
+// leaves the shared xpu::MakeRangeOp lowering untouched.
+struct XPUTLETritonMakeRangeOpConversion
+    : public RangeOpConversionBase<triton::MakeRangeOp> {
+  XPUTLETritonMakeRangeOpConversion(LLVMTypeConverter &converter,
+                                    const TargetInfoBase &targetInfo,
+                                    PatternBenefit benefit)
+      : RangeOpConversionBase<triton::MakeRangeOp>(converter, targetInfo,
+                                                   benefit) {}
+
+  // Axis-aware, hierarchical per-core offset (scheme A).
+  //
+  // The per-core base along the (innermost) axis is
+  // getClusterLayoutAxisBase(.., elemsPerCore) -- see Utility.h for the
+  // gCoord derivation. The TLE make_range emits an iota off it:
+  // offset = base + n.
+  inline SmallVector<SmallVector<Value>>
+  emitIndices(Location loc, RewriterBase &rewriter, Attribute layout,
+              RankedTensorType type) const {
+    auto clusterLayout = mlir::cast<triton::xpu::ClusterLayoutAttr>(layout);
+    auto shape = type.getShape();
+    unsigned rank = shape.size();
+    unsigned elemsPerCore = clusterLayout.getTotalElemsPerThread(shape, type);
+    SmallVector<SmallVector<Value>> indices(elemsPerCore,
+                                            SmallVector<Value>(rank));
+
+    unsigned axis = rank - 1;
+    unsigned axisSize = static_cast<unsigned>(shape[axis]);
+
+    // 1D cyclic-replicated layout -- the LargeN row vector that
+    // getCluster1DForSliceDim(d == 1) / getOutput1D build when g > 1
+    // (cpg=[g] > 1, gpc=[ngroup] > 1). Its authoritative element map is
+    // planLargeNOutputSegments': "group grp owns rows grp, grp+numGroups,
+    // ...; slot k maps to global row grp + k*numGroups", and the g col-cores
+    // of a group are REPLICAS holding identical values. The block base below
+    // (gCoord * unitsPerCore == coreId here) instead hands every col-core its
+    // own element, which nothing else agrees with -- observed as a
+    // row-shifted arange (`row r` reading rid `r*g`) the first time a kernel
+    // actually CONSUMES the row arange values (the fused group-norm's
+    // SM-gather weight map). Plain tle kernels never noticed because
+    // rows/cols aranges only ever fed local_ptr indices, which the LM path
+    // drops.
+    if (rank == 1 && clusterLayout.getCoresPerGroup()[0] > 1 &&
+        clusterLayout.getGroupsPerCluster()[0] > 1) {
+      unsigned groupSize = product(clusterLayout.getCoresPerGroup());
+      unsigned numGroups = clusterLayout.getGroupsPerCluster()[0];
+      Value groupId =
+          udiv(mlir::LLVM::XPU::getThreadId(rewriter, loc), i32_val(groupSize));
+      for (unsigned n = 0; n < elemsPerCore; ++n) {
+        Value idx = add(groupId, mul(i32_val(n), i32_val(numGroups)));
+        if (axisSize > 0)
+          idx = urem(idx, i32_val(axisSize));
+        for (unsigned k = 0; k < rank; ++k) {
+          indices[n][k] = idx;
+        }
+      }
+      return indices;
+    }
+
+    Value base = mlir::LLVM::XPU::getClusterLayoutAxisBase(
+        rewriter, loc, clusterLayout, axis, elemsPerCore);
+
+    // When the axis is distributed over more cores than it has unique elements
+    // (shapePerCTATile[axis] = elemsPerCore * nCores[axis] > shape[axis]), the
+    // surplus cores are data REPLICAS, not new indices. Without wrapping, a
+    // degenerate axis (e.g. XBLOCK=1 spread over 64 cores) would make each core
+    // produce its own coreId as the "index", corrupting any value derived from
+    // this range (observed as an extra 24*core_id in permuted addresses). Wrap
+    // the per-core index modulo the axis size so replicas mirror the unique
+    // data, matching emitOffsetForClusterLayout's `% shapePerCTA` semantics.
+
+    for (unsigned n = 0; n < elemsPerCore; ++n) {
+      Value idx = add(base, idx_val(n));
+      if (axisSize > 0)
+        idx = urem(idx, i32_val(axisSize));
+      for (unsigned k = 0; k < rank; ++k) {
+        indices[n][k] = idx;
+      }
+    }
+    return indices;
+  }
+
+  LogicalResult
+  matchAndRewrite(triton::MakeRangeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+    RankedTensorType ty = op.getType();
+    auto layout = ty.getEncoding();
+    auto elemTy = ty.getElementType();
+    assert(elemTy.isInteger(32));
+    uint32_t _start = op.getStart();
+    Value start = createIndexAttrConstant(rewriter, loc, elemTy, _start);
+
+    auto idxs = emitIndices(loc, rewriter, layout, ty);
+
+    unsigned elems = idxs.size();
+    SmallVector<Value> retVals(elems);
+    for (const auto &multiDim : llvm::enumerate(idxs)) {
+      assert(multiDim.value().size() == 1);
+      retVals[multiDim.index()] = add(multiDim.value()[0], start);
+    }
+    auto typeConverter = getTypeConverter();
+    Value result = packLLElements(loc, typeConverter, retVals, rewriter, ty);
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 void mlir::triton::xpu::populateMakeRangeOpToLLVMPattern(
     LLVMTypeConverter &typeConverter, const TargetInfoBase &targetInfo,
     RewritePatternSet &patterns, PatternBenefit benefit) {
 
   patterns.add<XPUMakeRangeOpConversion>(typeConverter, targetInfo, benefit);
+  patterns.add<XPUTLETritonMakeRangeOpConversion>(typeConverter, targetInfo,
+                                                  benefit);
   patterns.add<XPUOutRangeOpConversion>(typeConverter, targetInfo, benefit);
   patterns.add<XPUInterleaveOpConversion>(typeConverter, targetInfo, benefit);
 }

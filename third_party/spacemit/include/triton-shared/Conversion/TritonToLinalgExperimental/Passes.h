@@ -10,6 +10,7 @@
 
 #include "triton-shared/Conversion/TritonToLinalgExperimental/CollapseShape.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ConvertScanOp.h"
+#include "triton-shared/Conversion/TritonToLinalgExperimental/LoopPtrCarryToOffset.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcileLlvmPtrCasts.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ReconcilePtrCasts.h"
 #include "triton-shared/Conversion/TritonToLinalgExperimental/ScfbufferStandardized.h"

@@ -216,6 +216,19 @@ Value buildTMEIssuePredicate(Value userPred, Location loc,
   } else {
     threadId = getThreadId(rewriter, loc);
   }
+  // The explicit MP31 collective issue mode keeps a TME transaction's
+  // add-trans/copy/arrival region warp-uniform. Init-arrival is a separate
+  // one-thread setup operation. Unaligned explicit issuers conservatively
+  // retain their original single-thread semantics.
+  if (issueOp && !isa<triton::musa::InitArrivalOp>(issueOp) &&
+      issueThread % 32 == 0) {
+    if (auto module = issueOp->getParentOfType<ModuleOp>()) {
+      auto collective =
+          module->getAttrOfType<IntegerAttr>("musa.tme_issue_warp");
+      if (collective && collective.getInt())
+        threadId = b.and_(threadId, b.i32_val(-32));
+    }
+  }
   Value issuerPred = b.icmp_eq(threadId, b.i32_val(issueThread));
   return b.and_(userPred, issuerPred);
 }
@@ -513,7 +526,12 @@ struct InitArrivalOpConversion
                           .i32_val(static_cast<int32_t>(*numWarps));
     }
 
-    Value launchPred = buildTMEIssueOnlyPredicate(loc, rewriter);
+    Value truePred = arith::ConstantIntOp::create(rewriter, loc, 1, 1);
+#ifdef __TLE__
+    Value launchPred = buildTMEIssuePredicate(truePred, loc, rewriter, op);
+#else
+    Value launchPred = buildTMEIssuePredicate(truePred, loc, rewriter);
+#endif // __TLE__
     SmallVector<Value> operands = {adaptor.getBarId(), arriveCount,
                                    adaptor.getPhaseId()};
     emitPredicatedVoidIntrinsic(rewriter, loc, launchPred,
@@ -690,10 +708,10 @@ struct AsyncTMECopyGlobalToLocalOpConversion
 
 #ifdef __TLE__
     if (!op->hasAttr(triton::musa::kTMEExplicitCompletionAttr))
-      LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.barrier0",
+      LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.syncthreads.lm",
                                       TypeRange{}, {});
 #else
-    LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.barrier0",
+    LLVM::createLLVMIntrinsicCallOp(rewriter, loc, "llvm.musa.syncthreads.lm",
                                     TypeRange{}, {});
 #endif // __TLE__
 

@@ -4,7 +4,7 @@
 #include "TritonNVIDIAGPUToLLVM/Passes.h"
 #ifdef __FLAGTREE_COMMON_IR__
 #include "CommonIRToTTGIR/Passes.h"
-#endif
+#endif // __FLAGTREE_COMMON_IR__
 #include "cublas_instance.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
@@ -102,12 +102,15 @@ void init_triton_nvidia_passes_commonir(py::module &&m) {
   ADD_PASS_OPTION_WRAPPER_1("add_to_ttgir", mlir::triton::createCommonIRToTTGIR,
                             bool);
 }
-#endif
+#endif // __FLAGTREE_COMMON_IR__
 
 void init_triton_hopper_passes(py::module &&m) {
   // Meta's autoWS
   ADD_PASS_OPTION_WRAPPER_2("add_hopper_warpspec",
                             mlir::createNVGPUWarpSpecialization, int, bool);
+#ifdef __TLE__
+  ADD_PASS_WRAPPER_0("add_lower_ws_tokens", mlir::createNVGPULowerWSTokens);
+#endif
 }
 
 static void checkMatmulConstraints(const std::string &A_dtype,
@@ -200,9 +203,10 @@ void init_triton_nvidia(py::module &&m) {
 #ifdef __TLE__
   init_nvidia_tle_raw_passes(passes.def_submodule("tle_raw"));
 #endif
+
 #ifdef __FLAGTREE_COMMON_IR__
   init_triton_nvidia_passes_commonir(passes.def_submodule("commonir"));
-#endif
+#endif // __FLAGTREE_COMMON_IR__
 
   // load dialects
   m.def("load_dialects", [](mlir::MLIRContext &context) {

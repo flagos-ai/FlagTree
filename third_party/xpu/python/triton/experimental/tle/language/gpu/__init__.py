@@ -1,9 +1,10 @@
 # Triton 3.6 XPU TLE - GPU module
-# Phase 1: 连续性搬运 APIs
+# Phase 1: contiguous-copy APIs
 from .core import (
     alloc,
     local_ptr,
     copy,
+    dma_wait,
     local_load,
     local_store,
     pipeline,
@@ -21,6 +22,7 @@ __all__ = [
     "alloc",
     "local_ptr",
     "copy",
+    "dma_wait",
     "local_load",
     "local_store",
     "pipeline",

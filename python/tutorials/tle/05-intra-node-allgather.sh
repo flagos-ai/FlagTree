@@ -27,4 +27,4 @@ torchrun \
     --node_rank=0 \
     --master_addr="${MASTER_ADDR}" \
     --master_port="${MASTER_PORT}" \
-    "${SCRIPT_DIR}/test_tle_intra_node_allgather.py"
+    "${SCRIPT_DIR}/05-intra-node-allgather.py"

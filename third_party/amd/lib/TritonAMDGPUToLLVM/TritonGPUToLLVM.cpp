@@ -82,6 +82,19 @@ public:
     markUnknownOpDynamicallyLegal([](Operation *) -> bool { return true; });
   }
 };
+
+// Capability gate for TLE on the AMD/RDNA backend: the set of TLE ops that
+// currently have an AMD LLVM lowering. Ops outside this set are reported with a
+// precise, actionable diagnostic (instead of a generic "failed to legalize"
+// error) so partial support degrades cleanly. Extend this list as the
+// FlagMega-on-Radeon primitives (pipe / warp_specialize / distributed_barrier /
+// ...) gain RDNA lowerings.
+static bool isAMDLoweredTleOp(Operation *op) {
+  StringRef name = op->getName().getStringRef();
+  return name == "tle.local_pointers" || name == "tle.extract_tile" ||
+         name == "tle.insert_tile" || name == "tle.exclusive_cumsum" ||
+         name == "tle.memdesc_alias" || name == "tle.distributed_barrier";
+}
 #endif
 
 class TritonAMDGPUToLLVMTypeConverter : public TritonGPUToLLVMTypeConverter {
@@ -130,6 +143,26 @@ struct ConvertTritonAMDGPUToLLVM
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
 
+#ifdef __TLE__
+    // Capability gate (run first, before any conversion/analysis): TLE ops that
+    // do not yet have an AMD/RDNA lowering get a precise, actionable diagnostic
+    // here instead of a downstream crash or a generic legalization failure.
+    // Extend isAMDLoweredTleOp() as FlagMega-on-Radeon primitives land.
+    {
+      bool hasUnsupportedTleOp = false;
+      mod.walk([&](Operation *op) {
+        if (op->getName().getDialectNamespace() == "tle" &&
+            !isAMDLoweredTleOp(op)) {
+          op->emitOpError() << "has no AMD/RDNA lowering yet (arch "
+                            << this->arch.getValue() << ")";
+          hasUnsupportedTleOp = true;
+        }
+      });
+      if (hasUnsupportedTleOp)
+        return signalPassFailure();
+    }
+#endif
+
     AMD::TargetInfo targetInfo(this->arch.getValue());
     if (targetInfo.getISAFamily() == AMD::ISAFamily::Unknown) {
       mod.emitError("unsupported target: '") << this->arch.getValue() << "'";
@@ -152,8 +185,15 @@ struct ConvertTritonAMDGPUToLLVM
       AMD::annotateLocalLoadsSyncedViaAsyncWait(mod);
 
     AMD::addLocalBarrierAfterAmdGpuAsyncWait(mod);
+#ifdef __TLE__
+    SymbolTableCollection tables;
+    SymbolUserMap users(tables, mod);
+    ModuleMembarAnalysis membarPass(&allocation,
+                                    AMD::makeMembarFilter(users, allocation));
+#else
     ModuleMembarAnalysis membarPass(&allocation,
                                     mlir::triton::AMD::membarFilter);
+#endif
     membarPass.run();
 
     // Lower functions
@@ -214,6 +254,10 @@ struct ConvertTritonAMDGPUToLLVM
           typeConverter, tlePatterns, targetInfo, commonBenefit);
       mlir::triton::tle::populateExclusiveCumsumOpToLLVMPatterns(
           typeConverter, targetInfo, tlePatterns, commonBenefit);
+      mlir::triton::tle::populateMemDescAliasOpToLLVMPatterns(
+          typeConverter, tlePatterns, commonBenefit);
+      AMD::populateDistributedBarrierOpToLLVMPatterns(
+          typeConverter, tlePatterns, targetInfo, commonBenefit);
       if (failed(
               applyPartialConversion(mod, tleTarget, std::move(tlePatterns))))
         return signalPassFailure();
@@ -250,7 +294,13 @@ struct ConvertTritonAMDGPUToLLVM
     AMD::populateLoadStoreOpToLLVMPatterns(typeConverter, targetInfo, patterns,
                                            axisInfoAnalysis, AMDBenefit);
     AMD::populateMaskedOpsToLLVMPatterns(patterns, targetInfo);
+#ifdef __TLE__
+    AMD::populateBarrierOpToLLVMPatterns(typeConverter, patterns, targetInfo,
+                                         AMDBenefit);
+#else
     AMD::populateBarrierOpToLLVMPatterns(typeConverter, patterns, AMDBenefit);
+#endif
+
     AMD::populateTensorPtrOpsToLLVMPatterns(typeConverter, patterns,
                                             AMDBenefit);
 

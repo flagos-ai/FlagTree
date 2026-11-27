@@ -39,7 +39,7 @@ struct LLVMXPUMfenceCheckPass
     for (auto &block : func.getBlocks()) {
       DenseSet<Value> pendingLoads;
       DenseSet<Value> pendingPtrs;
-      // 收集load的指针，然后后续check是否有其他的op使用了这个指针或者使用了load
+      // Track load pointers and later check for dependent users.
       for (auto &op : llvm::make_early_inc_range(block)) {
 
         for (auto opp : op.getOperands()) {
@@ -79,10 +79,13 @@ struct LLVMXPUMfenceCheckPass
 
 private:
   void createMfenceOpForLM(OpBuilder &builder, mlir::Location loc) const {
-    // The magic number 1 of MfenceOp means mfencing on LM
+    // The magic number 1 of MfenceOp means mfencing on LM (bit0=LM).
+    // Mask bits are the xpu2 mfence template's (xtdk_sys_xpu2.h):
+    // 1=mfence_lm, 2=mfence_sm, 4=mfence_gm, 3=lm_sm, 5=lm_gm, 7=all.
+    // Only LM may be fenced here: this fence guards the LM side of a GM2LM.
     auto i32ty = builder.getIntegerType(32);
     auto one = builder.create<LLVM::ConstantOp>(loc, i32ty,
-                                                IntegerAttr::get(i32ty, 5));
+                                                IntegerAttr::get(i32ty, 1));
     builder.create<mlir::LLVM::XPU::MfenceOp>(loc, one);
   }
 };

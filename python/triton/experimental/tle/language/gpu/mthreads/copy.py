@@ -21,6 +21,8 @@
 import triton.language.core as tl
 
 from .. import types as tle
+from . import common
+from .types import TMECachePolicy, _TME_CACHE_POLICIES
 
 
 def normalize_copy_shape(shape) -> tuple[int, ...]:
@@ -85,7 +87,20 @@ def normalize_offsets(offsets, rank: int):
     return offsets_tuple
 
 
-def tmacopy(src, dst, direction, shape, offsets, barrier=None, _semantic=None) -> None:
+def normalize_cache_policy(cache_policy):
+    cache_policy = tl._unwrap_if_constexpr(cache_policy)
+    if cache_policy is None:
+        return None
+    # Import lazily because gpu.semantic also imports this module.
+    from .. import semantic as tle_semantic
+    if not common.enabled() or tle_semantic.COMMON_IR_ENABLED:
+        raise ValueError("copy cache_policy is only supported by the MUSA TLE backend")
+    if not isinstance(cache_policy, TMECachePolicy):
+        raise ValueError("cache_policy must be a compile-time tle.gpu.mthreads.TMECachePolicy")
+    return tuple(_TME_CACHE_POLICIES.index(value) for value in (cache_policy.inner, cache_policy.outer))
+
+
+def tmacopy(src, dst, direction, shape, offsets, barrier=None, cache_policy=None, _semantic=None) -> None:
     shape = normalize_copy_shape(shape)
     desc = src if direction.name == "GM_TO_LOCAL" else dst
     buffer = dst if direction.name == "GM_TO_LOCAL" else src
@@ -109,6 +124,6 @@ def tmacopy(src, dst, direction, shape, offsets, barrier=None, _semantic=None) -
         if barrier.expect_bytes is None or int(barrier.expect_bytes) <= 0:
             raise ValueError("TMA copy barrier must have positive expect_bytes")
         _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, barrier.handle,
-                                          int(barrier.expect_bytes))
+                                          int(barrier.expect_bytes), cache_policy)
         return
-    _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values)
+    _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, cachePolicy=cache_policy)

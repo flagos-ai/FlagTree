@@ -21,6 +21,25 @@ constexpr int kSharedMemoryAddressSpace = 3;
 constexpr int kClusterSharedMemoryAddressSpace = 7;
 } // namespace
 
+LogicalResult SetLayoutOp::verify() {
+  Attribute encoding = getTargetEncoding();
+  auto distributed = dyn_cast<ttg::DistributedEncodingTrait>(encoding);
+  if (!distributed)
+    return emitOpError(
+        "requires a distributed BlockEncoding or SlicedEncoding");
+  while (auto slice = dyn_cast<ttg::SliceEncodingAttr>(encoding))
+    encoding = slice.getParent();
+  auto blocked = dyn_cast<ttg::BlockedEncodingAttr>(encoding);
+  if (!blocked || blocked.getIsSme())
+    return emitOpError("only supports BlockEncoding and SlicedEncoding of "
+                       "BlockEncoding on Iluvatar");
+  unsigned rank = cast<ttg::LayoutEncodingTrait>(getTargetEncoding()).getRank();
+  if (rank != static_cast<unsigned>(
+                  cast<RankedTensorType>(getSrc().getType()).getRank()))
+    return emitOpError("layout rank must match the tensor rank");
+  return success();
+}
+
 void ExtractTileOp::build(OpBuilder &builder, OperationState &state, Value src,
                           Value index, ArrayRef<int64_t> tileShape) {
   auto srcType = cast<RankedTensorType>(src.getType());
@@ -201,6 +220,60 @@ LogicalResult InsertTileOp::verify() {
              << i << ": offset(" << offsets[i] << ") + tile(" << tileShape[i]
              << ") > source(" << srcShape[i] << ")";
   }
+
+  return success();
+}
+
+static std::optional<int64_t> getStaticMemDescByteSize(ttg::MemDescType type) {
+  int64_t numElements = 1;
+  for (int64_t dim : type.getShape()) {
+    if (ShapedType::isDynamic(dim) || dim < 0)
+      return std::nullopt;
+    if (dim != 0 && numElements > std::numeric_limits<int64_t>::max() / dim)
+      return std::nullopt;
+    numElements *= dim;
+  }
+
+  int64_t elementBits = type.getElementTypeBitWidth();
+  int64_t elementBytes = (elementBits + 7) / 8;
+  if (elementBytes <= 0)
+    return std::nullopt;
+  if (numElements > std::numeric_limits<int64_t>::max() / elementBytes)
+    return std::nullopt;
+  return numElements * elementBytes;
+}
+
+LogicalResult MemDescAliasOp::verify() {
+  auto srcType = getSrc().getType();
+  auto resultType = getType();
+  int64_t offsetBytes = getOffsetBytesAttr().getInt();
+
+  if (srcType.getMemorySpace() != resultType.getMemorySpace())
+    return emitOpError("expects source and result memory spaces to match");
+  if (!isa<ttg::SharedMemorySpaceAttr>(srcType.getMemorySpace()))
+    return emitOpError("expects shared memory descriptors");
+  if (resultType.getMutableMemory() && !srcType.getMutableMemory())
+    return emitOpError(
+        "cannot create a mutable alias from an immutable source");
+  if (offsetBytes < 0)
+    return emitOpError("expects non-negative offset_bytes");
+  if (offsetBytes > std::numeric_limits<int32_t>::max())
+    return emitOpError("expects offset_bytes to fit in i32 for shared memory "
+                       "lowering");
+
+  int64_t resultElementBytes = (resultType.getElementTypeBitWidth() + 7) / 8;
+  if (resultElementBytes <= 0)
+    return emitOpError("expects byte-addressable result element type");
+  if (offsetBytes % resultElementBytes != 0)
+    return emitOpError("expects offset_bytes to be aligned to the result "
+                       "element byte width");
+
+  std::optional<int64_t> srcBytes = getStaticMemDescByteSize(srcType);
+  std::optional<int64_t> resultBytes = getStaticMemDescByteSize(resultType);
+  if (!srcBytes || !resultBytes)
+    return emitOpError("expects static source and result memdesc byte sizes");
+  if (*resultBytes > *srcBytes || offsetBytes > *srcBytes - *resultBytes)
+    return emitOpError("result byte range must fit within the source view");
 
   return success();
 }

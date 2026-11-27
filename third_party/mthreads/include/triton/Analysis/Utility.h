@@ -50,6 +50,11 @@ public:
 
   unsigned getThreadOffsetOnReductionAxis();
 
+  // Return physical lane-id XOR masks that vary only the reduction axis.
+  // This is needed for fragments whose reduction-axis bits are interleaved
+  // with non-reduction bits (for example QY2 wave128 WMMA C).
+  SmallVector<unsigned> getReductionLaneMasks();
+
   bool isWarpSynchronous();
 
   unsigned getInterWarpSizeWithUniqueData();

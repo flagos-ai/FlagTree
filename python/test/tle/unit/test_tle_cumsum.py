@@ -147,7 +147,7 @@ def _entry_block(ptx: str) -> str:
     raise AssertionError("failed to parse PTX entry block")
 
 
-@pytest.mark.require_tle("cumsum")
+@pytest.mark.skip_if_tle_unsupported("cumsum")
 @pytest.mark.parametrize(
     "dtype, n, block, reverse, num_warps",
     [
@@ -170,8 +170,22 @@ def test_tle_cumsum_exclusive_and_total(dtype, n, block, reverse, num_warps):
     if (FLAGTREE_BACKEND == "tsingmicro" and dtype not in (torch.float16, torch.bfloat16, torch.float32)):
         pytest.skip("integer cumsum not supported by the tsingmicro hardware scan")
 
-    x = _make_input(dtype, block)
-    out_dtype = _pick_expected_dtype(dtype)
+    _check_cumsum_exclusive_and_total(_make_input(dtype, block), n, reverse, num_warps)
+
+
+@pytest.mark.skip_if_tle_unsupported("cumsum")
+@pytest.mark.skipif(not is_cuda(), reason="covers the NVIDIA reverse scan regression")
+def test_tle_cumsum_fp32_total_cancellation():
+    block = 512
+    x = (3 * torch.arange(block) % 7 - 3).float() / 3
+    # The first 511 inputs form complete periods that sum to zero.
+    x[-1] = 0.025
+    _check_cumsum_exclusive_and_total(x.cuda(), block, reverse=True, num_warps=16)
+
+
+def _check_cumsum_exclusive_and_total(x, n, reverse, num_warps):
+    block = x.numel()
+    out_dtype = _pick_expected_dtype(x.dtype)
     exclusive = torch.empty((block, ), device="cuda", dtype=out_dtype)
     total = torch.empty((1, ), device="cuda", dtype=out_dtype)
 
@@ -191,24 +205,32 @@ def test_tle_cumsum_exclusive_and_total(dtype, n, block, reverse, num_warps):
                                         dims=[0]) - x_valid
     else:
         expected_exclusive = torch.cumsum(x_valid, dim=0, dtype=out_dtype) - x_valid
-    expected_total = torch.sum(x_valid, dim=0, dtype=out_dtype)
 
-    if out_dtype in (torch.float16, torch.bfloat16):
-        torch.testing.assert_close(exclusive[:n], expected_exclusive, atol=2e-2, rtol=2e-2)
-        torch.testing.assert_close(total[0], expected_total, atol=2e-2, rtol=2e-2)
-    elif out_dtype == torch.float32:
-        # GPU parallel scan accumulation order differs from torch's sequential
-        # cumsum reference, especially in reverse mode.
+    if out_dtype == torch.float32:
+        # The two scans can group FP32 additions differently.
         atol = 1e-5 if reverse else 2e-6
         rtol = 5e-4 if reverse else 1e-5
         torch.testing.assert_close(exclusive[:n], expected_exclusive, atol=atol, rtol=rtol)
-        torch.testing.assert_close(total[0], expected_total, atol=2e-6, rtol=1e-5)
+
+        # Cancellation can make the total small while rounding still depends
+        # on the input magnitudes. Bound the error of n - 1 FP32 additions
+        # against a higher-precision sum.
+        values = x_valid.cpu().double()
+        scaled_roundoff = (n - 1) * torch.finfo(out_dtype).eps / 2
+        total_atol = values.abs().sum().item() * scaled_roundoff / (1 - scaled_roundoff)
+        torch.testing.assert_close(total[0].cpu().double(), values.sum(), atol=total_atol, rtol=0)
+        return
+
+    expected_total = torch.sum(x_valid, dim=0, dtype=out_dtype)
+    if out_dtype in (torch.float16, torch.bfloat16):
+        torch.testing.assert_close(exclusive[:n], expected_exclusive, atol=2e-2, rtol=2e-2)
+        torch.testing.assert_close(total[0], expected_total, atol=2e-2, rtol=2e-2)
     else:
         torch.testing.assert_close(exclusive[:n], expected_exclusive)
         torch.testing.assert_close(total[0], expected_total)
 
 
-@pytest.mark.require_tle("cumsum")
+@pytest.mark.skip_if_tle_unsupported("cumsum")
 @pytest.mark.skipif(
     not is_cuda(),
     reason="PTX-specific regression guard requires NVIDIA CUDA backend",
@@ -245,7 +267,7 @@ def test_tle_cumsum_ptx_fastpath_regression_guard():
     assert len(re.findall(r"\bselp\b", ptx)) == 0
 
 
-@pytest.mark.require_tle("cumsum")
+@pytest.mark.skip_if_tle_unsupported("cumsum")
 @pytest.mark.skipif(not _is_hcu_backend(),
                     reason="HCU ISA-specific regression guard not applicable on non-HCU backends")
 def test_tle_cumsum_amdgcn_fastpath_regression_guard():
@@ -283,7 +305,7 @@ def test_tle_cumsum_amdgcn_fastpath_regression_guard():
         "Detected predicated ds_write: possible regression to generic path"
 
 
-@pytest.mark.require_tle("cumsum", "gpu.alloc", "gpu.local_ptr")
+@pytest.mark.skip_if_tle_unsupported("cumsum", "gpu.alloc", "gpu.local_ptr")
 def test_tle_cumsum_helper_preserves_adjacent_sentinel():
     block = 512
     num_warps = block // threads_per_warp
@@ -305,7 +327,7 @@ def test_tle_cumsum_helper_preserves_adjacent_sentinel():
     torch.testing.assert_close(sentinel, expected_sentinel)
 
 
-@pytest.mark.require_tle("cumsum", "gpu.alloc", "gpu.local_ptr")
+@pytest.mark.skip_if_tle_unsupported("cumsum", "gpu.alloc", "gpu.local_ptr")
 def test_tle_cumsum_scalar_base_addptr_alias_regression():
     block = 512
     num_warps = block // threads_per_warp

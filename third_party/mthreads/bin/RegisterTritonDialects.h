@@ -19,7 +19,7 @@
 #ifdef __FLAGPRISM__
 // FlagPrism: use the external component's replacement Proton registration.
 #include "Integration/Registration.h" // FlagPrism: use the exported include root.
-#else
+#elif defined(__PROTON__)
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/Passes.h"
 #include "proton/Dialect/include/Conversion/ProtonGPUToLLVM/ProtonNvidiaGPUToLLVM/Passes.h"
 #include "proton/Dialect/include/Conversion/ProtonToProtonGPU/Passes.h"

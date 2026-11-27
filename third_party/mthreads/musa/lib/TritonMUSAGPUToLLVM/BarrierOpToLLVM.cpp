@@ -1,3 +1,4 @@
+#include "MUSATLE/Transforms/TransformAttrs.h"
 #include "PatternTritonGPUOpToLLVM.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -18,7 +19,33 @@ struct TTGBarrierOpConversion
   LogicalResult
   matchAndRewrite(triton::gpu::BarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    targetInfo.barrier(op.getLoc(), rewriter, op.getAddrSpace());
+    if (auto group = op->getAttrOfType<IntegerAttr>(
+            triton::musa_tle::kMUSATLEConsumerEpochSyncAttr)) {
+      if (op.getAddrSpace() != triton::gpu::AddrSpace::Local)
+        return op.emitOpError(
+            "MThreads TLE consumer epoch sync must target local memory");
+      auto call = LLVM::createLLVMIntrinsicCallOp(
+          rewriter, op.getLoc(), "llvm.musa.syncthreads.lm", TypeRange{}, {});
+      call->setAttr(triton::musa_tle::kMUSATLEConsumerEpochSyncAttr, group);
+    } else if (op->hasAttr(triton::musa_tle::kMUSATLEPipeTMEReuseSyncAttr)) {
+      if (op.getAddrSpace() != triton::gpu::AddrSpace::Local)
+        return op.emitOpError(
+            "MThreads TLE pipe TME reuse sync must target local memory");
+      auto call = LLVM::createLLVMIntrinsicCallOp(
+          rewriter, op.getLoc(), "llvm.musa.syncthreads.lm", TypeRange{}, {});
+      call->setAttr(triton::musa_tle::kMUSATLEPipeTMEReuseSyncAttr,
+                    rewriter.getUnitAttr());
+    } else if (op->hasAttr(triton::musa_tle::kMUSATLEExplicitCtaSyncAttr)) {
+      if (op.getAddrSpace() != triton::gpu::AddrSpace::Local)
+        return op.emitOpError(
+            "MThreads TLE explicit CTA sync must target local memory");
+      auto call = LLVM::createLLVMIntrinsicCallOp(
+          rewriter, op.getLoc(), "llvm.musa.syncthreads.lm", TypeRange{}, {});
+      call->setAttr(triton::musa_tle::kMUSATLEExplicitCtaSyncAttr,
+                    rewriter.getUnitAttr());
+    } else {
+      targetInfo.barrier(op.getLoc(), rewriter, op.getAddrSpace());
+    }
     rewriter.eraseOp(op);
     return success();
   }

@@ -7,6 +7,7 @@ import numbers
 
 from triton.runtime import driver
 
+from .._utils import get_xpu_arch
 from .._C.libtriton import ir
 from . import core as tl
 
@@ -80,8 +81,8 @@ class TritonSemantic(Generic[TensorTy]):
             # the comparison and the surrounding select in the same (f32) domain,
             # which the XPU SDNN select lowering requires. This is only needed on
             # TRITON_XPU_ARCH == 3 (SDNN), hence the arch gate below.
-            float_scalar_vs_float_tensor = (int(os.environ.get("TRITON_XPU_ARCH", "3")) == 3
-                                            and scalar_ty.is_floating() and tensor_ty.is_floating())
+            float_scalar_vs_float_tensor = (get_xpu_arch(3) == 3 and scalar_ty.is_floating()
+                                            and tensor_ty.is_floating())
             if (scalar_ty.kind().value <= tensor_ty.kind().value and not float_scalar_vs_float_tensor):
                 # Upcast because of 3) and 4) below!
                 if div_or_mod and (tensor_ty in (tl.float16, tl.bfloat16)):
@@ -593,7 +594,7 @@ class TritonSemantic(Generic[TensorTy]):
             raise ValueError("arange's end argument must be greater than the start argument")
         range = end - start
         # ===-------------------- For Triton XPU -----------------------===
-        # [internal] Triton XPU does not require the power-of-two limitation
+        # [sync source] Triton XPU does not require the power-of-two limitation
         # (mirrors the 3.0 fork). Kernels use e.g. `tl.arange(0, 12)` for the
         # cluster grid axis and block_size_candidates-generated non-pow2 tiles.
         # if (range & (range - 1)) != 0:
@@ -1011,7 +1012,7 @@ class TritonSemantic(Generic[TensorTy]):
         return ()
 
     def _load_block_pointer(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile,
-                            flagtree_hints, offset_state_policy="", mem_sync_mode=""):
+                            flagtree_hints=None, offset_state_policy="", mem_sync_mode=""):
         # Load by a block pointer: `pointer_type<block_type<>>`
         # Block pointer can not have `mask` and `other` arguments
         if mask is not None or other is not None:
@@ -1033,7 +1034,7 @@ class TritonSemantic(Generic[TensorTy]):
             self.builder.create_tensor_pointer_load(ptr.handle, boundary_check, padding, cache, eviction, is_volatile,
                                                     flagtree_hints, offset_state_policy, mem_sync_mode), dst_ty)
 
-    def _load_legacy(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, flagtree_hints,
+    def _load_legacy(self, ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile, flagtree_hints=None,
                      offset_state_policy="", mem_sync_mode=""):
         # Load by a tensor of pointers or a pointer of scalar: `block_type<pointer_type<>>` or `pointer_type<>`
         if not ptr.type.scalar.is_ptr():
@@ -1105,17 +1106,17 @@ class TritonSemantic(Generic[TensorTy]):
         return ret
 
     # NOTE: `flagtree_hints` is a unified string parameter that replaces the
-    # internal triton's (offset_state, sync_mode) pair.  It is passed through
+    # the sync source's (offset_state, sync_mode) pair.  It is passed through
     # to ir.cc where it becomes an mlir::StringAttr on the LoadOp/StoreOp,
     # enabling backend-specific optimizations (e.g. XPU async memory access).
     # `offset_state_policy` / `mem_sync_mode` are XPU-only performance hints
-    # (internal Triton XPU parity). They are attached as generic discardable
+    # (sync source XPU parity). They are attached as generic discardable
     # attributes (`xpu.offset_state_policy` / `xpu.mem_sync_mode`) on the load/
     # store op by the XPU vendored ir.cc, keeping the shared main-tree op
     # definitions untouched. Empty string means "not specified" -> the XPU
     # offset-analysis pass infers the state automatically.
     def load(self, ptr: TensorTy, mask: Optional[TensorTy], other: Optional[TensorTy], boundary_check: Tuple,
-             padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool, flagtree_hints: str,
+             padding_option: str, cache_modifier: str, eviction_policy: str, is_volatile: bool, flagtree_hints=None,
              offset_state_policy: str = "", mem_sync_mode: str = "") -> TensorTy:
         # Cache, eviction and padding options
         cache = self._str_to_load_cache_modifier(cache_modifier)
@@ -1340,7 +1341,7 @@ class TritonSemantic(Generic[TensorTy]):
         # physically-adjacent row. Mirror triton 3.0's `TRITONXPU_STORE_MASK_SIM`
         # path: read back the old value, `where(mask, val, old)`, then masked
         # store so masked-off lanes carry their original value (benign write).
-        # NOTE: FlagTree unifies internal triton's (offset_state, sync_mode) pair
+        # NOTE: FlagTree unifies the sync source's (offset_state, sync_mode) pair
         # into the `flagtree_hints` string param; the read-back load uses the
         # default hints, while the masked store forwards the caller-supplied
         # offset_state_policy / mem_sync_mode XPU hints.
@@ -1397,7 +1398,7 @@ class TritonSemantic(Generic[TensorTy]):
         if ptr.type.is_const() or ptr.type.element_ty.is_const():
             raise ValueError("Cannot store to a constant pointer")
         element_ty = ptr.type.scalar.element_ty
-        if element_ty is tl.float16 and op != 'add':
+        if element_ty is tl.float16 and op != 'add' and op != 'mul':
             raise ValueError("atomic_" + op + " does not support fp16")
         if element_ty is tl.bfloat16 and op != 'add':
             raise ValueError("atomic_" + op + " does not support bf16")

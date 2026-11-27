@@ -838,6 +838,24 @@ cloneDefChainInLoopBody(Operation *root, scf::ForOp forOp, IRMapping &mapping,
     Operation *cached = cloneOf.lookup(root);
     if (cached == root)
       return;
+    // The clone cache (alreadyCloned/cloneOf) is shared across different
+    // IRMapping contexts within a stage: the "next iteration" clone in the
+    // kernel body uses computeMapping, while the load-side prelude and copy
+    // operands use copyMapping, whose IV substitution is one step ahead. The
+    // same original op therefore resolves to different values in the two
+    // contexts. If the current mapping already binds all results of root, keep
+    // the clone that belongs to this context; overriding it with the other
+    // context's cache would feed values computed from the other IV into the
+    // dynamic copy size.
+    bool allResultsBound = true;
+    for (Value r : root->getResults()) {
+      if (!mapping.contains(r)) {
+        allResultsBound = false;
+        break;
+      }
+    }
+    if (allResultsBound)
+      return;
     assert(cached && "clone cache missing for already-cloned op");
     for (auto [from, to] : llvm::zip(root->getResults(), cached->getResults()))
       mapping.map(from, to);
@@ -1797,10 +1815,54 @@ struct PipelineRewriter {
       for (unsigned i = 2; i < newForOp.getNumResults(); ++i)
         epilogueAccs.push_back(newForOp.getResult(i));
 
+      // ── epilogue induction value ─────────────────────────────────────
+      // The original loop `scf.for %iv = lb to ub step s` runs
+      //     n      = ceil((ub - lb) / s)
+      // iterations, so the last IV is
+      //     lastIv = lb + (n - 1) * s
+      //
+      // Let r = ub - lastIv, the length actually covered by the final step,
+      // 1 <= r <= s. Expanding ub - 1 - lb:
+      //     ub - 1 - lb = (n - 1) * s + (r - 1)
+      // Since 0 <= r - 1 < s, (ub - 1 - lb) % s == r - 1, hence
+      //     lastIv = ub - 1 - ((ub - 1 - lb) % s) = ub - r
+      //
+      // The old code used `ub - step` directly. The two differ by:
+      //     ub - step = (lastIv + r) - s = lastIv - (s - r)
+      // They agree only when r == s (i.e. (ub - lb) % s == 0, the last step
+      // exactly covers a full step); otherwise the IV is too small by s - r.
+      // Two real-world failures:
+      //   * non-causal (lb=0, ub=1030, s=64):
+      //     n=17, lastIv=1024, r=6, old value 1030-64=966 = 1024-58;
+      //     the K-tail mask treated 58 zero-padded columns as valid keys
+      //     (only 6 are real).
+      //   * causal on-band (lb=0, ub=min((start_m+1)*BM, KV)=32,
+      //     s=BLOCK_N=64):
+      //     n=1, lastIv=0, r=32, old value 32-64=-32; `epilogueIv >= lb`
+      //     is false and the whole compute block is skipped, producing an
+      //     output close to all zeros.
+      //
+      // We are already inside the then-region of the outer scf.if(lb < ub),
+      // so ub-1-lb >= 0 and unsigned remainder is safe.
+      Value ubMinusOne =
+          rewriter.create<arith::SubIOp>(loc, ub, makeIvConst(1));
+      Value tailRem = rewriter.create<arith::RemUIOp>(
+          loc, rewriter.create<arith::SubIOp>(loc, ubMinusOne, lb), step);
+      Value lastIv = rewriter.create<arith::SubIOp>(loc, ubMinusOne, tailRem);
+      // alignedUb is the "aligned ub", i.e. lastIv + step. Substituting it
+      // back into the original `ub - (numStages-1-e)*step` keeps the
+      // epilogue stages in ascending order:
+      //   numStages == 2: e=0 -> lastIv
+      //   numStages == 3: e=0 -> lastIv-step, e=1 -> lastIv
+      // (getEffectiveNumStages currently only returns 1 or 2; the general
+      // form is kept for future use.)
+      Value alignedUb = rewriter.create<arith::AddIOp>(loc, lastIv, step);
+
       for (int e = 0; e < numStages - 1; ++e) {
         Value eOffsetVal = makeIvConst(static_cast<int64_t>(numStages - 1 - e));
         Value epilogueIv = rewriter.create<arith::SubIOp>(
-            loc, ub, rewriter.create<arith::MulIOp>(loc, eOffsetVal, step));
+            loc, alignedUb,
+            rewriter.create<arith::MulIOp>(loc, eOffsetVal, step));
 
         // 当原循环实际迭代数 N_orig < numStages - 1 时，
         // 部分 epilogue stage 对应的 epilogueIv 会 < lb（即原循环根本没有

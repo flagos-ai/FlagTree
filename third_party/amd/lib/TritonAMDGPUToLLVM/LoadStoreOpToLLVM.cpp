@@ -147,7 +147,10 @@ LogicalResult emitFence(Operation *op, ConversionPatternRewriter &rewriter,
   // LLVM::FenceOp lowering will emit the required cache ops and s_waitcnt
   // vmcnt(0) instrs
 
-  auto [emitReleaseFence, emitAcquireFence] = getOrderingFlags(memOrdering);
+  // port triton v3.9 (triton-lang/triton#11081): getOrderingFlags() returns
+  // {emitAcquireFence, emitReleaseFence}; this used to bind it the other way
+  // around, so a release fence ran for acquire semantics and vice versa.
+  auto [emitAcquireFence, emitReleaseFence] = getOrderingFlags(memOrdering);
   if (MemSyncScope::SYSTEM == memScope)
     return rewriter.notifyMatchFailure(
         op, "System memory scope is not supported for Buffer Atomic Ops");
@@ -1671,6 +1674,13 @@ struct AtomicCASOpConversion
                   ConversionPatternRewriter &rewriter) const override {
     // extract relevant info from Module
     auto loc = op.getLoc();
+    // port triton v3.9 (triton-lang/triton#10816). Unlike AtomicRMWOpConversion
+    // this always requests the trailing barrier: the scalar-result broadcast
+    // path below already has its own unconditional one, so this may add a
+    // harmless redundant barrier there, but every other path (tensor results,
+    // and the result-unused early return) had none at all.
+    insertAtomicOrderingBarriers(op, op.getSem(), /*emitBarrierAfter=*/true,
+                                 rewriter, targetInfo);
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     MLIRContext *ctx = rewriter.getContext();
     Value ptr = op.getPtr();
@@ -1861,6 +1871,12 @@ struct AtomicRMWOpConversion
   matchAndRewrite(triton::AtomicRMWOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
+    // port triton v3.9 (triton-lang/triton#10816): a result staged through
+    // shared memory (see `needLdsStaging` below) already gets its own
+    // trailing barrier before the broadcast read, so skip the redundant one.
+    insertAtomicOrderingBarriers(op, op.getSem(),
+                                 !op->hasAttr("allocation.offset"), rewriter,
+                                 targetInfo);
     auto b = TritonLLVMOpBuilder(loc, rewriter);
 
     auto binOp = matchAtomicOp(op.getAtomicRmwOp());

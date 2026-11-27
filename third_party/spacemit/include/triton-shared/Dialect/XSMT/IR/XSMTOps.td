@@ -264,25 +264,26 @@ def DescriptorLoadViewOp : XSMT_Op<"descriptor_load_view", [Pure]> {
 }
 
 def AllocOp : XSMT_Op<"alloc", [MemoryEffects<[MemAlloc]>]> {
-  let summary = "Allocate a tensor in specified memory storage";
+  let summary = "Allocate a tensor in specified memory scope";
   let description = [{
-    Allocates memory for a tensor with given shape in specified storage (e.g., l2, shared).
+    Allocates memory for a tensor with given shape in specified scope
+    (e.g., global, tcm, l2, fragment).
   }];
 
   let arguments = (ins
     DenseI32ArrayAttr:$shape,
-    StrAttr:$storage
+    StrAttr:$scope
   );
 
   let results = (outs TT_TensorPtr:$result);
 
   let assemblyFormat = [{
-    `[` $shape `]` `storage` `(` $storage `)` attr-dict `:` type($result)
+    `[` $shape `]` `scope` `(` $scope `)` attr-dict `:` type($result)
   }];
 }
 
 def AllocCopiesOp : XSMT_Op<"alloc_copies", [MemoryEffects<[MemAlloc]>]> {
-  let summary = "Allocate a buffer tensor in specified memory storage";
+  let summary = "Allocate a buffer tensor in specified memory scope";
   let description = [{
     Allocate a multi-copy tensor. The first dimension of `shape` is the number of copies.
     i.e. shape = [num, M, N].
@@ -290,7 +291,7 @@ def AllocCopiesOp : XSMT_Op<"alloc_copies", [MemoryEffects<[MemAlloc]>]> {
 
   let arguments = (ins
     DenseI64ArrayAttr:$shape,   // shape already includes num: [num, M, N]
-    StrAttr:$storage            // e.g. "l2", "smem"
+    StrAttr:$scope              // e.g. "l2", "tcm", "global", "fragment"
   );
 
   let results = (outs XSMT_BufferType:$result);
@@ -299,7 +300,7 @@ def AllocCopiesOp : XSMT_Op<"alloc_copies", [MemoryEffects<[MemAlloc]>]> {
     OpBuilder<(ins
       "llvm::ArrayRef<int64_t>":$shape,
       "mlir::Type":$elementType,
-      "llvm::StringRef":$storage
+      "llvm::StringRef":$scope
     ), [{
       auto *ctx = $_builder.getContext();
       if (shape.empty()) {
@@ -308,17 +309,17 @@ def AllocCopiesOp : XSMT_Op<"alloc_copies", [MemoryEffects<[MemAlloc]>]> {
 
       int copies = static_cast<int>(shape.front());
       auto shapeAttr = $_builder.getDenseI64ArrayAttr(shape);
-      auto storageAttr = ::mlir::StringAttr::get(ctx, storage);
+      auto scopeAttr = ::mlir::StringAttr::get(ctx, scope);
 
       auto resultTy = ::mlir::xsmt::BufferType::get(
-          ctx, shape, elementType, copies, storageAttr);
+          ctx, shape, elementType, copies, scopeAttr);
 
-      build($_builder, $_state, resultTy, shapeAttr, storageAttr);
+      build($_builder, $_state, resultTy, shapeAttr, scopeAttr);
     }]>
   ];
 
   let assemblyFormat = [{
-  `[` $shape `]` `storage` `(` $storage `)` attr-dict `:` qualified(type($result))
+  `[` $shape `]` `scope` `(` $scope `)` attr-dict `:` qualified(type($result))
   }];
 
   // let hasVerifier = 1;
@@ -557,7 +558,7 @@ def MBarrierSubviewOp : XSMT_Op<"mbarrier_subview", [Pure]> {
 
   let arguments = (ins
     XSMT_MBarrierType:$mbarrier,
-    AnyTypeOf<[I32, I64, Index]>:$index  // 支持动态索引
+    AnyTypeOf<[I32, I64, Index]>:$index  // supports dynamic indices
   );
 
   let results = (outs I64:$result);

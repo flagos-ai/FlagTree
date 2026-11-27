@@ -67,7 +67,7 @@ def _runtime_verify(output, device_dptr, grid, rank, world_size):
 
 class TestD2DBarrier:
 
-    @pytest.mark.require_tle("shard_id", "remote", "distributed_barrier")
+    @pytest.mark.skip_if_tle_unsupported("shard_id", "remote", "distributed_barrier")
     def test_tle_d2d_barrier(self):
         grid = (N, )
 

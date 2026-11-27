@@ -11,3 +11,6 @@ backend/lib/*
 # spert headers are vendored into backend/include at package time from the
 # spine-runtime submodule (setup.py); ExecutionEngine/ stays tracked.
 backend/include/SpineRuntime/*
+# MLIR Python bindings are vendored into backend/mlir_core at package time
+# from the LLVM asset (setup.py, LLVM_SYSPATH/python_packages/mlir_core).
+backend/mlir_core/*

@@ -279,6 +279,16 @@ LogicalResult MaskState::parseConstant(arith::ConstantOp constOp,
     this->scalar = builder.getIndexAttr(value);
   }
 
+  // A constant tensor must carry its shape in `dims` like tt.splat does
+  // (scalar = splatted value, dims = shape). Several helpers index `dims` by
+  // the tensor's rank (parseCmp's scalar path, minStateScalar,
+  // parseBroadcast, parseExpandDims), so leaving `dims` empty causes
+  // out-of-bounds SmallVector accesses downstream.
+  if (auto shapedType = dyn_cast<ShapedType>(constOp.getType())) {
+    for (auto s : shapedType.getShape())
+      this->dims.push_back(builder.getIndexAttr(s));
+  }
+
   return success();
 }
 
@@ -570,6 +580,11 @@ LogicalResult MaskState::parseBroadcast(triton::BroadcastOp broadcastOp,
   if (failed(parse(src, loc, builder)))
     return failure();
 
+  // The update below indexes `dims` by the source tensor's rank. Bail out on
+  // states that don't carry that many dims instead of writing out of bounds.
+  if (this->dims.size() < srcShape.size())
+    return failure();
+
   for (size_t i = 0; i < srcShape.size(); i++) {
     if (srcShape[i] == dstShape[i])
       continue;
@@ -643,6 +658,10 @@ LogicalResult MaskState::parseExpandDims(triton::ExpandDimsOp expandDimsOp,
   auto axis = expandDimsOp.getAxis();
   assert(dstShape[axis] == 1 &&
          "expect changed dimension to be 1 in expand_dims");
+  // Guard against states that carry no per-dimension information (e.g. a
+  // scalar-only state): inserting at begin() + axis would be out of bounds.
+  if (static_cast<size_t>(axis) > this->dims.size())
+    return failure();
   this->dims.insert(this->dims.begin() + axis, builder.getIndexAttr(1));
 
   return success();

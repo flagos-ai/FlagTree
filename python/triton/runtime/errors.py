@@ -58,6 +58,11 @@ class PTXASError(TritonError):
         return f"PTXAS error: {error_message}"
 
 
+# flagtree tileir: provide a backend-neutral compiler failure for autotuning.
+class BackendCompilerError(TritonError):
+    """A backend compiler failure that an autotuner may prune."""
+
+
 class AutotunerError(TritonError):
 
     def __init__(self, error_message: Optional[str] = None):

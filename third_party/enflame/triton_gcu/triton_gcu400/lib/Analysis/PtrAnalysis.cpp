@@ -94,9 +94,10 @@ void PtrState::addState(OpBuilder &builder, Location loc,
   this->source = lhsState.source ? lhsState.source : rhsState.source;
 
   if (lhsState.scalar && rhsState.scalar) {
-    auto addOp =
-        builder.create<arith::AddIOp>(loc, lhsState.scalar, rhsState.scalar);
-    this->scalar = addOp.getResult();
+    // Both scalars are i64 by contract, so this never routes through index.
+    this->scalar =
+        builder.create<arith::AddIOp>(loc, lhsState.scalar, rhsState.scalar)
+            .getResult();
   } else if (lhsState.getRank() == 0) {
     this->scalar = lhsState.scalar ? lhsState.scalar : rhsState.scalar;
   }
@@ -243,6 +244,7 @@ bool isZeroStride(OpBuilder &builder, Location loc, const OpFoldResult ofr) {
 
 PtrInfo PtrState::getPtrInfo(OpBuilder &builder, Location loc,
                              const MaskState &mstate,
+                             bool foldMaskStartIntoBase,
                              bool exposeMaskStartOffset) {
   PtrInfo ptrInfo;
 
@@ -260,23 +262,24 @@ PtrInfo PtrState::getPtrInfo(OpBuilder &builder, Location loc,
   auto one = builder.create<arith::ConstantIndexOp>(loc, 1);
 
   // The mask's within-tile start (mstate.starts) may be non-zero for a `>=`
-  // mask (the valid region begins at starts[d] within the tile). Fold it into
-  // the base pointer for loads (starts[d] * strides[d] * bpe) so the load
-  // reads from the valid region. For stores this is skipped — the store
-  // exposes starts via the `offsets` operand (see getDimOffset) for
-  // ConfigGcuStore to convert per-warp.
+  // mask (the valid region begins at starts[d] within the tile). When
+  // foldMaskStartIntoBase is set (loads) each start is folded into the base
+  // pointer as starts[d] * strides[d] * bpe so the DMA reads the valid memory
+  // block. When exposeMaskStartOffset is set (stores, and DMA loads whose
+  // mask carries a non-zero start) the start is ALSO exposed via `offsets` so
+  // the DMA lowering can place the data at the right tile / memory position.
   auto foldMaskStartsIntoBase = [&](Value base) -> Value {
-    if (exposeMaskStartOffset || mstate.starts.empty())
+    if (!foldMaskStartIntoBase || mstate.starts.empty())
       return base;
     auto bpeVal = builder.create<arith::ConstantIntOp>(loc, bpe, /*width=*/64);
     for (int64_t d = 0; d < static_cast<int64_t>(mstate.starts.size()); ++d) {
       if (auto attr = getIntAttr(mstate.starts[d]))
         if (attr.value() == 0)
           continue;
-      auto startI64 = builder.create<arith::IndexCastOp>(
-          loc, builder.getI64Type(), getValue(builder, loc, mstate.starts[d]));
-      auto strideI64 = builder.create<arith::IndexCastOp>(
-          loc, builder.getI64Type(), getValue(builder, loc, this->strides[d]));
+      auto startI64 = castOffsetToI64(builder, loc,
+                                      getValue(builder, loc, mstate.starts[d]));
+      auto strideI64 = castOffsetToI64(
+          builder, loc, getValue(builder, loc, this->strides[d]));
       auto elems = builder.create<arith::MulIOp>(loc, startI64, strideI64);
       base = builder.create<arith::AddIOp>(
           loc, base, builder.create<arith::MulIOp>(loc, elems, bpeVal));
@@ -284,10 +287,10 @@ PtrInfo PtrState::getPtrInfo(OpBuilder &builder, Location loc,
     return base;
   };
 
-  // Per-dimension within-tile mask start. For loads this is unused (the start
-  // is folded into the base, and offsets stays zero). For stores this becomes
-  // the `offsets` operand: the mask start in the tile coordinate space, which
-  // ConfigGcuStore converts to per-warp src/dst offsets.
+  // Per-dimension within-tile mask start (the tile coordinate at which the
+  // valid region begins). Only exposed when exposeMaskStartOffset is set
+  // (stores / DMA masked loads); the DMA lowering consumes it as the per-warp
+  // source slice offset (store) or the result-tile write offset (load).
   auto getMaskStart = [&](int64_t i) -> Value {
     if (exposeMaskStartOffset &&
         i < static_cast<int64_t>(mstate.starts.size())) {
@@ -300,9 +303,6 @@ PtrInfo PtrState::getPtrInfo(OpBuilder &builder, Location loc,
     return zero.getResult();
   };
 
-  // For stores, `offsets` carries the mask start (tile-internal). For loads,
-  // `offsets` is the memory offset and stays zero (the start is folded into
-  // the base above).
   auto getDimOffset = [&](int64_t i) -> Value {
     return exposeMaskStartOffset ? getMaskStart(i) : zero.getResult();
   };
@@ -313,8 +313,7 @@ PtrInfo PtrState::getPtrInfo(OpBuilder &builder, Location loc,
       loc, addr,
       builder.create<arith::MulIOp>(
           loc, builder.create<arith::ConstantIntOp>(loc, bpe, /*width=*/64),
-          builder.create<arith::IndexCastOp>(loc, builder.getI64Type(),
-                                             offsets[0])));
+          castOffsetToI64(builder, loc, offsets[0])));
   if (rank == 1) {
     base = foldMaskStartsIntoBase(base);
     ptrInfo.base = builder.create<IntToPtrOp>(
@@ -337,8 +336,7 @@ PtrInfo PtrState::getPtrInfo(OpBuilder &builder, Location loc,
           loc, base,
           builder.create<arith::MulIOp>(
               loc, builder.create<arith::ConstantIntOp>(loc, bpe, /*width=*/64),
-              builder.create<arith::IndexCastOp>(loc, builder.getI64Type(),
-                                                 offsets[i])));
+              castOffsetToI64(builder, loc, offsets[i])));
     }
     base = foldMaskStartsIntoBase(base);
     ptrInfo.base = builder.create<IntToPtrOp>(
@@ -390,9 +388,7 @@ bool PtrAnalysis::visitOperand(
     return true;
   }
   if (isa<IntegerType>(operand.getType())) {
-    auto castOp = rewriter.create<arith::IndexCastOp>(
-        loc, rewriter.getIndexType(), operand);
-    state.scalar = castOp.getResult();
+    state.scalar = castScalarToI64(rewriter, loc, operand);
     LLVM_DEBUG(llvm::dbgs() << std::string(kIndentSpaceNum, ' ')
                             << "operand is an integer " << operand << "\n");
     return true;
@@ -541,9 +537,8 @@ void PtrAnalysis::visitOperandConstSplat(
   assert(attr.isSplat() && isa<IntegerType>(attr.getElementType()));
   auto values = attr.getValues<IntegerAttr>();
   auto value = values[0].getValue();
-  auto constAttr = rewriter.getIndexAttr(value.getSExtValue());
   auto constOp = rewriter.create<arith::ConstantOp>(
-      loc, rewriter.getIndexType(), constAttr);
+      loc, rewriter.getI64IntegerAttr(value.getSExtValue()));
 
   state.scalar = constOp;
 
@@ -876,6 +871,56 @@ void PtrAnalysis::visitOperandMemDescToPtr(
 bool isPtrFromLoad(Value v, llvm::DenseMap<Value, bool> &valueFromLoads);
 bool isMaskCandidate(Value v, llvm::DenseMap<Value, bool> &valueToCandiates);
 
+static bool canAnalyzePtrValue(Value value, llvm::DenseSet<Value> &visited) {
+  if (!visited.insert(value).second)
+    return true;
+  if (isa<IntegerType>(value.getType()) || isa<BlockArgument>(value))
+    return true;
+
+  Operation *op = value.getDefiningOp();
+  if (!op)
+    return false;
+
+  return TypeSwitch<Operation *, bool>(op)
+      .Case<arith::ConstantOp, triton::MakeRangeOp,
+            triton::gcu::MemDescToPtrOp>([](auto) { return true; })
+      .Case<arith::AddIOp, arith::MulIOp, arith::RemSIOp, arith::DivSIOp>(
+          [&](auto binaryOp) {
+            return canAnalyzePtrValue(binaryOp.getLhs(), visited) &&
+                   canAnalyzePtrValue(binaryOp.getRhs(), visited);
+          })
+      .Case<arith::SelectOp>([&](auto selectOp) {
+        return canAnalyzePtrValue(selectOp.getTrueValue(), visited) &&
+               canAnalyzePtrValue(selectOp.getFalseValue(), visited);
+      })
+      .Case<arith::ExtSIOp, arith::ExtUIOp>([&](auto extOp) {
+        return canAnalyzePtrValue(extOp.getIn(), visited);
+      })
+      .Case<triton::BroadcastOp, triton::SplatOp, triton::ExpandDimsOp,
+            triton::BitcastOp, triton::TransOp>([&](auto unaryOp) {
+        return canAnalyzePtrValue(unaryOp.getSrc(), visited);
+      })
+      .Case<triton::AddPtrOp>([&](auto addPtrOp) {
+        return canAnalyzePtrValue(addPtrOp.getPtr(), visited) &&
+               canAnalyzePtrValue(addPtrOp.getOffset(), visited);
+      })
+      .Case<triton::DotOp>(
+          [&](auto dotOp) { return canAnalyzePtrValue(dotOp.getC(), visited); })
+      .Case<triton::ReduceOp>([&](auto reduceOp) {
+        return !reduceOp.getSrcs().empty() &&
+               canAnalyzePtrValue(reduceOp.getSrcs()[0], visited);
+      })
+      .Case<triton::LoadOp>([&](auto loadOp) {
+        return canAnalyzePtrValue(loadOp.getPtr(), visited);
+      })
+      .Default([](Operation *) { return false; });
+}
+
+static bool canAnalyzePtrValue(Value value) {
+  llvm::DenseSet<Value> visited;
+  return canAnalyzePtrValue(value, visited);
+}
+
 // Push a mask range bound (per-dimension start or end) as a new loop/condition
 // operand, so the mask's valid range can be carried across scf::ForOp /
 // scf::WhileOp boundaries.
@@ -892,8 +937,16 @@ static Value pushMaskBoundOperand(PatternRewriter &rewriter, Location loc,
       .getResult();
 }
 
+static Value pushPtrOperand(PatternRewriter &rewriter, Location loc,
+                            OpFoldResult ofr) {
+  if (auto intAttr = getIntAttr(ofr))
+    return rewriter.create<arith::ConstantOp>(
+        loc, rewriter.getI64IntegerAttr(intAttr.value()));
+  return castScalarToI64(rewriter, loc, cast<Value>(ofr));
+}
+
 void PtrAnalysis::rewriteYieldOp(
-    PatternRewriter &rewriter, scf::YieldOp op,
+    PatternRewriter &rewriter, scf::YieldOp op, ArrayRef<int> ptrSlotIndices,
     llvm::SmallDenseMap<Value, PtrState> &knownPtrs,
     llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   // any inserted instruction should be before this yield
@@ -910,21 +963,17 @@ void PtrAnalysis::rewriteYieldOp(
   // For each of the init arg that we added additional Values in for loop, we
   // need to add corresponding Values as yield operands. The loop below gathers
   // PtrState for those values.
-  for (auto [i, v] : llvm::enumerate(operands)) {
-    (void)i;
-    auto tType = dyn_cast<TensorType>(v.getType());
-    if (tType && ((tType.getElementType().isIntOrIndex() &&
-                   !tType.getElementType().isInteger(1)) ||
-                  isa<triton::PointerType>(tType.getElementType()))) {
-      llvm::DenseMap<Value, bool> valueFromLoads;
-      if (!isPtrFromLoad(v, valueFromLoads)) {
-        PtrState state;
-        visitOperand(rewriter, loc, v, state, knownPtrs);
-        yieldArgState.push_back(state);
-        LLVM_DEBUG(llvm::dbgs() << "ptr yieldArgState size:"
-                                << yieldArgState.size() << "\n");
-      }
-    }
+  for (int i : ptrSlotIndices) {
+    assert(i >= 0 && static_cast<size_t>(i) < operands.size());
+    Value v = operands[i];
+    PtrState state;
+    bool analyzed = visitOperand(rewriter, loc, v, state, knownPtrs);
+    assert(analyzed && "validated PtrState loop slot must remain analyzable");
+    if (!analyzed)
+      return;
+    yieldArgState.push_back(state);
+    LLVM_DEBUG(llvm::dbgs()
+               << "ptr yieldArgState size:" << yieldArgState.size() << "\n");
   }
 
   // mask info process
@@ -957,23 +1006,14 @@ void PtrAnalysis::rewriteYieldOp(
       // offsets can be IntAttr zeroes, since reinterpret_cast collapses them
       // for the input memref, and the for loop may not update offsets other
       // than offsets[0]. Create constants Values for those zeroes.
-      if (auto sIntAttr = getIntAttr(s)) {
-        assert(sIntAttr.value() == 0 && "attribute offsets should be zeroes");
-        auto constOp =
-            rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0));
-        operands.push_back(constOp.getResult());
-      } else {
-        operands.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), cast<Value>(s)));
-      }
+      operands.push_back(pushPtrOperand(rewriter, loc, s));
     }
 
     for (auto s : state.strides) {
       assert(!getIntAttr(s) &&
              "PtrState strides for yield within for loop not expected to be "
              "attribute.");
-      operands.push_back(rewriter.create<arith::IndexCastOp>(
-          loc, rewriter.getIndexType(), cast<Value>(s)));
+      operands.push_back(pushPtrOperand(rewriter, loc, s));
     }
   }
   LLVM_DEBUG(llvm::dbgs() << "after ptr operands size:" << operands.size()
@@ -1034,9 +1074,12 @@ LogicalResult PtrAnalysis::rewriteForOp(
                    !tType.getElementType().isInteger(1)) ||
                   isa<triton::PointerType>(tType.getElementType()))) {
       llvm::DenseMap<Value, bool> valueFromLoads;
-      if (!isPtrFromLoad(op.getRegionIterArg(i), valueFromLoads)) {
+      Value yieldValue = op.getYieldedValues()[i];
+      if (!isPtrFromLoad(op.getRegionIterArg(i), valueFromLoads) &&
+          canAnalyzePtrValue(arg) && canAnalyzePtrValue(yieldValue)) {
         PtrState state;
-        visitOperand(rewriter, loc, arg, state, knownPtrs);
+        if (!visitOperand(rewriter, loc, arg, state, knownPtrs))
+          continue;
         // Record the PtrState for later processing
         initArgIndexState.push_back(std::make_pair(i, state));
         LLVM_DEBUG(llvm::dbgs() << "ptr initArgIndexState size:"
@@ -1081,29 +1124,13 @@ LogicalResult PtrAnalysis::rewriteForOp(
       newInitArgs.push_back(state.scalar);
     }
     for (auto [j, s] : llvm::enumerate(state.offsets)) {
-      auto sIntAttr = getIntAttr(s);
-      if (sIntAttr) {
-        auto constOp = rewriter.create<arith::ConstantOp>(
-            loc, rewriter.getIndexAttr(sIntAttr.value()));
-        newInitArgs.push_back(constOp.getResult());
-        state.offsets[j] = constOp.getResult();
-      } else {
-        newInitArgs.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), cast<Value>(s)));
-      }
+      newInitArgs.push_back(pushPtrOperand(rewriter, loc, s));
+      state.offsets[j] = newInitArgs.back();
     }
 
     for (auto [j, s] : llvm::enumerate(state.strides)) {
-      auto sIntAttr = getIntAttr(s);
-      if (sIntAttr) {
-        auto constOp = rewriter.create<arith::ConstantOp>(
-            loc, rewriter.getIndexAttr(sIntAttr.value()));
-        newInitArgs.push_back(constOp.getResult());
-        state.strides[j] = constOp.getResult();
-      } else {
-        newInitArgs.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), cast<Value>(s)));
-      }
+      newInitArgs.push_back(pushPtrOperand(rewriter, loc, s));
+      state.strides[j] = newInitArgs.back();
     }
   }
   LLVM_DEBUG(llvm::dbgs() << "after ptr newInitArgs size:" << newInitArgs.size()
@@ -1203,7 +1230,12 @@ LogicalResult PtrAnalysis::rewriteForOp(
     LLVM_DEBUG(llvm::dbgs() << "newOp getNumRegionIterArgs size: "
                             << newOp.getNumRegionIterArgs() << "\n");
     auto yieldOp = cast<scf::YieldOp>(newOp.getBody()->getTerminator());
-    rewriteYieldOp(rewriter, yieldOp, knownPtrs, knownMasks);
+    llvm::SmallVector<int> ptrSlotIndices;
+    for (auto &[i, state] : initArgIndexState) {
+      (void)state;
+      ptrSlotIndices.push_back(i);
+    }
+    rewriteYieldOp(rewriter, yieldOp, ptrSlotIndices, knownPtrs, knownMasks);
   }
   LLVM_DEBUG({
     llvm::dbgs() << "ptr analysis create new for\n";
@@ -1266,6 +1298,7 @@ bool PtrAnalysis::byPassWhileOp(
 
 void PtrAnalysis::rewriteConditionOp(
     PatternRewriter &rewriter, scf::ConditionOp op,
+    ArrayRef<int> ptrSlotIndices,
     llvm::SmallDenseMap<Value, PtrState> &knownPtrs,
     llvm::SmallDenseMap<Value, MaskState> &knownMasks) {
   OpBuilder::InsertionGuard g(rewriter);
@@ -1280,21 +1313,17 @@ void PtrAnalysis::rewriteConditionOp(
   LLVM_DEBUG(llvm::dbgs() << "ptr rewriteConditionOp start: \n");
   auto loc = op.getLoc();
 
-  for (auto [i, v] : llvm::enumerate(operands)) {
-    (void)i;
-    auto tType = dyn_cast<TensorType>(v.getType());
-    if (tType && ((tType.getElementType().isIntOrIndex() &&
-                   !tType.getElementType().isInteger(1)) ||
-                  isa<triton::PointerType>(tType.getElementType()))) {
-      llvm::DenseMap<Value, bool> valueFromLoads;
-      if (!isPtrFromLoad(v, valueFromLoads)) {
-        PtrState state;
-        visitOperand(rewriter, loc, v, state, knownPtrs);
-        condArgState.push_back(state);
-        LLVM_DEBUG(llvm::dbgs()
-                   << "ptr condArgState size:" << condArgState.size() << "\n");
-      }
-    }
+  for (int i : ptrSlotIndices) {
+    assert(i >= 0 && static_cast<size_t>(i) < operands.size());
+    Value v = operands[i];
+    PtrState state;
+    bool analyzed = visitOperand(rewriter, loc, v, state, knownPtrs);
+    assert(analyzed && "validated PtrState while slot must remain analyzable");
+    if (!analyzed)
+      return;
+    condArgState.push_back(state);
+    LLVM_DEBUG(llvm::dbgs()
+               << "ptr condArgState size:" << condArgState.size() << "\n");
   }
 
   for (auto [i, v] : llvm::enumerate(operands)) {
@@ -1318,23 +1347,14 @@ void PtrAnalysis::rewriteConditionOp(
       operands.push_back(state.scalar);
     }
     for (auto s : state.offsets) {
-      if (auto sIntAttr = getIntAttr(s)) {
-        assert(sIntAttr.value() == 0 && "attribute offsets should be zeroes");
-        auto constOp =
-            rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexAttr(0));
-        operands.push_back(constOp.getResult());
-      } else {
-        operands.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), cast<Value>(s)));
-      }
+      operands.push_back(pushPtrOperand(rewriter, loc, s));
     }
 
     for (auto s : state.strides) {
       assert(!getIntAttr(s) &&
              "PtrState strides for condition within while loop not expected "
              "to be attribute.");
-      operands.push_back(rewriter.create<arith::IndexCastOp>(
-          loc, rewriter.getIndexType(), cast<Value>(s)));
+      operands.push_back(pushPtrOperand(rewriter, loc, s));
     }
   }
 
@@ -1372,9 +1392,17 @@ LogicalResult PtrAnalysis::rewriteWhileOp(
                    !tType.getElementType().isInteger(1)) ||
                   isa<triton::PointerType>(tType.getElementType()))) {
       llvm::DenseMap<Value, bool> valueFromLoads;
-      if (!isPtrFromLoad(beforeArgs[i], valueFromLoads)) {
+      auto conditionOp =
+          cast<scf::ConditionOp>(op.getBefore().front().getTerminator());
+      auto yieldOp = cast<scf::YieldOp>(op.getAfter().front().getTerminator());
+      Value conditionValue = conditionOp.getArgs()[i];
+      Value yieldValue = yieldOp.getOperands()[i];
+      if (!isPtrFromLoad(beforeArgs[i], valueFromLoads) &&
+          canAnalyzePtrValue(arg) && canAnalyzePtrValue(conditionValue) &&
+          canAnalyzePtrValue(yieldValue)) {
         PtrState state;
-        visitOperand(rewriter, loc, arg, state, knownPtrs);
+        if (!visitOperand(rewriter, loc, arg, state, knownPtrs))
+          continue;
         initArgIndexState.push_back(std::make_pair(i, state));
       }
     }
@@ -1405,28 +1433,12 @@ LogicalResult PtrAnalysis::rewriteWhileOp(
     if (state.scalar)
       newInitArgs.push_back(state.scalar);
     for (auto [j, s] : llvm::enumerate(state.offsets)) {
-      auto sIntAttr = getIntAttr(s);
-      if (sIntAttr) {
-        auto constOp = rewriter.create<arith::ConstantOp>(
-            loc, rewriter.getIndexAttr(sIntAttr.value()));
-        newInitArgs.push_back(constOp.getResult());
-        state.offsets[j] = constOp.getResult();
-      } else {
-        newInitArgs.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), cast<Value>(s)));
-      }
+      newInitArgs.push_back(pushPtrOperand(rewriter, loc, s));
+      state.offsets[j] = newInitArgs.back();
     }
     for (auto [j, s] : llvm::enumerate(state.strides)) {
-      auto sIntAttr = getIntAttr(s);
-      if (sIntAttr) {
-        auto constOp = rewriter.create<arith::ConstantOp>(
-            loc, rewriter.getIndexAttr(sIntAttr.value()));
-        newInitArgs.push_back(constOp.getResult());
-        state.strides[j] = constOp.getResult();
-      } else {
-        newInitArgs.push_back(rewriter.create<arith::IndexCastOp>(
-            loc, rewriter.getIndexType(), cast<Value>(s)));
-      }
+      newInitArgs.push_back(pushPtrOperand(rewriter, loc, s));
+      state.strides[j] = newInitArgs.back();
     }
   }
 
@@ -1546,10 +1558,16 @@ LogicalResult PtrAnalysis::rewriteWhileOp(
            "expect to remap all new before block args");
   }
 
+  llvm::SmallVector<int> ptrSlotIndices;
+  for (auto &[i, state] : initArgIndexState) {
+    (void)state;
+    ptrSlotIndices.push_back(i);
+  }
+
   {
     auto condOp =
         cast<scf::ConditionOp>(newOp.getBefore().front().getTerminator());
-    rewriteConditionOp(rewriter, condOp, knownPtrs, knownMasks);
+    rewriteConditionOp(rewriter, condOp, ptrSlotIndices, knownPtrs, knownMasks);
   }
 
   {
@@ -1599,7 +1617,7 @@ LogicalResult PtrAnalysis::rewriteWhileOp(
     LLVM_DEBUG(llvm::dbgs() << "newOp getAfterArguments size: "
                             << newOp.getAfterArguments().size() << "\n");
     auto yieldOp = cast<scf::YieldOp>(newOp.getAfter().front().getTerminator());
-    rewriteYieldOp(rewriter, yieldOp, knownPtrs, knownMasks);
+    rewriteYieldOp(rewriter, yieldOp, ptrSlotIndices, knownPtrs, knownMasks);
   }
 
   LLVM_DEBUG(llvm::dbgs() << "rewriteWhileOp getNumResults size: "
@@ -1886,6 +1904,17 @@ bool isPtrCandidate(Value v, const gcu::AxisInfoEx *axisInfoEx,
     } else {
       strideHint.push_back(stride);
     }
+  }
+
+  int broadcastDimCount = 0;
+  for (int i = 0; i < rank; ++i) {
+    if (strideHint[i] == 0 && tshape[i] > 1)
+      ++broadcastDimCount;
+  }
+  if (broadcastDimCount > 1) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "bypass load/store op with more than one broadcast dim: \n");
+    return false;
   }
 
   if (std::count(strideHint.begin(), strideHint.end(), 1) > 1) {

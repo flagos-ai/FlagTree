@@ -32,6 +32,8 @@
 // todo_AT gpu moduleop
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Support/LogicalResult.h"
@@ -228,6 +230,89 @@ SmallVector<int32_t> GetOrderByHint(SmallVector<int32_t> &candidateHints) {
   return transOrder;
 }
 
+/// Called from the `rank == 1` small-load branch of the elementwise-fusion
+/// bypass, which assumes the value stays in registers.  When the only consumers
+/// are stores into a contiguous SMEM view the load is really a GMEM -> SMEM
+/// transfer - the double-buffered stage of a TLE-Struct/TLE-Raw SWP pipeline,
+/// or a warp-specialized producer feeding a consumer through pipe + async - and
+/// must stay on the DTE path so FuseLoadLocalStorePattern folds it into one
+/// `copy_global_to_local`.
+///
+/// Conservative: a mixed use, a non-global source, or a non-contiguous SMEM
+/// destination returns false.  Such a view cannot be a DTE destination; the
+/// local-mem fusion skips it and GCUStoreOpLowering diagnoses it.
+static bool hasOnlySharedStoreUsers(triton::LoadOp op) {
+  constexpr unsigned kGlobalAS = 1;
+  if (op->use_empty())
+    return false;
+  auto ptrTy = dyn_cast<RankedTensorType>(op.getPtr().getType());
+  if (!ptrTy)
+    return false;
+  auto tPtrTy = dyn_cast<triton::PointerType>(ptrTy.getElementType());
+  if (!tPtrTy || tPtrTy.getAddressSpace() != kGlobalAS)
+    return false;
+  return llvm::all_of(op->getUsers(), [](Operation *user) {
+    auto localStore = dyn_cast<triton::gpu::LocalStoreOp>(user);
+    return localStore && isContiguousMemDescView(localStore.getDst());
+  });
+}
+
+/// True when the load's mask start is exposed through the load offsets - i.e.
+/// the valid region begins at a non-zero tile offset and ConfigGcuLoad has to
+/// place the loaded block there instead of at tile offset 0.
+///
+/// The check mirrors ConfigGcuLoad's shared-destination lowering: the block is
+/// placed by filling the tile with the default value and then slice-deslicing
+/// the valid block into the destination columns, which needs the destination
+/// offsets to be a static permutation of the tile dims. A dynamic stride, a
+/// transposed order, a broadcast dim or an appended stride / reshape dim is
+/// handled by other DTE ops that cannot carry destination offsets, so such a
+/// copy must stay on the elementwise path (the head lanes then come from the
+/// load's `other`).
+static bool canPlaceBlockAtDestOffset(SmallVector<int32_t> &hint,
+                                      const gcu::PtrInfo &ptrInfo) {
+  if (!IsStaticStride(hint))
+    return false;
+  // ConfigGcuLoad reads the hint as an order permutation. The DMA pass stores
+  // it in 1-based form for a reshape, and ConfigGcuLoad then appends another
+  // dim; neither shape can carry destination offsets.
+  if (IsStaticReshape(hint, ptrInfo.shape))
+    return false;
+  auto order = GetOrderByHint(hint);
+  auto rank = static_cast<int64_t>(order.size());
+  if (rank == 0 || static_cast<int64_t>(ptrInfo.shape.size()) != rank)
+    return false;
+  // Identity order: any other permutation is a transpose, which the shared
+  // path lowers with slice_transpose_start (no destination offsets).
+  for (int64_t i = 0; i < rank; ++i)
+    if (order[i] != i)
+      return false;
+  // A broadcast dim other than dim 0 is written with slice_broadcast_start
+  // (no destination offsets). A broadcast confined to dim 0 is not diverted
+  // by ConfigGcuLoad (bStaticBroadcast only looks at non-zero dims), so it
+  // reaches the destination-offset branch like a dense block and is not a
+  // reason to decline: a real (1, N) -> (M, N) broadcast is already split
+  // into a size-1 load plus tt.broadcast before the copy can be fused, so
+  // only the degenerate extent-1 dim remains here.
+  for (auto dim : ptrInfo.broadcastDims)
+    if (dim != 0)
+      return false;
+  // ConfigGcuLoad appends a synthetic innermost dim when no dim has unit
+  // stride and the innermost stride is a constant > 1. The copy offsets then
+  // no longer match the copy rank, so the destination-offset branch is
+  // skipped and the block would land at tile offset 0.
+  if (rank > 1 && rank < 4) {
+    bool hasUnitStride = llvm::any_of(ptrInfo.strides, [](Value stride) {
+      auto cst = getConstantIntValue(stride);
+      return cst && *cst == 1;
+    });
+    auto innerStride = getConstantIntValue(ptrInfo.strides[rank - 1]);
+    if (!hasUnitStride && innerStride && *innerStride > 1)
+      return false;
+  }
+  return true;
+}
+
 struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
   llvm::SmallDenseMap<Value, gcu::PtrState> &knownPtrs;
   llvm::SmallDenseMap<Value, gcu::MaskState> &knownMasks;
@@ -248,7 +333,14 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
         candidateHints(candidateHints), bStaticCondition(bStaticCondition) {}
   LogicalResult rewriteTensorLoad(triton::LoadOp op,
                                   PatternRewriter &rewriter) const {
+    if (op->hasAttr(gcu::kSkipDte))
+      return failure();
     auto loc = op.getLoc();
+    // A load whose only consumers store into a contiguous SMEM view is a
+    // GMEM -> SMEM transfer that has to stay on the DTE path (see
+    // hasOnlySharedStoreUsers). Such a transfer is also the one a head mask
+    // can misplace below.
+    const bool isSharedStoreUser = hasOnlySharedStoreUsers(op);
     auto rankedTensorTy = dyn_cast<RankedTensorType>(op.getPtr().getType());
     if (rankedTensorTy && rankedTensorTy.getRank() == 1) {
       auto elementTy =
@@ -259,13 +351,30 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
       if (elementTy.isIntOrFloat() && !elementTy.isInteger(64) &&
           mlir::triton::gcu::getBpe(elementTy) * elementsPerThread[0] <=
               smallSizeLoadLimit) {
-        LLVM_DEBUG(llvm::dbgs() << "bypass load op due to elementwise fusion: "
-                                << op << "\n");
-        return failure();
+        if (isSharedStoreUser) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "keep load op on the DTE path: every user stores into "
+                        "a contiguous SMEM view: "
+                     << op << "\n");
+        } else {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "bypass load op due to elementwise fusion: " << op
+                     << "\n");
+          return failure();
+        }
       }
     }
     // 2. Analyze the mask operand to determine at runtime the size of the data
     // we are moving.
+    // When a `>=`-style mask has a CONSTANT non-zero within-tile start (the
+    // valid region begins at starts[d] inside the result tile, e.g. an
+    // inductor slice_scatter reconstruction) the start is still folded into
+    // the base (so the DMA reads the valid memory block) AND exposed through
+    // the load offsets so ConfigGcuLoad can write the loaded block at the
+    // matching tile columns instead of column 0. A dynamic start cannot be
+    // told apart from an effectively-zero one (e.g. max(0, 0 - base)), so it
+    // is not exposed here and keeps the pre-existing DMA behavior.
+    bool exposeMaskStartOffset = false;
     gcu::MaskState mstate;
     if (op.getMask()) {
       LLVM_DEBUG(llvm::dbgs() << "=== analyze load mask state ===\n");
@@ -274,6 +383,20 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
         bStaticCondition = false;
       assert(!mstate.isEmpty() &&
              "expect valid mask state after analysis succeed\n");
+      for (const auto &start : mstate.starts) {
+        auto startAttr = gcu::getIntAttr(start);
+        if (startAttr && startAttr.value() != 0) {
+          exposeMaskStartOffset = true;
+          break;
+        }
+      }
+      if (exposeMaskStartOffset) {
+        if (auto sharedTy = dyn_cast<RankedTensorType>(op.getType())) {
+          if (mlir::isa<mlir::triton::gpu::SharedEncodingTrait>(
+                  sharedTy.getEncoding()))
+            exposeMaskStartOffset = false;
+        }
+      }
     }
     if (!bStaticCondition)
       return success();
@@ -291,11 +414,20 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
     Value defaultValue;
     auto tType = dyn_cast<RankedTensorType>(op.getType());
     if (op.getOther()) {
+      // The DTE pad operand is a single scalar value, so only a uniform `other`
+      // (a scalar, a splat, or a select of two of them) can be used here. Any
+      // other tensor `other` (e.g. `tl.arange`) is materialised lane by lane
+      // by the elementwise path, which handles the tensor fill natively.
+      // `getScalarValue` reports an error and returns an engaged-but-null
+      // optional for such a value - turning that into a default would silently
+      // pad every masked lane with zero - so decline the conversion before it.
+      if (!gcu::canExtractScalar(op.getOther())) {
+        op->setAttr(gcu::kSkipDte, BoolAttr::get(op->getContext(), true));
+        return success();
+      }
       auto scalarValue = gcu::getScalarValue(rewriter, loc, op.getOther());
-      assert(scalarValue.has_value() &&
-             "other value used in masked load produced by "
-             "unsupported instruction");
-      defaultValue = scalarValue.value();
+      assert(scalarValue && *scalarValue && "other must fold to a scalar");
+      defaultValue = *scalarValue;
     } else {
       defaultValue =
           gcu::createConstantZero(rewriter, loc, tType.getElementType());
@@ -303,11 +435,14 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
 
     auto rank = pstate.getRank();
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-    // Loads must keep the DMA offsets at zero (the mask start is a within-tile
-    // placement, not a memory offset); stores expose it as the source slice
-    // offset so the value tile is read from the valid region.
-    auto ptrInfo = pstate.getPtrInfo(rewriter, loc, mstate,
-                                     /*exposeMaskStartOffset=*/false);
+    // Loads fold the mask start into the base (the DMA then reads the valid
+    // memory block); when the mask has a non-zero constant start the start is
+    // ALSO exposed through the offsets so ConfigGcuLoad can place the block at
+    // the right result-tile columns instead of column 0.
+    auto ptrInfo =
+        pstate.getPtrInfo(rewriter, loc, mstate,
+                          /*foldMaskStartIntoBase=*/true,
+                          /*exposeMaskStartOffset=*/exposeMaskStartOffset);
     bool bNeedBroadCast = false;
     auto resultShape = tType.getShape();
     auto elemType = tType.getElementType();
@@ -321,6 +456,36 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
     assert(candidateHints.find(op.getOperation()) != candidateHints.end() &&
            "get order failed");
     auto opHint = candidateHints[op.getOperation()];
+    // A masked load whose valid block starts inside the tile exposes the mask
+    // start through its offsets. The fused `copy_global_to_local` carries them
+    // to ConfigGcuLoad as DESTINATION tile offsets, which only the static
+    // identity-order, non-broadcast shared path can honour (see
+    // canPlaceBlockAtDestOffset). For the other shapes the block would land at
+    // tile offset 0 - i.e. in the masked-out lanes - so keep the copy on the
+    // elementwise path, which materialises the head lanes from `other`.
+    if (exposeMaskStartOffset && isSharedStoreUser &&
+        !canPlaceBlockAtDestOffset(opHint, ptrInfo)) {
+      LLVM_DEBUG(llvm::dbgs()
+                 << "bypass a shared-memory copy that cannot place its block "
+                    "at the mask start: "
+                 << op << "\n");
+      op->setAttr(gcu::kSkipDte, BoolAttr::get(op->getContext(), true));
+      return success();
+    }
+    // Both the broadcast mapping and the dst-offset marker describe how the
+    // operands of the load are to be read, so they are handed to the builder:
+    // the fused copy_global_to_local inherits them and ConfigGcuLoad must not
+    // read the offsets as source offsets (the mask start is already folded into
+    // the base pointer). This lambda creates the triton_gcu.load shared by the
+    // four branches below; only the result type and the per-branch shape,
+    // stride and order operands differ.
+    auto createGcuLoad = [&](Type resultTy, ValueRange shapes,
+                             ValueRange strides, ArrayRef<int32_t> orderHint) {
+      return rewriter.create<mlir::triton::gcu::LoadOp>(
+          loc, resultTy, ptrInfo.base, shapes, strides, ptrInfo.offsets,
+          defaultValue, orderHint, ptrInfo.getBroadcastDimsArray(rank),
+          /*offsets_are_dst=*/exposeMaskStartOffset);
+    };
     // dynamic stride process
     if (!IsStaticStride(opHint)) {
       LLVM_DEBUG(llvm::dbgs() << "=== dynamic stride process ===\n");
@@ -354,18 +519,16 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
         }
         auto sliceType =
             RankedTensorType::get(sliceShape, elemType, tType.getEncoding());
-        auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
-            loc, sliceType, ptrInfo.base, updateShapes, updateStrides,
-            ptrInfo.offsets, defaultValue, dynamicOpHint);
+        auto load = createGcuLoad(sliceType, updateShapes, updateStrides,
+                                  dynamicOpHint);
         copyTritonLoadAttrsToGcuLoad(op, load);
         auto broadcastOp =
             rewriter.create<triton::BroadcastOp>(loc, op.getType(), load);
         rewriter.replaceOp(op, broadcastOp);
         return success();
       } else {
-        auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
-            loc, tType, ptrInfo.base, updateShapes, updateStrides,
-            ptrInfo.offsets, defaultValue, dynamicOpHint);
+        auto load =
+            createGcuLoad(tType, updateShapes, updateStrides, dynamicOpHint);
         copyTritonLoadAttrsToGcuLoad(op, load);
         rewriter.replaceOp(op, load);
         return success();
@@ -470,18 +633,16 @@ struct ConvertLoadOpToDma : public OpRewritePattern<triton::LoadOp> {
       if (bNeedBroadCast) {
         auto loadType = RankedTensorType::get(updateResultShape, elemType,
                                               tType.getEncoding());
-        auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
-            loc, loadType, ptrInfo.base, updateShapes, updateOrder,
-            ptrInfo.offsets, defaultValue, staticDefaultOrder);
+        auto load = createGcuLoad(loadType, updateShapes, updateOrder,
+                                  staticDefaultOrder);
         copyTritonLoadAttrsToGcuLoad(op, load);
         auto broadcastOp =
             rewriter.create<triton::BroadcastOp>(loc, op.getType(), load);
         rewriter.replaceOp(op, broadcastOp);
         return success();
       } else {
-        auto load = rewriter.create<mlir::triton::gcu::LoadOp>(
-            loc, op.getType(), ptrInfo.base, updateShapes, updateOrder,
-            ptrInfo.offsets, defaultValue, staticDefaultOrder);
+        auto load =
+            createGcuLoad(tType, updateShapes, updateOrder, staticDefaultOrder);
         copyTritonLoadAttrsToGcuLoad(op, load);
         rewriter.replaceOp(op, load);
         return success();
@@ -561,7 +722,11 @@ struct ConvertStoreOpToDma : public OpRewritePattern<triton::StoreOp> {
       return success();
     auto rank = pstate.getRank();
     auto one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+    // Stores do NOT fold the mask start into the base: the start is exposed
+    // through the offsets operand (the value tile keeps its tile origin and
+    // ConfigGcuStore derives the per-warp source slice/destination offsets).
     auto ptrInfo = pstate.getPtrInfo(rewriter, loc, mstate,
+                                     /*foldMaskStartIntoBase=*/false,
                                      /*exposeMaskStartOffset=*/true);
 
     SmallVector<Value> vSliceShape;
@@ -711,6 +876,7 @@ void ConvertTritonLoadStoreToDmaPass::runOnOperation() {
     if (applyPatternsGreedily(op, std::move(postPatterns), rewriteConfig)
             .failed())
       signalPassFailure();
+
     gcu::PtrAnalysis::postProcessEntry(moduleOp, global_condition,
                                        bStaticContion, support_stride0);
   }

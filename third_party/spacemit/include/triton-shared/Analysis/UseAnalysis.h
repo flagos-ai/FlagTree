@@ -87,6 +87,12 @@ public:
 
   void visitCallOperand(OpOperand &operand) override { return; }
 
+  // spine-triton has a visitNonControlFlowArguments override here (old-LLVM
+  // backward hook, pure virtual). FlagTree's LLVM 22 removed the hook from
+  // AbstractSparseBackwardDataFlowAnalysis and handles non-forwarded region
+  // args in the framework; UseInfo's initial state (Undefined) matches the
+  // exit state the upstream override set, so no override is needed.
+
   void setToExitState(UseInfo *lattice) override {
     lattice->type = UseType::Undefined;
   }

@@ -7,6 +7,8 @@ import pytest
 import triton.language as tl
 import triton.experimental.tle.language as tle
 from triton.experimental.tle.language.gpu.mthreads import (
+    MTHREADS_GEMM_COMPILER_OPTIONS_VERSION,
+    MTHREADS_TLE_CONSUMER_SYNC_VERSION,
     MusaDotOperandEncoding,
     MusaSqmmaEncoding,
     MusaWmmaEncoding,
@@ -45,7 +47,15 @@ def test_mthreads_layout_is_reexported_from_backend_namespace():
     assert not hasattr(tle.gpu, "MusaWmmaEncoding")
     assert not hasattr(tle.gpu, "MusaSqmmaEncoding")
     assert not hasattr(tle.gpu, "MusaDotOperandEncoding")
-    assert {"MusaWmmaEncoding", "MusaSqmmaEncoding", "MusaDotOperandEncoding"} <= set(tle.gpu.mthreads.__all__)
+    assert {
+        "MusaWmmaEncoding",
+        "MusaSqmmaEncoding",
+        "MusaDotOperandEncoding",
+        "MTHREADS_GEMM_COMPILER_OPTIONS_VERSION",
+        "MTHREADS_TLE_CONSUMER_SYNC_VERSION",
+    } <= set(tle.gpu.mthreads.__all__)
+    assert MTHREADS_GEMM_COMPILER_OPTIONS_VERSION == 2
+    assert MTHREADS_TLE_CONSUMER_SYNC_VERSION == 1
 
 
 def test_generic_gpu_import_does_not_reexport_mthreads_types():

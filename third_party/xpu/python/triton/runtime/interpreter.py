@@ -438,7 +438,7 @@ class InterpreterBuilder:
 
     # memory ops
     # NOTE: flagtree_hints is the FlagTree unified hint parameter that replaces
-    # the internal triton's (offset_state, sync_mode) pair.  In the real
+    # the sync source's (offset_state, sync_mode) pair.  In the real
     # compilation path (ir.cc) it is converted to an mlir::StringAttr on the
     # LoadOp/StoreOp.  In interpreter mode it is unused and ignored.
     def create_load(self, ptr, _0, _1, is_volatile, flagtree_hints=None, offset_state=None, sync_mode=None):

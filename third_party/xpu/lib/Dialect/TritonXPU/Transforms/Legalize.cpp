@@ -99,7 +99,43 @@ struct TritonXPULegalizePass
         }
       });
     }
-    return;
+
+    if (!isFirst)
+      return;
+
+    int64_t maxNumElements = 0;
+    triton::xpu::ClusterLayoutAttr maxEncoding;
+    auto updateMax2DTensorEncoding = [&](Type type) {
+      auto tensorType = mlir::dyn_cast<RankedTensorType>(type);
+      if (!tensorType || tensorType.getShape().size() != 2)
+        return;
+      auto globalEncoding = mlir::dyn_cast<triton::xpu::ClusterLayoutAttr>(
+          tensorType.getEncoding());
+      if (!globalEncoding)
+        return;
+      auto shape = tensorType.getShape();
+      if (shape[0] <= 0 || shape[1] <= 0)
+        return;
+      int64_t numElements = shape[0] * shape[1];
+      if (numElements <= maxNumElements)
+        return;
+      maxNumElements = numElements;
+      maxEncoding = globalEncoding;
+    };
+
+    for (auto op : opTree) {
+      op->walk([&](Operation *nested) {
+        if (isa<triton::xpu::ConvertLayoutOp, triton::ExpandDimsOp,
+                triton::xpu::BroadcastOp>(nested))
+          return;
+        for (auto result : nested->getResults())
+          updateMax2DTensorEncoding(result.getType());
+        for (auto operand : nested->getOperands())
+          updateMax2DTensorEncoding(operand.getType());
+      });
+    }
+    if (maxEncoding)
+      _getGroupInfo(maxEncoding);
   }
 
   size_t getSizePerCluster(Type &type, bool unrollOpt) {
@@ -135,7 +171,9 @@ struct TritonXPULegalizePass
     size_t rank = shape.size();
     llvm::SmallVector<int64_t> slicedShape(rank, 1u);
     // think about col mask, slice multi-dim tensor to 1-dim tensor
-    assert(rank <= 2 && "only 1-dim or 2-dim tensor is supported");
+    // The walk below is rank-agnostic: it accumulates the trailing dims until
+    // their product exceeds the per-cluster space and slices that one dim.
+    assert(rank >= 1 && "tensor must have at least one dimension");
 
     if (!isReduceMultiGroup) // no opt
       spaceSize = std::min(static_cast<int64_t>(spaceSize), shape[rank - 1]);
@@ -191,13 +229,12 @@ struct TritonXPULegalizePass
         size_t spaceSize = getSizePerCluster(types[i], unrollOpt);
         auto tensorShape = tensorType.getShape();
 
-        if (tensorShape.size() > 2) {
-          llvm_unreachable("3D Shape Unsupported.");
-        } else if (tensorShape.size() == 2 &&
-                   tensorShape[1] > coreNum * bufferSize) {
-          LLVM_DEBUG(llvm::dbgs() << "2D Shape[-1] = " << tensorShape[1]
-                                  << "); coreNum * bufferSize = "
-                                  << coreNum * bufferSize << "\n");
+        if (tensorShape.size() >= 2 &&
+            tensorShape[tensorShape.size() - 1] > coreNum * bufferSize) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "2D Shape[-1] = " << tensorShape[tensorShape.size() - 1]
+                     << "); coreNum * bufferSize = " << coreNum * bufferSize
+                     << "\n");
           llvm_unreachable("2D Shape[-1] <= core_num * buffer_size Limit. "
                            "Please Adjust COL_BLOCK_SIZE");
         }
@@ -246,9 +283,19 @@ struct TritonXPULegalizePass
           slicedShape[i] = std::max(tensorShape[i] / iterCount[i], size_t(1));
         }
       } else if (tensorShape.size() < iterCount.size()) {
-        assert(tensorShape.size() == 1 && iterCount.size() == 2);
-        size_t count = isInner ? iterCount[1] : iterCount[0];
-        slicedShape[0] = std::max(tensorShape[0] / count, size_t(1));
+        // The tensor has fewer dims than the tree's iteration rank, so the
+        // per-dim division above has no counterpart for its trailing dims.
+        // 1-D: keep the historical convention -- an inner (reduce-axis) value
+        // is a column vector and follows the last iteration dim, everything
+        // else follows the first. 2-D (only reachable in a rank>=3 tree):
+        // left-align, i.e. dim i follows iteration dim i.
+        if (tensorShape.size() == 1) {
+          size_t count = isInner ? iterCount.back() : iterCount.front();
+          slicedShape[0] = std::max(tensorShape[0] / count, size_t(1));
+        } else {
+          for (size_t i = 0; i < tensorShape.size(); ++i)
+            slicedShape[i] = std::max(tensorShape[i] / iterCount[i], size_t(1));
+        }
       } else {
         llvm_unreachable(
             "tensorShape.size() is not more than iterCount.size()");
@@ -757,12 +804,13 @@ struct TritonXPULegalizePass
       llvm::errs() << "{\n";
       llvm::errs() << "Operation,Chain Info\n";
 
-      // 遍历 mod 中的所有操作
+      // Walk all operations in the module
       mod.walk([&](mlir::Operation *op) {
         if (dyn_cast<triton::FuncOp>(op) || dyn_cast<mlir::ModuleOp>(op))
           return;
 
-        // 获取操作的字符串表示，记得处理逗号和换行符
+        // Get the string form of the op; commas and newlines are sanitized
+        // below
         std::string opStr;
         llvm::raw_string_ostream os(opStr);
         if (auto forOp = dyn_cast<scf::ForOp>(op)) {
@@ -784,14 +832,14 @@ struct TritonXPULegalizePass
           op->print(os);
         }
 
-        // 替换逗号和换行符
+        // Replace commas and newlines for the one-line dump
         std::replace(opStr.begin(), opStr.end(), ',', ';');
         std::replace(opStr.begin(), opStr.end(), '\n', ' ');
 
-        // 获取 InnerChain 信息
+        // Get the InnerChain info
         std::string chainInfo = getInnerChainInfo(op);
 
-        // 输出一行
+        // Emit one line
         llvm::errs() << "\t" << opStr << "," << chainInfo << "\n";
       });
       llvm::errs() << "}\n";
@@ -856,6 +904,199 @@ struct TritonXPULegalizePass
 
         auto setSlicedResTy = [&](Operation *op, bool isInner = false,
                                   bool needNewEncoding = false) {
+          // W5B_APPLIED(1): TransOp result must be permute(sliced src); the
+          // generic per-dim division below is wrong when the swapped dims have
+          // different slice factors (e.g. 4x4 sliced to 1x4 must yield 4x1).
+          if (auto transOp = llvm::dyn_cast<triton::TransOp>(op)) {
+            auto srcType =
+                mlir::dyn_cast<RankedTensorType>(transOp.getSrc().getType());
+            auto resType =
+                mlir::dyn_cast<RankedTensorType>(transOp.getResult().getType());
+            if (srcType && resType) {
+              auto srcShape = srcType.getShape();
+              llvm::SmallVector<int64_t> newShape;
+              newShape.reserve(srcShape.size());
+              for (int32_t d : transOp.getOrder())
+                newShape.push_back(srcShape[d]);
+              transOp.getResult().setType(RankedTensorType::get(
+                  newShape, resType.getElementType(), resType.getEncoding()));
+            }
+            return;
+          }
+          // W5C_APPLIED: ConvertLayoutOp must keep operand and result shape
+          // equal (SameOperandsAndResultShape trait). Derive the result from
+          // the current (possibly already sliced) operand instead of per-dim
+          // division.
+          if (auto cvtOp = llvm::dyn_cast<triton::xpu::ConvertLayoutOp>(op)) {
+            auto srcTy =
+                mlir::dyn_cast<RankedTensorType>(cvtOp.getSrc().getType());
+            auto resultTy =
+                mlir::dyn_cast<RankedTensorType>(cvtOp.getResult().getType());
+            if (srcTy && resultTy && srcTy.getShape() != resultTy.getShape()) {
+              cvtOp.getResult().setType(RankedTensorType::get(
+                  srcTy.getShape(), resultTy.getElementType(),
+                  resultTy.getEncoding()));
+            }
+            return;
+          }
+          // W5D_APPLIED(1): arith.select requires {true,false,result} same
+          // type. After an upstream trans the per-dim division no longer
+          // matches; derive the result from the (already sliced) true value and
+          // re-materialize a mismatched dense-constant false value at the same
+          // shape.
+          if (auto selOp = llvm::dyn_cast<mlir::arith::SelectOp>(op)) {
+            // W5I_APPLIED: shape source = first NON-CONSTANT tensor among
+            // true/false/condition (constants are re-materialized from it
+            // below); fall back to any tensor when all are constants.
+            auto selIsConst = [](Value v) {
+              return v.getDefiningOp<mlir::arith::ConstantOp>() != nullptr;
+            };
+            RankedTensorType trueTy;
+            for (Value v : {selOp.getTrueValue(), selOp.getFalseValue(),
+                            selOp.getCondition()}) {
+              if (auto t = llvm::dyn_cast<RankedTensorType>(v.getType()))
+                if (!selIsConst(v)) {
+                  trueTy = t;
+                  break;
+                }
+            }
+            if (!trueTy) {
+              for (Value v : {selOp.getTrueValue(), selOp.getFalseValue(),
+                              selOp.getCondition()}) {
+                if (auto t = llvm::dyn_cast<RankedTensorType>(v.getType())) {
+                  trueTy = t;
+                  break;
+                }
+              }
+            }
+            auto resTy = llvm::dyn_cast<RankedTensorType>(selOp.getType());
+            if (trueTy && resTy && trueTy.getRank() == resTy.getRank()) {
+              selOp.getResult().setType(RankedTensorType::get(
+                  trueTy.getShape(), resTy.getElementType(),
+                  resTy.getEncoding()));
+              // W5E_APPLIED: the condition must be signless i1 or match the
+              // value shape. A mask shared by selects on both sides of a trans
+              // keeps the pre-trans shape; insert a transposed view for this
+              // use only.
+              if (auto condTy = llvm::dyn_cast<RankedTensorType>(
+                      selOp.getCondition().getType())) {
+                if (condTy.getRank() == 2 && trueTy.getRank() == 2 &&
+                    condTy.getShape() != trueTy.getShape() &&
+                    condTy.getShape()[0] == trueTy.getShape()[1] &&
+                    condTy.getShape()[1] == trueTy.getShape()[0]) {
+                  llvm::SmallVector<int32_t, 2> trOrder = {1, 0};
+                  mlir::OpBuilder tb(selOp);
+                  auto newTy = RankedTensorType::get(trueTy.getShape(),
+                                                     condTy.getElementType(),
+                                                     condTy.getEncoding());
+                  auto newTrans = tb.create<triton::TransOp>(
+                      selOp.getLoc(), newTy, selOp.getCondition(),
+                      tb.getDenseI32ArrayAttr(trOrder));
+                  selOp->setOperand(0, newTrans.getResult());
+                }
+              }
+              for (unsigned selIdx : {1u, 2u}) {
+                auto cstOp = selOp->getOperand(selIdx)
+                                 .getDefiningOp<mlir::arith::ConstantOp>();
+                if (!cstOp)
+                  continue;
+                auto cstTy = llvm::dyn_cast<RankedTensorType>(cstOp.getType());
+                if (cstTy && cstTy.getRank() == trueTy.getRank() &&
+                    cstTy.getShape() != trueTy.getShape()) {
+                  if (auto attr = llvm::dyn_cast<mlir::DenseElementsAttr>(
+                          cstOp.getValue())) {
+                    auto newTy = RankedTensorType::get(trueTy.getShape(),
+                                                       cstTy.getElementType(),
+                                                       cstTy.getEncoding());
+                    // W5Q_APPLIED: never reuse the raw buffer blindly. A splat
+                    // is position-independent and can be rebuilt at any shape;
+                    // a rank-2 shape that is the mutual transpose of the target
+                    // is rebuilt with permuted data. Anything else is left
+                    // untouched so the verifier reports the mismatch.
+                    mlir::DenseElementsAttr newValue;
+                    if (attr.isSplat()) {
+                      newValue = mlir::DenseElementsAttr::get(
+                          newTy, attr.getSplatValue<mlir::Attribute>());
+                    } else if (cstTy.getRank() == 2 && newTy.getRank() == 2 &&
+                               cstTy.getShape()[0] == newTy.getShape()[1] &&
+                               cstTy.getShape()[1] == newTy.getShape()[0]) {
+                      llvm::SmallVector<mlir::Attribute> srcVals;
+                      for (auto v : attr.getValues<mlir::Attribute>())
+                        srcVals.push_back(v);
+                      int64_t rows = cstTy.getShape()[0];
+                      int64_t cols = cstTy.getShape()[1];
+                      llvm::SmallVector<mlir::Attribute> permuted;
+                      permuted.reserve(srcVals.size());
+                      for (int64_t c = 0; c < cols; ++c)
+                        for (int64_t r = 0; r < rows; ++r)
+                          permuted.push_back(srcVals[r * cols + c]);
+                      newValue = mlir::DenseElementsAttr::get(newTy, permuted);
+                    } else {
+                      continue;
+                    }
+                    mlir::OpBuilder b(selOp);
+                    auto newCstOp = b.create<mlir::arith::ConstantOp>(
+                        cstOp.getLoc(), newTy, newValue);
+                    selOp->setOperand(selIdx, newCstOp.getResult());
+                  }
+                }
+              }
+              return;
+            }
+          }
+          // W5G_APPLIED: elementwise ops must keep operand and result shapes
+          // identical after slicing. A data-driven chain (trans / reduce) can
+          // carry a shape that per-dim division of the result alone does not
+          // reproduce (e.g. absf over a sliced reduce). In that case adopt the
+          // largest tensor operand's (already sliced) shape.
+          // W5N_APPLIED: arith comparison ops carry SameTypeOperands but may
+          // lack the Elementwise trait; include them so a sliced operand
+          // propagates.
+          bool w5nIsElem =
+              op->hasTrait<mlir::OpTrait::Elementwise>() ||
+              llvm::isa<mlir::arith::CmpIOp, mlir::arith::CmpFOp>(op);
+          if (w5nIsElem && !op->getOperands().empty()) {
+            // W5K_APPLIED: pick the SMALLEST (already-sliced) tensor operand.
+            // When one operand is sliced and another still carries the
+            // pre-slice shape, the sliced one holds the data-driven truth.
+            Value best;
+            int64_t bestElems = -1;
+            for (auto operand : op->getOperands()) {
+              if (auto pt =
+                      llvm::dyn_cast<RankedTensorType>(operand.getType())) {
+                int64_t e = 1;
+                for (auto d : pt.getShape())
+                  e *= d;
+                if (bestElems < 0 || e < bestElems) {
+                  bestElems = e;
+                  best = operand;
+                }
+              }
+            }
+            if (best) {
+              auto ot = llvm::cast<RankedTensorType>(best.getType());
+              bool mismatch = false;
+              for (auto res : op->getResults()) {
+                auto rt = llvm::dyn_cast<RankedTensorType>(res.getType());
+                if (rt && rt.getRank() == ot.getRank() &&
+                    rt.getShape() != ot.getShape())
+                  mismatch = true;
+              }
+              if (mismatch) {
+                for (auto res : op->getResults()) {
+                  if (auto rt =
+                          llvm::dyn_cast<RankedTensorType>(res.getType())) {
+                    if (rt.getRank() == ot.getRank() &&
+                        rt.getShape() != ot.getShape())
+                      res.setType(RankedTensorType::get(ot.getShape(),
+                                                        rt.getElementType(),
+                                                        rt.getEncoding()));
+                  }
+                }
+                return;
+              }
+            }
+          }
           for (auto [i, resTy] : llvm::enumerate(op->getResultTypes())) {
             // LLVM_DEBUG(llvm::dbgs() << "\nOrigin Type: " << resTy);
             auto slicedResTy =
@@ -863,6 +1104,101 @@ struct TritonXPULegalizePass
             // LLVM_DEBUG(llvm::dbgs() << "\nSlicedResType Type: " <<
             // slicedResTy);
             op->getResult(i).setType(slicedResTy);
+          }
+        };
+
+        auto reshapeConstOperandsToMatchSiblings = [&](Operation *targetOp,
+                                                       bool skipIfInTree) {
+          if (isa<mlir::scf::ForOp, mlir::scf::IfOp, mlir::scf::YieldOp,
+                  mlir::arith::SelectOp, triton::ScanOp, triton::ReduceOp,
+                  triton::xpu::ScanOp, triton::xpu::ReduceOp>(targetOp))
+            return; // W5D_APPLIED(2): SelectOp constants handled in
+                    // setSlicedResTy
+          for (unsigned operandIdx = 0; operandIdx < targetOp->getNumOperands();
+               ++operandIdx) {
+            auto constOp = targetOp->getOperand(operandIdx)
+                               .getDefiningOp<mlir::arith::ConstantOp>();
+            if (!constOp || (skipIfInTree && sortedOpTree.contains(constOp)))
+              continue;
+            auto constTy = dyn_cast<RankedTensorType>(constOp.getType());
+            auto attr = dyn_cast<mlir::DenseElementsAttr>(constOp.getValue());
+            if (!constTy || !attr)
+              continue;
+            RankedTensorType targetTy;
+            for (unsigned siblingIdx = 0;
+                 siblingIdx < targetOp->getNumOperands(); ++siblingIdx) {
+              if (siblingIdx == operandIdx)
+                continue;
+              auto siblingTy = dyn_cast<RankedTensorType>(
+                  targetOp->getOperand(siblingIdx).getType());
+              if (!siblingTy || siblingTy.getRank() != constTy.getRank() ||
+                  siblingTy.getShape() == constTy.getShape())
+                continue;
+              targetTy = RankedTensorType::get(siblingTy.getShape(),
+                                               constTy.getElementType(),
+                                               constTy.getEncoding());
+              break;
+            }
+            if (!targetTy)
+              continue;
+            auto newValue = DenseElementsAttr::getFromRawBuffer(
+                cast<ShapedType>(targetTy), attr.getRawData());
+            OpBuilder constBuilder(targetOp);
+            auto newConstOp = constBuilder.create<mlir::arith::ConstantOp>(
+                constOp.getLoc(), targetTy, newValue);
+            targetOp->setOperand(operandIdx, newConstOp);
+          }
+        };
+
+        auto reshapeConstYieldOperandsToMatchResults =
+            [&](mlir::scf::YieldOp yieldOp, TypeRange resultTypes) {
+              for (unsigned i = 0; i < yieldOp.getNumOperands(); ++i) {
+                auto constOp = yieldOp.getOperand(i)
+                                   .getDefiningOp<mlir::arith::ConstantOp>();
+                auto targetTy = i < resultTypes.size()
+                                    ? dyn_cast<RankedTensorType>(resultTypes[i])
+                                    : RankedTensorType();
+                auto constTy =
+                    constOp ? dyn_cast<RankedTensorType>(constOp.getType())
+                            : RankedTensorType();
+                auto attr =
+                    constOp
+                        ? dyn_cast<mlir::DenseElementsAttr>(constOp.getValue())
+                        : nullptr;
+                if (!constOp || !targetTy || !constTy || !attr ||
+                    targetTy.getShape() == constTy.getShape())
+                  continue;
+                auto newValue = DenseElementsAttr::getFromRawBuffer(
+                    cast<ShapedType>(targetTy), attr.getRawData());
+                OpBuilder constBuilder(yieldOp);
+                auto newConstOp = constBuilder.create<mlir::arith::ConstantOp>(
+                    constOp.getLoc(), targetTy, newValue);
+                yieldOp.setOperand(i, newConstOp);
+              }
+            };
+
+        auto rewriteShapeSpecialOp = [&](Operation *shapeOp) {
+          if (auto cvtOp = dyn_cast<triton::xpu::ConvertLayoutOp>(shapeOp)) {
+            auto srcTy = dyn_cast<RankedTensorType>(cvtOp.getSrc().getType());
+            auto resultTy =
+                dyn_cast<RankedTensorType>(cvtOp.getResult().getType());
+            if (srcTy && resultTy && srcTy.getShape() != resultTy.getShape()) {
+              cvtOp.getResult().setType(RankedTensorType::get(
+                  srcTy.getShape(), resultTy.getElementType(),
+                  resultTy.getEncoding()));
+            }
+          } else if (auto expandOp = dyn_cast<triton::ExpandDimsOp>(shapeOp)) {
+            auto srcTy =
+                dyn_cast<RankedTensorType>(expandOp.getSrc().getType());
+            auto resultTy =
+                dyn_cast<RankedTensorType>(expandOp.getResult().getType());
+            if (!srcTy || !resultTy)
+              return;
+            SmallVector<int64_t> shape(srcTy.getShape().begin(),
+                                       srcTy.getShape().end());
+            shape.insert(shape.begin() + expandOp.getAxis(), 1);
+            expandOp.getResult().setType(RankedTensorType::get(
+                shape, resultTy.getElementType(), resultTy.getEncoding()));
           }
         };
 
@@ -897,6 +1233,27 @@ struct TritonXPULegalizePass
           builder.cloneRegionBefore(reduceOp.getCombineOp(), newCombineOp,
                                     newCombineOp.end());
           setSlicedResTy(newReduceIdxOp, isInner);
+          // W5F_APPLIED: per-core result shape must follow the (sliced) source
+          // shape minus the reduce axis. The generic rank-1 slicing above
+          // selects iterCount[1] via isInner and missed the cut on the non-axis
+          // dimension (e.g. a 1x4 source summing over axis 1 must yield 1xf32,
+          // not 4xf32).
+          if (auto srcTy = llvm::dyn_cast<RankedTensorType>(
+                  newReduceIdxOp.getSrcs().front().getType())) {
+            if (srcTy.getRank() == 2) {
+              llvm::SmallVector<int64_t> newShape;
+              for (int64_t d = 0; d < srcTy.getRank(); ++d)
+                if (d != newReduceIdxOp.getAxis())
+                  newShape.push_back(srcTy.getShape()[d]);
+              for (auto res : newReduceIdxOp->getResults()) {
+                if (auto rt = llvm::dyn_cast<RankedTensorType>(res.getType())) {
+                  if (rt.getRank() == 1)
+                    res.setType(RankedTensorType::get(
+                        newShape, rt.getElementType(), rt.getEncoding()));
+                }
+              }
+            }
+          }
           op->replaceAllUsesWith(newReduceIdxOp->getResults());
           //   LLVM_DEBUG(llvm::dbgs() << "\nAfter modify reduceOp\n" << m);
           for (auto &opInCombine : newCombineOp.getOps()) {
@@ -948,7 +1305,10 @@ struct TritonXPULegalizePass
                 slicedShapedType, attr.getRawData());
             auto newConstOp = builder.create<mlir::arith::ConstantOp>(
                 loc, slicedResTy, newValue);
-            op->replaceAllUsesWith(newConstOp->getResults());
+            for (auto &use : llvm::make_early_inc_range(op->getUses())) {
+              if (sortedOpTree.contains(use.getOwner()))
+                use.set(newConstOp->getResult(0));
+            }
           }
         } else if (auto forOp = dyn_cast<mlir::scf::ForOp>(op)) {
 
@@ -989,6 +1349,28 @@ struct TritonXPULegalizePass
               builderInFor.cloneRegionBefore(reduceOpInFor.getCombineOp(),
                                              newCombineOp, newCombineOp.end());
               setSlicedResTy(newReduceIdxOp, inBlockIsInner);
+              // W5F_APPLIED: per-core result shape must follow the (sliced)
+              // source shape minus the reduce axis. The generic rank-1 slicing
+              // above selects iterCount[1] via isInner and missed the cut on
+              // the non-axis dimension (e.g. a 1x4 source summing over axis 1
+              // must yield 1xf32, not 4xf32).
+              if (auto srcTy = llvm::dyn_cast<RankedTensorType>(
+                      newReduceIdxOp.getSrcs().front().getType())) {
+                if (srcTy.getRank() == 2) {
+                  llvm::SmallVector<int64_t> newShape;
+                  for (int64_t d = 0; d < srcTy.getRank(); ++d)
+                    if (d != newReduceIdxOp.getAxis())
+                      newShape.push_back(srcTy.getShape()[d]);
+                  for (auto res : newReduceIdxOp->getResults()) {
+                    if (auto rt =
+                            llvm::dyn_cast<RankedTensorType>(res.getType())) {
+                      if (rt.getRank() == 1)
+                        res.setType(RankedTensorType::get(
+                            newShape, rt.getElementType(), rt.getEncoding()));
+                    }
+                  }
+                }
+              }
               reduceOpInFor.replaceAllUsesWith(newReduceIdxOp->getResults());
               erasedOps.insert(reduceOpInFor);
               for (auto &opInCombine : newCombineOp.getOps()) {
@@ -1043,11 +1425,10 @@ struct TritonXPULegalizePass
                                           Block::iterator(inBlockOp));
                 std::advance(newInBlockOp, dist);
 
-                for (auto newInBlockOpRes : newInBlockOp->getResults()) {
-                  auto slicedOpType = getSlicedType(newInBlockOpRes.getType(),
-                                                    iterCount, isInnerOp);
-                  newInBlockOpRes.setType(slicedOpType);
-                }
+                setSlicedResTy(&*newInBlockOp, isInnerOp); // W5B_APPLIED(2)
+                rewriteShapeSpecialOp(&*newInBlockOp);
+                reshapeConstOperandsToMatchSiblings(&*newInBlockOp,
+                                                    /*skipIfInTree=*/false);
                 if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp)) {
                   handleXpuPrintOp(xpuPrintOp);
                 }
@@ -1060,10 +1441,17 @@ struct TritonXPULegalizePass
                 for (auto &inBlockOp0 : elseBlock) {
                   bool isInnerOp = inOpChain(innerChain, &inBlockOp0);
                   setSlicedResTy(&inBlockOp0, isInnerOp);
+                  rewriteShapeSpecialOp(&inBlockOp0);
+                  reshapeConstOperandsToMatchSiblings(&inBlockOp0,
+                                                      /*skipIfInTree=*/false);
                   if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp0)) {
                     handleXpuPrintOp(xpuPrintOp);
                   }
                 }
+                if (auto yieldOp =
+                        dyn_cast<mlir::scf::YieldOp>(elseBlock.getTerminator()))
+                  reshapeConstYieldOperandsToMatchResults(
+                      yieldOp, ifOp.getResultTypes());
                 for (auto newInBlockOpRes : ifOp->getResults()) {
                   auto slicedOpType =
                       getSlicedType(newInBlockOpRes.getType(), iterCount, true);
@@ -1073,9 +1461,16 @@ struct TritonXPULegalizePass
             } else if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp)) {
               handleXpuPrintOp(xpuPrintOp);
             } else {
+              rewriteShapeSpecialOp(&inBlockOp);
               setSlicedResTy(&inBlockOp, inBlockIsInner);
+              reshapeConstOperandsToMatchSiblings(&inBlockOp,
+                                                  /*skipIfInTree=*/false);
             }
           }
+          if (auto yieldOp =
+                  dyn_cast<mlir::scf::YieldOp>(forBlock.getTerminator()))
+            reshapeConstYieldOperandsToMatchResults(yieldOp,
+                                                    forOp.getResultTypes());
           for (auto op : erasedOps) {
             if (op->use_empty())
               op->erase();
@@ -1108,11 +1503,10 @@ struct TritonXPULegalizePass
                                       Block::iterator(inBlockOp));
             std::advance(newInBlockOp, dist);
 
-            for (auto newInBlockOpRes : newInBlockOp->getResults()) {
-              auto slicedOpType = getSlicedType(newInBlockOpRes.getType(),
-                                                iterCount, isInnerOp);
-              newInBlockOpRes.setType(slicedOpType);
-            }
+            setSlicedResTy(&*newInBlockOp, isInnerOp); // W5B_APPLIED(3)
+            rewriteShapeSpecialOp(&*newInBlockOp);
+            reshapeConstOperandsToMatchSiblings(&*newInBlockOp,
+                                                /*skipIfInTree=*/false);
             if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp)) {
               handleXpuPrintOp(xpuPrintOp);
             } else if (auto reduceOpInIf =
@@ -1126,6 +1520,28 @@ struct TritonXPULegalizePass
               builderInFor.cloneRegionBefore(reduceOpInIf.getCombineOp(),
                                              newCombineOp, newCombineOp.end());
               setSlicedResTy(newReduceIdxOp, isInnerOp);
+              // W5F_APPLIED: per-core result shape must follow the (sliced)
+              // source shape minus the reduce axis. The generic rank-1 slicing
+              // above selects iterCount[1] via isInner and missed the cut on
+              // the non-axis dimension (e.g. a 1x4 source summing over axis 1
+              // must yield 1xf32, not 4xf32).
+              if (auto srcTy = llvm::dyn_cast<RankedTensorType>(
+                      newReduceIdxOp.getSrcs().front().getType())) {
+                if (srcTy.getRank() == 2) {
+                  llvm::SmallVector<int64_t> newShape;
+                  for (int64_t d = 0; d < srcTy.getRank(); ++d)
+                    if (d != newReduceIdxOp.getAxis())
+                      newShape.push_back(srcTy.getShape()[d]);
+                  for (auto res : newReduceIdxOp->getResults()) {
+                    if (auto rt =
+                            llvm::dyn_cast<RankedTensorType>(res.getType())) {
+                      if (rt.getRank() == 1)
+                        res.setType(RankedTensorType::get(
+                            newShape, rt.getElementType(), rt.getEncoding()));
+                    }
+                  }
+                }
+              }
               reduceOpInIf.replaceAllUsesWith(newReduceIdxOp->getResults());
               for (auto &opInCombine : newCombineOp.getOps()) {
                 if (auto redReturnOp =
@@ -1160,16 +1576,19 @@ struct TritonXPULegalizePass
                                         Block::iterator(inBlockOp));
               std::advance(newInBlockOp, dist);
 
-              for (auto newInBlockOpRes : newInBlockOp->getResults()) {
-                auto slicedOpType = getSlicedType(newInBlockOpRes.getType(),
-                                                  iterCount, isInnerOp);
-                newInBlockOpRes.setType(slicedOpType);
-              }
+              setSlicedResTy(&*newInBlockOp, isInnerOp); // W5B_APPLIED(4)
+              rewriteShapeSpecialOp(&*newInBlockOp);
+              reshapeConstOperandsToMatchSiblings(&*newInBlockOp,
+                                                  /*skipIfInTree=*/false);
               if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp)) {
                 handleXpuPrintOp(xpuPrintOp);
               }
             }
           }
+          if (auto yieldOp =
+                  dyn_cast<mlir::scf::YieldOp>(newIfThenBlock.getTerminator()))
+            reshapeConstYieldOperandsToMatchResults(yieldOp,
+                                                    ifOp.getResultTypes());
 
         } else if (auto reshapeOp = dyn_cast<mlir::triton::ReshapeOp>(op)) {
           if (auto reshapeResTy =
@@ -1192,10 +1611,15 @@ struct TritonXPULegalizePass
               reshapeOp.getResult().setType(slicedReshapeSrcTy);
             }
           }
+        } else if (isa<triton::xpu::ConvertLayoutOp, triton::ExpandDimsOp>(
+                       op)) {
+          rewriteShapeSpecialOp(op);
         } else if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(op)) {
           handleXpuPrintOp(xpuPrintOp);
         } else {
+          rewriteShapeSpecialOp(op);
           setSlicedResTy(op, isInner);
+          reshapeConstOperandsToMatchSiblings(op, /*skipIfInTree=*/true);
         }
 
         // LLVM_DEBUG(llvm::dbgs() << "After Deal:\n" << m << "\n");

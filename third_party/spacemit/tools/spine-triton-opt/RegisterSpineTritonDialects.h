@@ -16,6 +16,7 @@
 #include "triton/Dialect/Triton/Transforms/Passes.h"
 
 #include "proton/Dialect/include/Dialect/Proton/IR/Dialect.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #include "triton-shared/Conversion/AddTargetDescription/Passes.h"
 #include "triton-shared/Conversion/StructuredToMemref/Passes.h"
 #include "triton-shared/Conversion/TLEToLinalg/Passes.h"
@@ -27,7 +28,6 @@
 #include "triton-shared/Conversion/TritonToUnstructured/Passes.h"
 #include "triton-shared/Conversion/UnstructuredToMemref/Passes.h"
 #include "triton-shared/Conversion/XSMTToLinalg/Passes.h"
-#include "triton-shared/Dialect/TLE/IR/TLEDialect.h"
 #include "triton-shared/Dialect/TritonStructured/IR/TritonStructuredDialect.h"
 #include "triton-shared/Dialect/TritonTilingExt/IR/TritonTilingExtDialect.h"
 #include "triton-shared/Dialect/XSMT/IR/XSMTDialect.h"
@@ -54,6 +54,7 @@ inline void registerSpineTritonDialects(mlir::DialectRegistry &registry) {
   mlir::triton::registerAddTargetDescriptionPasses();
   mlir::triton::registerScfbufferStandardized();
   mlir::triton::registerConvertScanOp();
+  mlir::triton::registerLoopPtrCarryToOffset();
   mlir::triton::registerXSMTToLinalgPass();
   mlir::triton::registerTLEToLinalgPass();
   mlir::triton::registerAddLLVMDebugInfoPass();
@@ -68,6 +69,6 @@ inline void registerSpineTritonDialects(mlir::DialectRegistry &registry) {
       mlir::func::FuncDialect, mlir::tensor::TensorDialect,
       mlir::memref::MemRefDialect, mlir::bufferization::BufferizationDialect,
       mlir::DLTIDialect, mlir::vector::VectorDialect, mlir::xsmt::XSMTDialect,
-      mlir::xsmt_async::XSMTAsyncDialect, mlir::tle::TLEDialect,
+      mlir::xsmt_async::XSMTAsyncDialect, mlir::triton::tle::TleDialect,
       mlir::triton::proton::ProtonDialect>();
 }

@@ -11,6 +11,8 @@ import torch
 import triton
 import triton.language as tl
 import triton.experimental.tle.language as tle
+from triton._flagtree_backend import FLAGTREE_BACKEND
+from triton._internal_testing import is_hip
 
 BLOCK_SIZE = 64
 
@@ -23,6 +25,11 @@ def _is_enflame_backend():
 def _is_hcu_backend():
     target = triton.runtime.driver.active.get_current_target()
     return target.backend == "hip"
+
+
+def _is_amd_hip_backend():
+    # Native AMD (hip) excludes HCU, which sets FLAGTREE_BACKEND.
+    return is_hip() and not FLAGTREE_BACKEND
 
 
 def _require_cuda():
@@ -340,7 +347,7 @@ def _local_pointer_full_view_dot_kernel(
 class TestTLELocalPointerKernel:
     """Ensure kernels can perform load/compute/store entirely via local pointers."""
 
-    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_axpy_matches_torch(self):
         torch.manual_seed(0)
         numel = BLOCK_SIZE * 4
@@ -356,7 +363,7 @@ class TestTLELocalPointerKernel:
         expected = alpha * x + y
         torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-6)
 
-    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_store_populates_constant(self):
         numel = BLOCK_SIZE * 4
         value = 2.25
@@ -368,7 +375,7 @@ class TestTLELocalPointerKernel:
         expected = torch.full_like(out, value)
         torch.testing.assert_close(out, expected, atol=1e-7, rtol=0)
 
-    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_none_generates_full_view_1d(self):
         block = 128
         numel = block - 9
@@ -414,7 +421,7 @@ class TestTLELocalPointerKernel:
         expected[numel:] = -1
         torch.testing.assert_close(out, expected, atol=0, rtol=0)
 
-    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_local_pointer_none_generates_full_view_2d(self):
         rows = 16
         cols = 32
@@ -433,7 +440,7 @@ class TestTLELocalPointerKernel:
         )
         torch.testing.assert_close(out, x, atol=1e-6, rtol=1e-6)
 
-    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_none_load_rewrites_to_local_load(self):
         block = 64
         out = torch.empty((block, ), device="cuda", dtype=torch.int32)
@@ -452,7 +459,7 @@ class TestTLELocalPointerKernel:
         expected = torch.arange(block, device="cuda", dtype=torch.int32) + 3
         torch.testing.assert_close(out, expected, atol=0, rtol=0)
 
-    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_full_indices_load_rewrites_to_local_load(self):
         block = 64
         out = torch.empty((block, ), device="cuda", dtype=torch.int32)
@@ -471,7 +478,7 @@ class TestTLELocalPointerKernel:
         expected = torch.arange(block, device="cuda", dtype=torch.int32) + 5
         torch.testing.assert_close(out, expected, atol=0, rtol=0)
 
-    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_conditional_mask_store_compiles(self):
         block = 512
         numel = block - 7
@@ -496,7 +503,7 @@ class TestTLELocalPointerKernel:
         expected[numel:] = -1
         torch.testing.assert_close(out, expected, atol=0, rtol=0)
 
-    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_looped_elementwise_matches_torch(self):
         chunks = 4
         numel = BLOCK_SIZE * chunks * 3
@@ -514,7 +521,7 @@ class TestTLELocalPointerKernel:
         expected = alpha * x + y
         torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-6)
 
-    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_local_pointer_tiled_matmul_matches_torch(self):
         block_m = 32
         block_n = 32
@@ -552,7 +559,52 @@ class TestTLELocalPointerKernel:
         expected = (a.float()) @ (b.float())
         torch.testing.assert_close(c, expected, atol=5e-3, rtol=5e-3)
 
-    @pytest.mark.require_tle("gpu.alloc", "gpu.copy", "gpu.local_ptr")
+    def test_local_pointer_tiled_matmul_amd_avoids_second_staging(self):
+        if not _is_amd_hip_backend():
+            pytest.skip("AMD HIP backend is required")
+
+        block_m = 32
+        block_n = 32
+        block_k = 32
+        num_k_tiles = 2
+        m = block_m
+        n = block_n
+        k = block_k * num_k_tiles
+        a = torch.randn((m, k), device="cuda", dtype=torch.float16)
+        b = torch.randn((k, n), device="cuda", dtype=torch.float16)
+        c = torch.empty((m, n), device="cuda", dtype=torch.float32)
+
+        compiled = _local_pointer_tiled_matmul_kernel.warmup(
+            a,
+            b,
+            c,
+            a.stride(0),
+            a.stride(1),
+            b.stride(0),
+            b.stride(1),
+            c.stride(0),
+            c.stride(1),
+            block_m,
+            block_n,
+            block_k,
+            num_k_tiles,
+            2,
+            block_k // 2,
+            grid=(1, 1),
+            num_warps=4,
+            num_stages=1,
+        )
+
+        ttgir = compiled.asm["ttgir"]
+        # WMMA-rematerialized operands stay in registers: two allocs/stores
+        # for the two K tiles, and no local_load reload of the staged tiles.
+        assert ttgir.count("ttg.local_alloc") == 2
+        assert ttgir.count("ttg.local_store") == 2
+        assert "ttg.local_load" not in ttgir
+        assert compiled.metadata.shared == 4096
+        assert "v_wmma" in compiled.asm["amdgcn"]
+
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.copy", "gpu.local_ptr")
     def test_local_pointer_axis_gather_matches_torch(self):
         rows = 8
         cols = 8
@@ -576,7 +628,7 @@ class TestTLELocalPointerKernel:
         expected = x[:, 1:1 + slice_width]
         torch.testing.assert_close(out, expected, atol=1e-6, rtol=1e-6)
 
-    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_scalar_dynamic_index_inserts_barrier(self):
         block = 64
         out = torch.empty((block, ), device="cuda", dtype=torch.int32)
@@ -604,7 +656,7 @@ class TestTLELocalPointerKernel:
             rtol=0,
         )
 
-    @pytest.mark.require_tle("gpu.alloc", "gpu.local_ptr")
+    @pytest.mark.skip_if_tle_unsupported("gpu.alloc", "gpu.local_ptr")
     def test_local_pointer_full_view_dot_avoids_pointer_convert_layout(self):
         block = 32
         a = torch.randn((block, block), device="cuda", dtype=torch.float16)

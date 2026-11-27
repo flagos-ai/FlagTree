@@ -2,6 +2,7 @@
 // TODO: Pass Description
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
@@ -54,6 +55,50 @@ public:
   TritonXPUMemoryInplace(unsigned bufferSize, unsigned coreNum) {
     this->bufferSize = bufferSize;
     this->coreNum = coreNum;
+  }
+
+  // Return the innermost enclosing loop (ForOp/WhileOp) of `op`, or nullptr.
+  static Operation *getEnclosingLoop(Operation *op) {
+    Operation *p = op->getParentOp();
+    while (p && !isa<triton::FuncOp>(p)) {
+      if (isa<scf::ForOp, scf::WhileOp>(p))
+        return p;
+      p = p->getParentOp();
+    }
+    return nullptr;
+  }
+
+  // FIXME: Monkey patch - For Discrete/DiscreteSame buffers whose users are
+  // in a different loop than the gm2lm, extend lifetime to cover that loop
+  // to prevent merging. This should be replaced with proper cross-iteration
+  // liveness analysis.
+  void extendLifetimeForDiscreteInLoop(triton::xpu::AllocaOp allocaOp,
+                                       OffsetState offsetState,
+                                       DenseMap<Operation *, unsigned> &op2Line,
+                                       unsigned &start, unsigned &end) {
+    if (offsetState != OffsetState::Discrete &&
+        offsetState != OffsetState::DiscreteSame)
+      return;
+
+    Operation *gm2lmLoop = nullptr;
+    for (auto user : allocaOp->getUsers()) {
+      if (isa<triton::xpu::GM2LMOp, triton::xpu::GM2LMMaskOp>(user)) {
+        gm2lmLoop = getEnclosingLoop(user);
+        break;
+      }
+    }
+
+    for (auto user : allocaOp->getUsers()) {
+      Operation *userLoop = getEnclosingLoop(user);
+      if (!userLoop || userLoop == gm2lmLoop)
+        continue;
+      if (op2Line.count(userLoop))
+        start = std::min(start, op2Line[userLoop]);
+      userLoop->walk([&](Operation *innerOp) {
+        if (op2Line.count(innerOp))
+          end = std::max(end, op2Line[innerOp]);
+      });
+    }
   }
 
   void lmInplace(ModuleOp &m) {
@@ -118,11 +163,20 @@ public:
         } else if (auto lm2gmOp = dyn_cast<triton::xpu::LM2GMMaskOp>(user)) {
           offsetState = static_cast<OffsetState>(lm2gmOp.getOffsetState());
           end = std::max(end, op2Line[lm2gmOp]);
+        } else if (isa<triton::xpu::PackOp, triton::xpu::UnpackOp>(user)) {
+          // A boundary op writes and reads its scratch buffer inside itself, so
+          // the buffer is live for exactly one line. Leaving start == end keeps
+          // it out of the reuse pool below, which is what we want: the buffer
+          // must not be aliased with anything that is live across the boundary.
+          start = std::min(start, op2Line[user]);
+          end = std::max(end, op2Line[user]);
         } else {
           llvm_unreachable("The User of AllocaOp can only be "
-                           "GM2LMOp/LoadOp/StoreOp/LM2GMOp");
+                           "GM2LMOp/LoadOp/StoreOp/LM2GMOp/PackOp/UnpackOp");
         }
       }
+      extendLifetimeForDiscreteInLoop(allocaOp, offsetState, op2Line, start,
+                                      end);
       if (start >= 0 && end > start) {
         MemoryBlock memoryBlock(allocaOp, start, end, offsetState, cache);
         memoryBlocks.emplace_back(memoryBlock);
@@ -137,11 +191,20 @@ public:
       unsigned tensorSize = getTensorSize(allocaOp.getResult().getType());
       unsigned pointeeBitWidth =
           triton::getPointeeBitWidth(allocaOp.getResult().getType());
+      // Distinguish scalar vs tensor allocas (and tensors of different rank)
+      // even when their flattened element count is identical, otherwise an
+      // inplace-merge will swap a scalar pointer in for a tensor result and
+      // break the downstream LLVM struct lowering.
+      unsigned typeKindWeight = 0;
+      if (auto rtt = dyn_cast<RankedTensorType>(allocaOp.getResult().getType()))
+        typeKindWeight = rtt.getRank() + 1; // 1 -> rank-1, 2 -> rank-2, ...
       unsigned bitWidthWeight = 100000;
       unsigned cacheWeight = bitWidthWeight * 10;
       unsigned sameWeight = cacheWeight * 10;
       unsigned discreteWeight = sameWeight * 10;
-      unsigned memoryBitWidth = pointeeBitWidth * bitWidthWeight + tensorSize;
+      unsigned typeKindWeightScale = discreteWeight * 10;
+      unsigned memoryBitWidth = pointeeBitWidth * bitWidthWeight + tensorSize +
+                                typeKindWeight * typeKindWeightScale;
       // Magic number is only used to distinguish different pointeeBitWidth
       memoryBitWidth +=
           i * cacheWeight *
@@ -236,7 +299,7 @@ public:
   void runOnOperation() override {
     ModuleOp m = getOperation();
     lmInplace(m);
-    if (mlir::triton::tools::getBoolEnvXPU("TRITONXPU_LM_REPORT"))
+    if (mlir::triton::tools::getBoolEnv("TRITONXPU_LM_REPORT"))
       reportLM(m);
   }
 };

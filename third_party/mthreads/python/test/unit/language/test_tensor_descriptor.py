@@ -1671,3 +1671,37 @@ def test_tensor_descriptor_store_downcast(dtype_str, device):
     kernel[(grid_m, grid_n)](desc, M, N, M_BLOCK=M_BLOCK, N_BLOCK=N_BLOCK)
     ref = torch.arange(M * N, dtype=torch.float32, device=device).reshape(M, N).to(torch_dtype)
     torch.testing.assert_close(out, ref)
+
+
+@pytest.mark.parametrize("dtype_str", ["float8_e4m3fn", "float8_e5m2"])
+def test_tensor_descriptor_fp8_load_store(dtype_str, device):
+    # fp8 enters descriptor_dtypes through the MUSA storage whitelist but
+    # upstream tma_dtypes has no fp8 entry, so pin both descriptor paths
+    # bitwise here (uint8 views: torch_musa cannot fill fp8 tensors).
+    if not is_musa():
+        pytest.skip("fp8 descriptor coverage targets the MUSA storage whitelist")
+
+    @triton.jit
+    def kernel(out_ptr, a_ptr, M, N, M_BLOCK: tl.constexpr, N_BLOCK: tl.constexpr):
+        in_desc = tl.make_tensor_descriptor(a_ptr, shape=[M, N], strides=[N, 1], block_shape=[M_BLOCK, N_BLOCK])
+        out_desc = tl.make_tensor_descriptor(out_ptr, shape=[M, N], strides=[N, 1], block_shape=[M_BLOCK, N_BLOCK])
+        moffset = tl.program_id(axis=0) * M_BLOCK
+        noffset = tl.program_id(axis=1) * N_BLOCK
+        block = in_desc.load([moffset, noffset])
+        out_desc.store([moffset, noffset], block)
+
+    def alloc_fn(size: int, align: int, stream: Optional[int]):
+        return torch.empty(size, dtype=torch.int8, device=device)
+
+    triton.set_allocator(alloc_fn)
+
+    torch_dtype = getattr(torch, dtype_str)
+    M, N = 128, 128
+    M_BLOCK, N_BLOCK = 32, 32
+    raw = torch.randint(0, 256, (M, N), dtype=torch.uint8, device=device)
+    inp = raw.view(torch_dtype)
+    out = torch.zeros((M, N), dtype=torch.uint8, device=device).view(torch_dtype)
+
+    kernel[(M // M_BLOCK, N // N_BLOCK)](out, inp, M, N, M_BLOCK=M_BLOCK, N_BLOCK=N_BLOCK)
+
+    assert torch.equal(out.view(torch.uint8), raw)

@@ -2,9 +2,9 @@
 
 Activation:
     FLAGTREE_USE_TILEIR=1   — opt non-TLE kernels into the TileIR compile path.
-                              Kernels that only use the supported top-level TLE
-                              subset also use TileIR; other TLE kernels fall back
-                              to the nvidia backend.
+                              Kernels that only use TileIR's ``tle_supported``
+                              primitives also use TileIR; other TLE kernels fall
+                              back to the nvidia backend.
     FLAGTREE_TILEIR_VERBOSE=1 — print routing decisions to stderr for debugging.
 
 When FLAGTREE_USE_TILEIR is unset (the default), the current target is returned
@@ -26,16 +26,6 @@ from triton.backends.compiler import GPUTarget
 _CUDA_TARGET = "cuda"
 _TILEIR_EXT_MODULE = "triton.backends.tileir.extend_core"
 _TLE_LANGUAGE_MODULE = "triton.experimental.tle.language"
-_TILEIR_SUPPORTED_TLE_ATTRS = frozenset({
-    "make_tensor_view",
-    "make_partition_view",
-    "make_view",
-    "dim",
-    "load_view_tko",
-    "store_view_tko",
-    "create_mem_token",
-    "join_mem_tokens",
-})
 
 
 class TLEUsage(Enum):
@@ -63,12 +53,18 @@ def _kernel_name(jit_fn) -> str:
     return getattr(fn, "__name__", repr(fn))
 
 
+def _tileir_supported_tle_primitives() -> frozenset[str]:
+    from triton.experimental.tle import supported_primitives
+
+    return supported_primitives("tileir")
+
+
 def kernel_tle_usage(jit_fn) -> TLEUsage:
     """Heuristic detection of TLE usage in a JIT'd function's source.
 
     ``TLEUsage.TILEIR_SUBSET`` means every detected TLE operation belongs to
-    the TileIR-supported top-level TKO view/token subset.
-    Any other TLE usage keeps the kernel on the native NVIDIA path.
+    TileIR's ``tle_supported`` whitelist. Any other TLE usage keeps the kernel
+    on the native NVIDIA path.
 
     Result is cached on the JITFunction instance via ``_flagtree_tle_usage``.
     """
@@ -105,7 +101,7 @@ def _global_obj_kind(obj) -> str | None:
 
     obj_module = getattr(obj, "__module__", "")
     obj_name = getattr(obj, "__name__", "")
-    if obj_module == _TILEIR_EXT_MODULE and obj_name in _TILEIR_SUPPORTED_TLE_ATTRS:
+    if obj_module == _TILEIR_EXT_MODULE and obj_name in _tileir_supported_tle_primitives():
         return "supported_function"
     if obj_module.startswith("triton.experimental.tle."):
         return "unsupported_function"
@@ -120,13 +116,14 @@ def _scan_source_for_tle(src: str, global_ns=None) -> TLEUsage:
     except SyntaxError:
         # `inspect.getsource` of a decorated function may include the decorator;
         # if ast can't parse, fall back to a substring check.
-        if any(f"tle.{name}" in src for name in _TILEIR_SUPPORTED_TLE_ATTRS):
+        if any(f"tle.{name}" in src for name in _tileir_supported_tle_primitives()):
             return TLEUsage.TILEIR_SUBSET
         return TLEUsage.OTHER if "tle." in src or "triton.experimental.tle" in src else TLEUsage.NONE
 
     tle_aliases = {"tle"}
     imported_supported = False
     imported_other = False
+    tileir_prims = _tileir_supported_tle_primitives()
 
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
@@ -147,7 +144,7 @@ def _scan_source_for_tle(src: str, global_ns=None) -> TLEUsage:
                 for n in node.names:
                     if n.name == "*":
                         imported_other = True
-                    elif n.name in _TILEIR_SUPPORTED_TLE_ATTRS:
+                    elif n.name in tileir_prims:
                         imported_supported = True
                     else:
                         imported_other = True
@@ -178,9 +175,10 @@ def _scan_source_for_tle(src: str, global_ns=None) -> TLEUsage:
         kind = _global_obj_kind(global_ns.get(base.id)) if global_ns else None
         is_tle_language = base.id in tle_aliases or kind == "tle_language_module"
         is_tle_other_module = kind == "tle_other_module"
-        if is_tle_language and len(attrs) == 1:
-            return "supported" if attrs[0] in _TILEIR_SUPPORTED_TLE_ATTRS else "other"
-        if is_tle_language or is_tle_other_module:
+        if is_tle_language:
+            primitive = ".".join(attrs)
+            return "supported" if primitive in tileir_prims else "other"
+        if is_tle_other_module:
             return "other"
         return None
 
@@ -198,6 +196,8 @@ def _scan_source_for_tle(src: str, global_ns=None) -> TLEUsage:
             elif kind == "other":
                 saw_other = True
 
+    # Mixed TileIR + NVIDIA TLE falls back to nvidia (OTHER). The nvidia
+    # codegen whitelist then rejects TileIR-only primitives.
     if saw_other:
         return TLEUsage.OTHER
     if saw_supported:

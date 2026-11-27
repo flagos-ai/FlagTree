@@ -105,7 +105,7 @@ LinearEncodingAttr toLinearEncoding(RankedTensorType type) {
 //===-------------------- For Triton XPU -----------------------===//
 // FlagTree XPU spec override: forward-declare the free getElemsPerThread
 // (Attribute, shape) overload so the XPU dispatch in getTotalElemsPerThread
-// below can call it before its definition. Upstream/internal declares this in
+// below can call it before its definition. The sync source declares this in
 // TritonGPU/IR/Dialect.h; under Q0b we keep the declaration local to this
 // vendored copy instead of editing the shared main-tree header.
 SmallVector<unsigned> getElemsPerThread(Attribute layout,

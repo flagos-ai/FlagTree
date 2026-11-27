@@ -66,7 +66,12 @@ using OperationTree = llvm::SetVector<mlir::Operation *>;
   math::ExpOp, math::SqrtOp, math::SinOp, math::CosOp, arith::ExtFOp,          \
       arith::TruncFOp, math::AbsFOp, math::LogOp
 
-#define REDUCE_COMBINE_OP COMBINE_OP, triton::xpu::ReduceReturnOp
+// ScanReturnOp rides along with ReduceReturnOp: both are the region's
+// terminator, and the shared region-admission walk visits it (its operand
+// is the combine result, defined in-block). Terminators carry no results,
+// so every results-touching consumer is a no-op on them.
+#define REDUCE_COMBINE_OP                                                      \
+  COMBINE_OP, triton::xpu::ReduceReturnOp, triton::xpu::ScanReturnOp
 
 // The scalar -> vector op table, single-sourced (redesign-v2.md §3.1,
 // step 2.1).
@@ -145,7 +150,21 @@ bool hasVectorForm(Operation *op);
 // that coupling, which is why §3.2 calls the `.Default` a timed bomb -- this
 // predicate is how the blast radius gets measured before the coupling goes.
 enum class VecTyCoverage { None, Full, Conditional };
-VecTyCoverage processOpVecTyCoverage(Operation *op);
+// `allowSmemVec` false mirrors the `tle-smem-vec` escape hatch: a scope=smem
+// TLE read then reports None so both the analysis and the rewrite leave it
+// scalar. Defaulted so the reporting-only callers stay unchanged; the two that
+// gate the rewrite pass the pass option. `allowTleVec` false is the retune
+// ladder's last rung: both TLE arms (the tt.load / tt.store off a
+// tle_local_ptr) report None, so the whole TLE compute segment stays scalar.
+// That is the universal fallback -- weights in LM or in SM both end up asking
+// unroll control for relief, so when its knobs are spent the only thing left is
+// to not vectorize at all.
+//
+// `allowSmemVec` false refuses only the cluster-shared read. Its stack sign is
+// configuration-dependent (measured 1920 vs 7616, 3520 vs 2688, 6336 vs OOB),
+// so it is an A/B knob, not a relief step.
+VecTyCoverage processOpVecTyCoverage(Operation *op, bool allowSmemVec = true,
+                                     bool allowTleVec = true);
 const char *toString(VecTyCoverage coverage);
 
 // Is the region-interpreting reduce lowering in use?
@@ -220,8 +239,28 @@ unsigned getVectorWidth(Type elemTy);
 // REDUCE_COMBINE_OP, and when they disagree the rewrite does not fall back, it
 // hits llvm_unreachable.
 //
-// E-independent: only looks at op kinds.
+// E-independent: looks at op kinds and operand element widths (both known
+// pre-tiling, per the E factorization above). Mixed-width combines -- e.g. an
+// f16-value argmax beside its i32 index -- stay scalar; equal-width ones fall
+// through to the op-kind check.
 bool reduceCombineIsVectorizable(triton::xpu::ReduceOp redOp);
+
+// Same question for ScanOp's combine region. Deliberately shares the reduce's
+// admission lists (REDUCE_COMBINE_REGION_OP / COMBINE_OP) so the scan
+// walk, Vectorize's retyping and the scan lowering's emitter cannot drift:
+// all three ends are new together and single-sourced on the same macro lists.
+bool scanCombineIsVectorizable(triton::xpu::ScanOp scanOp);
+
+// Master switch for scan vectorization. Default on; TRITONXPU_SCAN_VEC=0 makes
+// the closure walk veto on ScanOp again, which keeps the whole tree scalar
+// (the pre-scan-vec state, byte-identical escape hatch).
+inline bool scanVecEnabled() {
+  static const bool enabled =
+      mlir::triton::tools::isEnvValueBool(
+          mlir::triton::tools::getStrEnvXPU("TRITONXPU_SCAN_VEC"))
+          .value_or(true);
+  return enabled;
+}
 
 // Root-level report, shared by `tritonxpu-vectorizability-analysis` and by
 // Vectorize's own root enumeration.
@@ -233,6 +272,7 @@ bool reduceCombineIsVectorizable(triton::xpu::ReduceOp redOp);
 // line format from both sides is what makes the gap step 1.5 has to close
 // visible. Off unless TRITONXPU_VEC_REPORT=1.
 bool vecReportEnabled();
+
 // `cands` is the number of footprint questions the walk left open (step 1.5c);
 // -1 means "not applicable", which is every caller running the real oracle.
 void reportVecRoot(const char *stage, const char *site, Operation *root,
@@ -292,14 +332,21 @@ public:
   // in rather than called directly so this unit keeps no compile-time
   // dependency on TileAnalysis. Callers pass `vectorFitsReduceOperand`; it is
   // owned, not borrowed, because every caller builds the analysis from a
-  // temporary.
+  // temporary. `tleSmemVec` mirrors the pass option of the same name: false
+  // makes a scope=smem TLE read inadmissible so this analysis and the rewrite
+  // agree. Defaulted true so report-only callers stay unchanged.
+  // `scanOperandFits` is the ScanOp counterpart of `reduceOperandFits`,
+  // defaulted null so report-only callers stay unchanged; a null oracle makes
+  // the walk veto on ScanOp (nothing retypes the scan).
   VectorizabilityAnalysis(
       bool reduceVec, bool dumpFlag,
       std::function<bool(triton::xpu::ReduceOp, Type)> reduceOperandFits,
-      FitOracle fitOracle)
+      FitOracle fitOracle, bool tleSmemVec = true, bool tleVec = true,
+      std::function<bool(triton::xpu::ScanOp, Type)> scanOperandFits = nullptr)
       : ReduceVec(reduceVec), dumpFlag(dumpFlag),
         reduceOperandFits(std::move(reduceOperandFits)),
-        fitOracle(std::move(fitOracle)) {}
+        fitOracle(std::move(fitOracle)), tleSmemVec(tleSmemVec), tleVec(tleVec),
+        scanOperandFits(std::move(scanOperandFits)) {}
 
   // Every op that can be retyped if `root` is, or an empty result when the
   // closure cannot be formed. The closure is bidirectional (operands and users)
@@ -307,6 +354,7 @@ public:
   bool getVectorizableClosure(Operation *root, OperationTree &visited,
                               OperationTree &vectorizedOps) {
     fitCandidates.clear();
+    failedOps.clear();
     return vectorize(root, visited, vectorizedOps);
   }
 
@@ -316,6 +364,16 @@ public:
   // since a veto propagates to the root, a failed closure discards them.
   const llvm::SmallVector<FitCandidate> &getFitCandidates() const {
     return fitCandidates;
+  }
+
+  // The intrinsic ops the last closure walk vetoed on, i.e. the ops that made
+  // the root fall back to scalar. Empty when the walk succeeded. Reported by
+  // the transform so a developer sees *which* op blocked vectorization, not
+  // just that the root stayed scalar. Only the leaves are recorded (op kinds
+  // with no vector form, or a footprint/guard veto) -- the ancestors that
+  // merely propagate the veto are not.
+  const llvm::SmallVector<Operation *> &getFailedOps() const {
+    return failedOps;
   }
 
 private:
@@ -329,10 +387,14 @@ private:
                  OperationTree &vectorizedOps);
 
   bool ReduceVec;
+  bool tleSmemVec = true;
+  bool tleVec = true;
   bool dumpFlag;
   std::function<bool(triton::xpu::ReduceOp, Type)> reduceOperandFits;
+  std::function<bool(triton::xpu::ScanOp, Type)> scanOperandFits;
   FitOracle fitOracle;
   llvm::SmallVector<FitCandidate> fitCandidates;
+  llvm::SmallVector<Operation *> failedOps;
 };
 
 //===----------------------------------------------------------------------===//
@@ -390,8 +452,11 @@ public:
   // The oracle is the same one the closure walk takes, and for the same reason:
   // whether a load's footprint is a whole number of vectors is E-dependent, so
   // it must not be answered here. `Unknown` seeds nothing.
-  explicit VectorFlowAnalysis(FitOracle fitOracle)
-      : fitOracle(std::move(fitOracle)) {}
+  // See VectorizabilityAnalysis: same flag, same reason.
+  explicit VectorFlowAnalysis(FitOracle fitOracle, bool tleSmemVec = true,
+                              bool tleVec = true)
+      : fitOracle(std::move(fitOracle)), tleSmemVec(tleSmemVec),
+        tleVec(tleVec) {}
 
   // Partition every value in `func`, then pin. Read-only on the IR.
   void run(triton::FuncOp func);
@@ -415,6 +480,8 @@ private:
   void visit(Operation *op);
 
   FitOracle fitOracle;
+  bool tleSmemVec = true;
+  bool tleVec = true;
   llvm::DenseMap<Value, unsigned> ids;
   llvm::SmallVector<unsigned> parent;
   llvm::SmallVector<VState> pins; // per class root, valid after `find`

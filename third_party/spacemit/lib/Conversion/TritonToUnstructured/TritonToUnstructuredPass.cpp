@@ -149,6 +149,7 @@
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
+#include "tle/dialect/include/IR/Dialect.h"
 #include "triton-shared/Analysis/OpFoldResultUtils.h"
 #include "triton-shared/AnalysisStructured/PtrAnalysis.h"
 #include "triton-shared/Conversion/TritonToUnstructured/TritonToUnstructured.h"
@@ -572,6 +573,14 @@ public:
                   op->emitError("Do not support gather / scatter with multiple "
                                 "bases yet");
                   return failure();
+                })
+                .Case<tle::DSLRegionOp>([](tle::DSLRegionOp op) {
+                  // tle.dsl_region carries its !tt.ptr operands untouched: the
+                  // downstream ptr->memref pipeline wraps them in a cast chain
+                  // and TLEToLinalg's DSLRegionOpPattern traces them back to
+                  // the original memref. This pass must not rewrite them into
+                  // offsets, so skip the op entirely.
+                  return success();
                 })
                 .Default([&](Operation *op) {
                   op->emitError("unexpected op in ptr sequence");

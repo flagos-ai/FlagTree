@@ -46,6 +46,12 @@ loadX4(ConversionPatternRewriter &rewriter, Location loc, Value smemBase,
   auto resTy = cast<LLVM::LLVMStructType>(matTy);
   Type elemTy = cast<LLVM::LLVMStructType>(matTy).getBody()[0];
 
+  int elemBits;
+  if (auto gepOp = smemBase.getDefiningOp<LLVM::GEPOp>()) {
+    Type elemType = gepOp.getElemType();
+    elemBits = elemType.getIntOrFloatBitWidth();
+  }
+
   // For some reasons, LLVM backend inserts unnecessary (?) integer
   // instructions to pack & unpack b.sub-word integers. A workaround is to
   // store the results of ldmatrix in i32
@@ -82,6 +88,11 @@ loadX4(ConversionPatternRewriter &rewriter, Location loc, Value smemBase,
   }
 
   auto ldmatrix = builder.create(ldstring)->o("shared.b16");
+
+  // compiler will lowering correctly.
+  if (elemBits == 32 && needTrans)
+    ldmatrix = builder.create("ppu.ldmatrix.swzl.sync.aligned.m8n16.x1.trans")
+                   ->o("shared.b32");
 
   ldmatrix(resArgs, sbase, Args);
 

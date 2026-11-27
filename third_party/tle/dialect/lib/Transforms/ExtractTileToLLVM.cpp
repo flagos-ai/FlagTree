@@ -146,7 +146,7 @@ static LogicalResult
 lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
                         ConversionPatternRewriter &rewriter,
                         const LLVMTypeConverter *typeConverter,
-                        const TargetInfoBase &targetInfo) {
+                        const TargetInfoBase &targetInfo, bool plannedTile) {
 
   Location loc = op->getLoc();
   auto srcTy = cast<RankedTensorType>(op.getSrc().getType());
@@ -163,7 +163,10 @@ lowerExtractTileViaSMEM(ExtractTileOp op, ExtractTileOp::Adaptor adaptor,
   Type llvmElemTy = typeConverter->convertType(elemTy);
   if (!llvmElemTy)
     return op.emitError("SMEM path: failed to convert element type");
-  int64_t elemBytes = llvmElemTy.getIntOrFloatBitWidth() / 8;
+  // Match allocation analysis, including pointer tensors relayed through
+  // shared memory when a copy tile crosses the source thread partition.
+  int64_t elemBytes = plannedTile ? getBitwidth(srcTy) / 8
+                                  : llvmElemTy.getIntOrFloatBitWidth() / 8;
 
   // Offsets for thread 0 (compile-time constants, wrapping semantics)
   auto srcOffsets = mlir::emitOffsetForLayout(srcTy.getEncoding(), srcTy);
@@ -407,12 +410,17 @@ struct ExtractTileOpConversion : public ConvertOpToLLVMPattern<ExtractTileOp> {
     if (!isa<ttg::BlockedEncodingAttr>(srcTy.getEncoding()))
       return op.emitError("extract_tile only supports BlockedEncodingAttr");
 
-    auto staticIndex = getStaticIndex(op);
-    if (staticIndex.has_value() && isCTATileAligned(op, staticIndex.value()))
+    bool plannedTile = op->hasAttr(kPlannedTileAttr);
+    auto staticIndex =
+        plannedTile ? getStaticExtractTileIndex(op) : getStaticIndex(op);
+    if (staticIndex.has_value() &&
+        (plannedTile ? isExtractTileCTAAligned(op, *staticIndex)
+                     : isCTATileAligned(op, *staticIndex)))
       return lowerExtractTileStatic(
           op, adaptor, rewriter, this->getTypeConverter(), staticIndex.value());
     return lowerExtractTileViaSMEM(op, adaptor, rewriter,
-                                   this->getTypeConverter(), targetInfo);
+                                   this->getTypeConverter(), targetInfo,
+                                   plannedTile);
   }
 
 private:

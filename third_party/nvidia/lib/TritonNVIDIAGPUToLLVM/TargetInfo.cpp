@@ -493,8 +493,14 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
   } else {
 #ifdef __TLE__
     std::string elemConstraint = "=" + getConstraintForBitwidth(elemBitwidth);
-    auto *outOpr = vec == 1 ? builder.newOperand(elemConstraint)
-                            : builder.newListOperand(vec, elemConstraint);
+    // A predicated output needs a definition on inactive lanes as well.
+    // Otherwise ptxas treats its old value as a device-function live-in and
+    // saves it to local memory, even when those lanes' results are unused.
+    auto *outOpr = builder.newListOperand();
+    for (unsigned i = 0; i < vec; ++i)
+      outOpr->listAppend(builder.newOperand(elemConstraint, /*init=*/true));
+    if (vec == 1)
+      outOpr = outOpr->listGet(0);
     Value addrOperand = ptr;
     const char *addrConstraint = "l";
     if (useCluster && isa<LLVM::LLVMPointerType>(addrOperand.getType())) {

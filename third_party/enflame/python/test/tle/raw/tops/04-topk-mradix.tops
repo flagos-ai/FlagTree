@@ -1,0 +1,935 @@
+// Copyright 2026 Enflame. All Rights Reserved.
+/*
+ * HW MRADIX-accelerated TopK kernel for GCU400 via TLE-RAW.
+ *
+ * Execution geometry:
+ *   - One hw thread per SIP with 4 subthreads each (num_warps = 4; 1 does not
+ *     work -- the reclaim barriers and the sub0/sub1 writeback split assume 4
+ *     subthreads). MRADIX is a shared per-SIP unit, so only one hw thread per
+ *     SIP may drive it.
+ *   - Persistent kernel: grid = min(SIP_COUNT, M), blockDim 1, so one block is
+ *     one hw thread (grid == gbl_thr_num). Each thread walks its rows with
+ *     for (row = row_base; row < M; row += row_stride); the launcher owns the
+ *     row->thread mapping and passes row_base/row_stride (see the SWP note).
+ *   - Capacity: N <= MAX_L1_CACHE (65536 fp32) and K <= WS_STAGE_K_MAX (640).
+ *     SIP VDMEM is 896KB (229376 fp32); the kernel caches the whole row in
+ *     l1_buf (double buffered: 512KB) plus a 16KB reclaim workspace / staging
+ *     arena, i.e. 528KB of 896KB. Both buffers are allocated by the launcher
+ *     (tle.gpu.alloc) and passed in as plain pointers; the raw region must not
+ *     declare __local__ buffers of its own (both allocators start at VDMEM 0).
+ *     64K is the largest row the L1 radix-select is competitive on.
+ *     The host side (04-topk-mradix.py: L1_MAX_COLS / TOPK_K_MAX) enforces the
+ *     same envelope, so an oversized call fails loudly instead of silently
+ *     overflowing VDMEM.
+ *
+ * Algorithm (radix-SELECT, no in-kernel sort):
+ *   The row is copied into l1_buf and converted in place to order-preserving
+ *   uint32 keys. Up to seven MRADIX passes (5-bit digits, MSB first; the top
+ *   digit only carries 2 bits) narrow the search to the k-th largest key:
+ *   every pass rescans the full row (the candidate set is never compacted),
+ *   and the 32-bin walk stops early when a bin holds exactly the remaining
+ *   candidates -- its lower bound is then the threshold and still selects
+ *   exactly K lanes.
+ *   The reclaim pass scatters those lanes into staging (one ge stream when it
+ *   holds exactly K lanes, otherwise gt lanes first and then eq truncated at
+ *   K) and writeback copies staging[0, K) out, so the results come back in
+ *   reclaimed (unspecified) order = torch.topk(sorted=False) semantics; S4 is
+ *   an empty stage that only names where an in-kernel sort would go.
+ *   Stage banners in the kernel (stage, and the subthreads that run it):
+ *     S1  load + vt2ut    row -> sort-uint keys in l1_buf (sub0 DTE, next row
+ *                         prefetched; all subthreads convert)
+ *     S2  histogram       digit passes -> k-th key (sub0 only)
+ *     S3  reclaim         top-k lanes -> staging (count: all; prefix: sub0
+ *                         plus the table: sub2; scatter: all)
+ *     S4  sort            no-op (outputs stay unsorted)
+ *     S5  writeback       staging -> output row (K < VEC_LEN: sub0/sub1
+ *                         deslices; else sub0 vector copy)
+ *
+ * Scheduling and cost model (gcu400, topsprof device time, median n=80):
+ *   The scheduling unit is a whole row: one hw thread per SIP, rows walked
+ *   serially, so T_total ~= T_launch(~3.0us) + ceil(M / 24) * T_row(N, K)
+ *   and NOT (M / 24) * T_row: M is rounded up to the 24-SIP wave and the last
+ *   wave runs partly idle (wave quantization). At N=32768, K=256:
+ *       M=120 (5 waves)  113.0us
+ *       M=128 (6 waves)  133.1us   <- ~90% SIP utilization
+ *       M=144 (6 waves)  135.1us
+ *   so M=128 already pays for 6 full waves while doing 5.3 waves of work:
+ *   ~10% of that shape is tail. (The last wave is cheaper than a full one --
+ *   133.1 vs 135.1 -- because only 8 of 24 SIPs stay busy.)
+ *   Small N is row/launch bound: a row costs ~5us whatever N is until the
+ *   histogram starts to dominate. Large N is histogram-throughput bound: seven
+ *   passes over N/VEC_LEN chunks plus the 32-bin scalar bin walk, with K
+ *   adding ~0.017us per non-empty chunk (comp_cnt ~ K) of reclaim scatter.
+ *   Reducing the tail needs a unit finer than a row, i.e. r SIPs sharing one
+ *   row: cut the row into r bands, histogram per band, merge the 32-bin
+ *   partials behind a barrier, then reclaim inside each band (histograms
+ *   merge, the candidates never do), which also raises the reachable N by r.
+ *   That shape is not used here: the per-digit cross-SIP barrier plus the
+ *   shared-histogram round trip through global memory cost more than the ~10%
+ *   it wins, and with BLOCK_SIZE=1 a block is one hw thread, so r > 1 needs a
+ *   grid-scope barrier over all 24 SIPs. A block-scope version (6 hw threads
+ *   per block, grid = 4) is an untried variant.
+ *   Subthreads do not partition a row: all subthreads of a SIP share its radix
+ *   engine, so 2 groups of 4 (8 subthreads) only keeps two whole rows in
+ *   flight and ping-pongs the engine between them. That makes the unit coarser
+ *   (ceil(M/48) waves, still ~90% at M=128) and halves the VDMEM budget per
+ *   row; it does not touch the tail.
+ *
+ * Toolchain constraints (topscc v4.0.11):
+ *   - tcle::set_vl(VEC_LEN) MUST be set at kernel entry: without it the
+ *     MRADIX/DTE machinery runs with a wrong vector length and any MRADIX use
+ *     after a DTE slice faults the SIP at runtime.
+ *   - tcle::leaptr/TAR auto-incrementing loads work through TLE-RAW's MLIR
+ *     round-trip: tcle::simple_leaptr<VUI> lowers to l.tvldoa.w through the
+ *     full GCU converter chain, so the histogram passes load without any
+ *     per-load address arithmetic, and the batched 16x l.tvldoa.w costs
+ *     ~3 cyc/vector against 7-9 for the serial l.vldoa + address loop.
+ *   - The topscc function attributes (enable_software_pipeliner,
+ *     no_mem_alias_in_vldst_tar, loop_iterator_less_than_1024,
+ *     enable_bc_resolver) written as function __attribute__ survive the
+ *     tle_raw region as LLVM function attrs (e.g. attributes #2 in the
+ *     topscc -emit-llvm output) and shrink the compiled kernel .text. They
+ *     are applied to the histogram helper and to the kernel entry.
+ *   - Hot loops are unrolled with `#pragma clang loop unroll(full)`. That
+ *     needs the optimizer, and the TLE-Raw `.tops` is always built at -O3
+ *     (kTopsccOptLevel in gcu_compiler/lib/Target/LLVM/GCU/Target.cpp), so
+ *     the pragma is never dropped.
+ *
+ * Limits (not implemented):
+ *   - split-row multi-SIP cooperation (r SIPs per row, see the cost model)
+ *   - 2 subthread groups sharing the radix engine (two rows in flight per SIP)
+ *   - DTE-compute overlap between subthread groups (DTE on one, compute on the
+ *     other)
+ *   - find_kth shrink/compaction for the top-K prefix: later digit passes
+ *     rescan the whole row instead of narrowing to the kept bin
+ *   - fp16/bf16/uint8 inputs
+ *   - topk_per_row_prefill/decode/persistent modes
+ *   - is_sorted=true final radix sort of the k elements (S4)
+ */
+
+#include <stdint.h>
+#include <tcle_general.h>
+#include <tops.h>
+#include <tops/topscc_types.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <functional>
+#include <utility>
+
+typedef __vector unsigned int VUI;
+typedef __vector int          VSI;
+typedef __vector bool int     VMASK;
+
+constexpr int DSA_BITS      = 5;
+constexpr int NUM_BINS      = 1 << DSA_BITS;
+constexpr int VEC_LEN       = 128;
+constexpr int TYPE_BITS     = 32;
+constexpr int MAX_SHIFT_NUM = (TYPE_BITS + DSA_BITS - 1) / DSA_BITS; /* = 7 */
+constexpr uint32_t PAD_VALUE_DESC = 0u;
+
+// Radix-select caches the row's sort-uint keys in l1_buf (MAX_L1_CACHE).
+// MAX_L1_CACHE = 65536 fp32 = 256KB of the SIP's 896KB VDMEM.
+constexpr int MAX_L1_CACHE = 65536;
+
+/* Reclaim workspace (reclaim_ws[WS_SIZE] uint32_t).  Two count streams are
+   kept because the output is "all strictly-greater lanes, then the first
+   (K - n_gt) equal lanes":
+     [ge_count  fc_al) [ge_prefix fc_al) [gt_count fc_al) [gt_prefix fc_al)
+     [valid_vec_idx fc_al) | pad | [stage_v K_MAX) [stage_i K_MAX) [bcast 3)
+   fc_al = ALIGN_UP(full_chunks, VEC_LEN) with full_chunks = ALIGN_UP(N,
+   VEC_LEN) / VEC_LEN. WS_FC_AL_MAX is the largest fc_al the supported N can
+   produce (N = 65536 -> 512), so the count/prefix region can never run into the
+   staging area; static_assert below pins that.  The staging area holds K slots
+   per stream (K <= WS_STAGE_K_MAX), which is sufficient by construction: the gt
+   stream has n_gt <= K-1 lanes and the eq stream is truncated at K - n_gt.
+
+   Why WS_STAGE_K_MAX is 640 (the widest K this layout can carry):
+     - stage_v starts at WS_STAGE_V_OFF = 2560 words;
+     - the top 3 words (ws[4093..4095]) carry the values subthreads publish
+       to each other (desired, comp_cnt, n_ge, n_gt) and are never part of
+       staging, so staging must stop below them:
+       2*K <= 4096 - 2560 - 3 = 1533 -> K <= 766;
+     - stage_i must start 512B-aligned, which both writeback forms rely on
+       (the VUI-wide copy and the DTE deslice move whole VEC_LEN-lane beats),
+       so WS_STAGE_K_MAX must be a multiple of VEC_LEN words -> 640. The
+       runtime K itself is free (it is only bounded by WS_STAGE_K_MAX).
+   Going wider needs a bigger ws (host L1_WS_ELEMS / WS_SIZE here; this SIP
+   has ~368KB of VDMEM free) or relocating the 3 publish words; see the host
+   note at TOPK_K_MAX in 04-topk-mradix.py. */
+constexpr int WS_SIZE        = 4096;
+constexpr int WS_FC_AL_MAX   = 512;
+constexpr int WS_BCAST_SLOTS = 3;                /* ws[4093..4095] */
+constexpr int WS_STAGE_K_MAX = 640;              /* K slots per stream */
+constexpr int WS_STAGE_V_OFF = 5 * WS_FC_AL_MAX; /* 2560 */
+constexpr int WS_STAGE_I_OFF = WS_STAGE_V_OFF + WS_STAGE_K_MAX; /* 3200 */
+static_assert(WS_STAGE_I_OFF + WS_STAGE_K_MAX + WS_BCAST_SLOTS <= WS_SIZE,
+              "reclaim workspace too small for the staging area");
+
+/* DTE pad value: slice_async pads with PAD_FLOAT_DESC (-inf) for fp32, then
+ * maps under VT2UT to 0x007fffff - strictly below every finite key's image
+ * (values >= 0.0f map to [0x80000000, 0xff800000)) - so pad lanes can never
+ * enter a selected bin for K <= N. */
+#define PAD_FLOAT_DESC (__builtin_bit_cast(float, 0xff800000u))
+
+using CmpGe = std::greater_equal<>;
+using CmpGt = std::greater<>;
+using CmpEq = std::equal_to<>;
+
+static __device__ __forceinline__ VUI VT2UT(VUI u) {
+  return u ^ (((VUI)0 - (u >> 31)) | (VUI)(0x80000000u));
+}
+
+static __device__ __forceinline__ VUI UT2VT(VUI u) {
+  return u ^ (((u >> 31) - (VUI)1) | (VUI)(0x80000000u));
+}
+
+/* Inclusive Hillis-Steele scan in log2(VEC_LEN) shift_right steps; returns the
+   exclusive prefix (x shifted right by one lane) and the total in `total`. */
+__device__ __forceinline__ VUI lane_exclusive_scan(VUI x, uint32_t &total) {
+  VUI s = x;
+  #pragma clang loop unroll(full)
+  for (int d = 1; d < VEC_LEN; d <<= 1)
+    s = s + tcle::shift_right(s, (unsigned int)d);
+  total = static_cast<uint32_t>(s[VEC_LEN - 1]);
+  return tcle::shift_right(s, 1u);
+}
+
+/* Compression table: dst[0..ret) = the indices of the chunks with a nonzero
+   count, and ret (== comp_cnt) is returned. Stage 3 then walks comp_cnt slots
+   instead of fc_al. counts is only read; dst is its own workspace leg. */
+__device__ __forceinline__ int build_valid_table(uint32_t *counts,
+                                                 int matrix_col, VUI viota_base,
+                                                 uint32_t *dst) {
+  int cnt = 0;
+  for (int i = 0; i < matrix_col; i++) {
+    VUI counts_vec = tcle::load<VUI>(counts + i * VEC_LEN);
+    VMASK nonempty = counts_vec != (VUI)(0);
+    VUI st_offset = tcle::miota(nonempty) * (VUI)(sizeof(uint32_t));
+    VUI vec_index = (VUI)static_cast<uint32_t>(i * VEC_LEN) + viota_base;
+    tcle::scatter_cond(nonempty, vec_index, dst + cnt, st_offset);
+    cnt += static_cast<int>(tcle::popc_mb<0>(nonempty));
+  }
+  return cnt;
+}
+
+template <int kMaxBaseNum, int kMaxShiftNum>
+__device__ __forceinline__ bool find_k_bin(const uint32_t *hist, int &k_to_find,
+                                           uint32_t &desired, int digit_pos) {
+  int k = k_to_find;
+  uint32_t d = desired;
+  bool found = false;
+  int last = kMaxBaseNum - 1;
+  for (int i = last; i >= 0; i--) {
+    int count = static_cast<int>(hist[i]);
+    if (count == k) {
+      d = ((d << DSA_BITS) | static_cast<uint32_t>(i))
+          << ((kMaxShiftNum - 1 - digit_pos) * DSA_BITS);
+      k = 0;
+      found = true;
+      break;
+    }
+    if (count > k) {
+      d = (d << DSA_BITS) | static_cast<uint32_t>(i);
+      break;
+    }
+    k -= count;
+  }
+  k_to_find = k;
+  desired = d;
+  return found;
+}
+
+template <int SHIFT, bool INIT>
+static __device__ __noinline__ __attribute__((no_mem_alias_in_vldst_tar,
+                                              loop_iterator_less_than_1024,
+                                              enable_software_pipeliner,
+                                              enable_bc_resolver))
+void histogram_pass(uint32_t *su_ptr, int full_chunks, uint32_t desired) {
+  VUI *vp = reinterpret_cast<VUI *>(su_ptr);
+  tcle::leaptr<VUI> lp = tcle::simple_leaptr<VUI>(su_ptr);
+  VUI vprefix = (VUI)(0);
+  VUI vmask   = (VUI)(0);
+  VUI vpad    = (VUI)(PAD_VALUE_DESC);
+  if constexpr (!INIT) {
+    vprefix = (VUI)(desired << ((SHIFT + 1) * DSA_BITS));
+    vmask   = (VUI)(~0u << (DSA_BITS * (SHIFT + 1)));
+  } else {
+    (void)desired;
+  }
+
+  constexpr int UNROLL_CNT = 16;
+  int c = 0;
+  int c_batched = full_chunks & ~(UNROLL_CNT - 1);  // must be a power of 2
+  VUI raw[UNROLL_CNT];
+  for (; c < c_batched; c += UNROLL_CNT) {
+    #pragma clang loop unroll(full)
+    for (int j = 0; j < UNROLL_CNT; ++j)
+      raw[j] = lp.load();
+    if constexpr (!INIT) {
+      #pragma clang loop unroll(full)
+      for (int j = 0; j < UNROLL_CNT; ++j) {
+        raw[j] = tcle::vsel((raw[j] & vmask) == vprefix, raw[j], vpad);
+      }
+    }
+    #pragma clang loop unroll(full)
+    for (int j = 0; j < UNROLL_CNT; ++j) {
+      tcle::mradix_cntbase(raw[j], SHIFT);
+    }
+  }
+  for (; c < full_chunks; c++) {
+    VUI su = vp[c];
+    if constexpr (!INIT)
+      su = tcle::vsel(((su & vmask) == vprefix), su, vpad);
+    tcle::mradix_cntbase(su, SHIFT);
+  }
+}
+
+template <int... S>
+static __device__ __forceinline__ void
+dispatch_histogram_impl(int shift, uint32_t *su_ptr, int full_chunks,
+                        uint32_t desired, std::integer_sequence<int, S...>) {
+  ((shift == S ? (void)histogram_pass<S, false>(su_ptr, full_chunks, desired)
+               : (void)0),
+   ...);
+}
+static __device__ __forceinline__ void dispatch_histogram(int shift,
+                                                          uint32_t *su_ptr,
+                                                          int full_chunks,
+                                                          uint32_t desired) {
+  if (shift == MAX_SHIFT_NUM - 1) {
+    histogram_pass<MAX_SHIFT_NUM - 1, true>(su_ptr, full_chunks, 0);
+  } else {
+    dispatch_histogram_impl(
+        shift, su_ptr, full_chunks, desired,
+        std::make_integer_sequence<int, MAX_SHIFT_NUM - 1>{});
+  }
+}
+
+/* ============= Stage-3 lane scatter =============
+ * One masked 16-lane table load plus gathers replace per-chunk scalar metadata
+ * reads; every kept lane then lands in its own staging slot via scatter_cond.
+ *
+ * The split path must survive duplicate k-th values with exactly K staging
+ * slots: the ge stream alone can neither be truncated by position (a late gt
+ * lane must survive even when earlier eq lanes fill the buffer) nor overflow
+ * the buffer. So the two predicates write disjoint ranges, in one pass, from
+ * the prefixes stage 2 already built:
+ *     gt lane -> [0, n_gt)                              unconditional
+ *     eq lane -> [n_gt + eq_prefix[c], ... + rank)      while < K
+ * where eq_prefix[c] = ge_prefix[c] - gt_prefix[c] counts the eq lanes of the
+ * chunks before c, so staging[0, K) is the final answer and no post-scatter
+ * trim is needed.
+ * The scatter target is staging, not the global row, so that the K values and
+ * the K indices stay in one place: both writeback forms of S5 read from here,
+ * and a later S4 sort could rewrite the pair in place.
+ *
+ * `off` is the element offset where the selected lanes get packed; the
+ * 16-batched path gathers it (v_ge_off[j] / v_gt_off[j]) while the
+ * 4/remainder path reads it scalar.
+ */
+
+/* Fast path: n_ge == K, so the ge stream IS the answer. One mask, two scatters
+   per lane. */
+__device__ __forceinline__ void scatter_lane(VUI su, VUI vkey, int c, int off,
+                                             VUI viota_base, float *stage_v,
+                                             int *stage_i) {
+  VUI idx_vec = viota_base + (VUI)(c * VEC_LEN);
+  VUI float_bits = UT2VT(su);
+  VMASK mask = CmpGe()(su, vkey);
+  VUI bytes = tcle::miota(mask) * (VUI)(sizeof(float));
+  tcle::scatter_cond(mask, float_bits, stage_v + off, bytes);
+  tcle::scatter_cond(mask, idx_vec, stage_i + off, bytes);
+}
+
+/* Slow path: gt lanes first, then the eq lanes that still fit.
+   eq_off = n_gt + ge_off - gt_off (eq = ge - gt). The vsel turns the eq mask
+   into a rank vector with 0xFFFFFFFF for non-eq lanes, so one compare
+   expresses "eq lane AND rank < K - eq_off". Empty masks no-op, so an eq chunk
+   past the K budget costs one compare. */
+__device__ __forceinline__ void scatter_split_lane(
+    VUI su, VUI vkey, int c, int gt_off, int ge_off, int n_gt, int K,
+    VUI viota_base, float *stage_v, int *stage_i) {
+  VUI idx_vec = viota_base + (VUI)(c * VEC_LEN);
+  VUI float_bits = UT2VT(su);
+  VMASK gt_mask = CmpGt()(su, vkey);
+  VUI gt_bytes = tcle::miota(gt_mask) * (VUI)(sizeof(float));
+  tcle::scatter_cond(gt_mask, float_bits, stage_v + gt_off, gt_bytes);
+  tcle::scatter_cond(gt_mask, idx_vec, stage_i + gt_off, gt_bytes);
+  int eq_off = n_gt + ge_off - gt_off;
+  int eq_room = K - eq_off;
+  int eq_dst = eq_room > 0 ? eq_off : 0;
+  uint32_t eq_room_u = eq_room > 0 ? static_cast<uint32_t>(eq_room) : 0u;
+  VMASK eq_mask = CmpEq()(su, vkey);
+  VUI eq_iota = tcle::miota(eq_mask);
+  VUI keep_v = tcle::vsel(eq_mask, eq_iota, (VUI)(0xFFFFFFFFu));
+  VMASK keep = (keep_v < (VUI)(eq_room_u));
+  VUI eq_bytes = eq_iota * (VUI)(sizeof(float));
+  tcle::scatter_cond(keep, float_bits, stage_v + eq_dst, eq_bytes);
+  tcle::scatter_cond(keep, idx_vec, stage_i + eq_dst, eq_bytes);
+}
+
+/* ---- slow path: ties at the K-th value -----------------------------------
+   Must stay __forceinline__: an out-of-line callee takes su_ptr as an opaque
+   argument and loses the constant `l1_buf + {0, MAX_L1_CACHE}` base parity
+   specialization the row loop relies on.
+
+   Contract: every subthread calls it (the branch is uniform after the stage-2
+   barrier) with its own chunk window [chunk_start, chunk_start + chunk_count)
+   and it performs its own barriers. It writes the gt prefix into gt_prefix,
+   publishes n_gt into totals[0], then scatters
+       gt lane -> [0, n_gt)                              unconditional
+       eq lane -> [n_gt + eq_prefix[c], ... + rank)      only while < K
+   so stage_v/stage_i[0, K) ends up holding exactly the top-K. */
+static __device__ __forceinline__ void reclaim_scatter_split(
+    uint32_t *su_ptr, uint32_t key_uint, int K, int matrix_col, int comp_cnt,
+    int sub_idx, int sub_num, int chunk_start, int chunk_count,
+    uint32_t *ge_prefix, uint32_t *gt_counts, uint32_t *gt_prefix,
+    uint32_t *valid_vec_idx, float *stage_v, int *stage_i, uint32_t *totals,
+    VUI viota_base) {
+  VUI vkey = (VUI)(key_uint);
+  VUI *vp = reinterpret_cast<VUI *>(su_ptr);
+
+  // S3 stage 1b: gt (> key) counts. The pad lanes [full_chunks, fc_al) are
+  // not re-zeroed here: the caller's stage 1 already zeroed both count legs.
+  for (int c = chunk_start; c < chunk_start + chunk_count; c++) {
+    gt_counts[c] = tcle::popc_mb<0>(vp[c] > vkey);
+  }
+
+  __syncsubthreads();
+
+  // S3 stage 2b: gt exclusive prefix + total (sub0).
+  if (sub_idx == 0) {
+    VUI running_gt = (VUI)(0);
+    for (int i = 0; i < matrix_col; i++) {
+      VUI tv = tcle::loadeoa<VUI>(gt_counts + i, matrix_col);
+      tcle::storeeoa(running_gt, gt_prefix + i, matrix_col);
+      running_gt = running_gt + tv;
+    }
+    uint32_t acc_t = 0;
+    VUI base_gt = lane_exclusive_scan(running_gt, acc_t);
+    for (int i = 0; i < matrix_col; i++) {
+      VUI tv = tcle::loadeoa<VUI>(gt_prefix + i, matrix_col);
+      tcle::storeeoa(tv + base_gt, gt_prefix + i, matrix_col);
+    }
+    totals[0] = acc_t;
+  }
+
+  __syncsubthreads();
+
+  int n_gt = static_cast<int>(totals[0]);
+
+  /* S3 stage 3b: two-stream scatter, same 16-batched gather form as the fast
+     path (repeat16 / repeat4 / remainder over the compressed table). */
+  int repeat16 = comp_cnt / (sub_num * 16);
+  int remainder16 = comp_cnt % (sub_num * 16);
+  int repeat4 = remainder16 / (sub_num * 4);
+  int remainder4 = remainder16 % (sub_num * 4);
+  uint32_t bpe = static_cast<uint32_t>(sizeof(uint32_t));
+  for (int idx = 0; idx < repeat16; idx++) {
+    int offset = idx * sub_num * 16 + sub_idx * 16;
+    VUI vec_c = tcle::load<VUI>(valid_vec_idx + offset, (VUI)(0),
+                                tcle::vset_mb<VMASK>(16));
+    VUI v_ge_off = tcle::gather<VUI>(ge_prefix, vec_c * bpe);
+    VUI v_gt_off = tcle::gather<VUI>(gt_prefix, vec_c * bpe);
+    #pragma clang loop unroll(full)
+    for (int j = 0; j < 16; ++j) {
+      int c = static_cast<int>(vec_c[j]);
+      scatter_split_lane(vp[c], vkey, c, static_cast<int>(v_gt_off[j]),
+                         static_cast<int>(v_ge_off[j]), n_gt, K, viota_base,
+                         stage_v, stage_i);
+    }
+  }
+  for (int idx = 0; idx < repeat4; idx++) {
+    int offset = repeat16 * sub_num * 16 + idx * sub_num * 4 + sub_idx * 4;
+    for (int u = 0; u < 4; u++) {
+      int c = static_cast<int>(valid_vec_idx[offset + u]);
+      scatter_split_lane(vp[c], vkey, c, static_cast<int>(gt_prefix[c]),
+                         static_cast<int>(ge_prefix[c]), n_gt, K, viota_base,
+                         stage_v, stage_i);
+    }
+  }
+  for (int idx = sub_idx; idx < remainder4; idx += sub_num) {
+    int offset = repeat16 * sub_num * 16 + repeat4 * sub_num * 4 + idx;
+    int c = static_cast<int>(valid_vec_idx[offset]);
+    scatter_split_lane(vp[c], vkey, c, static_cast<int>(gt_prefix[c]),
+                       static_cast<int>(ge_prefix[c]), n_gt, K, viota_base,
+                       stage_v, stage_i);
+  }
+}
+
+// ============= kernel entry: one hw thread per row (persistent) =============
+
+extern "C" __device__ __attribute__((no_mem_alias_in_vldst_tar,
+                                     loop_iterator_less_than_1024,
+                                     enable_software_pipeliner,
+                                     enable_bc_resolver))
+void topk_mradix_l1_kernel(
+    __attribute__((address_space(1))) float *input,
+    __attribute__((address_space(1))) float *output_vals,
+    __attribute__((address_space(1))) int *output_idx,
+    uint32_t *l1_buf,      // row cache, 2 * MAX_L1_CACHE words
+    uint32_t *reclaim_ws,  // reclaim workspace, WS_SIZE words
+    int32_t M, int32_t N, int32_t K, int32_t row_base, int32_t row_stride) {
+
+  int32_t N_padded = (N + VEC_LEN - 1) / VEC_LEN * VEC_LEN;
+  int32_t full_chunks = N_padded / VEC_LEN;
+
+  // Subthread index/count; the kernel assumes sub_num == 4 (see the header).
+  int32_t sub_idx = subThreadIdx.x;
+  int32_t sub_num = threadDim.x;
+
+  /* MRADIX/DTE and vector ops require the per-SIP vector length to be set.
+     Without it the MRADIX engine and DTE-triggered VDMEM transfers fault at
+     runtime. */
+  tcle::set_vl(VEC_LEN);
+
+  // Hardware vector iota instead of a VEC_LEN-iteration scalar init loop.
+  VUI viota_base = tcle::mid<VUI, 0>(0);
+
+  // VC0 - sub0: row load (slice_async) + value writeback (deslice). The two
+  // operations never overlap, so one channel is enough.
+  thread_shared_cdte_vc_id_t val_vc{0};
+  tops::local_dte val_ctx(&val_vc);
+
+  // idx_ctx  sub1 - index writeback (deslice)
+  thread_shared_cdte_vc_id_t idx_vc{1};
+  tops::local_dte idx_ctx(&idx_vc);
+  if (sub_idx == 0) {
+    val_ctx.init();
+  }
+  if (sub_idx == 1 && K < VEC_LEN) {
+    // K >= VEC_LEN writes back with a direct VUI store, no DTE involved.
+    idx_ctx.init();
+  }
+
+  /* ---- SWP over rows: prefetch row r+row_stride under row r ------------
+     The load of the next row is issued before the current row is computed,
+     so the DTE runs underneath S2..S5:
+
+        prologue   issue load(row_base)         -> half A
+        for r      wait(load r)                 (issued one iteration earlier)
+                   issue load(r+row_stride)     -> half B
+                   compute row r on half A
+                   flip A/B
+        epilogue   none -- the last wait is the one at the loop head
+
+     One outstanding transfer per channel: a tops::event is a channel handle,
+     so wait() means "the channel is idle". The two halves of l1_buf alternate
+     every row, which is what makes 2 * MAX_L1_CACHE a double buffer.
+     In-loop order is wait -> barrier -> next issue: only sub0 holds the event,
+     so the barrier is what tells the other subthreads the row has arrived, and
+     the next issue must follow the wait because it reuses the same channel. */
+  tops::event ld_ev;
+  if (sub_idx == 0 && row_base < M) {
+    ld_ev = tops::slice_async(
+        val_ctx,
+        tops::mdspan(tops::Local, reinterpret_cast<float *>(l1_buf), N_padded),
+        tops::mdspan(tops::Global, input + static_cast<long>(row_base) * N, N),
+        {0}, PAD_FLOAT_DESC);
+  }
+
+  int buf = 0;  // which half of l1_buf holds this row: 0 or MAX_L1_CACHE
+  const int sub_chunks  = full_chunks / sub_num;  // chunks per subthread
+  const int sub_rem     = full_chunks % sub_num;
+  const int chunk_start = sub_idx * sub_chunks + std::min(sub_idx, sub_rem);
+  const int chunk_count = sub_chunks + (sub_idx < sub_rem ? 1 : 0);
+  for (int row = row_base; row < M; row += row_stride) {
+    __attribute__((address_space(1))) float *out_v = output_vals + row * K;
+    __attribute__((address_space(1))) int   *out_i = output_idx  + row * K;
+
+    // ======================================================================
+    // S1  load + VT2UT (in place)
+    //     One DTE loads the row into this row's half of l1_buf (issued one
+    //     iteration earlier, see the SWP note above); every subthread then
+    //     converts an equal share of the chunks in place.
+    // ======================================================================
+    uint32_t *su_ptr = l1_buf + (buf ? MAX_L1_CACHE : 0);
+
+    if (sub_idx == 0)
+      ld_ev.wait();
+
+    __syncsubthreads();
+
+    if (sub_idx == 0) {
+      int next_row = row + row_stride;
+      if (next_row < M) {
+        int nbuf = buf ? 0 : MAX_L1_CACHE;
+        ld_ev = tops::slice_async(
+            val_ctx,
+            tops::mdspan(tops::Local, reinterpret_cast<float *>(l1_buf + nbuf),
+                         N_padded),
+            tops::mdspan(tops::Global, input + static_cast<long>(next_row) * N,
+                         N),
+            {0}, PAD_FLOAT_DESC);
+      }
+    }
+
+    // full_chunks covers N_padded, so the last chunk's tail lanes are converted
+    // here too; the pad lanes map to 0x007fffff (see PAD_FLOAT_DESC).
+    {
+      VUI *vp = reinterpret_cast<VUI *>(su_ptr);
+      int c = chunk_start;
+      int c_end = chunk_start + chunk_count;
+      // Unrolled so several VEC_LEN-lane loads are in flight; best of
+      // 1/2/4/8/16/32 on three shapes (16: +0.8..2.4%, 32: +5%).
+      constexpr int VT2UT_UNROLL_CNT = 8;
+      int c_batched =
+          c + (chunk_count & ~(VT2UT_UNROLL_CNT - 1));  // power of 2
+      for (; c < c_batched; c += VT2UT_UNROLL_CNT) {
+        #pragma clang loop unroll(full)
+        for (int j = 0; j < VT2UT_UNROLL_CNT; ++j)
+          vp[c + j] = VT2UT(vp[c + j]);
+      }
+      for (; c < c_end; c++) {
+        vp[c] = VT2UT(vp[c]);
+      }
+    }
+
+    __syncsubthreads();
+
+    // ======================================================================
+    // S2  histogram + find_k_bin  (sub0 only: MRADIX is a shared HW unit)
+    //     MAX_SHIFT_NUM MRADIX digit passes (one per 5-bit digit, MSB first),
+    //     each narrowing the candidate prefix; find_k_bin then walks the 32
+    //     bins to pick the digit holding the k-th largest element.
+    //     Leaves `desired` = sort-uint key of the k-th largest value,
+    //     the same in every subthread after the barrier.
+    // ======================================================================
+    uint32_t desired = 0;
+    if (sub_idx == 0) {
+      bool found_k = false;
+      int k_to_find = K;
+      /* The bins are read back through this aligned stack array, not by
+         indexing the OACC vector directly: a lane read lowers to v.movoa2r
+         (OACC -> scalar-register move, one per bin) and measured 5-12%
+         slower than one 512B vector store plus 32 constant-address scalar
+         loads, which the compiler hoists and issues in parallel. */
+      __valigned__ uint32_t hist_stack[VEC_LEN];  // one VUI; 32 bins
+
+      for (int digit_pos = 0; digit_pos < MAX_SHIFT_NUM && !found_k;
+           digit_pos++) {
+        int shift = MAX_SHIFT_NUM - 1 - digit_pos;
+        VUI vzero = (VUI)(0);
+        tcle::mradix_w_base(vzero);
+
+        dispatch_histogram(shift, su_ptr, full_chunks, desired);
+
+        VUI hist_result = tcle::mradix_r_base<VUI>();
+        tcle::store(hist_result, hist_stack);
+
+        found_k = find_k_bin<NUM_BINS, MAX_SHIFT_NUM>(hist_stack, k_to_find,
+                                                      desired, digit_pos);
+      }
+      /* Sublthread 0 publishes desired in ws[4095]; every subthread reads it
+         right after the barrier below, and the slot is only rewritten (with
+         n_ge) after the next barrier, so the reuse is safe. */
+      reclaim_ws[4095] = desired;
+    }
+
+    __syncsubthreads();
+
+    if (sub_idx != 0)
+      desired = reclaim_ws[4095];
+
+    // ======================================================================
+    // S3  reclaim: select the top-k lanes into staging
+    //     Per-chunk popcount of the ge (>= threshold) stream (all subthreads),
+    //     exclusive prefix over the chunks plus a compression table of the
+    //     non-empty ones (sub0/sub2), then the lane scatter into staging
+    //     (all). Fast path n_ge == K (unique floats): the ge stream is the
+    //     answer. Slow path n_ge > K (ties at the k-th value): recount with
+    //     '>', then scatter gt to [0, n_gt) and eq to [n_gt, K).
+    // ======================================================================
+    VUI vkey = (VUI)(desired);
+
+    /* S3 stage 1 -- per-chunk ge (>= key) counts, all subthreads, straight
+       into the L1 workspace. The split path recounts the gt stream in a second
+       pass inside reclaim_scatter_split, so it never sweeps the row a third
+       time.
+       Workspace layout (fc_al = ALIGN_UP(full_chunks, VEC_LEN); see the WS_*
+       constants at the top of the file):
+         [ge_counts fc_al][ge_prefix fc_al][gt_counts fc_al]
+         [gt_prefix fc_al][valid_vec_idx fc_al] | [stage_v K_MAX]
+         [stage_i K_MAX] | ws[4093..4095]
+       eq_prefix[c] is not stored: eq = ge - gt, so stage 3 derives it as
+       ge_prefix[c] - gt_prefix[c]. The compression table (valid_vec_idx) lives
+       at ws[4*fc_al, 5*fc_al).
+       Why fc_al rounds up to VEC_LEN: stage 2 scans each count leg as a
+       (matrix_col x VEC_LEN) column-major matrix and moves one whole
+       VEC_LEN-lane column per loadeoa/storeeoa step, so a leg must be a whole
+       number of columns wide or the last column store would run into the next
+       leg. */
+    int fc_al = (full_chunks + VEC_LEN - 1) & ~(VEC_LEN - 1);
+    uint32_t *ge_counts = reclaim_ws;
+    uint32_t *ge_prefix = reclaim_ws + fc_al;
+    uint32_t *gt_counts = reclaim_ws + 2 * fc_al;
+    uint32_t *gt_prefix = reclaim_ws + 3 * fc_al;
+    uint32_t *valid_vec_idx = reclaim_ws + 4 * fc_al;
+    VUI *vp = reinterpret_cast<VUI *>(su_ptr);
+    constexpr int GE_COUNT_UNROLL_CNT = 16;
+    int c = chunk_start;
+    int c_end = chunk_start + chunk_count;
+    int c_batched =
+        c + (chunk_count & ~(GE_COUNT_UNROLL_CNT - 1));  // power of 2
+    for (; c < c_batched; c += GE_COUNT_UNROLL_CNT) {
+      VUI s[GE_COUNT_UNROLL_CNT];
+      #pragma clang loop unroll(full)
+      for (int j = 0; j < GE_COUNT_UNROLL_CNT; ++j)
+        s[j] = vp[c + j];
+      #pragma clang loop unroll(full)
+      for (int j = 0; j < GE_COUNT_UNROLL_CNT; ++j)
+        ge_counts[c + j] = tcle::popc_mb<0>(s[j] >= vkey);
+    }
+    for (; c < c_end; c++) {
+      ge_counts[c] = tcle::popc_mb<0>(vp[c] >= vkey);
+    }
+    /* Scalar pad zeroing (subthread 0): [full_chunks, fc_al) of both count
+       legs, so the EOA lane loads (which always read a full VEC_LEN-lane
+       column) see defined data. gt_counts is included because
+       reclaim_scatter_split only refills the real chunks and reuses this
+       padding; this is its only zeroing.
+       The padded lanes [N, N_padded) need no separate tail count: they live
+       inside the last full chunk and their ge count is already part of
+       ge_counts[full_chunks - 1]. */
+    if (sub_idx == 0) {
+      for (int c = full_chunks; c < fc_al; c++) {
+        ge_counts[c] = 0u;
+        gt_counts[c] = 0u;
+      }
+    }
+
+    __syncsubthreads();
+
+    /* S3 stage 2 -- the exclusive prefix over the chunks (sub0) and the
+       compression table of the non-empty chunks (sub2) run concurrently: sub0
+       reads ge_counts and writes ge_prefix, sub2 reads ge_counts and writes
+       valid_vec_idx, so the two are disjoint and one barrier joins them with
+       subs 1/3.
+       The prefix is a two-pass blocked scan over the (matrix_col x VEC_LEN)
+       view of the counts: element v = i + j*matrix_col, loadeoa/storeeoa with
+       stride matrix_col move whole columns, and
+       prefix(v) = row_base[j] + col_prefix(i, j). Pass 1 stores the value
+       BEFORE adding it, so for matrix_col == 1 it writes zeros and the row
+       base alone (lane j == counts[j]) produces the exclusive prefix.
+       row_base comes from lane_exclusive_scan over the column totals: TLE-RAW
+       has no vector arrays on the addrspace(5) stack, so the running sum
+       cannot stay in a stack array.
+       Only the ge prefix is built here; the gt prefix is consumed by the split
+       path alone, which builds it inside reclaim_scatter_split.
+       n_ge / comp_cnt are declared at this scope because the stage-3 block
+       below reads them. */
+    int n_ge = 0; /* #lanes >= key */
+    int comp_cnt = 0;
+    int matrix_col = fc_al / VEC_LEN;
+    if (sub_idx == 0) {
+      VUI running_ge = (VUI)(0);
+      for (int i = 0; i < matrix_col; i++) {
+        VUI gv = tcle::loadeoa<VUI>(ge_counts + i, matrix_col);
+        tcle::storeeoa(running_ge, ge_prefix + i, matrix_col);
+        running_ge = running_ge + gv;
+      }
+      uint32_t acc_g = 0;
+      VUI base_ge = lane_exclusive_scan(running_ge, acc_g);
+      for (int i = 0; i < matrix_col; i++) {
+        VUI gv = tcle::loadeoa<VUI>(ge_prefix + i, matrix_col);
+        tcle::storeeoa(gv + base_ge, ge_prefix + i, matrix_col);
+      }
+      n_ge = static_cast<int>(acc_g); /* tail already in the counts */
+      // ws[4095] is free again: desired was consumed before stage 1.
+      reclaim_ws[4095] = static_cast<uint32_t>(n_ge);
+    }
+
+    /* Subthread 2 builds the compression table of the non-empty chunks. A
+       chunk enters the table iff its ge count is nonzero (ge is a superset of
+       gt and eq), so one table drives both streams, and stage 3 iterates only
+       the non-empty ones: an empty chunk then costs nothing instead of a pair
+       of scatter_cond. The final-pass ge band is sparse on random data, so
+       comp_cnt << full_chunks and the stage-3 loop shrinks accordingly.
+       Table placement: ws[4*fc_al, 5*fc_al), the fifth leg of the stage-1
+       layout, i.e. <= 2560 words for every supported N (fc_al <= 512), so it
+       ends below staging at ws[WS_STAGE_V_OFF). Staging must never alias it:
+       a staging write would destroy the table mid-iteration, and the stale
+       entry would then index a wild vp[c].
+       comp_cnt is published to ws[4094] and read back after the barrier below,
+       like n_ge at ws[4095]. */
+    if (sub_idx == 2) {
+      comp_cnt =
+          build_valid_table(ge_counts, matrix_col, viota_base, valid_vec_idx);
+      reclaim_ws[4094] = static_cast<uint32_t>(comp_cnt);
+    }
+
+    __syncsubthreads();
+
+    n_ge = static_cast<int>(reclaim_ws[4095]);
+    /* comp_cnt and n_ge are read together after that barrier. sub2 never runs
+       sub0's scan but must still reach the same barrier sequence (a barrier on
+       only some paths aborts at runtime). */
+    comp_cnt = static_cast<int>(reclaim_ws[4094]);
+
+    /* ---- slow path decision --------------------------------------
+       n_ge > K means the boundary value repeats, so the ge stream is longer
+       than K and cannot be truncated by position (a late gt lane must outrank
+       an early eq lane). The recount / gt-prefix / two-stream scatter then runs
+       in reclaim_scatter_split(). Unique floats give n_ge == K exactly and only
+       ever take the fast path below. */
+    bool split_path = (n_ge > K);
+
+    /* S3 stage 3 -- pack the selected lanes of the row into staging[0, K).
+       What it computes, independent of how the lanes are scanned:
+         for each chunk c of the compressed table:   // non-empty chunks
+           for each lane l of vp[c]:                 // VEC_LEN sort keys
+             if (vp[c][l] >= vkey) {
+               stage_v[off] = value(l);              // UT2VT: key -> fp32
+               stage_i[off] = c * VEC_LEN + l;       // row lane index
+               off += 1;
+             }
+       with off starting at ge_prefix[c], so each chunk owns a disjoint slot
+       range and the packed row keeps the row's lane order. The split path uses
+       the same scheme with two predicates (see the block above the scatter
+       helpers).
+
+       A scalar form costs comp_cnt * VEC_LEN iterations plus ~6 scalar L1 reads
+       of table/prefix metadata per chunk; the code below removes both:
+         - the running `off` is miota(mask), the exclusive prefix of the
+           compare mask, and the conditional store is
+           scatter_cond(mask, data, stage + off, rank * sizeof(float));
+         - the metadata is fetched 16 chunks at a time: one masked 16-lane table
+           load (pad lanes read 0) plus one gather of ge_prefix[c] (the split
+           path gathers gt_prefix[c] as well);
+         - those 16 chunks are then inlined, one vector load + compare + miota
+           + 2 masked scatters each.
+       The table is walked in three tiers (repeat16 / repeat4 / remainder) so
+       the tail never reads past comp_cnt while every tier still keeps all
+       subthreads busy; comp_cnt is shared, not re-partitioned.
+
+       Iterate [0, comp_cnt), never [0, full_chunks): valid_vec_idx only holds
+       the non-empty chunks, so comp_cnt <= full_chunks, and an index past its
+       end reads uninitialized workspace, i.e. a garbage chunk id.
+       Staging placement: the five count/prefix legs occupy
+       5*fc_al <= WS_STAGE_V_OFF words (fc_al <= WS_FC_AL_MAX), so staging sits
+       above them and must never alias ge_prefix: staging writes would destroy
+       the prefix array mid-scatter and mis-aim the later scatters. Staging
+       spans ws[WS_STAGE_V_OFF, 4093) (2*K <= 1280 slots, ending at ws[3840)),
+       below the 3 publish words. Both staging buffers are 512B-aligned because
+       S5 ships them out with a DTE deslice (K < VEC_LEN) or with VUI-wide
+       copies (K >= VEC_LEN). */
+    float *stage_v = reinterpret_cast<float *>(reclaim_ws + WS_STAGE_V_OFF);
+    int   *stage_i = reinterpret_cast<int   *>(reclaim_ws + WS_STAGE_I_OFF);
+    if (split_path) {
+      reclaim_scatter_split(su_ptr, desired, K, matrix_col, comp_cnt, sub_idx,
+                            sub_num, chunk_start, chunk_count, ge_prefix,
+                            gt_counts, gt_prefix, valid_vec_idx, stage_v,
+                            stage_i, &reclaim_ws[4093], viota_base);
+    } else {
+      int repeat16 = comp_cnt / (sub_num * 16);
+      int remainder16 = comp_cnt % (sub_num * 16);
+      int repeat4 = remainder16 / (sub_num * 4);
+      int remainder4 = remainder16 % (sub_num * 4);
+      uint32_t bpe = static_cast<uint32_t>(sizeof(uint32_t));
+      for (int idx = 0; idx < repeat16; idx++) {
+        int offset = idx * sub_num * 16 + sub_idx * 16;
+        /* One masked 16-lane table load; padded lanes read 0. */
+        VUI vec_c = tcle::load<VUI>(valid_vec_idx + offset, (VUI)(0),
+                                    tcle::vset_mb<VMASK>(16));
+        VUI v_ge_off = tcle::gather<VUI>(ge_prefix, vec_c * bpe);
+        #pragma clang loop unroll(full)
+        for (int j = 0; j < 16; ++j) {
+          int c = static_cast<int>(vec_c[j]);
+          scatter_lane(vp[c], vkey, c, static_cast<int>(v_ge_off[j]),
+                       viota_base, stage_v, stage_i);
+        }
+      }
+      /* repeat4: scalar metadata reads. The 4-way loop stays a loop on purpose:
+         expanding it here measured ~0.5% slower than the loop form. */
+      for (int idx = 0; idx < repeat4; idx++) {
+        int offset = repeat16 * sub_num * 16 + idx * sub_num * 4 + sub_idx * 4;
+        for (int u = 0; u < 4; u++) {
+          int c = static_cast<int>(valid_vec_idx[offset + u]);
+          scatter_lane(vp[c], vkey, c, static_cast<int>(ge_prefix[c]),
+                       viota_base, stage_v, stage_i);
+        }
+      }
+      // remainder: strided single chunks.
+      for (int idx = sub_idx; idx < remainder4; idx += sub_num) {
+        int offset = repeat16 * sub_num * 16 + repeat4 * sub_num * 4 + idx;
+        int c = static_cast<int>(valid_vec_idx[offset]);
+        scatter_lane(vp[c], vkey, c, static_cast<int>(ge_prefix[c]), viota_base,
+                     stage_v, stage_i);
+      }
+    }
+
+    __syncsubthreads();
+
+    // ======================================================================
+    // S4  sort -- no-op: the k elements come back in reclaimed order, which is
+    //     torch.topk(sorted=False). A caller that needs the sorted contract
+    //     sorts the k-element slice itself (k <= WS_STAGE_K_MAX).
+    //     A real sort stage would read the staging S3 fills and rewrite it in
+    //     place, so it can be added here without touching S1..S3.
+    // ======================================================================
+
+    // ======================================================================
+    // S5  writeback: staging -> output row
+    //     One of two transports moves the row's k elements: a sub0/sub1 deslice
+    //     pair for K < VEC_LEN, a sub0 vector copy plus a scalar tail
+    //     otherwise. The gate is per K because a deslice costs ~3-3.5us of
+    //     issue latency per VUI beat; measurements and per-path constraints
+    //     follow.
+    // ======================================================================
+
+    /* Transport per K (topsprof medians):
+       - K < VEC_LEN: the deslice pair wins. 1x4096x32 10.50 vs 11.65us,
+         1x4096x64 11.33 vs 14.10us (2K scalar stores cost more than two
+         short DTE moves).
+       - K >= VEC_LEN: the copy wins. 128x32768x256 deslice pair 153.9 vs
+         copy 149.6us, because each deslice burns ~3-3.5us of issue latency per
+         VUI beat while the K=256 copy is 4 VUI chunk ops.
+       A deslice is blocking and carries no event, so both transports retire
+       before the row-end barrier and staging is free for the next row.
+
+       Vector copy: K/VEC_LEN VUI chunks plus a scalar tail. VUI is VEC_LEN
+       lanes (512B), so sv/si advance by c and out_v/out_i by c*VEC_LEN.
+       Both staging buffers are 512B-aligned (WS_STAGE_V_OFF = 2560 and
+       WS_STAGE_I_OFF = 3200 are multiples of VEC_LEN); the output rows are not
+       required to be, since an element-aligned VUI store is correct here.
+       The scalar tail covers K % VEC_LEN elements.
+       The staging reads and the row stores are plain C dereferences, never
+       tcle::load / tcle::store: tcle::load on a GLOBAL pointer is a
+       miscompile trigger, so this loop keeps the pointer arithmetic in C. */
+    if (K < VEC_LEN) {
+      if (sub_idx == 0) {
+        tops::deslice(val_ctx, /* role: val writeback (VC0) */
+                      tops::mdspan(tops::Global, out_v, K),
+                      tops::mdspan(tops::Local, stage_v, K), {0});
+      } else if (sub_idx == 1) {
+        tops::deslice(idx_ctx, /* role: idx writeback (VC1) */
+                      tops::mdspan(tops::Global, out_i, K),
+                      tops::mdspan(tops::Local, stage_i, K), {0});
+      }
+    } else if (sub_idx == 0) {
+      VUI *sv = reinterpret_cast<VUI *>(stage_v);
+      VUI *si = reinterpret_cast<VUI *>(stage_i);
+      /* The row start may be element-aligned only: on gcu400 a VUI store to
+         such an address is still correct, and measured 1.5x-3.6x faster than
+         the scalar copy of the whole K. */
+      int vec_chunks = K / VEC_LEN;
+      // Expanding this loop measured ~0.7-1% slower than the rolled form.
+      #pragma clang loop unroll(disable)
+      for (int c = 0; c < vec_chunks; c++) {
+        VUI vval = sv[c];
+        VUI vidx = si[c];
+        *reinterpret_cast<VUI *>(out_v + c * VEC_LEN) = vval;
+        *reinterpret_cast<VUI *>(out_i + c * VEC_LEN) = vidx;
+      }
+      for (int i = vec_chunks * VEC_LEN; i < K; i++) {
+        out_v[i] = stage_v[i];
+        out_i[i] = stage_i[i];
+      }
+    }
+
+    __syncsubthreads();
+
+    buf = buf ? 0 : MAX_L1_CACHE;
+  }
+}

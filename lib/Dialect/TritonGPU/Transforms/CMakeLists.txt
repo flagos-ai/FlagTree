@@ -16,10 +16,34 @@ if(NOT FLAGTREE_BACKEND)
   )
 endif()
 
+# The pass definition is only emitted by tablegen when
+# __FLAGTREE_PIPELINE_ENHANCE__ is defined (see cmake/FlagTreeOptions.cmake).
+set(TritonGPUTransformsPipelineEnhanceSources)
+if(NOT FLAGTREE_BACKEND)
+  list(APPEND TritonGPUTransformsPipelineEnhanceSources
+    Pipeliner/MergeDuplicateLoads.cpp
+  )
+endif()
+
+set(TritonGPUTransformsSharedMemoryHintSources ProcessSharedMemoryHint.cpp)
+set(TritonGPUTransformsWarpSpecializationSources
+  WarpSpecialization/AutomaticWarpSpecialization.cpp
+  WarpSpecialization/PartitionLoops.cpp
+)
+set(TritonGPUTransformsBackendLibs
+  NVWSIR
+  NVWSTransforms
+)
+if(FLAGTREE_BACKEND STREQUAL "iluvatar")
+  set(TritonGPUTransformsSharedMemoryHintSources)
+  set(TritonGPUTransformsWarpSpecializationSources)
+  set(TritonGPUTransformsBackendLibs TritonILUVATARUtils)
+endif()
+
 add_triton_library(TritonGPUTransforms
   AccelerateMatmul.cpp
   ${TritonGPUTransformsConcatDotOperandSources}
-  ProcessSharedMemoryHint.cpp
+  ${TritonGPUTransformsSharedMemoryHintSources}
   Coalesce.cpp
   F32DotTC.cpp
   FuseNestedLoops.cpp
@@ -35,6 +59,7 @@ add_triton_library(TritonGPUTransforms
   Pipeliner/MMAv5PipelineUtility.cpp
   Pipeliner/ScheduleLoops.cpp
   ${TritonGPUTransformsTleSources}
+  ${TritonGPUTransformsPipelineEnhanceSources}
   Pipeliner/WGMMAPipeline.cpp
   Pipeliner/PipelineExpander.cpp
   Pipeliner/TestPipelineLowerLoop.cpp
@@ -50,11 +75,10 @@ add_triton_library(TritonGPUTransforms
   Utility.cpp
   CoalesceUtils.cpp
   LayoutPropagationUtility.cpp
-  WarpSpecialization/AutomaticWarpSpecialization.cpp
+  ${TritonGPUTransformsWarpSpecializationSources}
   WarpSpecialization/Partition.cpp
   WarpSpecialization/OptimizePartitionWarps.cpp
   WarpSpecialization/PartitionBuilder.cpp
-  WarpSpecialization/PartitionLoops.cpp
   WarpSpecialization/PartitionScheduling.cpp
 
   DEPENDS
@@ -75,8 +99,7 @@ add_triton_library(TritonGPUTransforms
   TritonTransforms
   TritonGPUIR
   TritonNvidiaGPUIR
-  NVWSIR
-  NVWSTransforms
+  ${TritonGPUTransformsBackendLibs}
   TritonToTritonGPU
   TritonInstrumentIR
   MLIRTransformUtils

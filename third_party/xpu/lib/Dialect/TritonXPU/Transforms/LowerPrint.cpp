@@ -45,7 +45,7 @@ struct TritonXPUPrint : public impl::TritonXPUPrintBase<TritonXPUPrint> {
           printOp->getLoc(), pidX.getResult(), pidY.getResult(),
           pidZ.getResult(), outer_idx, inner_idx, uc_idx, inner_bound, uc_bound,
           b.getStringAttr(printOp.getPrefix()), b.getBoolAttr(printOp.getHex()),
-          printOp.getOperands());
+          printOp.getOperands(), b.getDenseI32ArrayAttr(printOp.getIsSigned()));
 
       printOp.erase();
     });

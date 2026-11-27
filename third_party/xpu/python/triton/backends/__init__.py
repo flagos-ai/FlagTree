@@ -35,6 +35,23 @@ class Backend:
     driver: Type[DriverBase]
 
 
+# ===-------------------- For Triton XPU -----------------------===
+# nvidia and xpu both report is_active()==True on CUDA-available systems, so
+# exactly one backend group must be selected explicitly: the xpu (KL3 / sdnn)
+# backend.
+_SELECTABLE_BACKENDS = ("nvidia", "amd", "xpu")
+
+
+def _select_xpu_backend(backends: dict[str, Backend]) -> dict[str, Backend]:
+    for name in _SELECTABLE_BACKENDS:
+        if name != "xpu":
+            backends.pop(name, None)
+    return backends
+
+
+# ===-----------------------------------------------------------===
+
+
 def _discover_backends() -> dict[str, Backend]:
     backends = dict()
     # Fast path: optionally skip entry point discovery (which can be slow) and
@@ -46,13 +63,17 @@ def _discover_backends() -> dict[str, Backend]:
         for name in os.listdir(root):
             if not os.path.isdir(os.path.join(root, name)):
                 continue
-            if name.startswith('__'):
+            # Skip both dunder dirs and single-underscore helper packages
+            # (e.g. `_xtdk_llvm19`, the shared LLVM 19 lib symlink setup.py
+            # stages): they are not backends and have no compiler/driver.
+            if name.startswith('_'):
                 continue
             compiler = importlib.import_module(f"triton.backends.{name}.compiler")
             driver = importlib.import_module(f"triton.backends.{name}.driver")
             backends[name] = Backend(_find_concrete_subclasses(compiler, BaseBackend),
                                      _find_concrete_subclasses(driver, DriverBase))
-        return backends
+
+        return _select_xpu_backend(backends)
 
     # Default path: discover via entry points for out-of-tree/downstream plugins.
     for ep in entry_points().select(group="triton.backends"):
@@ -60,7 +81,8 @@ def _discover_backends() -> dict[str, Backend]:
         driver = importlib.import_module(f"{ep.value}.driver")
         backends[ep.name] = Backend(_find_concrete_subclasses(compiler, BaseBackend),  # type: ignore
                                     _find_concrete_subclasses(driver, DriverBase))  # type: ignore
-    return backends
+
+    return _select_xpu_backend(backends)
 
 
 backends: dict[str, Backend] = _discover_backends()

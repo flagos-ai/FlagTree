@@ -1,0 +1,32 @@
+P800 * 4
+harbor.baai.ac.cn/flagtree/flagtree-xpu3.6-py310-torch2.9.0-ubuntu22.04:202610-vllm0.24.0-plugin-gems
+Driver Version: 5.0.21.47
+vllm==0.24.0+empty
+torch==2.9.0+cu129
+
+[2026/10/19] vllm-plugin-fl==0.3.0rc2.post1+ge15ddd4 (2026/10/11), flag_gems==5.4.0rc2.post1 (2026/09/14), flagtree===0.7.1a1+xpu3.6 (2026/10/13)
+# 服务冷启动时间: 13分31秒, 服务热启动时间: 5分41秒
+# 输入长度: 1K, 输出长度: 1K, 并发数: 4
+  Output token throughput (tok/s): 43.56
+  Total token throughput (tok/s): 87.12
+  Median TTFT (ms): 6384.90
+  Median TPOT (ms): 85.68
+  Median ITL (ms): 85.32
+# 输入长度: 512, 输出长度: 512, 并发数: 4
+  Output token throughput (tok/s): 43.09
+  Total token throughput (tok/s): 86.18
+  Median TTFT (ms): 3162.15
+  Median TPOT (ms): 86.75
+  Median ITL (ms): 84.99
+# 输入长度: 256, 输出长度: 256, 并发数: 4
+  Output token throughput (tok/s): 40.37
+  Total token throughput (tok/s): 80.74
+  Median TTFT (ms): 2205.38
+  Median TPOT (ms): 91.59
+  Median ITL (ms): 85.09
+# 输入长度: 128, 输出长度: 128, 并发数: 4
+  Output token throughput (tok/s): 38.13
+  Total token throughput (tok/s): 76.27
+  Median TTFT (ms): 2568.75
+  Median TPOT (ms): 87.52
+  Median ITL (ms): 85.13

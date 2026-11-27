@@ -197,7 +197,8 @@ DenseMap<unsigned, Value> getPPUAIUV1SwizzledSharedPtrs(
   auto elemBytes = resElemTy.getIntOrFloatBitWidth() / 8;
   // number of elements in one 32-byte channel slice
   unsigned sliceElems = 32 / elemBytes;
-  // swizzle chunk is 16 bytes (8 elems for b16, 16 elems for b8)
+  // swizzle chunk is 16 bytes (16 elems for b8, 8 for b16, 4 for b32); the
+  // rotation below works on 16-byte chunks and is independent of elemBytes
   unsigned outVec = sliceElems / 2;
   auto outOrder = resSharedLayout.getOrder();
 

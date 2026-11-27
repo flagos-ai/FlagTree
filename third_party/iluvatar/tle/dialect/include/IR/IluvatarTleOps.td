@@ -20,6 +20,20 @@ class IluvatarTle_Op<string mnemonic, list<Trait> traits = []>
 
 def IluvatarTle_SharedMemory : Resource<"::mlir::triton::gpu::SharedMemory">;
 
+def IluvatarTle_SetLayoutOp : IluvatarTle_Op<"gpu.set_layout", [
+    Pure, SameOperandsAndResultShape, SameOperandsAndResultElementType]> {
+  let summary = "Attach a requested distributed encoding to a tensor value";
+  let description = [{
+    Carries an explicit blocked or sliced-blocked layout through TTIR. The
+    Triton-to-TritonGPU conversion propagates this hard constraint and lowers
+    the boundary to a layout conversion. Only single-CTA layouts are supported.
+  }];
+  let arguments = (ins TT_Tensor:$src, AnyAttr:$target_encoding);
+  let results = (outs TT_Tensor:$result);
+  let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
+  let hasVerifier = 1;
+}
+
 def IluvatarTle_ExtractTileOp : IluvatarTle_Op<"extract_tile", [Pure]> {
   let arguments = (ins TT_Tensor:$src, TT_IntLike:$index);
   let results = (outs TT_Tensor:$result);
@@ -39,6 +53,31 @@ def IluvatarTle_InsertTileOp
   let assemblyFormat = [{
     $src `[` $index `]` `=` $tile attr-dict `:` qualified(type($src)) `,` qualified(type($index)) `,` qualified(type($tile)) `->` qualified(type($result))
   }];
+  let hasVerifier = 1;
+}
+
+def IluvatarTle_MemDescAliasOp : IluvatarTle_Op<"memdesc_alias", [Pure, MemDescViewTrait]> {
+  let summary = "create a typed view that aliases an existing shared memory descriptor";
+
+  let description = [{
+    This operation returns a descriptor-only view into an existing shared memory
+    descriptor. It does not allocate or move shared memory.
+
+    The result type carries the logical shape, element type, and encoding used
+    by consumers. The source descriptor provides the backing storage. The
+    offset_bytes attribute is a static byte offset from the source descriptor's
+    current view base.
+  }];
+
+  let arguments = (
+    ins TTG_MemDescType:$src,
+    I64Attr:$offset_bytes
+  );
+
+  let results = (outs TTG_MemDescType:$result);
+
+  let assemblyFormat = "$src attr-dict `:` qualified(type($src)) `->` qualified(type($result))";
+
   let hasVerifier = 1;
 }
 

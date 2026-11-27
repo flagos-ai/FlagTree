@@ -1,4 +1,7 @@
 #include "triton/Analysis/Allocation.h"
+#ifdef __TLE__
+#include "MUSATLE/Transforms/TransformAttrs.h"
+#endif
 
 #include <algorithm>
 #include <limits>
@@ -192,7 +195,7 @@ private:
       // values and has no dispatcher state.  Keep walking the nested regions
       // so their real allocations are still analyzed, but do not reserve the
       // generic capture mailbox for the container itself.
-      if (ws->hasAttr("musa_tle.static_warp_specialize"))
+      if (ws->hasAttr(musa_tle::kMUSATLEStaticWarpSpecializeAttr))
         return;
       auto [captureSize, captureAlign] = ws.getCaptureSizeAlign();
       maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, captureSize,
@@ -214,7 +217,7 @@ private:
       // need no per-warp state array.  Preserve the original allocation for
       // every other warp-specialize operation.
       func.walk([&](gpu::WarpSpecializeOp op) {
-        if (!op->hasAttr("musa_tle.static_warp_specialize"))
+        if (!op->hasAttr(musa_tle::kMUSATLEStaticWarpSpecializeAttr))
           numWarpIndices =
               std::max(numWarpIndices, op.getTotalPartitionWarps());
       });
@@ -599,7 +602,7 @@ private:
         bool differentConcurrentRegions =
             x->owner->getParentRegion() != y->owner->getParentRegion();
         if (wsx && wsx == wsy &&
-            wsx->hasAttr("musa_tle.static_warp_specialize")) {
+            wsx->hasAttr(musa_tle::kMUSATLEStaticWarpSpecializeAttr)) {
           Region *xRegion = getStaticWarpExecutionRegion(x->owner, wsx);
           Region *yRegion = getStaticWarpExecutionRegion(y->owner, wsy);
           differentConcurrentRegions = xRegion && yRegion && xRegion != yRegion;

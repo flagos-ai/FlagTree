@@ -20,7 +20,7 @@ std::optional<int64_t> getIntAttr(const OpFoldResult ofr);
 // attribute, the value of a plain arith.constant index, or the constant
 // result of an affine.min map (the tile size when the tile divides the
 // iteration range). nullopt when no static bound can be recovered.
-// Mirrors triton-shared Analysis/OpFoldResultUtils.cpp (internal d116bdf4);
+// Mirrors triton-shared Analysis/OpFoldResultUtils.cpp (sync source d116bdf4);
 // vendored here because FlagTree does not build third_party/triton_shared.
 std::optional<int64_t> getStaticUpperBound(const OpFoldResult ofr);
 

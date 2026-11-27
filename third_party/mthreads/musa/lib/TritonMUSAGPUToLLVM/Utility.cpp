@@ -62,8 +62,19 @@ buildSqmmaAccumulatorCarrierInfo(Type type) {
   unsigned fragmentElems = totalAccElems / fragmentCount;
   Type fragmentType = VectorType::get({static_cast<int64_t>(fragmentElems)},
                                       tensorTy.getElementType());
-  Type carrierType = VectorType::get({static_cast<int64_t>(totalAccElems)},
-                                     tensorTy.getElementType());
+  // Keep a single fragment as the existing vector fast path.  Represent a
+  // multi-fragment accumulator as independent aggregate fields so updating
+  // one fragment lowers to extractvalue/insertvalue instead of rebuilding one
+  // long vector element by element.  This also shortens live ranges for large
+  // rolling tiles before the MTGPU register allocator runs.
+  Type carrierType;
+  if (fragmentCount == 1) {
+    carrierType = fragmentType;
+  } else {
+    SmallVector<Type> fields(fragmentCount, fragmentType);
+    carrierType =
+        LLVM::LLVMStructType::getLiteral(tensorTy.getContext(), fields);
+  }
 
   return LLVM::MUSA::SqmmaAccumulatorCarrierInfo{
       tensorTy, fragmentCount, fragmentElems, fragmentType, carrierType};
@@ -211,6 +222,9 @@ Value extractSqmmaAccumulatorCarrierFragment(Location loc, Value carrier,
   if (info->fragmentCount == 1)
     return carrier;
 
+  if (isa<LLVM::LLVMStructType>(info->carrierType))
+    return LLVM::ExtractValueOp::create(rewriter, loc, carrier, fragmentIdx);
+
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   Value fragment = LLVM::UndefOp::create(rewriter, loc, info->fragmentType);
   for (unsigned i = 0; i < info->fragmentElems; ++i) {
@@ -231,6 +245,13 @@ Value insertSqmmaAccumulatorCarrierFragment(Location loc, Value carrier,
 
   if (info->fragmentCount == 1)
     return fragment;
+
+  if (isa<LLVM::LLVMStructType>(info->carrierType)) {
+    if (!carrier)
+      carrier = LLVM::UndefOp::create(rewriter, loc, info->carrierType);
+    return LLVM::InsertValueOp::create(rewriter, loc, carrier, fragment,
+                                       fragmentIdx);
+  }
 
   auto b = TritonLLVMOpBuilder(loc, rewriter);
   if (!carrier)

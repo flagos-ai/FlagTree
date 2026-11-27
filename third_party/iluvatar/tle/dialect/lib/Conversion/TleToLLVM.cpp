@@ -4,6 +4,7 @@
 #include "Conversion/TleToLLVM/ExtractOpToLLVM.h"
 #include "Conversion/TleToLLVM/LocalPointersOpToLLVM.h"
 #include "Conversion/TleToLLVM/PackOpToLLVM.h"
+#include "Conversion/TleToLLVM/ViewOpToLLVM.h"
 
 #ifdef FLAGCX_ENABLED
 #include "Conversion/TleToLLVM/FlagCxOpToLLVM/FlagCxOpToLLVM.h"
@@ -32,6 +33,8 @@ void populateTleToLLVMPatterns(LLVMTypeConverter &typeConverter,
       typeConverter, patterns, benefit);
   mlir::triton::iluvatar_tle::populatePackOpToLLVMPatterns(typeConverter,
                                                            patterns, benefit);
+  mlir::triton::iluvatar_tle::populateMemDescAliasOpToLLVMPatterns(
+      typeConverter, patterns, benefit);
   // FlagCX ops are lowered to LLVM.
 #ifdef FLAGCX_ENABLED
   mlir::triton::iluvatar_tle::populateFlagCxOpToLLVMPatterns(typeConverter,

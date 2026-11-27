@@ -1,6 +1,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
@@ -25,6 +26,71 @@ namespace triton {
 } // namespace mlir
 
 namespace {
+
+static Value stripSingleResultUnrealizedCasts(Value value) {
+  while (auto castOp = value.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (castOp->getNumOperands() != 1 || castOp->getNumResults() != 1)
+      break;
+    value = castOp->getOperand(0);
+  }
+  return value;
+}
+
+static Value getSourceTritonPtr(Value cudaTilePtr) {
+  auto castOp = cudaTilePtr.getDefiningOp<UnrealizedConversionCastOp>();
+  if (!castOp || castOp->getNumOperands() != 1 || castOp->getNumResults() != 1)
+    return {};
+
+  Value source = castOp->getOperand(0);
+  if (!isa<triton::PointerType>(source.getType()))
+    return {};
+  return source;
+}
+
+static LogicalResult rewriteCudaTilePtrAssume(LLVM::AssumeOp assumeOp,
+                                              PatternRewriter &rewriter,
+                                              cuda_tile::PtrToIntOp ptrToIntOp,
+                                              IntegerAttr divisorAttr,
+                                              int64_t divisor) {
+  Value cudaTilePtr = ptrToIntOp.getSource();
+  auto cudaTilePtrType = dyn_cast<cuda_tile::TileType>(cudaTilePtr.getType());
+  if (!cudaTilePtrType ||
+      !isa<cuda_tile::PointerType>(cudaTilePtrType.getElementType()))
+    return failure();
+
+  auto divByAttr = cuda_tile::DivByAttr::get(rewriter.getContext(), divisor,
+                                             std::nullopt, std::nullopt);
+  auto assumeCudaTileOp = cuda_tile::AssumeOp::create(
+      rewriter, assumeOp.getLoc(), cudaTilePtr, divByAttr);
+
+  DominanceInfo domInfo(assumeOp);
+  cudaTilePtr.replaceUsesWithIf(assumeCudaTileOp.getResult(),
+                                [&](OpOperand &operand) {
+                                  Operation *user = operand.getOwner();
+                                  if (user == assumeCudaTileOp.getOperation())
+                                    return false;
+                                  return domInfo.dominates(assumeOp, user);
+                                });
+
+  // If the CudaTile pointer was casted from a Triton pointer, also rewrite
+  // later Triton pointer users. This covers make_tensor_view bases built from a
+  // separate unrealized_conversion_cast of the same source pointer.
+  if (Value ttPtr = getSourceTritonPtr(cudaTilePtr)) {
+    Value newTtPtr = UnrealizedConversionCastOp::create(
+                         rewriter, assumeOp.getLoc(), ttPtr.getType(),
+                         assumeCudaTileOp.getResult())
+                         .getResult(0);
+    newTtPtr.getDefiningOp()->setAttr("tt.divisibility", divisorAttr);
+    ttPtr.replaceUsesWithIf(newTtPtr, [&](OpOperand &operand) {
+      Operation *user = operand.getOwner();
+      if (user == cudaTilePtr.getDefiningOp())
+        return false;
+      return domInfo.dominates(assumeOp, user);
+    });
+  }
+
+  return success();
+}
 
 // clang-format off
 // Match pattern:
@@ -99,6 +165,8 @@ LogicalResult RewriteArithAssumeImpl(LLVM::AssumeOp assumeOp,
   // There are two cases:
   // Case 1: intOrPtrToInt is a scalar integer value directly
   // Case 2: intOrPtrToInt is a result of tt.ptr_to_int operation
+  // Case 3: intOrPtrToInt is a result of cuda_tile.ptr_to_int, possibly behind
+  //         unrealized_conversion_cast operations.
   auto ptrToIntOp = intOrPtrToInt.getDefiningOp<triton::PtrToIntOp>();
   if (ptrToIntOp) {
     Value ttPtr = ptrToIntOp.getOperand();
@@ -135,9 +203,16 @@ LogicalResult RewriteArithAssumeImpl(LLVM::AssumeOp assumeOp,
       return false;
     });
     return success();
+  }
+
+  Value ptrToIntCandidate = stripSingleResultUnrealizedCasts(intOrPtrToInt);
+  auto cudaTilePtrToIntOp =
+      ptrToIntCandidate.getDefiningOp<cuda_tile::PtrToIntOp>();
+  if (cudaTilePtrToIntOp) {
+    return rewriteCudaTilePtrAssume(assumeOp, rewriter, cudaTilePtrToIntOp,
+                                    divisorAttr, divisor);
   } else {
     // Handle integer case
-    auto intType = dyn_cast<IntegerType>(intOrPtrToInt.getType());
     if (!isa<IntegerType>(intOrPtrToInt.getType()))
       return failure();
 

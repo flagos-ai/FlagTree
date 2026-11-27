@@ -71,6 +71,20 @@ static Value stripConvertLayouts(Value value) {
 static Value getSharedMemDescRoot(Value value) {
   Value current = stripConvertLayouts(value);
   while (current) {
+    if (auto result = dyn_cast<OpResult>(current)) {
+      Operation *wait = result.getOwner();
+      if (wait->getName().getStringRef() == "ttng.warp_group_dot_wait") {
+        unsigned resultNo = result.getResultNumber();
+        if (resultNo < wait->getNumOperands()) {
+          current = stripConvertLayouts(wait->getOperand(resultNo));
+          continue;
+        }
+      }
+    }
+    if (auto view = current.getDefiningOp<MemDescWGMMAViewOp>()) {
+      current = stripConvertLayouts(view.getSrc());
+      continue;
+    }
     if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
       current = stripConvertLayouts(index.getSrc());
       continue;

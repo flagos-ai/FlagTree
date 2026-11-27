@@ -372,7 +372,12 @@ class CodeGenerator(ast.NodeVisitor):
         else:
             from triton.language.semantic import TritonSemantic
             self.builder = ir.builder(context)
-            self.semantic = TritonSemantic(self.builder)
+            # flagtree tle: Track logical tensor descriptors with TLE frontend semantics.
+            if hasattr(self.builder, "mark_logical_tensor_descriptor"):
+                from triton.experimental.tle.language.gpu.semantic import TLEFrontendSemantic
+                self.semantic = TLEFrontendSemantic(self.builder)
+            else:
+                self.semantic = TritonSemantic(self.builder)
 
         self.name_loc_as_prefix = None
         self.file_name = file_name
@@ -1273,10 +1278,8 @@ class CodeGenerator(ast.NodeVisitor):
         # flagtree tle
         try:
             from ..experimental.tle import language as tle
-            tle_pipeline = tle.gpu.pipeline
             tle_range = tle.range  # flagtree reorder-loop-loads
         except (ImportError, AttributeError):
-            tle_pipeline = None
             tle_range = None
         try:
             from ..experimental.tle import language as tle
@@ -1285,10 +1288,10 @@ class CodeGenerator(ast.NodeVisitor):
             tle_dsa_pipeline = None
 
         # flagtree tle: check supported
-        if IteratorClass in (tle_pipeline, tle_range, tle_dsa_pipeline) and IteratorClass is not None:
+        if IteratorClass in (tle_range, tle_dsa_pipeline) and IteratorClass is not None:
             self._require_tle_primitive(IteratorClass)
 
-        if IteratorClass in [language.range, tle_pipeline, tle_range, tle_dsa_pipeline]:  # flagtree reorder-loop-loads
+        if IteratorClass in [language.range, tle_range, tle_dsa_pipeline]:  # flagtree reorder-loop-loads
             iterator = IteratorClass(*iter_args, **iter_kwargs)
             # visit iterator arguments
             # note: only `range` iterator is supported now
@@ -1367,8 +1370,9 @@ class CodeGenerator(ast.NodeVisitor):
                 for_op.set_attr("tt.warp_specialize", self.builder.get_unit_attr())
             if disable_licm:
                 for_op.set_attr("llvm.loop_annotation", self.builder.get_disable_loop_licm_attr())
-            if reorder and _unwrap_if_constexpr(loop_unroll_factor) is not None:  # flagtree reorder-loop-loads
-                for_op.set_attr("tt.reorder", self.builder.get_bool_attr(True))  # flagtree reorder-loop-loads
+            # flagtree reorder-loop-loads
+            if reorder and knobs.language.reorder_loop_loads and _unwrap_if_constexpr(loop_unroll_factor) is not None:
+                for_op.set_attr("tt.reorder", self.builder.get_bool_attr(True))
 
             self.scf_stack.append(node)
             for_op_body = for_op.get_body(0)
@@ -1541,6 +1545,12 @@ class CodeGenerator(ast.NodeVisitor):
             self.local_defs = prev_defs
             self.caller_context = prev_caller_context
 
+    def _get_tle_backend_name(self):
+        from triton._flagtree_backend import FLAGTREE_BACKEND
+
+        # An empty marker means NVIDIA; TileIR overrides this in its generator.
+        return FLAGTREE_BACKEND or "nvidia"
+
     # flagtree tle: check supported
     def _require_tle_primitive(self, primitive):
         from triton.experimental.tle import primitive_name
@@ -1549,10 +1559,9 @@ class CodeGenerator(ast.NodeVisitor):
             name = primitive_name(primitive)
         except ValueError:
             return
-        from triton._flagtree_backend import get_active_backend_name
-        from triton.experimental.tle import require_tle
+        from triton.experimental.tle import _require_tle_for_backend
 
-        require_tle(get_active_backend_name(), name)
+        _require_tle_for_backend(self._get_tle_backend_name(), name)
 
     def call_Function(self, node, fn, args, kws):
         # 4. Get current line number and hints
@@ -1874,6 +1883,9 @@ def ast_to_ttir(fn, src, context, options, codegen_fns, module_map, module=None)
     generator.flagtree_line_hints = getattr(tree.body[0], 'line_flagtree_hints', {}) or {}
     generator.visit(tree)
     module = generator.module
+    # flagtree tle: Validate logical tensor descriptors before verifying the module.
+    if hasattr(generator.builder, "validate_logical_tensor_descriptors"):
+        generator.builder.validate_logical_tensor_descriptors(module)
     # module takes ownership of the context
     module.context = context
     if not module.verify():

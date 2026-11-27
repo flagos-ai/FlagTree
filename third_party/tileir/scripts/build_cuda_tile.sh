@@ -20,8 +20,8 @@ BUILD_DIR="${REPO_ROOT}/build"
 INSTALL_DIR="${REPO_ROOT}/build/install"
 JOBS="${NINJA_JOBS:-32}"
 
-# Clean previous build and install results
-rm -rf "${BUILD_DIR}" "${INSTALL_DIR}"
+# The outer clean build removes this tree. Reuse unchanged SDK objects during
+# subsequent CMake configurations and incremental backend builds.
 mkdir -p "${BUILD_DIR}" "${INSTALL_DIR}"
 
 cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" \

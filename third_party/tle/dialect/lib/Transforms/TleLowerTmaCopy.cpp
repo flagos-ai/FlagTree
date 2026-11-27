@@ -28,6 +28,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
@@ -134,6 +135,21 @@ public:
       return failure();
     }
 
+    // Backend dialects without an eviction field retain the default policy.
+    // Use Operation::getAttr for both inherent and discardable attributes.
+    auto evictionPolicy = triton::EvictionPolicy::NORMAL;
+    if (Attribute attr = op->getAttr("evict")) {
+      auto policyAttr = dyn_cast<triton::EvictionPolicyAttr>(attr);
+      if (!policyAttr)
+        return op.emitOpError("requires a valid eviction policy");
+      evictionPolicy = policyAttr.getValue();
+    }
+    if (evictionPolicy != triton::EvictionPolicy::NORMAL &&
+        llvm::none_of(op->getName().getAttributeNames(), [](StringAttr name) {
+          return name.getValue() == "evict";
+        }))
+      return op.emitOpError("backend does not support TMA eviction policies");
+
     if (direction == TransferDirection::GM_TO_SHARMEMORY) {
       // Load from global memory to shared memory
       auto srcType = cast<TensorDescType>(op.getSrc().getType());
@@ -159,13 +175,21 @@ public:
       if (Value userBarrier = op.getBarrier()) {
         auto expectBytes =
             op->getAttrOfType<IntegerAttr>(op.getExpectBytesAttrName());
-        if (!expectBytes || expectBytes.getInt() <= 0)
+        // Zero is reserved for continuation tiles of a planned logical copy.
+        if (!expectBytes || expectBytes.getInt() < 0 ||
+            (expectBytes.getInt() == 0 &&
+             !op->hasAttr(kLogicalTMACopyBytesAttr)))
           return op.emitOpError("with explicit completion barrier requires "
                                 "positive expect_bytes");
-        rewriter.create<triton::nvidia_gpu::BarrierExpectOp>(
-            loc, userBarrier, static_cast<int32_t>(expectBytes.getInt()), pred);
-        rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
-            op.getLoc(), op.getSrc(), indices, userBarrier, dstMemDesc, pred);
+        if (expectBytes.getInt() > 0)
+          rewriter.create<triton::nvidia_gpu::BarrierExpectOp>(
+              loc, userBarrier, static_cast<int32_t>(expectBytes.getInt()),
+              pred);
+        auto tmaLoad =
+            rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
+                op.getLoc(), op.getSrc(), indices, userBarrier, dstMemDesc,
+                pred);
+        tmaLoad.setEvict(evictionPolicy);
       } else {
         if (op->hasAttr(op.getExpectBytesAttrName()))
           return op.emitOpError("expect_bytes requires an explicit completion "
@@ -195,13 +219,19 @@ public:
         int sizeInBytes = product(shapePerCTA) *
                           tensorType.getElementType().getIntOrFloatBitWidth() /
                           8;
+        if (auto logicalBytes =
+                op->getAttrOfType<IntegerAttr>(kLogicalTMACopyBytesAttr))
+          sizeInBytes = static_cast<int>(logicalBytes.getInt());
 
         rewriter.create<triton::nvidia_gpu::BarrierExpectOp>(loc, mbarrierAlloc,
                                                              sizeInBytes, pred);
 
         // Perform async TMA copy from global to existing shared memory
-        rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
-            op.getLoc(), op.getSrc(), indices, mbarrierAlloc, dstMemDesc, pred);
+        auto tmaLoad =
+            rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
+                op.getLoc(), op.getSrc(), indices, mbarrierAlloc, dstMemDesc,
+                pred);
+        tmaLoad.setEvict(evictionPolicy);
 
         // Wait for completion and invalidate barrier
         Value phase = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
@@ -212,6 +242,9 @@ public:
 #endif
 
     } else {
+      if (evictionPolicy != triton::EvictionPolicy::NORMAL)
+        return op.emitOpError("eviction policies are supported only for "
+                              "global-to-shared TMA copies");
 #if !defined(__HCU__)
       if (op.getBarrier())
         return op.emitOpError(

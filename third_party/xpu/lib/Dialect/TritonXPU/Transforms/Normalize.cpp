@@ -12,13 +12,10 @@
 // state analysis can move ahead of it (step 1.5c).
 //
 // Position: immediately before tritonxpu-vectorize, i.e. exactly where the
-// code used to run, with one difference -- Vectorize's own `vectorizeTLE` now
-// runs *after* these rewrites instead of before them. That can only matter for
-// a TLE kernel whose local-buffer store chain contains the NaN-aware max/min
-// select pattern: `doMaximumFusion` folds it to arith.maximumf, which *is* in
-// ARITH_BINARY_FLOAT_OP, so such a chain would newly vectorize. `vectorizeTLE`
-// stays behind because it needs Vectorize.cpp's VOp<T> table; no probe covers
-// the TLE path (golden.py has none), so this is stated, not measured.
+// code used to run. The note that used to sit here -- about the private TLE
+// walk running after these rewrites rather than before -- is moot: that walk is
+// gone, and TLE store chains now go through the same per-op machinery as
+// everything else, so they see these rewrites the way every other chain does.
 //===----------------------------------------------------------------------===//
 
 // clang-format off
@@ -30,6 +27,8 @@
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+
+#include <functional>
 // clang-format on
 
 #define DEBUG_TYPE "tritonxpu-normalize"
@@ -186,6 +185,40 @@ struct TritonXPUNormalize
         for (auto user : extUIOp.getOut().getUsers()) {
           if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(user)) {
             if (auto outTensorTy = dyn_cast<RankedTensorType>(outTy)) {
+              // The fused form only compiles if Vectorize actually retypes the
+              // compare into a vcmpf. It refuses the whole store chain when a
+              // producer has no vector form, and the one reachable here is a
+              // 64-bit int -> f32 sitofp/uitofp (VSIToFPOpConversion only
+              // lowers i32 -> f32; VectorizabilityAnalysis gates the same
+              // pair). Fusing anyway leaves a full-length triton_xpu.cmpf
+              // behind that ConvertTritonXPUToLLVM then rejects with
+              // "explicitly marked illegal" -- the flag_gems
+              // arange(i64) >= top_ks(i32) sampler mask. Stay scalar there.
+              std::function<bool(Value)> hasUnsignedSitofp =
+                  [&](Value v) -> bool {
+                Operation *def = v.getDefiningOp();
+                if (!def)
+                  return false;
+                if (auto castOp = dyn_cast<arith::SIToFPOp>(def)) {
+                  Type inTy = getElementTypeOrSelf(castOp.getIn().getType());
+                  if (inTy.isIntOrIndex() && !inTy.isInteger(32))
+                    return true;
+                  return false;
+                }
+                if (auto castOp = dyn_cast<arith::UIToFPOp>(def)) {
+                  Type inTy = getElementTypeOrSelf(castOp.getIn().getType());
+                  if (inTy.isIntOrIndex() && !inTy.isInteger(32))
+                    return true;
+                  return false;
+                }
+                for (Value operand : def->getOperands())
+                  if (hasUnsignedSitofp(operand))
+                    return true;
+                return false;
+              };
+              if (hasUnsignedSitofp(cmpFOp.getLhs()) ||
+                  hasUnsignedSitofp(cmpFOp.getRhs()))
+                return;
               auto lhsTy = cmpFOp.getLhs().getType();
               auto lhsElemTy =
                   getElementTypeOrSelf(getElementTypeOrSelf(lhsTy));

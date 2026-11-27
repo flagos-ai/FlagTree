@@ -16,7 +16,7 @@ Run with a FlagTree environment, for example:
     --node_rank=0 \
     --master_addr="${MASTER_ADDR}" \
     --master_port="${MASTER_PORT}" \
-    "${SCRIPT_DIR}/test_tle_intra_node_allgather.py"
+    "${SCRIPT_DIR}/05-intra-node-allgather.py"
 
 If you explicitly disabled distributed support with USE_FLAGCX=0, USE_DIST=0,
 or USE_TLE_DIST=0, it might be necessary to reset these settings before running this tutorial.

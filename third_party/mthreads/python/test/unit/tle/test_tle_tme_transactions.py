@@ -1,6 +1,7 @@
 """Compile-only coverage for mthreads TLE TME completion transactions."""
 
 import re
+from pathlib import Path
 
 import pytest
 import triton
@@ -189,6 +190,87 @@ def _lower_to_llvm_dialect(module, context):
     return module.str_nodebug()
 
 
+@pytest.mark.parametrize(
+    "leading,expected_groups",
+    [(192, 3), (320, 5)],
+    ids=["n192", "n320"],
+)
+def test_mthreads_tle_bf16_non_power_of_two_uses_64_element_tme_groups(tmp_path, leading, expected_groups):
+    fixture = f"""#shared = #ttg.swizzled_shared<{{vec = 1, perPhase = 1, maxPhase = 1, order = [0, 1]}}>
+#smem = #ttg.shared_memory
+module attributes {{"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32,
+    ttg.target = "musa:ph1", "ttg.threads-per-warp" = 32 : i32}} {{
+  tt.func public @n320_grouping(
+      %desc: !tt.tensordesc<tensor<{leading}x64xbf16, #shared>>) attributes {{
+      musa.max_bar_id = 1 : i32, noinline = false}} {{
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %true = arith.constant true
+    %smem = ttg.local_alloc : () -> !ttg.memdesc<{leading}x64xbf16, #shared, #smem, mutable>
+    ttmg.async_tme_copy_global_to_local %desc[%c0, %c0], %c1, %smem, %true {{
+      blockShape = array<i32: {leading}, 64>, cachePolicy = 0 : i32,
+      innerPersistence = 2 : i32, outerPersistence = 2 : i32,
+      prefetchSize = 0 : i32, swizzleGranularity = 0 : i32,
+      swizzleLine = 1 : i32, swizzleStride = 3 : i32
+    }} : !tt.tensordesc<tensor<{leading}x64xbf16, #shared>>,
+        !ttg.memdesc<{leading}x64xbf16, #shared, #smem, mutable>
+    tt.return
+  }}
+}}
+"""
+    fixture_path = tmp_path / f"n{leading}_grouping.ttgir"
+    fixture_path.write_text(fixture)
+
+    _, backend = mthreads_backend()
+    context = ir.context()
+    ir.load_dialects(context)
+    backend.load_dialects(context)
+    module = ir.parse_mlir_module(str(fixture_path), context)
+    lowered = _lower_to_llvm_dialect(module, context)
+
+    assert lowered.count('llvm.call_intrinsic "llvm.musa.tme.ld.tile.2d"') == 1, lowered
+    assert f"ttg.shared = {leading * 64 * 2} : i32" in lowered, lowered
+
+    constants = {
+        name: int(value)
+        for name, value in re.findall(
+            r"(%\d+) = llvm\.mlir\.constant\((-?\d+) : i32\) : i32",
+            lowered,
+        )
+    }
+    division = re.search(
+        r"(%\d+) = llvm\.udiv (%\d+), (%\d+) : i32.*?"
+        r"(%\d+) = llvm\.urem \2, \3 : i32",
+        lowered,
+        re.S,
+    )
+    assert division, lowered
+    assert constants[division.group(3)] == expected_groups, lowered
+
+    group_stride = re.search(
+        rf"%\d+ = llvm\.mul {re.escape(division.group(4))}, (%\d+) : i32",
+        lowered,
+    )
+    assert group_stride, lowered
+    assert constants[group_stride.group(1)] == 64, lowered
+
+    loop_limit = re.search(r'llvm\.icmp "slt" %\d+, (%\d+) : i32', lowered)
+    assert loop_limit, lowered
+    assert constants[loop_limit.group(1)] == leading, lowered
+
+
+def test_mthreads_sqmma_loader_uses_descriptor_grouping_contract():
+    # Core LinearLayout cannot represent a non-power-of-two memdesc output
+    # dimension, so the executable 192/320 coverage above exercises the TME
+    # producer.  Keep the SQMMA consumer coupled to that descriptor contract
+    # and prevent the former independent `min(width, 256 / elemBytes)` rule
+    # from returning unnoticed.
+    source_path = (Path(__file__).resolve().parents[4] / "musa/lib/TritonMUSAGPUToLLVM/DotOpToLLVM/SQMMA.cpp")
+    source = source_path.read_text()
+    assert "elemsPerLeadingGroup" in source
+    assert ("elemsPerSwizzlingRow = descriptorSpec.elemsPerLeadingGroup;" in source)
+
+
 @pytest.mark.parametrize("stages,slot", [(1, 0), (2, 0), (2, 1)])
 def test_mthreads_tle_completion_transaction_is_single_and_idempotent(stages, slot):
     _, context, module = _compile_transaction_module(stages, slot)
@@ -198,7 +280,9 @@ def test_mthreads_tle_completion_transaction_is_single_and_idempotent(stages, sl
     assert ttgir.count("ttmg.async_tme_copy_global_to_local") == 1, ttgir
     assert ttgir.count("ttmg.arrive_barrier_noret") == 1, ttgir
     assert ttgir.count("musa.tme.explicit_completion") == 3, ttgir
-    assert ttgir.count("musa.tme.issue_thread = 0 : i32") == 3, ttgir
+    # The three explicit completion operations and each full-barrier
+    # initialization are all issued by the same physical CTA thread.
+    assert ttgir.count("musa.tme.issue_thread = 0 : i32") == 3 + stages, ttgir
     assert "musa_tle.expect_bytes" not in ttgir, ttgir
     assert "ttmg.wait_barrier" not in ttgir, ttgir
 
@@ -244,7 +328,9 @@ def test_mthreads_tle_explicit_completion_uses_raw_issue_thread_without_barrier0
     assert llir.count('llvm.call_intrinsic "llvm.musa.tme.ld.tile.2d"') == 1, llir
     assert llir.count('llvm.call_intrinsic "llvm.musa.async.arrive.none.phaseid"') == 1, llir
     issue_constant = re.search(r"(%\d+) = llvm\.mlir\.constant\(512 : i32\) : i32", llir).group(1)
-    assert len(re.findall(rf'llvm\.icmp "eq" %\d+, {re.escape(issue_constant)} : i32', llir)) == 3, llir
+    # One predicate protects full-barrier initialization and three protect
+    # the explicit add/copy/arrive completion transaction.
+    assert len(re.findall(rf'llvm\.icmp "eq" %\d+, {re.escape(issue_constant)} : i32', llir)) == 4, llir
     assert (llir.index("llvm.musa.async.add.trans") < llir.index("llvm.musa.tme.ld.tile.2d") <
             llir.index("llvm.musa.async.arrive.none.phaseid")), llir
 

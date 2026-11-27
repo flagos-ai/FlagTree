@@ -126,11 +126,11 @@ def _generate_launcher(constants, signature, kernel_name="unknown_kernel"):
 #include "ExecutionEngine/CRunnerUtils.cpp"
 #include "SpineRuntime/spert.hpp"
 
-{'''extern "C" {{
+{'''extern "C" {
 // Proton kernel-level profiling APIs
 void proton_enter_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);
 void proton_exit_kernel(const char *kernel_name, int gridX, int gridY, int gridZ);
-}}''' if enable_proton_kernel_capture else ''}
+}''' if enable_proton_kernel_capture else ''}
 
 // New spert::Stream::launch ABI: kernel first param is spert::Context*,
 // followed by user args (pointers as StridedMemRefType*), then 3 i32 num_programs.
@@ -481,6 +481,12 @@ class RPCLauncher(object):
         rpc_args = []  # list of (type_tag, value)
         remote_addrs = []
         remote_tensor_map = {}
+        # Multiple tensor args may share one host storage (e.g. the two output
+        # views output[..., 0] / output[..., 1] of torch.polar). Upload each
+        # storage once and read it back once, otherwise the last readback would
+        # clobber the writes the kernel made through an earlier arg's remote
+        # buffer. Keyed by host storage data_ptr.
+        storage_remote = {}
         arg_idx = 0
         for arg in args:
             # Skip constexpr and value-specialized constant arguments
@@ -497,19 +503,42 @@ class RPCLauncher(object):
                 # The kernel indexes using the original strides, so we must
                 # not rearrange data with .contiguous().
                 storage = tensor.untyped_storage()
-                storage_bytes = bytes(storage)
-                # Pass the exact arg data_ptr (may be an interior offset for
-                # StridedBuffer slices or negative-stride flip inputs). The RPC
-                # server uses range-based lookup and builds per-arg descriptors
-                # with desc.data = buf_base + byte_offset, so the kernel always
-                # sees the correct element pointer while the full allocation is
-                # uploaded / read back.
-                addr = self.client.alloc_memory(len(storage_bytes))
-                self.client.write_memory(addr, storage_bytes)
+                skey = storage.data_ptr()
+                addr = storage_remote.get(skey)
+                if addr is None:
+                    import ctypes
+                    # bytes(storage) iterates element-by-element in Python
+                    # (~10s for 4MB); copy the raw buffer directly instead.
+                    storage_nbytes = getattr(storage, "nbytes", None)
+                    if callable(storage_nbytes):
+                        storage_nbytes = storage_nbytes()
+                    if storage_nbytes is None:
+                        # TypedPtr intentionally carries no allocation size.
+                        # Its following scalar element count is the only size
+                        # available for raw pointer tests.
+                        storage_nbytes = 0
+                        itemsize = getattr(getattr(arg, "dtype", None), "itemsize", 1)
+                        for later_idx, later_arg in enumerate(args[arg_idx:], arg_idx):
+                            if (later_idx not in self._constexpr_indices and later_idx not in self._constant_indices
+                                    and isinstance(later_arg, int) and later_arg > 0):
+                                storage_nbytes = int(later_arg) * int(itemsize)
+                                break
+                        if storage_nbytes <= 0:
+                            raise ValueError("TypedPtr requires a positive element count")
+                    storage_bytes = ctypes.string_at(storage.data_ptr(), storage_nbytes)
+                    # Pass the exact arg data_ptr (may be an interior offset for
+                    # StridedBuffer slices or negative-stride flip inputs). The RPC
+                    # server uses range-based lookup and builds per-arg descriptors
+                    # with desc.data = buf_base + byte_offset, so the kernel always
+                    # sees the correct element pointer while the full allocation is
+                    # uploaded / read back.
+                    addr = self.client.alloc_memory(len(storage_bytes))
+                    self.client.write_memory(addr, storage_bytes)
+                    storage_remote[skey] = addr
+                    remote_addrs.append((addr, storage, len(storage_bytes)))
                 arg_ptr = addr + (arg.data_ptr() - storage.data_ptr())
                 # Mark as output so the server writes the buffer back.
                 rpc_args.append(('ptr', arg_ptr, ARG_FLAG_OUTPUT))
-                remote_addrs.append((addr, arg, len(storage_bytes)))
                 remote_tensor_map[arg.data_ptr()] = arg_ptr
             elif sig_type.startswith("*"):
                 # Pointer type from signature
@@ -535,12 +564,9 @@ class RPCLauncher(object):
         RPCLauncher._last_kernel_time_s = exec_time_us / 1_000_000.0
 
         # Read back output tensors
-        for addr, tensor, size in remote_addrs:
+        for addr, storage, size in remote_addrs:
             import ctypes
             data = self.client.read_memory(addr, size)
-            real_tensor = tensor.unwrap() if hasattr(tensor, 'unwrap') else tensor
-            real_tensor_cpu = real_tensor.cpu()
-            storage = real_tensor_cpu.untyped_storage()
             ctypes.memmove(storage.data_ptr(), data, len(data))
             self.client.free_memory(addr)
 
@@ -721,7 +747,11 @@ class CPUDriver(DriverBase):
         return torch.empty(int(cache_size // 4), dtype=torch.int, device="cpu")
 
     def clear_cache(self, cache):
-        cache.zero_()
+        # Keep the benchmark cache flush on the host.  Calling zero_() here
+        # enters FlagGems' Triton override and uploads/reads the full 256 MiB
+        # buffer through the RPC server for every benchmark repetition.
+        import ctypes
+        ctypes.memset(cache.data_ptr(), 0, cache.numel() * cache.element_size())
 
     def map_python_to_cpp_type(self, ty: str) -> str:
         return _ty_to_cpp(ty)

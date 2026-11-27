@@ -891,7 +891,7 @@ def block_size_candidates_cluster(args, generate_configs, op_affiliation, row_si
 
 def _build_2d_configs(arch_meta, generate_configs, args, block_names, ele_bytes, dotout_ele_bytes, bias, hp_mode,
                       min_block_k, a_trans, b_trans, int8_w8a8, TRITON_i4_AUTOTUNING):
-    """Common 2-D MM tile-search body shared by xpu3 (arch=3) and mars (arch=4)."""
+    """Common 2-D MM tile-search body shared by arch 3 and arch 4."""
     mem = arch_meta["mem"]
     wcache = arch_meta["wcache"]
     dcache = arch_meta["dcache"]

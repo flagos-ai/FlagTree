@@ -68,7 +68,8 @@ def RdmaOp : Tx81Op<"rdma", [
     I32Attr:$rank,                   // rank
     I32Attr:$elem_bytes,             // elem bytes
     I32Attr:$fmt,                    // elem fmt
-    I64:$base_ddr_addr               // base DDR address (from func arg)
+    I64:$base_ddr_addr,              // base DDR address (from func arg)
+    AnyType:$loc_str                 // #loc source info string ptr
   );
 
   let results = (outs I64:$dst); // The dest address in SPM
@@ -94,7 +95,8 @@ def WdmaOp : Tx81Op<"wdma", [
     I32Attr:$rank,                   // rank
     I32Attr:$elem_bytes,             // elem bytes
     I32Attr:$fmt,                    // elem fmt
-    I64:$base_ddr_addr               // base DDR address (from func arg)
+    I64:$base_ddr_addr,              // base DDR address (from func arg)
+    AnyType:$loc_str                 // #loc source info string ptr
   );
 
   let results = (outs I64:$dst); // The dest address in DDR
@@ -143,7 +145,8 @@ def Rdma1dOp : Tx81Op<"rdma1d"> {
     Arg<MemRefOrInt, "DDR source", [MemRead]>:$source,             // The source address in DDR
     I32:$elem_count,
     I32Attr:$fmt,                    // elem fmt
-    I64:$base_ddr_addr               // base DDR address (from func arg)
+    I64:$base_ddr_addr,              // base DDR address (from func arg)
+    AnyType:$loc_str                 // #loc source info string ptr
   );
 
   let results = (outs);
@@ -156,7 +159,8 @@ def Wdma1dOp : Tx81Op<"wdma1d"> {
     Arg<MemRefOrInt, "SPM source", [MemRead]>:$source,             // The source address in SPM
     I32:$elem_count,
     I32Attr:$fmt,                    // elem fmt
-    I64:$base_ddr_addr               // base DDR address (from func arg)
+    I64:$base_ddr_addr,              // base DDR address (from func arg)
+    AnyType:$loc_str                 // #loc source info string ptr
   );
 
   let results = (outs);
@@ -396,6 +400,8 @@ def AddVSOp : BinaryVSOp<"addvs"> {
 def SubVSOp : BinaryVSOp<"subvs">;
 def MulVSOp : BinaryVSOp<"mulvs">;
 def DivVSOp : BinaryVSOp<"divvs">;
+def MaxVSOp : BinaryVSOp<"maxvs">;
+def MinVSOp : BinaryVSOp<"minvs">;
 
 // ...
 

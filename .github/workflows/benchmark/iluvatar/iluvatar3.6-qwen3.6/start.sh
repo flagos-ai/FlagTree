@@ -21,7 +21,7 @@
 # SOFTWARE.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-
+CURRENT_DIR="$(pwd -P)"
 source ~/env.sh
 source "${SCRIPT_DIR}/disable_local_proxy.sh"
 
@@ -37,12 +37,18 @@ if [[ -f "$PID_FILE" ]]; then
     pid=$(head -n 1 "$PID_FILE" | tr -d '[:space:]')
     if [[ "$pid" =~ ^[0-9]+$ ]]; then
         if kill -0 "$pid" 2>/dev/null; then
-            echo "[WARNING] Service already running: pid = $pid."
-            bash ${SCRIPT_DIR}/stop.sh
+            process_dir=$(pwdx "$pid" 2>/dev/null); process_dir=${process_dir#*: }
+            if [[ "$process_dir" == "$CURRENT_DIR" ]]; then
+                echo "[WARNING] Service already running: pid = $pid."
+                bash ${SCRIPT_DIR}/stop.sh
+            else
+                echo "[WARNING] pid = $pid belongs to '${process_dir:-unknown}', skip."
+            fi
         fi
     fi
 fi
 bash "${SCRIPT_DIR}/clear_fuser_process.sh"
+rm -f /dev/shm/* 2>/dev/null || true
 
 start=$(date +%s)
 
@@ -56,7 +62,7 @@ nohup vllm serve ./Qwen3.6-27B/  \
     --gpu-memory-utilization 0.8 \
     --trust-remote-code \
     --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY"}' \
-    --dtype bfloat16 2>&1 >vllm.log &
+    --dtype bfloat16 >vllm.log 2>&1 &
 echo "$!" >pid.txt
 
 PID_FILE="pid.txt"

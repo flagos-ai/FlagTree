@@ -78,6 +78,26 @@ SmallVector<Value> castToTileVec(TritonOpBuilder &self,
   return dst;
 }
 
+Value castPointerToCudaTile(TritonOpBuilder &self, Value ptr) {
+  if (auto rankedTy = dyn_cast<RankedTensorType>(ptr.getType())) {
+    auto ptrTy = cast<PointerType>(rankedTy.getElementType());
+    auto tileTy = cuda_tile::TileType::get(
+        rankedTy.getContext(), rankedTy.getShape(),
+        cuda_tile::PointerType::get(ptrTy.getPointeeType()));
+    return self.create<UnrealizedConversionCastOp>(tileTy, ptr).getResult(0);
+  }
+  Value cudaTilePtr = ptr;
+  if (auto tritonPtrTy = dyn_cast<PointerType>(ptr.getType())) {
+    Type cudaTilePtrTy =
+        cuda_tile::PointerType::get(tritonPtrTy.getPointeeType());
+    cudaTilePtr = self.create<UnrealizedConversionCastOp>(cudaTilePtrTy, ptr)
+                      .getResult(0);
+  } else if (!isa<cuda_tile::PointerType>(ptr.getType())) {
+    throw std::runtime_error("expect a pointer type");
+  }
+  return castToCudaTileType(self, cudaTilePtr);
+}
+
 Value castFromCudaTileAndExtract(TritonOpBuilder &self, Type resultType,
                                  Value value) {
   auto cTileTy = cast<cuda_tile::TileType>(resultType);
@@ -252,6 +272,98 @@ void init_tileir_tko_ir(py::module &&) {
                  optHint.value_or(nullptr));
              return retOp.getResultToken();
            })
+      .def(
+          "create_load_tko",
+          [](TritonOpBuilder &self, Value &ptr, std::optional<Value> &mask,
+             std::optional<Value> &other, std::optional<Value> &token,
+             uint32_t semantic, int32_t scope, int32_t cost,
+             int32_t capability) -> std::tuple<Value, Value> {
+            if (token && !isa<cuda_tile::TokenType>(token->getType()))
+              throw std::runtime_error("memToken must be a memory token");
+            auto *ctx = self.getBuilder().getContext();
+            Value tilePtr = castPointerToCudaTile(self, ptr);
+            auto ptrTileTy = cast<cuda_tile::TileType>(tilePtr.getType());
+            auto elementTy =
+                cast<cuda_tile::PointerType>(ptrTileTy.getElementType())
+                    .getPointeeType();
+            auto resultTy =
+                cuda_tile::TileType::get(ctx, ptrTileTy.getShape(), elementTy);
+            auto optHint = mlir::triton::utils::cvtNumStagesToOptHintAttr(
+                ctx, capability, cost);
+            auto op = self.create<cuda_tile::LoadPtrTkoOp>(
+                resultTy, cuda_tile::TokenType::get(ctx),
+                getMemoryOrderingAttr(ctx, semantic),
+                getMemoryScopeAttr(ctx, scope), tilePtr,
+                mask ? castToCudaTileType(self, *mask) : Value(),
+                other ? castToCudaTileType(self, *other) : Value(),
+                token.value_or(Value()), optHint.value_or(nullptr));
+            return std::make_tuple(
+                castFromCudaTileAndExtract(self, resultTy, op.getResult()),
+                op.getResultToken());
+          },
+          py::arg("ptr"), py::arg("mask").none(), py::arg("other").none(),
+          py::arg("token").none(), py::arg("semantic"), py::arg("scope"),
+          py::arg("cost"), py::arg("capability"))
+      .def(
+          "create_store_tko",
+          [](TritonOpBuilder &self, Value &ptr, Value &value,
+             std::optional<Value> &mask, std::optional<Value> &token,
+             uint32_t semantic, int32_t scope, int32_t cost,
+             int32_t capability) -> Value {
+            if (token && !isa<cuda_tile::TokenType>(token->getType()))
+              throw std::runtime_error("memToken must be a memory token");
+            auto *ctx = self.getBuilder().getContext();
+            auto optHint = mlir::triton::utils::cvtNumStagesToOptHintAttr(
+                ctx, capability, cost);
+            auto op = self.create<cuda_tile::StorePtrTkoOp>(
+                cuda_tile::TokenType::get(ctx),
+                getMemoryOrderingAttr(ctx, semantic),
+                getMemoryScopeAttr(ctx, scope),
+                castPointerToCudaTile(self, ptr),
+                castToCudaTileType(self, value),
+                mask ? castToCudaTileType(self, *mask) : Value(),
+                token.value_or(Value()), optHint.value_or(nullptr));
+            return op.getResultToken();
+          },
+          py::arg("ptr"), py::arg("value"), py::arg("mask").none(),
+          py::arg("token").none(), py::arg("semantic"), py::arg("scope"),
+          py::arg("cost"), py::arg("capability"))
+      .def("create_atomic_cas_tko",
+           [](TritonOpBuilder &self, Value &ptr, Value &cmp, Value &val,
+              std::optional<Value> &token, uint32_t semantic,
+              int32_t scope) -> std::tuple<Value, Value> {
+             auto *ctx = self.getBuilder().getContext();
+             Value cudaTileCmp = castToCudaTileType(self, cmp);
+             Value cudaTileVal = castToCudaTileType(self, val);
+             auto op = self.create<cuda_tile::AtomicCASTkoOp>(
+                 cudaTileVal.getType(), cuda_tile::TokenType::get(ctx),
+                 cuda_tile::symbolizeMemoryOrderingSemantics(semantic).value(),
+                 cuda_tile::symbolizeMemoryScope(scope).value(),
+                 castPointerToCudaTile(self, ptr), cudaTileCmp, cudaTileVal,
+                 /*mask=*/Value(), token.value_or(Value()));
+             return std::make_tuple(
+                 castFromCudaTileAndExtract(self, cudaTileVal.getType(),
+                                            op.getResult()),
+                 op.getResultToken());
+           })
+      .def("create_atomic_xchg_tko",
+           [](TritonOpBuilder &self, Value &ptr, Value &val,
+              std::optional<Value> &token, uint32_t semantic,
+              int32_t scope) -> std::tuple<Value, Value> {
+             auto *ctx = self.getBuilder().getContext();
+             Value cudaTileVal = castToCudaTileType(self, val);
+             auto op = self.create<cuda_tile::AtomicRMWTkoOp>(
+                 cudaTileVal.getType(), cuda_tile::TokenType::get(ctx),
+                 cuda_tile::symbolizeMemoryOrderingSemantics(semantic).value(),
+                 cuda_tile::symbolizeMemoryScope(scope).value(),
+                 castPointerToCudaTile(self, ptr),
+                 cuda_tile::AtomicRMWMode::XCHG, cudaTileVal,
+                 /*mask=*/Value(), token.value_or(Value()));
+             return std::make_tuple(
+                 castFromCudaTileAndExtract(self, cudaTileVal.getType(),
+                                            op.getResult()),
+                 op.getResultToken());
+           })
       .def("create_mem_token",
            [](TritonOpBuilder &self) -> Value {
              return self.create<cuda_tile::MakeTokenOp>().getResult();
@@ -307,15 +419,14 @@ void init_triton_to_cudatile_passes(py::module &&m) {
     auto &mpm = pm.nest<cuda_tile::ModuleOp>();
     mpm.addPass(cuda_tile::createSynthesizeDebugInfoScopesPass());
   });
-  m.def("add_rewrite_tensor_pointers_to_ldst", [](mlir::PassManager &pm) {
-    pm.addPass(mlir::triton::createTritonRewriteTensorPointer());
-  });
   m.def("add_assume_to_tileir", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::createRewriteAssumeWithCudaTilePass());
   });
   m.def("add_auto_gen_memtoken",
         [](mlir::PassManager &pm, bool enable_autogen_alias_mem_token) {
-          pm.addPass(mlir::triton::createAutoGenMemoryTokenPass(
+          auto &mpm = pm.nest<cuda_tile::ModuleOp>();
+          auto &epm = mpm.nest<cuda_tile::EntryOp>();
+          epm.addPass(mlir::triton::createAutoGenMemoryTokenPass(
               enable_autogen_alias_mem_token));
         });
 }
@@ -333,6 +444,23 @@ void init_triton_tileir(py::module &&m) {
 
     // Register cuda_tile passes to enable nested pass manager parsing
     cuda_tile::registerCudaTilePasses();
+  });
+  m.def("has_source_locations", [](mlir::ModuleOp mod) {
+    bool found = false;
+    mod->walk([&](mlir::Operation *op) {
+      op->getLoc()->walk([&](mlir::Location loc) {
+        if (auto fileLoc = llvm::dyn_cast<mlir::FileLineColLoc>(loc)) {
+          llvm::StringRef filename = fileLoc.getFilename().getValue();
+          if (fileLoc.getLine() > 0 && !filename.empty() &&
+              filename != "<unknown>") {
+            found = true;
+            return mlir::WalkResult::interrupt();
+          }
+        }
+        return mlir::WalkResult::advance();
+      });
+    });
+    return found;
   });
   m.def("only_contain_legal_dialects", [](mlir::ModuleOp mod) {
     bool only_contain_legal_dialects = true;

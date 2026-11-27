@@ -19,14 +19,16 @@
 # SOFTWARE.
 
 # flagtree tle
+from . import mthreads
 from .core import (
-    pipeline,
     range,
     alloc,
     alloc_barrier,
     alloc_barriers,
     barrier_arrive,
     barrier_wait,
+    async_commit_group,
+    async_wait_group,
     copy,
     memory_space,
     local_ptr,
@@ -34,6 +36,8 @@ from .core import (
     wgmma,
     wgmma_wait,
     set_layout,
+    tensor_map_fenceproxy_acquire,
+    reinterpret_tensor_map,
 )
 from .types import (layout, distributed_encoding, BlockEncoding, MmaEncoding, DotOperandEncoding, SlicedEncoding,
                     shared_layout, swizzled_shared_layout, tensor_memory_layout, nv_mma_shared_layout, scope,
@@ -43,19 +47,23 @@ from .types import (layout, distributed_encoding, BlockEncoding, MmaEncoding, Do
 storage_kind = memory_space
 
 __all__ = [
-    "pipeline",
+    "mthreads",
     "range",
     "alloc",
     "alloc_barrier",
     "alloc_barriers",
     "barrier_arrive",
     "barrier_wait",
+    "async_commit_group",
+    "async_wait_group",
     "copy",
     "local_ptr",
     "warp_specialize",
     "wgmma",
     "wgmma_wait",
     "set_layout",
+    "tensor_map_fenceproxy_acquire",
+    "reinterpret_tensor_map",
     "storage_kind",
     "layout",
     "distributed_encoding",

@@ -6,6 +6,8 @@
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 
+#include <climits>
+
 namespace mlir {
 namespace triton {
 namespace xpu {
@@ -42,7 +44,7 @@ static int getXPUOffsetStatePolicy(Operation *op) {
 // discardable attribute (set by the XPU vendored ir.cc from the tl.load/
 // tl.store `mem_sync_mode` kwarg). Defaults to SYNC when absent/unrecognized.
 // This keeps the shared main-tree op definitions untouched (Q0a) while
-// forwarding the internal-Triton XPU sync hint onto the XPU-local dialect ops.
+// forwarding the sync source's XPU sync hint onto the XPU-local dialect ops.
 static mlir::triton::MemorySyncMode getXPUMemSyncMode(Operation *op) {
   auto attr = op->getAttr("xpu.mem_sync_mode");
   if (auto strAttr = mlir::dyn_cast_or_null<StringAttr>(attr)) {
@@ -127,6 +129,11 @@ bool replaceAtomicOp(mlir::ModuleOp m) {
     auto storeOp = builder.create<triton::xpu::StoreOp>(
         loc, ptr, arithOp->getResults()[0], mask, Value(), -1, false,
         Dtype::UNKNOWN, MemorySyncMode::SYNC);
+    // The replacement LoadOp carries the old value that the atomic RMW
+    // result returns; rewire all users before erasing, otherwise MLIR
+    // aborts with "tt.atomic_rmw destroyed but still has uses".
+    for (OpResult r : atomicRMWOp->getResults())
+      r.replaceAllUsesWith(loadOp.getResult());
     atomicRMWOp.erase();
   });
 
@@ -577,9 +584,9 @@ struct TritonXPUCreateGM2LMPass
             if (this->isUseMaskZero) {
               auto gm2lmOp = builder.create<triton::xpu::GM2LMMaskOp>(
                   loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(),
-                  loadOp.getOther(), emptyLen, emptyBufPtr, offsetState, -1, -1,
-                  -1, -1, -1, false, loadOp.getSyncMode(), hasAtomicSim, false,
-                  handwrittenOffsetState);
+                  loadOp.getOther(), emptyLen, emptyBufPtr, offsetState,
+                  INT32_MIN, -1, -1, -1, -1, false, loadOp.getSyncMode(),
+                  hasAtomicSim, false, handwrittenOffsetState);
               loadOp.setOperand(0, gm2lmOp.getResult());
               loadOp.getResult().setType(extFOp.getType());
               extFOp.getResult().replaceAllUsesWith(loadOp.getResult());
@@ -600,8 +607,8 @@ struct TritonXPUCreateGM2LMPass
             } else {
               auto gm2lmOp = builder.create<triton::xpu::GM2LMOp>(
                   loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(),
-                  loadOp.getOther(), emptyBufPtr, offsetState, -1, -1, -1, -1,
-                  -1, false, loadOp.getSyncMode(), hasAtomicSim, false,
+                  loadOp.getOther(), emptyBufPtr, offsetState, INT32_MIN, -1,
+                  -1, -1, -1, false, loadOp.getSyncMode(), hasAtomicSim, false,
                   handwrittenOffsetState);
               loadOp.setOperand(0, gm2lmOp.getResult());
               loadOp.getResult().setType(extFOp.getType());
@@ -615,8 +622,8 @@ struct TritonXPUCreateGM2LMPass
       if (this->isUseMaskZero) {
         auto gm2lmOp = builder.create<triton::xpu::GM2LMMaskOp>(
             loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(),
-            loadOp.getOther(), emptyLen, emptyBufPtr, offsetState, -1, -1, -1,
-            -1, -1, false, loadOp.getSyncMode(), hasAtomicSim, false,
+            loadOp.getOther(), emptyLen, emptyBufPtr, offsetState, INT32_MIN,
+            -1, -1, -1, -1, false, loadOp.getSyncMode(), hasAtomicSim, false,
             handwrittenOffsetState);
         loadOp.setOperand(0, gm2lmOp.getResult());
         // Remove Mask in loadOp
@@ -633,8 +640,8 @@ struct TritonXPUCreateGM2LMPass
       } else {
         auto gm2lmOp = builder.create<triton::xpu::GM2LMOp>(
             loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(),
-            loadOp.getOther(), emptyBufPtr, offsetState, -1, -1, -1, -1, -1,
-            false, loadOp.getSyncMode(), hasAtomicSim, false,
+            loadOp.getOther(), emptyBufPtr, offsetState, INT32_MIN, -1, -1, -1,
+            -1, false, loadOp.getSyncMode(), hasAtomicSim, false,
             handwrittenOffsetState);
         loadOp.setOperand(0, gm2lmOp.getResult());
       }

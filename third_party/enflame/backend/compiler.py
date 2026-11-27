@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+import logging
 import re
 import os
 import subprocess
@@ -29,7 +30,6 @@ import hashlib
 from triton.runtime.cache import get_cache_manager
 from triton._C.libtriton import ir, passes, llvm
 from triton.backends.enflame import passes as gcu_passes
-from triton.backends.enflame.gcu_intrinsics import restore_intrinsics_from_placeholders as _restore_gcu_intrinsics
 from typing import Dict
 from types import ModuleType
 from triton.runtime.errors import OutOfResources
@@ -72,6 +72,11 @@ if toolkit.get_bool_env("TRITON_GCU_COMPILE_TIME"):
 
 
 def _patch_kernel_for_gcuir(kernel):
+    # LLVM 21 models gpu.barrier as a workgroup barrier without a scope
+    # attribute. Triton 3.8 emits that default explicitly using an attribute
+    # introduced by newer MLIR, which the fixed GCU parser cannot register.
+    kernel = re.sub(r'((?:"gpu\.barrier"\(\)|gpu\.barrier))\s*<\{\s*scope\s*=\s*#gpu\.barrier_scope<workgroup>\s*\}>',
+                    r'\1', kernel)
     # add gpu module
     kernel = re.sub('module ([^\n]+)\n', 'module \\1\ngpu.module @triton {\n', kernel)
     pattern = r'#loc\d* = loc\(.*?\)\n'
@@ -82,7 +87,32 @@ def _patch_kernel_for_gcuir(kernel):
     return kernel
 
 
+def _pack_i1_dense_hex(kernel):
+    """Convert Triton 3.8's byte-per-i1 hex payloads for the fixed GCU parser."""
+    pattern = re.compile(r'dense<"0x([0-9A-Fa-f]+)">\s*:\s*vector<(\d+)xi1>')
+
+    def pack(match):
+        payload = bytes.fromhex(match.group(1))
+        element_count = int(match.group(2))
+        if len(payload) != element_count:
+            return match.group(0)
+        packed = bytearray((element_count + 7) // 8)
+        for index, value in enumerate(payload):
+            if value:
+                packed[index // 8] |= 1 << (index % 8)
+        return f'dense<"0x{packed.hex().upper()}"> : vector<{element_count}xi1>'
+
+    return pattern.sub(pack, kernel)
+
+
 def _patch_kernel_for_llir(kernel, arch):
+    # GCU passes may materialize the newer default barrier scope after the
+    # initial TTGIR compatibility patch. Strip it again before LLVM 21 parses
+    # the GCUIR text for LLIR lowering.
+    kernel = re.sub(r'((?:"gpu\.barrier"\(\)|gpu\.barrier))\s*<\{\s*scope\s*=\s*#gpu\.barrier_scope<workgroup>\s*\}>',
+                    r'\1', kernel)
+    if _triton_version() >= (3, 8):
+        kernel = _pack_i1_dense_hex(kernel)
     # strip arith.trunci's overflowFlags attribute
     kernel = re.sub(r'((?:")?arith\.trunci(?:")?\([^)]*\))\s*<\{overflowFlags\s*=\s*#arith\.overflow<[^>]*>\}>', r'\1',
                     kernel)
@@ -125,21 +155,29 @@ def _warn_enable_i64_dropped():
 def _enable_i64_pass_option(options):
     """The trailing ' enable_i64=true' for --convert-gpu-to-gcu, when it is usable.
 
-    gcu300 is the only target whose toolkits can predate the option (tops1.9.10,
-    for one); such a toolkit rejects the whole command, so every kernel fails to
-    compile, whether or not it uses 64-bit integers. Later targets always know
-    the option, so they are not probed.
+    The option is only emitted when the toolkit's parser knows it. A toolkit that
+    does not (tops1.9.10, for one) rejects the whole command, so every kernel
+    fails to compile, whether or not it uses 64-bit integers.
     See toolkit.toolkit_supports_enable_i64.
     """
     if not options.enable_i64:
         return ''
-    if options.arch == "gcu300" and not toolkit.toolkit_supports_enable_i64():
-        _warn_enable_i64_dropped()
-        return ''
+    if options.arch == "gcu300":
+        if not toolkit.toolkit_supports_enable_i64():
+            _warn_enable_i64_dropped()
+            return ''
     return ' enable_i64=true'
 
 
 def make_ttir(mod, metadata, options):
+    # flagtree tle raw: post-compile kernel init hooks (e.g. efshmem cumodule
+    # init), stamped by the TOPS EDSL via tle.raw.kernel_init_hooks. Without
+    # this, run_kernel_init_hooks() silently no-ops on TOPS.
+    kernel_init_hooks = mod.get_operation().get_str_attr("tle.raw.kernel_init_hooks")
+    metadata['kernel_init_hooks'] = kernel_init_hooks.split(",") if kernel_init_hooks else []
+    # flagtree tle raw: efshmem device bitcode is a per-kernel decision, stamped
+    # by the TOPS EDSL as `tle.raw.efshmem_device_bc`; make_llir attaches it.
+    metadata['tle_raw_efshmem'] = bool(mod.get_operation().get_str_attr("tle.raw.efshmem_device_bc"))
     metadata['ptr_int_args'] = sorted(collect_ptr_int_args(str(mod)))
     # Validate num_warps constraints
     if options.arch in ("gcu400", "gcu410") and options.num_warps > 4:
@@ -152,8 +190,11 @@ def make_ttir(mod, metadata, options):
     pm.enable_debug()
 
     passes.common.add_inliner(pm)
+    # Triton 3.8 removed this pass; use it only when available.
     if options.arch == "gcu500":
-        passes.ttir.add_rewrite_tensor_pointer(pm)
+        rewrite_pass = getattr(passes.ttir, "add_rewrite_tensor_pointer", None)
+        if rewrite_pass is not None:
+            rewrite_pass(pm)
     passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
     passes.common.add_canonicalizer(pm)
     passes.ttir.add_combine(pm)
@@ -224,14 +265,20 @@ def make_gcuir(mod, metadata, options):
         support_stride0 = toolkit.get_bool_env("TRITON_GCU_ENABLE_STRIDE_BROADCAST")
         gcu_passes.gcu300.add_gcu_convert_triton_to_tritongpu(pm, options.num_warps, options.warp_size,
                                                               options.num_ctas, f'gcu:{options.arch}')
-        gcu_passes.gcu300.add_tritongpu_remove_layout_conversions(pm)
+        if _triton_version() == (3, 8):
+            gcu_passes.gcu300.add_triton_gcu_remove_layout_conversions(pm)
+        else:
+            gcu_passes.gcu300.add_tritongpu_remove_layout_conversions(pm)
         if metadata['tle_raw']:
             gcu_passes.gcu300.add_tle_remove_redundant_copy(pm)
         gcu_passes.gcu300.add_tle_to_triton_gcu(pm, getattr(options, 'cluster_dims', (1, 1, 1)))
         gcu_passes.gcu300.add_triton_gpu_to_triton_gcu(pm)
         gcu_passes.gcu300.add_convert_tensor_pointer(pm)
         gcu_passes.gcu300.add_triton_gcu_dot_layout_optimize(pm)
-        gcu_passes.gcu300.add_tritongpu_remove_layout_conversions(pm)
+        if _triton_version() == (3, 8):
+            gcu_passes.gcu300.add_triton_gcu_remove_layout_conversions(pm)
+        else:
+            gcu_passes.gcu300.add_tritongpu_remove_layout_conversions(pm)
         gcu_passes.gcu300.add_convert_triton_load_store_to_gcu_dma(pm, support_stride0, options.enable_i64)
         gcu_passes.mlir.add_canonicalize(pm)
         gcu_passes.mlir.add_loop_invariant_code_motion(pm)
@@ -250,7 +297,10 @@ def make_gcuir(mod, metadata, options):
             gcu_passes.gcu400.add_gcu64_type_verifier(pm)
         gcu_passes.gcu400.add_gcu_convert_triton_to_tritongpu(pm, options.num_warps, options.warp_size,
                                                               options.num_ctas, f'gcu:{options.arch}')
-        gcu_passes.gcu400.add_triton_gcu_remove_layout_conversions(pm)
+        if _triton_version() >= (3, 8):
+            gcu_passes.gcu400.add_tritongpu_remove_layout_conversions(pm)
+        else:
+            gcu_passes.gcu400.add_triton_gcu_remove_layout_conversions(pm)
         if metadata['tle_raw']:
             gcu_passes.gcu400.add_tle_remove_redundant_copy(pm)
             if not metadata['tle_raw_deferred']:
@@ -267,7 +317,10 @@ def make_gcuir(mod, metadata, options):
         gcu_passes.gcu400.add_convert_triton_load_store_to_gcu_dma(pm, options.enable_stride0, options.redundant_sip)
         gcu_passes.mlir.add_canonicalize(pm)
         gcu_passes.gcu400.add_triton_wgdot_to_gcu(pm)
-        gcu_passes.gcu400.add_triton_gcu_remove_layout_conversions(pm)
+        if _triton_version() >= (3, 8):
+            gcu_passes.gcu400.add_tritongpu_remove_layout_conversions(pm)
+        else:
+            gcu_passes.gcu400.add_triton_gcu_remove_layout_conversions(pm)
         gcu_passes.gcu400.add_triton_gcu_data_layout_optimize(pm)
         gcu_passes.mlir.add_loop_invariant_code_motion(pm)
         gcu_passes.gcu400.add_annotate_dot_acc_reuse(pm)
@@ -278,10 +331,11 @@ def make_gcuir(mod, metadata, options):
         gcu_passes.mlir.add_cse(pm)
         gcu_passes.mlir.add_canonicalize(pm)
         gcu_passes.gcu400.add_flatten_triton_func(pm)
+        gcu_passes.gcu400.add_gcu_tle_assign_memory_space(pm)
         gcu_passes.gcu400.add_triton_gcu_local_mem_optimize(pm)
         gcu_passes.gcu400.add_gcu_tle_lower_async_load(pm)
         gcu_passes.gcu400.add_triton_gcu_insert_producer_fences(pm)
-        gcu_passes.gcu400.add_convert_triton_to_gcu(pm)
+        gcu_passes.gcu400.add_convert_triton_to_gcu(pm, options.single_kernel_slot)
         gcu_passes.mlir.add_cse(pm)
         gcu_passes.mlir.add_canonicalize(pm)
         if metadata['tle_raw']:
@@ -294,6 +348,16 @@ def make_gcuir(mod, metadata, options):
 
 def make_llir(mod, metadata, options):
     mod = _patch_kernel_for_llir(str(mod), options.arch)
+    # flagtree tle raw: attach the efshmem device bitcode only to kernels that
+    # stamped `tle.raw.efshmem_device_bc` (see TOPSJITFunction.mark_kernel_init_hook).
+    extern_libs = list(options.extern_libs or [])
+    if metadata.get('tle_raw_efshmem'):
+        from triton.experimental.tle.raw.tops.efshmem.utils import get_efshmem_extern_libs
+        efshmem_libs = get_efshmem_extern_libs()
+        if not efshmem_libs:
+            raise RuntimeError("efshmem kernel requires libefshmem_device.bc: set EFSHMEM_HOME "
+                               "(or EFSHMEM_LIBDEVICE_PATH) to the efshmem install")
+        extern_libs += list(efshmem_libs.items())
     passes = []
     if toolkit.get_bool_env("MLIR_ENABLE_DUMP"):
         passes.append('-mlir-print-ir-after-all')
@@ -307,13 +371,12 @@ def make_llir(mod, metadata, options):
         '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
         '-convert-private-tag-to-gcu', '-convert-memref-to-gcu', '-kernel-memory-alloc=arch=' + options.arch +
         ' num-warps=' + str(options.num_warps), '-convert-warp-specialize-to-scf', '-loop-invariant-code-motion',
-        '-convert-scf-to-cf', '-canonicalize', '-cse', '--symbol-dce', '-gcu-remove-transform-ir',
+        '-scf-loop-unroll', '-convert-scf-to-cf', '-canonicalize', '--symbol-dce', '-gcu-remove-transform-ir',
         '-convert-vector-to-gcu=vector-bit-width=' + str(options.vector_length * 8), '-canonicalize',
         '--expand-strided-metadata', '-lower-affine', '-canonicalize', '-cse', '--convert-gpu-to-gcu=chipset=' +
         options.arch + ' vector-bit-width=' + str(options.vector_length * 8) + _enable_i64_pass_option(options),
-        '--gcu-attach-target=arch=' + options.arch +
-        ''.join([f' l={path}' for name, path in (options.extern_libs or []) if path]), '-convert-index-to-llvm',
-        '-gpu-to-llvm', '-convert-llvm-to-gcu', '-alloca-to-entry', '-canonicalize'
+        '--gcu-attach-target=arch=' + options.arch + ''.join([f' l={path}' for name, path in extern_libs if path]),
+        '-convert-index-to-llvm', '-gpu-to-llvm', '-convert-llvm-to-gcu', '-alloca-to-entry', '-canonicalize'
     ]
 
     # Get some metadata
@@ -364,9 +427,6 @@ def make_fatbin(mod, metadata, options):
     if options.arch == "gcu500":
         return _make_fatbin_gcu500(str(mod), metadata, options)
     else:
-        if metadata['tle_raw']:
-            if not metadata['tle_raw_deferred']:
-                mod = _restore_gcu_intrinsics(str(mod))
         with tempfile.TemporaryDirectory() as tmpdir:
             bin = os.path.join(tmpdir, "kernel.fatbin")
             compile_args = [
@@ -421,7 +481,14 @@ def _make_llir_gcu500(mod, metadata, options):
         metadata['name'] = m.group(1).strip()
 
     pipeline = gcu500.Pipeline()
-    pipeline.add_allocate_gcu_shared_memory()
+    # accelerate_matmul must run BEFORE allocate_shared_memory: it rewrites a
+    # single-atom tt.dot into SIMT128 fragment convert_layouts (which need shared
+    # memory) plus triton_gcu500.mma, and the allocation has to see those
+    # convert_layouts.  add_allocate_shared_memory maps to the upstream Triton
+    # AllocateSharedMemory pass (createAllocateSharedMemory); the former Enflame
+    # copy (AllocateGCUSharedMemory) was identical and is removed.
+    pipeline.add_accelerate_matmul()
+    pipeline.add_allocate_shared_memory()
     pipeline.add_convert_scf_to_cf()
     pipeline.add_convert_index_to_llvm()
     pipeline.add_convert_triton_gpu_to_efgcu()
@@ -449,31 +516,6 @@ def _make_llir_gcu500(mod, metadata, options):
 
     llir = pipeline.translate_to_llvmir(result_mlir)
 
-    opt_bin = resolve_gcu500_tool('opt')
-
-    # Run opt to simplify LLVM IR before passing to llc.
-    # Use -simplifycfg + -instcombine instead of -O3: -O3 is too aggressive
-    # and can break control flow in kernels using tl.atomic_add + conditional
-    # return patterns (e.g. test_constexpr_if_return). These two passes are
-    # sufficient to transform nested br i1 (generated by scf.if elif chains)
-    # into switch, which llc EFGCU can handle correctly (COMPILER-313).
-    with tempfile.NamedTemporaryFile(suffix='.ll', mode='w', delete=False) as f:
-        f.write(llir)
-        kernel_ll = f.name
-    try:
-        optimized_ll = kernel_ll + '.opt.ll'
-        cp = subprocess.run([
-            opt_bin, '-S', '-simplifycfg', '-instcombine', '-vectorize-slp=false', '--vectorize-loops=false', kernel_ll,
-            '-o', optimized_ll
-        ], capture_output=True, text=True, timeout=60)
-        if cp.returncode == 0 and os.path.isfile(optimized_ll):
-            with open(optimized_ll, 'r') as f:
-                llir = f.read()
-    finally:
-        for p in [kernel_ll, optimized_ll]:
-            if os.path.isfile(p):
-                os.remove(p)
-
     if options.extern_libs:
         libdevice_path = None
         for name, path in options.extern_libs:
@@ -491,30 +533,47 @@ def _make_llir_gcu500(mod, metadata, options):
                 linked_input_ll = f.name
             try:
                 linked_ll = linked_input_ll + '.linked.ll'
-                inline_optimized_ll = linked_input_ll + '.inline_opt.ll'
                 cp = subprocess.run([llvm_link, linked_input_ll] + link_inputs +
                                     ['-S', '--only-needed', '-o', linked_ll], capture_output=True, text=True,
                                     timeout=30)
                 if cp.returncode == 0 and os.path.isfile(linked_ll):
-                    kernel_name_for_opt = metadata.get("name", "")
-                    cp2 = subprocess.run([
-                        opt_bin, '-S', '-O3', '-passes=always-inline,default<O3>', '-vectorize-slp=false',
-                        '--vectorize-loops=false', '-internalize-public-api-list=' + kernel_name_for_opt, linked_ll,
-                        '-o', inline_optimized_ll
-                    ], capture_output=True, text=True, timeout=60)
-                    if cp2.returncode != 0 or not os.path.isfile(inline_optimized_ll):
-                        cp2 = subprocess.run([
-                            opt_bin, '-S', '-O3', '-vectorize-slp=false', '--vectorize-loops=false',
-                            '-internalize-public-api-list=' + kernel_name_for_opt, linked_ll, '-o', inline_optimized_ll
-                        ], capture_output=True, text=True, timeout=60)
-                    if cp2.returncode == 0 and os.path.isfile(inline_optimized_ll):
-                        with open(inline_optimized_ll, 'r') as f:
-                            llir = f.read()
-                    else:
-                        with open(linked_ll, 'r') as f:
-                            llir = f.read()
+                    with open(linked_ll, 'r') as f:
+                        llir = f.read()
+                    # Mirror the NVIDIA backend's llvm.optimize_module(mod,
+                    # OPTIMIZE_O3): internalize every function except the kernel
+                    # and run the default O3 pipeline, with IR loop/SLP
+                    # vectorization disabled as before.  llc never runs IR-level
+                    # passes for EFGCU, so this step is what folds the linked
+                    # libdevice helpers (e.g. __ef_exp2f) into the kernel before
+                    # lld resolves relocations.  Fall back to the linked
+                    # (un-optimized) IR if the in-process pass fails, matching
+                    # the former subprocess opt fallback.
+                    try:
+                        llir = gcu500.optimize_llvmir(llir, kernel_name)
+                    except Exception as e:
+                        logging.warning(
+                            "gcu500: in-process O3 optimization failed for kernel "
+                            "'%s', falling back to linked IR: %s", kernel_name, e)
+                    # llc does not run the always-inliner for EFGCU either, so
+                    # force-inline whatever the O3 pipeline deliberately kept:
+                    # mark every non-noinline definition (and its call sites)
+                    # alwaysinline, then run the AlwaysInlinerPass.  Mirrors the
+                    # NVIDIA backend's translate_to_asm() force-inline step and
+                    # the former `opt -passes=always-inline,default<O3>` run.
+                    # Both steps stay scoped to the post-link module: the linked
+                    # libdevice helpers are the only definitions that reach llc
+                    # here, and this must run before patch_llir() injects the
+                    # efgcu_kernel calling convention, which the in-process
+                    # parser does not accept.  On failure keep the O3-optimized
+                    # IR rather than failing the compile.
+                    try:
+                        llir = gcu500.inline_llvmir(llir)
+                    except Exception as e:
+                        logging.warning(
+                            "gcu500: in-process always-inline failed for kernel "
+                            "'%s', continuing with the O3-optimized IR: %s", kernel_name, e)
             finally:
-                for p in [linked_input_ll, linked_ll, inline_optimized_ll]:
+                for p in [linked_input_ll, linked_ll]:
                     if os.path.isfile(p):
                         os.remove(p)
 
@@ -551,6 +610,7 @@ class GCUOptions:
     enable_fp_fusion: bool = True
     enable_stride0: bool = False
     redundant_sip: bool = False
+    single_kernel_slot: bool = False
     enable_i64: bool = False
     launch_cooperative_grid: bool = False
     extern_libs: dict = None
@@ -597,6 +657,7 @@ class GCUOptions:
             # GCU500 (5.0): 1 warp = 128 threads (equivalent to 128 CUDA threads per warp)
             self.warp_size = 128  # SIMT warp size (5.0: 128 threads per warp)
             self.simt_lane_size = 128  # SIMT lane size (same as warp size for GCU500)
+            self.enable_i64 = True  # GCU500 SIMT ISA supports s64/u64
             # Handle exceptions for the num_warps parameter (SIMT mode supports more warps)
             if self.num_warps > 8:
                 self.num_warps = 8
@@ -622,9 +683,22 @@ class GCUOptions:
             libdevice_path = os.getenv("TRITON_LIBDEVICE_PATH", "")
             if self.arch == "gcu500":
                 if not libdevice_path or not os.path.isfile(libdevice_path):
-                    candidates = [f'{default_libdir}/gculibdevice.efgcu_tops.bc']
-                    libdevice_path = next((p for p in candidates if os.path.isfile(p)), candidates[0])
-                    extern_libs['libdevice'] = libdevice_path
+                    # Prefer the libdevice bundled with this wheel.  The one
+                    # shipped by TOPS implements __ef_rintf / __ef_nearbyintf
+                    # as llvm.round (round-half-away-from-zero), but rint must
+                    # round half TO EVEN - the bundled copy fixes those two
+                    # functions to llvm.rint and leaves every other entry (e.g.
+                    # __ef_roundf, which must stay llvm.round) untouched.
+                    candidates = [
+                        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'libdevice',
+                                     'gculibdevice.efgcu_tops.bc'),
+                        f'{default_libdir}/gculibdevice.efgcu_tops.bc',
+                    ]
+                    libdevice_path = next((p for p in candidates if os.path.isfile(p)), candidates[-1])
+                # Outside the branch on purpose: TRITON_LIBDEVICE_PATH used to
+                # set the path without registering it, so the override silently
+                # produced an unlinked __ef_* call and lld failed.
+                extern_libs['libdevice'] = libdevice_path
 
         if not extern_libs.get('libnvshmem_device', None):
             nvshmem_libdevice_path = os.getenv("NVSHMEM_LIBDEVICE_PATH", None)
@@ -668,15 +742,6 @@ class _GCUBackend(BaseBackend):
         else:
             args["enable_stride0"] = toolkit.get_bool_env("TRITON_GCU_ENABLE_STRIDE_GATHER")
 
-        # enable_i64 comes from ENABLE_I64 when the caller asks for it, and from
-        # the environment otherwise. Derive the environment default only when the
-        # key is absent, because triton parses these options twice: _pack_args
-        # parses the kernel's keyword arguments, then _do_compile hands the
-        # resolved dataclass back to compile() as a dict (options.__dict__), so
-        # the second parse always finds the key present. Re-deriving it there is
-        # what turned a resolved False into True under ENABLE_I64_CHECK=0 and made
-        # make_llir emit an option the toolkit then rejected.
-        # https://github.com/flagos-ai/FlagTree/issues/1233
         if "ENABLE_I64" in opts:
             args["enable_i64"] = opts["ENABLE_I64"]
         elif "enable_i64" not in opts:

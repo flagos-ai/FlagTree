@@ -28,11 +28,11 @@ Value llGetPid(Location loc, RewriterBase &rewriter, ModuleOp moduleOp,
                int axis);
 
 Value createDeviceCall(StringRef funcName, ConversionPatternRewriter &rewriter,
-                       Operation *op, Type &elemTy, ValueRange &operands,
+                       Operation *op, Type &elemTy, ValueRange operands,
                        Location &loc);
 
 void createDeviceCall(StringRef funcName, ConversionPatternRewriter &rewriter,
-                      Operation *op, ValueRange &operands, Location &loc);
+                      Operation *op, ValueRange operands, Location &loc);
 
 // XPU-local, ceil-based offset emission. Mirrors Triton 3.0's
 // `triton::xpu::emitOffsetForClusterLayout` / `emitOffsetForSliceLayout`
@@ -84,6 +84,26 @@ inline Value getThreadId(RewriterBase &rewriter, Location loc) {
       rewriter.create<::mlir::gpu::ThreadIdOp>(loc, ::mlir::gpu::Dimension::x);
   return rewriter.create<arith::IndexCastOp>(loc, i32_ty, tid);
 }
+
+// Hierarchical per-core base index along one axis of a ClusterLayout.
+//
+// A ClusterLayout tiles axis i over nCore[i] = coresPerGroup[i] *
+// groupsPerCluster[i] cores (with prod_i nCore[i] == 64). The global core
+// coordinate along axis i is
+//   gCoord[i] = groupCoord[i] * coresPerGroup[i] + coreInGroupCoord[i]
+// where coreInGroupCoord = delinearize(coreId % groupSize, coresPerGroup)
+// and   groupCoord       = delinearize(coreId / groupSize, groupsPerCluster)
+// both following `order` (fastest-changing axis first). The base this core
+// owns is then `gCoord[axis] * unitsPerCore`.
+//
+// `unitsPerCore` is whatever the caller counts along the axis: elements for a
+// scalar iota (MakeRangeOp), 512-bit vectors for a vectorized cluster-shared
+// read (TLEVLoadOp). Wrapping the result into the axis extent is the CALLER's
+// job, because the two differ in where the wrap belongs (per element vs on the
+// base) and in the unit of the modulus.
+Value getClusterLayoutAxisBase(RewriterBase &rewriter, Location loc,
+                               const triton::xpu::ClusterLayoutAttr &layout,
+                               unsigned axis, unsigned unitsPerCore);
 
 } // namespace mlir::LLVM::XPU
 

@@ -5,10 +5,17 @@
 
 #include <optional>
 #include <set>
+#ifdef __TLE__
+#include <functional>
+#include <map>
+#endif
 
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/RegionUtils.h"
+#ifdef __TLE__
+#include "nvidia/hopper/include/Transforms/Passes.h"
+#endif
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Dialect/Triton/IR/Types.h"
@@ -20,6 +27,7 @@
 #ifdef __TLE__
 #include "tle/dialect/include/Analysis/TlePipeEffectAnalysis.h"
 #include "tle/dialect/include/IR/Dialect.h"
+#include "tle/dialect/include/IR/ExactSMEM.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "llvm/ADT/DenseSet.h"
 #endif
@@ -121,6 +129,11 @@ void processProducerCommitOp(OpBuilder &builder, ttnvws::ProducerCommitOp op,
 #ifndef USE_MACA
 // TODO: failed because ttg::TMACopyOp not defined on metax backend's ttgpuir
 static int getTMACopyLoadSize(ttg::TMACopyOp copy) {
+#ifdef __TLE__
+  if (auto bytes =
+          copy->getAttrOfType<IntegerAttr>(ttle::kLogicalTMACopyBytesAttr))
+    return static_cast<int>(bytes.getInt());
+#endif
   auto dstTy = cast<ttg::MemDescType>(copy.getDst().getType());
   auto shapePerCTA = ttg::getShapePerCTA(dstTy.getEncoding(), dstTy.getShape());
   return product(shapePerCTA) * dstTy.getElementType().getIntOrFloatBitWidth() /
@@ -263,6 +276,20 @@ constexpr llvm::StringLiteral
 static Value getMemDescRoot(Value value) {
   Value current = value;
   while (true) {
+    if (auto result = dyn_cast<OpResult>(current)) {
+      if (auto wait = dyn_cast<triton::nvidia_gpu::WarpGroupDotWaitOp>(
+              result.getOwner())) {
+        unsigned resultNo = result.getResultNumber();
+        if (resultNo < wait.getNumOperands()) {
+          current = wait.getOperand(resultNo);
+          continue;
+        }
+      }
+    }
+    if (auto view = current.getDefiningOp<ttle::MemDescWGMMAViewOp>()) {
+      current = view.getSrc();
+      continue;
+    }
     if (auto index = current.getDefiningOp<ttg::MemDescIndexOp>()) {
       current = index.getSrc();
       continue;
@@ -614,6 +641,11 @@ static void coalesceMBarrierInitBarriers(Operation *parentOp) {
   for (Region &region : parentOp->getRegions())
     coalesceMBarrierInitBarriersInRegion(region);
 }
+#ifdef __TLE__
+
+#include "tle/dialect/include/Transforms/LowerTokenCalls.h"
+
+#endif
 
 #ifdef __TLE__
 LogicalResult lowerTokenOperations(Operation *parentOp, int numCTAs,
@@ -623,6 +655,9 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
                           int numConsumerGroups)
 #endif
 {
+#ifdef __TLE__
+  return lowerTokenOperationsThroughCalls(parentOp, numCTAs);
+#else
   SmallVector<Operation *> deprecatedOps;
   SmallVector<Operation *> deprecatedTokenOps;
   DenseSet<Operation *> warpSpecOps;
@@ -942,6 +977,7 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
 #ifdef __TLE__
   return success();
 #endif
+#endif
 }
 
 #ifdef __TLE__
@@ -962,4 +998,26 @@ void doTokenLowering(triton::FuncOp &funcOp, unsigned numConsumerGroups)
 #endif
 }
 
+#ifdef __TLE__
+#define GEN_PASS_DEF_NVGPULOWERWSTOKENS
+#include "nvidia/hopper/include/Transforms/Passes.h.inc"
+
+class NVGPULowerWSTokensPass
+    : public impl::NVGPULowerWSTokensBase<NVGPULowerWSTokensPass> {
+public:
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    bool hasToken = false;
+    module.walk([&](ttnvws::CreateTokenOp) { hasToken = true; });
+    if (!hasToken)
+      return;
+
+    int numCTAs = ttg::TritonGPUDialect::getNumCTAs(module);
+    if (failed(lowerTokenOperations(module, numCTAs,
+                                    /*numConsumerGroups=*/1)))
+      signalPassFailure();
+  }
+};
+
+#endif
 } // namespace mlir

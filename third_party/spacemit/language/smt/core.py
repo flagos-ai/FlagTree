@@ -35,7 +35,7 @@ class parallel(range):
     """
 
     def __init__(self, arg1, arg2=None, step=None, num_stages=None, loop_unroll_factor=None,
-                 bind_sub_block: bool = True):
+                 bind_sub_block: bool = False):
         super().__init__(arg1, arg2, step, num_stages, loop_unroll_factor)
         self.bind_sub_block = bind_sub_block
 
@@ -90,11 +90,12 @@ def view(base, offsets, shape, packed_size=None, destination=None, _semantic=Non
 
 
 @builtin
-def alloc(shape, type=tl.float32, storage="l2", _semantic=None):
-    """Allocate a tensor in shared memory with specified shape and packed tile size.
+def alloc(shape, type=tl.float32, scope="l2", _semantic=None):
+    """Allocate a tensor in specified memory scope.
 
     :param shape: shape of the tensor to allocate (e.g., [BLOCK_SIZE_N, BLOCK_SIZE_K])
     :param type: data type of the tensor elements (default: float32)
+    :param scope: memory scope ("global", "tcm", "l2", "fragment")
 
     Example
     *******
@@ -103,13 +104,13 @@ def alloc(shape, type=tl.float32, storage="l2", _semantic=None):
         b_packed_shared = tl.alloc([BLOCK_SIZE_N, BLOCK_SIZE_K])
     """
 
-    return smt_semantic.alloc(shape, type, storage, _semantic)
+    return smt_semantic.alloc(shape, type, scope, _semantic)
 
 
 @builtin
-def alloc_copies(shape, dtype=tl.float32, storage="l2", copies=1, _semantic=None):
+def alloc_copies(shape, dtype=tl.float32, scope="l2", copies=1, _semantic=None):
 
-    return smt_semantic.alloc_copies(shape, dtype, copies, storage, _semantic)
+    return smt_semantic.alloc_copies(shape, dtype, copies, scope, _semantic)
 
 
 @builtin

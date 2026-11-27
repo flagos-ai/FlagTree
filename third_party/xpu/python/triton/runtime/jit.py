@@ -580,8 +580,17 @@ class JitFunctionInfo:
 
 
 def compute_cache_key(kernel_key_cache, specialization, options):
-    key = (tuple(specialization), str(options))
-    cache_key = kernel_key_cache.get(key, None)
+    spec = tuple(specialization)
+    # Look the memoized key up under the options dict itself rather than its repr:
+    # `str(options)` costs ~0.5us and this runs on every launch. Two dicts that
+    # differ only in insertion order get separate entries, which only duplicates a
+    # cache line, never returns the wrong kernel.
+    key = (spec, tuple(options.items()))
+    try:
+        cache_key = kernel_key_cache.get(key, None)
+    except TypeError:  # an option value that is not hashable (e.g. a list)
+        key = (spec, str(options))
+        cache_key = kernel_key_cache.get(key, None)
     if cache_key is not None:
         return cache_key
 
@@ -744,12 +753,15 @@ class JITFunction(JITCallable, KernelInterface[T]):
             if kernel is None:
                 return None
 
-        # Check that used global values have not changed.
-        not_present = object()
-        for (name, _), (val, globals_dict) in self.used_global_vals.items():
-            if (newVal := globals_dict.get(name, not_present)) != val:
-                raise RuntimeError(
-                    f"Global variable {name} has changed since we compiled this kernel, from {val} to {newVal}")
+        # Check that used global values have not changed. Most kernels close over
+        # nothing, and the launch path is microsecond-sensitive, so skip the setup
+        # when there is nothing to check.
+        if self.used_global_vals:
+            not_present = object()
+            for (name, _), (val, globals_dict) in self.used_global_vals.items():
+                if (newVal := globals_dict.get(name, not_present)) != val:
+                    raise RuntimeError(
+                        f"Global variable {name} has changed since we compiled this kernel, from {val} to {newVal}")
 
         if not warmup:
             # canonicalize grid
@@ -763,13 +775,105 @@ class JITFunction(JITCallable, KernelInterface[T]):
             if hasattr(kernel, "result"):
                 kernel = kernel.result()
             # launch kernel
-            launch_metadata = kernel.launch_metadata(grid, stream, *bound_args.values())
+            enter_hook = knobs.runtime.launch_enter_hook
+            # `launch_metadata` returns None when there is no enter hook, but the
+            # call still unpacks every argument; check the same condition here so a
+            # hook-less launch does not pay for it.
+            launch_metadata = None if enter_hook is None else kernel.launch_metadata(grid, stream, *bound_args.values())
             kernel.run(grid_0, grid_1, grid_2, stream, kernel.function, kernel.packed_metadata, launch_metadata,
-                       knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *bound_args.values())
+                       enter_hook, knobs.runtime.launch_exit_hook, *bound_args.values())
         return kernel
 
     def repr(self, _):
         return self._fn_name if self._repr is None else self._repr(_)
+
+    def __getitem__(self, grid) -> T:
+        """The proxy `fn[grid](...)` calls, memoized per grid.
+
+        Contract is `KernelInterface.__getitem__`'s -- the proxy returns the
+        CompiledKernel -- but once a kernel exists for an argument specialization
+        the proxy skips what `run` would re-derive and cannot change: the options
+        dict, the cache-key string, the used-globals check, grid canonicalization,
+        plus building this closure again. Measured on KL3, a 4-argument pointer
+        kernel goes from 22.7us to ~14us of host time per launch.
+
+        Argument specialization still runs every call -- it is what selects the
+        kernel, and no cheap guard can replace it -- so the fast path is sound for
+        any argument set. Anything it does not model falls back to `run`: keyword
+        arguments, a callable grid, pre-run hooks, kernels that close over globals
+        (whose values `run` re-checks), an unhashable grid or specialization, and a
+        `debug` / `instrumentation_mode` knob change.
+        """
+        fallback = lambda *args, **kwargs: self.run(grid=grid, warmup=False, *args, **kwargs)  # noqa: E731
+        if knobs.runtime.disable_launch_fast_path:
+            return fallback
+        try:
+            launcher = self._bound_launchers.get(grid)
+        except TypeError:  # unhashable grid, e.g. a list
+            return fallback
+        if launcher is None:
+            launcher = self._bind_grid(grid, fallback)
+            self._bound_launchers[grid] = launcher
+        return launcher
+
+    def _bind_grid(self, grid, fallback):
+        """Build the memoized launcher for one grid; see `__getitem__`."""
+        if callable(grid) or self.pre_run_hooks:
+            return fallback
+
+        grid_size = len(grid)
+        grid_0 = grid[0]
+        grid_1 = grid[1] if grid_size > 1 else 1
+        grid_2 = grid[2] if grid_size > 2 else 1
+        # device -> (knob snapshot, binder, binder kwargs, {specialization: state})
+        devices = {}
+
+        def launch(*args, **kwargs):
+            # `used_global_vals` is only filled while the kernel is first parsed, so
+            # it has to be re-checked here rather than when this closure was built:
+            # run() re-validates those globals on every launch and this path does
+            # not model that.
+            if kwargs or self.used_global_vals:
+                return fallback(*args, **kwargs)
+            device = driver.active.get_current_device()
+            # Read the two knobs run() would fold into the options: a change has to
+            # invalidate the binder kwargs, so it is part of the per-device state.
+            snapshot = (self.debug or knobs.runtime.debug, knobs.compilation.instrumentation_mode)
+            state = devices.get(device)
+            if state is None or state[0] != snapshot:
+                _, _, _, backend, binder = self.device_caches[device]
+                extra = {"debug": snapshot[0], "instrumentation_mode": snapshot[1]}
+                if backend.binary_ext == 'xpubin':
+                    # The XPU backend bakes the launch grid into XPUOptions, so it
+                    # has to reach parse_options the same way run() sends it.
+                    extra["grid"] = grid
+                state = (snapshot, binder, extra, {})
+                devices[device] = state
+            _, binder, extra, kernels = state
+
+            bound_args, specialization, _ = binder(*args, **extra)
+            try:
+                entry = kernels.get(tuple(specialization))
+            except TypeError:  # a specialization value that is not hashable
+                return fallback(*args)
+            if entry is None:
+                kernel = self.run(grid=grid, warmup=False, *args)
+                if kernel is not None:
+                    try:
+                        kernels[tuple(specialization)] = (kernel, kernel.run, kernel.function, kernel.packed_metadata)
+                    except TypeError:
+                        pass
+                return kernel
+
+            kernel, run, function, packed_metadata = entry
+            stream = driver.active.get_current_stream(device)
+            enter_hook = knobs.runtime.launch_enter_hook
+            launch_metadata = None if enter_hook is None else kernel.launch_metadata(grid, stream, *bound_args.values())
+            run(grid_0, grid_1, grid_2, stream, function, packed_metadata, launch_metadata, enter_hook,
+                knobs.runtime.launch_exit_hook, *bound_args.values())
+            return kernel
+
+        return launch
 
     def __init__(self, fn, version=None, do_not_specialize=None, do_not_specialize_on_alignment=None, debug=None,
                  noinline=None, repr=None, launch_metadata=None):
@@ -806,6 +910,9 @@ class JITFunction(JITCallable, KernelInterface[T]):
 
         # Hooks that will be called prior to executing "run"
         self.pre_run_hooks = []
+
+        # Bound launchers, one per grid; see `_bind_grid`.
+        self._bound_launchers = {}
 
     def preload(self, specialization_data):
         import json

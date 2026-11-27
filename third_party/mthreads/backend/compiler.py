@@ -1,7 +1,8 @@
 from triton.backends.compiler import BaseBackend, DotCap, DotSupport, GPUTarget, Language
+from triton.backends.mthreads._musa_arch import musa_capability_from_arch, normalize_musa_arch
 from triton._C.libtriton import ir, passes, mthreads
 from triton import knobs
-from triton.runtime.errors import OutOfResources
+from triton.runtime.errors import OutOfResources, PTXASError
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,11 @@ import tempfile
 
 _DEFAULT_MUSA_PREFIX = "/usr/local/musa"
 
+# FlagGems uses this feature level to distinguish a backend that turns known
+# MTGPU register-allocation failures into recoverable autotuning failures from
+# an older backend that aborts the complete tuning run.
+MTHREADS_REGISTER_FAILURE_RECOVERY_VERSION = 1
+
 
 def min_dot_size(target: GPUTarget):
 
@@ -31,7 +37,10 @@ def min_dot_size(target: GPUTarget):
 
 
 # Whole-byte dtypes covered by the inherited async-copy/descriptor movement
-# paths; the fp8 portion follows the per-capability storage whitelist
+# paths; the fp8 portion follows the per-capability storage whitelist. The
+# async-copy path additionally gates on a >= 4-byte per-thread copy vector
+# (cp.async-style, dtype-agnostic); narrower copies fall back to ordinary
+# tt.load.
 _MOVEMENT_DTYPES = ("int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64", "fp16", "bf16", "fp32",
                     "fp64")
 
@@ -211,7 +220,6 @@ def get_musa_version() -> str:
         return "unknown"
 
 
-@functools.lru_cache(None)
 def file_hash(path: str) -> str:
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
@@ -239,22 +247,14 @@ def _tool_version_signature(path: str) -> str:
 
 
 def _normalize_arch(arch: object) -> str:
-    arch_str = str(arch).lower()
-    if "." not in arch_str:
-        return arch_str
-    arch_major, arch_minor = arch_str.split(".", 1)
-    if arch_major.isdecimal() and arch_minor.isdecimal():
-        return f"{arch_major}{arch_minor}"
-    return arch_str
+    return normalize_musa_arch(arch)
 
 
 def _capability_from_arch(arch: object) -> int:
-    arch_str = _normalize_arch(arch)
-    if arch_str.startswith("ph1"):
-        return 31
-    if arch_str.isdecimal():
-        return int(arch_str)
-    raise ValueError(f"Unsupported MUSA arch: {arch}")
+    capability = musa_capability_from_arch(arch)
+    if capability is None:
+        raise ValueError(f"Unsupported MUSA arch: {arch}")
+    return capability
 
 
 def _warp_size_from_capability(capability: int) -> int:
@@ -314,12 +314,14 @@ def _local_backend_tool_path(binary: str) -> Optional[str]:
 
 
 def _select_tool_path(binary: str, explicit_path: Optional[str], tool_getter) -> Optional[str]:
-    local_path = _local_backend_tool_path(binary)
-    if local_path:
-        return local_path
+    # Honor an explicit toolchain override before the bundled binaries. New
+    # lowering contracts may require a newer MTCC than the wheel contains.
     path = _validated_tool_path(explicit_path)
     if path:
         return path
+    local_path = _local_backend_tool_path(binary)
+    if local_path:
+        return local_path
     return _maybe_tool_path(tool_getter())
 
 
@@ -363,6 +365,27 @@ def _tool_output(stdout: Optional[str], stderr: Optional[str]) -> str:
     return "\n".join(chunks)
 
 
+def _is_known_mtgpu_register_failure(tool_name: str, output: str, returncode: Optional[int] = None) -> bool:
+    """Recognize recoverable register-allocation failures from MTT LLVM tools.
+
+    The MTGPU backend aborts instead of returning a regular diagnostic for a
+    small set of register-pressure failures. These are invalid autotuning
+    candidates, not fatal compiler errors. Keep the predicate deliberately
+    narrow so unrelated LLVM failures still surface as ``RuntimeError``.
+    """
+    if tool_name not in {"llc", "llc-asm"}:
+        return False
+    text = output.lower()
+    if "no registers from class available to allocate" in text:
+        return True
+
+    # At -O0 the same limitation can reach the post-RA helper and terminate by
+    # signal. Require both the pass name and an explicit crash indication.
+    post_ra = "mtgpu post-ra internal registers related optimization" in text
+    crash_markers = ("segmentation fault", "sigsegv", "signal 11", "exit code 139")
+    return post_ra and (returncode in (-11, 139) or any(marker in text for marker in crash_markers))
+
+
 def _run_tool_command(tool_name: str, cmd: list[str], *, repro_dir: Path, dump_log: bool = False) -> None:
     proc = subprocess.run(cmd, check=False, text=True, capture_output=True)
     output = _tool_output(proc.stdout, proc.stderr)
@@ -371,6 +394,11 @@ def _run_tool_command(tool_name: str, cmd: list[str], *, repro_dir: Path, dump_l
         print(output)
     if proc.returncode == 0:
         return
+    if _is_known_mtgpu_register_failure(tool_name, output, proc.returncode):
+        raise PTXASError("MTGPU register allocation rejected this candidate.\n"
+                         f"{output or '<empty>'}\n"
+                         f"Repro command: {shlex.join(cmd)}\n"
+                         f"Artifacts kept in: {repro_dir}")
     error = (f"`{tool_name}` failed with error code {proc.returncode}\n"
              f"`{tool_name}` output:\n{output or '<empty>'}\n"
              f"Repro command: {shlex.join(cmd)}\n"
@@ -613,6 +641,65 @@ def _drop_unsupported_attrs(ir_text: str, llc_major: Optional[int]) -> str:
     return out
 
 
+def _sdk_sqmma_descriptor_compat(ir_text: str, volatile: bool = False) -> str:
+    """Adapt the pointer descriptor ABI to the SDK LLVM-14 scalar ABI.
+
+    SDK crt/sqmma.h emits a load consumed by sqmma.desc, rather than a
+    pointer argument. This must run after LLVM optimization: FlagTree's LLVM
+    intrinsic table uses the pointer ABI. New named values leave numeric SSA
+    numbering intact. This adapter is opt-in because bundled and SDK llc can
+    report the same version while accepting different intrinsic signatures.
+    """
+    scalar_types = {"i8": ("i8", 1), "half": ("i16", 2), "fp32": ("float", 4)}
+    pattern = re.compile(r"@llvm\.musa\.sqmma\.desc\.(i8|half|fp32)\(")
+    counter = 0
+    output = []
+    for line in ir_text.splitlines(keepends=True):
+        match = pattern.search(line)
+        if not match:
+            output.append(line)
+            continue
+        # Find the first top-level comma, accounting for address-space types
+        # and constant GEP expressions (whose operands also contain commas).
+        start = match.end()
+        depth = 0
+        end = start
+        for end in range(start, len(line)):
+            c = line[end]
+            if c in "([<{":
+                depth += 1
+            elif c in ")]>}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif c == "," and depth == 0:
+                break
+        first = line[start:end].strip()
+        scalar, alignment = scalar_types[match.group(1)]
+        if first == scalar or first.startswith(scalar + " "):
+            output.append(line)  # Already SDK ABI; make the adapter idempotent.
+            continue
+        if not first.startswith("ptr addrspace(3)"):
+            raise ValueError(f"Unsupported SQMMA descriptor operand: {first!r}")
+        if line.lstrip().startswith("declare "):
+            first = scalar
+        else:
+            pointer = first[len("ptr addrspace(3)"):].strip()
+            if not (pointer.startswith("%") or pointer.startswith("@") or pointer.startswith("getelementptr ")):
+                raise ValueError(f"Unsupported SQMMA descriptor pointer: {pointer!r}")
+            while True:
+                name = f"%musa.sdk.desc.{counter}"
+                counter += 1
+                if not re.search(re.escape(name) + r"(?![\w.])", ir_text):
+                    break
+            indent = line[:len(line) - len(line.lstrip())]
+            qualifier = "volatile " if volatile else ""
+            output.append(f"{indent}{name} = load {qualifier}{scalar}, ptr addrspace(3) {pointer}, align {alignment}\n")
+            first = f"{scalar} {name}"
+        output.append(line[:start] + first + line[end:])
+    return "".join(output)
+
+
 def _llvm_compat(ir_text: str) -> str:
     replacements = [
         ("memory\\(none\\)", "readnone"),
@@ -710,18 +797,55 @@ def _llc_extra_options(metadata: Dict[str, object], options: "MUSAOptions", capa
         ],
     }
     opts = list(llc_options_map[(uses_sqmma, enable_backend_opt)])
+    # This option is deliberately narrow: it suppresses only the SQMMA
+    # optimized LLC scheduling flag when that flag is otherwise selected.
+    if options.disable_max_ilp_scheduler:
+        opts = [opt for opt in opts if opt != "-misched=mtgpu-max-ilp"]
     if capability == 22:
         opts.append("-mtgpu-alloc-shared-memory-from-zero=1")
     if options.llc_options:
-        opts.extend(shlex.split(options.llc_options))
+        # Explicit scheduler and MTGPU optimization-level switches replace the
+        # backend defaults. Several bundled llc versions reject conflicting
+        # duplicates instead of applying a deterministic last-one-wins rule.
+        user_opts = shlex.split(options.llc_options)
+        filtered_user_opts = []
+        override_prefixes = ("-misched=", "-mtgpu-opt-level=")
+        for user_opt in user_opts:
+            # The pass-manager -O level is emitted at a fixed command position
+            # by ``_llc_opt_level`` below.
+            if re.fullmatch(r"-O[0-3]", user_opt):
+                continue
+            if user_opt.startswith(override_prefixes):
+                prefix = user_opt.split("=", 1)[0] + "="
+                opts = [opt for opt in opts if not opt.startswith(prefix)]
+            elif user_opt in opts:
+                continue
+            filtered_user_opts.append(user_opt)
+        opts.extend(filtered_user_opts)
     return opts
+
+
+def _llc_opt_level(options: "MUSAOptions") -> str:
+    """Return the effective llc pass-manager optimization level."""
+    level = "-O2"
+    if not options.llc_options:
+        return level
+    for option in shlex.split(options.llc_options):
+        if re.fullmatch(r"-O[0-3]", option):
+            level = option
+    return level
 
 
 @dataclass(frozen=True)
 class MUSAOptions:
+    sqmma_descriptor_abi: str = "pointer"
+    # Opt-in: TME transaction issuers must supply warp-uniform inputs.
+    tme_issue_warp: bool = False
+    # Retain side effects and input dependencies of unused empty register identities.
+    lower_dead_tied_register_fences: bool = False
     num_warps: int = 4
     num_ctas: int = 1
-    num_stages: int = 3
+    num_stages: int = 1
     warp_size: int = 32
     maxnreg: Optional[int] = None
     cluster_dims: tuple = (1, 1, 1)  # flagtree mthreads3.2
@@ -744,7 +868,14 @@ class MUSAOptions:
     llc_options: Optional[str] = None
     enable_llc_opt: bool = False
     enable_backend_opt: bool = False
+    disable_max_ilp_scheduler: bool = False
+    disable_sqmma_m_split_preference: bool = False
     enable_fp8_burst2: bool = False
+    fp8_downcast_burst4: bool = False
+    exp2_vector_width: int = 1
+    exp2_native: bool = False
+    fp32_vector_width: int = 1
+    local_max_vector_width: int = 1
     enable_llvm_compat: bool = True
     extern_libs: Optional[tuple] = None
     debug: bool = False
@@ -759,6 +890,8 @@ class MUSAOptions:
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
         if not extern_libs.get("libdevice", None):
             extern_libs["libdevice"] = knobs.musa.libdevice_path or str(default_libdir / "libdevice.31.bc")
+        if self.arch is not None and _capability_from_arch(self.arch) == 31 and not extern_libs.get("printf", None):
+            extern_libs["printf"] = knobs.musa.libprintf_path or str(default_libdir / "libprintf.bc")
         object.__setattr__(self, "extern_libs", tuple(extern_libs.items()))
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, \
             "num_warps must be a power of 2"
@@ -775,6 +908,7 @@ class MUSAOptions:
         hash_dict["llc_tool_signature"] = _tool_version_signature(llc_path)
         hash_dict["lld_tool_signature"] = _tool_version_signature(lld_path)
         hash_dict["llc_asm_tool_signature"] = _tool_version_signature(llc_asm_path or "")
+        hash_dict["musa_k128_sqmma_opt_in_live"] = os.getenv("TRITON_MUSA_ENABLE_K128_SQMMA", "") == "1"
         if hash_dict["extern_libs"]:
             hash_dict["extern_libs"] = tuple((k, file_hash(v)) for k, v in sorted(hash_dict["extern_libs"]))
         key = "_".join([f"{name}-{val}" for name, val in sorted(hash_dict.items())])
@@ -904,9 +1038,49 @@ class MUSABackend(BaseBackend):
 
     def parse_options(self, opts) -> Any:
         opts = dict(opts)
+        if "k128_sqmma_opt_in" in opts:
+            raise ValueError("k128_sqmma_opt_in is not a per-kernel MThreads option; "
+                             "set TRITON_MUSA_ENABLE_K128_SQMMA=1 before compilation")
         arch = knobs.runtime.override_arch or opts.get("arch", None) or self.target.arch
         args = {"arch": _normalize_arch(arch)}
         capability = _capability_from_arch(args["arch"])
+        if opts.get("sqmma_descriptor_abi", "pointer") not in ("pointer", "sdk_scalar", "sdk_scalar_volatile",
+                                                               "native_mp31_sg16", "native_mp31_shared"):
+            raise ValueError("sqmma_descriptor_abi must be pointer, sdk_scalar, sdk_scalar_volatile, "
+                             "native_mp31_sg16, or native_mp31_shared")
+        if opts.get("sqmma_descriptor_abi") in ("native_mp31_sg16", "native_mp31_shared") and capability != 31:
+            raise ValueError("native MP31 descriptors require MP31")
+        if type(opts.get("tme_issue_warp", False)) is not bool:
+            raise ValueError("tme_issue_warp must be a bool")
+        if opts.get("tme_issue_warp", False) and capability != 31:
+            raise ValueError("tme_issue_warp is currently supported only on MP31")
+        exp2_width = opts.get("exp2_vector_width", 1)
+        if isinstance(exp2_width, bool) or not isinstance(exp2_width, int) or exp2_width not in (1, 2, 4):
+            raise ValueError(f"exp2_vector_width must be 1, 2, or 4, got {exp2_width!r}")
+        if type(opts.get("exp2_native", False)) is not bool:
+            raise ValueError("exp2_native must be a bool")
+        if opts.get("exp2_native", False) and exp2_width == 1:
+            raise ValueError("exp2_native requires exp2_vector_width 2 or 4")
+        fp32_width = opts.get("fp32_vector_width", 1)
+        if type(fp32_width) is not int or fp32_width not in (1, 4):
+            raise ValueError("fp32_vector_width must be 1 or 4")
+        max_width = opts.get("local_max_vector_width", 1)
+        if type(max_width) is not int or max_width not in (1, 4):
+            raise ValueError("local_max_vector_width must be 1 or 4")
+        if max_width == 4 and capability != 31:
+            raise ValueError("local_max_vector_width 4 currently requires MP31")
+        if type(opts.get("fp8_downcast_burst4", False)) is not bool:
+            raise ValueError("fp8_downcast_burst4 must be a bool")
+        if opts.get("fp8_downcast_burst4", False) and capability != 31:
+            raise ValueError("fp8_downcast_burst4 currently requires MP31")
+        if type(opts.get("lower_dead_tied_register_fences", False)) is not bool:
+            raise ValueError("lower_dead_tied_register_fences must be a bool")
+        # The bundled MTGPU llc currently only provides processors through
+        # mp_32. Reject future numeric capabilities here rather than letting
+        # instruction selection terminate the compiler process.
+        if capability > 32:
+            raise ValueError(f"Unsupported MUSA arch {args['arch']}: "
+                             "this FlagTree toolchain supports capabilities up to 32")
         if opts.get("num_ctas", 1) > 1 and capability == 31:
             raise ValueError("num_ctas > 1 requires MUSA cluster launch support. "
                              f"Current target is {args['arch']} (capability {capability}).")
@@ -954,7 +1128,14 @@ class MUSABackend(BaseBackend):
         maxnreg = opts.get("maxnreg", None)
         if maxnreg is not None and (not isinstance(maxnreg, int) or maxnreg <= 0):
             raise ValueError(f"maxnreg must be a positive integer, got {maxnreg!r}")
-        args.update({k: opts[k] for k in MUSAOptions.__dataclass_fields__.keys() if k in opts and opts[k] is not None})
+        # ``arch`` has already been resolved using the backend precedence
+        # (runtime override, per-kernel option, then target) and canonicalized
+        # above.  Do not copy the raw user spelling back over it here.
+        args.update({
+            k: opts[k]
+            for k in MUSAOptions.__dataclass_fields__.keys()
+            if k != "arch" and k in opts and opts[k] is not None
+        })
         if "warp_size" not in args:
             args["warp_size"] = _warp_size_from_capability(capability)
         return MUSAOptions(**args)
@@ -1017,6 +1198,11 @@ class MUSABackend(BaseBackend):
     def make_ttgir(mod, metadata, opt, arch, capability):
         if opt.maxnreg is not None:
             mod.set_attr("ttg.maxnreg", ir.builder(mod.context).get_int32_attr(opt.maxnreg))
+        if opt.disable_sqmma_m_split_preference:
+            mod.set_attr(
+                "musa_tle.disable_sqmma_m_split_preference",
+                ir.builder(mod.context).get_int32_attr(1),
+            )
 
         pm = ir.pass_manager(mod.context)
         dump_enabled = pm.enable_debug()
@@ -1063,6 +1249,8 @@ class MUSABackend(BaseBackend):
             passes.ttgpuir.add_schedule_loops(pm)
             mthreads.passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
         else:
+            passes.ttgpuir.add_fuse_nested_loops(pm)
+            passes.common.add_canonicalizer(pm)
             passes.ttir.add_triton_licm(pm)
 
         passes.common.add_canonicalizer(pm)
@@ -1104,8 +1292,20 @@ class MUSABackend(BaseBackend):
 
     @staticmethod
     def make_llir(src, metadata, options, arch):
+        src.set_attr("musa.tme_issue_warp", ir.builder(src.context).get_int32_attr(int(options.tme_issue_warp)))
         from triton._C.libtriton import llvm
 
+        src.set_attr("musa.sqmma_native_sg16",
+                     ir.builder(src.context).get_int32_attr(int(options.sqmma_descriptor_abi == "native_mp31_sg16")))
+        src.set_attr("musa.sqmma_native_shared",
+                     ir.builder(src.context).get_int32_attr(int(options.sqmma_descriptor_abi == "native_mp31_shared")))
+        src.set_attr("musa.exp2_vector_width", ir.builder(src.context).get_int32_attr(options.exp2_vector_width))
+        src.set_attr("musa.exp2_native", ir.builder(src.context).get_int32_attr(int(options.exp2_native)))
+        src.set_attr("musa.fp8_downcast_burst4",
+                     ir.builder(src.context).get_int32_attr(int(options.fp8_downcast_burst4)))
+        src.set_attr("musa.fp32_vector_width", ir.builder(src.context).get_int32_attr(options.fp32_vector_width))
+        src.set_attr("musa.local_max_vector_width",
+                     ir.builder(src.context).get_int32_attr(options.local_max_vector_width))
         mod = src
         total_num_warps = src.get_int_attr("ttg.total-num-warps")
         launch_num_warps = total_num_warps if total_num_warps is not None else options.num_warps
@@ -1149,10 +1349,16 @@ class MUSABackend(BaseBackend):
         mthreads.attach_datalayout(llvm_mod)
 
         if options.extern_libs:
-            paths = [path for (name, path) in options.extern_libs]
-            llvm.link_extern_libs(llvm_mod, paths)
+            inline_paths = [path for (name, path) in options.extern_libs if name != "printf"]
+            printf_paths = [path for (name, path) in options.extern_libs if name == "printf"]
+            if inline_paths:
+                llvm.link_extern_libs(llvm_mod, inline_paths)
+            if printf_paths:
+                llvm.link_extern_libs(llvm_mod, printf_paths, force_inline=False)
 
         MUSABackend._optimize_llir_module(llvm_mod, metadata, capability)
+        metadata["readonly_register_fence_count"] = (mthreads.lower_dead_tied_register_fences(llvm_mod)
+                                                     if options.lower_dead_tied_register_fences else 0)
         maxntidx = max(1, int(launch_num_warps) * int(options.warp_size))
         kernel_name_hint = src.get_entry_func_name() if hasattr(src, "get_entry_func_name") else ""
         mthreads.decorate_kernel_abi(llvm_mod, kernel_name_hint, maxntidx)
@@ -1206,6 +1412,8 @@ class MUSABackend(BaseBackend):
                                f"(default {_DEFAULT_MUSA_PREFIX}).")
 
         ir_text = src
+        if opt.sqmma_descriptor_abi in ("sdk_scalar", "sdk_scalar_volatile"):
+            ir_text = _sdk_sqmma_descriptor_compat(ir_text, volatile=opt.sqmma_descriptor_abi.endswith("_volatile"))
         llc_major = _detect_llvm_major_version(llc_path)
         if opt.enable_llvm_compat:
             ir_text = _drop_unsupported_attrs(ir_text, llc_major)
@@ -1221,7 +1429,7 @@ class MUSABackend(BaseBackend):
             print(ir_text)
 
         capability = _capability_from_arch(arch)
-        llc_opt_level = "-O2"
+        llc_opt_level = _llc_opt_level(opt)
         llc_opts = [
             "-march=mtgpu",
             f"-mcpu=mp_{capability}",

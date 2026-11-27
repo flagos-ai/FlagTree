@@ -5,6 +5,10 @@
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 
+#include "triton/Tools/Sys/GetEnv.hpp"
+
+#include <climits>
+
 namespace mlir {
 namespace triton {
 namespace xpu {
@@ -147,6 +151,35 @@ public:
       }
     });
 
+    // Attach an LM scratch buffer to each vector<->scalar boundary op. The
+    // scalar side fixes both the element type and the element count: pack
+    // writes that many scalars and reads them back as whole vectors, unpack
+    // does the reverse, so a single buffer shaped like the scalar side covers
+    // both views.
+    DenseSet<Operation *> boundaryAllocas;
+    auto attachBoundaryBuffer = [&](Operation *op, Value scalarSide) {
+      if (op->getNumOperands() > 1)
+        return; // bufPtr already attached
+      auto scalarTy = mlir::dyn_cast<RankedTensorType>(scalarSide.getType());
+      if (!scalarTy)
+        return;
+      OpBuilder builder(op);
+      auto ptrTy = triton::PointerType::get(scalarTy.getElementType(), 0);
+      auto lmPtrType = RankedTensorType::get(scalarTy.getShape(), ptrTy,
+                                             scalarTy.getEncoding());
+      auto allocaOp = builder.create<triton::xpu::AllocaOp>(
+          op->getLoc(), lmPtrType, product(scalarTy.getShape()));
+      op->insertOperands(op->getNumOperands(), {allocaOp});
+      allocaOp->moveBefore(op);
+      boundaryAllocas.insert(allocaOp);
+    };
+    m.walk([&](triton::xpu::PackOp packOp) {
+      attachBoundaryBuffer(packOp, packOp.getSrc());
+    });
+    m.walk([&](triton::xpu::UnpackOp unpackOp) {
+      attachBoundaryBuffer(unpackOp, unpackOp.getResult());
+    });
+
     // Move Alloca in the Front of FuncOp Body
     m.walk([&](triton::xpu::AllocaOp allocaOp) {
       // 1.Find FuncOp
@@ -166,7 +199,7 @@ public:
     m.walk([&](triton::xpu::LoadOp loadOp) {
       auto res = loadOp.getResult();
       if (res.hasOneUse() &&
-          (loadOp.getStride() == 1 || loadOp.getStride() == -1) &&
+          (loadOp.getStride() == 1 || loadOp.getStride() == INT32_MIN) &&
           !loadOp.getIsDiscrete()) {
         for (auto user : res.getUsers()) {
           if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(user)) {
@@ -200,6 +233,33 @@ public:
     for (auto op : loadStoreOps) {
       op->erase();
     }
+
+    // Report-only LM accounting. There is no LM capacity check anywhere in this
+    // pipeline -- XTDK decides whether the allocas fit -- so this never
+    // rejects anything, it only makes the footprint visible. The boundary
+    // scratch is broken out so a regression in it is attributable.
+    int64_t totalBytes = 0;
+    int64_t scratchBytes = 0;
+    unsigned numAllocas = 0;
+    m.walk([&](triton::xpu::AllocaOp allocaOp) {
+      auto ty = allocaOp.getResult().getType();
+      int64_t elems = getTotalElemsPerThread(ty);
+      int64_t bytes = elems * triton::getPointeeBitWidth(ty) / 8;
+      bytes = (bytes + 63) / 64 * 64; // LM allocas are 64-byte aligned
+      totalBytes += bytes;
+      ++numAllocas;
+      if (boundaryAllocas.contains(allocaOp))
+        scratchBytes += bytes;
+    });
+    std::string msg;
+    llvm::raw_string_ostream os(msg);
+    os << "[Alloca] allocas=" << numAllocas << " lmBytes=" << totalBytes
+       << " boundaryScratchBytes=" << scratchBytes
+       << " (64B-aligned, per core, before memory-inplace reuse; no LM "
+          "capacity check exists in this pipeline)";
+    m->emitRemark(msg);
+    if (mlir::triton::tools::getBoolEnv("TRITONXPU_LM_REPORT"))
+      llvm::errs() << "[Alloca][lm] " << msg << "\n";
   }
 };
 

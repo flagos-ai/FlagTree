@@ -420,17 +420,21 @@ CudaTileTypeConverter::CudaTileTypeConverter() {
     std::iota(dimMap.begin(), dimMap.end(), 0);
 
     SmallVector<int32_t> arrayOfi32Shape;
+    SmallVector<int32_t> traversalStrides;
     for (auto i64Shape : tileShape) {
       arrayOfi32Shape.push_back(i64Shape);
+      traversalStrides.push_back(1); // Set traversal stride to 1
     }
     auto shapeAttr = DenseI32ArrayAttr::get(ctx, arrayOfi32Shape);
+    auto traversalStridesAttr = DenseI32ArrayAttr::get(ctx, traversalStrides);
 
-    return cuda_tile::PartitionViewType::get(
-        ctx, shapeAttr, tensorViewTy, dimMap,
+    return cuda_tile::StridedViewType::get(
+        ctx, shapeAttr, traversalStridesAttr, tensorViewTy, dimMap,
         cuda_tile::PaddingValueAttr::get(ctx, cuda_tile::PaddingValue::zero));
   });
   addConversion([](cuda_tile::TensorViewType type) { return type; });
   addConversion([](cuda_tile::PartitionViewType type) { return type; });
+  addConversion([](cuda_tile::StridedViewType type) { return type; });
   addConversion([](cuda_tile::TokenType type) { return type; });
   addConversion(
       [](FloatType type) { return cuda_tile::TileType::get({}, type); });
