@@ -1,0 +1,15 @@
+{# Copyright 2026 FlagOS Contributors
+   SPDX-License-Identifier: MIT #}@triton.jit
+def {{ dense_matmul_accumulate_helper }}(
+    source, weight, source_offsets, weight_offsets, k_mask, n_mask,
+):
+    """Multiply in FP32 so BF16 products retain their full precision."""
+    source_value = tl.load(
+        source + source_offsets, mask=k_mask, other=0.0,
+    ).to(tl.float32)
+    weight_value = tl.load(
+        weight + weight_offsets,
+        mask=n_mask[:, None] & k_mask[None, :],
+        other=0.0,
+    ).to(tl.float32)
+    return tl.sum(weight_value * source_value[None, :], axis=1)

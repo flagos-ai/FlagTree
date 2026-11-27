@@ -1,0 +1,1244 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""CP-SAT candidate graph and extractor for AutoDistributed."""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from functools import cached_property
+from itertools import product
+
+from triton.flagmega.diagnostics import DumpFlags, DumpScope
+from triton.flagmega.errors import IRVerificationError
+from triton.flagmega.ir import (
+    BlockCyclicSplit,
+    DistributedType,
+    IRModule,
+    IRType,
+    ParameterKind,
+    Placement,
+    SBPSplit,
+    TupleType,
+    get_definition,
+)
+from triton.flagmega.ir.distributed_inference import broadcast_ir_type
+from triton.flagmega.passes.auto_distributed.candidate_identity import (
+    distributed_candidate_id, )
+from triton.flagmega.passes.auto_distributed.candidates import (
+    DistributedCandidate,
+    DistributedCandidateContext,
+    DistributedCandidateProvider,
+    DistributedCandidateProviderRegistry,
+)
+from triton.flagmega.passes.auto_distributed.fusion_cost import CandidateFusion, candidate_fusions
+from triton.flagmega.passes.auto_distributed.operation_cost import (
+    DistributedOperationCostModel, )
+from triton.flagmega.passes.auto_distributed.publication_cost import shared_publication
+from triton.flagmega.passes.auto_distributed.realization import (
+    DistributedReshardRealization,
+    DistributedReshardRealizationContext,
+    DistributedReshardRealizationPolicy,
+    DistributedReshardSourceKind,
+    DistributedReshardUsageKind,
+)
+from triton.flagmega.passes.auto_distributed.realization_analysis import ReshardRealizationAnalysis
+from triton.flagmega.passes.auto_distributed.reshard import (
+    DistributedReshardPlan,
+    DistributedReshardPlanner,
+)
+from triton.flagmega.passes.auto_distributed.reshard_cost import (
+    DistributedReshardCostModel, )
+from triton.flagmega.passes.constants import ConstnessAnalysis
+from triton.flagmega.passes.functions import (
+    function_nodes,
+    static_function_invocation_counts,
+    static_node_invocation_counts,
+)
+
+
+@dataclass(frozen=True)
+class CandidateBucket:
+    node_id: str
+    candidates: tuple[DistributedCandidate, ...]
+    executable: bool
+
+
+@dataclass(frozen=True)
+class ReshardSite:
+    producer_id: str
+    producer_index: int
+    consumer_id: str
+    consumer_index: int | None
+    input_index: int
+    target_type: IRType
+    plans: tuple[DistributedReshardPlan, ...]
+    usage: str
+    invocation_count: int
+    edge_kind: str = "input"
+
+    @cached_property
+    def key(self) -> tuple[str, str, int]:
+        return (self.producer_id, self.consumer_id, self.input_index)
+
+    @cached_property
+    def id(self) -> str:
+        consumer_index = "output" if self.consumer_index is None else str(self.consumer_index)
+        return (f"{self.producer_id}_{self.producer_index}__{self.consumer_id}_"
+                f"{consumer_index}_{self.input_index}")
+
+
+@dataclass(frozen=True)
+class SearchGraph:
+    module: IRModule
+    placement: Placement
+    buckets: tuple[CandidateBucket, ...]
+    reshard_sites: tuple[ReshardSite, ...]
+    realization_policy: DistributedReshardRealizationPolicy
+    invocation_counts: Mapping[str, int]
+    constant_ids: frozenset[str] = frozenset()
+    reshard_cost_model: DistributedReshardCostModel = DistributedReshardCostModel()
+    operation_cost_model: DistributedOperationCostModel = DistributedOperationCostModel()
+    # Adapter relations may be constructed only for these hard choices.
+    # Keep the full candidate surface and bind the reduced relations to their
+    # constraints so a later solve cannot silently relax them.
+    construction_fixed_selections: tuple[tuple[str, str], ...] = ()
+    # A graph is one immutable policy/IR snapshot. Replacing the graph resets
+    # analysis caches; no type/cost decisions leak into another agent trial.
+    _realized_costs: dict = field(default_factory=dict, init=False, compare=False, repr=False)
+    _publication_origins: dict = field(default_factory=dict, init=False, compare=False, repr=False)
+
+    @cached_property
+    def bucket_map(self) -> dict[str, CandidateBucket]:
+        return {bucket.node_id: bucket for bucket in self.buckets}
+
+    @cached_property
+    def fusions(self) -> tuple[CandidateFusion, ...]:
+        return candidate_fusions(self)
+
+    @cached_property
+    def realization_analysis(self):
+        return ReshardRealizationAnalysis(self.realization_policy)
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    graph: SearchGraph
+    selected: Mapping[str, DistributedCandidate]
+    selected_reshards: Mapping[tuple[str, str, int], DistributedReshardPlan]
+    objective: int
+    status: str
+    fusions: tuple[CandidateFusion, ...] = ()
+
+
+def _interface_type(value, placement):
+    """Keep declared ownership; give logical tensor leaves the broadcast default."""
+    if isinstance(value, DistributedType):
+        if value.placement != placement:
+            raise IRVerificationError("An explicit distributed interface must use the active placement.")
+        return value
+    if isinstance(value, TupleType):
+        return TupleType(tuple(_interface_type(field, placement) for field in value.fields))
+    return broadcast_ir_type(value, placement)
+
+
+def _broadcast_bank_ref(value, placement):
+    """Broadcast the tensors a parameter-bank handle carries.
+
+    Only this reference is destructured: `control.bank_get` reads its element
+    tuple and a `get_item` per field turns each weight into its own call
+    argument, so those leaves need the same distributed contract as any other
+    argument.  Every other reference crosses a boundary whole and meets a
+    reference parameter, so its leaves stay logical.
+    """
+
+    from triton.flagmega.ir.model import RefType
+
+    if not isinstance(value, RefType) or value.name != "parameter_bank":
+        return value
+    return RefType(value.name, tuple((name, _interface_type(field, placement)) for name, field in value.fields))
+
+
+def build_search_graph(
+    module: IRModule,
+    placement: Placement,
+    registry: DistributedCandidateProviderRegistry,
+    realization_policy: DistributedReshardRealizationPolicy,
+    reshard_cost_model: DistributedReshardCostModel | None = None,
+    operation_cost_model: DistributedOperationCostModel | None = None,
+    *,
+    fixed_selections: Mapping[str, str] | None = None,
+) -> SearchGraph:
+    """Build the full candidate surface and adapters allowed by hard choices.
+
+    A graph constructed with fixed choices must be solved under at least those
+    same choices. Proposal generation continues to use the unconstrained graph.
+    """
+    buckets: list[CandidateBucket] = []
+    reshard_memo = {}
+    type_inference_memo = {}
+    realization_analysis = ReshardRealizationAnalysis(realization_policy)
+
+    def reshard_plans(source, target, policy, source_kind, usage):
+        key = (source, target, source_kind, usage)
+        if key not in reshard_memo:
+            reshard_memo[key] = _reshard_plans(source, target, realization_analysis, source_kind, usage)
+        return reshard_memo[key]
+
+    function_invocations = static_function_invocation_counts(module)
+    node_invocations = static_node_invocation_counts(module)
+    available: dict[str, tuple[DistributedCandidate, ...]] = {}
+    constant_ids = ConstnessAnalysis.analyze(module).constants
+    function_parameter_kinds = _infer_function_parameter_kinds(module)
+    for node in module.nodes:
+        from triton.flagmega.ir.execution_mesh import effective_execution_mesh, placement_for_execution_mesh
+        node_placement = placement_for_execution_mesh(placement, effective_execution_mesh(module, node))
+        input_candidates = tuple(
+            tuple(candidate.return_type for candidate in available[input_id]) for input_id in node.inputs)
+        if node.op == "control.for":
+            from .loops import loop_candidates
+            candidates = loop_candidates(module, node, placement, available, registry.split_candidate_provider)
+            executable = False
+        elif node.op == "builtin.tuple":
+            values: list[DistributedCandidate] = []
+            for input_types in product(*input_candidates):
+                return_type = TupleType(tuple(input_types))
+                if any(candidate.return_type == return_type and candidate.input_types == tuple(input_types)
+                       for candidate in values):
+                    continue
+                values.append(
+                    DistributedCandidate(
+                        distributed_candidate_id(
+                            node.id,
+                            "tuple-structural-construction",
+                            return_type,
+                            tuple(input_types),
+                        ),
+                        return_type,
+                        tuple(input_types),
+                        0,
+                        "tuple-structural-construction",
+                        objective_kind="analytic",
+                        objective_model="flagmega.structural-zero/v1",
+                        objective_evidence=("structural-tuple", ),
+                    ))
+            candidates = tuple(values)
+            executable = False
+        elif node.op == "builtin.get_item":
+            index = int(node.attrs["index"])
+            values: list[DistributedCandidate] = []
+            for source in available[node.inputs[0]]:
+                if not isinstance(source.return_type, TupleType):
+                    continue
+                return_type = source.return_type.fields[index]
+                if not any(candidate.return_type == return_type and candidate.input_types == (source.return_type, )
+                           for candidate in values):
+                    values.append(
+                        DistributedCandidate(
+                            distributed_candidate_id(
+                                node.id,
+                                f"tuple-field-{index}",
+                                return_type,
+                                (source.return_type, ),
+                            ),
+                            return_type,
+                            (source.return_type, ),
+                            0,
+                            f"tuple-field-{index}",
+                        ))
+            candidates = tuple(values)
+            executable = False
+        else:
+            provider = registry.try_get(node.op)
+            if provider is None:
+                is_originator = not node.inputs
+                is_structural_call = node.op in {"builtin.call", "control.bank_get"}
+                if not is_originator and not is_structural_call:
+                    raise IRVerificationError(
+                        f"AutoDistributed has no reviewed candidate provider for "
+                        f"compute op {node.op!r} at {node.id!r}.",
+                        stage=module.stage,
+                        node_id=node.id,
+                    )
+                return_type = node.type if is_originator else _interface_type(node.type, placement)
+                if is_originator:
+                    # A parameter bank is the one originator whose reference
+                    # gets destructured downstream, so its element tuple has
+                    # to carry the same broadcast contract the rows will be
+                    # read at.  Otherwise the row is distributed while its
+                    # handle stays logical, and that pairing cannot survive
+                    # a write-out/read-back of the IR.
+                    return_type = _broadcast_bank_ref(return_type, placement)
+                if node.op == "control.bank_get":
+                    # A row's broadcast return type must stay derivable from
+                    # the bank handle, because `BankGet.infer_type` rebuilds
+                    # it from the handle's element whenever the IR is written
+                    # out and read back.  Broadcasting the result while
+                    # leaving the handle logical makes the row distributed in
+                    # memory and logical after a round trip, so the call's
+                    # arguments silently stop matching the callee's ABI.
+                    input_types = tuple(
+                        _broadcast_bank_ref(module.node_map[value].type, placement) for value in node.inputs)
+                elif is_structural_call:
+                    callee = str(node.attrs["callee"])
+                    parameter_kinds = function_parameter_kinds[callee]
+                    input_types = tuple(
+                        module.node_map[value].type if parameter_kind ==
+                        ParameterKind.ATTRIBUTE else _interface_type(module.node_map[value].type, placement)
+                        for value, parameter_kind in zip(node.inputs, parameter_kinds))
+                else:
+                    input_types = ()
+                candidates = (DistributedCandidate(
+                    f"distribution.{node.id}.{'originator' if is_originator else 'broadcast'}",
+                    return_type,
+                    input_types,
+                    0,
+                    "logical-originator" if is_originator else "function-call-abi-propagation",
+                    objective_model="flagmega.structural-distribution/v1",
+                ), )
+                executable = False
+            else:
+                context = DistributedCandidateContext(
+                    module,
+                    node,
+                    node_placement,
+                    input_candidates,
+                    registry.split_candidate_provider,
+                    reshard_cost_model or DistributedReshardCostModel(),
+                    operation_cost_model or DistributedOperationCostModel(),
+                    type_inference_memo=type_inference_memo,
+                )
+                candidates = _provider_candidates(provider, context, node.type)
+                if not candidates and not provider.is_exhaustive:
+                    candidates = (DistributedCandidate(
+                        f"distribution.{node.id}.logical",
+                        node.type,
+                        tuple(module.node_map[value].type for value in node.inputs),
+                        0,
+                        "non-exhaustive-provider-fallback",
+                        node.op,
+                    ), )
+                executable = True
+        if not candidates:
+            raise IRVerificationError(f"AutoDistributed produced no candidates for {node.id!r}.", stage=module.stage,
+                                      node_id=node.id)
+        available[node.id] = candidates
+        buckets.append(CandidateBucket(node.id, candidates, executable))
+    # Close operation-owned forward and reverse type relations before forming
+    # reshard sites. Structural tuple demands remain field-wise, avoiding an
+    # arbitrary Cartesian product of layouts unrelated to a consumer.
+    from .propagation import complete_candidate_relations
+    buckets = list(
+        complete_candidate_relations(module, tuple(buckets), placement, registry, reshard_cost_model
+                                     or DistributedReshardCostModel(), operation_cost_model
+                                     or DistributedOperationCostModel(), type_inference_memo))
+    from triton.flagmega.ir.region import is_region
+
+    from .loops import add_binding_candidates
+    buckets = add_binding_candidates(module, buckets)
+    bucket_map = {bucket.node_id: bucket for bucket in buckets}
+    from .search_domains import fixed_candidate_domains
+    fixed = dict(fixed_selections or {})
+    domains = fixed_candidate_domains(bucket_map, fixed, stage=module.stage)
+    sites: list[ReshardSite] = []
+    for consumer in module.nodes:
+        if consumer.op == "builtin.get_item":
+            # Tuple projection is structural: adapting the whole tuple here
+            # also converts unread fields. Forward closure provides each
+            # actual producer tuple; any needed conversion belongs on the
+            # projected field's consumer edge, including Partial reduction.
+            continue
+        consumer_bucket = bucket_map[consumer.id]
+        for consumer_index, candidate in enumerate(consumer_bucket.candidates):
+            if consumer_index not in domains[consumer.id]:
+                continue
+            for input_index, producer_id in enumerate(consumer.inputs):
+                target_type = candidate.input_types[input_index]
+                for producer_index, producer in enumerate(bucket_map[producer_id].candidates):
+                    if producer_index not in domains[producer_id]:
+                        continue
+                    # Native structural candidates encode one exact Cartesian
+                    # product of their producer choices and must not be
+                    # weakened by an unrelated adapter edge.  Only the
+                    # demand-closure candidates above intentionally admit
+                    # field-wise adaptation.
+                    if (consumer.op == "builtin.tuple"
+                            and "provider-demanded-tuple-layout" not in candidate.objective_evidence):
+                        continue
+                    plans = reshard_plans(
+                        producer.return_type,
+                        target_type,
+                        realization_policy,
+                        source_kind_for_node(module.node_map[producer_id]),
+                        DistributedReshardUsageKind.INTERNAL,
+                    )
+                    if plans:
+                        sites.append(
+                            ReshardSite(
+                                producer_id,
+                                producer_index,
+                                consumer.id,
+                                consumer_index,
+                                input_index,
+                                target_type,
+                                plans,
+                                DistributedReshardUsageKind.INTERNAL.value,
+                                node_invocations.get(consumer.id, 1),
+                            ))
+    # A Yield targets the body's selected iter argument, not a DAG input of
+    # the loop. Shared bodies have one backedge ABI and one physical adapter.
+    from .loops import loop_edges
+    for parameter, output, yield_index in loop_edges(module):
+        for consumer_index, candidate in enumerate(bucket_map[parameter].candidates):
+            if consumer_index not in domains[parameter]:
+                continue
+            for producer_index, producer in enumerate(bucket_map[output].candidates):
+                if producer_index not in domains[output]:
+                    continue
+                plans = reshard_plans(
+                    producer.return_type,
+                    candidate.return_type,
+                    realization_policy,
+                    source_kind_for_node(module.node_map[output]),
+                    DistributedReshardUsageKind.FUNCTION_BOUNDARY,
+                )
+                if plans:
+                    sites.append(
+                        ReshardSite(
+                            output,
+                            producer_index,
+                            parameter,
+                            consumer_index,
+                            yield_index,
+                            candidate.return_type,
+                            plans,
+                            DistributedReshardUsageKind.FUNCTION_BOUNDARY.value,
+                            node_invocations.get(output, 1),
+                            edge_kind="loop_yield",
+                        ))
+    for function in module.functions:
+        if is_region(function):
+            continue
+        consumer_id = function_boundary_id(function.name)
+        for output_index, output_id in enumerate(function.outputs):
+            target_type = function_output_type(module, function.name, output_id, placement)
+            for producer_index, producer in enumerate(bucket_map[output_id].candidates):
+                if producer_index not in domains[output_id]:
+                    continue
+                usage = (DistributedReshardUsageKind.PROGRAM_OUTPUT
+                         if function.name == module.entry else DistributedReshardUsageKind.FUNCTION_BOUNDARY)
+                plans = reshard_plans(
+                    producer.return_type,
+                    target_type,
+                    realization_policy,
+                    source_kind_for_node(module.node_map[output_id]),
+                    usage,
+                )
+                if plans:
+                    sites.append(
+                        ReshardSite(
+                            output_id,
+                            producer_index,
+                            consumer_id,
+                            None,
+                            output_index,
+                            target_type,
+                            plans,
+                            usage.value,
+                            function_invocations.get(function.name, 1),
+                        ))
+    graph = SearchGraph(
+        module,
+        placement,
+        tuple(buckets),
+        tuple(sites),
+        realization_policy,
+        node_invocations,
+        constant_ids,
+        reshard_cost_model or DistributedReshardCostModel(),
+        operation_cost_model or DistributedOperationCostModel(),
+        tuple(sorted(fixed.items())),
+    )
+    # Keep planning's exact type/ownership proofs for costing and extraction.
+    # Replacing/reconstructing a graph creates a fresh analysis snapshot.
+    object.__setattr__(graph, "realization_analysis", realization_analysis)
+    return graph
+
+
+def _infer_function_parameter_kinds(module: IRModule, ) -> dict[str, tuple[ParameterKind, ...]]:
+    """Infer reference ParameterKind at reusable-function boundaries.
+
+    A graph function has no separate signature object for semantic operand
+    kinds.  Derive it from every direct use of each formal.  Attribute-only
+    formals (dimensions, state handles, launch controls) stay ordinary values;
+    any data/structural use makes the formal an Input.  Recursive calls are
+    handled callee-first and cycles conservatively become Inputs.
+    """
+
+    users: dict[str, list[tuple[object, int]]] = {}
+    for function in module.functions:
+        for node in function_nodes(module, function):
+            for index, input_id in enumerate(node.inputs):
+                users.setdefault(input_id, []).append((node, index))
+
+    memo: dict[str, tuple[ParameterKind, ...]] = {}
+    active: set[str] = set()
+
+    def classify_function(name: str) -> tuple[ParameterKind, ...]:
+        if name in memo:
+            return memo[name]
+        function = module.function_map[name]
+        if name in active:
+            return tuple(ParameterKind.INPUT for _ in function.parameters)
+        active.add(name)
+        result: list[ParameterKind] = []
+        for parameter_id in function.parameters:
+            kinds: list[ParameterKind] = []
+            for user, input_index in users.get(parameter_id, ()):
+                if user.op == "builtin.call":
+                    callee_name = str(user.attrs["callee"])
+                    callee_kinds = classify_function(callee_name)
+                    kinds.append(callee_kinds[input_index])
+                    continue
+                try:
+                    definition = get_definition(user.op)
+                except KeyError:
+                    kinds.append(ParameterKind.INPUT)
+                    continue
+                if input_index >= len(definition.input_parameters):
+                    kinds.append(ParameterKind.INPUT)
+                    continue
+                kinds.append(definition.input_parameters[input_index].parameter_kind)
+            result.append(ParameterKind.ATTRIBUTE if kinds and all(kind == ParameterKind.ATTRIBUTE
+                                                                   for kind in kinds) else ParameterKind.INPUT)
+        active.remove(name)
+        memo[name] = tuple(result)
+        return memo[name]
+
+    for function in module.functions:
+        classify_function(function.name)
+    return memo
+
+
+def solve_search_graph(
+    graph: SearchGraph,
+    *,
+    fixed_selections: Mapping[str, str] | None = None,
+    dump_subdirectory: str | None = None,
+) -> SearchResult:
+    fixed = dict(fixed_selections or {})
+    if any(fixed.get(name) != candidate for name, candidate in graph.construction_fixed_selections):
+        raise IRVerificationError(
+            "AutoDistributed solve cannot relax graph construction fixed selections; rebuild the graph.",
+            stage=graph.module.stage,
+        )
+    cp_model = _load_cp_model()
+    model = cp_model.CpModel()
+    bucket_map = graph.bucket_map
+    site_map = {(site.producer_id, site.producer_index, site.consumer_id, site.consumer_index, site.input_index): site
+                for site in graph.reshard_sites}
+    from .search_domains import propagate_domains
+    domains = propagate_domains(graph, fixed, site_map)
+    variables = {}
+    for bucket in graph.buckets:
+        node = graph.module.node_map[bucket.node_id]
+        exact_inputs = {}
+        if node.op == "builtin.get_item":
+            for index in domains[bucket.node_id]:
+                required = bucket.candidates[index].input_types
+                exact_inputs.setdefault(required, []).append(index)
+        for index in domains[bucket.node_id]:
+            alias = None
+            if node.op == "builtin.get_item" and len(exact_inputs[bucket.candidates[index].input_types]) == 1:
+                required = bucket.candidates[index].input_types[0]
+                source_id = node.inputs[0]
+                matches = [i for i in domains[source_id] if bucket_map[source_id].candidates[i].return_type == required]
+                if len(matches) == 1:
+                    alias = variables.get((source_id, matches[0]))
+            # A unique structural projection is determined by its producer.
+            # Reuse that decision; implementation variants remain separate.
+            variables[(bucket.node_id,
+                       index)] = (alias if alias is not None else model.NewBoolVar(f"{bucket.node_id}__{index}"))
+    for bucket in graph.buckets:
+        model.AddExactlyOne([variables[(bucket.node_id, index)] for index in domains[bucket.node_id]])
+    ordered_choices = (variables[(bucket.node_id, index)] for bucket in graph.buckets for index in sorted(
+        domains[bucket.node_id], key=lambda i: (
+            bucket.candidates[i].operation_cost,
+            _candidate_distribution_complexity(bucket.candidates[i]),
+            i,
+        )))
+    model.AddDecisionStrategy(list(dict.fromkeys(ordered_choices)), cp_model.CHOOSE_FIRST, cp_model.SELECT_MAX_VALUE)
+
+    objective_terms = []
+    objective_weights = []
+    simplicity_weights = []
+    fusion_variables = {}
+    member_fusions = {}
+    for ordinal, fusion in enumerate(graph.fusions):
+        if any(member not in variables for member in fusion.members):
+            continue
+        active = model.NewBoolVar(f"fusion_{ordinal}")
+        model.AddMinEquality(active, [variables[member] for member in fusion.members])
+        fusion_variables[ordinal] = active
+        for member in fusion.members:
+            member_fusions.setdefault(member, []).append(active)
+        objective_terms.append(active)
+        objective_weights.append(fusion.operation_cost * fusion.invocation_count)
+        simplicity_weights.append(0)
+    for bucket in graph.buckets:
+        for index, candidate in enumerate(bucket.candidates):
+            if index not in domains[bucket.node_id]:
+                continue
+            member = (bucket.node_id, index)
+            selected_var = variables[member]
+            standalone = selected_var
+            if member in member_fusions:
+                standalone = model.NewBoolVar(f"standalone__{bucket.node_id}_{index}")
+                # Every selected node is charged exactly once, either alone
+                # or as part of the region the lowering rule will realize.
+                model.Add(standalone + sum(member_fusions[member]) == selected_var)
+                objective_terms.append(selected_var)
+                objective_weights.append(0)
+                simplicity_weights.append(_candidate_distribution_complexity(candidate))
+            objective_terms.append(standalone)
+            # Candidate construction rejects invalid ranges.  Do not clamp:
+            # silently turning a broken negative/overflow estimate into a
+            # legal objective would change compiler decisions.
+            objective_weights.append(candidate.operation_cost * graph.invocation_counts.get(bucket.node_id, 1))
+            simplicity_weights.append(0 if member in member_fusions else _candidate_distribution_complexity(candidate))
+
+    # Index producer candidates by return type, and by reshard-site edge, once.
+    # The producer/consumer compatibility constraints below otherwise re-scan
+    # every producer candidate for every consumer-candidate/input edge, which is
+    # quadratic in a node's candidate count -- the dominant cost for graphs with
+    # many distribution candidates (e.g. multi-token prefill). The lookups below
+    # reproduce the exact same compatible sets, in the same ascending order.
+    producers_by_return_type: dict[str, dict[object, list[int]]] = {}
+    for bucket in graph.buckets:
+        by_type: dict[object, list[int]] = {}
+        for producer_index in sorted(domains[bucket.node_id]):
+            by_type.setdefault(bucket.candidates[producer_index].return_type, []).append(producer_index)
+        producers_by_return_type[bucket.node_id] = by_type
+    reshard_producers: dict[tuple[object, object, int, int], list[int]] = {}
+    for producer_id, producer_index, consumer_id, consumer_index, input_index in site_map:
+        if producer_index in domains[producer_id]:
+            reshard_producers.setdefault((producer_id, consumer_id, consumer_index, input_index),
+                                         []).append(producer_index)
+    from .search_relations import add_reshard_relations
+    # Feasibility needs candidate compatibility and fusion constraints, while
+    # path prices/publication choices are auxiliary optimization variables.
+    candidate_model = cp_model.CpModel()
+    candidate_model.Proto().CopyFrom(model.Proto())
+    plan_variables, independent_paths, edge_costs, publications = add_reshard_relations(
+        model, graph, domains, variables)
+    objective_terms.extend(edge_costs)
+    objective_weights.extend((1, ) * len(edge_costs))
+    simplicity_weights.extend((0, ) * len(edge_costs))
+
+    for consumer in graph.module.nodes:
+        consumer_bucket = bucket_map[consumer.id]
+        for consumer_index, candidate in enumerate(consumer_bucket.candidates):
+            if consumer_index not in domains[consumer.id]:
+                continue
+            consumer_var = variables[(consumer.id, consumer_index)]
+            for input_index, producer_id in enumerate(consumer.inputs):
+                required = candidate.input_types[input_index]
+                type_matches = producers_by_return_type[producer_id].get(required, ())
+                site_matches = reshard_producers.get((producer_id, consumer.id, consumer_index, input_index), ())
+                if site_matches:
+                    compatible = sorted(set(type_matches).union(site_matches))
+                else:
+                    compatible = list(type_matches)
+                if not compatible:
+                    model.Add(consumer_var == 0)
+                    candidate_model.Add(consumer_var == 0)
+                    continue
+                if len(compatible) == len(domains[producer_id]):
+                    # ExactlyOne(producer) makes this implication a tautology.
+                    continue
+                if len(compatible) == 1 and consumer_var is variables[(producer_id, compatible[0])]:
+                    continue
+                candidate_model.Add(consumer_var <= sum(variables[(producer_id, producer_index)]
+                                                        for producer_index in compatible))
+                if (producer_id, consumer.id, input_index) not in plan_variables:
+                    # Positive-cost relation tables already own this legality.
+                    model.Add(consumer_var <= sum(variables[(producer_id, i)] for i in compatible))
+
+    for ordinal, ((_, invocations, cost), uses) in enumerate(publications.items()):
+        published = model.NewBoolVar(f"publication_{ordinal}")
+        model.AddMaxEquality(published, uses)
+        objective_terms.append(published)
+        objective_weights.append(cost * invocations)
+        simplicity_weights.append(0)
+
+    from triton.flagmega.ir.region import is_region
+
+    from .loops import add_solver_constraints
+    add_solver_constraints(model, candidate_model, graph, domains, variables, site_map)
+
+    for function in graph.module.functions:
+        if is_region(function):
+            continue
+        consumer_id = function_boundary_id(function.name)
+        for output_index, output_id in enumerate(function.outputs):
+            target = function_output_type(graph.module, function.name, output_id, graph.placement)
+            bucket = bucket_map[output_id]
+            for producer_index, candidate in enumerate(bucket.candidates):
+                if producer_index not in domains[output_id]:
+                    continue
+                if candidate.return_type == target:
+                    continue
+                if (output_id, producer_index, consumer_id, None, output_index) not in site_map:
+                    model.Add(variables[(output_id, producer_index)] == 0)
+
+    # Keep the analytic/agent supplied objective primary.  When it cannot
+    # distinguish two complete plans, prefer the simpler contiguous storage
+    # contract deterministically.  Block-cyclic candidates stay in the graph
+    # and remain selectable by editing the checkpoint or supplying stronger
+    # objective evidence; this is a default tie-break, not target legality.
+    maximum_simplicity = sum(
+        max(_candidate_distribution_complexity(candidate)
+            for candidate in bucket.candidates)
+        for bucket in graph.buckets)
+    primary_scale = maximum_simplicity + 1
+    objective_coefficients: list[int] = []
+    maximum_objective = 0
+    for index, (primary, simplicity) in enumerate(zip(objective_weights, simplicity_weights)):
+        coefficient = primary_scale * primary + simplicity
+        _require_cp_sat_int64(coefficient, f"objective coefficient {index}")
+        maximum_objective += coefficient * objective_terms[index].Proto().domain[-1]
+        _require_cp_sat_int64(maximum_objective, "maximum aggregate objective")
+        objective_coefficients.append(coefficient)
+    model.Minimize(sum(coefficient * variable
+                       for coefficient, variable in zip(objective_coefficients, objective_terms)))
+    validation = model.Validate()
+    if validation:
+        raise IRVerificationError(f"AutoDistributed CP-SAT model is invalid: {validation}", stage=graph.module.stage)
+    model._flagmega_candidate_model = candidate_model
+    solver, status_value = _solve_distribution_model(cp_model, model, graph)
+    status = solver.StatusName(status_value)
+    selected = {
+        bucket.node_id:
+        next(candidate
+             for index, candidate in enumerate(bucket.candidates)
+             if index in domains[bucket.node_id] and solver.BooleanValue(variables[(bucket.node_id, index)]))
+        for bucket in graph.buckets
+    }
+    selected_indexes = {
+        bucket.node_id:
+        next(index
+             for index, _ in enumerate(bucket.candidates)
+             if index in domains[bucket.node_id] and solver.BooleanValue(variables[(bucket.node_id, index)]))
+        for bucket in graph.buckets
+    }
+    selected_reshards = {}
+    selected_reshard_sites: dict[tuple[str, str, int], ReshardSite] = {}
+    for site in graph.reshard_sites:
+        if selected_indexes[site.producer_id] != site.producer_index:
+            continue
+        if site.consumer_index is not None and selected_indexes[site.consumer_id] != site.consumer_index:
+            continue
+        for plan_index, plan in enumerate(site.plans):
+            choice = solver.Value(plan_variables[site.key]) if site.key in plan_variables else 0
+            selected_path = independent_paths[(site.key, site.producer_index, site.consumer_index)][choice]
+            if selected_path == plan_index:
+                selected_reshards[site.key] = plan
+                selected_reshard_sites[site.key] = site
+                break
+    primary_objective = sum(candidate.operation_cost * graph.invocation_counts.get(node_id, 1)
+                            for node_id, candidate in selected.items())
+    selected_fusions = tuple(graph.fusions[index]
+                             for index, variable in fusion_variables.items()
+                             if solver.BooleanValue(variable))
+    primary_objective += sum(
+        (fusion.operation_cost - fusion.standalone_cost) * fusion.invocation_count for fusion in selected_fusions)
+    selected_publications = set()
+    for key, plan in selected_reshards.items():
+        site = selected_reshard_sites[key]
+        cost = _realized_reshard_plan_cost(graph, site, selected[site.producer_id].return_type, plan)
+        shared = shared_publication(graph, site, plan)
+        if shared is not None:
+            if shared[0] in selected_publications:
+                cost -= shared[1]
+            selected_publications.add(shared[0])
+        primary_objective += cost * site.invocation_count
+    result = SearchResult(
+        graph,
+        selected,
+        selected_reshards,
+        primary_objective,
+        status,
+        selected_fusions,
+    )
+    if dump_subdirectory is None:
+        _dump_search(result)
+    else:
+        with DumpScope(dump_subdirectory):
+            _dump_search(result)
+    return result
+
+
+def _solve_distribution_model(cp_model, model, graph: SearchGraph):
+    """Extract a distribution plan, or explain why no plan exists.
+
+    The budget is spent on deterministic work rather than wall-clock seconds.
+    A wall-clock deadline makes the extraction depend on how busy the machine
+    is: the same model that closes on an idle host reaches only presolve on a
+    loaded one, and CP-SAT then reports ``UNKNOWN`` with an empty solution
+    pool.  ``UNKNOWN`` says nothing about the module -- infeasible candidate
+    relations are already reported as ``INFEASIBLE`` by ``propagate_domains``
+    -- so treating it as a compile failure turns machine load into a compiler
+    error.
+
+    Feasibility and optimality are therefore budgeted separately.  A first
+    pass stops at the first feasible assignment, which is cheap because it
+    ignores the objective entirely; that assignment is the fallback, so the
+    pass can always produce a plan.  A second pass optimises from there and
+    keeps whichever solution it improves to.  Only genuine infeasibility,
+    where even the first pass finds no assignment, remains an error.
+    """
+
+    workers = _positive_env_int("FLAGMEGA_AD_SOLVE_WORKERS", max((os.cpu_count() or 2) // 2, 1))
+    # Measured on the 45-layer GLM-5.3 graph: budgets of 30 and 120 reach the
+    # identical objective (1447678284), while 600 spends 609s instead of 250s
+    # for no improvement.  The objective search plateaus early on this model
+    # class, so the larger default only bought compile time.  Raise
+    # FLAGMEGA_AD_SOLVE_DETERMINISTIC_TIME for a graph that is still improving.
+    budget = _positive_env_float("FLAGMEGA_AD_SOLVE_DETERMINISTIC_TIME", 30.0)
+
+    def configure(solver):
+        # Deterministic time is reproducible across runs and across machine
+        # load; interleaved search keeps it reproducible with many workers.
+        solver.parameters.max_deterministic_time = budget
+        solver.parameters.num_workers = workers
+        solver.parameters.interleave_search = True
+        return solver
+
+    # Dropping the objective is what makes the first pass cheap: the 45-layer
+    # GLM-5.3-Flash model needs 0.9 deterministic units to prove feasibility
+    # and more than 1400 to make progress on its 46-bit objective.
+    relaxed = cp_model.CpModel()
+    relaxed.Proto().CopyFrom(model.Proto())
+    relaxed.Proto().ClearField("objective")
+    candidate_model = getattr(model, "_flagmega_candidate_model", None)
+    if candidate_model is not None:
+        candidate_solver = configure(cp_model.CpSolver())
+        candidate_solver.parameters.num_workers = 1
+        candidate_solver.parameters.search_branching = cp_model.FIXED_SEARCH
+        candidate_solver.parameters.stop_after_first_solution = True
+        candidate_status = candidate_solver.Solve(candidate_model)
+        if candidate_status not in {cp_model.OPTIMAL, cp_model.FEASIBLE}:
+            raise IRVerificationError(
+                f"AutoDistributed CP-SAT extraction failed: {candidate_solver.StatusName(candidate_status)}",
+                stage=graph.module.stage,
+            )
+        # Every supported pair has a legal path. Fix the proven candidate
+        # assignment and complete its auxiliary variables in the full model;
+        # this remains a full-model feasibility proof, including any extra
+        # constraints supplied by a caller, rather than a candidate-only plan.
+        candidate_solution = candidate_solver.ResponseProto().solution
+        relaxed.Proto().solution_hint.Clear()
+        relaxed.Proto().solution_hint.vars.extend(range(len(candidate_solution)))
+        relaxed.Proto().solution_hint.values.extend(candidate_solution)
+    feasibility = configure(cp_model.CpSolver())
+    # Relation path/cost variables are consequences of the semantic choices.
+    # The satisfaction search must choose those contracts first; a parallel
+    # portfolio branching on auxiliary encodings can spend its entire budget
+    # without completing one assignment. Optimality retains the full portfolio.
+    feasibility.parameters.search_branching = cp_model.FIXED_SEARCH
+    feasibility.parameters.num_workers = 1
+    if candidate_model is not None:
+        feasibility.parameters.fix_variables_to_their_hinted_value = True
+    feasibility.parameters.stop_after_first_solution = True
+    feasible_status = feasibility.Solve(relaxed)
+    if feasible_status not in {cp_model.OPTIMAL, cp_model.FEASIBLE}:
+        raise IRVerificationError(
+            "AutoDistributed CP-SAT extraction failed: "
+            f"{feasibility.StatusName(feasible_status)}",
+            stage=graph.module.stage,
+        )
+
+    optimizer = configure(cp_model.CpSolver())
+    # Start the optimiser from the assignment feasibility already proved, so
+    # the objective search improves a plan instead of searching for its first.
+    hint = model.Proto().solution_hint
+    hint.Clear()
+    solution = feasibility.ResponseProto().solution
+    hint.vars.extend(range(len(solution)))
+    hint.values.extend(solution)
+    status_value = optimizer.Solve(model)
+    if status_value in {cp_model.OPTIMAL, cp_model.FEASIBLE}:
+        return optimizer, status_value
+    # The fallback plan is feasible but unoptimised; never report it as
+    # optimal, because the relaxation it came from had no objective.
+    return feasibility, cp_model.FEASIBLE
+
+
+def _require_cp_sat_int64(value: int, description: str) -> None:
+    """Reject an objective that OR-Tools cannot represent exactly."""
+
+    maximum = (1 << 63) - 1
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= maximum:
+        raise IRVerificationError(f"AutoDistributed {description} exceeds the signed 64-bit CP-SAT "
+                                  f"range: {value}.", )
+
+
+def _candidate_distribution_complexity(candidate: DistributedCandidate) -> int:
+    """Count non-contiguous split stages in one candidate's storage ABI."""
+
+    return sum(_type_distribution_complexity(value) for value in (candidate.return_type, *candidate.input_types))
+
+
+def _type_distribution_complexity(value: IRType) -> int:
+    if isinstance(value, TupleType):
+        return sum(_type_distribution_complexity(field) for field in value.fields)
+    if not isinstance(value, DistributedType):
+        return 0
+    return sum(1 for policy in value.axis_policies if isinstance(policy, SBPSplit) for stage in policy.stages
+               if isinstance(stage.distribution, BlockCyclicSplit))
+
+
+def graph_dot(
+    graph: SearchGraph,
+    selected: Mapping[str, DistributedCandidate] | None = None,
+    selected_reshards: Mapping[tuple[str, str, int], DistributedReshardPlan] | None = None,
+) -> str:
+    lines = ["digraph AutoDistributed {", "  rankdir=LR;"]
+    for bucket in graph.buckets:
+        lines.append(f'  subgraph "cluster_{_dot(bucket.node_id)}" {{')
+        lines.append(f'    label="{_dot(bucket.node_id)}";')
+        for index, candidate in enumerate(bucket.candidates):
+            picked = selected is not None and selected.get(bucket.node_id) == candidate
+            if selected is not None and not picked:
+                continue
+            color = "green" if picked else "black"
+            target = "" if candidate.target_op is None else f"\\ntarget={candidate.target_op}"
+            label = (f"{candidate.id}\\n{_type_text(candidate.return_type)}"
+                     f"{target}\\ncost={candidate.operation_cost}"
+                     f" x{graph.invocation_counts.get(bucket.node_id, 1)}"
+                     f"\\nmodel={candidate.objective_kind}:{candidate.objective_model}")
+            lines.append(f'    "{_dot(bucket.node_id)}_{index}" [label="{_dot(label)}", color={color}];')
+        lines.append("  }")
+    bucket_map = graph.bucket_map
+    for node in graph.module.nodes:
+        for input_index, producer_id in enumerate(node.inputs):
+            for producer_index, producer in enumerate(bucket_map[producer_id].candidates):
+                if selected is not None and selected.get(producer_id) != producer:
+                    continue
+                for consumer_index, candidate in enumerate(bucket_map[node.id].candidates):
+                    if selected is not None and selected.get(node.id) != candidate:
+                        continue
+                    if (bucket_map[producer_id].candidates[producer_index].return_type ==
+                            candidate.input_types[input_index]):
+                        lines.append(f'  "{_dot(producer_id)}_{producer_index}" -> '
+                                     f'"{_dot(node.id)}_{consumer_index}" [label="arg{input_index}"];')
+    output_nodes: set[str] = set()
+    for site in graph.reshard_sites:
+        if selected is not None and (
+                selected.get(site.producer_id) != bucket_map[site.producer_id].candidates[site.producer_index] or
+            (site.consumer_index is not None
+             and selected.get(site.consumer_id) != bucket_map[site.consumer_id].candidates[site.consumer_index])):
+            continue
+        if site.consumer_index is None and site.consumer_id not in output_nodes:
+            output_nodes.add(site.consumer_id)
+            lines.append(f'  "{_dot(site.consumer_id)}" [shape=box, label="{_dot(site.consumer_id)}"];')
+        for plan_index, plan in enumerate(site.plans):
+            picked = (selected_reshards is not None and selected_reshards.get(site.key) == plan and selected is not None
+                      and selected.get(site.producer_id) == bucket_map[site.producer_id].candidates[site.producer_index]
+                      and (site.consumer_index is None or selected.get(site.consumer_id)
+                           == bucket_map[site.consumer_id].candidates[site.consumer_index]))
+            if selected is not None and not picked:
+                continue
+            color = "green" if picked else "gray"
+            plan_node = f"reshard_{site.id}_{plan_index}"
+            source_type = bucket_map[site.producer_id].candidates[site.producer_index].return_type
+            label = (f"reshard {site.usage}\\n{_plan_text(plan)}\\n"
+                     f"standalone_cost={_realized_reshard_plan_cost(graph, site, source_type, plan)}"
+                     f" x{site.invocation_count}")
+            shared = shared_publication(graph, site, plan)
+            if shared is not None:
+                label += f"\\nshared_publication={shared[0][0]} cost={shared[1]}"
+            lines.append(f'  "{_dot(plan_node)}" [shape=diamond, label="{_dot(label)}", color={color}];')
+            lines.append(f'  "{_dot(site.producer_id)}_{site.producer_index}" -> "{_dot(plan_node)}";')
+            consumer_node = (site.consumer_id
+                             if site.consumer_index is None else f"{site.consumer_id}_{site.consumer_index}")
+            lines.append(f'  "{_dot(plan_node)}" -> "{_dot(consumer_node)}" [label="arg{site.input_index}"];')
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+def _dump_search(result: SearchResult) -> None:
+    dumper = DumpScope.current()
+    enabled = dumper.is_enabled(DumpFlags.COMPILE) or dumper.is_enabled(DumpFlags.EGRAPH_COST)
+    if not enabled or dumper.directory is None:
+        return
+    category = (DumpFlags.EGRAPH_COST if dumper.is_enabled(DumpFlags.EGRAPH_COST) else DumpFlags.COMPILE)
+    source_hash = result.graph.module.semantic_hash
+    with dumper.open_artifact(
+            "DistributedSearchGraph.dot",
+            category=category,
+            kind="distributed-search-dot",
+            producer="AutoDistributed",
+            source_semantic_hash=source_hash,
+            encoding="utf-8",
+    ) as stream:
+        stream.write(graph_dot(result.graph))
+    with dumper.open_artifact(
+            "Costs/Solve.txt",
+            category=category,
+            kind="solver-log",
+            producer="AutoDistributed",
+            source_semantic_hash=source_hash,
+            encoding="utf-8",
+    ) as stream:
+        stream.write(f"Status : {result.status}\n")
+        stream.write(f"Objective : {result.objective}\n")
+        stream.write(f"Buckets : {len(result.graph.buckets)}\n")
+        stream.write(f"Candidates : {sum(len(bucket.candidates) for bucket in result.graph.buckets)}\n")
+        stream.write(f"Reshard sites : {len(result.graph.reshard_sites)}\n")
+        stream.write(f"Reshard programs : {sum(len(site.plans) for site in result.graph.reshard_sites)}\n")
+    with dumper.open_artifact(
+            "Costs/Pick.dot",
+            category=category,
+            kind="distributed-pick-dot",
+            producer="AutoDistributed",
+            source_semantic_hash=source_hash,
+            encoding="utf-8",
+    ) as stream:
+        stream.write(graph_dot(result.graph, result.selected, result.selected_reshards))
+    with dumper.open_artifact(
+            "Costs/Pick.txt",
+            category=category,
+            kind="selection-report",
+            producer="AutoDistributed",
+            source_semantic_hash=source_hash,
+            encoding="utf-8",
+    ) as stream:
+        for bucket in result.graph.buckets:
+            picked = result.selected[bucket.node_id]
+            stream.write(f"{bucket.node_id}: {picked.id} type={_type_text(picked.return_type)} "
+                         f"target={picked.target_op or result.graph.module.node_map[bucket.node_id].op} "
+                         f"cost={picked.operation_cost} objective={picked.objective_kind}:"
+                         f"{picked.objective_model} reason={picked.reason} "
+                         f"evidence={picked.objective_evidence} "
+                         f"invocations={result.graph.invocation_counts.get(bucket.node_id, 1)}\n")
+        stream.write("Realized fusions (replace member operation costs):\n")
+        for fusion in result.fusions:
+            members = ",".join(node_id for node_id, _ in fusion.members)
+            stream.write(f"  {members} -> {fusion.operation}: cost={fusion.operation_cost} "
+                         f"standalone_cost={fusion.standalone_cost} invocations={fusion.invocation_count}\n")
+        stream.write("Reshards:\n")
+        selected_sites = {
+            site.key: site
+            for site in result.graph.reshard_sites
+            if result.selected[site.producer_id] == result.graph.bucket_map[site.producer_id].candidates[
+                site.producer_index] and (site.consumer_index is None or result.selected[site.consumer_id] ==
+                                          result.graph.bucket_map[site.consumer_id].candidates[site.consumer_index])
+        }
+        publications = {}
+        for (producer_id, consumer_id, input_index), plan in sorted(result.selected_reshards.items()):
+            site = selected_sites[(producer_id, consumer_id, input_index)]
+            cost = _realized_reshard_plan_cost(result.graph, site, result.selected[producer_id].return_type, plan)
+            shared = shared_publication(result.graph, site, plan)
+            publication = ""
+            if shared is not None:
+                cost -= shared[1]
+                publications[shared[0]] = publications.get(shared[0], 0) + 1
+                publication = f" publication={shared[0][0]}"
+            stream.write(f"  {producer_id} -> {consumer_id}[{input_index}]: "
+                         f"{_plan_text(plan)} edge_cost={cost} invocations={site.invocation_count}{publication}\n")
+        stream.write("Shared publications (charged once per invocation):\n")
+        for (origin, invocations, cost), edges in sorted(publications.items()):
+            stream.write(f"  {origin}: cost={cost} invocations={invocations} edges={edges}\n")
+
+
+def _reshard_plans(
+    source: IRType,
+    target: IRType,
+    policy: DistributedReshardRealizationPolicy,
+    source_kind: DistributedReshardSourceKind,
+    usage_kind: DistributedReshardUsageKind,
+) -> tuple[DistributedReshardPlan, ...]:
+    if source == target:
+        return ()
+    if isinstance(source, TupleType) or isinstance(target, TupleType):
+        return ()
+
+    def can_realize(edge_source: IRType, edge_target: IRType) -> bool:
+        edge_source_kind = source_kind if edge_source == source else DistributedReshardSourceKind.INTERNAL
+        edge_usage_kind = usage_kind if edge_target == target else DistributedReshardUsageKind.INTERNAL
+        return policy.classify(
+            DistributedReshardRealizationContext(
+                edge_source,
+                edge_target,
+                edge_source_kind,
+                edge_usage_kind,
+            )) != DistributedReshardRealization.UNSUPPORTED
+
+    return DistributedReshardPlanner.plan(source, target, can_realize)
+
+
+def _realized_reshard_plan_cost(
+    graph: SearchGraph,
+    site: ReshardSite,
+    source_type: IRType,
+    plan: DistributedReshardPlan,
+) -> int:
+    """Cost the physical realization selected for every reshard edge.
+
+    A semantic type transition is not necessarily a byte transfer. A local
+    ``ShardedView`` is free, while a widening internal view pays the target's
+    grid-publication cost; ``Boxing`` pays the regular transfer estimate.
+    """
+
+    total = 0
+    previous = source_type
+    source_kind = (DistributedReshardSourceKind.CONSTANT if site.producer_id in graph.constant_ids else
+                   source_kind_for_node(graph.module.node_map[site.producer_id]))
+    usage = DistributedReshardUsageKind(site.usage)
+    key = (source_type, plan, source_kind, usage)
+    if key in graph._realized_costs:
+        return graph._realized_costs[key]
+    for index, step in enumerate(plan.step_types):
+        realization = graph.realization_analysis.classify(
+            DistributedReshardRealizationContext(
+                previous,
+                step,
+                source_kind if index == 0 else DistributedReshardSourceKind.INTERNAL,
+                usage if index + 1 == len(plan.step_types) else DistributedReshardUsageKind.INTERNAL,
+            ))
+        total = min(
+            total + graph.reshard_cost_model.realization_cost(
+                DistributedReshardRealizationContext(
+                    previous,
+                    step,
+                    source_kind if index == 0 else DistributedReshardSourceKind.INTERNAL,
+                    usage if index + 1 == len(plan.step_types) else DistributedReshardUsageKind.INTERNAL,
+                ),
+                realization,
+            ),
+            2_000_000_000,
+        )
+        previous = step
+    graph._realized_costs[key] = total
+    return total
+
+
+def _provider_candidates(
+        provider: DistributedCandidateProvider,
+        context: DistributedCandidateContext,
+        default_type: IRType,
+        demanded_types=(),
+) -> tuple[DistributedCandidate, ...]:
+    values: list[DistributedCandidate] = []
+    from triton.flagmega.ir.execution_mesh import effective_execution_mesh
+    constrained = effective_execution_mesh(context.module, context.source_call) is not None
+
+    def matches_placement(value):
+        if isinstance(value, DistributedType):
+            return value.placement == context.placement
+        if isinstance(value, TupleType):
+            return all(matches_placement(field) for field in value.fields)
+        return True
+
+    for return_type in provider.get_return_candidate_types(context, (default_type, *demanded_types)):
+        if constrained and not matches_placement(return_type):
+            continue
+        for input_tuple in provider.try_get_input_type_tuples(context, return_type) or ():
+            if not provider.allows_partial_inputs and any(
+                    _contains_partial(value) for value in input_tuple.input_types):
+                continue
+            values.append(provider.create_candidate(context, return_type, input_tuple))
+    return tuple(values)
+
+
+def _contains_partial(value: IRType) -> bool:
+    if isinstance(value, DistributedType):
+        return value.partial is not None
+    if isinstance(value, TupleType):
+        return any(_contains_partial(field) for field in value.fields)
+    return False
+
+
+def source_kind_for_node(node) -> DistributedReshardSourceKind:
+    if node.op in {"builtin.weight", "builtin.const_asset"}:
+        return DistributedReshardSourceKind.CONSTANT
+    if node.op == "builtin.var":
+        return DistributedReshardSourceKind.FUNCTION_PARAMETER
+    return DistributedReshardSourceKind.INTERNAL
+
+
+def function_boundary_id(function_name: str) -> str:
+    return f"@function:{function_name}"
+
+
+def function_output_type(
+    module: IRModule,
+    function_name: str,
+    output_id: str,
+    placement: Placement,
+) -> IRType:
+    """Return the boundary type demanded after AutoDistributed.
+
+    A call and its callee share declared distributed tensor interfaces.
+    Unannotated logical tensor leaves keep the recursively broadcast default.
+    The output demand must match the call candidate's physical ABI.
+    """
+
+    output_type = module.node_map[output_id].type
+    return _interface_type(output_type, placement)
+
+
+def _plan_text(plan: DistributedReshardPlan) -> str:
+    return " -> ".join(_type_text(step) for step in plan.step_types)
+
+
+def _type_text(value: IRType) -> str:
+    if isinstance(value, DistributedType):
+        return f"Dist({','.join(str(item) for item in value.axis_policies)};{value.placement})"
+    if isinstance(value, TupleType):
+        return "(" + ",".join(_type_text(field) for field in value.fields) + ")"
+    return type(value).__name__
+
+
+def _dot(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _load_cp_model():
+    try:
+        from ortools.sat.python import cp_model
+    except ImportError as error:
+        raise RuntimeError("FlagMega AutoDistributed requires OR-Tools CP-SAT; install ortools==9.10.4067.") from error
+    return cp_model
+
+
+def _positive_env_float(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _positive_env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+__all__ = [
+    "CandidateBucket",
+    "ReshardSite",
+    "SearchGraph",
+    "SearchResult",
+    "build_search_graph",
+    "function_boundary_id",
+    "function_output_type",
+    "graph_dot",
+    "solve_search_graph",
+    "source_kind_for_node",
+]

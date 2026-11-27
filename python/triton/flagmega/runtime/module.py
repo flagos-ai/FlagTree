@@ -1,0 +1,1972 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""Strict loader and runtime for generated FlagMega artifacts."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+import os
+from triton.flagmega.runtime.scalar import validate_scalar_argument
+from pathlib import Path
+from dataclasses import dataclass, replace
+from math import prod
+
+from triton.flagmega.artifacts import read_rdata_index, verify_rdata
+from triton.flagmega.codegen.triton.runtime_binding import (
+    DEVICE_CONTEXT_ABI,
+    DEVICE_CONTEXT_ARGUMENTS,
+    DEVICE_CONTEXT_HANDLES,
+)
+from triton.flagmega.errors import ArtifactError, EvaluationError, IRSchemaError, IRVerificationError, RuntimeContractError
+from triton.flagmega.ir import (
+    DType,
+    DistributedType,
+    RefType,
+    TensorType,
+    TupleType,
+    VectorType,
+    logical_type,
+    tensor_type,
+    verify_buffer_plan,
+)
+from triton.flagmega.ir.ops.nn._gdn_state import (
+    GatedDeltaNetStateConfig,
+    GatedDeltaNetStateKind,
+)
+from triton.flagmega.ir.ops.nn._dsa_indexer_state import (
+    DsaIndexerState,
+    DsaIndexerStateConfig,
+    create_dsa_indexer_state,
+)
+from triton.flagmega.ir.ops.nn._kda_state import (
+    KdaState,
+    KdaStateConfig,
+    create_kda_state,
+)
+from triton.flagmega.ir.types import data_type_from_data
+from triton.flagmega.ir.ops.nn._paged_attention_state import (
+    PagedAttentionState,
+    PagedAttentionStateConfig,
+    create_paged_attention_state,
+)
+from triton.flagmega.runtime.prepared import ResourceContract, prepare_jit_kernel
+from triton.flagmega.runtime.nvidia_launch import compilation_knobs, compilation_options
+from triton.flagmega.runtime.kernel_programs import verified_kernel_programs
+from triton.flagmega.runtime.lifecycle import RuntimeModule
+from triton.flagmega.runtime.tensor_descriptor import TensorDescriptorCache
+from triton.flagmega.runtime.state_storage import tensor_state_storage_type
+from triton.flagmega.runtime.function_offsets import (
+    materialize_function_offset_tables,
+    validate_function_offset_tables,
+    verify_function_offset_source,
+)
+from triton.flagmega.runtime.workspace_diagnostics import (
+    materialize_memory_pool_views,
+    memory_pool_view_specs,
+)
+
+
+def _resource_contract(codegen, target, *, requires_grid_wide_sync: bool = False, device: str | None = None,
+                       diagnostic_resources=None):
+    target = str(target or "")
+    if diagnostic_resources is not None and target != "nvidia-sm90":
+        raise ArtifactError("Diagnostic resources require the NVIDIA SM90 Triton runtime.")
+    if target == "iluvatar-bi-v150":
+        # BI-V150's driver has no CUDA cooperative-launch admission API, so a
+        # grid-wide barrier is only safe when the launch grid cannot exceed
+        # the physical SM count (see ResourceContract.requires_grid_wide_sync
+        # and _validate_resources). Query the live device this artifact was
+        # loaded on rather than assume a fixed SM count or the process-wide
+        # default device, so this stays correct for multi-GPU processes and
+        # across BI-V150 variants.
+        available_sm_count = None
+        if requires_grid_wide_sync:
+            torch = _torch()
+            target_device = device if device is not None else torch.cuda.current_device()
+            available_sm_count = int(torch.cuda.get_device_properties(target_device).multi_processor_count)
+        return ResourceContract(
+            compute_num_warps=int(codegen["num_warps"]),
+            resident_blocks_per_sm=1,
+            # COREX/BI-V150 accepts a 256-register kernel. This is different
+            # from the generic NVIDIA-compatible default of 255; see the
+            # direct launch evidence in perf-iteration/ITERATION.md Trial 129.
+            registers_per_thread_limit=256,
+            register_file_capacity_per_sm=262144,
+            shared_memory_capacity_bytes=131072,
+            warp_size=64,
+            requires_grid_wide_sync=requires_grid_wide_sync,
+            cooperative_launch_admission=False,
+            available_sm_count=available_sm_count,
+            # COREX's compiler reports only the aggregate n_spills count, not
+            # ptxas' per-function stack/spill-store/spill-load breakdown --
+            # see ResourceContract.reports_ptxas_resource_fields.
+            reports_ptxas_resource_fields=False,
+            # BI-V150's backend emits a small, fixed, content- and
+            # maxnreg-independent local-memory footprint (measured up to 96
+            # bytes / 24 words on the full flagmega_main artifact; verified
+            # unrelated to kernel source -- neutering every Triton op between
+            # the barrier that introduces it and the prior one leaves the
+            # spill unchanged) once a force-inlined callee accumulates 3+
+            # internal grid barriers. It doesn't grow with kernel size or
+            # maxnreg, so tolerate it here rather than disable the spill
+            # check outright -- a genuinely new, much larger spill (e.g. from
+            # a future kernel change) will still raise.
+            spill_tolerance_bytes=128,
+        )
+    if target == "nvidia-sm89":
+        # Ada (sm_89) exposes a 99 KB opt-in shared-memory limit
+        # (Sm89Capability.max_shared_memory_bytes = 101376), not Hopper's
+        # 227,328-byte ResourceContract default. Use the matching capacity so
+        # the resource check rejects a kernel whose smem would overflow Ada.
+        return ResourceContract(
+            compute_num_warps=int(codegen["num_warps"]),
+            resident_blocks_per_sm=1,
+            requires_grid_wide_sync=requires_grid_wide_sync,
+            shared_memory_capacity_bytes=101376,
+        )
+    if target.startswith("amd-"):
+        # RDNA register allocation differs from ptxas; a small spill does not
+        # affect correctness, so the no-spill residency gate is NVIDIA-only for
+        # this bring-up (occupancy tuning is a later performance pass). The
+        # RDNA assembler also reports only the aggregate n_spills count, not
+        # ptxas' per-function stack/spill breakdown.
+        return ResourceContract(
+            compute_num_warps=int(codegen["num_warps"]),
+            resident_blocks_per_sm=1,
+            requires_grid_wide_sync=requires_grid_wide_sync,
+            forbid_spills=False,
+            reports_ptxas_resource_fields=False,
+            # RDNA wave32 architecturally allows 256 VGPRs/lane; the 255 default
+            # is ptxas' NVIDIA limit, not RDNA's.
+            registers_per_thread_limit=256,
+        )
+    return ResourceContract(
+        compute_num_warps=int(codegen["num_warps"]),
+        resident_blocks_per_sm=1,
+        requires_grid_wide_sync=requires_grid_wide_sync,
+        diagnostic_resources=diagnostic_resources,
+    )
+
+
+def _requires_grid_wide_sync(ir_module) -> bool:
+    launch_contract = ir_module.metadata.get("launch_contract")
+    if not isinstance(launch_contract, Mapping):
+        return False
+    return bool(launch_contract.get("cooperative_grid", False))
+
+
+class GeneratedElementwiseModule(RuntimeModule):
+
+    def __init__(self, artifact: Path, manifest: dict[str, object], ir_module, kernel) -> None:
+        super().__init__()
+        self.artifact = artifact
+        self.manifest = manifest
+        self.ir_module = ir_module
+        self.kernel = kernel
+        self.codegen = manifest["codegen"]
+        self._prepared = None
+        self.prepare_count = 0
+        function = ir_module.function_map[ir_module.entry]
+        self._input_types = tuple(logical_type(ir_module.node_map[node_id].type) for node_id in function.parameters)
+        self._output_type = logical_type(ir_module.node_map[function.outputs[0]].type)
+
+    @property
+    def prepared(self) -> bool:
+        return self._prepared is not None
+
+    @property
+    def resource_report(self):
+        return None if self._prepared is None else self._prepared.resource_report
+
+    def load(self, device: str = "cuda:0") -> GeneratedElementwiseModule:
+        torch = _torch()
+        _validate_artifact_device(torch, device, self.manifest.get("target"))
+        self._mark_loaded(device)
+        return self
+
+    def prepare(self, *inputs, output=None) -> GeneratedElementwiseModule:
+        torch = _torch()
+        self._require_loaded()
+        self._validate_inputs(inputs)
+        if output is None:
+            output = self._allocate_output(torch)
+        self._validate_tensor("output", output, self._output_type)
+        if str(output.device) != self._device:
+            raise RuntimeContractError(f"Output must be on prepared device {self._device}, got {output.device}.")
+        contract = _resource_contract(
+            self.codegen,
+            self.manifest.get("target"),
+            requires_grid_wide_sync=_requires_grid_wide_sync(self.ir_module),
+            device=self._device,
+        )
+        self._prepared = prepare_jit_kernel(
+            self.kernel,
+            (*inputs, output),
+            tuple(int(value) for value in self.codegen["dynamic_argument_indices"]),
+            grid=tuple(int(value) for value in self.codegen["grid"]),
+            contract=contract,
+            allocation_device=self._device,
+            **compilation_options(contract, self.manifest.get("target", "")),
+        )
+        self.prepare_count += 1
+        self._mark_prepared()
+        return self
+
+    def run_into(self, output, *inputs, stream=None) -> None:
+        self._require_prepared()
+        if self._prepared is None:
+            raise RuntimeContractError("Artifact must be prepared before run_into().")
+        self._validate_inputs(inputs)
+        self._validate_tensor("output", output, self._output_type)
+        self._prepared.launch(*inputs, output, stream=stream)
+
+    def run(self, *inputs, stream=None):
+        torch = _torch()
+        self._require_prepared()
+        if self._prepared is None:
+            raise RuntimeContractError("Artifact must be prepared before run().")
+        self._validate_inputs(inputs)
+        output = self._allocate_output(torch)
+        self.run_into(output, *inputs, stream=stream)
+        return output
+
+    def _release_resources(self) -> None:
+        self._prepared = None
+
+    def _validate_inputs(self, inputs) -> None:
+        if len(inputs) != len(self._input_types):
+            raise RuntimeContractError(f"Artifact expects {len(self._input_types)} inputs, got {len(inputs)}.")
+        for index, (value, value_type) in enumerate(zip(inputs, self._input_types)):
+            self._validate_tensor(f"input {index}", value, value_type)
+            if str(value.device) != self._device:
+                raise RuntimeContractError(
+                    f"Input {index} must be on prepared device {self._device}, got {value.device}.")
+
+    def _allocate_output(self, torch):
+        if not isinstance(self._output_type, TensorType):
+            raise RuntimeContractError("Elementwise output must have a TensorType ABI.")
+        shape = tuple(int(dimension.value) for dimension in self._output_type.shape)
+        dtype = {
+            "uint8": torch.uint8,
+            "bfloat16": torch.bfloat16,
+            "float16": torch.float16,
+            "float32": torch.float32,
+        }[self._output_type.dtype.value]
+        return torch.empty(shape, dtype=dtype, device=self._device)
+
+    @staticmethod
+    def _validate_tensor(name: str, value, value_type) -> None:
+        torch = _torch()
+        if not isinstance(value_type, TensorType) or not isinstance(value, torch.Tensor):
+            raise RuntimeContractError(f"{name} must be a torch.Tensor matching a TensorType ABI.")
+        shape = tuple(int(dimension.value) for dimension in value_type.shape)
+        dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[value_type.dtype.value]
+        if tuple(value.shape) != shape or value.dtype != dtype:
+            raise RuntimeContractError(
+                f"{name} must have shape {shape} and dtype {dtype}, got {tuple(value.shape)} and {value.dtype}.")
+        if not value.is_contiguous():
+            raise RuntimeContractError(f"{name} must be contiguous.")
+        if value.data_ptr() % 16:
+            raise RuntimeContractError(f"{name} must be at least 16-byte aligned.")
+
+
+# Artifact v1 compatibility name.  New packages use the operation-neutral
+# adapter above; old elementwise_add/v1 manifests still resolve to this alias.
+GeneratedAddModule = GeneratedElementwiseModule
+
+
+@dataclass
+class GatedDeltaNetState:
+    convolution: object
+    recurrent: object
+
+
+@dataclass
+class CompositeModelState:
+    """Persistent state composed from first-class KDA and paged-cache objects."""
+
+    kda: KdaState
+    paged: PagedAttentionState
+    next_kda: KdaState
+    dsa: DsaIndexerState | None = None
+
+    @property
+    def tensor_states(self) -> dict[object, tuple[object, object]]:
+        """Compatibility view; new callers should use ``state.kda``."""
+        return {
+            layer_id: (self.kda.convolution_layer(layer_id), self.kda.recurrent_layer(layer_id))
+            for layer_id in self.kda.config.layer_ids
+        }
+
+    @property
+    def next_tensor_states(self) -> dict[object, tuple[object, object]]:
+        """Compatibility view; new callers should use ``state.next_kda``."""
+        return {
+            layer_id: (
+                self.next_kda.convolution_layer(layer_id),
+                self.next_kda.recurrent_layer(layer_id),
+            )
+            for layer_id in self.next_kda.config.layer_ids
+        }
+
+
+class GeneratedTirCallGraphModule(RuntimeModule):
+    """Model-neutral runtime for the flattened bufferized-TIR entry ABI."""
+
+    def __init__(self, artifact: Path, manifest: dict[str, object], ir_module, kernel) -> None:
+        super().__init__()
+        self.artifact = artifact
+        self.manifest = manifest
+        self.ir_module = ir_module
+        # `kernel` is either a single JITFunction (the only shape every
+        # existing caller/artifact uses today) or a tuple of JITFunctions:
+        # a sequence launched in order on one stream, replacing in-kernel
+        # grid barriers with launch boundaries for targets that opt in via
+        # `codegen["kernels"]` (see perf-iteration/ITERATION.md Trial
+        # 31-32). `self.kernel` stays a single JITFunction for backward
+        # compatibility with every reader of that attribute.
+        self.kernels: tuple = kernel if isinstance(kernel, tuple) else (kernel, )
+        self.kernel = self.kernels[0]
+        self.codegen = manifest["codegen"]
+        self._diagnostic_resources = None
+        binding = self.codegen.get("runtime_binding")
+        if not isinstance(binding, Mapping):
+            raise ArtifactError("TIR call-graph artifact has no runtime binding.")
+        self.runtime_binding = binding
+        self.buffer_plan = verify_buffer_plan(ir_module)
+        persistent_request = ir_module.metadata.get("persistent_window_resources")
+        persistent_plan = self.codegen.get("persistent_window_resources")
+        if persistent_request is not None or persistent_plan is not None:
+            from triton.flagmega.ir.persistent_window import plan_window_resources
+            from triton.flagmega.codegen.triton.package_plan import plain_package_value
+
+            try:
+                expected_persistent = plan_window_resources(
+                    persistent_request,
+                    binding["pools"],
+                    self.codegen.get("kernels"),
+                    self.codegen.get("device_window_storage"),
+                )
+            except IRVerificationError as error:
+                raise ArtifactError(str(error)) from error
+            if plain_package_value(expected_persistent) != plain_package_value(persistent_plan):
+                raise ArtifactError("Persistent window resources differ from the typed module request.")
+        # A tuple of PreparedKernel, one per entry in self.kernels, built by
+        # _prepare_external. None (not an empty tuple) means "not prepared
+        # yet" -- kept as a single None/tuple union, not a tuple that's
+        # sometimes empty, so `self._prepared is None` stays a reliable
+        # prepared-state check exactly as it was for the single-kernel case.
+        self._prepared: tuple | None = None
+        self._program_dag = None
+        self._pool_values: dict[str, object] = {}
+        self._device_window = None
+        self._device_dptr = None
+        self._tensor_descriptors = TensorDescriptorCache()
+        self._function_offset_values = ()
+        self.prepare_count = 0
+
+        arguments = tuple(binding.get("arguments", ()))
+        pools = tuple(binding.get("pools", ()))
+        signature = tuple(str(value) for value in binding.get("signature", ()))
+        expected = tuple(str(value["name"]) for value in (*arguments, *pools))
+        if signature != expected:
+            raise ArtifactError("TIR runtime binding signature does not match arguments and pools.")
+        raw_specs = self.codegen.get("host_tensor_descriptor_specs", ())
+        if not isinstance(raw_specs, (tuple, list)):
+            raise ArtifactError("TIR host tensor descriptor specs must be a sequence.")
+        self._descriptor_specs = tuple(raw_specs)
+        try:
+            descriptor_names = TensorDescriptorCache.validate_specs(self._descriptor_specs, source_names=expected)
+        except RuntimeContractError as error:
+            raise ArtifactError(f"Invalid TIR host tensor descriptor ABI: {error}") from error
+        self._needs_device_dptr = bool(self.codegen.get("distributed_device_dptr", False))
+        context_abi = self.codegen.get("device_context_abi")
+        if context_abi not in (None, "runtime-handles/v1", DEVICE_CONTEXT_ABI):
+            raise ArtifactError(f"Unsupported distributed device context ABI: {context_abi!r}.")
+        if context_abi is not None and not self._needs_device_dptr:
+            raise ArtifactError("A distributed device context ABI requires a device context.")
+        self._context_argument_names = (DEVICE_CONTEXT_ARGUMENTS if context_abi == DEVICE_CONTEXT_ABI else
+                                        DEVICE_CONTEXT_HANDLES if context_abi == "runtime-handles/v1" else
+                                        ("device_dptr", )) if self._needs_device_dptr else ()
+        if set(descriptor_names).intersection(("device_dptr", *self._context_argument_names)):
+            raise ArtifactError("Host tensor descriptor name conflicts with a device context argument.")
+        self._function_offset_specs = validate_function_offset_tables(
+            self.codegen.get("function_offset_tables", ()),
+            existing_names=(*expected, "device_dptr", *self._context_argument_names, *descriptor_names),
+        )
+        for entry_kernel in self.kernels:
+            verify_function_offset_source(
+                entry_kernel,
+                self._function_offset_specs,
+                existing_names=(*expected, "device_dptr", *self._context_argument_names, *descriptor_names),
+            )
+        expected_codegen_signature = (
+            *expected,
+            *self._context_argument_names,
+            *descriptor_names,
+            *(spec["name"] for spec in self._function_offset_specs),
+        )
+        codegen_signature = tuple(
+            str(value) for value in self.codegen.get("signature_arguments", expected_codegen_signature))
+        if codegen_signature != expected_codegen_signature:
+            raise ArtifactError("TIR generated signature does not match runtime roots and "
+                                "host tensor descriptors and function offset tables.")
+        external_names = {str(value["name"]) for value in arguments}
+        descriptor_base = len(expected) + len(self._context_argument_names)
+        self._dynamic_descriptor_indices = tuple(index for index, spec in enumerate(self._descriptor_specs)
+                                                 if str(spec["source"]) in external_names)
+        expected_dynamic = (
+            *range(len(arguments)),
+            *(descriptor_base + index for index in self._dynamic_descriptor_indices),
+        )
+        dynamic = tuple(int(value) for value in self.codegen.get("dynamic_argument_indices", ()))
+        if dynamic != expected_dynamic:
+            raise ArtifactError("TIR call-graph dynamic arguments must be its external buffers "
+                                "followed by descriptors backed by those buffers.")
+
+    @property
+    def prepared(self) -> bool:
+        return self._prepared is not None
+
+    @property
+    def resource_report(self):
+        # Single-kernel case (every artifact today): identical to before --
+        # the first (only) prepared kernel's report, same dict shape every
+        # existing caller depends on (e.g. report["spill_bytes"]).
+        # Multi-kernel case: no artifact exercises this yet; reporting a
+        # tuple of per-kernel reports here rather than silently picking one
+        # is the safer default until a real caller defines what "the"
+        # resource report of a kernel sequence should mean.
+        if self._prepared is None:
+            return None
+        if len(self._prepared) == 1:
+            return self._prepared[0].resource_report
+        return tuple(prepared.resource_report for prepared in self._prepared)
+
+    @property
+    def external_arguments(self) -> tuple[Mapping[str, object], ...]:
+        return tuple(self.runtime_binding["arguments"])
+
+    def load(self, device: str = "cuda:0", *, shared_rdata=None) -> "GeneratedTirCallGraphModule":
+        torch = _torch()
+        _validate_artifact_device(torch, device, self.manifest.get("target"))
+        window_storage = self.codegen.get("device_window_storage")
+        window_storage = None if window_storage is None else str(window_storage)
+        if window_storage is not None and not self._needs_device_dptr:
+            raise ArtifactError("A FlagCX symmetric-window pool requires the distributed device "
+                                "context.")
+        pools: dict[str, object] = {}
+        persistent = self.codegen.get("persistent_window_resources")
+        if persistent is not None:
+            from triton.flagmega.ir.persistent_window import validate_window_resources
+
+            try:
+                validate_window_resources(persistent, self.runtime_binding["pools"])
+            except IRVerificationError as error:
+                raise ArtifactError(str(error)) from error
+            if persistent["storage"] != window_storage:
+                raise ArtifactError("Persistent resources must use the registered symmetric window.")
+        self._function_offset_values = materialize_function_offset_tables(
+            torch,
+            self._function_offset_specs,
+            device=device,
+        )
+        for pool in self.runtime_binding["pools"]:
+            name = str(pool["name"])
+            storage = str(pool["storage"])
+            nbytes = int(pool["nbytes"])
+            if storage == "rdata":
+                pools[name] = self._load_rdata(torch, device, nbytes, shared_rdata=shared_rdata)
+            elif storage == "workspace" or storage in self.buffer_plan.memory_space_map:
+                space = self.buffer_plan.memory_space_map[storage]
+                if space.kind == "shared" or space.allocation_scope.value == "external":
+                    raise ArtifactError(f"Unsupported TIR runtime pool storage {storage!r}.")
+                pools[name] = (self._allocate_device_window(torch, device, persistent["allocation_nbytes"] if persistent
+                                                            else nbytes) if storage == window_storage else torch.empty(
+                                                                (nbytes, ), dtype=torch.uint8, device=device))
+                if persistent and storage == window_storage:
+                    for resource in persistent["resources"]:
+                        begin = resource["offset"]
+                        self._device_window[begin:begin + resource["nbytes"]].zero_()
+                    # Consumers bind only the ordinary scratch extent. The
+                    # registered allocation owns the channel for module life.
+                    pools[name] = self._device_window[:nbytes]
+                    if torch.device(device).type == "cuda":
+                        torch.cuda.current_stream(device).synchronize()
+            else:
+                raise ArtifactError(f"Unsupported TIR runtime pool storage {storage!r}.")
+        if window_storage is not None and self._device_window is None:
+            raise ArtifactError(f"Cross-chip reads require the {window_storage!r} pool, which "
+                                "this artifact does not allocate.")
+        self._pool_values = pools
+        self._mark_loaded(device)
+        return self
+
+    def prepare(self, *external_arguments) -> "GeneratedTirCallGraphModule":
+        self._prepare_external(tuple(external_arguments))
+        return self
+
+    def run_into(self, *external_arguments, stream=None) -> None:
+        self._launch_external(tuple(external_arguments), stream=stream)
+
+    def diagnostic_workspace(self, *, clone: bool = False) -> dict[str, object]:
+        """Return views over the default lifetime pool (compatibility API).
+
+        Keys in the entry function are logical buffer ids.  Reusable/nested
+        function buffers use ``call/path::buffer`` keys so two invocations do
+        not masquerade as one SSA value.  Because reusable allocations and call
+        frames are reused, these are current raw bytes, not historical
+        snapshots of every value at its definition point.
+        """
+
+        return self.diagnostic_memory_pools(clone=clone).get(self.buffer_plan.default_workspace, {})
+
+    def diagnostic_memory_pools(self, *, clone: bool = False) -> dict[str, dict[str, object]]:
+        """Return typed current-value views for every runtime lifetime pool.
+
+        A block- or device-scoped runtime allocation has a leading physical
+        scope dimension. Nested function frames remain resolved relative to
+        each scope, exactly as they are in the generated call ABI.
+        """
+
+        self._require_loaded()
+        result: dict[str, dict[str, object]] = {}
+        for pool in self.runtime_binding["pools"]:
+            storage = str(pool["storage"])
+            space = self.buffer_plan.memory_space_map.get(storage)
+            if (space is None or not space.supports_lifetime_reuse or space.allocation_scope.value != "function"
+                    or space.kind == "shared"):
+                continue
+            name = str(pool["name"])
+            try:
+                allocation = self._pool_values[name]
+            except KeyError as error:
+                raise RuntimeContractError(f"Runtime memory pool {name!r} has not been loaded.") from error
+            scope_count = int(pool.get("scope_count", 1))
+            scope_nbytes = int(pool.get(
+                "scope_nbytes",
+                int(pool["nbytes"]) // scope_count,
+            ))
+            specs = memory_pool_view_specs(
+                self.buffer_plan,
+                entry=self.ir_module.entry,
+                memory_space=storage,
+            )
+            result[storage] = materialize_memory_pool_views(
+                allocation,
+                specs,
+                scope_count=scope_count,
+                scope_nbytes=scope_nbytes,
+                clone=clone,
+            )
+        return result
+
+    def _prepare_bound(self, values_by_buffer: Mapping[str, object]) -> None:
+        self._prepare_external(self._external_values(values_by_buffer))
+
+    def _launch_bound(
+        self,
+        values_by_buffer: Mapping[str, object],
+        *,
+        stream=None,
+    ) -> None:
+        self._launch_external(self._external_values(values_by_buffer), stream=stream)
+
+    def _external_values(self, values_by_buffer: Mapping[str, object]) -> tuple[object, ...]:
+        values: list[object] = []
+        for argument in self.external_arguments:
+            buffer = str(argument["buffer"])
+            try:
+                values.append(values_by_buffer[buffer])
+            except KeyError as error:
+                raise RuntimeContractError(f"Runtime adapter did not bind external buffer {buffer!r}.") from error
+        return tuple(values)
+
+    def _kernel_launch_specs(self) -> tuple[dict[str, object], ...]:
+        """Per-kernel (dynamic_argument_indices, grid) for each entry in
+        self.kernels, in launch order.
+
+        Single-kernel artifacts (every one today) have no `codegen["kernels"]`
+        key: this returns exactly the one spec built from the existing
+        top-level `codegen["dynamic_argument_indices"]`/`["grid"]`, unchanged
+        from before this method existed. Multi-kernel artifacts (opt-in via
+        `codegen["kernels"]`, see ITERATION.md Trial 31-32) get one spec per
+        list entry instead.
+        """
+        if "kernel_program_schema" in self.codegen:
+            return verified_kernel_programs(self.codegen, self.kernels, self.ir_module)
+        raw_kernels = self.codegen.get("kernels")
+        if raw_kernels is None:
+            if len(self.kernels) != 1:
+                raise ArtifactError("Runtime module has multiple kernels but the manifest's "
+                                    "codegen has no 'kernels' list describing them.")
+            return ({
+                "dynamic_argument_indices": tuple(int(value) for value in self.codegen["dynamic_argument_indices"]),
+                "grid": tuple(int(value) for value in self.codegen["grid"]),
+            }, )
+        if len(raw_kernels) != len(self.kernels):
+            raise ArtifactError(f"Manifest describes {len(raw_kernels)} kernel(s) but "
+                                f"{len(self.kernels)} were resolved from the generated source.")
+        return tuple({
+            "dynamic_argument_indices": tuple(int(value) for value in spec["dynamic_argument_indices"]),
+            "grid": tuple(int(value) for value in spec["grid"]),
+        } for spec in raw_kernels)
+
+    def _bind_diagnostic_resources(self, context) -> None:
+        from triton.flagmega.runtime.diagnostic_resources import BoundDiagnosticResourceContract
+        if (type(context) is not BoundDiagnosticResourceContract or context.artifact != str(self.artifact.resolve())
+                or self._diagnostic_resources is not None or self._prepared is not None):
+            raise ArtifactError("Diagnostic context must bind its exact artifact before preparation.")
+        context.verify_artifact(self.artifact, self.manifest, self.codegen)
+        # Check every entry now; selecting one must never leave partial coverage.
+        symbols = ([spec["symbol"] for spec in self.codegen["kernels"]]
+                   if self.codegen.get("kernels") is not None else [self.codegen["symbol"]])
+        for symbol in symbols:
+            context.for_entry(symbol).require_bound()
+        self._diagnostic_resources = context
+
+    def _bind_frozen_native(self, context) -> None:
+        from triton.flagmega.runtime.frozen_native import BoundFrozenNative
+        if type(context) is not BoundFrozenNative:
+            raise ArtifactError("Frozen native selection requires a verified per-artifact binding.")
+        context.verify_artifact(self.artifact, self.manifest, self.codegen)
+        context.validate_kernels(self.kernels)
+        self._frozen_native = context
+
+    def _prepare_external(self, external_arguments: tuple[object, ...]) -> None:
+        context = getattr(self, "_diagnostic_resources", None)
+        if context is not None:
+            context.verify_artifact(self.artifact, self.manifest, self.codegen)
+        frozen = getattr(self, "_frozen_native", None)
+        if frozen is not None:
+            frozen.verify_artifact(self.artifact, self.manifest, self.codegen)
+        self._require_loaded()
+        self._validate_external_arguments(external_arguments)
+        # All caller-owned tensors (including adapter-created outputs and
+        # state) must exist before FlagCX registers its symmetric window.
+        # FlagCX's registration changes the CUDA allocation state and a later
+        # cudaMalloc may return ``cudaErrorInvalidValue``.  Initialize the
+        # static device context at the ABI boundary, after those tensors have
+        # been materialized but before kernel preparation consumes its dptr.
+        if self._needs_device_dptr and self._device_dptr is None:
+            self._initialize_device_context(_torch(), self._device)
+        pool_arguments = tuple(self._pool_values[str(pool["name"])] for pool in self.runtime_binding["pools"])
+        descriptors = self._materialize_tensor_descriptors(external_arguments)
+        arguments = (*external_arguments, *pool_arguments)
+        if self._needs_device_dptr:
+            if self._device_dptr is None:
+                raise RuntimeContractError("Chip/node launch requires an initialized distributed device context.")
+            context_arguments = (self._device_dptr, )
+            if self._context_argument_names in (DEVICE_CONTEXT_HANDLES, DEVICE_CONTEXT_ARGUMENTS):
+                context_arguments = self._device_dptr.get_packed_data()
+                if self._context_argument_names == DEVICE_CONTEXT_ARGUMENTS:
+                    # Injection changes the compiled entry and launcher ABI.
+                    # Keep that decision in the specialization key even though
+                    # process-local handle addresses remain runtime data.
+                    context_arguments = (*context_arguments, bool(self._device_dptr.is_lite_mode))
+            arguments = (*arguments, *context_arguments)
+        arguments = (*arguments, *descriptors, *self._function_offset_values)
+        specs = self._kernel_launch_specs()
+        target = self.manifest.get("target", "")
+        with compilation_knobs(target):
+            prepared = []
+            for index, (kernel, spec) in enumerate(zip(self.kernels, specs, strict=True)):
+                grid = spec['grid']
+                if 'launch_recipe' in spec:
+                    from triton.flagmega.ir.launch_recipe import TaskLaunchRecipe
+                    properties = _torch().cuda.get_device_properties(self._device)
+                    grid = TaskLaunchRecipe.from_data(
+                        spec['launch_recipe']).resolve(sm_count=int(properties.multi_processor_count))
+                context = getattr(self, "_diagnostic_resources", None)
+                if context is not None:
+                    symbol = (self.codegen["kernels"][index]["symbol"]
+                              if self.codegen.get("kernels") is not None else self.codegen["symbol"])
+                    context = context.for_entry(symbol)
+                contract = _resource_contract(
+                    {**self.codegen, "num_warps": spec.get("num_warps", self.codegen["num_warps"])},
+                    self.manifest.get("target"),
+                    requires_grid_wide_sync=spec.get("requires_grid_wide_sync",
+                                                     _requires_grid_wide_sync(self.ir_module)),
+                    device=self._device,
+                    diagnostic_resources=context,
+                )
+                options = compilation_options(
+                    contract,
+                    target,
+                    floating_point_contract=self.ir_module.metadata.get("floating_point_contract"),
+                )
+                if 'maxnreg' in spec:
+                    contract = replace(
+                        contract, registers_per_thread_limit=min(contract.registers_per_thread_limit, spec['maxnreg']))
+                    options['maxnreg'] = spec['maxnreg']
+                from triton.flagmega.runtime.program_arguments import BoundProgram, project_arguments
+                bindings = spec.get("argument_bindings")
+                if frozen is None:
+                    instance = prepare_jit_kernel(
+                        kernel,
+                        arguments if bindings is None else project_arguments(bindings, arguments),
+                        spec["dynamic_argument_indices"],
+                        grid=grid,
+                        contract=contract,
+                        allocation_device=self._device,
+                        **options,
+                    )
+                else:
+                    instance = frozen.prepare(
+                        kernel,
+                        arguments if bindings is None else project_arguments(bindings, arguments),
+                        spec["dynamic_argument_indices"],
+                        grid=grid,
+                        contract=contract,
+                        allocation_device=self._device,
+                        **options,
+                    )
+                prepared.append(instance if bindings is None else BoundProgram(
+                    instance, bindings, spec["dynamic_argument_indices"], self.codegen["dynamic_argument_indices"]))
+            if self.codegen.get("kernel_program_schema") in {
+                    "flagmega.kernel-programs/v2-dag",
+                    "flagmega.kernel-programs/v3-dag-completion",
+                    "flagmega.kernel-programs/v4-functions",
+                    "flagmega.kernel-programs/v7-mesh-dag",
+            }:
+                from triton.flagmega.runtime.program_dag import ProgramDAG
+                self._program_dag = ProgramDAG(specs, tuple(prepared), device=self._device,
+                                               target=self.manifest.get("target"))
+            self._prepared = tuple(prepared)
+        self.prepare_count += 1
+        self._mark_prepared()
+
+    def _launch_external(self, external_arguments: tuple[object, ...], *, stream=None) -> None:
+        self._require_prepared()
+        if self._prepared is None:
+            raise RuntimeContractError("Artifact must be prepared before launch.")
+        self._validate_external_arguments(external_arguments)
+        # Pool-backed descriptors are static arguments captured by prepare.
+        # Rebinding all of them here repeats validation and tensor-view work
+        # even though launch only consumes the external-backed descriptors.
+        dynamic_descriptors = (self._materialize_tensor_descriptors(
+            external_arguments,
+            descriptor_specs=tuple(self._descriptor_specs[index] for index in self._dynamic_descriptor_indices),
+        ) if self._dynamic_descriptor_indices else ())
+        # Launched in order on the caller's stream (or the current stream,
+        # when `stream` is None -- see PreparedKernel.launch). CUDA/CoreX
+        # serializes kernel launches on one stream by construction: by the
+        # time a later launch's CTAs start, every earlier launch's CTAs have
+        # retired and their global-memory writes (workspace, external
+        # buffers) are visible. For the multi-kernel case, this is exactly
+        # the cross-CTA visibility guarantee an in-kernel grid barrier would
+        # have provided, via a mechanism this backend actually supports
+        # (see ITERATION.md Trial 31's hardware-measured validation).
+        if self._program_dag is not None:
+            self._program_dag.launch(external_arguments, dynamic_descriptors, stream=stream)
+            return
+        for prepared in self._prepared:
+            prepared.launch(
+                *external_arguments,
+                *dynamic_descriptors,
+                stream=stream,
+            )
+
+    def _materialize_tensor_descriptors(
+        self,
+        external_arguments: tuple[object, ...],
+        *,
+        descriptor_specs: tuple[Mapping[str, object], ...] | None = None,
+    ) -> tuple[object, ...]:
+        specs = self._descriptor_specs if descriptor_specs is None else descriptor_specs
+        if not specs:
+            return ()
+        sources = {
+            str(descriptor["name"]): value
+            for descriptor, value in zip(self.external_arguments, external_arguments, strict=True)
+        }
+        sources.update(self._pool_values)
+        return self._tensor_descriptors.materialize_many(
+            str(self.codegen["symbol"]),
+            specs,
+            sources,
+        )
+
+    def _validate_external_arguments(self, external_arguments: tuple[object, ...]) -> None:
+        if len(external_arguments) != len(self.external_arguments):
+            raise RuntimeContractError(f"TIR entry expects {len(self.external_arguments)} external "
+                                       f"buffers, got {len(external_arguments)}.")
+        torch = _torch()
+        for descriptor, value in zip(self.external_arguments, external_arguments, strict=True):
+            if descriptor.get("runtime_value_kind") == "scalar":
+                validate_scalar_argument(str(descriptor["buffer"]), value, str(descriptor["scalar_dtype"]))
+                continue
+            if not isinstance(value, torch.Tensor):
+                raise RuntimeContractError(f"TIR external buffer {descriptor['buffer']!r} must be a torch.Tensor.")
+            if str(value.device) != self._device or not value.is_contiguous():
+                raise RuntimeContractError(f"TIR external buffer {descriptor['buffer']!r} must be contiguous "
+                                           f"and on {self._device}.")
+
+    def _load_rdata(self, torch, device: str, expected_nbytes: int, *, shared_rdata=None):
+        if shared_rdata is not None and self.codegen.get("triton_readonly_device_layout") is not None:
+            raise ArtifactError("Shared readonly canonical pools cannot bind a distinct device layout.")
+        if self.manifest.get("rdata") is None:
+            raise ArtifactError("Executable TIR artifact requires a packed rdata image.")
+        # This is the point where the payload bytes are actually mapped, so it is
+        # also where they are digested.  ``load_artifact`` defers the payload
+        # digest to here (see ``verify_rdata(verify_image_bytes=...)``) precisely
+        # so the image is hashed once per process rather than once per layer that
+        # inspects the artifact, and scoped to the one segment this chip maps.
+        assets = self.artifact / "assets"
+        published = read_rdata_index(assets)
+        chip = _runtime_chip_index(int(published.get("chip_count", 1)))
+        # An index predating per-segment digests can only be verified whole, so
+        # the scope follows what the image actually publishes.
+        scope = chip if (isinstance(published.get("segment_sha256"), list)
+                         or published.get("digest_kind") == "sha256-source-layout/v1") else None
+        index = verify_rdata(assets, module=self.ir_module, segment=scope, reuse_source_proofs=True)
+        if shared_rdata is not None:
+            from triton.flagmega.runtime.shared_readonly import SharedReadonlyPool
+            if not isinstance(shared_rdata, SharedReadonlyPool):
+                raise ArtifactError("Shared readonly storage requires a SharedReadonlyPool proof owner.")
+            return shared_rdata._bind_verified(assets, index, self.ir_module, chip=chip, device=device,
+                                               expected_nbytes=expected_nbytes)
+        if index.get("digest_kind") == "sha256-source-layout/v1":
+            from triton.flagmega.runtime.source_rdata import load_source_rdata
+            if int(index["segment_nbytes"]) != expected_nbytes:
+                raise ArtifactError("Source rdata segment size does not match the runtime readonly pool.")
+            pool = load_source_rdata(assets, index, self.ir_module, chip=chip, device=device)
+            return _triton_readonly_device_pool(pool, self.codegen, self.ir_module)
+        segment_nbytes = int(index.get("segment_nbytes", index["nbytes"]))
+        if segment_nbytes != expected_nbytes:
+            raise ArtifactError("TIR rdata pool size does not match its runtime binding.")
+        host = torch.from_file(
+            str(self.artifact / "assets" / str(index["image"])),
+            shared=False,
+            size=int(index["nbytes"]),
+            dtype=torch.uint8,
+        )
+        pool = host.narrow(0, chip * segment_nbytes, segment_nbytes).to(device=device)
+        return _triton_readonly_device_pool(pool, self.codegen, self.ir_module)
+
+    def _release_resources(self) -> None:
+        # ``_device_window`` is assigned before world-size validation and
+        # window registration.  Treat that partially initialized state as a
+        # live communicator too, so a failed prepare cannot leak FlagCX.
+        has_device_context = (self._device_dptr is not None or self._device_window is not None)
+        self._prepared = None
+        self._program_dag = None
+        self._pool_values = {}
+        self._tensor_descriptors.clear()
+        self._function_offset_values = ()
+        self._device_dptr = None
+        self._device_window = None
+        if has_device_context:
+            # The context is process-wide in TLE/FlagCX.  Release it only
+            # after the prepared launch and its backing window are no longer
+            # reachable; cleanup also respects ownership of a caller-created
+            # torch process group.
+            import triton.experimental.tle.language as tle
+
+            tle.cleanup_communicator()
+
+    def _allocate_device_window(self, torch, device: str, nbytes: int):
+        """Allocate one runtime pool as this process' FlagCX symmetric window.
+
+        A kernel reading a peer chip addresses the peer's instance of the pool
+        at the same offsets, which only holds when the pool allocation itself is
+        the registered window.  Registration happens later, with the rest of
+        the device context, once the caller's tensors exist.
+        """
+
+        import triton.experimental.tle.language as tle
+
+        if self._device_window is not None:
+            raise ArtifactError("Only one runtime pool can back the FlagCX symmetric window.")
+        if nbytes <= 0:
+            raise ArtifactError("A FlagCX symmetric-window pool requires a non-empty allocation.")
+        self._device_window = tle.allocate_dist_tensor((nbytes, ), dtype=torch.uint8, device=device)
+        return self._device_window
+
+    def _initialize_device_context(self, torch, device: str) -> None:
+        """Create the static FlagCX context required by chip/node lowering."""
+        import triton.experimental.tle.language as tle
+
+        # The registered window must be backed by a native, page-aligned CUDA
+        # allocation.  FlagCX's pluggable pool can return 512-byte-aligned
+        # blocks, which are invalid as symmetric-window bases.
+        expected_devices = int(self.codegen.get("mesh_device_extent", 1))
+        expected_nodes = int(self.codegen.get("mesh_node_extent", 1))
+        expected_world = expected_devices * expected_nodes
+        import torch.distributed as dist
+        # ``allocate_dist_tensor`` owns the normal FlagMega entry path: it
+        # initializes FlagCX and, when the caller is a torchrun worker, the
+        # NCCL/Gloo process groups.  Do not require the CLI to duplicate that
+        # backend bootstrap before loading an artifact.  A remote-reading
+        # artifact already allocated its window pool that way at load time.
+        if self._device_window is None:
+            self._device_window = tle.allocate_dist_tensor((1, ), dtype=torch.uint8, device=device)
+        actual_devices = dist.get_world_size() if dist.is_initialized() else 0
+        if actual_devices != expected_world:
+            raise ArtifactError(f"Launch mesh requires {expected_devices} devices across "
+                                f"{expected_nodes} nodes ({expected_world} ranks), but the process group has "
+                                f"{actual_devices} ranks.")
+        self._device_dptr = tle.create_dist_tensor(self._device_window)
+
+
+class GeneratedTirSingleTensorModule(GeneratedTirCallGraphModule):
+    """Convenience adapter for any tensor-only entry with one tensor result.
+
+    Bufferized TIR keeps result buffers explicit and may own rdata/workspace
+    pools even for a one-op graph.  This adapter preserves that physical ABI
+    while exposing the ordinary ``prepare(inputs)``/``run(inputs)`` interface.
+    Selection is purely structural and has no model or operation allow-list.
+    """
+
+    result_kind = "tensor"
+
+    def __init__(self, artifact, manifest, ir_module, kernel) -> None:
+        super().__init__(artifact, manifest, ir_module, kernel)
+        function = ir_module.function_map[ir_module.entry]
+        input_types = tuple(logical_type(ir_module.node_map[value].type) for value in function.parameters)
+        if not all(isinstance(value, TensorType) for value in input_types):
+            raise ArtifactError("Single-tensor runtime requires tensor-only entry parameters.")
+        self._input_types = input_types
+        self._output_name, self._output_type = _single_tensor_output(ir_module)
+
+    def create_outputs(self):
+        self._require_loaded()
+        return _allocate_tensor(_torch(), self._output_type, self._device)
+
+    def prepare(self, *inputs, output=None):
+        self._validate_inputs(inputs)
+        if output is None:
+            output = self.create_outputs()
+        _validate_ir_tensor("output", output, self._output_type, self._device)
+        self._prepare_bound(self._entry_buffer_values(inputs, output))
+        return self
+
+    def run_into(self, output, *inputs, stream=None) -> None:
+        self._validate_inputs(inputs)
+        _validate_ir_tensor("output", output, self._output_type, self._device)
+        self._launch_bound(self._entry_buffer_values(inputs, output), stream=stream)
+
+    def run(self, *inputs, stream=None):
+        output = self.create_outputs()
+        self.run_into(output, *inputs, stream=stream)
+        return output
+
+    def _validate_inputs(self, inputs) -> None:
+        self._require_loaded()
+        if len(inputs) != len(self._input_types):
+            raise RuntimeContractError(f"Entry expects {len(self._input_types)} tensor inputs, "
+                                       f"got {len(inputs)}.")
+        for index, (value, value_type) in enumerate(zip(inputs, self._input_types, strict=True)):
+            _validate_ir_tensor(f"input {index}", value, value_type, self._device)
+
+    def _entry_buffer_values(self, inputs, output) -> dict[str, object]:
+        function = self.buffer_plan.function_map[self.ir_module.entry]
+        values: dict[str, object] = {}
+        for (value, buffers), actual in zip(function.parameters, inputs, strict=True):
+            if len(buffers) != 1:
+                raise RuntimeContractError(f"Entry parameter {value!r} has a non-scalar buffer tuple.")
+            values[buffers[0]] = actual
+        output_bindings = dict(function.outputs)[self._output_name]
+        if len(output_bindings) != 1:
+            raise RuntimeContractError(f"Entry output {self._output_name!r} has a non-scalar buffer tuple.")
+        values[output_bindings[0]] = output
+        return values
+
+
+class GeneratedTirGatedDeltaNetModule(GeneratedTirCallGraphModule):
+    """State-friendly runtime adapter; generated code remains model-neutral."""
+
+    def __init__(self, artifact, manifest, ir_module, kernel) -> None:
+        super().__init__(artifact, manifest, ir_module, kernel)
+        self._state_config = _gdn_state_config_from_entry(ir_module)
+
+    result_kind = "tensor_state"
+
+    def create_outputs(self):
+        torch = _torch()
+        self._require_loaded()
+        _, output_type = _single_tensor_output(self.ir_module)
+        return _allocate_tensor(torch, output_type, self._device)
+
+    def create_state(self) -> GatedDeltaNetState:
+        torch = _torch()
+        self._require_loaded()
+        config = self._state_config
+        return GatedDeltaNetState(
+            torch.zeros(
+                config.storage_shape(GatedDeltaNetStateKind.CONVOLUTION),
+                dtype=torch.bfloat16,
+                device=self._device,
+            ),
+            torch.zeros(
+                config.storage_shape(GatedDeltaNetStateKind.RECURRENT),
+                dtype=torch.float32,
+                device=self._device,
+            ),
+        )
+
+    def prepare(self, input_ids, state: GatedDeltaNetState, *, output=None):
+        torch = _torch()
+        self._require_loaded()
+        self._validate_state(input_ids, state)
+        _, output_type = _single_tensor_output(self.ir_module)
+        if output is None:
+            output = _allocate_tensor(torch, output_type, self._device)
+        _validate_ir_tensor("output", output, output_type, self._device)
+        values = self._entry_buffer_values(input_ids, state, output=output)
+        self._prepare_bound(values)
+        return self
+
+    def run_into(self, output, input_ids, state: GatedDeltaNetState, *, stream=None):
+        self._validate_state(input_ids, state)
+        _, output_type = _single_tensor_output(self.ir_module)
+        _validate_ir_tensor("output", output, output_type, self._device)
+        self._launch_bound(
+            self._entry_buffer_values(input_ids, state, output=output),
+            stream=stream,
+        )
+
+    def run(self, input_ids, state: GatedDeltaNetState, *, stream=None):
+        torch = _torch()
+        _, output_type = _single_tensor_output(self.ir_module)
+        output = _allocate_tensor(torch, output_type, self._device)
+        self.run_into(output, input_ids, state, stream=stream)
+        return output, state
+
+    def _entry_buffer_values(self, input_ids, state, *, output):
+        function = self.buffer_plan.function_map[self.ir_module.entry]
+        values: dict[str, object] = {}
+        tensor_parameters = [(value, buffers)
+                             for value, buffers in function.parameters
+                             if not isinstance(self.ir_module.node_map[value].type, RefType)]
+        if len(tensor_parameters) != 1 or len(tensor_parameters[0][1]) != 1:
+            raise RuntimeContractError("GDN runtime requires one tensor entry parameter.")
+        values[tensor_parameters[0][1][0]] = input_ids
+        state_buffers = next(buffers for value, buffers in function.parameters
+                             if isinstance(self.ir_module.node_map[value].type, RefType))
+        values.update(dict(zip(
+            state_buffers,
+            (state.convolution, state.recurrent),
+            strict=True,
+        )))
+        for value, buffers in function.outputs:
+            value_type = self.ir_module.node_map[value].type
+            if isinstance(value_type, RefType):
+                values.update(dict(zip(
+                    buffers,
+                    (state.convolution, state.recurrent),
+                    strict=True,
+                )))
+            else:
+                if len(buffers) != 1:
+                    raise RuntimeContractError(f"GDN output {value!r} has a non-scalar buffer tuple.")
+                values[buffers[0]] = output
+        return values
+
+    def _validate_state(self, input_ids, state) -> None:
+        torch = _torch()
+        if (not isinstance(input_ids, torch.Tensor) or tuple(input_ids.shape) != (1, )
+                or input_ids.dtype != torch.int32):
+            raise RuntimeContractError("input_ids must be int32[1].")
+        if not isinstance(state, GatedDeltaNetState):
+            raise RuntimeContractError("state must be GatedDeltaNetState.")
+        config = self._state_config
+        expected = (
+            config.storage_shape(GatedDeltaNetStateKind.CONVOLUTION),
+            config.storage_shape(GatedDeltaNetStateKind.RECURRENT),
+        )
+        if (tuple(state.convolution.shape) != expected[0] or state.convolution.dtype != torch.bfloat16
+                or tuple(state.recurrent.shape) != expected[1] or state.recurrent.dtype != torch.float32):
+            raise RuntimeContractError("GDN state does not match the final IR ABI.")
+
+
+class _GeneratedTirPagedAttentionBase(GeneratedTirCallGraphModule):
+
+    def __init__(self, artifact, manifest, ir_module, kernel) -> None:
+        super().__init__(artifact, manifest, ir_module, kernel)
+        self._state_config = _paged_state_config_from_entry(ir_module)
+
+    @property
+    def state_config(self) -> PagedAttentionStateConfig:
+        return self._state_config
+
+    def create_state(self) -> PagedAttentionState:
+        self._require_loaded()
+        return create_paged_attention_state(self._state_config, device=self._device)
+
+    def _validate_inputs(
+        self,
+        input_ids,
+        state: PagedAttentionState,
+        *,
+        dynamic_values: bool = True,
+    ) -> None:
+        torch = _torch()
+        if (not isinstance(input_ids, torch.Tensor) or tuple(input_ids.shape) != (1, )
+                or input_ids.dtype != torch.int32):
+            raise RuntimeContractError("input_ids must be int32[1].")
+        if not isinstance(state, PagedAttentionState):
+            raise RuntimeContractError("state must be PagedAttentionState.")
+        if state.config != self._state_config:
+            raise RuntimeContractError("Paged-attention state does not match the final IR ABI.")
+        state.validate(dynamic_values=dynamic_values)
+
+    def _entry_buffer_values(
+        self,
+        input_ids,
+        state: PagedAttentionState,
+        outputs_by_value: Mapping[str, object],
+    ) -> dict[str, object]:
+        function = self.buffer_plan.function_map[self.ir_module.entry]
+        values: dict[str, object] = {}
+        state_values = {
+            "kv_caches": state.kv_caches,
+            "query_start_loc": state.query_start_loc,
+            "seq_lens": state.seq_lens,
+            "slot_mapping": state.slot_mapping,
+            "block_table": state.block_table,
+        }
+        for value, buffers in function.parameters:
+            value_type = self.ir_module.node_map[value].type
+            if isinstance(value_type, RefType):
+                values.update(_bind_ref_buffers(value_type, buffers, state_values))
+            else:
+                if len(buffers) != 1:
+                    raise RuntimeContractError(f"Entry parameter {value!r} has a non-scalar buffer tuple.")
+                values[buffers[0]] = input_ids
+        for value, buffers in function.outputs:
+            value_type = self.ir_module.node_map[value].type
+            if isinstance(value_type, RefType):
+                values.update(_bind_ref_buffers(value_type, buffers, state_values))
+                continue
+            try:
+                output = outputs_by_value[value]
+            except KeyError as error:
+                raise RuntimeContractError(f"Runtime adapter did not bind entry output {value!r}.") from error
+            if len(buffers) != 1:
+                raise RuntimeContractError(f"Entry output {value!r} has a non-scalar buffer tuple.")
+            values[buffers[0]] = output
+        return values
+
+
+class GeneratedTirPagedAttentionLayerModule(_GeneratedTirPagedAttentionBase):
+    """Friendly adapter for an entry returning one tensor and updated state."""
+
+    result_kind = "tensor_state"
+
+    def create_outputs(self):
+        torch = _torch()
+        self._require_loaded()
+        _, output_type = _single_tensor_output(self.ir_module)
+        return _allocate_tensor(torch, output_type, self._device)
+
+    def prepare(self, input_ids, state: PagedAttentionState, *, output=None):
+        torch = _torch()
+        self._require_loaded()
+        self._validate_inputs(input_ids, state, dynamic_values=True)
+        output_name, output_type = _single_tensor_output(self.ir_module)
+        if output is None:
+            output = _allocate_tensor(torch, output_type, self._device)
+        _validate_ir_tensor("output", output, output_type, self._device)
+        self._prepare_bound(self._entry_buffer_values(input_ids, state, {output_name: output}))
+        return self
+
+    def run_into(self, output, input_ids, state: PagedAttentionState, *, stream=None):
+        # prepare() proves content-dependent invariants such as cache capacity
+        # and the physical page table.  A prepared launch may update cache
+        # contents but not its structural ABI; re-running CUDA reductions to
+        # prove the same invariant on every token would put validation kernels
+        # on the decode critical path.
+        self._validate_inputs(input_ids, state, dynamic_values=False)
+        output_name, output_type = _single_tensor_output(self.ir_module)
+        _validate_ir_tensor("output", output, output_type, self._device)
+        self._launch_bound(
+            self._entry_buffer_values(input_ids, state, {output_name: output}),
+            stream=stream,
+        )
+
+    def run(self, input_ids, state: PagedAttentionState, *, stream=None):
+        torch = _torch()
+        output_name, output_type = _single_tensor_output(self.ir_module)
+        output = _allocate_tensor(torch, output_type, self._device)
+        self.run_into(output, input_ids, state, stream=stream)
+        return output, state
+
+
+class GeneratedTirPagedAttentionModelModule(_GeneratedTirPagedAttentionBase):
+    """Friendly adapter for logits/token outputs and an updated cache state."""
+
+    result_kind = "logits_token_state"
+
+    def create_outputs(self):
+        torch = _torch()
+        self._require_loaded()
+        outputs = _named_tensor_outputs(self.ir_module)
+        _, logits_type = _output_by_dtype(outputs, DType.FLOAT32)
+        _, token_type = _output_by_dtype(outputs, DType.INT32)
+        return (
+            _allocate_tensor(torch, logits_type, self._device),
+            _allocate_tensor(torch, token_type, self._device),
+        )
+
+    def prepare(
+        self,
+        input_ids,
+        state: PagedAttentionState,
+        *,
+        logits=None,
+        next_token=None,
+    ):
+        torch = _torch()
+        self._require_loaded()
+        self._validate_inputs(input_ids, state, dynamic_values=True)
+        outputs = _named_tensor_outputs(self.ir_module)
+        logits_name, logits_type = _output_by_dtype(outputs, DType.FLOAT32)
+        token_name, token_type = _output_by_dtype(outputs, DType.INT32)
+        if logits is None:
+            logits = _allocate_tensor(torch, logits_type, self._device)
+        if next_token is None:
+            next_token = _allocate_tensor(torch, token_type, self._device)
+        _validate_ir_tensor("logits", logits, logits_type, self._device)
+        _validate_ir_tensor("next_token", next_token, token_type, self._device)
+        self._prepare_bound(self._entry_buffer_values(
+            input_ids,
+            state,
+            {logits_name: logits, token_name: next_token},
+        ))
+        return self
+
+    def run_into(
+        self,
+        logits,
+        next_token,
+        input_ids,
+        state: PagedAttentionState,
+        *,
+        stream=None,
+    ) -> None:
+        self._validate_inputs(input_ids, state, dynamic_values=False)
+        outputs = _named_tensor_outputs(self.ir_module)
+        logits_name, logits_type = _output_by_dtype(outputs, DType.FLOAT32)
+        token_name, token_type = _output_by_dtype(outputs, DType.INT32)
+        _validate_ir_tensor("logits", logits, logits_type, self._device)
+        _validate_ir_tensor("next_token", next_token, token_type, self._device)
+        self._launch_bound(
+            self._entry_buffer_values(
+                input_ids,
+                state,
+                {logits_name: logits, token_name: next_token},
+            ),
+            stream=stream,
+        )
+
+    def run(self, input_ids, state: PagedAttentionState, *, stream=None):
+        torch = _torch()
+        outputs = _named_tensor_outputs(self.ir_module)
+        _, logits_type = _output_by_dtype(outputs, DType.FLOAT32)
+        _, token_type = _output_by_dtype(outputs, DType.INT32)
+        logits = _allocate_tensor(torch, logits_type, self._device)
+        next_token = _allocate_tensor(torch, token_type, self._device)
+        self.run_into(logits, next_token, input_ids, state, stream=stream)
+        return logits, next_token, state
+
+
+class GeneratedTirCompositeModelModule(GeneratedTirCallGraphModule):
+    """Runtime adapter for a model with several tensor states and one page cache.
+
+    Some full-model graphs intentionally keep each KDA layer's state as plain
+    tensors so the KDA operators can remain functional, while MLA layers use
+    the structured paged-attention reference.  The flattened call-graph ABI
+    contains both contracts; this adapter owns the state carry without
+    encoding a fixed layer count or model-specific compiler assumptions.
+    """
+
+    result_kind = "composite_logits_token_state"
+
+    def __init__(self, artifact, manifest, ir_module, kernel) -> None:
+        super().__init__(artifact, manifest, ir_module, kernel)
+        function = ir_module.function_map[ir_module.entry]
+        abi = ir_module.metadata.get("composite_abi")
+        if not isinstance(abi, Mapping) or abi.get("schema") != "flagmega.composite-abi/v1":
+            raise ArtifactError("Composite model runtime requires an explicit composite_abi metadata contract.")
+        by_name = {str(value): value for value in function.parameters}
+        output_by_name = {str(value): value for value in function.outputs}
+        try:
+            self._input_id = by_name[str(abi["input_id"])]
+            self._logits_id = output_by_name[str(abi["logits_output"])]
+            self._token_id = output_by_name[str(abi["token_output"])]
+        except KeyError as error:
+            raise ArtifactError(f"Composite ABI references an unknown entry value: {error}") from error
+        self._input_type = logical_type(ir_module.node_map[self._input_id].type)
+        self._prefill_id = None
+        if "prefill_input" in abi:
+            try:
+                self._prefill_id = by_name[str(abi["prefill_input"])]
+            except KeyError as error:
+                raise ArtifactError("Composite ABI references an unknown prefill input.") from error
+            phase_type = ir_module.node_map[self._prefill_id].type
+            if (logical_type(phase_type) != tensor_type(DType.BOOL, ()) or isinstance(phase_type, DistributedType) and
+                (phase_type.partial is not None or phase_type.exclusive is not None)):
+                raise ArtifactError("Composite prefill input must be a replicated rank-zero bool tensor.")
+        self._state_specs: dict[object, tuple[TensorType, TensorType]] = {}
+        self._state_logical_specs = {}
+        self._state_inputs: dict[object, tuple[object, object]] = {}
+        self._state_outputs: dict[object, tuple[object, object]] = {}
+        state_buffers = dict((*self.buffer_plan.function_map[ir_module.entry].parameters,
+                              *self.buffer_plan.function_map[ir_module.entry].outputs))
+        bindings = abi.get("tensor_states")
+        if not isinstance(bindings, (tuple, list)) or not bindings:
+            raise ArtifactError("Composite ABI requires non-empty tensor_states bindings.")
+        for binding in bindings:
+            if not isinstance(binding, Mapping):
+                raise ArtifactError("Composite tensor state binding must be a mapping.")
+            state_id = binding.get("state_id")
+            input_names = tuple(str(value) for value in binding.get("input", ()))
+            output_names = tuple(str(value) for value in binding.get("output", ()))
+            if len(input_names) != 2 or len(output_names) != 2:
+                raise ArtifactError("Composite tensor state bindings require two inputs and outputs.")
+            try:
+                input_values = tuple(by_name[name] for name in input_names)
+                output_values = tuple(output_by_name[name] for name in output_names)
+            except KeyError as error:
+                raise ArtifactError(f"Composite ABI references an unknown tensor state: {error}") from error
+            input_logical = tuple(_materialized_state_type(ir_module.node_map[value].type) for value in input_values)
+            output_logical = tuple(_materialized_state_type(ir_module.node_map[value].type) for value in output_values)
+            if not all(isinstance(logical_type(value), TensorType) for value in (*input_logical, *output_logical)):
+                raise ArtifactError(f"Composite tensor state {state_id!r} must use tensor values.")
+            if input_logical != output_logical:
+                raise ArtifactError(
+                    f"Composite tensor state {state_id!r} changes shape, dtype or ownership across carry.")
+            physical = []
+            for values in (input_values, output_values):
+                tensors = []
+                for value in values:
+                    buffers = state_buffers[value]
+                    if len(buffers) != 1:
+                        raise ArtifactError(f"Composite tensor state {state_id!r} must bind one buffer per tensor.")
+                    tensors.append(tensor_state_storage_type(self.buffer_plan.buffer_map[buffers[0]]))
+                physical.append(tuple(tensors))
+            input_types, output_types = physical
+            if input_types != output_types:
+                raise ArtifactError(f"Composite tensor state {state_id!r} changes physical layout across carry.")
+            self._state_specs[state_id] = input_types
+            self._state_logical_specs[state_id] = input_logical
+            self._state_inputs[state_id] = input_values
+            self._state_outputs[state_id] = output_values
+        paged_binding = abi.get("paged_state")
+        if not isinstance(paged_binding, Mapping):
+            raise ArtifactError("Composite ABI requires a paged_state binding.")
+        try:
+            self._paged_param = by_name[str(paged_binding["input"])]
+            self._paged_output = output_by_name[str(paged_binding["output"])]
+        except KeyError as error:
+            raise ArtifactError(f"Composite ABI references an unknown paged state: {error}") from error
+        if not isinstance(ir_module.node_map[self._paged_param].type, RefType) or not isinstance(
+                ir_module.node_map[self._paged_output].type, RefType):
+            raise ArtifactError("Composite paged_state binding must connect RefType values.")
+        dsa_binding = abi.get("dsa_state")
+        self._dsa_param = self._dsa_output = None
+        if dsa_binding is not None:
+            if not isinstance(dsa_binding, Mapping):
+                raise ArtifactError("Composite dsa_state binding must be a mapping.")
+            try:
+                self._dsa_param = by_name[str(dsa_binding["input"])]
+                dsa_output_name = dsa_binding.get("output")
+                self._dsa_output = (output_by_name[str(dsa_output_name)] if dsa_output_name is not None else None)
+            except KeyError as error:
+                raise ArtifactError(f"Composite ABI references an unknown DSA state: {error}") from error
+            if (not isinstance(ir_module.node_map[self._dsa_param].type, RefType) or
+                (self._dsa_output is not None and not isinstance(ir_module.node_map[self._dsa_output].type, RefType))):
+                raise ArtifactError("Composite dsa_state binding must connect RefType values.")
+        state_types = tuple(self._state_specs.values())
+        if any(pair != state_types[0] for pair in state_types[1:]):
+            raise ArtifactError("Composite KDA state bindings must use one homogeneous state contract.")
+        logical_state_types = tuple(self._state_logical_specs.values())
+        if any(pair != logical_state_types[0] for pair in logical_state_types[1:]):
+            raise ArtifactError("Composite KDA state bindings must use one homogeneous ownership contract.")
+        logical_pair = logical_state_types[0]
+        self._kda_config = KdaStateConfig(
+            layer_ids=tuple(self._state_specs),
+            convolution_type=state_types[0][0],
+            recurrent_type=state_types[0][1],
+            logical_types=logical_pair if any(isinstance(value, DistributedType) for value in logical_pair) else None,
+        )
+        self._paged_config = _paged_state_config_from_entry(ir_module)
+        self._dsa_config = (_dsa_state_config_from_entry(ir_module, self._dsa_param)
+                            if self._dsa_param is not None else None)
+
+    def load(self, device: str = "cuda:0", *, shared_rdata=None) -> GeneratedTirCompositeModelModule:
+        super().load(device, shared_rdata=shared_rdata)
+        logical = self._kda_config.logical_types
+        if logical is not None:
+            from triton.flagmega.ir.distributed_type import SBPSplit
+            sharded = [
+                kind for kind in logical if isinstance(kind, DistributedType) and any(
+                    isinstance(policy, SBPSplit) and any(kind.placement.hierarchy_levels[axis] in {"c", "d"}
+                                                         for stage in policy.stages
+                                                         for axis in stage.hierarchy_axes)
+                    for policy in kind.axis_policies)
+            ]
+            if sharded:
+                chips = {
+                    kind.placement.physical_level_size("c") * kind.placement.physical_level_size("d")
+                    for kind in sharded
+                }
+                if len(chips) != 1:
+                    raise ArtifactError("Composite tensor states require one chip ownership contract.")
+                self._kda_config = replace(self._kda_config, chip_index=_runtime_chip_index(chips.pop()))
+        return self
+
+    def create_state(self) -> CompositeModelState:
+        self._require_loaded()
+        return CompositeModelState(
+            kda=create_kda_state(self._kda_config, device=self._device),
+            paged=create_paged_attention_state(self._paged_config, device=self._device),
+            next_kda=create_kda_state(self._kda_config, device=self._device),
+            dsa=(create_dsa_indexer_state(self._dsa_config, device=self._device)
+                 if self._dsa_config is not None else None),
+        )
+
+    def create_outputs(self):
+        torch = _torch()
+        self._require_loaded()
+        return (
+            _allocate_tensor(torch, logical_type(self.ir_module.node_map[self._logits_id].type), self._device),
+            _allocate_tensor(torch, logical_type(self.ir_module.node_map[self._token_id].type), self._device),
+        )
+
+    def prepare(self, input_ids, state: CompositeModelState, *, logits=None, next_token=None, prefill=False):
+        self._require_loaded()
+        self._validate_state(input_ids, state, dynamic_values=True)
+        logits_type = logical_type(self.ir_module.node_map[self._logits_id].type)
+        token_type = logical_type(self.ir_module.node_map[self._token_id].type)
+        torch = _torch()
+        if logits is None:
+            logits = _allocate_tensor(torch, logits_type, self._device)
+        if next_token is None:
+            next_token = _allocate_tensor(torch, token_type, self._device)
+        _validate_ir_tensor("logits", logits, logits_type, self._device)
+        _validate_ir_tensor("next_token", next_token, token_type, self._device)
+        self._prepare_bound(self._entry_buffer_values(input_ids, state, logits, next_token, prefill=prefill))
+        return self
+
+    def run_into(self, logits, next_token, input_ids, state: CompositeModelState, *, stream=None, prefill=False):
+        # As with the paged-only adapters, prepare validates cache contents;
+        # launches retain the structural ABI checks while device kernels own
+        # state updates. Re-reading device scalars here synchronizes every
+        # decode step and makes an otherwise prepared launch uncapturable.
+        self._validate_state(input_ids, state, dynamic_values=False)
+        logits_type = logical_type(self.ir_module.node_map[self._logits_id].type)
+        token_type = logical_type(self.ir_module.node_map[self._token_id].type)
+        _validate_ir_tensor("logits", logits, logits_type, self._device)
+        _validate_ir_tensor("next_token", next_token, token_type, self._device)
+        self._launch_bound(self._entry_buffer_values(input_ids, state, logits, next_token, prefill=prefill),
+                           stream=stream)
+        # The generated KDA outputs are separate buffers. Carry the complete
+        # state object after the launch, just like the GDN state adapter does.
+        state.kda.convolution.copy_(state.next_kda.convolution)
+        state.kda.recurrent.copy_(state.next_kda.recurrent)
+
+    def run(self, input_ids, state: CompositeModelState, *, stream=None, prefill=False):
+        logits, next_token = self.create_outputs()
+        self.run_into(logits, next_token, input_ids, state, stream=stream, prefill=prefill)
+        return logits, next_token, state
+
+    def _entry_buffer_values(self, input_ids, state, logits, next_token, *, prefill=False):
+        if type(prefill) is not bool:
+            raise RuntimeContractError("Composite prefill must be a Python bool, supplied explicitly by the caller.")
+        if prefill and self._prefill_id is None:
+            raise RuntimeContractError("This composite artifact has no request-phase input.")
+        plan = self.buffer_plan.function_map[self.ir_module.entry]
+        values: dict[str, object] = {}
+        for value, buffers in plan.parameters:
+            value_type = self.ir_module.node_map[value].type
+            if isinstance(value_type, RefType):
+                if value == self._paged_param:
+                    values.update(_bind_ref_buffers(value_type, buffers, _paged_state_values(state.paged)))
+                elif value == self._dsa_param and state.dsa is not None:
+                    values.update(_bind_ref_buffers(value_type, buffers, _dsa_state_values(state.dsa)))
+                else:
+                    raise RuntimeContractError(f"Composite ABI has an unexpected RefType parameter {value!r}.")
+                continue
+            if value == self._input_id:
+                if len(buffers) != 1:
+                    raise RuntimeContractError("Composite input binding must contain one buffer.")
+                values[buffers[0]] = input_ids
+                continue
+            if value == self._prefill_id:
+                if len(buffers) != 1:
+                    raise RuntimeContractError("Composite prefill input must contain one buffer.")
+                values[buffers[0]] = prefill
+                continue
+            matched = False
+            for state_id, input_values in self._state_inputs.items():
+                for slot, input_value in enumerate(input_values):
+                    if value == input_value:
+                        if len(buffers) != 1:
+                            raise RuntimeContractError(f"Composite state {state_id!r} has a non-scalar buffer tuple.")
+                        values[buffers[0]] = (state.kda.convolution_layer(state_id)
+                                              if slot == 0 else state.kda.recurrent_layer(state_id))
+                        matched = True
+                        break
+                if matched:
+                    break
+            if not matched:
+                raise RuntimeContractError(f"Composite ABI does not bind entry parameter {value!r}.")
+        for value, buffers in plan.outputs:
+            value_type = self.ir_module.node_map[value].type
+            if isinstance(value_type, RefType):
+                if value == self._paged_output:
+                    values.update(_bind_ref_buffers(value_type, buffers, _paged_state_values(state.paged)))
+                elif value == self._dsa_output and state.dsa is not None:
+                    values.update(_bind_ref_buffers(value_type, buffers, _dsa_state_values(state.dsa)))
+                else:
+                    raise RuntimeContractError(f"Composite ABI has an unexpected RefType output {value!r}.")
+                continue
+            if value == self._logits_id:
+                values[buffers[0]] = logits
+            elif value == self._token_id:
+                values[buffers[0]] = next_token
+            else:
+                matched = False
+                for state_id, output_values in self._state_outputs.items():
+                    for slot, output_value in enumerate(output_values):
+                        if value == output_value:
+                            if len(buffers) != 1:
+                                raise RuntimeContractError(
+                                    f"Composite state {state_id!r} has a non-scalar output tuple.")
+                            values[buffers[0]] = (state.next_kda.convolution_layer(state_id)
+                                                  if slot == 0 else state.next_kda.recurrent_layer(state_id))
+                            matched = True
+                            break
+                    if matched:
+                        break
+                if not matched:
+                    raise RuntimeContractError(f"Composite ABI does not bind entry output {value!r}.")
+        return values
+
+    def _validate_state(self, input_ids, state, *, dynamic_values=True):
+        if not isinstance(state, CompositeModelState):
+            raise RuntimeContractError("State must be CompositeModelState.")
+        _validate_ir_tensor("input_ids", input_ids, self._input_type, self._device)
+        state.paged.validate(dynamic_values=dynamic_values)
+        if self._dsa_config is not None:
+            if state.dsa is None or state.dsa.config != self._dsa_config:
+                raise RuntimeContractError("DSA state does not match the final IR ABI.")
+            try:
+                state.dsa.validate(dynamic_values=dynamic_values)
+            except EvaluationError as error:
+                raise RuntimeContractError(f"DSA state does not match the final IR ABI: {error}") from error
+        elif state.dsa is not None:
+            raise RuntimeContractError("Unexpected DSA state for an artifact without DSA ABI.")
+        if state.kda.config != self._kda_config or state.next_kda.config != self._kda_config:
+            raise RuntimeContractError("KDA state does not match the final IR ABI.")
+        try:
+            state.kda.validate()
+            state.next_kda.validate()
+        except EvaluationError as error:
+            raise RuntimeContractError(f"KDA state does not match the final IR ABI: {error}") from error
+        for state_id, (first_type, second_type) in self._state_specs.items():
+            index = state.kda.config.layer_ids.index(state_id)
+            _validate_ir_tensor(f"state_{state_id}_0", state.kda.convolution[index], first_type, self._device)
+            _validate_ir_tensor(f"state_{state_id}_1", state.kda.recurrent[index], second_type, self._device)
+            _validate_ir_tensor(f"next_state_{state_id}_0", state.next_kda.convolution[index], first_type, self._device)
+            _validate_ir_tensor(f"next_state_{state_id}_1", state.next_kda.recurrent[index], second_type, self._device)
+
+
+def _materialized_state_type(kind):
+    if isinstance(kind, DistributedType):
+        from triton.flagmega.ir.distributed_inference import all_broadcast
+        if kind.partial is not None or kind.exclusive is not None:
+            raise ArtifactError("Composite persistent tensor state must be materialized and non-exclusive.")
+        if all_broadcast(kind):
+            return kind.tensor
+    return kind
+
+
+def _dsa_state_values(state: DsaIndexerState) -> dict[str, object]:
+    return {
+        "packed_states": state.packed_states,
+        "seq_lens": state.seq_lens,
+    }
+
+
+def _dsa_state_config_from_entry(ir_module, value_id) -> DsaIndexerStateConfig:
+    if value_id is None:
+        raise ArtifactError("DSA state config requires an entry reference value.")
+    value_type = ir_module.node_map[value_id].type
+    if not isinstance(value_type, RefType) or value_type.name != "dsa_indexer_state":
+        raise ArtifactError("Entry DSA state must use the dsa_indexer_state reference type.")
+    fields = dict(value_type.fields)
+    packed = fields.get("packed_states")
+    seq_lens = fields.get("seq_lens")
+    if not isinstance(packed, TensorType) or not isinstance(seq_lens, TensorType):
+        raise ArtifactError("DSA state reference fields are malformed.")
+    shape = tuple(d.fixed_value for d in packed.shape)
+    if len(shape) != 3 or shape[2] < 3 or shape[2] % 2 == 0 or tuple(d.fixed_value for d in seq_lens.shape) != (1, ):
+        raise ArtifactError("DSA state reference has an invalid physical shape.")
+    metadata = ir_module.metadata
+    layer_ids = tuple(metadata.get("dsa_full_indexer_layers", ()))
+    if len(layer_ids) != shape[0]:
+        raise ArtifactError("DSA state layer metadata disagrees with the reference shape.")
+    output_width = int(metadata.get("dsa_index_output_width", 0))
+    if output_width <= 0:
+        raise ArtifactError("DSA state metadata has no positive output width.")
+    return DsaIndexerStateConfig(layer_ids, shape[1], (shape[2] - 1) // 2, output_width)
+
+
+def _paged_state_values(state: PagedAttentionState) -> dict[str, object]:
+    return {
+        "kv_caches": state.kv_caches,
+        "query_start_loc": state.query_start_loc,
+        "seq_lens": state.seq_lens,
+        "slot_mapping": state.slot_mapping,
+        "block_table": state.block_table,
+    }
+
+
+def _is_composite_model_entry(ir_module) -> bool:
+    abi = ir_module.metadata.get("composite_abi")
+    function = ir_module.function_map[ir_module.entry]
+    ref_count = sum(isinstance(ir_module.node_map[value].type, RefType) for value in function.parameters)
+    return (isinstance(abi, Mapping) and abi.get("schema") == "flagmega.composite-abi/v1"
+            and isinstance(abi.get("tensor_states"), (tuple, list)) and isinstance(abi.get("paged_state"), Mapping)
+            and ref_count in (1, 2) and (ref_count == 1 or isinstance(abi.get("dsa_state"), Mapping)))
+
+
+def create_tir_runtime(artifact, manifest, ir_module, kernel):
+    """Select a user-facing runtime adapter at the artifact ABI boundary.
+
+    The generated package remains a model-independent TIR call graph. Friendly
+    state wrappers are selected from the entry's structural RefType ABI, not
+    from importer architecture names or codegen-side model reconstruction.
+    """
+
+    return tir_runtime_type(ir_module)(artifact, manifest, ir_module, kernel)
+
+
+def tir_runtime_type(ir_module):
+    """Return the runtime adapter class one entry's ABI calls for.
+
+    Split out from :func:`create_tir_runtime` so a second codegen backend can
+    reuse the selection without duplicating it: the choice depends only on the
+    entry's structural ABI, which is the same whichever language the package
+    was generated in. See ``runtime/cpp_module.py``.
+    """
+
+    function = ir_module.function_map[ir_module.entry]
+    if _is_composite_model_entry(ir_module):
+        return GeneratedTirCompositeModelModule
+    if any(
+            isinstance(ir_module.node_map[value].type, TupleType)
+            for value in (*function.parameters, *function.outputs)):
+        # Aggregate entries expose flattened buffers through the general ABI.
+        # Tensor/state convenience adapters require top-level named tensors;
+        # a one-leaf tuple is still an aggregate, not a scalar tensor result.
+        return GeneratedTirCallGraphModule
+    reference_types = tuple(ir_module.node_map[value].type
+                            for value in function.parameters
+                            if isinstance(ir_module.node_map[value].type, RefType))
+    if reference_types:
+        tensor_parameters = tuple(
+            logical_type(ir_module.node_map[value].type)
+            for value in function.parameters
+            if not isinstance(ir_module.node_map[value].type, RefType))
+        # State field names alone do not establish the convenience ABI. These
+        # wrappers accept one int32 token, not arbitrary tensors or prefill
+        # batches. Such entries expose the same kernel through the raw ABI.
+        if (len(tensor_parameters) != 1 or not isinstance(tensor_parameters[0], TensorType)
+                or tensor_parameters[0].dtype != DType.INT32 or not all(axis.is_fixed
+                                                                        for axis in tensor_parameters[0].shape)
+                or tuple(axis.fixed_value for axis in tensor_parameters[0].shape) != (1, )):
+            return GeneratedTirCallGraphModule
+    reference_fields = (frozenset(
+        name for name, _ in reference_types[0].fields) if len(reference_types) == 1 else frozenset())
+    if reference_fields == {"convolution", "recurrent"}:
+        return GeneratedTirGatedDeltaNetModule
+    if reference_fields == {
+            "kv_caches",
+            "query_start_loc",
+            "seq_lens",
+            "slot_mapping",
+            "block_table",
+    }:
+        tensor_outputs = _named_tensor_outputs(ir_module)
+        runtime_type = (GeneratedTirPagedAttentionModelModule
+                        if len(tensor_outputs) == 2 else GeneratedTirPagedAttentionLayerModule)
+        return runtime_type
+    if not reference_types and len(_named_tensor_outputs(ir_module)) == 1:
+        parameter_types = tuple(logical_type(ir_module.node_map[value].type) for value in function.parameters)
+        if all(isinstance(value, TensorType) for value in parameter_types):
+            return GeneratedTirSingleTensorModule
+    return GeneratedTirCallGraphModule
+
+
+def _torch():
+    try:
+        import torch
+    except ImportError as error:
+        raise RuntimeContractError("FlagMega generated runtime requires PyTorch tensor/storage APIs.") from error
+    return torch
+
+
+def _triton_readonly_device_pool(pool, codegen, module):
+    """Transform a freshly verified pool once, before preparation or capture."""
+    contract = codegen.get("triton_readonly_device_layout")
+    if contract is None:
+        return pool
+    if codegen.get("triton_readonly_layout") is not None:
+        from triton.flagmega.codegen.triton.nvidia_readonly_layout import validate_layout_data
+        validate_layout_data(codegen, module_semantic_hash=module.semantic_hash)
+    from triton.flagmega.codegen.readonly_layout import apply_readonly_layout
+    return apply_readonly_layout(pool, contract, module)
+
+
+def _runtime_chip_index(chip_count: int) -> int:
+    """Resolve the row-major chip index used by chip-local rdata segments."""
+
+    if chip_count <= 1:
+        return 0
+    raw = os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0"))
+    try:
+        chip = int(raw)
+    except (TypeError, ValueError) as error:
+        raise ArtifactError(f"Invalid distributed runtime chip index {raw!r}.") from error
+    if chip < 0 or chip >= chip_count:
+        raise ArtifactError(f"Distributed runtime chip index {chip} is outside rdata chip range [0, {chip_count}).")
+    return chip
+
+
+def _gdn_state_config_from_entry(ir_module) -> GatedDeltaNetStateConfig:
+    function = ir_module.function_map[ir_module.entry]
+    state_types = [
+        ir_module.node_map[value].type
+        for value in function.parameters
+        if isinstance(ir_module.node_map[value].type, RefType)
+    ]
+    if len(state_types) != 1:
+        raise ArtifactError("GDN runtime requires exactly one RefType entry parameter.")
+    fields = dict(state_types[0].fields)
+    try:
+        convolution = fields["convolution"]
+        recurrent = fields["recurrent"]
+    except KeyError as error:
+        raise ArtifactError("GDN runtime state must contain convolution and recurrent fields.") from error
+    if not isinstance(convolution, TensorType) or not isinstance(recurrent, TensorType):
+        raise ArtifactError("GDN runtime state fields must be tensors.")
+    if not isinstance(convolution.dtype, VectorType) or not isinstance(recurrent.dtype, VectorType):
+        raise ArtifactError("GDN runtime state fields must retain vector lanes.")
+    conv_shape = _fixed_shape(convolution, "GDN convolution state")
+    recurrent_shape = _fixed_shape(recurrent, "GDN recurrent state")
+    if len(conv_shape) != 3 or len(recurrent_shape) != 4:
+        raise ArtifactError("GDN runtime state has an unsupported rank.")
+    convolution_lanes = tuple(int(value) for value in convolution.dtype.lanes)
+    recurrent_lanes = tuple(int(value) for value in recurrent.dtype.lanes)
+    num_layers, packed_conv_dim, history = conv_shape
+    _, num_value_heads, value_head_dim, packed_key_dim = recurrent_shape
+    conv_dim = packed_conv_dim * prod(convolution_lanes)
+    key_head_dim = packed_key_dim * prod(recurrent_lanes)
+    residual = conv_dim - num_value_heads * value_head_dim
+    denominator = 2 * key_head_dim
+    if residual <= 0 or residual % denominator:
+        raise ArtifactError("GDN state dimensions cannot recover an integral key-head count.")
+    _, output_type = _single_tensor_output(ir_module)
+    output_shape = _fixed_shape(output_type, "GDN entry output")
+    if len(output_shape) != 2 or output_shape[0] != 1:
+        raise ArtifactError("GDN entry output must have shape [1, hidden_size].")
+    hidden_size = output_shape[1]
+    return GatedDeltaNetStateConfig(
+        num_layers=num_layers,
+        num_key_heads=residual // denominator,
+        num_value_heads=num_value_heads,
+        key_head_dim=key_head_dim,
+        value_head_dim=value_head_dim,
+        conv_kernel_size=history + 1,
+        hidden_size=hidden_size,
+        convolution_lanes=convolution_lanes,
+        recurrent_lanes=recurrent_lanes,
+    )
+
+
+def _fixed_shape(value_type: TensorType, name: str) -> tuple[int, ...]:
+    if not all(dimension.is_fixed for dimension in value_type.shape):
+        raise ArtifactError(f"{name} requires a static shape.")
+    return tuple(dimension.fixed_value for dimension in value_type.shape)
+
+
+def _paged_state_config_from_entry(ir_module) -> PagedAttentionStateConfig:
+    function = ir_module.function_map[ir_module.entry]
+    state_types = [
+        ir_module.node_map[value].type
+        for value in function.parameters
+        if isinstance(ir_module.node_map[value].type, RefType) and any(
+            name == "kv_caches" for name, _ in ir_module.node_map[value].type.fields)
+    ]
+    if len(state_types) != 1:
+        raise ArtifactError("Paged-attention runtime requires exactly one paged-cache RefType entry parameter.")
+    fields = dict(state_types[0].fields)
+    cache = fields.get("kv_caches")
+    if not isinstance(cache, TensorType) or not isinstance(cache.dtype, VectorType):
+        raise ArtifactError("Paged-attention runtime requires a vectorized kv_caches tensor.")
+    shape = _fixed_shape(cache, "Paged-attention KV cache")
+    if len(shape) != 6 or shape[2] != 2:
+        raise ArtifactError("Paged-attention KV cache has an unsupported layout.")
+    lanes = prod(cache.dtype.lanes)
+    return PagedAttentionStateConfig(
+        num_layers=shape[1],
+        num_kv_heads=shape[4],
+        head_dim=shape[5] * lanes,
+        block_size=shape[3],
+        num_blocks=shape[0],
+        lanes=lanes,
+    )
+
+
+def _bind_ref_buffers(
+    ref_type: RefType,
+    buffers: tuple[str, ...],
+    values_by_field: Mapping[str, object],
+) -> dict[str, object]:
+    fields = tuple(name for name, _ in ref_type.fields)
+    if len(fields) != len(buffers):
+        raise RuntimeContractError(f"RefType {ref_type.name!r} field/buffer arity differs.")
+    try:
+        return {buffer: values_by_field[field] for field, buffer in zip(fields, buffers, strict=True)}
+    except KeyError as error:
+        raise RuntimeContractError(f"Runtime state does not bind RefType field {error.args[0]!r}.") from error
+
+
+def _named_tensor_outputs(ir_module) -> dict[str, TensorType]:
+    function = ir_module.function_map[ir_module.entry]
+    result: dict[str, TensorType] = {}
+    for value in function.outputs:
+        value_type = ir_module.node_map[value].type
+        if isinstance(value_type, RefType):
+            continue
+        logical = logical_type(value_type)
+        if not isinstance(logical, TensorType):
+            raise ArtifactError(f"Entry output {value!r} does not have a tensor runtime ABI.")
+        result[value] = logical
+    return result
+
+
+def _single_tensor_output(ir_module) -> tuple[str, TensorType]:
+    outputs = _named_tensor_outputs(ir_module)
+    if len(outputs) != 1:
+        raise ArtifactError(f"Layer runtime requires one tensor output, found {tuple(outputs)}.")
+    return next(iter(outputs.items()))
+
+
+def _output_by_dtype(outputs: Mapping[str, TensorType], dtype: DType) -> tuple[str, TensorType]:
+    matched = tuple((name, value_type) for name, value_type in outputs.items() if value_type.dtype == dtype)
+    if len(matched) != 1:
+        raise ArtifactError(f"Entry requires one {dtype.value} output, found "
+                            f"{tuple(name for name, _ in matched)}.")
+    return matched[0]
+
+
+def _allocate_tensor(torch, value_type: TensorType, device: str, *, zero: bool = False):
+    allocator = torch.zeros if zero else torch.empty
+    return allocator(
+        _runtime_tensor_shape(value_type, "Runtime output"),
+        dtype=_torch_dtype(torch, value_type.dtype),
+        device=device,
+    )
+
+
+def _validate_ir_tensor(
+    name: str,
+    value,
+    value_type: TensorType,
+    device: str,
+) -> None:
+    torch = _torch()
+    shape = _runtime_tensor_shape(value_type, f"Runtime {name}")
+    dtype = _torch_dtype(torch, value_type.dtype)
+    if (not isinstance(value, torch.Tensor) or tuple(value.shape) != shape or value.dtype != dtype):
+        raise RuntimeContractError(f"{name} must have shape {shape} and dtype {dtype}.")
+    if str(value.device) != device or not value.is_contiguous():
+        raise RuntimeContractError(f"{name} must be contiguous and on {device}.")
+
+
+def _runtime_tensor_shape(value_type: TensorType, name: str) -> tuple[int, ...]:
+    shape = _fixed_shape(value_type, name)
+    if isinstance(value_type.dtype, VectorType):
+        shape += tuple(value_type.dtype.lanes)
+    return shape
+
+
+def _torch_dtype(torch, dtype):
+    scalar = dtype.elem_type if isinstance(dtype, VectorType) else dtype
+    try:
+        return {
+            DType.UINT8: torch.uint8,
+            DType.BFLOAT16: torch.bfloat16,
+            DType.FLOAT16: torch.float16,
+            DType.FLOAT32: torch.float32,
+            DType.INT32: torch.int32,
+            DType.INT64: torch.int64,
+            DType.FLOAT8_E4M3FN: torch.float8_e4m3fn,
+        }[scalar]
+    except KeyError as error:
+        raise ArtifactError(f"Runtime cannot materialize dtype {scalar!r}.") from error
+
+
+def _validate_artifact_device(torch, device: str, target: object) -> None:
+    target = str(target or "")
+    if not device.startswith("cuda") or not torch.cuda.is_available():
+        raise RuntimeContractError(f"Executable target {target!r} requires a CUDA-compatible device, got {device!r}.")
+    # ROCm/HIP GPUs report through the "cuda" device namespace. An RDNA artifact
+    # is built for a specific gfx arch (gfx1100 vs gfx1201 differ in ISA / WMMA),
+    # so a HIP-build check alone is not enough: verify the device's gcnArchName
+    # matches the target, otherwise a mismatched artifact fails later at JIT /
+    # launch with an error that is hard to trace back to the wrong GPU.
+    if target.startswith("amd-"):
+        if getattr(torch.version, "hip", None) is None:
+            raise RuntimeContractError(f"Artifact target {target!r} requires a ROCm/HIP torch build.")
+        expected_arch = target[len("amd-"):]
+        properties = torch.cuda.get_device_properties(torch.device(device))
+        # gcnArchName may carry feature suffixes, e.g. "gfx1100:sramecc+:xnack-".
+        actual_arch = str(getattr(properties, "gcnArchName", "") or "").split(":")[0]
+        if actual_arch != expected_arch:
+            raise RuntimeContractError(f"Artifact target {target!r} requires a {expected_arch} GPU, "
+                                       f"got {actual_arch or 'unknown'!r}.")
+        return
+    capability = tuple(torch.cuda.get_device_capability(torch.device(device)))
+    # Each target pins an exact compute capability. nvidia-sm89 is Ada (8, 9)
+    # specifically: the Sm89Capability resource model (99 KB opt-in smem, Ada
+    # register file) does not describe other 8.x parts (e.g. A100 sm_80), so a
+    # loose 8.x match would admit a device the artifact was not built for.
+    expected = {"nvidia-sm90": (9, 0), "nvidia-sm89": (8, 9), "nvidia-sm120": (12, 0), "iluvatar-bi-v150":
+                (7, 1)}.get(target)
+    if expected is None:
+        raise RuntimeContractError(f"Unsupported executable FlagMega target {target!r}.")
+    if capability != expected:
+        raise RuntimeContractError(f"Artifact target {target} requires capability {expected}, got {capability}.")
+    if target == "iluvatar-bi-v150" and not getattr(torch, "corex", False):
+        raise RuntimeContractError("Artifact target iluvatar-bi-v150 requires COREX PyTorch.")
+
+
+def _typed_byte_view(storage, offset: int, nbytes: int, dtype: object, shape: tuple[int, ...]):
+    torch = _torch()
+    try:
+        data_type = data_type_from_data(dtype)
+    except (IRSchemaError, TypeError, ValueError) as error:
+        raise ArtifactError(f"Generated runtime cannot decode rdata/workspace dtype {dtype!r}.") from error
+    scalar_type = data_type.elem_type if isinstance(data_type, VectorType) else data_type
+    dtype_value = {
+        "uint8": torch.uint8,
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "float32": torch.float32,
+        "float8_e4m3fn": torch.float8_e4m3fn,
+    }.get(scalar_type.value)
+    if dtype_value is None:
+        raise ArtifactError(f"Generated runtime cannot materialize rdata/workspace dtype {dtype!r}.")
+    if offset < 0 or nbytes < 0 or offset + nbytes > storage.numel():
+        raise ArtifactError(f"Typed byte view [{offset}, {offset + nbytes}) is outside its storage.")
+    lanes = data_type.lanes if isinstance(data_type, VectorType) else ()
+    view = storage.narrow(0, offset, nbytes).view(dtype_value).reshape((*shape, *lanes))
+    if view.data_ptr() % 16:
+        raise ArtifactError("Generated static buffer is not 16-byte aligned.")
+    return view

@@ -1,0 +1,218 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""SM90 selected-kernel workspace ABI policy."""
+
+from dataclasses import replace
+from math import prod
+
+from triton.flagmega.ir import (
+    Candidate,
+    DistributedType,
+    DType,
+    IRModule,
+    Node,
+    TupleType,
+    local_tensor_type,
+    tensor_type,
+)
+from triton.flagmega.ir.distributed_inference import tensor_of
+from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
+
+
+def attach_workspace_requirements(
+    node: Node,
+    candidates: tuple[Candidate, ...],
+    module: IRModule,
+    *,
+    mesh_hierarchy: tuple[int, ...],
+) -> tuple[Candidate, ...]:
+    """Make internal scratch explicit before candidate selection is frozen."""
+
+    result = []
+    for candidate in candidates:
+        requirements = _requirements(node, candidate, module, mesh_hierarchy)
+        result.append(
+            replace(candidate, parameters={
+                **dict(candidate.parameters),
+                "workspaces": requirements,
+            }) if requirements else candidate)
+    return tuple(result)
+
+
+def _requirements(node, candidate, module, mesh_hierarchy):
+    family = str(candidate.parameters.get("family", ""))
+    variant = str(candidate.parameters.get("variant", ""))
+    mesh_size = prod(mesh_hierarchy)
+    values = []
+
+    def workspace(name, dtype, shape, alignment=256, *, lifetime="invocation"):
+        values.append({
+            "name": name,
+            "type": tensor_type(dtype, shape),
+            "memory_space": "workspace",
+            "alignment": alignment,
+            "lifetime": lifetime,
+        })
+
+    if family == "mhc_pre" and variant in {"cooperative_stream_fma", "cooperative_contiguous_tf32"}:
+        streams = tensor_of(module.node_map[node.inputs[0]].type)
+        hc = streams.shape[1].fixed_value
+        splits = int(node.attrs.get("projection_splits", 1))
+        # Coefficient and square partials are indexed by logical split. The
+        # last hc entries publish pre coefficients for the collapse phase.
+        workspace("projection_partials", DType.FLOAT32, (streams.shape[0], (hc * (hc + 2) + 1) * splits + hc))
+
+    if family == "sparse_experts_gate_up" and variant == "cooperative_wgmma":
+        from triton.flagmega.codegen.triton.sparse_experts.cooperative_geometry import cooperative_gate_geometry
+        from triton.flagmega.ir.ops.core import get_definition
+
+        geometry = cooperative_gate_geometry(
+            {
+                parameter.name: module.node_map[node.inputs[index]].type
+                for index, parameter in enumerate(get_definition(node.op).input_parameters)
+            }, node.type)
+        if geometry is None:
+            raise ValueError("Cooperative FP8 expert workspace requires a proven chip owner domain.")
+        workspace("projection_partials", DType.FLOAT32, geometry.partial_shape)
+        workspace("activation_scales", DType.FLOAT32, geometry.scale_shape)
+
+    if family == "sparse_experts_gate_up" and variant == "complete_k_wgmma":
+        from triton.flagmega.codegen.triton.sparse_experts.cooperative_geometry import cooperative_gate_geometry
+        from triton.flagmega.ir.ops.core import get_definition
+
+        geometry = cooperative_gate_geometry(
+            {
+                parameter.name: module.node_map[node.inputs[index]].type
+                for index, parameter in enumerate(get_definition(node.op).input_parameters)
+            }, node.type)
+        if geometry is None:
+            raise ValueError("Complete-K experts require a proven chip owner domain.")
+        workspace("quantized_activations", DType.FLOAT8_E4M3FN,
+                  (geometry.tokens, geometry.chip_routes, geometry.reduction))
+        workspace("activation_scales", DType.FLOAT32, geometry.scale_shape)
+
+    if family == "matmul_glu" and variant == "cooperative_wgmma":
+        from triton.flagmega.codegen.triton.matmul_glu_geometry import cooperative_glu_geometry
+        from triton.flagmega.ir.ops.core import get_definition
+
+        geometry = cooperative_glu_geometry(
+            {
+                parameter.name: module.node_map[node.inputs[index]].type
+                for index, parameter in enumerate(get_definition(node.op).input_parameters)
+            }, node.type, node.attrs)
+        if geometry is None:
+            raise ValueError("Cooperative FP8 GLU requires matching complete chip owner domains.")
+        workspace("gate_partials", DType.FLOAT32, geometry.partial_shape)
+        workspace("up_partials", DType.FLOAT32, geometry.partial_shape)
+        workspace("activation_scales", DType.FLOAT32, geometry.scale_shape)
+
+    if family == "block_fp8" and variant == "cooperative_wgmma":
+        from triton.flagmega.codegen.triton.block_fp8_geometry import cooperative_block_geometry
+
+        geometry = cooperative_block_geometry(
+            dict(
+                zip(
+                    ("value", "weight", "weight_scale"),
+                    (module.node_map[value].type for value in node.inputs),
+                    strict=True,
+                )), node.type, node.attrs)
+        if geometry is None:
+            raise ValueError("Cooperative FP8 projection requires a proven complete chip owner domain.")
+        workspace("projection_partials", DType.FLOAT32, geometry.partial_shape)
+        workspace("activation_scales", DType.FLOAT32, geometry.scale_shape)
+
+    if family == "gdn_recurrent":
+        # Each owner computes its dense local value slice, while RMS
+        # normalization is over a complete value head. reference materializes
+        # this as the recurrent core scratch buffer; making it a caller-owned
+        # PrimFunction workspace gives the inter-owner barrier a real ABI.
+        workspace(
+            "core_scratch",
+            DType.FLOAT32,
+            (
+                int(node.attrs["num_value_heads"]),
+                int(node.attrs["value_head_dim"]),
+            ),
+            128,
+        )
+
+    if family == "greedy_sample" and variant == "distributed_argmax":
+        logits = module.node_map[GreedySample.logits.read(node.inputs)].type
+        local = local_tensor_type(logits) if isinstance(logits, DistributedType) else logits
+        workspace("partial_max", DType.FLOAT32, (local.shape[0], mesh_size), 128)
+        workspace("partial_index", DType.INT32, (local.shape[0], mesh_size), 128)
+
+    if family == "gather_reduce_add_norm_stats":
+        if not isinstance(node.type, TupleType) or len(node.type.fields) != 2:
+            return ()
+        value = tensor_of(node.type.fields[0])
+        workspace("collective", value.dtype, value.shape)
+        # One RMS partial per (mesh owner, owner-local PARTIAL-input row). The
+        # partials kernel writes `shard_index * local_rows + row`, where local_rows
+        # is the partial INPUT's local row count (token-replicated, so it spans
+        # the token axis). The statistics OUTPUT may be token-sharded to a single
+        # row per owner, so sizing by the output would undersize the workspace --
+        # size by the input. M==1 (decode) keeps the flat (mesh_size,) layout.
+        partial_type = module.node_map[node.inputs[0]].type
+        local_partial = (local_tensor_type(partial_type) if isinstance(partial_type, DistributedType) else partial_type)
+        from math import prod as _prod
+        local_rows = _prod(dim.fixed_value for dim in local_partial.shape[:-1]) if local_partial.shape[:-1] else 1
+        partials_shape = (mesh_size, ) if local_rows == 1 else (mesh_size, local_rows)
+        workspace("norm_stats_partials", DType.FLOAT32, partials_shape, 128)
+
+    if family == "gather_reduce_add_norm_apply":
+        components = 2 if bool(node.attrs.get("use_mean", False)) else 1
+        collective_owner_count = int(candidate.parameters.get("owner_count", mesh_size))
+        # One (components, owner) statistics slab per owner-local outer (token)
+        # row. The outer rows are the dimensions BEFORE the normalization axis;
+        # the suffix shape[axis:] is reduced into a single statistic. M==1
+        # (decode) keeps the flat single-row layout; M>1 (prefill) prepends the
+        # row axis so each token reduces its own independent RMS. The renderer
+        # iterates the FINER of the partial-input / value-output local domains
+        # (by scalar capacity) and indexes the workspace by THAT domain's outer
+        # rows; equal total capacity need not mean equal row count, so size from
+        # the selected domain, not the output, or the store overruns the buffer.
+        value_type = node.type.fields[0] if isinstance(node.type, TupleType) else node.type
+        partial_type = module.node_map[node.inputs[0]].type
+        local_value = (local_tensor_type(value_type) if isinstance(value_type, DistributedType) else value_type)
+        local_partial = (local_tensor_type(partial_type) if isinstance(partial_type, DistributedType) else partial_type)
+        partial_capacity = prod((dim.fixed_value for dim in local_partial.shape), start=1)
+        value_capacity = prod((dim.fixed_value for dim in local_value.shape), start=1)
+        domain_local = local_partial if partial_capacity <= value_capacity else local_value
+        axis = int(node.attrs.get("axis", 0))
+        axis = axis + len(domain_local.shape) if axis < 0 else axis
+        local_rows = prod((dim.fixed_value for dim in domain_local.shape[:axis]), start=1)
+        partials_shape = ((components, collective_owner_count) if local_rows == 1 else
+                          (local_rows, components, collective_owner_count))
+        workspace("norm_stats_partials", DType.FLOAT32, partials_shape, 128)
+
+    if family == "add_norm_stats" and variant == "rms":
+        # One RMS partial per (outer row, block owner): the dimensions before
+        # the normalized axis are independent per-token statistics. A single
+        # outer row keeps the flat (mesh_size,) layout.
+        value = tensor_of(node.type.fields[0]) if isinstance(node.type, TupleType) else None
+        outer_rows = 1
+        if value is not None:
+            axis = int(node.attrs.get("axis", -1))
+            axis = axis + len(value.shape) if axis < 0 else axis
+            if value.shape[:axis]:
+                outer_rows = prod(dim.fixed_value for dim in value.shape[:axis])
+        partials_shape = (mesh_size, ) if outer_rows == 1 else (outer_rows, mesh_size)
+        workspace("norm_stats_partials", DType.FLOAT32, partials_shape, 128)
+
+    if (node.op == "ntt.matmul_norm_stats" and family == "dense_matmul"
+            and candidate.parameters.get("distribution_schedule", {}).get("kind") == "reduction_split"):
+        if not isinstance(node.type, TupleType) or len(node.type.fields) != 2:
+            return ()
+        value = tensor_of(node.type.fields[0])
+        workspace(
+            "matmul_partial",
+            value.dtype,
+            (mesh_size, *value.shape),
+        )
+        workspace("norm_stats_partials", DType.FLOAT32, (mesh_size, ), 128)
+
+    return tuple(values)
+
+
+__all__ = ["attach_workspace_requirements"]

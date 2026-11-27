@@ -1,0 +1,27 @@
+{# Copyright 2026 FlagOS Contributors
+   SPDX-License-Identifier: MIT #}{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "gdn_convolution" and call.variant == "persistent" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for channel_start in tl.range(0, {{ call.local_capacity }}, {{ call.tile }}):
+        local_channels = channel_start + tl.arange(0, {{ call.tile }})
+        channel_mask = (
+            (local_channels < ({{ call.active_channels }}))
+            & ({{ call.writer_active }})
+        )
+        global_channels = {{ call.global_channel }}
+        for token_index in range({{ call.tokens }}):
+            _flagmega_gdn_convolution_local_tile(
+                {{ call.qkv }}, {{ call.result }}, {{ call.state }}, {{ call.weight }},
+                {{ call.source_offset }}, {{ call.result_offset }}, {{ call.weight_offset }},
+                global_channels, channel_mask,
+                {{ call.history }}, {{ call.weight_kernel_stride }},
+                {{ call.round_products }}, {{ call.round_before_activation }},
+                {{ call.current_first }},
+            )
+
+
+{% endif %}
+{% endfor %}

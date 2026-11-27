@@ -1,0 +1,8 @@
+{# Copyright 2026 FlagOS Contributors
+   SPDX-License-Identifier: MIT #}# flagmega-kernel: gdn_recurrent/persistent
+{% if gdn_helper_variant | default("persistent") == "persistent" %}
+{% include "kernels/gdn_recurrent/_helpers.py.jinja" %}
+{% endif %}
+{% if render_calls is defined %}
+{% include "kernels/gdn_recurrent/_function.py.jinja" %}
+{% endif %}

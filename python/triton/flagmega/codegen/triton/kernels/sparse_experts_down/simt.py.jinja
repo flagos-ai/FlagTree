@@ -1,0 +1,24 @@
+{# Copyright 2026 FlagOS Contributors
+   SPDX-License-Identifier: MIT #}# flagmega-kernel: sparse_experts_down/simt platform=generic
+{% if render_calls is defined %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "kernels/_expert_quantization_group.py.jinja" as quant %}
+{% for call in render_calls %}
+{% if call.family == (down_template_family | default("sparse_experts_down")) and call.variant == "simt" %}
+{% if call.attrs.activation_quantization | default("dynamic_fp8") == "dynamic_fp8_ue8m0" %}
+{% include "kernels/_ue8m0_quantization.py.jinja" %}
+{% endif %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+{% if call.partitions is defined %}
+    for _fm_partition in tl.range(0, {{ call.partitions }}):
+{% filter indent(4, first=True) %}
+{% include "kernels/sparse_experts_down/_body.py.jinja" %}
+{% endfilter %}
+{% else %}
+{% include "kernels/sparse_experts_down/_body.py.jinja" %}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}

@@ -1,0 +1,629 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""Composable stage registry and built-in FlagMega pipeline."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from typing import Callable
+
+from triton.flagmega.errors import StageError
+from triton.flagmega.ir import IRModule, ProvenanceRecord, verify_module
+from triton.flagmega.passes.target_independent import decompose_complex_ops
+from triton.flagmega.passes.tir.fuse_attention_gate import fuse_attention_gate
+from triton.flagmega.passes.tir.fuse_distributed_ops import fuse_distributed_ops
+from triton.flagmega.passes.g3_adapter_inventory import check_g3_adapters
+from triton.flagmega.passes.norm_stats import (
+    finalize_norm_stats_bindings,
+    fuse_norm_stats_apply,
+    lower_add_norm_stats,
+)
+from triton.flagmega.passes.functions import (
+    form_add_norm_stats,
+    hoist_call_invariant_expressions,
+    lift_constant_parameter_expressions,
+    post_function_boundary_pack_propagation,
+    propagate_function_boundary_layouts,
+    propagate_post_auto_distributed_function_boundary_layouts,
+    remove_unused_functions,
+    sink_norm_stats_boxing_across_function_boundaries,
+    thread_norm_stats_across_function_boundaries,
+)
+from triton.flagmega.passes.constants import (
+    ConstantCSEPass,
+    ConstantPhase,
+    FreezeConstantIslandsPass,
+    constant_phase,
+    freeze_constant_islands,
+    thaw_constant_islands,
+)
+from triton.flagmega.passes.tir.lower_tensor_subspans import lower_tensor_subspans
+from triton.flagmega.passes.packed_qkv_combine import (
+    fold_materialized_packed_qkv_parallel_linear_combine,
+    lower_packed_qkv_parallel_linear_combine,
+)
+from triton.flagmega.passes.auto_distributed.policy import (
+    lower_vectorization_contracts, )
+from triton.flagmega.passes.tir import (
+    canonicalize_packed_qkv_weights,
+    fuse_bank_qkv_weights,
+    lower_transfer_pipeline_regions,
+    lower_tuple_boxing,
+    materialize_execution_functions,
+)
+from triton.flagmega.rules import DataflowRewriter
+from triton.flagmega.rules.neutral import auto_packing_neutral_rules
+from triton.flagmega.rules.ntt.decompose_paged_attention import (
+    decompose_paged_attention_rule,
+    paged_attention_split_plan,
+    paged_attention_work,
+)
+from triton.flagmega.codegen.triton.kernel_dispatch import selected_kernel_nodes
+from triton.flagmega.targets.base import Target
+
+StageTransform = Callable[[IRModule, Target], IRModule]
+
+
+@dataclass(frozen=True)
+class Stage:
+    name: str
+    input_stage: str
+    output_stage: str
+    transform: StageTransform
+    output_dialect: str | None = None
+    selection_point: bool = False
+    compatible_input_stages: frozenset[str] = frozenset()
+
+    def accepts(self, module_stage: str) -> bool:
+        return module_stage == self.input_stage or module_stage in self.compatible_input_stages
+
+    def run(self, module: IRModule, target: Target) -> IRModule:
+        verify_module(module)
+        if not self.accepts(module.stage):
+            accepted = sorted({self.input_stage, *self.compatible_input_stages})
+            raise StageError(
+                f"Stage {self.name!r} requires one of {accepted}, got {module.stage!r}.",
+                stage=module.stage,
+            )
+        parent_hash = module.semantic_hash
+        result = self.transform(module, target)
+        result = replace(
+            result,
+            stage=self.output_stage,
+            dialect=self.output_dialect or result.dialect,
+            provenance=result.provenance +
+            (ProvenanceRecord(self.output_stage, parent_hash, f"flagmega.stage:{self.name}"), ),
+        )
+        verify_module(result, expected_stage=self.output_stage)
+        target.verify(result)
+        return result
+
+
+_STAGES: dict[str, Stage] = {}
+_STAGE_ALIASES = {
+    "form-qkv-rope-with-cache": "decompose-gdn",
+    "fuse-gather-reduce-add-norm-apply": "fuse-distributed-ops",
+    "fuse-gather-reduce-norm-apply": "fuse-distributed-ops",
+}
+
+
+def register_stage(stage: Stage) -> None:
+    if stage.name in _STAGES:
+        raise ValueError(f"Stage {stage.name!r} is already registered.")
+    _STAGES[stage.name] = stage
+
+
+def get_stage(name: str) -> Stage:
+    try:
+        return _STAGES[_STAGE_ALIASES.get(name, name)]
+    except KeyError as error:
+        raise StageError(f"Unknown FlagMega stage {name!r}; available: {sorted(_STAGES)}") from error
+
+
+def next_stage(module_stage: str) -> Stage | None:
+    exact = [stage for stage in _STAGES.values() if stage.input_stage == module_stage]
+    matches = exact or [stage for stage in _STAGES.values() if stage.accepts(module_stage)]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise StageError(f"Stage {module_stage!r} has ambiguous successors: {[value.name for value in matches]}.")
+    return matches[0]
+
+
+def stage_names() -> tuple[str, ...]:
+    return tuple(sorted({*_STAGES, *_STAGE_ALIASES}))
+
+
+def _propose_distribution(module: IRModule, target: Target) -> IRModule:
+    # Direct stage invocation may resume an older ``stats_combined`` Python
+    # checkpoint. The grouped pipeline exposes removal and constant outlining
+    # separately; direct stage calls need the same search preparation.
+    return target.propose_distribution(_pre_distribution_freeze(module, target))
+
+
+def _auto_distribute(module: IRModule, target: Target) -> IRModule:
+    if module.stage == "distribution_candidates":
+        return target.apply_distribution(module)
+    return target.auto_distribute(_pre_distribution_freeze(module, target))
+
+
+def _lower_vectorization_contracts(module: IRModule, _target: Target) -> IRModule:
+    return lower_vectorization_contracts(module)
+
+
+def _propose_vectorization(module: IRModule, target: Target) -> IRModule:
+    return target.propose_vectorization(module)
+
+
+def _apply_vectorization(module: IRModule, target: Target) -> IRModule:
+    return target.apply_vectorization(module)
+
+
+def _propose_packing(module: IRModule, target: Target) -> IRModule:
+    return target.propose_packing(module)
+
+
+def _apply_packing(module: IRModule, target: Target) -> IRModule:
+    packed = target.apply_packing(module)
+    return DataflowRewriter(auto_packing_neutral_rules()).rewrite(packed)
+
+
+def _decompose_paged_attention(module: IRModule, target: Target) -> IRModule:
+    # The split count is a property of the attention work (context geometry and
+    # the GQA group), not of the mesh shape; the mesh only says which split
+    # counts are expressible.
+    work = paged_attention_work(module)
+    if work is None:
+        # No paged attention in this module, so there is no attention work to
+        # plan a split for and the rule would match nothing.
+        return module
+    split_axis, split_count = paged_attention_split_plan(target.distributed_placements(module), work)
+    return DataflowRewriter((decompose_paged_attention_rule(split_axis, split_count), )).rewrite(module)
+
+
+def _propose_tir(module: IRModule, target: Target) -> IRModule:
+    # A direct stage call can resume a pre-normalization Python checkpoint.
+    # The grouped pipeline exposes the transformation and its own dumps.
+    return target.propose_tir(lower_tuple_boxing(module))
+
+
+def _lower_to_tir(module: IRModule, target: Target) -> IRModule:
+    return target.lower_to_tir(module)
+
+
+def _canonicalize_packed_qkv_weights(module: IRModule, _target: Target) -> IRModule:
+    # A loop body reads its weights from a parameter bank, so fuse those three
+    # fields first; the canonicalizer then sees one already fused RHS.
+    return fuse_bank_qkv_weights(canonicalize_packed_qkv_weights(module))
+
+
+def _propose_microkernels(module: IRModule, target: Target) -> IRModule:
+    # Direct canonical-TIR resumes perform the same pre-selection planning as
+    # the named pipeline stages. Neither operation consults selection records.
+    return target.propose_microkernels(lower_tensor_subspans(target.plan_storage_alignments(module)))
+
+
+def _select_microkernels(module: IRModule, target: Target) -> IRModule:
+    return target.select_microkernels(module)
+
+
+def _finalize_tir_package(module: IRModule, target: Target) -> IRModule:
+    kernels = selected_kernel_nodes(module)
+    from triton.flagmega.codegen.triton.execution_programs import plan_execution_programs
+    module = plan_execution_programs(module, target, kernels)
+    launch_contract = {
+        **dict(module.metadata.get("launch_contract", {})),
+        **target.plan_launch(module, kernels),
+    }
+    with_launch = replace(
+        module,
+        metadata={
+            **dict(module.metadata),
+            "launch_contract": launch_contract,
+        },
+    )
+    package_plan = target.plan_codegen_package(with_launch, kernels)
+    return replace(
+        with_launch,
+        metadata={
+            **dict(with_launch.metadata),
+            "codegen_package_plan": package_plan,
+        },
+    )
+
+
+def _constant_cse(module: IRModule, _target: Target) -> IRModule:
+    return ConstantCSEPass().run(module)
+
+
+def _freeze_constants(module: IRModule, _target: Target) -> IRModule:
+    return FreezeConstantIslandsPass().run(module)
+
+
+def _pre_distribution_freeze(module: IRModule, _target: Target) -> IRModule:
+    if constant_phase(module) == ConstantPhase.FROZEN:
+        return verify_module(module)
+    return freeze_constant_islands(remove_unused_functions(module))
+
+
+def _post_distribution_thaw(module: IRModule, _target: Target) -> IRModule:
+    # Older distributed checkpoints already contain ordinary constant IR.
+    if constant_phase(module) == ConstantPhase.OPEN:
+        return module
+    return thaw_constant_islands(module)
+
+
+def _bufferize(module: IRModule, target: Target) -> IRModule:
+    return target.bufferize(module)
+
+
+def _plan_function_memory(module: IRModule, target: Target) -> IRModule:
+    return target.plan_function_memory(module)
+
+
+def _plan_memory_synchronization(module: IRModule, target: Target) -> IRModule:
+    return target.plan_memory_synchronization(module)
+
+
+def _materialize_execution_functions(module: IRModule, _target: Target) -> IRModule:
+    return materialize_execution_functions(module)
+
+
+def _lower_transfer_pipeline_regions(module: IRModule, _target: Target) -> IRModule:
+    return lower_transfer_pipeline_regions(module)
+
+
+register_stage(
+    Stage(
+        "decompose-gdn",
+        "imported",
+        "decomposed",
+        lambda module, _target: decompose_complex_ops(module),
+        compatible_input_stages=frozenset({"canonical", "egraph_candidates", "extracted", "normalization_decomposed"}),
+    ))
+register_stage(
+    Stage(
+        "hoist-call-invariants",
+        "decomposed",
+        "call_invariants_hoisted",
+        lambda module, _target: hoist_call_invariant_expressions(module),
+    ))
+register_stage(
+    Stage(
+        "propose-vectorization",
+        "call_invariants_hoisted",
+        "vectorization_candidates",
+        _propose_vectorization,
+        selection_point=True,
+        compatible_input_stages=frozenset({"decomposed"}),
+    ))
+register_stage(Stage(
+    "apply-vectorization",
+    "vectorization_candidates",
+    "vectorized",
+    _apply_vectorization,
+))
+register_stage(Stage(
+    "propose-packing",
+    "vectorized",
+    "packing_candidates",
+    _propose_packing,
+    selection_point=True,
+))
+register_stage(Stage("apply-packing", "packing_candidates", "packed", _apply_packing))
+register_stage(
+    Stage(
+        "thread-norm-stats",
+        "boundary_layout_cleaned",
+        "stats_threaded",
+        lambda module, _target: thread_norm_stats_across_function_boundaries(module),
+    ))
+register_stage(
+    Stage(
+        "propagate-function-boundary-layouts",
+        "packed",
+        "boundary_layout_propagated",
+        lambda module, _target: propagate_function_boundary_layouts(module),
+    ))
+register_stage(
+    Stage(
+        "post-function-boundary-pack-propagation",
+        "boundary_layout_propagated",
+        "boundary_layout_cleaned",
+        lambda module, target: post_function_boundary_pack_propagation(module, target),
+    ))
+register_stage(
+    Stage(
+        "decompose-paged-attention",
+        "stats_threaded",
+        "attention_decomposed",
+        _decompose_paged_attention,
+    ))
+register_stage(
+    Stage(
+        "form-add-norm-stats",
+        "attention_decomposed",
+        "stats_combined",
+        lambda module, _target: form_add_norm_stats(module),
+        compatible_input_stages=frozenset({"stats_threaded"}),
+    ))
+
+
+def _packing_g3_checkpoint(module, _target):
+    result = remove_unused_functions(module)
+    check_g3_adapters(result, checkpoint="02_AutoPackingPass/After")
+    return result
+
+
+def _distribution_g3_checkpoint(module, target):
+    from triton.flagmega.passes.rewriter import DataflowPass
+    result = fuse_attention_gate(module)
+    result = DataflowPass("AbsorbSupportedNumericBoundariesAfterDistribution", target.pre_post_ops_rules(),
+                          rewrite_constants=False).run(result)
+    check_g3_adapters(result, checkpoint="03_AutoDistributedPass/After")
+    return result
+
+
+register_stage(Stage(
+    "remove-unused-functions",
+    "stats_combined",
+    "unused_functions_removed",
+    _packing_g3_checkpoint,
+))
+register_stage(
+    Stage(
+        "pre-distribution-freeze",
+        "unused_functions_removed",
+        "distribution_constants_frozen",
+        _pre_distribution_freeze,
+        compatible_input_stages=frozenset({"stats_combined"}),
+    ))
+register_stage(
+    Stage(
+        "propose-distribution",
+        "distribution_constants_frozen",
+        "distribution_candidates",
+        _propose_distribution,
+        selection_point=True,
+        compatible_input_stages=frozenset({"stats_combined", "unused_functions_removed"}),
+    ))
+register_stage(
+    Stage(
+        "auto-distributed",
+        "distribution_candidates",
+        "distributed",
+        _auto_distribute,
+        compatible_input_stages=frozenset({
+            "stats_combined",
+            "unused_functions_removed",
+            "distribution_constants_frozen",
+        }),
+    ))
+register_stage(Stage(
+    "post-distribution-thaw",
+    "distributed",
+    "distribution_constants_open",
+    _post_distribution_thaw,
+))
+register_stage(
+    Stage(
+        "fold-materialized-packed-qkv-combine",
+        "distribution_constants_open",
+        "qkv_combine_folded",
+        lambda module, target: fold_materialized_packed_qkv_parallel_linear_combine(
+            _post_distribution_thaw(module, target)),
+        compatible_input_stages=frozenset({"distribution_candidates", "distributed"}),
+    ))
+register_stage(
+    Stage(
+        "lower-packed-qkv-combine",
+        "qkv_combine_folded",
+        "qkv_combine_lowered",
+        lambda module, _target: lower_packed_qkv_parallel_linear_combine(module),
+    ))
+register_stage(
+    Stage(
+        "sink-norm-stats-boxing",
+        "qkv_combine_lowered",
+        "norm_stats_boxing_sunk",
+        lambda module, _target: sink_norm_stats_boxing_across_function_boundaries(module),
+    ))
+register_stage(
+    Stage(
+        "propagate-post-auto-distributed-function-boundary-layouts",
+        "norm_stats_boxing_sunk",
+        "distributed_boundary_layout_propagated",
+        lambda module, target: propagate_post_auto_distributed_function_boundary_layouts(
+            module,
+            target.distributed_reshard_realization_policy(),
+        ),
+    ))
+register_stage(
+    Stage(
+        "finalize-norm-stats-bindings",
+        "distributed_boundary_layout_propagated",
+        "norm_bindings_finalized",
+        lambda module, _target: finalize_norm_stats_bindings(module),
+        compatible_input_stages=frozenset({"norm_stats_boxing_sunk"}),
+    ))
+register_stage(
+    Stage(
+        "sink-finalized-norm-stats-boxing",
+        "norm_bindings_finalized",
+        "finalized_norm_stats_boxing_sunk",
+        lambda module, _target: sink_norm_stats_boxing_across_function_boundaries(module),
+    ))
+register_stage(
+    Stage(
+        "lower-add-norm-stats",
+        "finalized_norm_stats_boxing_sunk",
+        "add_norm_stats_lowered",
+        lambda module, _target: lower_add_norm_stats(module),
+        compatible_input_stages=frozenset({"norm_bindings_finalized"}),
+    ))
+register_stage(
+    Stage(
+        "lower-vectorization-contracts",
+        "add_norm_stats_lowered",
+        "vector_contracts_lowered",
+        _lower_vectorization_contracts,
+        compatible_input_stages=frozenset({"norm_bindings_finalized"}),
+    ))
+register_stage(
+    Stage(
+        "fuse-attention-gate",
+        "vector_contracts_lowered",
+        "attention_gate_fused",
+        _distribution_g3_checkpoint,
+    ))
+register_stage(
+    Stage(
+        "fuse-norm-stats-apply",
+        "attention_gate_fused",
+        "fused_norm",
+        lambda module, _target: fuse_norm_stats_apply(module),
+        compatible_input_stages=frozenset({
+            "vector_contracts_lowered",
+            "add_norm_stats_lowered",
+            # Resume checkpoints emitted before vector-contract lowering became
+            # an explicit pass.
+            "norm_bindings_finalized",
+        }),
+    ))
+register_stage(
+    Stage(
+        "lower-tuple-boxing",
+        "distributed_ops_fused",
+        "tuple_boxing_lowered",
+        lambda module, _target: lower_tuple_boxing(module),
+        compatible_input_stages=frozenset({"frozen_constants"}),
+    ))
+register_stage(
+    Stage(
+        "propose-tir",
+        "tuple_boxing_lowered",
+        "selected_tir_variants",
+        _propose_tir,
+        selection_point=True,
+        compatible_input_stages=frozenset({"frozen_constants", "distributed_ops_fused"}),
+    ))
+register_stage(Stage(
+    "constant-cse",
+    "fused_norm",
+    "canonical_constants",
+    _constant_cse,
+))
+register_stage(
+    Stage(
+        "lift-constant-parameters",
+        "canonical_constants",
+        "constant_parameters_lifted",
+        lambda module, _target: lift_constant_parameter_expressions(module),
+    ))
+register_stage(
+    Stage("freeze-constants", "constant_parameters_lifted", "frozen_constants", _freeze_constants,
+          compatible_input_stages=frozenset({"canonical_constants"})))
+register_stage(
+    Stage(
+        "fuse-distributed-ops",
+        "frozen_constants",
+        "distributed_ops_fused",
+        lambda module, target: fuse_distributed_ops(module, fusion_rules=target.pre_post_ops_rules()),
+        compatible_input_stages=frozenset({"gather_reduce_add_norm_apply_fused", "gather_reduce_norm_apply_fused"}),
+    ))
+register_stage(Stage("lower-tir", "selected_tir_variants", "selected_tir", _lower_to_tir,
+                     output_dialect="semantic_tir"))
+register_stage(
+    Stage(
+        "canonicalize-packed-qkv-weights",
+        "selected_tir",
+        "canonicalized_tir",
+        _canonicalize_packed_qkv_weights,
+        output_dialect="semantic_tir",
+    ))
+register_stage(
+    Stage(
+        "plan-tir-alignments",
+        "canonicalized_tir",
+        "aligned_tir",
+        lambda module, target: target.plan_storage_alignments(module),
+        output_dialect="semantic_tir",
+    ))
+register_stage(
+    Stage(
+        "lower-tensor-subspans",
+        "aligned_tir",
+        "tensor_subspans_lowered",
+        lambda module, _target: lower_tensor_subspans(module),
+        output_dialect="semantic_tir",
+    ))
+register_stage(
+    Stage(
+        "propose-microkernels",
+        "tensor_subspans_lowered",
+        "microkernel_candidates",
+        _propose_microkernels,
+        compatible_input_stages=frozenset({"canonicalized_tir", "aligned_tir"}),
+        output_dialect="semantic_tir",
+        selection_point=True,
+    ))
+register_stage(
+    Stage(
+        "select-microkernels",
+        "microkernel_candidates",
+        "selected_microkernels",
+        _select_microkernels,
+        output_dialect="semantic_tir",
+    ))
+register_stage(
+    Stage(
+        "finalize-tir-package",
+        "selected_microkernels",
+        "packaged_tir",
+        _finalize_tir_package,
+        output_dialect="semantic_tir",
+    ))
+register_stage(
+    Stage(
+        "plan-function-memory",
+        "packaged_tir",
+        "memory_placed_tir",
+        _plan_function_memory,
+        output_dialect="semantic_tir",
+    ))
+register_stage(
+    Stage(
+        "bufferize",
+        "memory_placed_tir",
+        "allocated_tir",
+        _bufferize,
+        output_dialect="bufferized_tir",
+        # Load pre-split selected_tir checkpoints produced by FlagMega v1. The
+        # canonical successor remains canonicalize-packed-qkv-weights because
+        # ``next_stage`` prefers exact input stages over compatibility edges.
+        compatible_input_stages=frozenset({"packaged_tir", "selected_tir"}),
+    ))
+register_stage(
+    Stage(
+        "materialize-execution-functions",
+        "allocated_tir",
+        "scheduled_tir",
+        _materialize_execution_functions,
+        output_dialect="bufferized_tir",
+    ))
+register_stage(
+    Stage(
+        "plan-memory-synchronization",
+        "scheduled_tir",
+        "synchronized_tir",
+        _plan_memory_synchronization,
+        output_dialect="bufferized_tir",
+    ))
+register_stage(
+    Stage(
+        "lower-transfer-pipeline-regions",
+        "synchronized_tir",
+        "bufferized_tir",
+        _lower_transfer_pipeline_regions,
+        output_dialect="bufferized_tir",
+    ))

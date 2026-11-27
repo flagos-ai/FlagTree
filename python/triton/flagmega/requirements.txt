@@ -1,0 +1,2 @@
+# FlagMega EGraph extraction intentionally has no greedy fallback.
+ortools==9.10.4067

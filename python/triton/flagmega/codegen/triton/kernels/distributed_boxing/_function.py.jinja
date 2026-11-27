@@ -1,0 +1,127 @@
+{# Copyright 2026 FlagOS Contributors
+   SPDX-License-Identifier: MIT #}{% import "entrypoints/_common.py.jinja" as entry with context %}
+{# One chip's instance of a distributed buffer holds only the components its own
+   owners produced.  A leaf whose destination region is not contained in that
+   instance selects each element's source chip and reads it through the FlagCX
+   symmetric window.  ``shard_id`` is a scalar, so the peer index is a loop
+   variable and the per-element selection is a mask.  The peer count is a
+   placement constant, so the loop is unrolled: a remote pointer built from a
+   loop-carried value would otherwise need a stack frame. #}
+{% macro partial_reduction(leaf, source, mask="boxing_mask") -%}
+for boxing_partial_start in tl.range(
+    0, {{ leaf.partial_owner_count }}, {{ leaf.partial_owner_tile }},
+    loop_unroll_factor=1,
+):
+    boxing_partial_member = boxing_partial_start + tl.arange(0, {{ leaf.partial_owner_tile }})
+    boxing_partial_owner = {{ leaf.partial_owner }}
+    boxing_source_offset = {{ leaf.source_offset }}
+    boxing_partial_values = tl.load(
+        {{ source }}
+        + boxing_partial_owner[:, None] * {{ leaf.owner_stride }}
+        + boxing_source_offset[None, :],
+        mask=(boxing_partial_member[:, None] < {{ leaf.partial_owner_count }})
+             & {{ mask }}[None, :],
+        other={{ leaf.neutral }},
+    ).to({{ leaf.accumulator_type }})
+    boxing_reduced = {{ leaf.reduction_expression }}
+    boxing_accumulator = {{ leaf.combine_expression }}
+{%- endmacro %}
+{% for call in render_calls %}
+{% if call.family == "distributed_boxing" and call.variant == distributed_boxing_variant %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+{% if call.leaves | selectattr("remote_source", "defined") | list %}
+{# A callee's pool pointer already includes all enclosing function frames.
+   Recover its allocation-relative displacement against this rank's registered
+   window, then use that same displacement in the peer's window. #}
+    boxing_window_base = tle.remote(
+        device_dptr, space="device", dtype=tl.uint8,
+        shard_id=_flagmega_device_rank.to(tl.int32), offset=0,
+    )
+{% endif %}
+{% for leaf in call.leaves %}
+{% if leaf.source_is_scalar | default(false) %}
+{% for line in leaf.fusion_post_lines | default(()) %}
+    {{ line }}
+{% endfor %}
+{% if leaf.fusion_post_value is defined %}
+    tl.store({{ leaf.result }} + ({{ leaf.result_offset }}), {{ leaf.fusion_post_value }},
+             mask=({{ leaf.writer_active }}))
+{% else %}
+    tl.store({{ leaf.result }} + ({{ leaf.result_offset }}), {{ leaf.source }},
+             mask=({{ leaf.writer_active }}))
+{% endif %}
+{% else %}
+{% if leaf.remote_source is defined %}
+    boxing_source_byte_offset = (
+        ({{ leaf.remote_local_base }}).to(tl.uint64) - boxing_window_base.to(tl.uint64)
+    ).to(tl.int64)
+{% endif %}
+    for boxing_start in tl.range(0, {{ leaf.capacity }}, {{ leaf.tile }}):
+        boxing_offsets = boxing_start + tl.arange(0, {{ leaf.tile }})
+        boxing_mask = (
+            (boxing_offsets < {{ leaf.capacity }}) & ({{ leaf.active }})
+        )
+{% if leaf.reduction %}
+        boxing_accumulator = tl.full(({{ leaf.tile }},), {{ leaf.neutral }}, {{ leaf.accumulator_type }})
+{% if leaf.remote_source is defined and leaf.remote_owner is defined %}
+{# The reduction group lives inside one chip, but which chip holds a given
+   element's group follows from that element's coordinate.  Every peer is
+   visited once and the elements it does not own are masked off, so each
+   element accumulates exactly its own chip's group. #}
+        boxing_remote_owner = {{ leaf.remote_owner }}
+        for boxing_peer in tl.static_range({{ leaf.remote_peers }}):
+            boxing_peer_mask = boxing_mask & (boxing_remote_owner == boxing_peer)
+{{ partial_reduction(leaf, leaf.remote_source, "boxing_peer_mask") | indent(12, true) }}
+{% elif leaf.remote_source is defined %}
+        for boxing_peer in tl.static_range({{ leaf.remote_peers }}):
+{{ partial_reduction(leaf, leaf.remote_source) | indent(12, true) }}
+{% else %}
+{{ partial_reduction(leaf, leaf.source) | indent(8, true) }}
+{% endif %}
+        tl.store(
+            {{ leaf.result }} + ({{ leaf.result_offset }}),
+            boxing_accumulator.to({{ leaf.output_type }}),
+            mask=boxing_mask & ({{ leaf.writer_active }}),
+        )
+{% else %}
+{% if leaf.remote_source is defined %}
+        boxing_remote_owner = {{ leaf.remote_owner }}
+        boxing_value = tl.zeros(({{ leaf.tile }},), {{ leaf.remote_value_type }})
+        for boxing_peer in tl.static_range({{ leaf.remote_peers }}):
+            boxing_peer_mask = boxing_mask & (boxing_remote_owner == boxing_peer)
+            boxing_value = tl.where(
+                boxing_peer_mask,
+                tl.load(
+                    {{ leaf.remote_source }} + ({{ leaf.remote_source_offset }}),
+                    mask=boxing_peer_mask,
+                    other=0.0,
+                ),
+                boxing_value,
+            )
+{% else %}
+        boxing_value = tl.load(
+            {{ leaf.source }} + ({{ leaf.source_offset }}),
+            mask=boxing_mask,
+            other=0.0,
+        )
+{% endif %}
+{% for line in leaf.fusion_post_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+{% if leaf.fusion_post_value is defined %}
+        boxing_value = {{ leaf.fusion_post_value }}
+{% endif %}
+        tl.store(
+            {{ leaf.result }} + ({{ leaf.result_offset }}),
+            boxing_value,
+            mask=boxing_mask & ({{ leaf.writer_active }}),
+        )
+{% endif %}
+{% endif %}
+{% endfor %}
+
+
+{% endif %}
+{% endfor %}

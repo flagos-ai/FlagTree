@@ -1,0 +1,118 @@
+{% if num_warps == 16 %}
+{% include "kernels/paged_attention_partial/platforms/corex/bi_v150/_batched.py.jinja" %}
+{% else %}
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: MIT
+# flagmega-kernel: paged_attention_partial/decode_t16 (parallel owner heads)
+@triton.jit
+def _flagmega_paged_attention_partial_parallel(
+    query, kv_cache, slot_mapping, block_table, layer_id,
+    partial_max, partial_sum, partial_accumulator,
+    context_shard, head, head_active, query_token,
+    num_layers: tl.constexpr, num_query_heads: tl.constexpr,
+    num_kv_heads: tl.constexpr, head_dim: tl.constexpr,
+    block_size: tl.constexpr, scale: tl.constexpr,
+    token_tile: tl.constexpr, context_shards: tl.constexpr,
+    query_dim_stride: tl.constexpr, query_lanes: tl.constexpr,
+    accumulator_dim_stride: tl.constexpr, num_blocks: tl.constexpr,
+    head_tile: tl.constexpr,
+):
+    # Sixteen warps own all four heads and sixteen tokens. For a 32-warp
+    # entry, the singleton axis replicates this mapping without changing
+    # the reduction tree or the amount of model work.
+    kv_layout: tl.constexpr = tle.gpu.BlockEncoding(
+        [1, 1, 1, 1], [1, 1, 1, 64], [{{ num_warps // 16 }}, 4, 4, 1], [3, 2, 1, 0]
+    )
+    dimension = tl.arange(0, head_dim)
+    token_lane = tl.arange(0, token_tile)
+    head_active = tl.full((head_tile,), True, tl.int1) & head_active
+    head_active = head_active & (head < num_query_heads)
+    context_length = tl.load(slot_mapping).to(tl.int32) + query_token + 1
+    token_begin = (context_length * context_shard) // context_shards
+    token_end = (context_length * (context_shard + 1)) // context_shards
+    query_offset = (
+        (dimension // query_lanes) * query_dim_stride + dimension % query_lanes
+    )
+    query_value = tl.load(
+        query[:, None] + query_offset[None, :],
+        mask=head_active[:, None], other=0,
+    ).to(tl.float32)
+    kv_head = head // (num_query_heads // num_kv_heads)
+    running_max = tl.full((head_tile,), -float("inf"), tl.float32)
+    running_sum = tl.zeros((head_tile,), tl.float32)
+    accumulator = tl.zeros((head_tile, head_dim), tl.float32)
+    for token_start in tl.range(token_begin, token_end, token_tile):
+        token = token_start + token_lane
+        valid = token < token_end
+        physical_block = tl.load(
+            block_table + token // block_size, mask=valid, other=0,
+        )
+        physical_block = tl.minimum(
+            tl.maximum(physical_block, 0), num_blocks - 1,
+        )
+        key_base = (
+            ((physical_block * num_layers + layer_id) * 2 * block_size
+             + token % block_size) * num_kv_heads
+        ).to(tl.int64) * head_dim
+        offsets = (
+            key_base[None, None, :, None]
+            + kv_head[None, :, None, None] * head_dim
+            + dimension[None, None, None, :]
+        )
+        mask = head_active[None, :, None, None] & valid[None, None, :, None]
+        # Select the consumer layout before loading so Coalesce need not
+        # introduce an intermediate layout and a shared-memory conversion.
+        key_value = tl.load(
+            tle.gpu.set_layout(kv_cache + offsets, kv_layout),
+            mask=mask, other=0,
+        ).to(tl.float32)
+        key_value = tle.gpu.set_layout(key_value, kv_layout)
+        product = tl.sum(key_value * query_value[None, :, None, :], 0)
+        # Preserve the portable tree: two 64-dimension sums, then their sum.
+        halves = tl.trans(
+            tl.reshape(product, (head_tile, token_tile, 2, head_dim // 2)),
+            (0, 1, 3, 2),
+        )
+        low, high = tl.split(halves)
+        score = (tl.sum(low, 2) + tl.sum(high, 2)) * scale
+        score = tl.where(
+            head_active[:, None] & valid[None, :], score, -float("inf"),
+        )
+        updated_max = tl.maximum(running_max, tl.max(score, 1))
+        previous_scale = tl.exp(running_max - updated_max)
+        probability = tl.where(
+            head_active[:, None] & valid[None, :],
+            tl.exp(score - updated_max[:, None]), 0.0,
+        )
+        value_value = tl.load(
+            tle.gpu.set_layout(
+                kv_cache + offsets + block_size * num_kv_heads * head_dim,
+                kv_layout,
+            ),
+            mask=mask, other=0,
+        ).to(tl.float32)
+        value_value = tle.gpu.set_layout(value_value, kv_layout)
+        weighted = tl.sum(probability[None, :, :, None] * value_value, 0)
+        # Pair token 0 with 8 before the remaining 4/2/1 folds. A generic
+        # token reduction under this mapping would start with a different pair.
+        weighted_halves = tl.trans(
+            tl.reshape(weighted, (head_tile, 2, token_tile // 2, head_dim)),
+            (0, 2, 3, 1),
+        )
+        w_low, w_high = tl.split(weighted_halves)
+        accumulator = (
+            accumulator * previous_scale[:, None] + tl.sum(w_low + w_high, 1)
+        )
+        probability_halves = tl.trans(
+            tl.reshape(probability, (head_tile, 2, token_tile // 2)), (0, 2, 1),
+        )
+        p_low, p_high = tl.split(probability_halves)
+        running_sum = running_sum * previous_scale + tl.sum(p_low + p_high, 1)
+        running_max = updated_max
+    tl.store(partial_max, running_max, mask=head_active)
+    tl.store(partial_sum, running_sum, mask=head_active)
+    tl.store(
+        partial_accumulator[:, None] + dimension[None, :] * accumulator_dim_stride,
+        accumulator, mask=head_active[:, None],
+    )
+{% endif %}

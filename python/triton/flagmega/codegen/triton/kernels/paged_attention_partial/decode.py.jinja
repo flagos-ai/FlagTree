@@ -1,0 +1,283 @@
+{# Copyright 2026 FlagOS Contributors
+   SPDX-License-Identifier: MIT #}# flagmega-kernel: paged_attention_partial/decode
+{% if paged_attention_partial_variant == "decode_layout4" %}
+# The BI-V150 experiment keeps the entry launch contract unchanged, but maps
+# each [token, head_dim] tile to four logical warps.  With a 128-wide head,
+# one warp owns a complete reduction row (two values per lane); the remaining
+# 28 entry warps are not introduced into this tensor's reduction tree.
+_flagmega_paged_attention_partial_reduction_layout = tl.constexpr(
+    tle.gpu.BlockEncoding(
+        [4, 2], [1, 64], [4, 1], [1, 0],
+    )
+)
+{% endif %}
+{% if paged_attention_partial_variant in ("decode_layout32", "decode_t128_layout32") %}
+# The legal counterpart of the failed four-warp experiment: keep the 32-warp
+# launch contract, assign one warp to each token row, and keep head_dim inside
+# that warp (two values per lane).  There is therefore no cross-warp reduction
+# along head_dim while the encoding still covers the complete [32, 128] tile.
+_flagmega_paged_attention_partial_reduction_layout = tl.constexpr(
+    tle.gpu.BlockEncoding(
+        [1, 2], [1, 64], [32, 1], [1, 0],
+    )
+)
+{% endif %}
+{% set paged_attention_partial_value_with_key = paged_attention_partial_issue_value_with_key | default(false) %}
+{#- Per-token-row online softmax: each tile row keeps its own max/sum/accumulator
+    so the loop has no cross-warp reduction; the rows are merged once at the
+    end. Changes the fp32 summation order. #}
+{% set paged_attention_partial_row_softmax = paged_attention_partial_per_row_softmax | default(false) %}
+{#- Tile rows past token_end address the last in-context token instead of
+    being masked, so the block-id and K/V loads need no exec-mask branches;
+    their scores are still -inf and their probabilities 0. Bitwise-identical. #}
+{% set paged_attention_partial_clamped_tiles = paged_attention_partial_unmasked_tiles | default(false) %}
+{#- Load the next tile's block ids together with this tile's K/V, so each tile
+    costs one dependent memory round trip instead of two. Bitwise-identical. #}
+{% set paged_attention_partial_next_block_ids = paged_attention_partial_prefetch_block_ids | default(false) %}
+{% macro paged_attention_partial_value_load() %}
+            value_value = tl.load(
+                kv_cache + value_base[:, None] + dimension[None, :],
+{% if not paged_attention_partial_clamped_tiles %}
+                mask=valid[:, None],
+                other=0.0,
+{% endif %}
+            ).to(tl.float32)
+{% if paged_attention_partial_variant in ("decode_layout4", "decode_layout32", "decode_t128_layout32") or paged_attention_partial_warp_rows | default(false) %}
+            value_value = tle.gpu.set_layout(
+                value_value, _flagmega_paged_attention_partial_reduction_layout
+            )
+{% endif %}
+{% endmacro %}
+@triton.jit
+def _flagmega_paged_attention_qk_mma(query, cache, key_base, valid, head_dim: tl.constexpr, token_tile: tl.constexpr):
+    rows = tl.arange(0, 16)
+    reduction_tile: tl.constexpr = min(64, head_dim)
+    score = tl.zeros((16, token_tile), tl.float32)
+    for start in tl.range(0, head_dim, reduction_tile):
+        dimension = start + tl.arange(0, reduction_tile)
+        query_slice = tl.gather(query, dimension, axis=0).to(tl.bfloat16)
+        query_matrix = tl.broadcast_to(query_slice[None, :], (16, reduction_tile))
+        key = tl.load(cache + key_base[None, :] + dimension[:, None],
+                      mask=valid[None, :] & (dimension[:, None] < head_dim), other=0).to(tl.bfloat16)
+        score = tl.dot(query_matrix, key, score)
+    return tl.sum(tl.where(rows[:, None] == 0, score, 0.0), axis=0)
+
+
+@triton.jit
+def _flagmega_paged_attention_pv_mma(probability, cache, value_base, valid, previous,
+                                   head_dim: tl.constexpr, token_tile: tl.constexpr):
+    rows = tl.arange(0, 16)
+    accumulator = tl.broadcast_to(previous[None, :], (16, previous.shape[0]))
+    reduction_tile: tl.constexpr = min(32, token_tile)
+    dimension = tl.arange(0, head_dim)
+    for start in tl.range(0, token_tile, reduction_tile):
+        offsets = start + tl.arange(0, reduction_tile)
+        probability_slice = tl.gather(probability, offsets, axis=0).to(tl.bfloat16)
+        probability_matrix = tl.broadcast_to(probability_slice[None, :], (16, reduction_tile))
+        base = tl.gather(value_base, offsets, axis=0)
+        mask = tl.gather(valid, offsets, axis=0)
+        value = tl.load(cache + base[:, None] + dimension[None, :], mask=mask[:, None], other=0).to(tl.bfloat16)
+        accumulator = tl.dot(probability_matrix, value, accumulator)
+    return tl.sum(tl.where(rows[:, None] == 0, accumulator, 0.0), axis=0)
+
+
+@triton.jit(noinline=True)
+def {{ paged_attention_partial_symbol | default("_flagmega_paged_attention_partial") }}(
+    query,
+    kv_cache,
+    slot_mapping,
+    block_table,
+    layer_id,
+    partial_max,
+    partial_sum,
+    partial_accumulator,
+    context_shard,
+    head,
+    query_token,
+    num_layers: tl.constexpr,
+    num_query_heads: tl.constexpr,
+    num_kv_heads: tl.constexpr,
+    head_dim: tl.constexpr,
+    block_size: tl.constexpr,
+    scale: tl.constexpr,
+    token_tile: tl.constexpr,
+    context_shards: tl.constexpr,
+    query_dim_stride: tl.constexpr,
+    query_lanes: tl.constexpr,
+    accumulator_dim_stride: tl.constexpr,
+    num_blocks: tl.constexpr,
+    online_bf16: tl.constexpr = False,
+    softmax_block_size: tl.constexpr = 64,
+    reverse_softmax: tl.constexpr = False,
+):
+    """Portable per-context-shard online-softmax state computation."""
+    dimension = tl.arange(0, head_dim)
+    token_lane = tl.arange(0, token_tile)
+    if head < num_query_heads:
+        # Cache update publishes the current query chunk base through
+        # slot_mapping. sequence_lengths advances only after the final layer,
+        # so it cannot describe the just-written token for every reusable
+        # decode-layer invocation.
+        context_length = tl.load(slot_mapping).to(tl.int32) + query_token + 1
+        if online_bf16:
+            # A separately rounded local origin changes the logical online
+            # softmax. One context owner retains the declared full traversal.
+            token_begin = tl.where(context_shard == 0, 0, context_length)
+            token_end = context_length
+        else:
+            token_begin = (context_length * context_shard) // context_shards
+            token_end = (context_length * (context_shard + 1)) // context_shards
+        # ``query`` and all partial-state pointers are already rebased to the
+        # selected owner-local head by the call ABI. ``head`` remains the
+        # logical head coordinate and is used only for cache-head selection.
+        query_offset = (dimension // query_lanes) * query_dim_stride + dimension % query_lanes
+        query_value = tl.load(query + query_offset).to(tl.float32)
+        kv_head = head // (num_query_heads // num_kv_heads)
+        active_layer = layer_id
+{% if paged_attention_partial_row_softmax %}
+        row_max = tl.full((token_tile,), -float("inf"), tl.float32)
+        row_sum = tl.zeros((token_tile,), tl.float32)
+        row_accumulator = tl.zeros((token_tile, head_dim), tl.float32)
+{% else %}
+        running_max = -float("inf")
+        running_sum = 0.0
+        accumulator = tl.zeros((head_dim,), tl.float32)
+{% endif %}
+{% if paged_attention_partial_clamped_tiles or paged_attention_partial_next_block_ids %}
+        token_last = tl.maximum(token_end - 1, 0)
+{% endif %}
+        step_width = softmax_block_size if online_bf16 else token_tile
+        steps = tl.cdiv(token_end - token_begin, step_width)
+{% if paged_attention_partial_next_block_ids %}
+        first_step = (steps - 1) if online_bf16 and reverse_softmax else 0
+        next_physical_block = tl.load(
+            block_table + tl.minimum(token_begin + first_step * step_width + token_lane, token_last) // block_size
+        )
+{% endif %}
+        for step in tl.range(0, steps):
+            step_index = (steps - 1 - step) if online_bf16 and reverse_softmax else step
+            token_start = token_begin + step_index * step_width
+            token = token_start + token_lane
+            valid = (token < token_end) & ((token_lane < softmax_block_size) if online_bf16 else True)
+{% if paged_attention_partial_clamped_tiles %}
+            address_token = tl.minimum(token, token_last)
+            logical_block = address_token // block_size
+            block_offset = address_token % block_size
+{% else %}
+            logical_block = token // block_size
+            block_offset = token % block_size
+{% endif %}
+            # ``token < token_end`` bounds which tokens are logically part of
+            # the sequence, but not whether ``block_table`` has actually been
+            # refreshed out to ``logical_block`` for *this* call -- the host
+            # driver only overwrites its leading ``width`` columns per step
+            # (see vllm_adapter.py's block_table update), so a stale/garbage
+            # tail entry can otherwise compute a genuinely out-of-bounds
+            # kv_cache address for an in-range token and fault the whole
+            # device (observed as dmesg "XID: 24 mmu page fault", which the
+            # in-kernel grid barrier then surfaces as a permanent hang: the
+            # faulted program never reaches its barrier and every other
+            # program spins forever). Clamp to the cache's real block count
+            # so a stale entry can only select a physically valid line.
+{% if paged_attention_partial_next_block_ids %}
+            physical_block = next_physical_block
+{% elif paged_attention_partial_clamped_tiles %}
+            physical_block = tl.load(block_table + logical_block)
+{% else %}
+            physical_block = tl.load(block_table + logical_block, mask=valid, other=0)
+{% endif %}
+            physical_block = tl.minimum(tl.maximum(physical_block, 0), num_blocks - 1)
+            key_base = (
+                ((((physical_block * num_layers + active_layer) * 2) * block_size
+                   + block_offset) * num_kv_heads + kv_head) * head_dim
+            )
+            # Keep the address calculation in an integer type at the pointer
+            # boundary; nested persistent-kernel specialization can otherwise
+            # promote this mixed expression before tl.load sees it.
+            key_base = key_base.to(tl.int64)
+            value_base = key_base + block_size * num_kv_heads * head_dim
+            if online_bf16:
+                score = _flagmega_paged_attention_qk_mma(
+                    query_value, kv_cache, key_base, valid, head_dim, token_tile) * scale
+            else:
+                key_value = tl.load(
+                kv_cache + key_base[:, None] + dimension[None, :],
+{% if not paged_attention_partial_clamped_tiles %}
+                mask=valid[:, None],
+                other=0.0,
+{% endif %}
+                ).to(tl.float32)
+{% if paged_attention_partial_variant in ("decode_layout4", "decode_layout32", "decode_t128_layout32") or paged_attention_partial_warp_rows | default(false) %}
+                key_value = tle.gpu.set_layout(
+                    key_value, _flagmega_paged_attention_partial_reduction_layout
+                )
+{% endif %}
+                score = tl.sum(key_value * query_value[None, :], axis=1) * scale
+{% if paged_attention_partial_value_with_key %}
+{{ paged_attention_partial_value_load() }}
+{% endif %}
+{% if paged_attention_partial_next_block_ids %}
+            next_physical_block = tl.load(
+                block_table + tl.minimum(tl.maximum(token_begin + (((steps - 2 - step) if online_bf16 and reverse_softmax else (step + 1)) * step_width) + token_lane, 0), token_last) // block_size
+            )
+{% endif %}
+            score = tl.where(valid, score, -float("inf"))
+{% if paged_attention_partial_row_softmax %}
+            updated_max = tl.maximum(row_max, score)
+            safe_max = tl.where(updated_max == -float("inf"), 0.0, updated_max)
+            previous_scale = tl.exp(row_max - safe_max)
+            probability = tl.where(valid, tl.exp(score - safe_max), 0.0)
+{% if not paged_attention_partial_value_with_key %}
+{{ paged_attention_partial_value_load() }}
+{%- endif %}
+            row_accumulator = (
+                row_accumulator * previous_scale[:, None] + probability[:, None] * value_value
+            )
+            row_sum = row_sum * previous_scale + probability
+            row_max = updated_max
+{% else %}
+            tile_max = tl.max(score, axis=0)
+            updated_max = tl.maximum(running_max, tile_max)
+            if online_bf16:
+                previous_scale = tl.exp2((running_max - updated_max) * 1.4426950408889634)
+                probability = tl.where(valid, tl.exp2(score * 1.4426950408889634
+                                                      - updated_max * 1.4426950408889634), 0.0)
+                product_probability = probability.to(tl.bfloat16).to(tl.float32)
+            else:
+                previous_scale = tl.exp(running_max - updated_max)
+                probability = tl.where(valid, tl.exp(score - updated_max), 0.0)
+                product_probability = probability
+            if online_bf16:
+                accumulator = _flagmega_paged_attention_pv_mma(
+                    product_probability, kv_cache, value_base, valid, accumulator * previous_scale,
+                    head_dim, token_tile)
+            else:
+{% if not paged_attention_partial_value_with_key %}
+{{ paged_attention_partial_value_load() | indent(4, true) }}
+{% endif %}
+                accumulator = (
+                    accumulator * previous_scale
+                    + tl.sum(product_probability[:, None] * value_value, axis=0)
+                )
+            running_sum = running_sum * previous_scale + tl.sum(probability, axis=0)
+            running_max = updated_max
+{% endif %}
+{% if paged_attention_partial_row_softmax %}
+        running_max = tl.max(row_max, axis=0)
+        safe_running_max = tl.where(running_max == -float("inf"), 0.0, running_max)
+        row_weight = tl.exp(row_max - safe_running_max)
+        running_sum = tl.sum(row_sum * row_weight, axis=0)
+        accumulator = tl.sum(row_accumulator * row_weight[:, None], axis=0)
+{% endif %}
+        # Each pointer is already rebased to this physical owner's compact
+        # partial-state component by the call ABI.  The component contains one
+        # local head, so both context_shard and the global head coordinate have
+        # already selected storage.  Reapplying ``head`` here writes into a
+        # later owner's component (and can leave this component undefined).
+        partial_index = 0
+        tl.store(partial_max + partial_index, running_max)
+        tl.store(partial_sum + partial_index, running_sum)
+        tl.store(
+            partial_accumulator + dimension * accumulator_dim_stride,
+            accumulator,
+        )

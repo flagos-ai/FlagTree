@@ -1,0 +1,81 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""vectorized unary operation."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import Mapping, Sequence
+
+from triton.flagmega.errors import IRSchemaError
+from triton.flagmega.ir.distributed_inference import tensor_of
+from triton.flagmega.ir.model import DistributedType, IRType, Node
+from triton.flagmega.ir.ops.core import (
+    OpCost,
+    attribute_parameter,
+    input_parameter,
+    op_definition,
+    tensor_elements,
+    tensor_nbytes,
+)
+from triton.flagmega.ir.ops.math.exp import Exp
+from triton.flagmega.ir.ops.math.sigmoid import Sigmoid
+from triton.flagmega.ir.ops.math.silu import Silu
+from triton.flagmega.ir.ops.pointwise import SameTypePointwiseOp
+from triton.flagmega.ir.type_pattern import is_tensor
+from triton.flagmega.ir.types import VectorType
+
+
+@op_definition(
+    "math.vectorized_unary",
+    namespace="math",
+    functional_name="vectorized_unary",
+    display_name="Math.VectorizedUnary",
+)
+class VectorizedUnary(SameTypePointwiseOp):
+    const_evaluable = True
+    scalar_definitions = {"silu": Silu, "sigmoid": Sigmoid, "exp": Exp}
+    value = input_parameter(is_tensor())
+    unary_op = attribute_parameter()
+    math_mode = attribute_parameter(default="fast")
+
+    @classmethod
+    def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
+        attrs = super().normalize_attrs(attributes)
+        unary_op = str(attrs["unary_op"])
+        if unary_op not in cls.scalar_definitions:
+            raise IRSchemaError(f"Unsupported vectorized unary op {unary_op!r}.")
+        if attrs["math_mode"] != "fast" and unary_op != "silu":
+            raise IRSchemaError("Only vectorized SiLU accepts a nondefault math_mode.")
+        mode_attrs = Silu.normalize_attrs({"math_mode": attrs["math_mode"]})
+        return {"unary_op": unary_op, **mode_attrs}
+
+    @classmethod
+    def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
+        value_type = cls.value.type_of(inputs)
+        if not isinstance(tensor_of(value_type).dtype, VectorType):
+            raise IRSchemaError("F.math.vectorized_unary requires a VectorType tensor.")
+        scalar = replace(tensor_of(value_type), dtype=tensor_of(value_type).dtype.elem_type)
+        scalar_type = replace(value_type, tensor=scalar) if isinstance(value_type, DistributedType) else scalar
+        scalar_attrs = {"math_mode": attrs["math_mode"]} if "math_mode" in attrs else {}
+        cls.scalar_definitions[str(attrs["unary_op"])].infer_type((replace(inputs[0], type=scalar_type), ),
+                                                                  scalar_attrs)
+        return value_type
+
+    @classmethod
+    def evaluate(cls, node, arguments, context):
+        # Reuse the op-local scalar contract, including Sigmoid's FP32
+        # computation followed by its declared BF16/FP32 output rounding.
+        return cls.scalar_definitions[str(node.attrs["unary_op"])].evaluate(node, arguments, context)
+
+    @classmethod
+    def cost(cls, node: Node) -> OpCost:
+        tensor = tensor_of(node.type)
+        elements = tensor_elements(tensor)
+        if elements is not None:
+            elements *= tensor.dtype.lane_count
+        size = tensor_nbytes(tensor)
+        return OpCost(flops=None if elements is None else elements * 4, bytes_read=size, bytes_written=size)
+
+
+__all__ = ["VectorizedUnary"]

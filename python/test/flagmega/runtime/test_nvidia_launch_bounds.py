@@ -1,0 +1,25 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""Assembler occupancy assumptions must agree with the residency contract."""
+
+import pytest
+
+from triton.flagmega.runtime.nvidia_launch import compilation_options
+from triton.flagmega.runtime.prepared import ResourceContract
+
+
+@pytest.mark.parametrize("warps,blocks", [(4, 1), (8, 1), (4, 2), (4, 4)])
+def test_compilation_uses_contract_launch_bounds(warps, blocks):
+    contract = ResourceContract(compute_num_warps=warps, resident_blocks_per_sm=blocks)
+    options = compilation_options(contract)
+    assert options["num_warps"] == warps
+    assert options["ptx_options"] == f"--minnctapersm={blocks}"
+    assert contract.forbid_spills
+
+
+@pytest.mark.parametrize("target", ["nvidia-sm90", "iluvatar-bi-v150", "amd-gfx1100"])
+def test_strict_numerical_contract_preserves_separate_rounding(target):
+    contract = ResourceContract(compute_num_warps=4, resident_blocks_per_sm=1)
+    strict = compilation_options(contract, target, floating_point_contract="strict")
+    assert strict["enable_fp_fusion"] is False
+    assert "enable_fp_fusion" not in compilation_options(contract, target)

@@ -1,0 +1,968 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""Plan synchronization from concrete post-bufferization byte hazards."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from triton.flagmega.errors import IRVerificationError
+from triton.flagmega.ir.memory_effect import expand_memory_effect
+
+from triton.flagmega.ir.bufferization import BufferPlan, MemorySharingScope
+from triton.flagmega.ir.bufferization.synchronization import (
+    MemoryRange,
+    MemorySynchronizationPlan,
+    SynchronizationEvent,
+)
+from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
+from triton.flagmega.ir.distributed_type import (
+    ContiguousSplit,
+    SBP,
+    SBPSplit,
+    exclusive_transition_axes,
+)
+from triton.flagmega.ir.memory_effect import (
+    MemoryAccessDomain,
+    MemoryAccessMode,
+    MemoryAccessPartitionKind,
+    MemoryAccessScope,
+    MemoryEffect,
+    MemoryOwnerAccess,
+)
+from triton.flagmega.ir.model import DistributedType, IRModule, RefType, logical_type
+from triton.flagmega.ir.region import is_region
+from triton.flagmega.ir.tir.execution_kind import (
+    KernelExecutionKind,
+    kernel_execution_kind_for_call,
+)
+from triton.flagmega.ir.tir.kernel_dispatch import kernel_dispatch_for_call
+from triton.flagmega.passes.tir.bufferize.graph import callee_first_functions, function_nodes
+from triton.flagmega.passes.tir.bufferize.barrier_coverage import BarrierCoverage
+from triton.flagmega.passes.tir.bufferize.call_accesses import CallAccessResolver, physical_identity
+from triton.flagmega.passes.tir.plan_function_memory import _consumer_preserves_exclusive_blocks
+
+
+@dataclass(frozen=True)
+class _Access:
+    node: str
+    buffer: str
+    storage: str
+    physical_id: str
+    offset: int
+    nbytes: int
+    mode: str
+    distributed_type: DistributedType | None
+    distributed_storage_kind: DistributedBufferStorageKind
+    effect: MemoryEffect
+    access_partition: tuple[str, object | None]
+    is_reference: bool
+    requires_full_chip: bool
+    sharing_scope: MemorySharingScope
+    owner_stride_bytes: int = 0
+
+
+@dataclass
+class _PendingAccess:
+    access: _Access
+    coverage: BarrierCoverage = field(default_factory=BarrierCoverage)
+    needs_device_coverage: bool = False
+
+
+@dataclass(frozen=True)
+class _FunctionExit:
+    accesses: tuple[_PendingAccess, ...]
+    completion: BarrierCoverage
+
+
+def plan_memory_synchronization(
+    module: IRModule,
+    plan: BufferPlan,
+) -> MemorySynchronizationPlan:
+    """Plan the weakest sufficient barriers for all concrete byte hazards."""
+
+    return _plan_memory_synchronization(module, plan)
+
+
+def transfer_source_dependencies(module, plan, function_name, calls):
+    """Reuse the physical hazard analysis for reads moved to producer tasks.
+
+    Keep every preceding writer, including disjoint portions of one source
+    and pooled-storage reuse. A newer local write cannot discharge an older
+    cross-owner publication requirement.
+    """
+    resolver = CallAccessResolver(module, plan, _node_accesses)
+    bindings = dict(plan.function_map[function_name].values)
+    history = []
+    result = {}
+    for call in calls:
+        accesses = resolver.accesses(function_name, module.node_map[call.call_id], bindings)
+        source_spans = tuple(plan.buffer_map[value].physical_access_span for value in call.transfer_sources)
+        reads = tuple(access for access in accesses if access.effect.physical_mode & MemoryAccessMode.READ and any(
+            span.may_alias(plan.buffer_map[access.buffer].physical_access_span) for span in source_spans))
+        result[call.call_id] = tuple(
+            dict.fromkeys((previous.node, _hazard_requirement(previous, current))
+                          for previous in history
+                          for current in reads
+                          if _conflicts(previous, current)))
+        history.extend(access for access in accesses if access.effect.physical_mode & MemoryAccessMode.WRITE)
+    return result
+
+
+def _plan_memory_synchronization(
+    module: IRModule,
+    plan: BufferPlan,
+    *,
+    reuse_preferences=None,
+    semantic_dependencies_only=False,
+) -> MemorySynchronizationPlan:
+    """Insert the weakest sufficient barrier before every unresolved hazard.
+
+    Workspace reuse is compared by concrete byte range rather than logical
+    buffer id, so WAW/WAR hazards introduced by SAT placement are covered too.
+    Like reference, a pure RAW may use a block or placement-axis group barrier;
+    an unprovable owner relation is conservatively promoted to a full grid
+    barrier.  The next region starts with the current kernel's accesses.
+    """
+
+    events_by_function = {}
+    exits = {}
+    entries = {}
+    entry_functions = {call.callee for call in plan.call_map.values()}
+    call_accesses = CallAccessResolver(module, plan, _node_accesses)
+    # Program order is fixed for this module, so index it once instead of
+    # rescanning every node to rank each conflicting producer.
+    node_ordinals = {node.id: index for index, node in enumerate(module.nodes)}
+    repeated = _repeated_graph_functions(module)
+    for function in callee_first_functions(module):
+        events = []
+        events_by_function[function.name] = events
+        abi = plan.function_map[function.name]
+        bindings = dict(abi.values)
+        calls = tuple((node, call_accesses.accesses(function.name, node, bindings))
+                      for node in function_nodes(module, function)
+                      if node.op in {"tir.kernel", "tir.call", "control.for"})
+        device_ranges = _device_visible_ranges(calls)
+
+        history: list[_PendingAccess] = []
+        # Local pruning cannot decide what the caller will later access from a
+        # peer. Keep completed local effects with their actual coverage until
+        # the caller has substituted and reclassified their concrete ranges.
+        exit_accesses: list[_PendingAccess] = []
+        completion = BarrierCoverage()
+        incoming_completion = BarrierCoverage()
+        entry_accesses = []
+        if function.name in repeated and calls:
+            # A repeated function's own trailing accesses precede its leading
+            # ones on the next execution.  Walking it once from an empty
+            # history can only see hazards within one execution; seed the
+            # history with its accesses so the wrap-around pair is formed
+            # too, and the barrier lands before the leading call, where every
+            # execution reaches it.  A loop body qualifies, and so does
+            # anything the body calls: `decode_layer` is straight-line but
+            # runs once per trip.
+            for _, accesses in calls:
+                history.extend(_pending_access(access, device_ranges) for access in accesses)
+        for node, current in calls:
+            call = plan.call_map.get(node.id)
+            if call is not None and node.op == "tir.call":
+                callee_entries = entries[call.callee]
+                # The full may-access tuple has already been instantiated
+                # by CallAccessResolver.accesses. Entry coverage follows that
+                # same validated order; do not repeat all frame/shape proofs
+                # for every invocation and every placement-cost query.
+                extras = call_accesses._loop_copy_accesses(function.name, node, call)
+                coverages = tuple(coverage for _, coverage in callee_entries) + tuple(BarrierCoverage() for _ in extras)
+                if len(coverages) != len(current):
+                    raise IRVerificationError("Callee entry coverage must preserve every instantiated may-access.")
+                incoming = tuple(zip(current, coverages, strict=True))
+            else:
+                # A possibly empty loop cannot promise an internal fence.
+                incoming = [(access, BarrierCoverage()) for access in current]
+            conflicts = [
+                (previous.access, access)
+                for previous in history
+                for access, coverage in incoming
+                if _conflicts(previous.access, access) and (not semantic_dependencies_only or (plan.buffer_map[
+                    previous.access.buffer].mem_span.buffer.id == plan.buffer_map[access.buffer].mem_span.buffer.id))
+                and not previous.coverage.covers(_hazard_requirement(previous.access, access))
+                and not coverage.covers(_hazard_requirement(previous.access, access))
+            ]
+            if conflicts:
+                after = max(
+                    (previous.node for previous, _ in conflicts),
+                    key=node_ordinals.__getitem__,
+                )
+                ranges = []
+                hazards = set()
+                seen = set()
+                for previous, access in conflicts:
+                    hazards.add(f"{previous.mode.upper()}->{access.mode.upper()}")
+                    start = max(previous.offset, access.offset)
+                    end = min(previous.offset + previous.nbytes, access.offset + access.nbytes)
+                    key = (access.storage, access.physical_id, start, end - start, access.mode)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    ranges.append(MemoryRange(*key))
+                scope, axis_group_axes = _conflict_requirement(conflicts)
+                if reuse_preferences is not None and not axis_group_axes and scope in {
+                        "grid",
+                        "device",
+                }:
+                    from .reuse_preferences import record_reuse_preferences
+
+                    record_reuse_preferences(plan, function.name, conflicts, reuse_preferences)
+                events.append(
+                    SynchronizationEvent(
+                        function.name,
+                        after,
+                        node.id,
+                        scope,
+                        tuple(sorted(hazards)),
+                        tuple(ranges),
+                        axis_group_axes,
+                    ))
+                placement = next((requirement[2]
+                                  for previous, access in conflicts
+                                  if (requirement := _hazard_requirement(previous, access))[0] == "grid"), None)
+                requirement = (scope, axis_group_axes, placement)
+                for pending in (*history, *exit_accesses):
+                    pending.coverage.apply(requirement, pending.access.distributed_type)
+                _record_universal_completion(completion, requirement)
+                _record_universal_completion(incoming_completion, requirement)
+                # Coverage must also suffice for future owner relations. A
+                # local writer can feed a later peer read after an intervening
+                # chip barrier; that barrier has not published its bytes to
+                # the peer. Keep accesses to device-visible ranges until a
+                # device rendezvous, including accesses that are local here.
+                history = _prune_covered(history)
+            # These are barriers between function entry and each access,
+            # not barriers after a previous access in this same function.
+            # Keep the two directions separate, especially after a newer
+            # local write that must still be published to a later peer.
+            if function.name in entry_functions:
+                entry_accesses.extend(
+                    (access,
+                     BarrierCoverage(
+                         block_synchronized=(
+                             incoming_completion.full_chip_synchronized or coverage.full_chip_synchronized),
+                         full_chip_synchronized=(
+                             incoming_completion.full_chip_synchronized or coverage.full_chip_synchronized),
+                         device_synchronized=(incoming_completion.device_synchronized or coverage.device_synchronized),
+                     )) for access, coverage in incoming)
+            if call is None:
+                pending = tuple(_pending_access(access, device_ranges) for access in current)
+            else:
+                callee_exit = exits[call.callee]
+                requirement = _universal_requirement(callee_exit.completion)
+                if requirement is not None:
+                    for previous in (*history, *exit_accesses):
+                        previous.coverage.apply(requirement, previous.access.distributed_type)
+                    _record_universal_completion(completion, requirement)
+                    if node.op == "tir.call":
+                        _record_universal_completion(incoming_completion, requirement)
+                    history = _prune_covered(history)
+                translated = call_accesses.instantiate(function.name, node,
+                                                       tuple(value.access for value in callee_exit.accesses))
+                pending = []
+                for access, previous in zip(translated, callee_exit.accesses, strict=True):
+                    value = _pending_access(access, device_ranges)
+                    # Full-chip/device rendezvous cover the whole launched
+                    # grid. Block and axis-group coverage needs an additional
+                    # formal/actual owner proof, so do not export it yet.
+                    value.coverage = BarrierCoverage(
+                        block_synchronized=previous.coverage.full_chip_synchronized,
+                        full_chip_synchronized=previous.coverage.full_chip_synchronized,
+                        device_synchronized=previous.coverage.device_synchronized,
+                    )
+                    pending.append(value)
+                pending.extend(
+                    _pending_access(access, device_ranges)
+                    for access in call_accesses._loop_copy_accesses(function.name, node, call))
+            history.extend(pending)
+            exit_accesses.extend(pending)
+        if function.name in entry_functions:
+            # Validate the coverage/effect ordering once per callee, before
+            # any caller reuses it. Keep the complete effects in the resolver.
+            if tuple(access for access, _ in entry_accesses) != call_accesses._summary(function.name):
+                raise IRVerificationError("Callee entry coverage differs from its complete may-access summary.")
+            entries[function.name] = tuple(entry_accesses)
+        exits[function.name] = _FunctionExit(
+            tuple(value for value in exit_accesses if not value.coverage.device_synchronized), completion)
+    return MemorySynchronizationPlan(
+        tuple(event for function in module.functions for event in events_by_function[function.name]))
+
+
+def _universal_requirement(coverage):
+    if coverage.device_synchronized:
+        return "device", (), None
+    if coverage.full_chip_synchronized:
+        return "grid", (), None
+    return None
+
+
+def _record_universal_completion(coverage, requirement):
+    scope, axes, _ = requirement
+    if scope == "device" or (scope == "grid" and not axes):
+        coverage.apply(requirement, None)
+
+
+def _prune_covered(history):
+    return [
+        pending for pending in history
+        if not ((pending.coverage.device_synchronized if pending.needs_device_coverage else pending.coverage.
+                 full_chip_synchronized) or (not pending.needs_device_coverage and _resolved_scope(pending.access) is
+                                             MemoryAccessScope.BLOCK and pending.coverage.block_synchronized))
+    ]
+
+
+def _pending_access(access, device_ranges):
+    ranges = device_ranges.get((access.storage, access.physical_id), ())
+    needs_device = any(start < access.offset + access.nbytes and access.offset < end for start, end in ranges)
+    return _PendingAccess(access, needs_device_coverage=needs_device)
+
+
+def _device_visible_ranges(calls):
+    """Byte ranges that any access in this function can reach across chips."""
+    ranges = {}
+    for _, accesses in calls:
+        for access in accesses:
+            if _requires_device(access):
+                ranges.setdefault((access.storage, access.physical_id), []).append(
+                    (access.offset, access.offset + access.nbytes))
+    result = {}
+    for key, spans in ranges.items():
+        merged = []
+        for start, end in sorted(spans):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        result[key] = tuple(merged)
+    return result
+
+
+def _repeated_graph_functions(module: IRModule) -> frozenset[str]:
+    """Name every graph function that runs more than once per launch.
+
+    A ``control.for`` body is repeated, and so is anything it calls, because
+    the body invokes that callee on every trip.  Only these functions have a
+    wrap-around hazard between their own trailing and leading accesses.
+    """
+
+    callees: dict[str, tuple[str, ...]] = {}
+    for function in module.functions:
+        values = []
+        for node in function_nodes(module, function):
+            if node.op not in {"builtin.call", "tir.call", "control.for"}:
+                continue
+            callee = str(node.attrs.get("callee", ""))
+            if callee in module.function_map:
+                values.append(callee)
+        callees[function.name] = tuple(dict.fromkeys(values))
+
+    result = {function.name for function in module.functions if is_region(function)}
+    for function in module.functions:
+        for node in function_nodes(module, function):
+            if node.op != "control.for":
+                continue
+            callee = str(node.attrs.get("callee", ""))
+            if callee in module.function_map:
+                result.add(callee)
+    pending = list(result)
+    while pending:
+        for callee in callees.get(pending.pop(), ()):
+            if callee not in result:
+                result.add(callee)
+                pending.append(callee)
+    return frozenset(result)
+
+
+def _node_accesses(module, plan, function_name, node, bindings):
+    result: dict[tuple[object, ...], _Access] = {}
+    # A cooperative/synchronized-local kernel may execute an internal grid
+    # barrier without publishing a value to every placement owner.  Its
+    # inter-kernel visibility is still described by typed memory effects and
+    # DistributedType owner maps (for example, paged-attention merge only
+    # rendezvous over its partial axis).  Only a true collective changes the
+    # owner set and therefore forces the conservative full-chip fallback.
+    publishes_across_chip = (kernel_execution_kind_for_call(module, node) is KernelExecutionKind.COLLECTIVE)
+    dispatch = kernel_dispatch_for_call(module, node)
+    effect_map = {} if dispatch is None else dict(dispatch.memory_effect_map)
+    has_typed_effects = dispatch is not None and bool(dispatch.memory_effects)
+
+    def add(
+        buffer_id,
+        effect: MemoryEffect,
+        *,
+        reference_access=False,
+        publishes=False,
+        input_access=False,
+    ):
+        descriptor = plan.buffer_map[buffer_id]
+        if descriptor.storage in {"scalar", "rdata"} or descriptor.nbytes == 0:
+            return
+        # All workspace allocations of one function are ranges in the same
+        # pool even when SAT assigns them distinct allocation ids.
+        physical_id = physical_identity(plan, function_name, descriptor)
+        access_partition = _resolve_access_partition(effect, node, module)
+        # The ABI's MemSpan exposes one owner component. Cross-kernel hazards
+        # in a shared pool must include all components, including SAT reuse
+        # intersecting only a nonzero owner. Keep owner maps for scope proofs;
+        # expanding the byte footprint does not itself require a grid barrier.
+        access_span = descriptor.physical_access_span
+        # Runtime-indexed views retain symbolic MemSpans for alias analysis.
+        # Barrier byte ranges conservatively cover their bounded envelope;
+        # never pretend a dynamic view begins at the parent's zero offset.
+        access_start = access_span.absolute_start.minimum
+        access_end = access_span.absolute_end.maximum
+        if access_start is None or access_end is None:
+            raise IRVerificationError("Synchronization requires bounded memory access spans.")
+        access_bytes = access_end - access_start
+        key = (
+            descriptor.storage,
+            physical_id,
+            access_start,
+            access_bytes,
+            access_partition,
+            descriptor.component_stride_bytes,
+        )
+        previous = result.get(key)
+        mode = effect.physical_mode
+        previous_mode = (MemoryAccessMode.NONE if previous is None else previous.effect.physical_mode)
+        merged_mode = mode | previous_mode
+        merged_effect = MemoryEffect(
+            merged_mode,
+            _merge_access_scope(
+                effect.scope,
+                MemoryAccessScope.INFERRED if previous is None else previous.effect.scope,
+            ),
+            effect.kind if previous is None or effect.kind == previous.effect.kind else "direct",
+            effect.access_domain
+            if previous is None or effect.access_domain == previous.effect.access_domain else MemoryAccessDomain(),
+            effect.access_partition
+            if previous is None or effect.access_partition == previous.effect.access_partition else {},
+            effect.owner_access if previous is None or effect.owner_access == previous.effect.owner_access else
+            MemoryOwnerAccess.PARTIAL_GROUP,
+        )
+        owner_type = descriptor.distributed_type
+        if (input_access and mode & MemoryAccessMode.READ
+                and descriptor.distributed_storage_kind is DistributedBufferStorageKind.CANONICAL_GLOBAL
+                and owner_type is not None and owner_type.exclusive is not None
+                and not _consumer_preserves_exclusive_blocks(owner_type, node.type)):
+            # The input's E annotation identifies its writer. Canonical
+            # readers executing for non-E outputs also include other blocks.
+            exclusive = owner_type.exclusive
+            owners = exclusive.owner_coordinates or (0, ) * len(exclusive.axes)
+            retained = tuple((axis, owner)
+                             for axis, owner in zip(exclusive.axes, owners)
+                             if not owner_type.placement.is_physical_block_axis(axis))
+            owner_type = replace(
+                owner_type, exclusive=(SBP.exclusive(tuple(
+                    axis for axis, _ in retained), tuple(owner for _, owner in retained)) if retained else None))
+            merged_effect = replace(merged_effect, scope=MemoryAccessScope.CHIP)
+        result[key] = _Access(
+            node.id,
+            buffer_id,
+            descriptor.storage,
+            physical_id,
+            access_start,
+            access_bytes,
+            _mode_name(merged_mode),
+            owner_type,
+            descriptor.distributed_storage_kind,
+            merged_effect,
+            access_partition,
+            reference_access or bool(previous and previous.is_reference),
+            (effect.scope in {MemoryAccessScope.CHIP, MemoryAccessScope.DEVICE} or publishes
+             or bool(previous and previous.requires_full_chip)),
+            plan.memory_space_map[descriptor.mem_span.buffer.memory_space].sharing_scope,
+            descriptor.component_stride_bytes,
+        )
+
+    argument_names = (tuple(dispatch.arguments) if dispatch is not None and len(dispatch.arguments) == len(node.inputs)
+                      else tuple(f"argument_{index}" for index in range(len(node.inputs))))
+    for input_id, argument_name in zip(node.inputs, argument_names, strict=True):
+        is_reference = isinstance(logical_type(module.node_map[input_id].type), RefType)
+        effect = effect_map.get(
+            argument_name,
+            MemoryEffect.NONE if has_typed_effects else MemoryEffect.READ,
+        )
+        buffers = bindings.get(input_id, ())
+        leaf_effects = expand_memory_effect(module.node_map[input_id].type, effect)
+        for buffer_id, leaf_effect in zip(buffers, leaf_effects if buffers else (), strict=True):
+            if leaf_effect.physical_mode is not MemoryAccessMode.NONE:
+                add(
+                    buffer_id,
+                    leaf_effect,
+                    reference_access=is_reference,
+                    publishes=publishes_across_chip,
+                    input_access=True,
+                )
+    output_buffers = tuple(bindings.get(node.id, ()))
+    output_effects = _expanded_output_effects(
+        module,
+        node,
+        dispatch,
+        effect_map,
+        has_typed_effects,
+        len(output_buffers),
+    )
+    for buffer_id, output_effect in zip(output_buffers, output_effects, strict=True):
+        if output_effect.physical_mode is not MemoryAccessMode.NONE:
+            add(buffer_id, output_effect, publishes=publishes_across_chip)
+    workspace_binding = plan.kernel_call_map.get(node.id)
+    if workspace_binding is not None:
+        # Invocation lifetime permits SAT reuse, but does not mean all owners
+        # have finished reading scratch when one owner returns from the call.
+        # Scratch is a mutable ABI buffer, not an SSA output. Include both its
+        # writes and final reads so reuse by another scratch or ordinary value
+        # observes the arena's real sharing scope (block-local remains local).
+        for _, buffer_id in workspace_binding.workspaces:
+            add(buffer_id, MemoryEffect.READ_WRITE)
+    return tuple(result.values())
+
+
+def _expanded_output_effects(
+    module: IRModule,
+    node,
+    dispatch,
+    effect_map,
+    has_typed_effects: bool,
+    output_buffer_count: int,
+) -> tuple[MemoryEffect, ...]:
+    if dispatch is None:
+        return (MemoryEffect.WRITE, ) * output_buffer_count
+    default = MemoryEffect.NONE if has_typed_effects else MemoryEffect.WRITE
+    effects = tuple(effect_map.get(name, default) for name in dispatch.outputs)
+    primitive = module.kernel_callable_map.get(str(node.attrs.get("callee", "")))
+    if primitive is None or len(primitive.output_parameters) != len(effects):
+        return (_merge_effects(effects), ) * output_buffer_count
+    expanded = tuple(leaf for parameter, effect in zip(primitive.output_parameters, effects, strict=True)
+                     for leaf in expand_memory_effect(parameter.type, effect))
+    return (expanded if len(expanded) == output_buffer_count else (_merge_effects(effects), ) * output_buffer_count)
+
+
+def _conflicts(previous: _Access, current: _Access) -> bool:
+    # Two accesses can only conflict when they overlap the same physical
+    # bytes.  That test is a handful of comparisons and rejects almost every
+    # candidate pair, so it runs before the effect/partition analysis below;
+    # the predicate is a conjunction, so the order does not change its result.
+    if not (previous.storage == current.storage and previous.physical_id == current.physical_id and previous.offset
+            < current.offset + current.nbytes and current.offset < previous.offset + previous.nbytes):
+        return False
+    producer_reads = bool(previous.effect.physical_mode & MemoryAccessMode.READ)
+    producer_writes = bool(previous.effect.physical_mode & MemoryAccessMode.WRITE)
+    consumer_reads = bool(current.effect.physical_mode & MemoryAccessMode.READ)
+    consumer_writes = bool(current.effect.physical_mode & MemoryAccessMode.WRITE)
+    requires_synchronization = ((producer_writes and consumer_reads) or (producer_reads and consumer_writes)
+                                or (producer_writes and consumer_writes and previous.buffer != current.buffer))
+    return bool(requires_synchronization and _partitions_may_alias(previous.access_partition, current.access_partition))
+
+
+def _conflict_requirement(conflicts: list[tuple[_Access, _Access]], ) -> tuple[str, tuple[int, ...]]:
+    """Infer the weakest barrier and owner axis group for all byte hazards.
+
+    This is the executable subset of the reference ``MemoryEffectAnalyzer`` scope
+    rule.  Ordinary storage and a RAW whose producer/consumer retain the exact
+    same distributed owner map are block-local.  Reference effects, explicit
+    collective/synchronized implementations, and a changed/unknown owner map
+    require chip synchronization.  A future axis-group representation can
+    refine the latter without weakening this contract.
+    """
+
+    requirements = tuple(_hazard_requirement(previous, current) for previous, current in conflicts)
+    if any(scope == "device" for scope, _, _ in requirements):
+        return "device", ()
+    if all(scope == "block" for scope, _, _ in requirements):
+        return "block", ()
+    chip = tuple(value for value in requirements if value[0] == "grid")
+    placements = {value[2] for value in chip}
+    if any(not axes for _, axes, _ in chip) or len(placements) != 1:
+        return "grid", ()
+    placement = next(iter(placements))
+    if placement is None:
+        return "grid", ()
+    axes = tuple(sorted({axis for _, values, _ in chip for axis in values}))
+    block_axes = _block_axes(placement)
+    return ("grid", ()) if axes == block_axes else ("grid", axes)
+
+
+def _hazard_requirement(
+    previous: _Access,
+    current: _Access,
+) -> tuple[str, tuple[int, ...], object | None]:
+    producer = previous.distributed_type
+    consumer = current.distributed_type
+    placement = (producer.placement if producer is not None and consumer is not None
+                 and producer.placement == consumer.placement else None)
+    if _requires_device(previous) or _requires_device(current):
+        # One side of the hazard reads or writes a peer chip's instance of these
+        # bytes.  Chip-local barriers order nothing across chips, so the event
+        # must escalate to a device rendezvous.
+        return "device", (), placement
+    if previous.effect.access_domain.is_same_fixed_block(current.effect.access_domain) and (
+            None if producer is None else producer.placement) == (None if consumer is None else consumer.placement):
+        return "block", (), placement
+    if (_resolved_scope(previous) is MemoryAccessScope.BLOCK and _resolved_scope(current) is MemoryAccessScope.BLOCK):
+        # Match the reference ordering: a physically replicated block-local arena
+        # cannot create a cross-block byte hazard, even when the producing op
+        # also has collective semantics for another operand or result.
+        return "block", (), placement
+    exclusive_axes = None
+    if producer is not None and consumer is not None:
+        exclusive_axes = exclusive_transition_axes(producer, consumer)
+    if exclusive_axes is not None:
+        # A B/E publication or selection only needs to rendezvous owners on
+        # the E axes. This must precede the generic full-chip fallback:
+        # canonical/global storage is chip-visible, but E defines the only
+        # owner group that writes or consumes the value.
+        if exclusive_axes:
+            return "grid", exclusive_axes, placement
+        return "block", (), placement
+    if previous.requires_full_chip or current.requires_full_chip:
+        return "grid", (), placement
+    producer_reads = bool(previous.effect.physical_mode & MemoryAccessMode.READ)
+    producer_writes = bool(previous.effect.physical_mode & MemoryAccessMode.WRITE)
+    consumer_reads = bool(current.effect.physical_mode & MemoryAccessMode.READ)
+    consumer_writes = bool(current.effect.physical_mode & MemoryAccessMode.WRITE)
+    has_raw = producer_writes and consumer_reads
+    has_war = producer_reads and consumer_writes
+    has_waw = (producer_writes and consumer_writes and previous.buffer != current.buffer)
+    if has_raw and not has_war and not has_waw:
+        axes = _infer_raw_axis_group(previous, current)
+        if axes is not None:
+            if not axes:
+                return "block", (), placement
+            return "grid", axes, placement
+    if has_war and not has_raw and not has_waw:
+        # A WAR is the ownership dual of a RAW: every old reader must finish
+        # before a new writer may reuse the byte range.  Reverse the owner-map
+        # relation so a broadcast reader followed by an axis-sharded writer,
+        # for example, rendezvous only on the newly introduced owner axis.
+        axes = _infer_raw_axis_group(current, previous)
+        if axes is not None:
+            if not axes:
+                return "block", (), placement
+            return "grid", axes, placement
+    return "grid", (), placement
+
+
+def _requires_device(access: _Access) -> bool:
+    """Whether this access reaches another chip's instance of the bytes.
+
+    A typed partial-group access reaches every owner of that group, including
+    peer chips. Ordinary local accesses to the same type do not. Storage alone
+    cannot establish that distinction.
+    """
+    if access.effect.scope is MemoryAccessScope.DEVICE:
+        return True
+    value_type = access.distributed_type
+    return (access.effect.owner_access is MemoryOwnerAccess.PARTIAL_GROUP and value_type is not None
+            and value_type.partial is not None and any(
+                value_type.placement.hierarchy_levels[axis] in {"c", "d"} and value_type.placement.hierarchy[axis] > 1
+                for axis in value_type.partial.axes))
+
+
+def _resolved_scope(access: _Access) -> MemoryAccessScope:
+    if access.effect.scope is not MemoryAccessScope.INFERRED:
+        return access.effect.scope
+    if access.sharing_scope is MemorySharingScope.BLOCK:
+        return MemoryAccessScope.BLOCK
+    return (
+        MemoryAccessScope.CHIP if access.sharing_scope in {
+            MemorySharingScope.DIE,
+            MemorySharingScope.CHIP,
+        } or access.is_reference
+        # The current NVIDIA workspace is explicitly chip-scoped. Distributed
+        # views in that arena are therefore chip-visible unless pure-RAW
+        # owner-map inference below proves a block or placement-axis group.
+        or access.distributed_type is not None or access.distributed_storage_kind in {
+            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+        } else MemoryAccessScope.BLOCK)
+
+
+def _resolve_access_partition(
+    effect: MemoryEffect,
+    node,
+    module: IRModule,
+) -> tuple[str, object | None]:
+    partition = effect.access_partition
+    if partition.kind is MemoryAccessPartitionKind.WHOLE_RESOURCE:
+        return ("whole", None)
+    assert partition.argument_index is not None
+    if partition.argument_index >= len(node.inputs):
+        # Verification of a selected kernel must reject this eventually.  At
+        # planning time an invalid dynamic provider is conservatively treated
+        # as the whole resource rather than proving a false disjointness.
+        return ("whole", None)
+    selector = module.node_map[node.inputs[partition.argument_index]]
+    if selector.op in {"builtin.scalar_const", "tir.scalar_const"}:
+        value = selector.attrs.get("value")
+        if isinstance(value, int) and not isinstance(value, bool):
+            return ("static", value)
+    return ("symbolic", selector.id)
+
+
+def _partitions_may_alias(
+    lhs: tuple[str, object | None],
+    rhs: tuple[str, object | None],
+) -> bool:
+    # This deliberately mirrors the reference ResolvedMemoryAccessPartition:
+    # distinct compile-time integers prove disjointness; whole-resource and
+    # symbolic selectors remain conservative, even when their SSA ids differ.
+    return not (lhs[0] == rhs[0] == "static" and lhs[1] != rhs[1])
+
+
+def _infer_raw_axis_group(
+    previous: _Access,
+    current: _Access,
+) -> tuple[int, ...] | None:
+    producer = previous.distributed_type
+    consumer = current.distributed_type
+    if (producer is None or consumer is None or producer.placement != consumer.placement
+            or producer.partial != consumer.partial):
+        return None
+    if producer.exclusive is not None and producer.exclusive == consumer.exclusive:
+        # E->E values remain on one owner and do not cross an owner boundary.
+        return ()
+    exclusive_axes = exclusive_transition_axes(producer, consumer)
+    if exclusive_axes is not None:
+        return exclusive_axes
+    # SBP describes ownership of logical coordinates, not ownership of an
+    # arbitrary reused arena address. A shifted allocation can make writer
+    # owner 0 alias reader owner 1 despite identical SBP. Likewise a compact
+    # owner-major array and canonical cyclic storage have different byte maps.
+    # The logical owner-map proof below applies only at a common physical
+    # origin and in the same coordinate system/owner stride.
+    if previous.offset != current.offset:
+        return None
+    producer_storage = previous.distributed_storage_kind
+    consumer_storage = current.distributed_storage_kind
+    if producer_storage != consumer_storage and not (producer_storage.exposes_logical_coordinates
+                                                     and consumer_storage.exposes_logical_coordinates):
+        return None
+    if (producer_storage in {
+            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+    } and (previous.nbytes != current.nbytes or previous.owner_stride_bytes != current.owner_stride_bytes)):
+        return None
+    producer_split = _split_assignments(producer)
+    consumer_split = _split_assignments(consumer)
+    if producer_split is None or consumer_split is None:
+        return None
+    producer_assignments, producer_orders = producer_split
+    consumer_assignments, consumer_orders = consumer_split
+    for tensor_axis in range(max(len(producer.axis_policies), len(consumer.axis_policies))):
+        producer_order = producer_orders.get(tensor_axis, ())
+        consumer_order = consumer_orders.get(tensor_axis, ())
+        common = tuple(axis for axis in producer_order if axis in consumer_order)
+        if common != tuple(axis for axis in consumer_order if axis in producer_order):
+            return None
+        removes_axis = any(axis not in consumer_order for axis in producer_order)
+        if removes_axis and (len(consumer_order) > len(producer_order)
+                             or producer_order[:len(consumer_order)] != consumer_order):
+            return None
+        if removes_axis and consumer_order and not _is_prefix_coarsening(
+                producer.axis_policies[tensor_axis],
+                consumer.axis_policies[tensor_axis],
+                producer,
+                consumer,
+                tensor_axis,
+        ):
+            return None
+    required: list[int] = []
+    for access, distributed in ((previous, producer), (current, consumer)):
+        if (access.effect.owner_access is MemoryOwnerAccess.PARTIAL_GROUP and distributed.partial is not None):
+            required.extend(distributed.partial.axes)
+    for access, assignments in (
+        (previous, producer_assignments),
+        (current, consumer_assignments),
+    ):
+        if (access.distributed_storage_kind not in {
+                DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                DistributedBufferStorageKind.COMPACT_PER_CHIP,
+        } and access.sharing_scope is not MemorySharingScope.BLOCK):
+            # The current FlagMega workspace has no # BlockLocalData pool stride. A canonical/global component is
+            # physically shared by owners on every unassigned (broadcast)
+            # mesh axis, so those owners must rendezvous before a RAW. Fully
+            # sharded or compact-per-owner components remain block-local.
+            required.extend(axis for axis in _block_axes(producer.placement) if axis not in assignments)
+    for axis in sorted(set(producer_assignments) | set(consumer_assignments)):
+        producer_tensor_axis = producer_assignments.get(axis)
+        consumer_tensor_axis = consumer_assignments.get(axis)
+        if (producer_tensor_axis is not None and consumer_tensor_axis is not None
+                and producer_tensor_axis != consumer_tensor_axis):
+            return None
+        if producer_tensor_axis is not None and consumer_tensor_axis is None:
+            required.append(axis)
+    for tensor_axis in range(min(len(producer.axis_policies), len(consumer.axis_policies))):
+        producer_order = producer_orders.get(tensor_axis, ())
+        consumer_order = consumer_orders.get(tensor_axis, ())
+        if (producer_order and producer_order == consumer_order and not _equivalent_split_byte_units(
+                producer.axis_policies[tensor_axis],
+                consumer.axis_policies[tensor_axis],
+                producer,
+                consumer,
+                tensor_axis,
+        )):
+            required.extend(producer_order)
+    axes = tuple(sorted(set(required)))
+    block_axes = _block_axes(producer.placement)
+    if any(axis not in block_axes for axis in axes):
+        return None
+    return axes
+
+
+def _split_assignments(distributed_type: DistributedType):
+    assignments: dict[int, int] = {}
+    orders: dict[int, tuple[int, ...]] = {}
+    for tensor_axis, policy in enumerate(distributed_type.axis_policies):
+        if not isinstance(policy, SBPSplit):
+            continue
+        axes = tuple(policy.hierarchy_axes)
+        if (len(set(axes)) != len(axes) or any(
+                axis >= distributed_type.placement.rank or not distributed_type.placement.is_physical_block_axis(axis)
+                for axis in axes)):
+            return None
+        orders[tensor_axis] = axes
+        for axis in axes:
+            if axis in assignments:
+                return None
+            assignments[axis] = tensor_axis
+    return assignments, orders
+
+
+def _is_prefix_coarsening(
+    producer_policy,
+    consumer_policy,
+    producer_type: DistributedType,
+    consumer_type: DistributedType,
+    tensor_axis: int,
+) -> bool:
+    if not isinstance(producer_policy, SBPSplit) or not isinstance(consumer_policy, SBPSplit):
+        return False
+    producer_index = 0
+    for consumer_index, consumer_stage in enumerate(consumer_policy.stages):
+        if producer_index >= len(producer_policy.stages):
+            return False
+        producer_stage = producer_policy.stages[producer_index]
+        producer_index += 1
+        if producer_stage == consumer_stage:
+            continue
+        if (consumer_index != len(consumer_policy.stages) - 1
+                or producer_stage.hierarchy_axes[:len(consumer_stage.hierarchy_axes)] != consumer_stage.hierarchy_axes
+                or not isinstance(producer_stage.distribution, ContiguousSplit)
+                or not isinstance(consumer_stage.distribution, ContiguousSplit)):
+            return False
+        producer_granularity = producer_stage.distribution.granularity
+        consumer_granularity = consumer_stage.distribution.granularity
+        if producer_granularity is None or consumer_granularity is None:
+            return producer_granularity is consumer_granularity
+        if (not producer_granularity.is_fixed or not consumer_granularity.is_fixed
+                or not _same_fixed_axis_byte_extent(producer_type, consumer_type, tensor_axis)):
+            return False
+        removed_axes = producer_stage.hierarchy_axes[len(consumer_stage.hierarchy_axes):]
+        removed_owner_count = 1
+        for axis in removed_axes:
+            removed_owner_count *= producer_type.placement.hierarchy[axis]
+        producer_bytes = (producer_granularity.fixed_value * producer_type.tensor.dtype.itemsize * removed_owner_count)
+        consumer_bytes = (consumer_granularity.fixed_value * consumer_type.tensor.dtype.itemsize)
+        return producer_bytes == consumer_bytes
+    return True
+
+
+def _same_fixed_axis_byte_extent(
+    lhs: DistributedType,
+    rhs: DistributedType,
+    tensor_axis: int,
+) -> bool:
+    """Compare split-axis units after vector pack/unpack reinterpretation."""
+
+    if (tensor_axis >= len(lhs.tensor.shape) or tensor_axis >= len(rhs.tensor.shape)):
+        return False
+    lhs_extent = lhs.tensor.shape[tensor_axis]
+    rhs_extent = rhs.tensor.shape[tensor_axis]
+    return (lhs_extent.is_fixed and rhs_extent.is_fixed and lhs_extent.fixed_value * lhs.tensor.dtype.itemsize
+            == rhs_extent.fixed_value * rhs.tensor.dtype.itemsize)
+
+
+def _equivalent_split_byte_units(
+    lhs_policy,
+    rhs_policy,
+    lhs_type: DistributedType,
+    rhs_type: DistributedType,
+    tensor_axis: int,
+) -> bool:
+    """Compare an unchanged split owner map in physical byte coordinates."""
+
+    if lhs_policy == rhs_policy:
+        return True
+    if (not isinstance(lhs_policy, SBPSplit) or not isinstance(rhs_policy, SBPSplit)
+            or len(lhs_policy.stages) != len(rhs_policy.stages)
+            or not _same_fixed_axis_byte_extent(lhs_type, rhs_type, tensor_axis)):
+        return False
+    for lhs_stage, rhs_stage in zip(lhs_policy.stages, rhs_policy.stages, strict=True):
+        if lhs_stage.hierarchy_axes != rhs_stage.hierarchy_axes:
+            return False
+        lhs_distribution = lhs_stage.distribution
+        rhs_distribution = rhs_stage.distribution
+        if not isinstance(lhs_distribution, ContiguousSplit) or not isinstance(rhs_distribution, ContiguousSplit):
+            return False
+        lhs_granularity = lhs_distribution.granularity
+        rhs_granularity = rhs_distribution.granularity
+        if lhs_granularity is None or rhs_granularity is None:
+            if lhs_granularity is not rhs_granularity:
+                return False
+            continue
+        if not lhs_granularity.is_fixed or not rhs_granularity.is_fixed:
+            return False
+        if (lhs_granularity.fixed_value * lhs_type.tensor.dtype.itemsize
+                != rhs_granularity.fixed_value * rhs_type.tensor.dtype.itemsize):
+            return False
+    return True
+
+
+def _block_axes(placement) -> tuple[int, ...]:
+    return tuple(axis for axis in range(placement.rank) if placement.is_physical_block_axis(axis))
+
+
+def _merge_access_scope(
+    lhs: MemoryAccessScope,
+    rhs: MemoryAccessScope,
+) -> MemoryAccessScope:
+    if MemoryAccessScope.DEVICE in {lhs, rhs}:
+        return MemoryAccessScope.DEVICE
+    if MemoryAccessScope.CHIP in {lhs, rhs}:
+        return MemoryAccessScope.CHIP
+    if MemoryAccessScope.BLOCK in {lhs, rhs}:
+        return MemoryAccessScope.BLOCK
+    return MemoryAccessScope.INFERRED
+
+
+def _merge_effects(effects: tuple[MemoryEffect, ...]) -> MemoryEffect:
+    if not effects:
+        return MemoryEffect.WRITE
+    result = effects[0]
+    for value in effects[1:]:
+        result = MemoryEffect(
+            result.mode | value.mode,
+            _merge_access_scope(result.scope, value.scope),
+            result.kind if result.kind == value.kind else "direct",
+            result.access_domain if result.access_domain == value.access_domain else MemoryAccessDomain(),
+            result.access_partition if result.access_partition == value.access_partition else {},
+            result.owner_access if result.owner_access == value.owner_access else MemoryOwnerAccess.PARTIAL_GROUP,
+        )
+    return result
+
+
+def _mode_name(mode: MemoryAccessMode) -> str:
+    if mode == MemoryAccessMode.READ:
+        return "read"
+    if mode == MemoryAccessMode.WRITE:
+        return "write"
+    return "read_write"
+
+
+__all__ = ["plan_memory_synchronization"]

@@ -1,0 +1,223 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""Target policy for physically realizing a semantic distributed reshard."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+from typing import Protocol
+
+from triton.flagmega.ir import (
+    DistributedType,
+    IRType,
+    TensorType,
+    boxing_crossing_chip_axes,
+    is_local_shard_subview,
+    sharded_view_error,
+)
+
+
+class DistributedReshardRealization(str, Enum):
+    BOXING = "boxing"
+    SHARDED_VIEW = "sharded_view"
+    UNSUPPORTED = "unsupported"
+
+
+class DistributedReshardSourceKind(str, Enum):
+    CONSTANT = "constant"
+    INTERNAL = "internal"
+    FUNCTION_PARAMETER = "function_parameter"
+
+
+class DistributedReshardUsageKind(str, Enum):
+    INTERNAL = "internal"
+    FUNCTION_BOUNDARY = "function_boundary"
+    PROGRAM_OUTPUT = "program_output"
+
+
+@dataclass(frozen=True)
+class DistributedReshardRealizationContext:
+    source_type: IRType
+    target_type: IRType
+    source_kind: DistributedReshardSourceKind
+    usage_kind: DistributedReshardUsageKind
+
+
+class DistributedReshardRealizationPolicy(Protocol):
+
+    def uses_sharded_views_for_constants(self) -> bool:
+        ...
+
+    def classify(
+        self,
+        context: DistributedReshardRealizationContext,
+    ) -> DistributedReshardRealization:
+        ...
+
+
+class NttDistributedReshardRealizationPolicy:
+    """Reshard realization shared by NTT targets with unified constant storage."""
+
+    def __init__(self, *, unified_shared_storage: bool = False) -> None:
+        self._unified_shared_storage = bool(unified_shared_storage)
+
+    def uses_sharded_views_for_constants(self) -> bool:
+        return self._unified_shared_storage
+
+    def classify(
+        self,
+        context: DistributedReshardRealizationContext,
+    ) -> DistributedReshardRealization:
+        """Decide the realization, then reject one it cannot address.
+
+        Subclasses override ``_classify_realization``, so the peer-addressing
+        constraint below holds for every NTT policy.  It is applied to the
+        answer rather than to the request because a proven chip-local view
+        needs no peer addressing. A view cannot replace a required gather:
+        its consumer would read bytes absent from the local chip instance.
+        """
+
+        realization = self._classify_realization(context)
+        if (realization is DistributedReshardRealization.BOXING and reads_unaddressable_peer_instance(context)):
+            return DistributedReshardRealization.UNSUPPORTED
+        return realization
+
+    def _classify_realization(
+        self,
+        context: DistributedReshardRealizationContext,
+    ) -> DistributedReshardRealization:
+        from triton.flagmega.passes.auto_distributed.reshard import can_box
+
+        if not can_box(context.source_type, context.target_type):
+            return DistributedReshardRealization.UNSUPPORTED
+        if _is_exclusive_transition(context.source_type, context.target_type):
+            return DistributedReshardRealization.SHARDED_VIEW
+        if self.can_alias_constant(context):
+            return DistributedReshardRealization.SHARDED_VIEW
+        return DistributedReshardRealization.BOXING
+
+    def can_alias_constant(
+        self,
+        context: DistributedReshardRealizationContext,
+    ) -> bool:
+        if (not self._unified_shared_storage or context.source_kind != DistributedReshardSourceKind.CONSTANT
+                or not isinstance(context.target_type, DistributedType)
+                or sharded_view_error(context.source_type, context.target_type) is not None):
+            return False
+        if isinstance(context.source_type, TensorType):
+            return True
+        return (isinstance(context.source_type, DistributedType)
+                and is_local_shard_subview(context.source_type, context.target_type))
+
+
+class PyNttDistributedReshardRealizationPolicy(NttDistributedReshardRealizationPolicy):
+    """PyNTT alias policy for its persistent unified-memory execution model."""
+
+    def __init__(self) -> None:
+        super().__init__(unified_shared_storage=True)
+
+    def _classify_realization(
+        self,
+        context: DistributedReshardRealizationContext,
+    ) -> DistributedReshardRealization:
+        from triton.flagmega.passes.auto_distributed.reshard import can_box
+
+        if not can_box(context.source_type, context.target_type):
+            return DistributedReshardRealization.UNSUPPORTED
+        if _is_exclusive_transition(context.source_type, context.target_type):
+            return DistributedReshardRealization.SHARDED_VIEW
+        if (not isinstance(context.target_type, DistributedType)
+                or sharded_view_error(context.source_type, context.target_type) is not None):
+            return DistributedReshardRealization.BOXING
+        if self.can_alias_constant(context):
+            return DistributedReshardRealization.SHARDED_VIEW
+        # Plain tensor parameters denote complete canonical storage on their
+        # chip. Unified-memory kernels can read an owner-local view directly;
+        # copying them into each execution mesh would create redundant programs
+        # and tie this boundary to a default mesh. Prove the chip coordinates,
+        # dtype and ownership before treating the requested distribution as a
+        # read-only view. Partial values still require explicit publication.
+        if (isinstance(context.source_type, TensorType) and context.usage_kind == DistributedReshardUsageKind.INTERNAL):
+            from triton.flagmega.ir.distributed_type import chip_view_error
+            if chip_view_error(context.source_type, context.target_type) is None:
+                return DistributedReshardRealization.SHARDED_VIEW
+        if (context.usage_kind not in {
+                DistributedReshardUsageKind.INTERNAL,
+                # Callee-owned canonical storage has the same layout proof
+                # at a return as at an internal use. Its completion is still
+                # priced/scheduled before the caller can read remote shards.
+                DistributedReshardUsageKind.FUNCTION_BOUNDARY,
+                DistributedReshardUsageKind.PROGRAM_OUTPUT,
+        } or not isinstance(context.source_type, DistributedType)):
+            return DistributedReshardRealization.BOXING
+
+        source_type = context.source_type
+        target_type = context.target_type
+        if (is_local_shard_subview(source_type, target_type)
+                and _can_materialize_canonical_chip_view(source_type, target_type)):
+            return DistributedReshardRealization.SHARDED_VIEW
+        if context.source_kind != DistributedReshardSourceKind.INTERNAL:
+            return DistributedReshardRealization.BOXING
+        return (DistributedReshardRealization.SHARDED_VIEW if _can_materialize_canonical_chip_view(
+            source_type, target_type) else DistributedReshardRealization.BOXING)
+
+
+def reads_unaddressable_peer_instance(context: DistributedReshardRealizationContext, ) -> bool:
+    """Whether this reshard would read a peer chip's copy of opaque storage.
+
+    A chip-crossing Boxing addresses the source on every peer chip through the
+    FlagCX symmetric window, which requires the source bytes to live in a pool
+    the runtime registers as that window.  A function parameter is an opaque
+    pointer the caller supplies: its peer-side base is not the pool's, so no
+    peer address for it exists.  Such a reshard is therefore not realizable at
+    this boundary, and reporting that here lets the boundary planner choose a
+    parameter ABI whose restore stays chip-local instead of emitting a Boxing
+    that only fails once codegen tries to build the remote pointer.
+    """
+
+    if context.source_kind is not DistributedReshardSourceKind.FUNCTION_PARAMETER:
+        return False
+    return bool(boxing_crossing_chip_axes(context.source_type, context.target_type))
+
+
+def _is_exclusive_transition(source_type: IRType, target_type: IRType) -> bool:
+    if (isinstance(target_type, DistributedType) and target_type.exclusive is not None
+            and isinstance(source_type, TensorType)):
+        return True
+    return (
+        isinstance(source_type, DistributedType) and isinstance(target_type, DistributedType)
+        and source_type.placement == target_type.placement and source_type.partial is None
+        and target_type.partial is None and source_type.exclusive != target_type.exclusive
+        and (source_type.exclusive is not None or target_type.exclusive is not None)
+        # Exclusive changes participation, not which bytes reside on a chip.
+        # In particular, Sc -> E(block) and E(chip) -> B still need a gather.
+        and not boxing_crossing_chip_axes(source_type, target_type))
+
+
+def _can_materialize_canonical_chip_view(
+    source_type: DistributedType,
+    target_type: DistributedType,
+) -> bool:
+    # Comparing only the tensor axis that owns each chip misses changes to
+    # split granularity/stages. Prove actual per-chip region containment.
+    if source_type.placement != target_type.placement:
+        from triton.flagmega.ir.distributed_type import chip_view_error
+        return chip_view_error(source_type, target_type) is None
+    return not boxing_crossing_chip_axes(source_type, target_type)
+
+
+class CanonicalStorageReshardRealizationPolicy(PyNttDistributedReshardRealizationPolicy):
+    """Compatibility spelling for the former PyNTT-only policy name."""
+
+
+__all__ = [
+    "CanonicalStorageReshardRealizationPolicy",
+    "DistributedReshardRealization",
+    "DistributedReshardRealizationContext",
+    "DistributedReshardRealizationPolicy",
+    "DistributedReshardSourceKind",
+    "DistributedReshardUsageKind",
+    "NttDistributedReshardRealizationPolicy",
+    "PyNttDistributedReshardRealizationPolicy",
+]

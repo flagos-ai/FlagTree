@@ -1,0 +1,128 @@
+{# Copyright 2026 FlagOS Contributors
+   SPDX-License-Identifier: MIT #}{% macro mesh_coordinates() -%}
+{% if distributed_entry %}
+{% set effective_mesh_rank = mesh_rank | default(mesh_hierarchy | length) %}
+{% set effective_mesh_levels = mesh_levels | default("b" * effective_mesh_rank) %}
+{% if tasks_per_owner | default(1) > 1 %}
+    _flagmega_task_index = tle.shard_id(FLAGMEGA_GRID_MESH, 'block_task').to(tl.int64)
+{% endif %}
+{% if "device" in (mesh_axis_sources | default(())) %}
+    _flagmega_device_rank = tle.shard_id(FLAGMEGA_GRID_MESH, "device", device_dptr=device_dptr).to(tl.int64)
+{% endif %}
+{% if "node" in (mesh_axis_sources | default(())) %}
+    _flagmega_node_rank = tle.shard_id(FLAGMEGA_GRID_MESH, "node", device_dptr=device_dptr).to(tl.int64)
+{% endif %}
+{% for axis in range(effective_mesh_rank) %}
+{% if (mesh_axis_sources | default(effective_mesh_levels))[axis] == "device" %}
+    shard_coord{{ axis }} = ((_flagmega_device_rank // {{ mesh_coordinate_strides[axis] }}) % {{ mesh_hierarchy[axis] }})
+{% elif (mesh_axis_sources | default(effective_mesh_levels))[axis] == "node" %}
+    shard_coord{{ axis }} = ((_flagmega_node_rank // {{ mesh_coordinate_strides[axis] }}) % {{ mesh_hierarchy[axis] }})
+{% elif effective_mesh_levels[axis] == "b" %}
+{% if dynamic_execution | default(false) %}
+    {# B data has one chip-local logical owner; physical CTA ids belong only
+       to the selected dynamic task mapping, never to this data coordinate. #}
+    shard_coord{{ axis }} = tl.full((), 0, tl.int64)
+{% else %}
+    shard_coord{{ axis }} = tle.shard_id(FLAGMEGA_GRID_MESH, '{{ mesh_axis_names[axis] }}').to(tl.int64)
+{% endif %}
+{% else %}
+    shard_coord{{ axis }} = tl.full((), 0, tl.int64)
+{% endif %}
+{% endfor %}
+{% if effective_mesh_rank == 2 %}
+    shard_y = shard_coord0
+    shard_x = shard_coord1
+{% endif %}
+{% set linear = namespace(expression="") %}
+{% for axis in range(effective_mesh_rank) %}
+{% if loop.first %}
+{% set linear.expression = "shard_coord" ~ axis %}
+{% else %}
+{% set linear.expression = "(" ~ linear.expression ~ " * " ~ mesh_hierarchy[axis] ~ " + shard_coord" ~ axis ~ ")" %}
+{% endif %}
+{% endfor %}
+    shard_index = {{ linear.expression }}
+{% set block_axes = [] %}
+{% for axis in range(effective_mesh_rank) %}
+{% if effective_mesh_levels[axis] == "b" %}
+{% set _ = block_axes.append(axis) %}
+{% endif %}
+{% endfor %}
+{% set block_linear = namespace(expression="0") %}
+{% for axis in block_axes %}
+{% set block_linear.expression = "(" ~ block_linear.expression ~ " * " ~ mesh_hierarchy[axis] ~ " + shard_coord" ~ axis ~ ")" %}
+{% endfor %}
+    block_index = {{ block_linear.expression }}
+{% if tasks_per_owner | default(1) > 1 %}
+    block_index = block_index * {{ tasks_per_owner }} + _flagmega_task_index
+{% endif %}
+{% else %}
+{% set effective_mesh_rank = mesh_rank | default(mesh_hierarchy | length) %}
+{% for axis in range(effective_mesh_rank) %}
+    shard_coord{{ axis }} = tl.full((), 0, tl.int64)
+{% endfor %}
+{% if effective_mesh_rank == 2 %}
+    shard_y = shard_coord0
+    shard_x = shard_coord1
+{% endif %}
+    shard_index = 0
+    block_index = 0
+{% endif %}
+{%- endmacro %}
+
+{% macro phase_schedule(call, phases) -%}
+{# All cross-phase values have explicit buffer/workspace ABI storage. Only
+   compute phases are device functions; synchronization stays in the caller's
+   entry-relative grid scratch scope. No register values cross the barrier. #}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+{% for phase in phases %}
+    {{ call.symbol }}__{{ phase }}({{ call.signature }})
+{% if not loop.last %}
+{{ stage_barrier() }}
+{% endif %}
+{% endfor %}
+{%- endmacro %}
+
+{% macro stage_barrier(axis_group_key=none, census=none) -%}
+{% if distributed_entry %}    tle.distributed_barrier({% if axis_group_key %}FLAGMEGA_GRID_AXIS_GROUP_{{ axis_group_key }}{% else %}FLAGMEGA_GRID_MESH{% endif %}{% if mesh_requires_device_dptr | default(false) %}, device_dptr=device_dptr{% endif %}{% if census is not none %}, census={{ census }}{% endif %})
+{% else %}    tl.debug_barrier()
+{% endif %}{%- endmacro %}
+
+{% macro device_barrier() -%}
+{# A chip barrier orders nothing between chips, so a hazard whose accesses reach
+   a peer chip's instance needs a device rendezvous.  FlagCX allocates the
+   intra-barrier slot as ``peer[myRank * nBarriers + ctaIndex]`` and the runtime
+   requests ``intraBarrierCount = 1``, so exactly one block per chip may enter
+   it.  The leader's rendezvous is bracketed by full chip barriers, which is
+   what makes it order every block of every chip. #}
+{% if distributed_entry and mesh_requires_device_dptr | default(false) %}
+{{ stage_barrier() }}
+    if block_index == 0:
+        tle.distributed_barrier(device_dptr=device_dptr, space="device")
+{{ stage_barrier() }}
+{% else %}{{ stage_barrier() }}
+{% endif %}{%- endmacro %}
+
+{% macro kernel_decorator(call, prefer_inline=false) -%}
+{# Actual op execution functions own their index/value live ranges, regardless
+   of local-shard or collective placement. Address/math helpers remain inline
+   inside these boundaries. A schedule with an internal grid barrier still
+   uses entry-relative scratch: it must be phase-split before it can move into
+   a device function. This condition is an ABI constraint, not a cost policy.
+
+   For barrier-free calls, noinline=True (below) is itself a cost policy
+   (code-size/compile-time reuse across repeated call sites), not an ABI
+   requirement -- callers may pass prefer_inline=true to opt out where
+   per-call latency matters more than shared code size. Measured on
+   BI-V150 (ITERATION.md Trial 13-15): this backend does not carry a
+   bf16-native-multiply/late-fp32-upcast micro-optimization across a
+   noinline=True call boundary (0.119ms), but does when the same callee is
+   force-inlinable (0.098ms) -- a ~17% win on that operator alone, with the
+   two forms measured bitwise-identical in output. #}
+{% if (call.internal_grid_barriers | default(0)) == 0 and not prefer_inline %}
+@triton.jit(noinline=True)
+{% else %}
+@triton.jit
+{% endif %}
+{%- endmacro %}
