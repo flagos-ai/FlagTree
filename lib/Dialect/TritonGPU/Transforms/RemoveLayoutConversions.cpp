@@ -501,13 +501,21 @@ static int64_t getByteCount(Value result, int64_t minElementCount,
                             int64_t minBitWidth);
 #endif // __FLAGTREE_RLC_ENHANCE__
 
+#ifdef __TLE__
+static bool hasTleExplicitResultEncoding(Operation *op) {
+  return llvm::any_of(op->getResults(), [&](OpResult result) {
+    return getTleExplicitResultEncoding(op, result.getResultNumber());
+  });
+}
+#endif
+
 // Return true if the op is an op with a layout we don't want to change. We will
 // propagate the layout starting from anchor ops.
 bool isLayoutAnchor(Operation *op) {
 #ifdef __TLE__
   if (isa<triton::tle::ExtractTileOp, triton::tle::InsertTileOp>(op))
     return true;
-  if (isTleExplicitConvertLayoutOp(op))
+  if (hasTleExplicitResultEncoding(op))
     return true;
   // TLE WGMMA is lowered to the native WarpGroupDot anchor later in the
   // NVIDIA pipeline. Treat it identically before that lowering so layout
@@ -586,11 +594,9 @@ void LayoutPropagation::initAnchorLayout() {
     if (isLayoutAnchor(op)) {
       for (auto result : op->getResults()) {
 #ifdef __TLE__
-        bool hard = isTleExplicitConvertLayoutOp(op);
         Attribute explicitEncoding =
-            hard ? getTleExplicitResultEncoding(op, result.getResultNumber())
-                 : nullptr;
-        addAnchor(result, explicitEncoding, hard);
+            getTleExplicitResultEncoding(op, result.getResultNumber());
+        addAnchor(result, explicitEncoding, bool(explicitEncoding));
 #else  // __TLE__
         addAnchor(result);
 #endif // __TLE__
@@ -3149,6 +3155,17 @@ void LayoutPropagation::resolveConflicts() {
 #endif // __FLAGTREE_RLC_ENHANCE__
   for (auto &it : layouts) {
     LayoutInfo &info = it.second;
+#ifdef __TLE__
+    // A directly requested layout is stronger than layouts propagated from
+    // other values, including another explicit layout across a conversion.
+    if (Attribute explicitEncoding = getTleExplicitValueEncoding(it.first)) {
+      info.encodings.clear();
+      info.encodings.insert(explicitEncoding);
+      info.hardEncodings.clear();
+      info.hardEncodings.insert(explicitEncoding);
+      continue;
+    }
+#endif
     if (info.encodings.size() <= 1)
       continue;
 #ifdef __TLE__
@@ -3777,6 +3794,10 @@ bool canBeRemat(Operation *op) {
   // flagtree: backport from Triton main: triton/pull/11001, triton/pull/12268
   if (hasEffect<MemoryEffects::Write>(op))
     return false;
+#ifdef __TLE__
+  if (hasTleExplicitResultEncoding(op))
+    return false;
+#endif
   if (isa<LoadOp, StoreOp>(op))
     return !isExpensiveLoadOrStore(op);
   if (isa<AtomicRMWOp, AtomicCASOp, DotOp>(op))
@@ -3805,6 +3826,8 @@ static bool isDuplicableLoadInEncoding(Operation *op, Attribute encoding,
   if (loadOp.getIsVolatile())
     return false;
 #ifdef __TLE__
+  if (hasTleExplicitResultEncoding(op) || getTleExplicitMemoryEncoding(op))
+    return false;
   // A load from a TLE cluster remote pointer lowers to a vectorized
   // shared::cluster load; duplicating or retagging it corrupts that access, so
   // it is never duplicable (see valueOnTleRemotePointerPath).
@@ -4268,6 +4291,10 @@ static int64_t getByteCount(Value result, int64_t minElementCount = 0,
 
 void LayoutRematerialization::backwardRematerialization(
     ConvertLayoutOp convertOp) {
+#ifdef __TLE__
+  if (isTleExplicitConvertLayoutOp(convertOp))
+    return;
+#endif
   // DotOperand is hoisted by hoistDotOperand
   RankedTensorType targetType = convertOp.getType();
 #ifdef __TLE__
@@ -4647,6 +4674,10 @@ void LayoutRematerialization::hoistConvertDotOperand() {
 
 void LayoutRematerialization::hoistConvertDotOperand(
     ConvertLayoutOp convertOp) {
+#ifdef __TLE__
+  if (isTleExplicitConvertLayoutOp(convertOp))
+    return;
+#endif
   auto targetType = convertOp.getType();
   // The pass is targeted to MMA dot operands
 
@@ -4695,6 +4726,10 @@ void LayoutRematerialization::hoistConvertDotOperand(
   // We hoist over any operation that can be done without data movement between
   // threads We do views and elementwise pure ops for now
   auto noDataMovement = [](Operation *op) {
+#ifdef __TLE__
+    if (hasTleExplicitResultEncoding(op))
+      return false;
+#endif
 #ifdef __FLAGTREE_CONCAT_DOT_OPERAND__
     // ConcatDotOperandOp is defined on logical indices, i.e. which fragment
     // element each result element is, so it commutes with a layout convert.
@@ -4774,6 +4809,10 @@ void LayoutRematerialization::hoistConvertDotOperand(
 // of the convert.
 void LayoutRematerialization::hoistConvertOnTopOfExtOrBroadcast(
     ConvertLayoutOp convertOp) {
+#ifdef __TLE__
+  if (isTleExplicitConvertLayoutOp(convertOp))
+    return;
+#endif
   // DotOperand is hoisted by hoistDotOperand
   RankedTensorType targetType = convertOp.getType();
   if (isa<DotOperandEncodingAttr>(targetType.getEncoding()))
@@ -4872,6 +4911,10 @@ void LayoutRematerialization::hoistConvertOnTopOfExtOrBroadcast(
 
 void LayoutRematerialization::hoistConvertIntoConditionals(
     ConvertLayoutOp convertOp) {
+#ifdef __TLE__
+  if (isTleExplicitConvertLayoutOp(convertOp))
+    return;
+#endif
   // Take the backward slice of tensor dependencies rooted at the conversion,
   // stopping at conditionals. This subslice is used to initialize the analysis.
   SetVector<Value> slice;
