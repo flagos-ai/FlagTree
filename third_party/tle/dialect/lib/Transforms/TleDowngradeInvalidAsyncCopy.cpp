@@ -21,7 +21,9 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#ifndef __FLAGTREE_NATIVE_CACHE_POLICY__
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#endif
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dominance.h"
@@ -88,6 +90,7 @@ static bool hasLegalCpAsyncWidth(ttg::AsyncCopyGlobalToLocalOp copyOp,
   return llvm::is_contained({4u, 8u, 16u}, vecBytes);
 }
 
+#ifndef __FLAGTREE_NATIVE_CACHE_POLICY__
 static std::optional<Region *>
 getEnclosingWarpSpecializePartition(Operation *op) {
   for (Region *region = op->getParentRegion(); region;) {
@@ -135,6 +138,7 @@ dropUnsafeLoopFreePartitionCachePolicy(ttg::AsyncCopyGlobalToLocalOp copyOp) {
   copyOp.setEvictAttr(tt::EvictionPolicyAttr::get(copyOp.getContext(),
                                                   tt::EvictionPolicy::NORMAL));
 }
+#endif
 
 static unsigned floorPowerOfTwo(unsigned value) {
   if (value == 0)
@@ -543,11 +547,52 @@ struct DowngradeInvalidAsyncCopyPass
         rematerializeLogicalAsyncCopy(copyOp, initialAxisInfo,
                                       caches[copyOp->getBlock()], dominance);
     }
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+    if (failed(downgradeCopies<tt::ModuleAxisInfoAnalysis>(module, false)) ||
+        (!plannedCopies.empty() &&
+         failed(downgradeCopies<tle::ModuleAxisInfoAnalysis>(module, true))))
+      signalPassFailure();
+#else
     downgradeCopies<tt::ModuleAxisInfoAnalysis>(module, false);
     if (!plannedCopies.empty())
       downgradeCopies<tle::ModuleAxisInfoAnalysis>(module, true);
+#endif
   }
 
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+  template <typename AxisAnalysis>
+  LogicalResult downgradeCopies(ModuleOp module, bool planned) {
+    AxisAnalysis axisInfo(module);
+    SmallVector<ttg::AsyncCopyGlobalToLocalOp> invalidCopies;
+    module.walk([&](ttg::AsyncCopyGlobalToLocalOp copyOp) {
+      if (copyOp->hasAttr(kCopyPlanAttr) != planned)
+        return;
+      // Width/layout fallback is independent of hints. Keep the original
+      // fields if the copy must become a synchronous load.
+      if (!hasLegalCpAsyncWidth(copyOp, axisInfo))
+        invalidCopies.push_back(copyOp);
+    });
+
+    IRRewriter rewriter(&getContext());
+    for (ttg::AsyncCopyGlobalToLocalOp copyOp : invalidCopies) {
+      if (copyOp->hasAttr(kTleRequiredAsyncCopyAttr)) {
+        if (succeeded(legalizeRequiredAsyncCopy(rewriter, copyOp, axisInfo)))
+          continue;
+        copyOp.emitError(
+            "explicit tle.gpu.copy(is_async=True) cannot be represented by "
+            "a legal NVIDIA cp.async width; refusing synchronous downgrade");
+        return failure();
+      }
+      if (copyOp->getBlock() &&
+          failed(downgradeAsyncCopy(rewriter, copyOp, axisInfo))) {
+        copyOp.emitError("cannot downgrade invalid async copy with non-trivial "
+                         "async token users");
+        return failure();
+      }
+    }
+    return success();
+  }
+#else
   template <typename AxisAnalysis>
   void downgradeCopies(ModuleOp module, bool planned) {
     AxisAnalysis axisInfo(module);
@@ -581,6 +626,7 @@ struct DowngradeInvalidAsyncCopyPass
       }
     }
   }
+#endif
 };
 
 } // namespace

@@ -906,6 +906,8 @@ class TritonSemantic(Generic[TensorTy]):
 # ===----------------------------------------------------------------------===//
 
     def _str_to_load_cache_modifier(self, cache_modifier):
+        if getattr(tl, "_HAS_NATIVE_CACHE_POLICY", False) and isinstance(cache_modifier, ir.CACHE_MODIFIER):
+            return cache_modifier
         cache = ir.CACHE_MODIFIER.NONE  # default
         if cache_modifier:
             if cache_modifier == ".ca":
@@ -919,6 +921,8 @@ class TritonSemantic(Generic[TensorTy]):
         return cache
 
     def _str_to_store_cache_modifier(self, cache_modifier):
+        if getattr(tl, "_HAS_NATIVE_CACHE_POLICY", False) and isinstance(cache_modifier, ir.CACHE_MODIFIER):
+            return cache_modifier
         cache = ir.CACHE_MODIFIER.NONE  # default
         if cache_modifier:
             if cache_modifier == ".wb":
@@ -934,6 +938,8 @@ class TritonSemantic(Generic[TensorTy]):
         return cache
 
     def _str_to_eviction_policy(self, eviction_policy):
+        if getattr(tl, "_HAS_NATIVE_CACHE_POLICY", False) and isinstance(eviction_policy, ir.EVICTION_POLICY):
+            return eviction_policy
         eviction = ir.EVICTION_POLICY.NORMAL  # default
         if eviction_policy:
             if eviction_policy == "evict_last":

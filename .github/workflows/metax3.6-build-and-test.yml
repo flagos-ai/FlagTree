@@ -151,3 +151,14 @@ jobs:
             test_tle_gpu_local_ptr.py \
             -k "not test_local_pointer_tiled_matmul_matches_torch and \
                 not test_local_pointer_full_view_dot_avoids_pointer_convert_layout"
+
+      - name: Test installed MetaX cache-policy lowering
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          source ~/env.sh
+          python3 -c 'from triton._flagtree_backend import FLAGTREE_BACKEND; assert FLAGTREE_BACKEND == "metax", FLAGTREE_BACKEND'
+          python3 -m pytest -q \
+            python/test/tle/integration/test_cache_policy_ir.py \
+            python/test/tle/integration/test_native_memory_policy.py \
+            python/test/tle/integration/test_tle_native_cache_policy.py

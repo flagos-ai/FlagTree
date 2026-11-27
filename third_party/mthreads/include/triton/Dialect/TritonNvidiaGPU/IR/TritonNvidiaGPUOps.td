@@ -364,7 +364,16 @@ def TTNG_AsyncTMACopyLocalToGlobalOp : TTNG_Op<"async_tma_copy_local_to_global">
   let arguments = (ins
     Arg<TT_TensorDescType, "", [MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>:$desc,
     Variadic<I32>:$coord,
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+#ifdef __TLE__
+    Arg<TTG_MemDescType, "", [MemRead<SharedMemory>]>:$src,
+    DefaultValuedAttr<TT_EvictionPolicyAttr, "triton::EvictionPolicy::NORMAL">:$evict
+#else
     Arg<TTG_MemDescType, "", [MemRead<SharedMemory>]>:$src
+#endif
+#else
+    Arg<TTG_MemDescType, "", [MemRead<SharedMemory>]>:$src
+#endif
   );
 
   let assemblyFormat = [{

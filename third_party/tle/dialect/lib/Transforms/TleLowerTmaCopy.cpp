@@ -31,6 +31,9 @@
 #include "tle/dialect/include/IR/ExactSMEM.h"
 #include "tle/dialect/include/Transforms/Passes.h"
 #include "tle/dialect/include/Transforms/TransformAttrs.h"
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+#include "triton/Dialect/Triton/IR/CacheControls.h"
+#endif
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
@@ -242,7 +245,11 @@ public:
 #endif
 
     } else {
-      if (evictionPolicy != triton::EvictionPolicy::NORMAL)
+      if (evictionPolicy != triton::EvictionPolicy::NORMAL
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+          && !triton::isL2Eviction(evictionPolicy)
+#endif
+      )
         return op.emitOpError("eviction policies are supported only for "
                               "global-to-shared TMA copies");
 #if !defined(__HCU__)
@@ -272,6 +279,9 @@ public:
       auto tmaStore =
           rewriter.create<triton::nvidia_gpu::AsyncTMACopyLocalToGlobalOp>(
               op.getLoc(), op.getDst(), indices, op.getSrc());
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+      tmaStore.setEvict(evictionPolicy);
+#endif
       tmaStore->setAttr(kTleTMAStoreExplicitCommitAttr, rewriter.getUnitAttr());
       rewriter.create<TMAStoreCommitGroupOp>(loc);
 

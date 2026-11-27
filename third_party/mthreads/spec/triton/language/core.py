@@ -21,6 +21,7 @@ T = TypeVar('T')
 TRITON_BUILTIN = "__triton_builtin__"
 
 PropagateNan = ir.PROPAGATE_NAN
+_HAS_NATIVE_CACHE_POLICY = hasattr(ir.EVICTION_POLICY, "L2_EVICT_FIRST")
 
 
 def must_use_result(x, s=True):
@@ -1267,7 +1268,8 @@ class tensor(base_value):
 
 
 def _type_for_tuple_values(values, fields=None):
-    return tuple_type([constexpr_type(x) if isinstance(x, (int, float, dtype)) else x.type for x in values], fields)
+    scalars = (int, float, str, type(None), dtype) if _HAS_NATIVE_CACHE_POLICY else (int, float, dtype)
+    return tuple_type([constexpr_type(x) if isinstance(x, scalars) else x.type for x in values], fields)
 
 
 class tuple(base_value):
@@ -2143,9 +2145,29 @@ def dot_scaled(lhs, lhs_scale, lhs_format, rhs, rhs_scale, rhs_format, acc=None,
 # -----------------------
 
 
+def _resolve_native_cache_policy(cache_policy, pointer, is_load, cache_modifier, eviction_policy, _semantic):
+    """Validate a ``cache_policy`` object for an ordinary load or store.
+
+    The core language does not know the vendor policy classes; it only
+    requires the object to implement ``resolve_memory_access`` and
+    ``to_ir``. The TLE policy base class provides both, so the dependency
+    points from the experimental layer to the core language and not back.
+    """
+    cache_policy = _unwrap_if_constexpr(cache_policy)
+    if cache_policy is None:
+        return None
+    if not _HAS_NATIVE_CACHE_POLICY:
+        raise ValueError("cache_policy requires a TLE-enabled compiler")
+    resolve = getattr(cache_policy, "resolve_memory_access", None)
+    if resolve is None or getattr(cache_policy, "to_ir", None) is None:
+        raise TypeError("cache_policy must be a native tle.gpu cache policy object or None, "
+                        f"got {type(cache_policy).__name__}")
+    return resolve(pointer, is_load, cache_modifier, eviction_policy, _semantic)
+
+
 @builtin
 def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", cache_modifier="", eviction_policy="",
-         volatile=False, _semantic=None):
+         volatile=False, _semantic=None, *, cache_policy=None):
     """
     Return a tensor of data whose values are loaded from memory at location defined by `pointer`:
 
@@ -2188,6 +2210,9 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     :type eviction_policy: str, optional
     :param volatile: changes volatile option in NVIDIA PTX
     :type volatile: bool, optional
+    :param cache_policy: Native per-access policy object, shared with ``tle.gpu.copy``.
+        Mutually exclusive with nonempty cache_modifier and eviction_policy.
+        None preserves the original memory path and default controls.
     """
     # `mask` and `other` can be constexpr
     mask = _unwrap_if_constexpr(mask)
@@ -2200,6 +2225,9 @@ def load(pointer, mask=None, other=None, boundary_check=(), padding_option="", c
     cache_modifier = _unwrap_if_constexpr(cache_modifier)
     eviction_policy = _unwrap_if_constexpr(eviction_policy)
     volatile = _unwrap_if_constexpr(volatile)
+    cache_policy = _resolve_native_cache_policy(cache_policy, pointer, True, cache_modifier, eviction_policy, _semantic)
+    if cache_policy is not None:
+        cache_modifier, eviction_policy = cache_policy.to_ir(True)
     return _semantic.load(pointer, mask, other, boundary_check, padding_option, cache_modifier, eviction_policy,
                           volatile)
 
@@ -2255,7 +2283,8 @@ def _experimental_descriptor_store(desc_pointer, value, offsets, _semantic=None)
 
 @_tensor_member_fn
 @builtin
-def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", eviction_policy="", _semantic=None):
+def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", eviction_policy="", _semantic=None, *,
+          cache_policy=None):
     """
     Store a tensor of data into memory locations defined by `pointer`.
 
@@ -2293,6 +2322,9 @@ def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", evict
         stands for cache write-through, see `cache operator <https://docs.nvidia.com/cuda/parallel-thread-execution/index.html#cache-operators>`_ for more details.
     :param eviction_policy: changes eviction policy in NVIDIA PTX
     :type eviction_policy: str, optional, should be one of {"", "evict_first", "evict_last"}
+    :param cache_policy: Native per-access policy object, shared with ``tle.gpu.copy``.
+        Mutually exclusive with nonempty cache_modifier and eviction_policy.
+        None preserves the original memory path and default controls.
     """
     # `value` can be constexpr
     value = _semantic.to_tensor(value)
@@ -2301,6 +2333,10 @@ def store(pointer, value, mask=None, boundary_check=(), cache_modifier="", evict
         mask = _semantic.to_tensor(mask)
     cache_modifier = _unwrap_if_constexpr(cache_modifier)
     eviction_policy = _unwrap_if_constexpr(eviction_policy)
+    cache_policy = _resolve_native_cache_policy(cache_policy, pointer, False, cache_modifier, eviction_policy,
+                                                _semantic)
+    if cache_policy is not None:
+        cache_modifier, eviction_policy = cache_policy.to_ir(False)
     return _semantic.store(pointer, value, mask, boundary_check, cache_modifier, eviction_policy)
 
 

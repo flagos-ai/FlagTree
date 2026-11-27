@@ -178,12 +178,26 @@ getTMEPersistence(ttg::TMACopyOp op, StringRef name) {
   if (!attr)
     return triton::musa::TMEPersistence::CACHE_NORMAL;
   auto value = dyn_cast<IntegerAttr>(attr);
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+  const int64_t maximum =
+      name == triton::musa::kTMEInnerPersistenceAttr ? 5 : 3;
+  if (!value || !value.getType().isInteger(32) || value.getInt() < 0 ||
+      value.getInt() > maximum) {
+    op.emitOpError() << name << " must be an i32 in [0, " << maximum << "]";
+    return failure();
+  }
+  if (value.getInt() > 3 && !triton::musa::isMUSACacheControlTarget(op)) {
+    op.emitOpError("native TME inner persistence requires MUSA mp_31");
+    return failure();
+  }
+#else
   if (!value || !value.getType().isInteger(32) || value.getInt() < 0 ||
       value.getInt() > 3) {
     op.emitOpError() << name << " must be an i32 in [0, 3] "
                      << "(none, once, normal, persist)";
     return failure();
   }
+#endif
   return static_cast<triton::musa::TMEPersistence>(value.getInt());
 }
 
@@ -200,10 +214,29 @@ static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
     return op.emitOpError("expects one tensor descriptor operand and one "
                           "shared memdesc operand");
   }
+
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+  int64_t prefetchSize = 0;
+  if (Attribute attr = op->getAttr("musa.tme.prefetch_size")) {
+    auto size = dyn_cast<IntegerAttr>(attr);
+    if (!size || !size.getType().isInteger(32) ||
+        (size.getInt() != 0 && size.getInt() != 64 && size.getInt() != 128 &&
+         size.getInt() != 256))
+      return op.emitOpError(
+          "TME prefetch size must be i32 0, 64, 128, or 256 bytes");
+    prefetchSize = size.getInt();
+    if (prefetchSize && !globalToLocal)
+      return op.emitOpError(
+          "TME prefetch is only supported for descriptor loads");
+    if (prefetchSize && !triton::musa::isMUSACacheControlTarget(op))
+      return op.emitOpError("TME prefetch cache hint requires MUSA mp_31");
+  }
+#else
   if (!globalToLocal && (op->hasAttr(triton::musa::kTMEInnerPersistenceAttr) ||
                          op->hasAttr(triton::musa::kTMEOuterPersistenceAttr)))
     return op.emitOpError("cache persistence is only supported for "
                           "descriptor-to-shared copies");
+#endif
 
   auto descTy = globalToLocal ? srcDescTy : dstDescTy;
   auto memDescTy = globalToLocal ? dstMemDescTy : srcMemDescTy;
@@ -233,6 +266,10 @@ static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
       return failure();
     config->innerPersistence = *inner;
     config->outerPersistence = *outer;
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+    config->prefetchSize =
+        static_cast<triton::musa::TMEPrefetchSize>(prefetchSize);
+#endif
 
     // An explicitly supplied TLE completion barrier belongs to the caller's
     // staged pipeline.  Preserve that hardware barrier ID and defer its
@@ -291,6 +328,15 @@ static LogicalResult lowerTMACopy(ttg::TMACopyOp op, RewriterBase &rewriter) {
         triton::musa::TMECopyKind::LocalToGlobal);
     if (failed(config))
       return op.emitOpError("unable to resolve final TME store config");
+
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+    auto inner = getTMEPersistence(op, triton::musa::kTMEInnerPersistenceAttr);
+    auto outer = getTMEPersistence(op, triton::musa::kTMEOuterPersistenceAttr);
+    if (failed(inner) || failed(outer))
+      return failure();
+    config->innerPersistence = *inner;
+    config->outerPersistence = *outer;
+#endif
 
     auto asyncCopy = triton::musa::createAsyncTMECopyLocalToGlobal(
         rewriter, loc, op.getDst(), *coord, op.getSrc(), pred, *config);

@@ -2204,7 +2204,11 @@ int getMmaInstNum(Type type) {
   } else if (type.isSignlessInteger(8)) {
     return 2;
   } else {
+#ifdef __FLAGTREE_NATIVE_CACHE_POLICY__
+    llvm::report_fatal_error("invalid dtype for mma");
+#else
     assert(false && "invalid dtype for mma");
+#endif
   }
 }
 

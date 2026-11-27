@@ -13,6 +13,8 @@ from lit.llvm.subst import ToolSubst
 # (config is an instance of TestingConfig created when discovering tests)
 # name: The name of this test suite
 config.name = 'TRITON-TLE'
+if getattr(config, 'enable_native_cache_policy', False):
+    config.available_features.add('flagtree-native-cache-policy')
 
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
 

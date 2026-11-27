@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 import triton.language.core as tl
 
+from .._policy_base import DESCRIPTOR, LOAD, NativeCachePolicy, POINTER, STORE
 from ..types import distributed_encoding
 
 _MUSA_PH1_VERSION = [3, 1]
@@ -54,29 +55,118 @@ _TME_CACHE_POLICIES = ("none", "once", "normal", "persist")
 
 
 @dataclass(frozen=True)
-class TMECachePolicy:
+class TMECachePolicy(NativeCachePolicy):
     """Per-copy MThreads TME inner/outer cache persistence hints.
 
-    Each field accepts ``"none"``, ``"once"``, ``"normal"``, or ``"persist"``.
+    Each field accepts ``"none"``, ``"once"``, ``"normal"``, or ``"persist"``,
+    or their integer aliases 0, 1, 2, and 3 respectively.
+    ``inner`` additionally accepts native SDK encodings 4 and 5 on mp_31;
+    their replacement semantics are not assigned portable eviction names.
+    ``prefetch_size`` accepts 0, 64, 128, or 256 bytes for descriptor loads.
     The default preserves normal persistence in both domains. Non-default
     hints are performance-sensitive and must be measured on the target kernel.
     This immutable value can be used as a ``tl.constexpr`` kernel or worker
     argument. It does not change copy completion or synchronization.
     """
 
-    inner: str = "normal"
-    outer: str = "normal"
+    backend = "mthreads"
+    kind = "tme"
+    paths = frozenset({DESCRIPTOR})
+    directions = frozenset({LOAD, STORE})
+
+    inner: str | int = "normal"
+    outer: str | int = "normal"
+    prefetch_size: int = 0
 
     def __post_init__(self):
+        if not getattr(tl, "_HAS_NATIVE_CACHE_POLICY", False):
+            for name in ("inner", "outer"):
+                value = tl._unwrap_if_constexpr(getattr(self, name))
+                if not isinstance(value, str) or value not in _TME_CACHE_POLICIES:
+                    raise ValueError(
+                        f"TMECachePolicy {name} must be a compile-time string: none, once, normal, or persist")
+                object.__setattr__(self, name, value)
+            prefetch = tl._unwrap_if_constexpr(self.prefetch_size)
+            if type(prefetch) is not int or prefetch != 0:
+                raise ValueError("TMECachePolicy prefetch_size requires native cache policy support")
+            object.__setattr__(self, "prefetch_size", 0)
+            return
         for name in ("inner", "outer"):
             value = tl._unwrap_if_constexpr(getattr(self, name))
-            if not isinstance(value, str) or value not in _TME_CACHE_POLICIES:
-                raise ValueError(f"TMECachePolicy {name} must be a compile-time string: none, once, normal, or persist")
+            if type(value) is int and value in range(4):
+                value = _TME_CACHE_POLICIES[value]
+            native_inner = name == "inner" and type(value) is int and value in (4, 5)
+            named_policy = isinstance(value, str) and value in _TME_CACHE_POLICIES
+            if not native_inner and not named_policy:
+                suffix = "; inner also accepts native integers 4 or 5" if name == "inner" else ""
+                raise ValueError(f"TMECachePolicy {name} must be none, once, normal, persist, or integer 0..3{suffix}")
             object.__setattr__(self, name, value)
+        prefetch = tl._unwrap_if_constexpr(self.prefetch_size)
+        if type(prefetch) is not int or prefetch not in (0, 64, 128, 256):
+            raise ValueError("TMECachePolicy prefetch_size must be 0, 64, 128, or 256 bytes")
+        object.__setattr__(self, "prefetch_size", prefetch)
+
+    def check_access(self, path, direction):
+        if direction == STORE and self.prefetch_size:
+            raise ValueError("TMECachePolicy prefetch_size is only supported for descriptor loads")
 
     @property
-    def type(self):
-        return tl.constexpr_type(self)
+    def inner_code(self):
+        """SDK encoding of ``inner`` (names map to 0..3, native ints pass through)."""
+        return self.inner if type(self.inner) is int else _TME_CACHE_POLICIES.index(self.inner)
+
+    @property
+    def outer_code(self):
+        return _TME_CACHE_POLICIES.index(self.outer)
+
+    def native_fields(self, is_load):
+        return {"inner": self.inner_code, "outer": self.outer_code, "prefetch_size": self.prefetch_size}
+
+
+@dataclass(frozen=True)
+class LSUCachePolicy(NativeCachePolicy):
+    """Native MUSA cache controls for pointer-based global/shared copies.
+
+    Persistence fields use SDK integers 0..5 and ``l2_policy`` uses 0 or 1.
+    These are MUSA encodings, not portable L1/L2 eviction names. ``None``
+    selects the SDK default for the copy direction: inner/outer 4/2, L2 0
+    for loads and 1 for stores. The SDK coherence control is kept at its
+    direction-specific default and is not exposed as a performance hint.
+    Explicit LSU policies on loads, stores and pointer copies require mp_31.
+    Omit the policy to use the target's default memory instruction.
+    """
+
+    backend = "mthreads"
+    kind = "lsu"
+    paths = frozenset({POINTER})
+    directions = frozenset({LOAD, STORE})
+
+    inner_persistence: int | None = None
+    outer_persistence: int | None = None
+    l2_policy: int | None = None
+
+    def __post_init__(self):
+        for name, maximum in (("inner_persistence", 5), ("outer_persistence", 5), ("l2_policy", 1)):
+            value = tl._unwrap_if_constexpr(getattr(self, name))
+            if value is not None and (type(value) is not int or not 0 <= value <= maximum):
+                raise ValueError(f"LSUCachePolicy {name} must be None or a compile-time integer in [0, {maximum}]")
+            object.__setattr__(self, name, value)
+
+    def to_ir(self, is_load):
+        from triton._C.libtriton import ir
+        fields = self.native_fields(is_load)
+        # Matches the named musa_iN_oN_lN cases in NativeCacheModifiers.td.
+        value = (128 + fields["inner_persistence"] * 12 + fields["outer_persistence"] * 2 + fields["l2_policy"])
+        return ir.CACHE_MODIFIER(value), ir.EVICTION_POLICY.NORMAL
+
+    def native_fields(self, is_load):
+        # ``None`` resolves to the SDK default for the direction here, so the
+        # compiler only ever sees concrete encodings.
+        return {
+            "inner_persistence": 4 if self.inner_persistence is None else self.inner_persistence,
+            "outer_persistence": 2 if self.outer_persistence is None else self.outer_persistence,
+            "l2_policy": (0 if is_load else 1) if self.l2_policy is None else self.l2_policy,
+        }
 
 
 class _MusaMmaEncoding(distributed_encoding):

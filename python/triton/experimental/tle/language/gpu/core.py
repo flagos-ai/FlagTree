@@ -28,6 +28,7 @@ from enum import Enum
 from triton._C.libtriton import ir
 from . import types as tle
 from . import semantic as tle_semantic
+from ._cache_policy import resolve_policy
 from .mthreads import common as mthreads_common
 from .mthreads import buffer as mthreads_buffer
 from .mthreads import copy as mthreads_copy
@@ -221,9 +222,11 @@ def _as_call_args(args):
     else:
         raise ValueError(f"warp_specialize function arguments must be a tuple, got {type(args).__name__}")
 
+    scalars = ((tl.dtype, float, int, bool, str, type(None),
+                tuple) if getattr(tl, "_HAS_NATIVE_CACHE_POLICY", False) else (tl.dtype, float, int, bool, str, tuple))
+
     def normalize(arg):
-        if isinstance(arg, (tl.dtype, float, int, bool, str, tuple)) or isinstance(getattr(arg, "type", None),
-                                                                                   tl.constexpr_type):
+        if isinstance(arg, scalars) or isinstance(getattr(arg, "type", None), tl.constexpr_type):
             return tl.constexpr(arg)
         # Distributed runtime contexts are host-side constexpr handles.  They
         # must not be captured as warp-specialize IR operands (they have no
@@ -1262,16 +1265,21 @@ def copy(
             as ``other`` (zero by default). For local-to-global copies, masked
             elements are not stored. TMA descriptor copies do not accept a
             mask.
-        cache_policy: Optional backend-specific compile-time policy object.
-            None preserves the backend's default behavior. MThreads accepts
-            ``tle.gpu.mthreads.TMECachePolicy(inner, outer)`` for
-            descriptor-to-shared copies; both fields default to ``"normal"``
-            and accept ``"none"``, ``"once"``, ``"normal"``, or ``"persist"``.
-            Other backends and CommonIR currently reject explicit policies.
-            Hints apply to this copy only and do not change synchronization.
-            Benchmark non-default policies on the target workload. Streaming
-            access alone does not justify ``inner="none"``, which can severely
-            degrade GEMM performance.
+        cache_policy: Optional native policy for this copy's global-memory side.
+            None preserves the backend's default behavior. NVIDIA uses
+            ``tle.gpu.CachePolicy`` with native cache modifiers, L1 eviction,
+            static L2 policy objects (fraction=1).
+            MThreads uses ``mthreads.TMECachePolicy``
+            for descriptor copies and ``mthreads.LSUCachePolicy`` for pointer
+            copies. PPU uses ``ppu.CachePolicy`` or ``ppu.AIUCachePolicy``;
+            HCU and MetaX use their namespaced ``CachePolicy`` classes.
+            Static fields are immutable compile-time values. Each type retains
+            its backend's native meaning; there is no portable intent mapping.
+            The target, copy direction, and memory path determine which controls
+            are supported; invalid combinations raise errors. Hints do not
+            change synchronization. Measure non-default policies on the target
+            workload. NVIDIA CachePolicy() requires at least one explicit hint;
+            use None to retain the default.
         other: Optional fill value for the local-memory elements a
             global-to-local copy does not read, i.e. the lanes the ``mask``
             excludes. It is passed as the ``other`` operand of the generated
@@ -1328,10 +1336,14 @@ def copy(
     mthreads_enabled = mthreads_common.enabled()
     iluvatar_enabled = iluvatar_copy.enabled()
     cache_policy = tl._unwrap_if_constexpr(cache_policy)
-    if mthreads_enabled:
-        cache_policy = mthreads_copy.normalize_cache_policy(cache_policy)
-    elif cache_policy is not None:
-        raise ValueError("copy cache_policy is not supported by this backend")
+    eviction_policy = tl._unwrap_if_constexpr(eviction_policy)
+    if not getattr(tl, "_HAS_NATIVE_CACHE_POLICY", False):
+        if mthreads_enabled:
+            cache_policy = mthreads_copy.normalize_cache_policy(cache_policy)
+        elif cache_policy is not None:
+            raise ValueError("copy cache_policy is not supported by this backend")
+    elif cache_policy is not None and eviction_policy:
+        raise ValueError("copy cache_policy cannot be combined with eviction_policy")
     is_async = tl._unwrap_if_constexpr(is_async)
     if not isinstance(is_async, builtins.bool):
         raise ValueError(f"copy is_async must be a compile-time bool, got {type(is_async).__name__}")
@@ -1371,7 +1383,10 @@ def copy(
             other = _semantic.to_tensor(0.0 if other is None else other)
         boundary_check = ()
         padding_option = ""
-        cache_modifier = ""
+        if getattr(tl, "_HAS_NATIVE_CACHE_POLICY", False) and cache_policy is not None:
+            cache_modifier, norm_eviction_policy = cache_policy.to_ir(direction == CopyDirection.GM_TO_LOCAL)
+        else:
+            cache_modifier, norm_eviction_policy = "", eviction_policy
         volatile = False
 
         try:
@@ -1389,25 +1404,28 @@ def copy(
                         mask_handle,
                         other_handle,
                         _semantic._str_to_load_cache_modifier(cache_modifier),
-                        _semantic._str_to_eviction_policy(eviction_policy),
+                        _semantic._str_to_eviction_policy(norm_eviction_policy),
                         volatile,
                     )
                 elif iluvatar_enabled:
                     # Iluvatar's semantic.load carries an extra stride slot
                     # after other; ordinary TLE copies leave it unset.
                     tt_load = _semantic.load(src, mask, other, None, boundary_check, padding_option, cache_modifier,
-                                             eviction_policy, volatile)
+                                             norm_eviction_policy, volatile)
                 else:
                     # None fills the FlagTree hints slot; TLE copy has no hints to pass.
                     load_extra_args = () if mthreads_enabled else (None, )
                     tt_load = _semantic.load(src, mask, other, boundary_check, padding_option, cache_modifier,
-                                             eviction_policy, volatile, *load_extra_args)
+                                             norm_eviction_policy, volatile, *load_extra_args)
                 if not is_async:
                     local_ptrs = local_ptr(dst, _make_full_indices(dst, _semantic), _semantic=_semantic)
                     # Every local element is initialized. A false source mask is
                     # represented by the loaded other value rather than by suppressing
                     # the shared-memory store.
-                    _semantic.store(local_ptrs, tt_load, None, boundary_check, cache_modifier, eviction_policy)
+                    if getattr(tl, "_HAS_NATIVE_CACHE_POLICY", False):
+                        _semantic.store(local_ptrs, tt_load, None, boundary_check, "", "")
+                    else:
+                        _semantic.store(local_ptrs, tt_load, None, boundary_check, cache_modifier, eviction_policy)
                     if hasattr(_semantic.builder, "mark_logical_pointer_copy"):
                         # Preserve the requested copy extent independently of the
                         # Python value type. TTIR checks it against the destination
@@ -1417,7 +1435,7 @@ def copy(
             else:
                 local_ptrs = local_ptr(src, _make_full_indices(src, _semantic), _semantic=_semantic)
                 load = tl.load(local_ptrs, _semantic=_semantic)
-                _semantic.store(dst, load, mask, boundary_check, cache_modifier, eviction_policy)
+                _semantic.store(dst, load, mask, boundary_check, cache_modifier, norm_eviction_policy)
         except Exception as e:
             raise RuntimeError(f"copy operation failed: {str(e)}") from e
 
@@ -1490,8 +1508,12 @@ def copy(
             copy_shape_args = (shape, )
         assert len(offsets) == len(desc.shape), "Offsets and shape must have the same length"
         offsets = _semantic._convert_to_ir_values(offsets, require_i64=False)
-        copy_policy_args = ({} if not eviction_policy else
-                            {"eviction_policy": _semantic._str_to_eviction_policy(eviction_policy)})
+        if getattr(tl, "_HAS_NATIVE_CACHE_POLICY", False) and cache_policy is not None:
+            policy_args = {"eviction_policy": cache_policy.to_ir(direction == CopyDirection.GM_TO_LOCAL)[1]}
+        elif eviction_policy:
+            policy_args = {"eviction_policy": _semantic._str_to_eviction_policy(eviction_policy)}
+        else:
+            policy_args = {}
         _semantic.builder.create_tma_copy(
             src.handle,
             dst.handle,
@@ -1499,7 +1521,7 @@ def copy(
             None if barrier_slot is None else barrier_slot.handle,
             expect_bytes,
             *copy_shape_args,
-            **copy_policy_args,
+            **policy_args,
         )
         return
 
@@ -1534,7 +1556,14 @@ def copy(
             f"Invalid copy combination: src={type(src).__name__}, dst={type(dst).__name__}. "
             "One operand must be tl.tensor (global memory) and the other must be tle.buffered_tensor (local memory)")
 
-    if cache_policy is not None and (is_normcopy or direction != CopyDirection.GM_TO_LOCAL):
+    if getattr(tl, "_HAS_NATIVE_CACHE_POLICY", False):
+        cache_policy = resolve_policy(cache_policy, not is_normcopy, direction == CopyDirection.GM_TO_LOCAL, _semantic,
+                                      mthreads_enabled, iluvatar_enabled, tle_semantic.COMMON_IR_ENABLED)
+        if cache_policy is not None and is_normcopy:
+            global_operand = src if direction == CopyDirection.GM_TO_LOCAL else dst
+            if getattr(global_operand.dtype, "address_space", None) != 1:
+                raise ValueError("copy cache_policy requires a global-memory pointer")
+    elif cache_policy is not None and (is_normcopy or direction != CopyDirection.GM_TO_LOCAL):
         raise ValueError("copy cache_policy is only supported for descriptor-to-shared copies")
     if is_async:
         if mthreads_enabled:
@@ -1641,6 +1670,14 @@ def copy(
         return normcopy(src, dst, shape, direction, mask, other, _semantic)
     if mask is not None:
         raise ValueError("copy mask is only supported for standard pointer-tensor copies")
+    from triton._flagtree_backend import FLAGTREE_BACKEND
+    if getattr(tl, "_HAS_NATIVE_CACHE_POLICY", False) and FLAGTREE_BACKEND == "ppu":
+        # PPU has no TMA engine: a descriptor copy is an asynchronous block
+        # pointer load that the backend promotes to a native AIU transfer.
+        # ``cache_policy`` is ``None`` or an AIUCachePolicy here; None selects
+        # ppu.DEFAULT_AIU_KP (documented there rather than hidden in lowering).
+        from .ppu import _copy_descriptor
+        return _copy_descriptor(src, dst, shape, offsets, barrier, cache_policy, _semantic=_semantic)
     if mthreads_enabled:
         if eviction_policy:
             raise ValueError("TMA eviction policies are not supported by the mthreads backend")
@@ -1649,8 +1686,14 @@ def copy(
             if direction != CopyDirection.GM_TO_LOCAL:
                 raise ValueError("TMA copy barrier is only supported for global-to-shared TMA copy")
             barrier_slot = _tma_completion_barrier_slot(barrier, _semantic)
-        return mthreads_copy.tmacopy(src, dst, direction, shape, offsets, barrier_slot, cache_policy=cache_policy,
-                                     _semantic=_semantic)
+        if not getattr(tl, "_HAS_NATIVE_CACHE_POLICY", False):
+            return mthreads_copy.tmacopy(src, dst, direction, shape, offsets, barrier_slot, cache_policy=cache_policy,
+                                         _semantic=_semantic)
+        # TME persistence and prefetch are operands of the MUSA tma_copy
+        # builder rather than a tt.cache_policy annotation.
+        tme_scope, tme_prefetch_size = mthreads_copy.native_tme_controls(cache_policy)
+        return mthreads_copy.tmacopy(src, dst, direction, shape, offsets, barrier_slot, cache_policy=tme_scope,
+                                     prefetch_size=tme_prefetch_size, _semantic=_semantic)
     else:
         return tmacopy(src, dst, direction, shape, offsets, barrier, _semantic)
 

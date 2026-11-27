@@ -778,11 +778,13 @@ class HIPBackend(BaseBackend):
         # amdgcn = llvm.translate_to_asm(src, hcu.TARGET_TRIPLE, options.arch, features, flags, options.enable_fp_fusion,
         #                                False)
         kernel_ir = str(src)
-        # Prefer dcc for tle.raw when IR has no buffer.rsrc (dcc rejects that intrinsic).
+        # Keep buffer-resource IR on DTK clang when a kernel also uses tle.raw.
         # Path follows FlagTree/DTK layout: {ROCM_PATH|/opt/dtk}/dcc/bin/dcc
+        import triton.language.core as tl_core
         dcc = Path(HIPBackend.path_to_rocm()) / "dcc" / "bin" / "dcc"
-        use_dcc = (bool(metadata.get("hcu_tle_raw")) and dcc.is_file()
-                   and "llvm.amdgcn.make.buffer.rsrc" not in kernel_ir)
+        rsrc_marker = "ptr addrspace(8)" if getattr(tl_core, "_HAS_NATIVE_CACHE_POLICY",
+                                                    False) else "llvm.amdgcn.make.buffer.rsrc"
+        use_dcc = bool(metadata.get("hcu_tle_raw")) and dcc.is_file() and rsrc_marker not in kernel_ir
         metadata["hcu_raw_dcc"] = use_dcc
         try:
             with tempfile.NamedTemporaryFile(mode='w', suffix=".ll", delete=False) as f:

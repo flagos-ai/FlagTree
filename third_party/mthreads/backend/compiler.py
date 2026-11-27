@@ -887,6 +887,11 @@ class MUSAOptions:
     instrumentation_mode: str = ""
     inplace_alias_pairs: str = ""
 
+    @property
+    def supports_lsu_cache_policy(self) -> bool:
+        import triton.language.core as tl_core
+        return getattr(tl_core, "_HAS_NATIVE_CACHE_POLICY", False) and musa_capability_from_arch(self.arch) == 31
+
     def __post_init__(self):
         default_libdir = Path(__file__).parent / "lib"
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
