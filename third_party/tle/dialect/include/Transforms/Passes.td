@@ -445,6 +445,26 @@ def TritonTlePlanLogicalDomains
                            "mlir::triton::tle::TleDialect"];
 }
 #endif // __TLE_TILED_SMEM__
+def TritonTleLowerPipeToRDNA
+    : Pass<"triton-tle-lower-pipe-to-rdna", "mlir::ModuleOp"> {
+  let summary = "lower CTA SMEM TLE pipe operations to AMD/RDNA mbarrier ops";
+
+  let description = [{
+    RDNA analogue of triton-tle-lower-pipe-to-nvws. Lowers the CTA-scoped SMEM
+    pipe IR produced by tle.pipe to the AMD hardware mbarrier ops
+    (triton::amdgpu::{Init,Arrive,Wait}BarrierOp): a per-stage full/empty
+    mbarrier pair with whole-CTA participant counts, correctness-first (no warp
+    specialization or async transport). The amd dialect is loaded at run time, so
+    it is not declared as a dependent dialect here (the pass is a no-op on builds
+    without the amd backend).
+  }];
+
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::gpu::GPUDialect",
+                           "mlir::triton::TritonDialect",
+                           "mlir::triton::gpu::TritonGPUDialect"];
+}
+
 def TritonTleRestorePipeFunctionCalls
     : Pass<"triton-tle-restore-pipe-function-calls", "mlir::ModuleOp"> {
   let summary = "restore noinline pipe helper calls after NVWS state materialization";
@@ -464,6 +484,19 @@ def TritonTleRestorePipeFunctionCalls
                            "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect"];
 }
 
+def TritonTleSharedOffsetFunctionABI
+    : Pass<"triton-tle-shared-offset-function-abi", "mlir::ModuleOp"> {
+  let summary = "Pass Shared device-function arguments as arena-relative offsets";
+  let description = [{
+    After NVIDIA LLVM lowering, convert Shared pointer leaves of internal
+    device-function arguments to 32-bit offsets from global_smem. Callers
+    encode and callees decode, including nested memdesc structures. Constant
+    call-site offsets no longer keep absolute Shared addresses live from pipe
+    initialization through an entire persistent entry. Returns and external
+    function interfaces retain their existing representation.
+  }];
+  let dependentDialects = ["mlir::LLVM::LLVMDialect"];
+}
 
 def TritonTleLowerExtractTile
     : Pass<"triton-tle-lower-extract-tile", "mlir::ModuleOp"> {
