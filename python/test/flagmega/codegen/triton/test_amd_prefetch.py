@@ -53,11 +53,10 @@ def test_inserts_before_the_last_collective_on_gfx1201():
     index = next(i for i, e in enumerate(events) if e.get("kind") == "prefetch")
     assert events[index + 1]["family"] == "distributed_boxing"
     event = events[index]
-    assert event["guard"] == (
-        "_flagmega_call_offsets.to(tl.int64, bitcast=True) != "
-        "(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) + 16).to(tl.int64, bitcast=True)")
+    assert event["guard"] == "_flagmega_call_offsets != 16"
     assert event["base"] == ("_flagmega_call_pool_rdata.to(tl.pointer_type(tl.uint8)) "
-                             "+ tl.load(_flagmega_call_offsets + 9, volatile=True)")
+                             "+ tl.load(_flagmega_function_offsets.to(tl.pointer_type(tl.int64)) "
+                             "+ _flagmega_call_offsets + 9, volatile=True)")
     assert event["slab_bytes"] == 131072 and event["chunks"] == 32
 
 
@@ -110,7 +109,7 @@ def test_rendered_prefetch_compiles_and_runs_on_gfx12(tmp_path):
     rdata = torch.zeros(2 * event["slab_bytes"] + 4096, dtype=torch.uint8, device="cuda")
     for record in (0, 16):  # a middle record prefetches; the last record must not
         out = torch.zeros(2, dtype=torch.int64, device="cuda")
-        kernel = module.run[(2, )](table, table[record:], rdata, out)
+        kernel = module.run[(2, )](table, record, rdata, out)
         torch.cuda.synchronize()
         assert out.tolist() == [1, 2]
     assert "s_prefetch_data" in kernel.asm["amdgcn"]

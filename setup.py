@@ -966,7 +966,6 @@ setup(
     install_requires=[
         "importlib-metadata; python_version < '3.10'",
     ],
-    extras_require={"flagmega": ["jinja2>=3.1", "ortools==9.10.4067"]},
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
     package_data={**helper.get_package_data(backends), "triton.flagmega": ["codegen/triton/**/*.jinja"]},  # flagtree
@@ -993,6 +992,10 @@ setup(
     classifiers=CLASSIFIERS,
     test_suite="tests",
     extras_require={
+        "flagmega": [
+            "jinja2>=3.1",
+            "ortools==9.10.4067",
+        ],
         "build": [
             "cmake>=3.20,<4.0",
             "GitPython",  # flagtree
